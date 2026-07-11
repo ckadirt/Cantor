@@ -33,6 +33,7 @@ import {
   mulberry32,
   placeSymbol,
   polygonPath,
+  relaxPositions,
   resample,
   resampleStrokedSvg,
 } from './morph';
@@ -42,14 +43,26 @@ import { space, type, usePalette } from '../theme/tokens';
 /** The slogan under the wordmark. One line; keep it short. */
 const SLOGAN = 'The beautiful way to interact with music.';
 
-// Timeline, in seconds (normalised against DURATION below). Tune freely.
-const BUILD_BASE = 0.15; // first bar draws in
+// Timeline, all in real seconds — the whole intro is scheduled off these, so
+// changing one phase never quietly speeds up another. Tune freely.
+const BUILD_BASE = 0.15; // first bar draws in — the Cantor set, kept as it was
 const BUILD_ROW_STEP = 0.1; // per row, centre outward
 const BUILD_DUR = 0.5;
-const MORPH_BASE = 1.15; // first bar starts morphing
-const MORPH_STEP = 0.1; // even one-by-one cascade, ~0.1s apart
-const MORPH_DUR = 0.55;
-const DURATION = 5200; // ms, whole intro
+const MORPH_BASE = 1.1; // first bar starts morphing
+const MORPH_TOTAL = 1.5; // the whole cascade of morphs spans exactly this
+const MORPH_DUR = 0.5; // each bar's own morph
+const REVEAL_START = 2.35; // "Cantor" + slogan fade in (overlaps the morph tail)
+const REVEAL_DUR = 0.8;
+const FRAME_START = 2.0; // bars settle to a faint border frame
+const FRAME_DUR = 1.0;
+const DURATION_S = 3.3; // whole intro, seconds
+const DURATION = DURATION_S * 1000; // ms
+
+// The same windows on the 0..1 master clock, for the worklet-side reveal/fade.
+const REVEAL_A = REVEAL_START / DURATION_S;
+const REVEAL_B = (REVEAL_START + REVEAL_DUR) / DURATION_S;
+const FRAME_A = FRAME_START / DURATION_S;
+const FRAME_B = (FRAME_START + FRAME_DUR) / DURATION_S;
 
 // ── worklet easing helpers ──────────────────────────────────────────────────
 function smoothstep(a: number, b: number, x: number): number {
@@ -82,7 +95,7 @@ function Bar({ m, p, color }: { m: BarModel; p: SharedValue<number>; color: stri
   // faint constellation once the name takes over.
   const transform = useDerivedValue(() => [{ scaleX: reveal.value }]);
   const opacity = useDerivedValue(() => {
-    const frame = 1 - 0.6 * smoothstep(0.66, 0.92, p.value);
+    const frame = 1 - 0.6 * smoothstep(FRAME_A, FRAME_B, p.value);
     return reveal.value * frame;
   });
 
@@ -112,32 +125,53 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     const order = laid.map((_, i) => i).sort((a, b) => laid[a].cx - laid[b].cx);
     const morphIndex = new Array<number>(laid.length);
     order.forEach((barI, rank) => (morphIndex[barI] = rank));
+    // Spread the per-bar starts so first-start → last-finish spans MORPH_TOTAL.
+    const morphStep = (MORPH_TOTAL - MORPH_DUR) / Math.max(1, laid.length - 1);
 
-    return laid.map((bar, i) => {
+    // First pass: pick each mark's size, tilt, and a rough scatter point out
+    // toward the borders along the bar's own outward direction.
+    const place = laid.map((bar, i) => {
       const rand = mulberry32(i * 2654435761);
-      const sym = SYMBOLS[i % SYMBOLS.length];
-
-      // scatter toward the borders along the bar's own outward direction
       let angle = Math.atan2(bar.cy - cy, bar.cx - cx);
       if (!Number.isFinite(angle) || (bar.cx === cx && bar.cy === cy)) {
         angle = rand() * Math.PI * 2;
       }
       const radX = (0.5 + rand() * 0.42) * (width / 2);
       const radY = (0.42 + rand() * 0.5) * (height / 2);
-      const tx = Math.min(width - margin, Math.max(margin, cx + Math.cos(angle) * radX));
-      const ty = Math.min(height - margin, Math.max(margin, cy + Math.sin(angle) * radY));
       const symSize = 30 + rand() * 20; // thin glyphs read better a touch larger
-      const spin = (rand() - 0.5) * 0.7; // gentle tilt only — keep glyphs legible
+      return {
+        sym: SYMBOLS[i % SYMBOLS.length],
+        symSize,
+        spin: (rand() - 0.5) * 0.7, // gentle tilt only — keep glyphs legible
+        pos: {
+          x: Math.min(width - margin, Math.max(margin, cx + Math.cos(angle) * radX)),
+          y: Math.min(height - margin, Math.max(margin, cy + Math.sin(angle) * radY)),
+        },
+      };
+    });
 
+    // Second pass: relax the scatter so no two marks land on top of each other.
+    const radii = place.map(pl => pl.symSize * 0.6 + 6);
+    // The array holds the same `pos` object references, so this settles each
+    // pl.pos in place (radius = half the glyph plus a little breathing room).
+    relaxPositions(place.map(pl => pl.pos), radii, {
+      minX: margin,
+      minY: margin,
+      maxX: width - margin,
+      maxY: height - margin,
+    });
+
+    return laid.map((bar, i) => {
+      const pl = place[i];
       const homePts = resample(Skia.Path.MakeFromSVGString(barSvg(bar.rect))!);
-      const symPts = resampleStrokedSvg(sym.svg, STROKE);
+      const symPts = resampleStrokedSvg(pl.sym.svg, STROKE);
       const targetPts =
         symPts.length > 0
-          ? align(homePts, placeSymbol(symPts, tx, ty, symSize, spin))
+          ? align(homePts, placeSymbol(symPts, pl.pos.x, pl.pos.y, pl.symSize, pl.spin))
           : homePts; // fallback: bar just fades in place if the glyph didn't parse
 
       const buildStart = BUILD_BASE + bar.rowRank * BUILD_ROW_STEP;
-      const morphStart = MORPH_BASE + morphIndex[i] * MORPH_STEP;
+      const morphStart = MORPH_BASE + morphIndex[i] * morphStep;
       return {
         homePath: polygonPath(homePts),
         targetPath: polygonPath(targetPts),
@@ -159,7 +193,7 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
   }, [p]);
 
   const nameStyle = useAnimatedStyle(() => {
-    const a = smoothstep(0.82, 0.99, p.value);
+    const a = smoothstep(REVEAL_A, REVEAL_B, p.value);
     return {
       opacity: a,
       transform: [{ translateY: (1 - a) * 12 }, { scale: 0.97 + 0.03 * a }],

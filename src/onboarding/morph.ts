@@ -104,6 +104,51 @@ export function placeSymbol(
   });
 }
 
+/**
+ * Push a set of points apart until none overlap, keeping them inside `bounds`.
+ * Deterministic relaxation — a few dozen passes of pairwise repulsion is plenty
+ * for the handful of scattered marks. Mutates `pts` in place.
+ */
+export function relaxPositions(
+  pts: Pt[],
+  radii: number[],
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  iterations = 80,
+): void {
+  const n = pts.length;
+  for (let iter = 0; iter < iterations; iter++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        let dx = pts[j].x - pts[i].x;
+        let dy = pts[j].y - pts[i].y;
+        let d = Math.hypot(dx, dy);
+        const min = radii[i] + radii[j];
+        if (d >= min) {
+          continue;
+        }
+        if (d < 1e-4) {
+          // coincident — nudge apart deterministically
+          dx = (i - j) % 2 === 0 ? 1 : -1;
+          dy = 0.3;
+          d = Math.hypot(dx, dy);
+        }
+        const push = (min - d) / 2;
+        const nx = (dx / d) * push;
+        const ny = (dy / d) * push;
+        pts[i].x -= nx;
+        pts[i].y -= ny;
+        pts[j].x += nx;
+        pts[j].y += ny;
+      }
+    }
+    // keep everyone on-screen
+    for (let i = 0; i < n; i++) {
+      pts[i].x = Math.min(bounds.maxX, Math.max(bounds.minX, pts[i].x));
+      pts[i].y = Math.min(bounds.maxY, Math.max(bounds.minY, pts[i].y));
+    }
+  }
+}
+
 /* eslint-disable no-bitwise -- mulberry32 is inherently bitwise */
 /** Deterministic per-bar RNG so the scatter is stable across renders. */
 export function mulberry32(seed: number): () => number {
