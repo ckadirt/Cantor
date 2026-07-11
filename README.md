@@ -1,97 +1,133 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Cantor
 
-# Getting Started
+A new way to interact with music. Cantor generates full songs on-device — no cloud inference required — built on the ACE-Step 1.5 music model. This repo is the **React Native app** (RN 0.86, bare CLI, `applicationId com.cantor.app`).
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
+> **Generation runs where you are.** The generation engine is being disentangled from the app so a song can be produced on **local devices (smartphones)**, on a **PC or Mac**, and — coming soon — on **our own servers**. Same app, interchangeable backends. This is core to the philosophy: revolutionize how we interact with music by letting the music be made anywhere.
 
-## Step 1: Start Metro
+---
 
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
+## Prerequisites
 
-To start the Metro dev server, run the following command from the root of your React Native project:
+- Node.js + npm
+- JDK 17
+- Android SDK (this machine: `android/local.properties` sets `sdk.dir`; `ANDROID_HOME` is unset)
+- Android NDK **r27b** (r30 is beta — don't use it)
+- A connected device or emulator (`adb devices` should list it)
+
+Make sure you've completed the RN [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide once.
+
+Install JS dependencies:
 
 ```sh
-# Using npm
+npm install
+```
+
+---
+
+## The local server (Metro)
+
+"The local server" is **Metro**, the JavaScript bundler/dev server. Debug builds load their JS bundle from it live, so it must be running while you develop.
+
+```sh
+# from cantor/ (the repo root)
 npm start
-
-# OR using Yarn
-yarn start
 ```
 
-## Step 2: Build and run your app
+That runs `react-native start` on **port 8081**. Leave it running in its own terminal.
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+If it gets into a weird state after adding native deps or changing Babel config, reset its cache:
 
 ```sh
-# Using npm
+npx react-native start --reset-cache
+```
+
+### Let a USB-connected phone reach Metro
+
+A device on USB has to forward port 8081 back to your machine:
+
+```sh
+adb reverse tcp:8081 tcp:8081
+```
+
+> **Trap:** unplugging/replugging USB drops the reverse mapping. The app then red-screens *"Unable to load script"* on the next cold start. Just re-run the `adb reverse` line above.
+
+---
+
+## Debug build
+
+A debug APK is signed with the bundled `debug.keystore` and loads its JS from Metro (hot reload works).
+
+**One command (build + install + launch)** — Metro must be running:
+
+```sh
 npm run android
-
-# OR using Yarn
-yarn android
 ```
 
-### iOS
-
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
-
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+**Or build and install the APK by hand:**
 
 ```sh
-bundle install
+cd android
+./gradlew assembleDebug
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Then, and every time you update your native dependencies, run:
+> First Gradle build is slow (~16 min); it's cached after that. Adding new native dependencies forces a full rebuild (~8–9 min) — pair it with `--reset-cache` on Metro.
+
+### Debugging workflow
+
+- **Metro running?** Debug builds need it (see above), plus `adb reverse tcp:8081 tcp:8081` over USB.
+- **Open the Dev Menu:** `adb shell input keyevent 82` (or shake the device / <kbd>Ctrl</kbd>+<kbd>M</kbd>).
+- **Fast Refresh:** save a file and the app updates automatically.
+- **Full reload:** press <kbd>R</kbd> twice, or "Reload" in the Dev Menu.
+- **Screenshot to verify on-device:** `adb exec-out screencap -p > shot.png`.
+- **Native resource changes** (icons, manifest, anything under `android/`) are **not** hot-reloaded — rebuild with Gradle.
+
+---
+
+## Production / release build
+
+The release build minifies (ProGuard), doesn't need Metro, and ships a self-contained JS bundle.
+
+> ⚠️ **Signing:** `android/app/build.gradle` currently signs `release` with the **debug keystore** (RN template default). Before publishing to Play, generate your own upload keystore and wire it into `signingConfigs.release` — see [Signing your app](https://reactnative.dev/docs/signed-apk-android). Until then a release build is fine for local testing but **not** distributable.
+
+**Release APK** (for sideloading / direct install):
 
 ```sh
-bundle exec pod install
+cd android
+./gradlew assembleRelease
+adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+**Release AAB** (Android App Bundle — the format Google Play wants):
 
 ```sh
-# Using npm
-npm run ios
-
-# OR using Yarn
-yarn ios
+cd android
+./gradlew bundleRelease
+# output: android/app/build/outputs/bundle/release/app-release.aab
 ```
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+Run a release build directly on a device:
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
+```sh
+npm run android -- --mode=release
+```
 
-## Step 3: Modify your app
+Version is set in `android/app/build.gradle` (`versionCode` / `versionName`) — bump both before a release.
 
-Now that you have successfully run the app, let's make changes!
+---
 
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
+## Tests & lint
 
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
+```sh
+npm test      # Jest
+npm run lint  # ESLint
+```
 
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
+---
 
-## Congratulations! :tada:
+## Troubleshooting
 
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+- **"Unable to load script" red screen** → Metro isn't running or `adb reverse` was dropped. Start Metro and re-run `adb reverse tcp:8081 tcp:8081`.
+- **Metro 500s after native/Babel changes** → `npx react-native start --reset-cache`.
+- **Weird NDK/CMake failures** → the workspace path contains a space (`step-ace 1.5`); suspect that first. Also confirm you're on NDK **r27b**, not the beta r30.
+- General RN issues: [Troubleshooting](https://reactnative.dev/docs/troubleshooting).
