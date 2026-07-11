@@ -36,6 +36,7 @@ import {
   relaxPositions,
   resample,
   resampleStrokedSvg,
+  smoothstep,
 } from './morph';
 import { STROKE, SYMBOLS } from './symbols';
 import { space, type, usePalette } from '../theme/tokens';
@@ -63,13 +64,6 @@ const REVEAL_A = REVEAL_START / DURATION_S;
 const REVEAL_B = (REVEAL_START + REVEAL_DUR) / DURATION_S;
 const FRAME_A = FRAME_START / DURATION_S;
 const FRAME_B = (FRAME_START + FRAME_DUR) / DURATION_S;
-
-// ── worklet easing helpers ──────────────────────────────────────────────────
-function smoothstep(a: number, b: number, x: number): number {
-  'worklet';
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-}
 
 type BarModel = {
   homePath: SkPath;

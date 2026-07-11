@@ -9,6 +9,13 @@ import { Skia, StrokeCap, StrokeJoin, type SkPath } from '@shopify/react-native-
 
 export type Pt = { x: number; y: number };
 
+/** Hermite step from a to b — the app's one easing. Worklet-safe. */
+export function smoothstep(a: number, b: number, x: number): number {
+  'worklet';
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
 /** Points per shape. 64 is plenty for glyph-sized marks and cheap on the GPU. */
 export const N = 64;
 
