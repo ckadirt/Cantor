@@ -28,14 +28,28 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { barSvg, layoutBars } from './cantorBars';
-import { align, mulberry32, placeSymbol, polygonPath, resample, resampleSvg } from './morph';
-import { SYMBOLS } from './symbols';
+import {
+  align,
+  mulberry32,
+  placeSymbol,
+  polygonPath,
+  resample,
+  resampleStrokedSvg,
+} from './morph';
+import { STROKE, SYMBOLS } from './symbols';
 import { space, type, usePalette } from '../theme/tokens';
 
 /** The slogan under the wordmark. One line; keep it short. */
 const SLOGAN = 'The beautiful way to interact with music.';
 
-const DURATION = 4600; // ms, whole intro
+// Timeline, in seconds (normalised against DURATION below). Tune freely.
+const BUILD_BASE = 0.15; // first bar draws in
+const BUILD_ROW_STEP = 0.1; // per row, centre outward
+const BUILD_DUR = 0.5;
+const MORPH_BASE = 1.15; // first bar starts morphing
+const MORPH_STEP = 0.1; // even one-by-one cascade, ~0.1s apart
+const MORPH_DUR = 0.55;
+const DURATION = 5200; // ms, whole intro
 
 // ── worklet easing helpers ──────────────────────────────────────────────────
 function smoothstep(a: number, b: number, x: number): number {
@@ -90,8 +104,16 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     const cy = height * 0.42; // sit the mark a little above centre
     const size = Math.min(width, height) * 0.52;
     const margin = 28;
+    const sec = 1000 / DURATION; // seconds → normalised clock
 
-    return layoutBars(size, cx, cy).map((bar, i) => {
+    const laid = layoutBars(size, cx, cy);
+    // Morph cascade order: a clean left-to-right sweep, evenly spaced in time —
+    // not the centre-first bloom the radial ordering gave.
+    const order = laid.map((_, i) => i).sort((a, b) => laid[a].cx - laid[b].cx);
+    const morphIndex = new Array<number>(laid.length);
+    order.forEach((barI, rank) => (morphIndex[barI] = rank));
+
+    return laid.map((bar, i) => {
       const rand = mulberry32(i * 2654435761);
       const sym = SYMBOLS[i % SYMBOLS.length];
 
@@ -104,26 +126,28 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
       const radY = (0.42 + rand() * 0.5) * (height / 2);
       const tx = Math.min(width - margin, Math.max(margin, cx + Math.cos(angle) * radX));
       const ty = Math.min(height - margin, Math.max(margin, cy + Math.sin(angle) * radY));
-      const symSize = 18 + rand() * 16;
-      const spin = sym.spin ? rand() * Math.PI * 2 : (rand() - 0.5) * 0.5;
+      const symSize = 30 + rand() * 20; // thin glyphs read better a touch larger
+      const spin = (rand() - 0.5) * 0.7; // gentle tilt only — keep glyphs legible
 
       const homePts = resample(Skia.Path.MakeFromSVGString(barSvg(bar.rect))!);
-      const symPts = resampleSvg(sym.svg);
+      const symPts = resampleStrokedSvg(sym.svg, STROKE);
       const targetPts =
         symPts.length > 0
           ? align(homePts, placeSymbol(symPts, tx, ty, symSize, spin))
           : homePts; // fallback: bar just fades in place if the glyph didn't parse
 
+      const buildStart = BUILD_BASE + bar.rowRank * BUILD_ROW_STEP;
+      const morphStart = MORPH_BASE + morphIndex[i] * MORPH_STEP;
       return {
         homePath: polygonPath(homePts),
         targetPath: polygonPath(targetPts),
         out: Skia.Path.Make(),
         cx: bar.cx,
         cy: bar.cy,
-        buildStart: 0.02 + bar.rowRank * 0.06,
-        buildEnd: 0.02 + bar.rowRank * 0.06 + 0.16,
-        morphStart: 0.4 + bar.radial * 0.16 + rand() * 0.05,
-        morphEnd: 0.4 + bar.radial * 0.16 + 0.24,
+        buildStart: buildStart * sec,
+        buildEnd: (buildStart + BUILD_DUR) * sec,
+        morphStart: morphStart * sec,
+        morphEnd: (morphStart + MORPH_DUR) * sec,
       };
     });
   }, [width, height]);
@@ -135,7 +159,7 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
   }, [p]);
 
   const nameStyle = useAnimatedStyle(() => {
-    const a = smoothstep(0.72, 0.98, p.value);
+    const a = smoothstep(0.82, 0.99, p.value);
     return {
       opacity: a,
       transform: [{ translateY: (1 - a) * 12 }, { scale: 0.97 + 0.03 * a }],

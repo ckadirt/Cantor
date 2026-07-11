@@ -5,7 +5,7 @@
  * Skia's built-in interpolatePaths can morph any of them into any other on the
  * UI thread. Correspondence + easing — that's the whole magic.
  */
-import { Skia, type SkPath } from '@shopify/react-native-skia';
+import { Skia, StrokeCap, StrokeJoin, type SkPath } from '@shopify/react-native-skia';
 
 export type Pt = { x: number; y: number };
 
@@ -32,6 +32,20 @@ export function resample(path: SkPath, n = N): Pt[] {
 export function resampleSvg(svg: string, n = N): Pt[] {
   const path = Skia.Path.MakeFromSVGString(svg);
   return path ? resample(path, n) : [];
+}
+
+/**
+ * Thicken a centerline SVG into a thin ribbon (Path.stroke) and sample its
+ * outline. Lets the symbols be authored as single elegant strokes yet morph
+ * through the same filled-polygon pipeline as the solid bars.
+ */
+export function resampleStrokedSvg(svg: string, width: number, n = N): Pt[] {
+  const base = Skia.Path.MakeFromSVGString(svg);
+  if (!base) {
+    return [];
+  }
+  const ribbon = base.stroke({ width, cap: StrokeCap.Round, join: StrokeJoin.Round });
+  return ribbon ? resample(ribbon, n) : [];
 }
 
 /** A closed N-gon as an SkPath — the interpolable form of any shape. */

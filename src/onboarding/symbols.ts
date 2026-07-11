@@ -1,49 +1,52 @@
 /**
  * The marks the Cantor bars morph into as they disperse to the borders — a
- * quiet constellation of math and music glyphs. Each is a single closed contour
- * authored in a 0..100 box (so the morph correspondence is clean) and kept
- * inside the design's rounded-bar / minimal vocabulary. Add richer glyphs (∫ Σ
- * 𝄞 …) here as SVG strings; the pipeline resamples whatever it's given.
+ * quiet constellation of math and music glyphs. Each is a single flowing
+ * *centerline* stroke authored in a 0..100 box (cubic béziers, no chunky
+ * fills); morph.ts thickens it into a thin ribbon (Path.stroke) before
+ * resampling, so the marks read fine and delicate. Keep them single, mostly
+ * non-self-crossing strokes — the morph samples one contour.
  */
 
 export type Symbol = {
   name: string;
   svg: string;
-  /** Whether a random rotation reads well on this mark. */
-  spin: boolean;
 };
 
+/** Ribbon thickness, in the 0..100 authoring box. Scales down with the mark. */
+export const STROKE = 4.2;
+
 export const SYMBOLS: Symbol[] = [
-  // a rounded bar — the primitive itself, rotated becomes a "stroke"
+  // ∫ — integral: a tall S spine curling top-right to bottom-left
   {
-    name: 'bar',
-    spin: true,
+    name: 'integral',
+    svg: 'M 66 16 C 55 12 51 22 51 34 L 51 66 C 51 78 47 88 35 84',
+  },
+  // ∿ — a sine wave: two calm humps, math and music at once
+  {
+    name: 'sine',
+    svg: 'M 12 50 C 25 22 38 22 50 50 C 62 78 75 78 88 50',
+  },
+  // ∞ — lemniscate, drawn as one open pass
+  {
+    name: 'infinity',
     svg:
-      'M 22 42 H 78 A 8 8 0 0 1 78 58 H 22 A 8 8 0 0 1 22 42 Z',
+      'M 50 50 C 40 33 19 37 21 50 C 23 63 40 67 50 50 C 60 33 81 37 79 50 C 77 63 60 67 50 50',
   },
-  // filled dot — a note head / a point
+  // a treble-ish spiral — one continuous inward curl
   {
-    name: 'dot',
-    spin: false,
-    svg: 'M 50 22 A 28 28 0 1 0 49.99 22 Z',
-  },
-  // plus — math; a random spin turns it into ×
-  {
-    name: 'plus',
-    spin: true,
+    name: 'spiral',
     svg:
-      'M 42 18 H 58 V 42 H 82 V 58 H 58 V 82 H 42 V 58 H 18 V 42 H 42 Z',
+      'M 58 46 C 49 42 45 50 49 56 C 54 63 65 59 65 49 C 65 36 50 31 39 40 C 26 51 31 72 49 78',
   },
-  // play triangle — music / the player
-  {
-    name: 'play',
-    spin: false,
-    svg: 'M 30 20 L 82 50 L 30 80 Z',
-  },
-  // quarter note — stem + head as one contour
+  // ♪ — an eighth note as a single stroke: head loop, stem, flag
   {
     name: 'note',
-    spin: false,
-    svg: 'M 45 24 L 53 24 L 53 62 A 15 13 0 1 1 45 56 Z',
+    svg:
+      'M 33 74 C 25 72 25 82 34 82 C 44 82 43 69 40 65 L 40 24 C 53 28 60 37 57 49',
+  },
+  // a slur / fermata arc — a safe, calm music mark
+  {
+    name: 'arc',
+    svg: 'M 18 62 C 30 28 70 28 82 62',
   },
 ];
