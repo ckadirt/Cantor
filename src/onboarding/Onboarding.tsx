@@ -1,9 +1,11 @@
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
+import { IntroPanel } from './IntroPanel';
 import { radius, space, type, usePalette } from '../theme/tokens';
 
-const STEPS = [1, 2, 3, 4, 5];
+// Panel 0 is the animated Cantor-set intro; the rest are placeholders for now.
+const STEPS = [2, 3, 4, 5];
 
 type Props = {
   onDone: () => void;
@@ -12,8 +14,12 @@ type Props = {
 /** Full-screen overlay rendered above MainScreen until the flow completes. */
 export function Onboarding({ onDone }: Props) {
   const pal = usePalette();
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(-1); // -1 = intro panel
   const last = step === STEPS.length - 1;
+
+  if (step < 0) {
+    return <IntroPanel onNext={() => setStep(0)} />;
+  }
 
   return (
     <View style={[styles.root, { backgroundColor: pal.bg }]}>
