@@ -9,12 +9,22 @@
  * windows, flights on gentle arcs, cascaded in reading order. Retargets
  * mid-flight capture the live positions and flow on from there.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
-import { Canvas, Glyphs, type SkFont } from '@shopify/react-native-skia';
+import {
+  Canvas,
+  Glyphs,
+  Group,
+  interpolatePaths,
+  Path,
+  Skia,
+  type SkFont,
+  type SkPath,
+} from '@shopify/react-native-skia';
 import {
   cancelAnimation,
   Easing,
+  runOnJS,
   useDerivedValue,
   useReducedMotion,
   useSharedValue,
@@ -23,6 +33,7 @@ import {
 } from 'react-native-reanimated';
 import { smootherstep } from './geometry';
 import { useMorphFont } from './fonts';
+import { buildGlyphMorphPaths } from './glyphs';
 import {
   buildFlights,
   ENTER_RISE,
@@ -35,9 +46,13 @@ import {
   MOVER_DIP,
   type CharBox,
   type Flights,
+  type MorphPair,
 } from './text';
 
 type Glyph = { id: number; pos: { x: number; y: number } };
+
+/** A shape-morphing pair, its outline paths prebuilt (native Skia only). */
+type MorphModel = MorphPair & { fromPath: SkPath; toPath: SkPath; out: SkPath };
 
 function toGlyphs(boxes: CharBox[], rise = 0): Glyph[] {
   const out: Glyph[] = [];
@@ -61,6 +76,18 @@ function captureBoxes(f: Flights, t: number): CharBox[] {
       y: m.fy + (m.ty - m.fy) * u + m.py * arc,
     });
   }
+  for (const m of f.morphs) {
+    // A half-morphed outline isn't a glyph; approximate with whichever
+    // character it currently resembles more, at the interpolated position.
+    const u = smootherstep(m.a, m.b, t);
+    const arc = 4 * u * (1 - u);
+    const near = u < 0.5 ? m.from : m.to;
+    boxes.push({
+      ...near,
+      x: m.from.x + (m.to.x - m.from.x) * u + m.px * arc,
+      y: m.from.y + (m.to.y - m.from.y) * u + m.py * arc,
+    });
+  }
   const exitA = 1 - smootherstep(0, EXIT_END, t);
   if (exitA > 0.25) {
     const rise = EXIT_RISE * smootherstep(0, EXIT_END, t);
@@ -82,11 +109,68 @@ type Model = {
   width: number;
   font: SkFont;
   flights: Flights;
+  morphModels: MorphModel[];
   exitGlyphs: Glyph[];
   enterGlyphs: Glyph[];
   animate: boolean;
   gen: number;
 };
+
+/**
+ * Prebuild outline paths for the shape-morphing pairs. Where the platform
+ * can't outline a glyph, the pair quietly degrades to exit + enter.
+ */
+function buildMorphModels(font: SkFont, flights: Flights): MorphModel[] {
+  const models: MorphModel[] = [];
+  const failed: MorphPair[] = [];
+  for (const m of flights.morphs) {
+    const paths = buildGlyphMorphPaths(font, m.from, m.to);
+    if (paths) {
+      models.push({ ...m, fromPath: paths.from, toPath: paths.to, out: Skia.Path.Make() });
+    } else {
+      failed.push(m);
+    }
+  }
+  if (failed.length > 0) {
+    flights.morphs = flights.morphs.filter(m => !failed.includes(m));
+    flights.exits = [...flights.exits, ...failed.map(m => m.from)];
+    flights.enters = [...flights.enters, ...failed.map(m => m.to)];
+  }
+  return models;
+}
+
+function MorphGlyph({
+  m,
+  tt,
+  color,
+  dip,
+}: {
+  m: MorphModel;
+  tt: SharedValue<number>;
+  color: string;
+  dip: SharedValue<number>;
+}) {
+  const path = useDerivedValue(() =>
+    interpolatePaths(
+      smootherstep(m.a, m.b, tt.value),
+      [0, 1],
+      [m.fromPath, m.toPath],
+      undefined,
+      m.out,
+    ),
+  );
+  // travel lives in the paths; only the arc bulge rides a transform
+  const shift = useDerivedValue(() => {
+    const u = smootherstep(m.a, m.b, tt.value);
+    const arc = 4 * u * (1 - u);
+    return [{ translateX: m.px * arc }, { translateY: m.py * arc }];
+  });
+  return (
+    <Group transform={shift}>
+      <Path path={path} style="fill" fillType="evenOdd" color={color} opacity={dip} />
+    </Group>
+  );
+}
 
 type Props = {
   text: string;
@@ -116,12 +200,18 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
     const retarget = model !== null && model.width === width && model.font === font;
     let flights: Flights;
     if (!retarget) {
-      flights = { movers: [], exits: [], enters: next };
+      flights = { movers: [], morphs: [], exits: [], enters: next };
     } else if (reduced) {
-      flights = { movers: [], exits: captureBoxes(model.flights, tt.value), enters: next };
+      flights = {
+        movers: [],
+        morphs: [],
+        exits: captureBoxes(model.flights, tt.value),
+        enters: next,
+      };
     } else {
       flights = buildFlights(captureBoxes(model.flights, tt.value), next, width);
     }
+    const morphModels = buildMorphModels(font, flights);
     if (!progress) {
       // Render-phase write on purpose: the first committed frame must show the
       // captured state (t=0), not the finished target.
@@ -133,6 +223,7 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
       width,
       font,
       flights,
+      morphModels,
       exitGlyphs: toGlyphs(flights.exits),
       enterGlyphs: toGlyphs(flights.enters),
       animate: retarget,
@@ -140,14 +231,42 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
     });
   }
 
+  // Once the flight lands, swap approximated morph paths for real glyphs —
+  // one React commit at rest, never during the animation.
+  const settle = useCallback((gen: number) => {
+    setModel(cur => {
+      if (!cur || cur.gen !== gen || !cur.animate) {
+        return cur;
+      }
+      const homes = [
+        ...cur.flights.movers.map(m => m.box),
+        ...cur.flights.morphs.map(m => m.to),
+        ...cur.flights.enters,
+      ];
+      return {
+        ...cur,
+        flights: { movers: [], morphs: [], exits: [], enters: homes },
+        morphModels: [],
+        exitGlyphs: [],
+        enterGlyphs: toGlyphs(homes),
+        animate: false,
+      };
+    });
+  }, []);
+
   useEffect(() => {
     if (!model?.animate || progress) {
       return;
     }
+    const gen = model.gen;
     cancelAnimation(clock);
     clock.value = 0;
-    clock.value = withTiming(1, { duration, easing: Easing.linear });
-  }, [model, progress, duration, clock]);
+    clock.value = withTiming(1, { duration, easing: Easing.linear }, fin => {
+      if (fin) {
+        runOnJS(settle)(gen);
+      }
+    });
+  }, [model, progress, duration, clock, settle]);
 
   const movers = model?.flights.movers ?? [];
   const moverGlyphs = useDerivedValue(() => {
@@ -194,6 +313,15 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
               opacity={exitAlpha}
             />
           )}
+          {model.morphModels.map((m, i) => (
+            <MorphGlyph
+              key={`${model.gen}#${i}`}
+              m={m}
+              tt={tt}
+              color={color}
+              dip={moverAlpha}
+            />
+          ))}
           {movers.length > 0 && (
             <Glyphs font={font} glyphs={moverGlyphs} color={color} opacity={moverAlpha} />
           )}

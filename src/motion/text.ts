@@ -6,10 +6,13 @@
  * The policy is hierarchical, manim-style:
  *   1. whole words present in both lines glide as units (much calmer than
  *      letters scattering individually);
- *   2. leftover characters match by identity + nearest relative position;
- *   3. any char match that would fly farther than MAX_FLIGHT_FRAC of the line
- *      width is demoted to exit+enter — long coincidental flights are what
- *      reads as alphabet soup.
+ *   2. leftover characters match by identity + nearest relative position —
+ *      but a match that would fly farther than MAX_FLIGHT_FRAC of the line
+ *      width is rejected (long coincidental flights read as alphabet soup);
+ *   3. everything still unmatched pairs up in reading order and SHAPE-MORPHS —
+ *      the old glyph's outline bends into the new one's (glyphs.ts), which is
+ *      the TransformMatchingShapes gesture that makes manim text feel alive.
+ *      Only a count imbalance leaves true exits/entrances.
  *
  * Every constant here is a taste lever; scrub them in MotionLab.
  */
@@ -54,8 +57,19 @@ export type Mover = {
   b: number;
 };
 
+/** An unmatched pair whose glyph outlines shape-morph into each other. */
+export type MorphPair = {
+  from: CharBox;
+  to: CharBox;
+  px: number;
+  py: number;
+  a: number;
+  b: number;
+};
+
 export type Flights = {
   movers: Mover[];
+  morphs: MorphPair[];
   exits: CharBox[];
   enters: CharBox[];
 };
@@ -188,11 +202,38 @@ export function buildFlights(
     }
   });
 
-  // Movers cascade in reading order of their destinations.
-  pairs.sort((p, q) => p.to.y - q.to.y || p.to.x - q.to.x);
+  // 3 — whatever identity couldn't match pairs up in reading order and
+  // shape-morphs: the old glyph bends into the new one where it stands.
+  const byReading = (a: CharBox, b: CharBox) => a.y - b.y || a.x - b.x;
+  const leftPrev = prev.filter(b => !usedPrev.has(b)).sort(byReading);
+  const leftNext = next.filter(b => !usedNext.has(b)).sort(byReading);
+  const morphPairs: { from: CharBox; to: CharBox }[] = [];
+  const k = Math.min(leftPrev.length, leftNext.length);
+  if (k > 0) {
+    // spread the larger side evenly over the smaller; extremes always pair
+    const pickFrom = leftPrev.length >= leftNext.length;
+    for (let j = 0; j < k; j++) {
+      const spread = (n: number) => (k > 1 ? Math.round((j * (n - 1)) / (k - 1)) : 0);
+      const from = pickFrom ? leftPrev[spread(leftPrev.length)] : leftPrev[j];
+      const to = pickFrom ? leftNext[j] : leftNext[spread(leftNext.length)];
+      usedPrev.add(from);
+      usedNext.add(to);
+      morphPairs.push({ from, to });
+    }
+  }
+
+  // One cascade for flights and shape-morphs alike, in destination reading
+  // order, each with the same arc math.
+  type Kinded = { from: CharBox; to: CharBox; morph: boolean };
+  const all: Kinded[] = [
+    ...pairs.map(p => ({ ...p, morph: false })),
+    ...morphPairs.map(p => ({ ...p, morph: true })),
+  ].sort((p, q) => byReading(p.to, q.to));
   const span = MOVE_END - MOVE_START;
   const lag = span * MOVER_LAG;
-  const movers = pairs.map(({ from, to }, i): Mover => {
+  const movers: Mover[] = [];
+  const morphs: MorphPair[] = [];
+  all.forEach(({ from, to, morph }, i) => {
     const dx = to.x - from.x;
     const dy = to.y - from.y;
     const d = Math.hypot(dx, dy);
@@ -208,24 +249,30 @@ export function buildFlights(
         py = -py;
       }
     }
-    const a = MOVE_START + (pairs.length > 1 ? (lag * i) / (pairs.length - 1) : 0);
-    return {
-      box: to,
-      ids: to.ids,
-      xo: to.xo,
-      fx: from.x,
-      fy: from.y,
-      tx: to.x,
-      ty: to.y,
-      px,
-      py,
-      a,
-      b: a + span - lag,
-    };
+    const a = MOVE_START + (all.length > 1 ? (lag * i) / (all.length - 1) : 0);
+    const b = a + span - lag;
+    if (morph) {
+      morphs.push({ from, to, px, py, a, b });
+    } else {
+      movers.push({
+        box: to,
+        ids: to.ids,
+        xo: to.xo,
+        fx: from.x,
+        fy: from.y,
+        tx: to.x,
+        ty: to.y,
+        px,
+        py,
+        a,
+        b,
+      });
+    }
   });
 
   return {
     movers,
+    morphs,
     exits: prev.filter(b => !usedPrev.has(b)),
     enters: next.filter(b => !usedNext.has(b)),
   };
