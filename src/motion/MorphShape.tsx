@@ -15,10 +15,10 @@ import {
   Easing,
   useDerivedValue,
   useReducedMotion,
-  useSharedValue,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
+import { bornClock } from './clock';
 import { smootherstep } from './geometry';
 import { resolveShape, type Shape } from './shapes';
 import {
@@ -77,6 +77,8 @@ type Built = {
   key: string;
   shapeName: string;
   transition: Transition;
+  /** Born at 0 when animating, 1 when settled — never reset across builds. */
+  clock: SharedValue<number>;
   animate: boolean;
 };
 
@@ -101,8 +103,6 @@ export function MorphShape({
   scale = DEFAULT_SCALE,
   progress,
 }: Props) {
-  const clock = useSharedValue(1);
-  const t = progress ?? clock;
   const reduced = useReducedMotion();
   const [built, setBuilt] = useState<Built | null>(null);
 
@@ -112,32 +112,37 @@ export function MorphShape({
     // Same canvas, new shape → animate from the live geometry. Anything else
     // (mount, resize) just sits at the target.
     const retarget = built && built.shapeName !== shape.name;
+    const captureT = progress ? progress.value : built?.clock.value ?? 1;
     const transition = retarget
       ? (reduced ? crossfadeTransition : buildTransition)(
-          captureTransition(built.transition, t.value),
+          captureTransition(built.transition, captureT),
           to,
         )
       : settledTransition(to);
-    if (!progress) {
-      // Written during render on purpose: the first committed frame must show
-      // the captured geometry (t=0), not the finished target.
-      clock.value = retarget ? 0 : 1;
-    }
-    setBuilt({ key, shapeName: shape.name, transition, animate: !!retarget });
+    // Each build owns a clock born at its start value — the new tree can
+    // never paint against a stale clock from the previous transition.
+    setBuilt({
+      key,
+      shapeName: shape.name,
+      transition,
+      clock: bornClock(retarget && !progress ? 0 : 1),
+      animate: !!retarget,
+    });
   }
 
   useEffect(() => {
     if (!built?.animate || progress) {
       return;
     }
-    cancelAnimation(clock);
-    clock.value = 0;
+    const clock = built.clock;
     clock.value = withTiming(1, { duration, easing: Easing.linear });
-  }, [built, progress, duration, clock]);
+    return () => cancelAnimation(clock);
+  }, [built, progress, duration]);
 
   if (!built) {
     return null;
   }
+  const t = progress ?? built.clock;
   return (
     <Canvas style={{ width, height }}>
       {built.transition.slots.map((s, i) => (

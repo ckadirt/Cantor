@@ -5,9 +5,16 @@
  * title morph letter-by-letter (shared characters fly to their new homes),
  * and bodies exchange on the same clock. Nothing just cuts.
  */
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
-import Animated, { Easing, FadeInDown, FadeOut } from 'react-native-reanimated';
+import Animated, {
+  cancelAnimation,
+  Easing,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import { IntroPanel } from './IntroPanel';
 import { MorphShape, MorphText } from '../motion';
 import { whatPanel } from './panels/WhatPanel';
@@ -30,21 +37,14 @@ const PANELS: PanelDef[] = [
 // One clock for the whole step change; sigil and letters ride it directly,
 // the body exchange is scheduled to sit inside it. Tune freely.
 const TRANSITION_MS = 700;
-const BODY_EXIT_MS = 260; // old body fades…
-const BODY_ENTER_DELAY_MS = 260; // …then the new one
-const BODY_ENTER_MS = 380;
+const BODY_EXIT_MS = 260; // old body fades (content swaps at the bottom)…
+const BODY_ENTER_MS = 380; // …then the new one rises in
 const BODY_SHIFT = 14; // px the incoming body rises
 
 // Fixed frame zones so nothing shifts while letters fly between panels.
 const SIGIL_H = 168;
 const EYEBROW_H = 20;
 const TITLE_H = 78;
-
-const bodyEnter = FadeInDown.duration(BODY_ENTER_MS)
-  .delay(BODY_ENTER_DELAY_MS)
-  .easing(Easing.out(Easing.cubic))
-  .withInitialValues({ opacity: 0, transform: [{ translateY: BODY_SHIFT }] });
-const bodyExit = FadeOut.duration(BODY_EXIT_MS);
 
 type Props = {
   onDone: () => void;
@@ -56,6 +56,40 @@ export function Onboarding({ onDone }: Props) {
   const { width } = useWindowDimensions();
   const [step, setStep] = useState(-1); // -1 = intro panel
 
+  // The body swaps by hand, not with entering/exiting layout animations —
+  // those flash the incoming view for a frame on the new architecture. One
+  // persistent view fades out, swaps content while invisible, rises back in.
+  const [shownStep, setShownStep] = useState(0);
+  const bodyA = useSharedValue(0);
+  const stepRef = useRef(step);
+  stepRef.current = step;
+  const swapBody = useCallback(() => setShownStep(Math.max(0, stepRef.current)), []);
+
+  useEffect(() => {
+    if (step < 0) {
+      return;
+    }
+    if (step === shownStep) {
+      // content is in place (mount, or just swapped while invisible)
+      bodyA.value = withTiming(1, {
+        duration: BODY_ENTER_MS,
+        easing: Easing.out(Easing.cubic),
+      });
+    } else {
+      cancelAnimation(bodyA);
+      bodyA.value = withTiming(0, { duration: BODY_EXIT_MS, easing: Easing.linear }, fin => {
+        if (fin) {
+          runOnJS(swapBody)();
+        }
+      });
+    }
+  }, [step, shownStep, bodyA, swapBody]);
+
+  const bodyStyle = useAnimatedStyle(() => ({
+    opacity: bodyA.value,
+    transform: [{ translateY: BODY_SHIFT * (1 - bodyA.value) }],
+  }));
+
   const go = (next: number) => {
     setStep(Math.max(-1, next));
   };
@@ -65,7 +99,7 @@ export function Onboarding({ onDone }: Props) {
   }
 
   const def = PANELS[step];
-  const Body = def.Body;
+  const Body = PANELS[shownStep].Body;
 
   return (
     <View style={[styles.root, { backgroundColor: pal.bg }]}>
@@ -104,12 +138,14 @@ export function Onboarding({ onDone }: Props) {
         style={styles.title}
       />
 
-      <Animated.View
-        key={def.key}
-        entering={bodyEnter}
-        exiting={bodyExit}
-        style={styles.body}>
-        <Body onNext={() => go(step + 1)} onDone={onDone} />
+      {/* The animated view persists; only its content swaps (while invisible).
+          A fading-out body's buttons are inert — shownStep lags step. */}
+      <Animated.View style={[styles.body, bodyStyle]}>
+        <Body
+          key={PANELS[shownStep].key}
+          onNext={() => shownStep === step && go(step + 1)}
+          onDone={() => shownStep === step && onDone()}
+        />
       </Animated.View>
     </View>
   );

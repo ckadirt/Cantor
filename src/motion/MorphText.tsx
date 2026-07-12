@@ -31,6 +31,7 @@ import {
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
+import { bornClock } from './clock';
 import { smootherstep } from './geometry';
 import { useMorphFont } from './fonts';
 import { buildGlyphMorphPaths } from './glyphs';
@@ -112,6 +113,8 @@ type Model = {
   morphModels: MorphModel[];
   exitGlyphs: Glyph[];
   enterGlyphs: Glyph[];
+  /** Born at 0 when animating, 1 when settled — never reset across models. */
+  clock: SharedValue<number>;
   animate: boolean;
   gen: number;
 };
@@ -184,8 +187,7 @@ type Props = {
 };
 
 export function MorphText({ text, charStyle, color, duration = 700, style, progress }: Props) {
-  const clock = useSharedValue(1);
-  const tt = progress ?? clock;
+  const idle = useSharedValue(1); // stand-in clock until the first model exists
   const reduced = useReducedMotion();
   const font = useMorphFont(charStyle);
   const [width, setWidth] = useState(0);
@@ -198,6 +200,7 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
     // Same canvas and font → animate from the live glyph positions. A fresh
     // mount (or width/font change) just sits at the new layout.
     const retarget = model !== null && model.width === width && model.font === font;
+    const captureT = progress ? progress.value : model?.clock.value ?? 1;
     let flights: Flights;
     if (!retarget) {
       flights = { movers: [], morphs: [], exits: [], enters: next };
@@ -205,19 +208,16 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
       flights = {
         movers: [],
         morphs: [],
-        exits: captureBoxes(model.flights, tt.value),
+        exits: captureBoxes(model.flights, captureT),
         enters: next,
       };
     } else {
-      flights = buildFlights(captureBoxes(model.flights, tt.value), next, width);
+      flights = buildFlights(captureBoxes(model.flights, captureT), next, width);
     }
     const morphModels = buildMorphModels(font, flights);
-    if (!progress) {
-      // Render-phase write on purpose: the first committed frame must show the
-      // captured state (t=0), not the finished target.
-      clock.value = retarget ? 0 : 1;
-    }
     genRef.current++;
+    // Each model owns a clock born at its start value — the committed tree can
+    // never paint against a stale clock from the previous transition.
     setModel({
       text,
       width,
@@ -226,10 +226,13 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
       morphModels,
       exitGlyphs: toGlyphs(flights.exits),
       enterGlyphs: toGlyphs(flights.enters),
+      clock: bornClock(retarget && !progress ? 0 : 1),
       animate: retarget,
       gen: genRef.current,
     });
   }
+
+  const tt = progress ?? model?.clock ?? idle;
 
   // Once the flight lands, swap approximated morph paths for real glyphs —
   // one React commit at rest, never during the animation.
@@ -259,14 +262,14 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
       return;
     }
     const gen = model.gen;
-    cancelAnimation(clock);
-    clock.value = 0;
+    const clock = model.clock;
     clock.value = withTiming(1, { duration, easing: Easing.linear }, fin => {
       if (fin) {
         runOnJS(settle)(gen);
       }
     });
-  }, [model, progress, duration, clock, settle]);
+    return () => cancelAnimation(clock);
+  }, [model, progress, duration, settle]);
 
   const movers = model?.flights.movers ?? [];
   const moverGlyphs = useDerivedValue(() => {
@@ -281,7 +284,7 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
       }
     }
     return out;
-  }, [movers]);
+  }, [movers, tt]);
   const moverAlpha = useDerivedValue(() => {
     const p = smootherstep(MOVE_START, MOVE_END, tt.value);
     return 1 - MOVER_DIP * 4 * p * (1 - p);
@@ -304,15 +307,16 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
       accessibilityLabel={text}>
       {model && font && (
         <Canvas style={StyleSheet.absoluteFill}>
-          {model.exitGlyphs.length > 0 && (
-            <Glyphs
-              font={font}
-              glyphs={model.exitGlyphs}
-              transform={exitShift}
-              color={color}
-              opacity={exitAlpha}
-            />
-          )}
+          {/* The three glyph layers stay mounted across every transition —
+              only their arrays change, atomically with the commit. Fresh
+              nodes mid-flight are how one-frame blanks happen. */}
+          <Glyphs
+            font={font}
+            glyphs={model.exitGlyphs}
+            transform={exitShift}
+            color={color}
+            opacity={exitAlpha}
+          />
           {model.morphModels.map((m, i) => (
             <MorphGlyph
               key={`${model.gen}#${i}`}
@@ -322,18 +326,14 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
               dip={moverAlpha}
             />
           ))}
-          {movers.length > 0 && (
-            <Glyphs font={font} glyphs={moverGlyphs} color={color} opacity={moverAlpha} />
-          )}
-          {model.enterGlyphs.length > 0 && (
-            <Glyphs
-              font={font}
-              glyphs={model.enterGlyphs}
-              transform={enterShift}
-              color={color}
-              opacity={enterAlpha}
-            />
-          )}
+          <Glyphs font={font} glyphs={moverGlyphs} color={color} opacity={moverAlpha} />
+          <Glyphs
+            font={font}
+            glyphs={model.enterGlyphs}
+            transform={enterShift}
+            color={color}
+            opacity={enterAlpha}
+          />
         </Canvas>
       )}
     </View>
