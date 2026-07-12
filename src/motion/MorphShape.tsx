@@ -94,7 +94,13 @@ type Props = {
   progress?: SharedValue<number>;
 };
 
-export function MorphShape({
+/**
+ * Memoized so unrelated parent commits can't re-render the canvas: a Skia
+ * re-record while its mapper is ticking is the partial-frame race.
+ */
+export const MorphShape = React.memo(MorphShapeImpl);
+
+function MorphShapeImpl({
   shape,
   width,
   height,

@@ -9,7 +9,7 @@
  * windows, flights on gentle arcs, cascaded in reading order. Retargets
  * mid-flight capture the live positions and flow on from there.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 import {
   Canvas,
@@ -24,7 +24,6 @@ import {
 import {
   cancelAnimation,
   Easing,
-  runOnJS,
   useDerivedValue,
   useReducedMotion,
   useSharedValue,
@@ -53,7 +52,13 @@ import {
 type Glyph = { id: number; pos: { x: number; y: number } };
 
 /** A shape-morphing pair, its outline paths prebuilt (native Skia only). */
-type MorphModel = MorphPair & { fromPath: SkPath; toPath: SkPath; out: SkPath };
+type MorphModel = MorphPair & {
+  fromPath: SkPath;
+  toPath: SkPath;
+  out: SkPath;
+  /** The destination character as real glyphs — shown once the morph lands. */
+  toGlyphs: Glyph[];
+};
 
 function toGlyphs(boxes: CharBox[], rise = 0): Glyph[] {
   const out: Glyph[] = [];
@@ -129,7 +134,13 @@ function buildMorphModels(font: SkFont, flights: Flights): MorphModel[] {
   for (const m of flights.morphs) {
     const paths = buildGlyphMorphPaths(font, m.from, m.to);
     if (paths) {
-      models.push({ ...m, fromPath: paths.from, toPath: paths.to, out: Skia.Path.Make() });
+      models.push({
+        ...m,
+        fromPath: paths.from,
+        toPath: paths.to,
+        out: Skia.Path.Make(),
+        toGlyphs: toGlyphs([m.to]),
+      });
     } else {
       failed.push(m);
     }
@@ -145,11 +156,13 @@ function buildMorphModels(font: SkFont, flights: Flights): MorphModel[] {
 function MorphGlyph({
   m,
   tt,
+  font,
   color,
   dip,
 }: {
   m: MorphModel;
   tt: SharedValue<number>;
+  font: SkFont;
   color: string;
   dip: SharedValue<number>;
 }) {
@@ -168,9 +181,20 @@ function MorphGlyph({
     const arc = 4 * u * (1 - u);
     return [{ translateX: m.px * arc }, { translateY: m.py * arc }];
   });
+  // The moment the morph lands, the approximated outline hands off to the
+  // real glyph — same mounted nodes, pure UI-thread ramps. (No React commit
+  // may ever happen at animation end: a commit racing a ticking mapper can
+  // scramble the old recording's variables and paint a partial frame.)
+  const pathAlpha = useDerivedValue(() =>
+    smootherstep(m.a, m.b, tt.value) >= 1 ? 0 : dip.value,
+  );
+  const glyphAlpha = useDerivedValue(() =>
+    smootherstep(m.a, m.b, tt.value) >= 1 ? 1 : 0,
+  );
   return (
     <Group transform={shift}>
-      <Path path={path} style="fill" fillType="evenOdd" color={color} opacity={dip} />
+      <Path path={path} style="fill" fillType="evenOdd" color={color} opacity={pathAlpha} />
+      <Glyphs font={font} glyphs={m.toGlyphs} color={color} opacity={glyphAlpha} />
     </Group>
   );
 }
@@ -186,7 +210,14 @@ type Props = {
   progress?: SharedValue<number>;
 };
 
-export function MorphText({ text, charStyle, color, duration = 700, style, progress }: Props) {
+/**
+ * Memoized so unrelated parent commits (e.g. the onboarding body swapping
+ * mid-transition) can't re-render the canvas: a Skia re-record while its
+ * mapper is ticking is exactly the partial-frame race.
+ */
+export const MorphText = React.memo(MorphTextImpl);
+
+function MorphTextImpl({ text, charStyle, color, duration = 700, style, progress }: Props) {
   const idle = useSharedValue(1); // stand-in clock until the first model exists
   const reduced = useReducedMotion();
   const font = useMorphFont(charStyle);
@@ -234,42 +265,17 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
 
   const tt = progress ?? model?.clock ?? idle;
 
-  // Once the flight lands, swap approximated morph paths for real glyphs —
-  // one React commit at rest, never during the animation.
-  const settle = useCallback((gen: number) => {
-    setModel(cur => {
-      if (!cur || cur.gen !== gen || !cur.animate) {
-        return cur;
-      }
-      const homes = [
-        ...cur.flights.movers.map(m => m.box),
-        ...cur.flights.morphs.map(m => m.to),
-        ...cur.flights.enters,
-      ];
-      return {
-        ...cur,
-        flights: { movers: [], morphs: [], exits: [], enters: homes },
-        morphModels: [],
-        exitGlyphs: [],
-        enterGlyphs: toGlyphs(homes),
-        animate: false,
-      };
-    });
-  }, []);
-
+  // No completion callback, no settle commit: React must never touch the
+  // tree at animation end (see MorphGlyph). The next transition's build
+  // captures homes off the parked flights just the same.
   useEffect(() => {
     if (!model?.animate || progress) {
       return;
     }
-    const gen = model.gen;
     const clock = model.clock;
-    clock.value = withTiming(1, { duration, easing: Easing.linear }, fin => {
-      if (fin) {
-        runOnJS(settle)(gen);
-      }
-    });
+    clock.value = withTiming(1, { duration, easing: Easing.linear });
     return () => cancelAnimation(clock);
-  }, [model, progress, duration, settle]);
+  }, [model, progress, duration]);
 
   const movers = model?.flights.movers ?? [];
   const moverGlyphs = useDerivedValue(() => {
@@ -307,10 +313,14 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
       accessibilityLabel={text}>
       {model && font && (
         <Canvas style={StyleSheet.absoluteFill}>
-          {/* The three glyph layers stay mounted across every transition —
-              only their arrays change, atomically with the commit. Fresh
-              nodes mid-flight are how one-frame blanks happen. */}
+          {/* Every layer remounts per generation (keys): Skia applies node
+              insert/remove batches atomically with the commit, but prop
+              updates on LIVE nodes land a frame late — updating a persistent
+              node's glyphs array mid-choreography is how one-frame flickers
+              happen (verified frame-by-frame; the always-remounting sigils
+              never flicker). */}
           <Glyphs
+            key={`ex${model.gen}`}
             font={font}
             glyphs={model.exitGlyphs}
             transform={exitShift}
@@ -322,12 +332,20 @@ export function MorphText({ text, charStyle, color, duration = 700, style, progr
               key={`${model.gen}#${i}`}
               m={m}
               tt={tt}
+              font={font}
               color={color}
               dip={moverAlpha}
             />
           ))}
-          <Glyphs font={font} glyphs={moverGlyphs} color={color} opacity={moverAlpha} />
           <Glyphs
+            key={`mv${model.gen}`}
+            font={font}
+            glyphs={moverGlyphs}
+            color={color}
+            opacity={moverAlpha}
+          />
+          <Glyphs
+            key={`en${model.gen}`}
             font={font}
             glyphs={model.enterGlyphs}
             transform={enterShift}
