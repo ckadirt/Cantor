@@ -4,9 +4,9 @@
  * disperses to the borders, morphing into a quiet field of math and music marks
  * — leaving the name and the promise alone in the middle.
  *
- * All motion eases like a function: pure smoothstep windows over one linear
+ * All motion eases like a function: pure smootherstep windows over one linear
  * clock, nothing bouncy. Morphing is the manim trick (resample → interpolate)
- * running on the UI thread via Skia's interpolatePaths. See morph.ts.
+ * running on the UI thread via Skia's interpolatePaths. See src/motion.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
@@ -29,15 +29,15 @@ import Animated, {
 } from 'react-native-reanimated';
 import { barSvg, layoutBars } from './cantorBars';
 import {
-  align,
+  alignClosed,
   mulberry32,
-  placeSymbol,
+  placePts,
   polygonPath,
   relaxPositions,
-  resample,
-  resampleStrokedSvg,
-  smoothstep,
-} from './morph';
+  ribbonOutline,
+  sampleOutline,
+  smootherstep,
+} from '../motion';
 import { STROKE, SYMBOLS } from './symbols';
 import { space, type, usePalette } from '../theme/tokens';
 
@@ -78,8 +78,8 @@ type BarModel = {
 };
 
 function Bar({ m, p, color }: { m: BarModel; p: SharedValue<number>; color: string }) {
-  const reveal = useDerivedValue(() => smoothstep(m.buildStart, m.buildEnd, p.value));
-  const morphT = useDerivedValue(() => smoothstep(m.morphStart, m.morphEnd, p.value));
+  const reveal = useDerivedValue(() => smootherstep(m.buildStart, m.buildEnd, p.value));
+  const morphT = useDerivedValue(() => smootherstep(m.morphStart, m.morphEnd, p.value));
 
   const path = useDerivedValue(() =>
     interpolatePaths(morphT.value, [0, 1], [m.homePath, m.targetPath], undefined, m.out),
@@ -89,7 +89,7 @@ function Bar({ m, p, color }: { m: BarModel; p: SharedValue<number>; color: stri
   // faint constellation once the name takes over.
   const transform = useDerivedValue(() => [{ scaleX: reveal.value }]);
   const opacity = useDerivedValue(() => {
-    const frame = 1 - 0.6 * smoothstep(FRAME_A, FRAME_B, p.value);
+    const frame = 1 - 0.6 * smootherstep(FRAME_A, FRAME_B, p.value);
     return reveal.value * frame;
   });
 
@@ -157,11 +157,11 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
 
     return laid.map((bar, i) => {
       const pl = place[i];
-      const homePts = resample(Skia.Path.MakeFromSVGString(barSvg(bar.rect))!);
-      const symPts = resampleStrokedSvg(pl.sym.svg, STROKE);
+      const homePts = sampleOutline(Skia.Path.MakeFromSVGString(barSvg(bar.rect))!);
+      const symPts = ribbonOutline(pl.sym.svg, STROKE);
       const targetPts =
         symPts.length > 0
-          ? align(homePts, placeSymbol(symPts, pl.pos.x, pl.pos.y, pl.symSize, pl.spin))
+          ? alignClosed(homePts, placePts(symPts, pl.pos.x, pl.pos.y, pl.symSize, pl.spin))
           : homePts; // fallback: bar just fades in place if the glyph didn't parse
 
       const buildStart = BUILD_BASE + bar.rowRank * BUILD_ROW_STEP;
@@ -187,7 +187,7 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
   }, [p]);
 
   const nameStyle = useAnimatedStyle(() => {
-    const a = smoothstep(REVEAL_A, REVEAL_B, p.value);
+    const a = smootherstep(REVEAL_A, REVEAL_B, p.value);
     return {
       opacity: a,
       transform: [{ translateY: (1 - a) * 12 }, { scale: 0.97 + 0.03 * a }],

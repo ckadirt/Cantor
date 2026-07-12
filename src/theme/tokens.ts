@@ -45,12 +45,15 @@ export const radius = {
 } as const;
 
 /**
- * Android maps 'serif' → Noto Serif, 'monospace' → a mono system face.
- * Display = serif with math heritage (bundle Computer Modern/Spectral later);
- * mono = UI labels, numbers, anything data-shaped.
+ * Bundled faces (assets/fonts, mirrored in android/app/src/main/assets/fonts —
+ * native rebuild required when they change): 'cmu-serif' = CMU Serif (Computer
+ * Modern, the math heritage) for display; 'spectral' = Spectral for body text.
+ * Mono stays the system monospace. The Skia text engine resolves the same
+ * family names through src/motion/fonts.ts.
  */
 export const font = {
-  display: 'serif',
+  display: 'cmu-serif',
+  text: 'spectral',
   mono: 'monospace',
 } as const;
 
@@ -58,8 +61,8 @@ export const type = {
   wordmark: { fontFamily: font.display, fontSize: 40, letterSpacing: 0.5 },
   title: { fontFamily: font.display, fontSize: 26, letterSpacing: 0.3 },
   heading: { fontFamily: font.display, fontSize: 20 },
-  body: { fontSize: 15, lineHeight: 22 },
-  small: { fontSize: 13, lineHeight: 18 },
+  body: { fontFamily: font.text, fontSize: 15, lineHeight: 22 },
+  small: { fontFamily: font.text, fontSize: 13, lineHeight: 18 },
   eyebrow: { fontFamily: font.mono, fontSize: 11, letterSpacing: 2 },
   mono: { fontFamily: font.mono, fontSize: 14 },
 } as const;

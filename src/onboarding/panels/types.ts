@@ -1,6 +1,6 @@
 /** Contracts between Onboarding's morphing frame and the content panels. */
 import type * as React from 'react';
-import type { Sigil } from '../sigils';
+import type { Shape } from '../../motion';
 
 /** What a panel body receives: just its exits. */
 export type PanelBodyProps = {
@@ -17,6 +17,6 @@ export type PanelDef = {
   key: string;
   eyebrow: string;
   title: string;
-  sigil: Sigil;
+  sigil: Shape;
   Body: React.ComponentType<PanelBodyProps>;
 };

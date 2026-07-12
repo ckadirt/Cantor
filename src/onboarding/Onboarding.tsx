@@ -9,8 +9,7 @@ import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, { Easing, FadeInDown, FadeOut } from 'react-native-reanimated';
 import { IntroPanel } from './IntroPanel';
-import { MorphText } from './MorphText';
-import { SigilMark } from './SigilMark';
+import { MorphShape, MorphText } from '../motion';
 import { whatPanel } from './panels/WhatPanel';
 import { backendsPanel } from './panels/BackendsPanel';
 import { identityPanel } from './panels/IdentityPanel';
@@ -56,15 +55,9 @@ export function Onboarding({ onDone }: Props) {
   const pal = usePalette();
   const { width } = useWindowDimensions();
   const [step, setStep] = useState(-1); // -1 = intro panel
-  const [from, setFrom] = useState(0); // previous step, for the sigil morph
 
   const go = (next: number) => {
-    if (next < 0) {
-      setStep(-1);
-      return;
-    }
-    setFrom(step < 0 ? next : step);
-    setStep(next);
+    setStep(Math.max(-1, next));
   };
 
   if (step < 0) {
@@ -87,10 +80,8 @@ export function Onboarding({ onDone }: Props) {
       </View>
 
       <View style={styles.sigilZone}>
-        <SigilMark
-          key={`${PANELS[from].key}->${def.key}`}
-          from={PANELS[from].sigil}
-          to={def.sigil}
+        <MorphShape
+          shape={def.sigil}
           duration={TRANSITION_MS}
           width={width - space.lg * 2}
           height={SIGIL_H}

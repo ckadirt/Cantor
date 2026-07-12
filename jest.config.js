@@ -1,10 +1,17 @@
 module.exports = {
   preset: '@react-native/jest-preset',
-  setupFiles: ['./node_modules/react-native-gesture-handler/jestSetup.js'],
+  // Skia's jest env loads real CanvasKit (wasm), so geometry code actually
+  // runs in tests; its jestSetup swaps the native module for the wasm one.
+  testEnvironment: '@shopify/react-native-skia/jestEnv.js',
+  setupFiles: [
+    './node_modules/react-native-gesture-handler/jestSetup.js',
+    './node_modules/@shopify/react-native-skia/jestSetup.js',
+  ],
   // reanimated's worklets runtime needs native modules; use the official mock
   moduleNameMapper: {
     '^react-native-reanimated$': 'react-native-reanimated/mock',
     '^react-native-worklets$': 'react-native-worklets/src/mock',
+    '\\.(ttf|otf)$': '<rootDir>/jest/assetStub.js',
   },
   // react-navigation and friends ship untranspiled ESM
   transformIgnorePatterns: [
