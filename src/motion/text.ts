@@ -1,7 +1,7 @@
 /**
  * Text as geometry: synchronous glyph layout (no onLayout roundtrips — the
- * font's metrics ARE the layout) and the matching policy that turns an old
- * line into flights toward a new one.
+ * font's metrics ARE the layout) and the policies that turn one laid-out text
+ * object into another.
  *
  * The policy is hierarchical, manim-style:
  *   1. whole words present in both lines glide as units (much calmer than
@@ -13,6 +13,11 @@
  *      the old glyph's outline bends into the new one's (glyphs.ts), which is
  *      the TransformMatchingShapes gesture that makes manim text feel alive.
  *      Only a count imbalance leaves true exits/entrances.
+ *
+ * `buildFlights` preserves the expressive TransformMatchingShapes variant.
+ * `buildTransformFlights` mirrors a plain manim Transform: align the source
+ * and target families by reading order, then move every pair over the same
+ * clock window. Neither policy leaks into layout or rendering.
  *
  * Every constant here is a taste lever; scrub them in MotionLab.
  */
@@ -30,6 +35,25 @@ export const EXIT_RISE = 8; // exits drift up while fading (dp)
 export const ENTER_RISE = 10; // entrances rise into place (dp)
 export const MOVER_DIP = 0.15; // movers dim slightly mid-flight
 export const MAX_FLIGHT_FRAC = 0.55; // longer would-be flights become exit+enter
+/** Default runtime for text transforms/crossfades, in milliseconds. */
+export const DEFAULT_TEXT_TRANSFORM_MS = 700;
+
+/* ---------------------------------------------------------- Manim Write knobs */
+/** ManimGL draws each glyph border during the first half, then fills it. */
+export const WRITE_BORDER_PORTION = 0.5;
+/** ManimGL's maximum lag_ratio between adjacent glyph submobjects. */
+export const WRITE_MAX_LAG = 0.2;
+/** ManimGL budgets four lag units across a text object's family. */
+export const WRITE_LAG_BUDGET = 4;
+/** ManimGL switches its automatic Write duration at 15 drawn family members. */
+export const WRITE_LONG_TEXT_AT = 15;
+export const WRITE_SHORT_MS = 1000;
+export const WRITE_LONG_MS = 2000;
+/** Thin outline used while a glyph is being written, in physical pixels. */
+export const WRITE_STROKE_PX = 1.25;
+
+export type TextMotionVariant = 'transform' | 'matching' | 'crossfade';
+export type TextAppearance = 'write' | 'fade' | 'none';
 
 /** A laid-out character: glyph ids + offsets, pen origin at the baseline. */
 export type CharBox = {
@@ -65,6 +89,9 @@ export type MorphPair = {
   py: number;
   a: number;
   b: number;
+  /** Invisible family copies reproduce Manim's unequal-length alignment. */
+  fromAlpha?: number;
+  toAlpha?: number;
 };
 
 export type Flights = {
@@ -73,6 +100,57 @@ export type Flights = {
   exits: CharBox[];
   enters: CharBox[];
 };
+
+export type WritePhase = {
+  borderEnd: number;
+  borderAlpha: number;
+  fillAlpha: number;
+  settled: boolean;
+};
+
+/** ManimGL's automatic Write lag ratio. */
+export function writeLagRatio(glyphCount: number): number {
+  return glyphCount <= 0
+    ? 0
+    : Math.min(WRITE_LAG_BUDGET / (glyphCount + 1), WRITE_MAX_LAG);
+}
+
+/** Per-glyph alpha on the shared Write clock; identical to Animation.get_sub_alpha. */
+export function writeSubAlpha(t: number, index: number, glyphCount: number): number {
+  'worklet';
+  if (glyphCount <= 0) {
+    return 1;
+  }
+  const lag = Math.min(WRITE_LAG_BUDGET / (glyphCount + 1), WRITE_MAX_LAG);
+  const fullLength = (glyphCount - 1) * lag + 1;
+  return Math.min(1, Math.max(0, t * fullLength - index * lag));
+}
+
+/** DrawBorderThenFill's two phases for one glyph. */
+export function writePhase(alpha: number): WritePhase {
+  'worklet';
+  const t = Math.min(1, Math.max(0, alpha));
+  if (t < WRITE_BORDER_PORTION) {
+    return {
+      borderEnd: t / WRITE_BORDER_PORTION,
+      borderAlpha: 1,
+      fillAlpha: 0,
+      settled: false,
+    };
+  }
+  const fill = (t - WRITE_BORDER_PORTION) / (1 - WRITE_BORDER_PORTION);
+  return {
+    borderEnd: 1,
+    borderAlpha: 1 - fill,
+    fillAlpha: fill,
+    settled: fill >= 1,
+  };
+}
+
+/** ManimGL's automatic 1 s / 2 s Write runtime rule, expressed in ms. */
+export function writeDurationMs(glyphCount: number): number {
+  return glyphCount < WRITE_LONG_TEXT_AT ? WRITE_SHORT_MS : WRITE_LONG_MS;
+}
 
 /** Word-wrap `text` against the font's real metrics. Baseline coordinates. */
 export function layoutText(
@@ -276,4 +354,65 @@ export function buildFlights(
     exits: prev.filter(b => !usedPrev.has(b)),
     enters: next.filter(b => !usedNext.has(b)),
   };
+}
+
+type AlignedBox = { box: CharBox; alpha: number };
+
+/**
+ * Expand a text family the way Manim's Mobject.add_n_more_submobjects does:
+ * preserve reading order, distribute repeats evenly, and make only the first
+ * copy of each repeated glyph visible. The invisible copies provide geometry
+ * for characters that exist on only one side of an unequal-length Transform.
+ */
+function alignFamily(boxes: CharBox[], targetLength: number): AlignedBox[] {
+  if (boxes.length === 0 || targetLength === 0) {
+    return [];
+  }
+  if (boxes.length === targetLength) {
+    return boxes.map(box => ({ box, alpha: 1 }));
+  }
+  const seen = new Set<number>();
+  return Array.from({ length: targetLength }, (_, i) => {
+    const sourceIndex = Math.floor((i * boxes.length) / targetLength);
+    const alpha = seen.has(sourceIndex) ? 0 : 1;
+    seen.add(sourceIndex);
+    return { box: boxes[sourceIndex], alpha };
+  });
+}
+
+/**
+ * Plain Manim Transform for text.
+ *
+ * Unlike buildFlights, this does no identity matching, no word matching, no
+ * arcs, and no cascade. Glyph families align by reading order (with invisible
+ * copies on the shorter side) and every outline interpolates on [0, 1]. That
+ * shared alpha is what makes the line read as one coordinated object.
+ */
+export function buildTransformFlights(prev: CharBox[], next: CharBox[]): Flights {
+  if (prev.length === 0 || next.length === 0) {
+    return { movers: [], morphs: [], exits: prev, enters: next };
+  }
+  const count = Math.max(prev.length, next.length);
+  const from = alignFamily(prev, count);
+  const to = alignFamily(next, count);
+  return {
+    movers: [],
+    morphs: from.map((source, i) => ({
+      from: source.box,
+      to: to[i].box,
+      px: 0,
+      py: 0,
+      a: 0,
+      b: 1,
+      fromAlpha: source.alpha,
+      toAlpha: to[i].alpha,
+    })),
+    exits: [],
+    enters: [],
+  };
+}
+
+/** Simultaneous whole-object crossfade, also used for reduced motion. */
+export function buildCrossfadeFlights(prev: CharBox[], next: CharBox[]): Flights {
+  return { movers: [], morphs: [], exits: prev, enters: next };
 }

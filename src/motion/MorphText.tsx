@@ -1,13 +1,21 @@
 /**
- * TransformMatchingShapes for text, on the intro's substrate: glyphs drawn on
- * one Skia canvas instead of a per-character forest of RN Text views. Layout
- * comes synchronously from font metrics (no onLayout roundtrip, no ghost
- * frames), a transition is three draw calls (exits / movers / enters), and the
- * only React commit per change is swapping the flight model in.
+ * Cantor's text-motion framework on one Skia canvas.
  *
- * Same motion grammar as everything else: one linear clock, smootherstep
- * windows, flights on gentle arcs, cascaded in reading order. Retargets
- * mid-flight capture the live positions and flow on from there.
+ * Variants share synchronous font layout, glyph-outline geometry, one linear
+ * clock, mid-flight capture, reduced-motion fallback, and UI-thread glyph
+ * hand-offs:
+ *
+ *  - transform: plain Manim Transform — the whole text family changes on one
+ *    shared alpha, in reading order, with no character matching or cascade;
+ *  - matching: the existing TransformMatchingShapes gesture — words/letters
+ *    find their counterparts and travel independently;
+ *  - crossfade: simultaneous old/new exchange, also forced by reduced motion;
+ *  - write appearance: Manim Write / DrawBorderThenFill — each exact glyph
+ *    outline traces on, then resolves into its fill, with Manim's glyph lag.
+ *
+ * One Canvas avoids a forest of RN Text views. No completion callback mutates
+ * the tree: animated outlines hand ownership to mounted Glyphs on the UI
+ * thread, preserving the Flicker Law across React commits and Skia mapper ticks.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
@@ -33,9 +41,12 @@ import {
 import { bornClock } from './clock';
 import { smootherstep } from './geometry';
 import { useMorphFont } from './fonts';
-import { buildGlyphMorphPaths } from './glyphs';
+import { buildGlyphMorphPaths, placedGlyphPath } from './glyphs';
 import {
+  buildCrossfadeFlights,
   buildFlights,
+  buildTransformFlights,
+  DEFAULT_TEXT_TRANSFORM_MS,
   ENTER_RISE,
   ENTER_START,
   EXIT_END,
@@ -44,20 +55,53 @@ import {
   MOVE_END,
   MOVE_START,
   MOVER_DIP,
+  WRITE_STROKE_PX,
+  writeDurationMs,
+  writePhase,
+  writeSubAlpha,
   type CharBox,
   type Flights,
   type MorphPair,
+  type TextAppearance,
+  type TextMotionVariant,
 } from './text';
 
 type Glyph = { id: number; pos: { x: number; y: number } };
+type ModelKind = 'settled' | 'write' | TextMotionVariant;
 
-/** A shape-morphing pair, its outline paths prebuilt (native Skia only). */
+/** A shape-morphing pair, its outline paths prebuilt once on the JS thread. */
 type MorphModel = MorphPair & {
   fromPath: SkPath;
   toPath: SkPath;
   out: SkPath;
-  /** The destination character as real glyphs — shown once the morph lands. */
+  /** Destination as a real glyph — mounted before the UI-thread hand-off. */
   toGlyphs: Glyph[];
+};
+
+type WriteModel = {
+  path: SkPath;
+  glyphs: Glyph[];
+  index: number;
+  count: number;
+};
+
+type Model = {
+  text: string;
+  width: number;
+  font: SkFont;
+  layout: CharBox[];
+  kind: ModelKind;
+  flights: Flights;
+  morphModels: MorphModel[];
+  writeModels: WriteModel[];
+  writeFallback: CharBox[];
+  exitGlyphs: Glyph[];
+  enterGlyphs: Glyph[];
+  /** Born at the start value; clocks are never reset across committed models. */
+  clock: SharedValue<number>;
+  animate: boolean;
+  runTime: number;
+  gen: number;
 };
 
 function toGlyphs(boxes: CharBox[], rise = 0): Glyph[] {
@@ -70,8 +114,8 @@ function toGlyphs(boxes: CharBox[], rise = 0): Glyph[] {
   return out;
 }
 
-/** Live glyph positions at clock value t — the JS mirror of the worklet math. */
-function captureBoxes(f: Flights, t: number): CharBox[] {
+/** Live positions at t — the JS mirror used to seed interruption retargets. */
+function captureBoxes(f: Flights, t: number, matching: boolean): CharBox[] {
   const boxes: CharBox[] = [];
   for (const m of f.movers) {
     const u = smootherstep(m.a, m.b, t);
@@ -83,9 +127,13 @@ function captureBoxes(f: Flights, t: number): CharBox[] {
     });
   }
   for (const m of f.morphs) {
-    // A half-morphed outline isn't a glyph; approximate with whichever
-    // character it currently resembles more, at the interpolated position.
     const u = smootherstep(m.a, m.b, t);
+    const alpha = (m.fromAlpha ?? 1) + ((m.toAlpha ?? 1) - (m.fromAlpha ?? 1)) * u;
+    if (alpha <= 0.02) {
+      continue;
+    }
+    // A half-morphed outline is not a font glyph. As in the original engine,
+    // retain whichever endpoint it resembles more at the live position.
     const arc = 4 * u * (1 - u);
     const near = u < 0.5 ? m.from : m.to;
     boxes.push({
@@ -94,40 +142,41 @@ function captureBoxes(f: Flights, t: number): CharBox[] {
       y: m.from.y + (m.to.y - m.from.y) * u + m.py * arc,
     });
   }
-  const exitA = 1 - smootherstep(0, EXIT_END, t);
+  const exitA = matching
+    ? 1 - smootherstep(0, EXIT_END, t)
+    : 1 - smootherstep(0, 1, t);
   if (exitA > 0.25) {
-    const rise = EXIT_RISE * smootherstep(0, EXIT_END, t);
+    const rise = matching ? EXIT_RISE * smootherstep(0, EXIT_END, t) : 0;
     for (const b of f.exits) {
       boxes.push({ ...b, y: b.y - rise });
     }
   }
-  const enterA = smootherstep(ENTER_START, 1, t);
+  const enterA = matching
+    ? smootherstep(ENTER_START, 1, t)
+    : smootherstep(0, 1, t);
   if (enterA > 0.25) {
     for (const b of f.enters) {
-      boxes.push({ ...b, y: b.y + ENTER_RISE * (1 - enterA) });
+      boxes.push({ ...b, y: b.y + (matching ? ENTER_RISE * (1 - enterA) : 0) });
     }
   }
   return boxes;
 }
 
-type Model = {
-  text: string;
-  width: number;
-  font: SkFont;
-  flights: Flights;
-  morphModels: MorphModel[];
-  exitGlyphs: Glyph[];
-  enterGlyphs: Glyph[];
-  /** Born at 0 when animating, 1 when settled — never reset across models. */
-  clock: SharedValue<number>;
-  animate: boolean;
-  gen: number;
-};
+function captureModel(model: Model, t: number): CharBox[] {
+  if (model.kind === 'settled') {
+    return model.layout;
+  }
+  if (model.kind !== 'write') {
+    return captureBoxes(model.flights, t, model.kind === 'matching');
+  }
+  // Retargeting during Write starts from glyphs with a visible traced portion.
+  return model.layout.filter((_, i) => {
+    const phase = writePhase(writeSubAlpha(t, i, model.layout.length));
+    return Math.max(phase.borderEnd * phase.borderAlpha, phase.fillAlpha) > 0.02;
+  });
+}
 
-/**
- * Prebuild outline paths for the shape-morphing pairs. Where the platform
- * can't outline a glyph, the pair quietly degrades to exit + enter.
- */
+/** Prebuild outline interpolation; native failures degrade to crossfades. */
 function buildMorphModels(font: SkFont, flights: Flights): MorphModel[] {
   const models: MorphModel[] = [];
   const failed: MorphPair[] = [];
@@ -147,10 +196,30 @@ function buildMorphModels(font: SkFont, flights: Flights): MorphModel[] {
   }
   if (failed.length > 0) {
     flights.morphs = flights.morphs.filter(m => !failed.includes(m));
-    flights.exits = [...flights.exits, ...failed.map(m => m.from)];
-    flights.enters = [...flights.enters, ...failed.map(m => m.to)];
+    flights.exits = [
+      ...flights.exits,
+      ...failed.filter(m => (m.fromAlpha ?? 1) > 0.02).map(m => m.from),
+    ];
+    flights.enters = [
+      ...flights.enters,
+      ...failed.filter(m => (m.toAlpha ?? 1) > 0.02).map(m => m.to),
+    ];
   }
   return models;
+}
+
+function buildWriteModels(font: SkFont, boxes: CharBox[]) {
+  const models: WriteModel[] = [];
+  const fallback: CharBox[] = [];
+  boxes.forEach((box, index) => {
+    const path = placedGlyphPath(font, box);
+    if (path) {
+      models.push({ path, glyphs: toGlyphs([box]), index, count: boxes.length });
+    } else {
+      fallback.push(box);
+    }
+  });
+  return { models, fallback };
 }
 
 function MorphGlyph({
@@ -166,30 +235,23 @@ function MorphGlyph({
   color: string;
   dip: SharedValue<number>;
 }) {
+  const amount = useDerivedValue(() => smootherstep(m.a, m.b, tt.value));
   const path = useDerivedValue(() =>
-    interpolatePaths(
-      smootherstep(m.a, m.b, tt.value),
-      [0, 1],
-      [m.fromPath, m.toPath],
-      undefined,
-      m.out,
-    ),
+    interpolatePaths(amount.value, [0, 1], [m.fromPath, m.toPath], undefined, m.out),
   );
-  // travel lives in the paths; only the arc bulge rides a transform
   const shift = useDerivedValue(() => {
-    const u = smootherstep(m.a, m.b, tt.value);
-    const arc = 4 * u * (1 - u);
+    const arc = 4 * amount.value * (1 - amount.value);
     return [{ translateX: m.px * arc }, { translateY: m.py * arc }];
   });
-  // The moment the morph lands, the approximated outline hands off to the
-  // real glyph — same mounted nodes, pure UI-thread ramps. (No React commit
-  // may ever happen at animation end: a commit racing a ticking mapper can
-  // scramble the old recording's variables and paint a partial frame.)
-  const pathAlpha = useDerivedValue(() =>
-    smootherstep(m.a, m.b, tt.value) >= 1 ? 0 : dip.value,
-  );
+  const pathAlpha = useDerivedValue(() => {
+    if (amount.value >= 1) {
+      return 0;
+    }
+    const alpha = (m.fromAlpha ?? 1) + ((m.toAlpha ?? 1) - (m.fromAlpha ?? 1)) * amount.value;
+    return alpha * dip.value;
+  });
   const glyphAlpha = useDerivedValue(() =>
-    smootherstep(m.a, m.b, tt.value) >= 1 ? 1 : 0,
+    amount.value >= 1 ? (m.toAlpha ?? 1) : 0,
   );
   return (
     <Group transform={shift}>
@@ -199,84 +261,182 @@ function MorphGlyph({
   );
 }
 
-type Props = {
+function WriteGlyph({
+  model,
+  tt,
+  font,
+  color,
+}: {
+  model: WriteModel;
+  tt: SharedValue<number>;
+  font: SkFont;
+  color: string;
+}) {
+  const alpha = useDerivedValue(() => writeSubAlpha(tt.value, model.index, model.count));
+  const borderEnd = useDerivedValue(() => writePhase(alpha.value).borderEnd);
+  const borderAlpha = useDerivedValue(() => writePhase(alpha.value).borderAlpha);
+  const fillPathAlpha = useDerivedValue(() => {
+    const phase = writePhase(alpha.value);
+    return phase.settled ? 0 : phase.fillAlpha;
+  });
+  const glyphAlpha = useDerivedValue(() => (writePhase(alpha.value).settled ? 1 : 0));
+  return (
+    <>
+      <Path
+        path={model.path}
+        style="stroke"
+        start={0}
+        end={borderEnd}
+        strokeWidth={WRITE_STROKE_PX}
+        strokeCap="round"
+        strokeJoin="round"
+        color={color}
+        opacity={borderAlpha}
+      />
+      <Path
+        path={model.path}
+        style="fill"
+        fillType="evenOdd"
+        color={color}
+        opacity={fillPathAlpha}
+      />
+      <Glyphs font={font} glyphs={model.glyphs} color={color} opacity={glyphAlpha} />
+    </>
+  );
+}
+
+function WriteFallbackGlyph({
+  box,
+  index,
+  count,
+  tt,
+  font,
+  color,
+}: {
+  box: CharBox;
+  index: number;
+  count: number;
+  tt: SharedValue<number>;
+  font: SkFont;
+  color: string;
+}) {
+  const opacity = useDerivedValue(() =>
+    smootherstep(0, 1, writeSubAlpha(tt.value, index, count)),
+  );
+  return <Glyphs font={font} glyphs={toGlyphs([box])} color={color} opacity={opacity} />;
+}
+
+export type MorphTextProps = {
   text: string;
   charStyle: TextStyle;
   color: string;
+  /** Morph/crossfade duration. Write uses Manim's automatic duration by default. */
   duration?: number;
-  /** Outer container — reserve a fixed height here so the page never shifts. */
+  writeDuration?: number;
+  /** Existing matching behavior remains the backward-compatible default. */
+  variant?: TextMotionVariant;
+  /** Applied on first mount and whenever an empty text becomes non-empty. */
+  appearance?: TextAppearance;
+  /** Outer container — reserve a fixed height so the page never shifts. */
   style?: StyleProp<ViewStyle>;
-  /** External clock (0..1) — the component stops driving its own. */
+  /** External 0..1 clock; the component stops driving its own. */
   progress?: SharedValue<number>;
 };
 
 /**
- * Memoized so unrelated parent commits (e.g. the onboarding body swapping
- * mid-transition) can't re-render the canvas: a Skia re-record while its
- * mapper is ticking is exactly the partial-frame race.
+ * Memoized so unrelated parent commits cannot re-record a ticking Canvas.
+ * Each committed generation owns fresh Skia nodes and a fresh born clock.
  */
 export const MorphText = React.memo(MorphTextImpl);
 
-function MorphTextImpl({ text, charStyle, color, duration = 700, style, progress }: Props) {
-  const idle = useSharedValue(1); // stand-in clock until the first model exists
+function MorphTextImpl({
+  text,
+  charStyle,
+  color,
+  duration = DEFAULT_TEXT_TRANSFORM_MS,
+  writeDuration,
+  variant = 'matching',
+  appearance = 'none',
+  style,
+  progress,
+}: MorphTextProps) {
+  const idle = useSharedValue(1);
   const reduced = useReducedMotion();
   const font = useMorphFont(charStyle);
   const [width, setWidth] = useState(0);
   const [model, setModel] = useState<Model | null>(null);
   const genRef = useRef(0);
 
-  if (font && width > 0 && (model?.text !== text || model.width !== width || model.font !== font)) {
+  if (
+    font &&
+    width > 0 &&
+    (model?.text !== text || model.width !== width || model.font !== font ||
+      (model.kind !== 'write' && model.kind !== 'settled' && model.kind !== variant && !reduced))
+  ) {
     const lineHeight = charStyle.lineHeight ?? (charStyle.fontSize ?? 14) * 1.35;
     const next = layoutText(text, font, charStyle.letterSpacing ?? 0, width, lineHeight);
-    // Same canvas and font → animate from the live glyph positions. A fresh
-    // mount (or width/font change) just sits at the new layout.
     const retarget = model !== null && model.width === width && model.font === font;
     const captureT = progress ? progress.value : model?.clock.value ?? 1;
+    const prev = retarget && model ? captureModel(model, captureT) : [];
+    const shouldWrite =
+      !reduced && appearance === 'write' && next.length > 0 && (!retarget || prev.length === 0);
+
+    let kind: ModelKind;
     let flights: Flights;
-    if (!retarget) {
-      flights = { movers: [], morphs: [], exits: [], enters: next };
-    } else if (reduced) {
-      flights = {
-        movers: [],
-        morphs: [],
-        exits: captureBoxes(model.flights, captureT),
-        enters: next,
-      };
+    if (shouldWrite) {
+      kind = 'write';
+      flights = buildCrossfadeFlights([], next);
+    } else if (!retarget && appearance === 'none' && !reduced) {
+      kind = 'settled';
+      flights = buildCrossfadeFlights([], next);
+    } else if (reduced || variant === 'crossfade' || (!retarget && appearance === 'fade')) {
+      kind = 'crossfade';
+      flights = buildCrossfadeFlights(prev, next);
+    } else if (variant === 'transform') {
+      kind = 'transform';
+      flights = buildTransformFlights(prev, next);
     } else {
-      flights = buildFlights(captureBoxes(model.flights, captureT), next, width);
+      kind = 'matching';
+      flights = buildFlights(prev, next, width);
     }
+
     const morphModels = buildMorphModels(font, flights);
+    const write = kind === 'write'
+      ? buildWriteModels(font, next)
+      : { models: [], fallback: [] };
     genRef.current++;
-    // Each model owns a clock born at its start value — the committed tree can
-    // never paint against a stale clock from the previous transition.
     setModel({
       text,
       width,
       font,
+      layout: next,
+      kind,
       flights,
       morphModels,
+      writeModels: write.models,
+      writeFallback: write.fallback,
       exitGlyphs: toGlyphs(flights.exits),
-      enterGlyphs: toGlyphs(flights.enters),
-      clock: bornClock(retarget && !progress ? 0 : 1),
-      animate: retarget,
+      enterGlyphs: toGlyphs(kind === 'settled' ? next : flights.enters),
+      clock: bornClock(kind === 'settled' ? 1 : 0),
+      animate: kind !== 'settled',
+      runTime: kind === 'write' ? (writeDuration ?? writeDurationMs(next.length)) : duration,
       gen: genRef.current,
     });
   }
 
   const tt = progress ?? model?.clock ?? idle;
 
-  // No completion callback, no settle commit: React must never touch the
-  // tree at animation end (see MorphGlyph). The next transition's build
-  // captures homes off the parked flights just the same.
+  // No completion commit: all outline→glyph ownership changes stay UI-thread-only.
   useEffect(() => {
     if (!model?.animate || progress) {
       return;
     }
     const clock = model.clock;
-    clock.value = withTiming(1, { duration, easing: Easing.linear });
+    clock.value = withTiming(1, { duration: model.runTime, easing: Easing.linear });
     return () => cancelAnimation(clock);
-  }, [model, progress, duration]);
+  }, [model, progress]);
 
+  const matching = model?.kind === 'matching';
   const movers = model?.flights.movers ?? [];
   const moverGlyphs = useDerivedValue(() => {
     const out: Glyph[] = [];
@@ -291,18 +451,33 @@ function MorphTextImpl({ text, charStyle, color, duration = 700, style, progress
     }
     return out;
   }, [movers, tt]);
-  const moverAlpha = useDerivedValue(() => {
+  const morphDip = useDerivedValue(() => {
+    if (!matching) {
+      return 1;
+    }
     const p = smootherstep(MOVE_START, MOVE_END, tt.value);
     return 1 - MOVER_DIP * 4 * p * (1 - p);
-  });
-  const exitAlpha = useDerivedValue(() => 1 - smootherstep(0, EXIT_END, tt.value));
+  }, [matching, tt]);
+  const exitAlpha = useDerivedValue(() =>
+    matching
+      ? 1 - smootherstep(0, EXIT_END, tt.value)
+      : 1 - smootherstep(0, 1, tt.value),
+  [matching, tt]);
   const exitShift = useDerivedValue(() => [
-    { translateY: -EXIT_RISE * smootherstep(0, EXIT_END, tt.value) },
-  ]);
-  const enterAlpha = useDerivedValue(() => smootherstep(ENTER_START, 1, tt.value));
+    { translateY: matching ? -EXIT_RISE * smootherstep(0, EXIT_END, tt.value) : 0 },
+  ], [matching, tt]);
+  const enterAlpha = useDerivedValue(() =>
+    matching
+      ? smootherstep(ENTER_START, 1, tt.value)
+      : smootherstep(0, 1, tt.value),
+  [matching, tt]);
   const enterShift = useDerivedValue(() => [
-    { translateY: ENTER_RISE * (1 - smootherstep(ENTER_START, 1, tt.value)) },
-  ]);
+    {
+      translateY: matching
+        ? ENTER_RISE * (1 - smootherstep(ENTER_START, 1, tt.value))
+        : 0,
+    },
+  ], [matching, tt]);
 
   return (
     <View
@@ -313,47 +488,97 @@ function MorphTextImpl({ text, charStyle, color, duration = 700, style, progress
       accessibilityLabel={text}>
       {model && font && (
         <Canvas style={StyleSheet.absoluteFill}>
-          {/* Every layer remounts per generation (keys): Skia applies node
-              insert/remove batches atomically with the commit, but prop
-              updates on LIVE nodes land a frame late — updating a persistent
-              node's glyphs array mid-choreography is how one-frame flickers
-              happen (verified frame-by-frame; the always-remounting sigils
-              never flicker). */}
-          <Glyphs
-            key={`ex${model.gen}`}
-            font={font}
-            glyphs={model.exitGlyphs}
-            transform={exitShift}
-            color={color}
-            opacity={exitAlpha}
-          />
-          {model.morphModels.map((m, i) => (
-            <MorphGlyph
-              key={`${model.gen}#${i}`}
-              m={m}
-              tt={tt}
+          {model.kind === 'write' ? (
+            <>
+              {model.writeModels.map((writeModel, i) => (
+                <WriteGlyph
+                  key={`${model.gen}#write${i}`}
+                  model={writeModel}
+                  tt={tt}
+                  font={font}
+                  color={color}
+                />
+              ))}
+              {model.writeFallback.map((box, i) => (
+                <WriteFallbackGlyph
+                  key={`${model.gen}#fallback${i}`}
+                  box={box}
+                  index={model.layout.indexOf(box)}
+                  count={model.layout.length}
+                  tt={tt}
+                  font={font}
+                  color={color}
+                />
+              ))}
+            </>
+          ) : model.kind === 'settled' ? (
+            <Glyphs
+              key={`set${model.gen}`}
               font={font}
+              glyphs={model.enterGlyphs}
               color={color}
-              dip={moverAlpha}
             />
-          ))}
-          <Glyphs
-            key={`mv${model.gen}`}
-            font={font}
-            glyphs={moverGlyphs}
-            color={color}
-            opacity={moverAlpha}
-          />
-          <Glyphs
-            key={`en${model.gen}`}
-            font={font}
-            glyphs={model.enterGlyphs}
-            transform={enterShift}
-            color={color}
-            opacity={enterAlpha}
-          />
+          ) : (
+            <>
+              {/* Layers remount per generation. Updating live Skia node props
+                  across a React commit is the known one-frame flicker race. */}
+              <Glyphs
+                key={`ex${model.gen}`}
+                font={font}
+                glyphs={model.exitGlyphs}
+                transform={exitShift}
+                color={color}
+                opacity={exitAlpha}
+              />
+              {model.morphModels.map((m, i) => (
+                <MorphGlyph
+                  key={`${model.gen}#morph${i}`}
+                  m={m}
+                  tt={tt}
+                  font={font}
+                  color={color}
+                  dip={morphDip}
+                />
+              ))}
+              <Glyphs
+                key={`mv${model.gen}`}
+                font={font}
+                glyphs={moverGlyphs}
+                color={color}
+                opacity={morphDip}
+              />
+              <Glyphs
+                key={`en${model.gen}`}
+                font={font}
+                glyphs={model.enterGlyphs}
+                transform={enterShift}
+                color={color}
+                opacity={enterAlpha}
+              />
+            </>
+          )}
         </Canvas>
       )}
     </View>
   );
 }
+
+/** Convenience primitives: one engine, explicit vocabulary at call sites. */
+type VariantTextProps = Omit<MorphTextProps, 'variant'>;
+type WriteTextProps = Omit<MorphTextProps, 'appearance'>;
+
+export const TransformText = React.memo(function TransformTextComponent(props: VariantTextProps) {
+  return <MorphText {...props} variant="transform" />;
+});
+
+export const MatchingText = React.memo(function MatchingTextComponent(props: VariantTextProps) {
+  return <MorphText {...props} variant="matching" />;
+});
+
+export const CrossfadeText = React.memo(function CrossfadeTextComponent(props: VariantTextProps) {
+  return <MorphText {...props} variant="crossfade" />;
+});
+
+export const WriteText = React.memo(function WriteTextComponent(props: WriteTextProps) {
+  return <MorphText {...props} appearance="write" />;
+});

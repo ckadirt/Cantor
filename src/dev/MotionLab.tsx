@@ -5,16 +5,24 @@
  *    test; geometry must flow, never snap);
  *  - SCRUB mode: drag the strip to move the clock by hand and park a morph at
  *    t = 0.3 while you judge it;
- *  - the text block cycles phrases through MorphText with the real fonts.
+ *  - the text block cycles phrases through every text-motion variant with the
+ *    real fonts; remount the lab to replay the initial Write appearance.
  */
 import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
-import { LIBRARY, MorphShape, MorphText, type LibraryName } from '../motion';
+import {
+  LIBRARY,
+  MorphShape,
+  MorphText,
+  type LibraryName,
+  type TextMotionVariant,
+} from '../motion';
 import { space, type, usePalette } from '../theme/tokens';
 
 const NAMES = Object.keys(LIBRARY) as LibraryName[];
+const TEXT_VARIANTS: TextMotionVariant[] = ['transform', 'matching', 'crossfade'];
 
 const PHRASES = [
   'What Cantor is',
@@ -34,6 +42,7 @@ export function MotionLab() {
   const [shape, setShape] = useState<LibraryName>('note');
   const [scrubbing, setScrubbing] = useState(false);
   const [phrase, setPhrase] = useState(0);
+  const [textVariant, setTextVariant] = useState<TextMotionVariant>('transform');
   const progress = useSharedValue(1);
   const [stripW, setStripW] = useState(1);
 
@@ -106,12 +115,28 @@ export function MotionLab() {
         ))}
       </ScrollView>
 
+      <View style={styles.textModes}>
+        {TEXT_VARIANTS.map(name => (
+          <Pressable key={name} onPress={() => setTextVariant(name)} hitSlop={6}>
+            <Text
+              style={[
+                type.mono,
+                { color: name === textVariant ? pal.ink : pal.faint },
+              ]}>
+              {name.toUpperCase()}
+            </Text>
+          </Pressable>
+        ))}
+      </View>
+
       <Pressable onPress={() => setPhrase(p => (p + 1) % PHRASES.length)}>
         <MorphText
           text={PHRASES[phrase]}
           charStyle={type.title}
           color={pal.ink}
           duration={700}
+          variant={textVariant}
+          appearance="write"
           style={styles.textZone}
           progress={scrubbing ? progress : undefined}
         />
@@ -153,4 +178,9 @@ const styles = StyleSheet.create({
   },
   textZone: { height: 78, marginTop: space.lg },
   hint: { marginTop: space.xs },
+  textModes: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: space.md,
+  },
 });

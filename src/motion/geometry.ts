@@ -175,7 +175,11 @@ export function ribbonOutline(svg: string, width: number, n = N): Pt[] {
   if (!base) {
     return [];
   }
-  const ribbon = base.stroke({ width, cap: StrokeCap.Round, join: StrokeJoin.Round });
+  const ribbon = Skia.Path.Stroke(base, {
+    width,
+    cap: StrokeCap.Round,
+    join: StrokeJoin.Round,
+  });
   return ribbon ? sampleOutline(ribbon, n) : [];
 }
 
@@ -183,24 +187,29 @@ export function ribbonOutline(svg: string, width: number, n = N): Pt[] {
 
 /** An open polyline as an SkPath — the one verb structure everything shares. */
 export function polylinePath(pts: Pt[]): SkPath {
-  const p = Skia.Path.Make();
+  const builder = Skia.PathBuilder.Make();
   if (pts.length === 0) {
-    return p;
+    return builder.build();
   }
-  p.moveTo(pts[0].x, pts[0].y);
+  builder.moveTo(pts[0].x, pts[0].y);
   for (let i = 1; i < pts.length; i++) {
-    p.lineTo(pts[i].x, pts[i].y);
+    builder.lineTo(pts[i].x, pts[i].y);
   }
-  return p;
+  return builder.build();
 }
 
 /** A closed N-gon as an SkPath (the intro's bar/ribbon form). */
 export function polygonPath(pts: Pt[]): SkPath {
-  const p = polylinePath(pts);
-  if (pts.length > 0) {
-    p.close();
+  const builder = Skia.PathBuilder.Make();
+  if (pts.length === 0) {
+    return builder.build();
   }
-  return p;
+  builder.moveTo(pts[0].x, pts[0].y);
+  for (let i = 1; i < pts.length; i++) {
+    builder.lineTo(pts[i].x, pts[i].y);
+  }
+  builder.close();
+  return builder.build();
 }
 
 /* ----------------------------------------------------------------- alignment */

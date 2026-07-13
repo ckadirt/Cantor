@@ -82,15 +82,29 @@ export function glyphOutline(font: SkFont, ch: string): Outline | null {
   return outline;
 }
 
+/**
+ * A glyph's exact native outline at its laid-out baseline position. Write uses
+ * this unsampled path so its border trace and filled hand-off are pixel-identical
+ * to the final Skia glyph. CanvasKit does not expose MakeFromText, so callers
+ * retain a Glyphs fallback for that environment.
+ */
+export function placedGlyphPath(font: SkFont, box: CharBox): SkPath | null {
+  try {
+    return Skia.Path.MakeFromText(box.ch, box.x, box.y, font);
+  } catch {
+    return null;
+  }
+}
+
 function multiPolylinePath(contours: Pt[][]): SkPath {
-  const p = Skia.Path.Make();
+  const builder = Skia.PathBuilder.Make();
   for (const pts of contours) {
-    p.moveTo(pts[0].x, pts[0].y);
+    builder.moveTo(pts[0].x, pts[0].y);
     for (let i = 1; i < pts.length; i++) {
-      p.lineTo(pts[i].x, pts[i].y);
+      builder.lineTo(pts[i].x, pts[i].y);
     }
   }
-  return p;
+  return builder.build();
 }
 
 const placed = (o: Outline, x: number, y: number): Outline =>

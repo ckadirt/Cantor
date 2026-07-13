@@ -2,8 +2,8 @@
  * The onboarding flow. Panel -1 is the animated Cantor intro; after it the
  * content panels share one persistent frame, and the intro's trick carries
  * through the whole flow: the sigil morphs shape-to-shape, the eyebrow and
- * title morph letter-by-letter (shared characters fly to their new homes),
- * and bodies exchange on the same clock. Nothing just cuts.
+ * title use whole-object Manim transforms, and bodies exchange on the same
+ * clock. Their first appearance uses Manim's Write gesture. Nothing just cuts.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
@@ -16,7 +16,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { IntroPanel } from './IntroPanel';
-import { MorphShape, MorphText } from '../motion';
+import { MorphShape, TransformText } from '../motion';
 import { whatPanel } from './panels/WhatPanel';
 import { backendsPanel } from './panels/BackendsPanel';
 import { identityPanel } from './panels/IdentityPanel';
@@ -123,18 +123,20 @@ export function Onboarding({ onDone }: Props) {
         />
       </View>
 
-      <MorphText
+      <TransformText
         text={def.eyebrow.toUpperCase()}
         charStyle={type.eyebrow}
         color={pal.muted}
         duration={TRANSITION_MS}
+        appearance="write"
         style={styles.eyebrow}
       />
-      <MorphText
+      <TransformText
         text={def.title}
         charStyle={type.title}
         color={pal.ink}
         duration={TRANSITION_MS}
+        appearance="write"
         style={styles.title}
       />
 

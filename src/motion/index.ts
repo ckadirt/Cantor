@@ -4,7 +4,8 @@
  *   Shapes + Verbs + one Clock (manim's architecture, on Skia):
  *   - LIBRARY: drawn primitives (music/math/figures) under one authoring contract
  *   - MorphShape: shape→shape morphs, retargetable mid-flight
- *   - MorphText: letter-matching text morphs drawn as glyphs on a canvas
+ *   - MorphText: shared text-motion engine with transform/matching/crossfade
+ *   - WriteText/TransformText/MatchingText: explicit reusable text primitives
  *   - geometry/transition: the math, for anything bespoke (the intro uses it raw)
  *
  * House grammar: linear master clock, smootherstep windows, staggered starts,
@@ -17,4 +18,11 @@ export * from './text';
 export { LIBRARY, CENTERLINES, type LibraryName } from './library';
 export { useMorphFont } from './fonts';
 export { MorphShape } from './MorphShape';
-export { MorphText } from './MorphText';
+export {
+  CrossfadeText,
+  MatchingText,
+  MorphText,
+  TransformText,
+  WriteText,
+  type MorphTextProps,
+} from './MorphText';
