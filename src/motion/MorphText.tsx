@@ -23,9 +23,9 @@ import {
   Canvas,
   Glyphs,
   Group,
-  interpolatePaths,
   Path,
   Skia,
+  usePathInterpolation,
   type SkFont,
   type SkPath,
 } from '@shopify/react-native-skia';
@@ -73,8 +73,20 @@ type ModelKind = 'settled' | 'write' | TextMotionVariant;
 type MorphModel = MorphPair & {
   fromPath: SkPath;
   toPath: SkPath;
-  out: SkPath;
   /** Destination as a real glyph — mounted before the UI-thread hand-off. */
+  toGlyphs: Glyph[];
+};
+
+/**
+ * A plain Transform is one coordinated text family, not N independent mapper
+ * graphs. At most three layers are needed: visible→visible, hidden→visible,
+ * and visible→hidden (Manim's unequal-family alignment copies).
+ */
+type TransformLayerModel = {
+  fromPath: SkPath;
+  toPath: SkPath;
+  fromAlpha: number;
+  toAlpha: number;
   toGlyphs: Glyph[];
 };
 
@@ -93,6 +105,7 @@ type Model = {
   kind: ModelKind;
   flights: Flights;
   morphModels: MorphModel[];
+  transformLayers: TransformLayerModel[];
   writeModels: WriteModel[];
   writeFallback: CharBox[];
   exitGlyphs: Glyph[];
@@ -187,7 +200,6 @@ function buildMorphModels(font: SkFont, flights: Flights): MorphModel[] {
         ...m,
         fromPath: paths.from,
         toPath: paths.to,
-        out: Skia.Path.Make(),
         toGlyphs: toGlyphs([m.to]),
       });
     } else {
@@ -206,6 +218,50 @@ function buildMorphModels(font: SkFont, flights: Flights): MorphModel[] {
     ];
   }
   return models;
+}
+
+/**
+ * Fuse all equally-visible glyph pairs into a single verb-identical path.
+ * This is both closer to Manim's whole-Mobject Transform and substantially
+ * cheaper than asking dozens of immutable SkPath host objects to invalidate
+ * one Canvas independently on every display tick.
+ */
+function buildTransformLayers(models: MorphModel[]): TransformLayerModel[] {
+  const groups = new Map<
+    string,
+    { fromAlpha: number; toAlpha: number; models: MorphModel[] }
+  >();
+  for (const model of models) {
+    const fromAlpha = model.fromAlpha ?? 1;
+    const toAlpha = model.toAlpha ?? 1;
+    if (fromAlpha <= 0.02 && toAlpha <= 0.02) {
+      continue;
+    }
+    const key = `${fromAlpha}:${toAlpha}`;
+    const group = groups.get(key) ?? { fromAlpha, toAlpha, models: [] };
+    group.models.push(model);
+    groups.set(key, group);
+  }
+
+  return [...groups.values()].map(group => {
+    const from = Skia.PathBuilder.Make();
+    const to = Skia.PathBuilder.Make();
+    const destinationGlyphs: Glyph[] = [];
+    for (const model of group.models) {
+      from.addPath(model.fromPath);
+      to.addPath(model.toPath);
+      if (group.toAlpha > 0.02) {
+        destinationGlyphs.push(...model.toGlyphs);
+      }
+    }
+    return {
+      fromPath: from.build(),
+      toPath: to.build(),
+      fromAlpha: group.fromAlpha,
+      toAlpha: group.toAlpha,
+      toGlyphs: destinationGlyphs,
+    };
+  });
 }
 
 function buildWriteModels(font: SkFont, boxes: CharBox[]) {
@@ -236,9 +292,11 @@ function MorphGlyph({
   dip: SharedValue<number>;
 }) {
   const amount = useDerivedValue(() => smootherstep(m.a, m.b, tt.value));
-  const path = useDerivedValue(() =>
-    interpolatePaths(amount.value, [0, 1], [m.fromPath, m.toPath], undefined, m.out),
-  );
+  // Skia paths are immutable as of RN Skia 2.6. usePathInterpolation drives
+  // the same native interpolation while explicitly invalidating the canvas on
+  // every mapper tick; a plain derived value can otherwise coalesce the new
+  // host objects into only a handful of visible frames.
+  const path = usePathInterpolation(amount, [0, 1], [m.fromPath, m.toPath]);
   const shift = useDerivedValue(() => {
     const arc = 4 * amount.value * (1 - amount.value);
     return [{ translateX: m.px * arc }, { translateY: m.py * arc }];
@@ -258,6 +316,38 @@ function MorphGlyph({
       <Path path={path} style="fill" fillType="evenOdd" color={color} opacity={pathAlpha} />
       <Glyphs font={font} glyphs={m.toGlyphs} color={color} opacity={glyphAlpha} />
     </Group>
+  );
+}
+
+function TransformLayer({
+  model,
+  tt,
+  font,
+  color,
+}: {
+  model: TransformLayerModel;
+  tt: SharedValue<number>;
+  font: SkFont;
+  color: string;
+}) {
+  const amount = useDerivedValue(() => smootherstep(0, 1, tt.value));
+  const path = usePathInterpolation(amount, [0, 1], [model.fromPath, model.toPath]);
+  const pathAlpha = useDerivedValue(() => {
+    if (amount.value >= 1) {
+      return 0;
+    }
+    return model.fromAlpha + (model.toAlpha - model.fromAlpha) * amount.value;
+  });
+  const glyphAlpha = useDerivedValue(() =>
+    amount.value >= 1 ? model.toAlpha : 0,
+  );
+  return (
+    <>
+      <Path path={path} style="fill" fillType="evenOdd" color={color} opacity={pathAlpha} />
+      {model.toGlyphs.length > 0 && (
+        <Glyphs font={font} glyphs={model.toGlyphs} color={color} opacity={glyphAlpha} />
+      )}
+    </>
   );
 }
 
@@ -401,6 +491,7 @@ function MorphTextImpl({
     }
 
     const morphModels = buildMorphModels(font, flights);
+    const transformLayers = kind === 'transform' ? buildTransformLayers(morphModels) : [];
     const write = kind === 'write'
       ? buildWriteModels(font, next)
       : { models: [], fallback: [] };
@@ -413,6 +504,7 @@ function MorphTextImpl({
       kind,
       flights,
       morphModels,
+      transformLayers,
       writeModels: write.models,
       writeFallback: write.fallback,
       exitGlyphs: toGlyphs(flights.exits),
@@ -530,16 +622,26 @@ function MorphTextImpl({
                 color={color}
                 opacity={exitAlpha}
               />
-              {model.morphModels.map((m, i) => (
-                <MorphGlyph
-                  key={`${model.gen}#morph${i}`}
-                  m={m}
-                  tt={tt}
-                  font={font}
-                  color={color}
-                  dip={morphDip}
-                />
-              ))}
+              {model.kind === 'transform'
+                ? model.transformLayers.map((layer, i) => (
+                    <TransformLayer
+                      key={`${model.gen}#transform${i}`}
+                      model={layer}
+                      tt={tt}
+                      font={font}
+                      color={color}
+                    />
+                  ))
+                : model.morphModels.map((m, i) => (
+                    <MorphGlyph
+                      key={`${model.gen}#morph${i}`}
+                      m={m}
+                      tt={tt}
+                      font={font}
+                      color={color}
+                      dip={morphDip}
+                    />
+                  ))}
               <Glyphs
                 key={`mv${model.gen}`}
                 font={font}
