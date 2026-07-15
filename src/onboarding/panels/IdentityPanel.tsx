@@ -1,37 +1,97 @@
 /**
- * Panel 3 — the reveal. The 12-word identity, created on-device. The mechanics
- * (BIP39, ed25519) live behind an expandable "How does this work?" for the
- * curious; everyone else just meets their words and moves on.
+ * Panel 3 — the reveal. The 12-word identity, freshly minted on-device.
+ *
+ * No grid: the words flow like the phrase they are. Each one starts as the
+ * raw material it came from — a scramble of letters — and morphs into its
+ * real self in a reading-order cascade (the engine's Transform gesture), so
+ * the screen tells the true story: random bits just became your name.
+ * The mechanics live behind "How does this work?" for the curious.
  */
-import React, { useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
-import Animated, { FadeIn } from 'react-native-reanimated';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Text, View, type TextStyle } from 'react-native';
+import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
+import { TransformText } from '../../motion';
 import { Button, PanelBody } from './kit';
-import { PLACEHOLDER_PHRASE } from './phrase';
+import { getIdentityPhrase } from '../../identity/mnemonic';
 import { SIGILS } from '../sigils';
 import { space, type, usePalette } from '../../theme/tokens';
 import type { PanelBodyProps, PanelDef } from './types';
 
-function Body({ onNext }: PanelBodyProps) {
+// The cascade: after the body settles, one word resolves at a time.
+const BASE_DELAY_MS = 600;
+const STAGGER_MS = 110;
+const RESOLVE_MS = 480;
+
+// Word geometry — mono metrics are uniform, so widths are exact.
+const WORD_SIZE = 15;
+const MONO_ADVANCE = WORD_SIZE * 0.6;
+const WORD_H = 20;
+
+const WORD_STYLE: TextStyle = {
+  fontFamily: type.mono.fontFamily,
+  fontSize: WORD_SIZE,
+};
+
+const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+
+/** Same-length noise for a word — what 128 random bits look like. */
+function scrambleFor(word: string): string {
+  let s = '';
+  for (let i = 0; i < word.length; i++) {
+    s += LETTERS[Math.floor(Math.random() * LETTERS.length)];
+  }
+  return s;
+}
+
+function RevealWord({
+  word,
+  index,
+  resolved,
+}: {
+  word: string;
+  index: number;
+  resolved: boolean;
+}) {
   const pal = usePalette();
-  const [open, setOpen] = useState(false);
-  const words = PLACEHOLDER_PHRASE;
-  const half = Math.ceil(words.length / 2);
-
-  const toggle = () => setOpen(o => !o);
-
-  const column = (from: number, to: number) => (
-    <View style={styles.col}>
-      {words.slice(from, to).map((w, i) => (
-        <View key={w} style={styles.word}>
-          <Text style={[styles.num, { color: pal.faint }]}>
-            {String(from + i + 1).padStart(2, '0')}
-          </Text>
-          <Text style={[styles.wordText, { color: pal.ink }]}>{w}</Text>
-        </View>
-      ))}
+  const scramble = useMemo(() => scrambleFor(word), [word]);
+  return (
+    <View style={styles.word}>
+      <Text style={[styles.num, { color: pal.faint }]}>
+        {String(index + 1).padStart(2, '0')}
+      </Text>
+      <TransformText
+        text={resolved ? word : scramble}
+        charStyle={WORD_STYLE}
+        color={resolved ? pal.ink : pal.faint}
+        duration={RESOLVE_MS}
+        style={{ width: word.length * MONO_ADVANCE + 2, height: WORD_H }}
+      />
     </View>
   );
+}
+
+function Body({ onNext }: PanelBodyProps) {
+  const pal = usePalette();
+  const reduced = useReducedMotion();
+  const [open, setOpen] = useState(false);
+  const [resolvedCount, setResolvedCount] = useState(0);
+  const words = getIdentityPhrase();
+
+  useEffect(() => {
+    if (reduced) {
+      setResolvedCount(words.length);
+      return;
+    }
+    const timers = words.map((_, i) =>
+      setTimeout(
+        () => setResolvedCount(n => Math.max(n, i + 1)),
+        BASE_DELAY_MS + i * STAGGER_MS,
+      ),
+    );
+    return () => timers.forEach(clearTimeout);
+  }, [words, reduced]);
+
+  const toggle = () => setOpen(o => !o);
 
   return (
     <PanelBody footer={<Button label="Continue" onPress={onNext} />}>
@@ -40,10 +100,10 @@ function Body({ onNext }: PanelBodyProps) {
         this device — no password behind them, and no one else has them.
       </Text>
 
-      <View style={[styles.grid, { borderColor: pal.line }]}>
-        {column(0, half)}
-        <View style={[styles.divider, { backgroundColor: pal.line }]} />
-        {column(half, words.length)}
+      <View style={styles.phrase} accessible accessibilityLabel={words.join(', ')}>
+        {words.map((w, i) => (
+          <RevealWord key={`${i}-${w}`} word={w} index={i} resolved={i < resolvedCount} />
+        ))}
       </View>
 
       <Pressable onPress={toggle} style={styles.howHead} hitSlop={8}>
@@ -77,20 +137,19 @@ export const identityPanel: PanelDef = {
 
 const styles = StyleSheet.create({
   lede: { marginBottom: space.lg },
-  grid: {
+  phrase: {
     flexDirection: 'row',
-    borderWidth: 1,
+    flexWrap: 'wrap',
+    columnGap: space.lg,
+    rowGap: space.md,
     paddingVertical: space.sm,
   },
-  col: { flex: 1, paddingHorizontal: space.md, gap: space.sm, paddingVertical: space.xs },
-  divider: { width: 1 },
-  word: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm },
+  word: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
   num: {
     fontFamily: type.mono.fontFamily,
-    fontSize: 11,
+    fontSize: 10,
     fontVariant: ['tabular-nums'],
   },
-  wordText: { fontFamily: type.mono.fontFamily, fontSize: 15 },
-  howHead: { marginTop: space.lg },
+  howHead: { marginTop: space.xl },
   howBody: { marginTop: space.sm },
 });

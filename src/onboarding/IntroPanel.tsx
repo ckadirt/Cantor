@@ -8,7 +8,7 @@
  * clock, nothing bouncy. Morphing is the manim trick (resample → interpolate)
  * running on the UI thread via Skia's interpolatePaths. See src/motion.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Pressable,
   StyleSheet,
@@ -28,6 +28,8 @@ import {
 import Animated, {
   Easing,
   FadeIn,
+  runOnJS,
+  useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
   withTiming,
@@ -79,6 +81,20 @@ const NAME_WRITE_START = 2.55; // the wordmark writes itself as the frame settle
 const NAME_WRITE_DUR = 1.05;
 const SLOGAN_WRITE_START = 3.35; // slogan starts while the name finishes
 const SLOGAN_WRITE_DUR = 1.45;
+
+// Exit — Begin plays the reveal backwards instead of cutting: the slogan and
+// wordmark UNWRITE (their write clocks run home to 0), the constellation fades
+// along its own cascade order, and only on a quiet page does the panel frame
+// mount and write itself in. Windows are fractions of the exit clock.
+const EXIT_MS = 720;
+const EXIT_SLOGAN_A = 0.0; // written last, unwritten first
+const EXIT_SLOGAN_B = 0.52;
+const EXIT_NAME_A = 0.16;
+const EXIT_NAME_B = 0.74;
+const EXIT_SYMBOL_A = 0.18; // first constellation symbol starts fading
+const EXIT_SYMBOL_STEP = 0.035; // per-symbol cascade lag
+const EXIT_SYMBOL_DUR = 0.5;
+const EXIT_FOOTER_B = 0.3; // Begin is gone before anything else finishes
 const FRAME_START = 2.0; // symbols settle to a faint constellation
 const FRAME_DUR = 1.0;
 const DURATION_S = 4.95; // whole intro, seconds
@@ -152,6 +168,8 @@ type GlyphMorphModel = {
   morphStart: number;
   morphEnd: number;
   settledOpacity: number;
+  exitStart: number; // window on the exit clock, cascade order
+  exitEnd: number;
 };
 
 type TargetModel = {
@@ -251,10 +269,12 @@ function Bar({
 function GlyphMorph({
   model,
   p,
+  x,
   color,
 }: {
   model: GlyphMorphModel;
   p: SharedValue<number>;
+  x: SharedValue<number>;
   color: string;
 }) {
   const morphT = useDerivedValue(() =>
@@ -273,9 +293,9 @@ function GlyphMorph({
     if (p.value < MORPH_SWITCH) {
       return 0;
     }
-    return (
-      1 - (1 - model.settledOpacity) * smootherstep(FRAME_A, FRAME_B, p.value)
-    );
+    const settled =
+      1 - (1 - model.settledOpacity) * smootherstep(FRAME_A, FRAME_B, p.value);
+    return settled * (1 - smootherstep(model.exitStart, model.exitEnd, x.value));
   });
   return (
     <Path
@@ -292,6 +312,8 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
   const pal = usePalette();
   const { width, height } = useWindowDimensions();
   const p = useSharedValue(0);
+  const x = useSharedValue(0); // exit clock — 0 until Begin, then 0→1 once
+  const exitingRef = useRef(false);
   const [ready, setReady] = useState(false);
 
   const scene = useMemo<{
@@ -421,6 +443,7 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
       Math.max(1, CONSTELLATION_PLACEMENTS.length - 1);
     const glyphs = pairsBySymbol.map((pairs, symbolIndex) => {
       const morphStart = MORPH_BASE + symbolIndex * morphStep;
+      const exitStart = EXIT_SYMBOL_A + symbolIndex * EXIT_SYMBOL_STEP;
       return {
         fromPath: compoundPolygonPath(pairs.map(pair => pair.from)),
         toPath: compoundPolygonPath(pairs.map(pair => pair.to)),
@@ -428,6 +451,8 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
         morphStart: morphStart * sec,
         morphEnd: (morphStart + MORPH_DUR) * sec,
         settledOpacity: CONSTELLATION_PLACEMENTS[symbolIndex].opacity,
+        exitStart,
+        exitEnd: exitStart + EXIT_SYMBOL_DUR,
       };
     });
 
@@ -443,12 +468,25 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
   // The copy is WRITTEN, not faded: each line gets its own linear window of
   // the master clock, and WriteText's DrawBorderThenFill does the rest. Linear
   // (not smootherstep) — the write cascade eases per glyph internally.
-  const nameClock = useDerivedValue(() =>
-    Math.min(1, Math.max(0, (p.value - NAME_A) / (NAME_B - NAME_A))),
-  );
-  const sloganClock = useDerivedValue(() =>
-    Math.min(1, Math.max(0, (p.value - SLOGAN_A) / (SLOGAN_B - SLOGAN_A))),
-  );
+  // The exit clock takes the same lines home: min(write, unwrite) runs each
+  // clock backwards through the identical gesture, so Begin unwrites the page.
+  const nameClock = useDerivedValue(() => {
+    const write = Math.min(1, Math.max(0, (p.value - NAME_A) / (NAME_B - NAME_A)));
+    return Math.min(write, 1 - smootherstep(EXIT_NAME_A, EXIT_NAME_B, x.value));
+  });
+  const sloganClock = useDerivedValue(() => {
+    const write = Math.min(
+      1,
+      Math.max(0, (p.value - SLOGAN_A) / (SLOGAN_B - SLOGAN_A)),
+    );
+    return Math.min(
+      write,
+      1 - smootherstep(EXIT_SLOGAN_A, EXIT_SLOGAN_B, x.value),
+    );
+  });
+  const footerStyle = useAnimatedStyle(() => ({
+    opacity: 1 - smootherstep(0, EXIT_FOOTER_B, x.value),
+  }));
 
   // Tap anywhere only fast-forwards the intro; advancing is Begin's job.
   const skip = () => {
@@ -459,6 +497,24 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
       });
       setTimeout(() => setReady(true), 460);
     }
+  };
+
+  // Begin: play the exit, then hand over on a quiet page. The commit that
+  // swaps screens happens with every clock parked (flicker law).
+  const begin = () => {
+    if (exitingRef.current) {
+      return;
+    }
+    exitingRef.current = true;
+    x.value = withTiming(
+      1,
+      { duration: EXIT_MS, easing: Easing.linear },
+      fin => {
+        if (fin) {
+          runOnJS(onNext)();
+        }
+      },
+    );
   };
 
   return (
@@ -473,6 +529,7 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
               key={CONSTELLATION_PLACEMENTS[index].item.key}
               model={model}
               p={p}
+              x={x}
               color={pal.ink}
             />
           ))}
@@ -499,12 +556,12 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
       {ready && (
         <Animated.View
           entering={FadeIn.duration(360)}
-          style={styles.footer}
+          style={[styles.footer, footerStyle]}
           pointerEvents="box-none"
         >
           <Pressable
             style={[styles.button, { borderColor: pal.ink }]}
-            onPress={onNext}
+            onPress={begin}
           >
             <Text style={[styles.buttonLabel, { color: pal.ink }]}>Begin</Text>
           </Pressable>

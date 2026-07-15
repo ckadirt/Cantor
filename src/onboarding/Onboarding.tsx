@@ -90,6 +90,19 @@ export function Onboarding({ onDone }: Props) {
     transform: [{ translateY: BODY_SHIFT * (1 - bodyA.value) }],
   }));
 
+  // The header rises softly the first time the frame appears after the intro
+  // — manual, not an entering animation (those flash a frame on Fabric).
+  const headerA = useSharedValue(0);
+  useEffect(() => {
+    if (step >= 0) {
+      headerA.value = withTiming(1, {
+        duration: 480,
+        easing: Easing.out(Easing.cubic),
+      });
+    }
+  }, [step, headerA]);
+  const headerStyle = useAnimatedStyle(() => ({ opacity: headerA.value }));
+
   const go = (next: number) => {
     setStep(Math.max(-1, next));
   };
@@ -103,7 +116,7 @@ export function Onboarding({ onDone }: Props) {
 
   return (
     <View style={[styles.root, { backgroundColor: pal.bg }]}>
-      <View style={styles.header}>
+      <Animated.View style={[styles.header, headerStyle]}>
         <Pressable onPress={() => go(step - 1)} hitSlop={12} style={styles.back}>
           <Text style={[type.eyebrow, { color: pal.faint }]}>‹ BACK</Text>
         </Pressable>
@@ -111,7 +124,7 @@ export function Onboarding({ onDone }: Props) {
           {step + 1} / {PANELS.length}
         </Text>
         <View style={styles.back} />
-      </View>
+      </Animated.View>
 
       <View style={styles.sigilZone}>
         <MorphShape
@@ -120,6 +133,7 @@ export function Onboarding({ onDone }: Props) {
           width={width - space.lg * 2}
           height={SIGIL_H}
           color={pal.ink}
+          appearance="write"
         />
       </View>
 

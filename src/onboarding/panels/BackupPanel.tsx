@@ -4,8 +4,9 @@
  */
 import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import { Button, Checkbox, PanelBody } from './kit';
-import { PLACEHOLDER_PHRASE } from './phrase';
+import { getIdentityPhrase } from '../../identity/mnemonic';
 import { SIGILS } from '../sigils';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 import type { PanelBodyProps, PanelDef } from './types';
@@ -16,9 +17,7 @@ function Body({ onNext }: PanelBodyProps) {
   const [copied, setCopied] = useState(false);
 
   const copy = () => {
-    // TODO(identity): copy the real phrase to the clipboard once generation is
-    // wired (react-native Clipboard). Placeholder confirms the interaction.
-    void PLACEHOLDER_PHRASE;
+    Clipboard.setString(getIdentityPhrase().join(' '));
     setCopied(true);
   };
 
