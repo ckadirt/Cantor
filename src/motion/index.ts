@@ -13,11 +13,33 @@
  */
 export * from './geometry';
 export * from './shapes';
+export * from './silhouette';
 export * from './transition';
 export * from './text';
 export { LIBRARY, CENTERLINES, type LibraryName } from './library';
+export {
+  SYMBOL_LIBRARY,
+  type SymbolName,
+  type SymbolPrimitive,
+} from './symbolLibrary';
 export { useMorphFont } from './fonts';
-export { MorphShape } from './MorphShape';
+export {
+  MorphShape,
+  type MorphShapeProps,
+  type ShapeAppearance,
+} from './MorphShape';
+export {
+  AnimatedSymbol,
+  WriteSymbol,
+  type AnimatedSymbolProps,
+  type WriteSymbolProps,
+} from './AnimatedSymbol';
+export {
+  CanonicalSymbol,
+  SymbolArtworkPath,
+  type CanonicalSymbolProps,
+  type SymbolArtworkPathProps,
+} from './CanonicalSymbol';
 export {
   CrossfadeText,
   MatchingText,

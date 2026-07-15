@@ -1,15 +1,21 @@
 /**
  * Onboarding — panel 1. The Cantor set draws itself in from the centre bar
  * (middle-thirds, staggered outward like a 3Blue1Brown Create), then every bar
- * disperses to the borders, morphing into a quiet field of math and music marks
- * — leaving the name and the promise alone in the middle.
+ * resolves into a constellation of canonical mathematical and musical symbols
+ * around a quiet centre reserved for the name and promise.
  *
  * All motion eases like a function: pure smootherstep windows over one linear
  * clock, nothing bouncy. Morphing is the manim trick (resample → interpolate)
  * running on the UI thread via Skia's interpolatePaths. See src/motion.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import {
   Canvas,
   Group,
@@ -30,15 +36,18 @@ import Animated, {
 import { barSvg, layoutBars } from './cantorBars';
 import {
   alignClosed,
-  mulberry32,
-  placePts,
-  polygonPath,
-  relaxPositions,
-  ribbonOutline,
+  centroid,
+  compoundPolygonPath,
+  resolveSilhouette,
   sampleOutline,
+  SILHOUETTE_N,
   smootherstep,
 } from '../motion';
-import { STROKE, SYMBOLS } from './symbols';
+import {
+  CONSTELLATION_SYMBOLS,
+  INTRO_CONTOUR_COUNT,
+  type ConstellationSymbol,
+} from './symbols';
 import { space, type, usePalette } from '../theme/tokens';
 
 /** The slogan under the wordmark. One line; keep it short. */
@@ -52,51 +61,228 @@ const BUILD_DUR = 0.5;
 const MORPH_BASE = 1.1; // first bar starts morphing
 const MORPH_TOTAL = 1.5; // the whole cascade of morphs spans exactly this
 const MORPH_DUR = 0.5; // each bar's own morph
-const REVEAL_START = 2.35; // "Cantor" + slogan fade in (overlaps the morph tail)
-const REVEAL_DUR = 0.8;
-const FRAME_START = 2.0; // bars settle to a faint border frame
+const REVEAL_START = 2.62; // copy starts only after the final morph clears centre
+const REVEAL_DUR = 0.65;
+const FRAME_START = 2.0; // symbols settle to a faint constellation
 const FRAME_DUR = 1.0;
 const DURATION_S = 3.3; // whole intro, seconds
 const DURATION = DURATION_S * 1000; // ms
+
+// Geometry knobs — positions are fractions of the live viewport. The middle
+// fractions are a hard copy exclusion zone: no target contour lands there.
+const MARK_CENTER_Y = 0.42;
+const MARK_SIZE = 0.52;
+const COPY_CLEAR_TOP = 0.3;
+const COPY_CLEAR_BOTTOM = 0.56;
+const COPY_CLEAR_GAP = 16; // px between final ink and the reserved copy zone
+const FOOTER_CLEARANCE = 132; // px kept clear for Begin and its breathing room
+
+type ConstellationPlacement = {
+  item: ConstellationSymbol;
+  x: number;
+  y: number;
+  size: number;
+  spin: number;
+  opacity: number;
+};
+
+const byKey = Object.fromEntries(
+  CONSTELLATION_SYMBOLS.map(item => [item.key, item]),
+) as Record<ConstellationSymbol['key'], ConstellationSymbol>;
+
+const CONSTELLATION_PLACEMENTS: readonly ConstellationPlacement[] = [
+  {
+    item: byKey.alephNull,
+    x: 0.1,
+    y: 0.16,
+    size: 0.17,
+    spin: 0,
+    opacity: 0.5,
+  },
+  {
+    item: byKey.infinity,
+    x: 0.29,
+    y: 0.19,
+    size: 0.12,
+    spin: 0,
+    opacity: 0.43,
+  },
+  {
+    item: byKey.cantorSet,
+    x: 0.49,
+    y: 0.14,
+    size: 0.18,
+    spin: 0,
+    opacity: 0.47,
+  },
+  {
+    item: byKey.contourIntegral,
+    x: 0.69,
+    y: 0.19,
+    size: 0.17,
+    spin: 0,
+    opacity: 0.44,
+  },
+  {
+    item: byKey.trebleClef,
+    x: 0.9,
+    y: 0.15,
+    size: 0.2,
+    spin: 0,
+    opacity: 0.5,
+  },
+  {
+    item: byKey.segno,
+    x: 0.1,
+    y: 0.68,
+    size: 0.18,
+    spin: 0,
+    opacity: 0.47,
+  },
+  {
+    item: byKey.fermata,
+    x: 0.3,
+    y: 0.72,
+    size: 0.13,
+    spin: 0,
+    opacity: 0.42,
+  },
+  {
+    item: byKey.partial,
+    x: 0.5,
+    y: 0.67,
+    size: 0.18,
+    spin: 0,
+    opacity: 0.47,
+  },
+  { item: byKey.nabla, x: 0.7, y: 0.72, size: 0.15, spin: 0, opacity: 0.42 },
+  {
+    item: byKey.continuum,
+    x: 0.9,
+    y: 0.68,
+    size: 0.18,
+    spin: 0,
+    opacity: 0.47,
+  },
+];
 
 // The same windows on the 0..1 master clock, for the worklet-side reveal/fade.
 const REVEAL_A = REVEAL_START / DURATION_S;
 const REVEAL_B = (REVEAL_START + REVEAL_DUR) / DURATION_S;
 const FRAME_A = FRAME_START / DURATION_S;
 const FRAME_B = (FRAME_START + FRAME_DUR) / DURATION_S;
+const MORPH_SWITCH = MORPH_BASE / DURATION_S;
 
 type BarModel = {
   homePath: SkPath;
-  targetPath: SkPath;
-  out: SkPath;
   cx: number;
   cy: number;
   buildStart: number;
   buildEnd: number;
-  morphStart: number;
-  morphEnd: number;
 };
 
-function Bar({ m, p, color }: { m: BarModel; p: SharedValue<number>; color: string }) {
-  const reveal = useDerivedValue(() => smootherstep(m.buildStart, m.buildEnd, p.value));
-  const morphT = useDerivedValue(() => smootherstep(m.morphStart, m.morphEnd, p.value));
+type GlyphMorphModel = {
+  fromPath: SkPath;
+  toPath: SkPath;
+  out: SkPath;
+  morphStart: number;
+  morphEnd: number;
+  settledOpacity: number;
+};
 
-  const path = useDerivedValue(() =>
-    interpolatePaths(morphT.value, [0, 1], [m.homePath, m.targetPath], undefined, m.out),
+type TargetModel = {
+  symbolIndex: number;
+  pts: ReturnType<typeof sampleOutline>;
+  cx: number;
+  cy: number;
+};
+
+function placedSymbolY(
+  placement: ConstellationPlacement,
+  height: number,
+  symbolSize: number,
+): number {
+  const desiredY = height * placement.y;
+  const isUpper = placement.y < COPY_CLEAR_TOP;
+  const symbolExtent = symbolSize * 0.5;
+  return isUpper
+    ? Math.min(
+      desiredY,
+      height * COPY_CLEAR_TOP - symbolExtent - COPY_CLEAR_GAP,
+    )
+    : Math.min(
+      height - FOOTER_CLEARANCE - symbolExtent,
+      Math.max(
+        desiredY,
+        height * COPY_CLEAR_BOTTOM + symbolExtent + COPY_CLEAR_GAP,
+      ),
+    );
+}
+
+function Bar({
+  m,
+  p,
+  color,
+}: {
+  m: BarModel;
+  p: SharedValue<number>;
+  color: string;
+}) {
+  const reveal = useDerivedValue(() =>
+    smootherstep(m.buildStart, m.buildEnd, p.value),
   );
 
-  // grow from the bar's centre (the middle-thirds gesture), then settle to a
-  // faint constellation once the name takes over.
+  // Build as independent Cantor bars. At MORPH_SWITCH an identical compound
+  // source path takes over, so the change of renderer is visually lossless.
   const transform = useDerivedValue(() => [{ scaleX: reveal.value }]);
-  const opacity = useDerivedValue(() => {
-    const frame = 1 - 0.6 * smootherstep(FRAME_A, FRAME_B, p.value);
-    return reveal.value * frame;
-  });
+  const opacity = useDerivedValue(() =>
+    p.value < MORPH_SWITCH ? reveal.value : 0,
+  );
 
   return (
     <Group transform={transform} origin={{ x: m.cx, y: m.cy }}>
-      <Path path={path} color={color} opacity={opacity} />
+      <Path path={m.homePath} color={color} opacity={opacity} />
     </Group>
+  );
+}
+
+function GlyphMorph({
+  model,
+  p,
+  color,
+}: {
+  model: GlyphMorphModel;
+  p: SharedValue<number>;
+  color: string;
+}) {
+  const morphT = useDerivedValue(() =>
+    smootherstep(model.morphStart, model.morphEnd, p.value),
+  );
+  const path = useDerivedValue(() =>
+    interpolatePaths(
+      morphT.value,
+      [0, 1],
+      [model.fromPath, model.toPath],
+      undefined,
+      model.out,
+    ),
+  );
+  const opacity = useDerivedValue(() => {
+    if (p.value < MORPH_SWITCH) {
+      return 0;
+    }
+    return (
+      1 - (1 - model.settledOpacity) * smootherstep(FRAME_A, FRAME_B, p.value)
+    );
+  });
+  return (
+    <Path
+      path={path}
+      style="fill"
+      fillType="evenOdd"
+      color={color}
+      opacity={opacity}
+    />
   );
 }
 
@@ -106,78 +292,141 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
   const p = useSharedValue(0);
   const [ready, setReady] = useState(false);
 
-  const bars = useMemo<BarModel[]>(() => {
+  const scene = useMemo<{
+    bars: BarModel[];
+    glyphs: GlyphMorphModel[];
+  }>(() => {
     const cx = width / 2;
-    const cy = height * 0.42; // sit the mark a little above centre
-    const size = Math.min(width, height) * 0.52;
-    const margin = 28;
+    const cy = height * MARK_CENTER_Y; // sit the mark a little above centre
+    const shortSide = Math.min(width, height);
+    const size = shortSide * MARK_SIZE;
     const sec = 1000 / DURATION; // seconds → normalised clock
 
     const laid = layoutBars(size, cx, cy);
-    // Morph cascade order: a clean left-to-right sweep, evenly spaced in time —
-    // not the centre-first bloom the radial ordering gave.
-    const order = laid.map((_, i) => i).sort((a, b) => laid[a].cx - laid[b].cx);
-    const morphIndex = new Array<number>(laid.length);
-    order.forEach((barI, rank) => (morphIndex[barI] = rank));
-    // Spread the per-bar starts so first-start → last-finish spans MORPH_TOTAL.
-    const morphStep = (MORPH_TOTAL - MORPH_DUR) / Math.max(1, laid.length - 1);
-
-    // First pass: pick each mark's size, tilt, and a rough scatter point out
-    // toward the borders along the bar's own outward direction.
-    const place = laid.map((bar, i) => {
-      const rand = mulberry32(i * 2654435761);
-      let angle = Math.atan2(bar.cy - cy, bar.cx - cx);
-      if (!Number.isFinite(angle) || (bar.cx === cx && bar.cy === cy)) {
-        angle = rand() * Math.PI * 2;
-      }
-      const radX = (0.5 + rand() * 0.42) * (width / 2);
-      const radY = (0.42 + rand() * 0.5) * (height / 2);
-      const symSize = 30 + rand() * 20; // thin glyphs read better a touch larger
-      return {
-        sym: SYMBOLS[i % SYMBOLS.length],
-        symSize,
-        spin: (rand() - 0.5) * 0.7, // gentle tilt only — keep glyphs legible
-        pos: {
-          x: Math.min(width - margin, Math.max(margin, cx + Math.cos(angle) * radX)),
-          y: Math.min(height - margin, Math.max(margin, cy + Math.sin(angle) * radY)),
-        },
-      };
-    });
-
-    // Second pass: relax the scatter so no two marks land on top of each other.
-    const radii = place.map(pl => pl.symSize * 0.6 + 6);
-    // The array holds the same `pos` object references, so this settles each
-    // pl.pos in place (radius = half the glyph plus a little breathing room).
-    relaxPositions(place.map(pl => pl.pos), radii, {
-      minX: margin,
-      minY: margin,
-      maxX: width - margin,
-      maxY: height - margin,
-    });
-
-    return laid.map((bar, i) => {
-      const pl = place[i];
-      const homePts = sampleOutline(Skia.Path.MakeFromSVGString(barSvg(bar.rect))!);
-      const symPts = ribbonOutline(pl.sym.svg, STROKE);
-      const targetPts =
-        symPts.length > 0
-          ? alignClosed(homePts, placePts(symPts, pl.pos.x, pl.pos.y, pl.symSize, pl.spin))
-          : homePts; // fallback: bar just fades in place if the glyph didn't parse
-
+    if (laid.length !== INTRO_CONTOUR_COUNT) {
+      throw new Error(
+        `intro: ${laid.length} Cantor bars cannot map to ${INTRO_CONTOUR_COUNT} contours`,
+      );
+    }
+    const homeContours = laid.map(bar =>
+      sampleOutline(
+        Skia.Path.MakeFromSVGString(barSvg(bar.rect))!,
+        SILHOUETTE_N,
+      ),
+    );
+    const bars = laid.map((bar, index) => {
       const buildStart = BUILD_BASE + bar.rowRank * BUILD_ROW_STEP;
-      const morphStart = MORPH_BASE + morphIndex[i] * morphStep;
       return {
-        homePath: polygonPath(homePts),
-        targetPath: polygonPath(targetPts),
-        out: Skia.Path.Make(),
+        homePath: compoundPolygonPath([homeContours[index]]),
         cx: bar.cx,
         cy: bar.cy,
         buildStart: buildStart * sec,
         buildEnd: (buildStart + BUILD_DUR) * sec,
-        morphStart: morphStart * sec,
-        morphEnd: (morphStart + MORPH_DUR) * sec,
       };
     });
+
+    // Resolve the actual STIX/Noto compound outlines—not the animation
+    // centerlines—at their final constellation positions.
+    const targetsBySymbol = CONSTELLATION_PLACEMENTS.map(
+      (placement, symbolIndex) => {
+        const { symbol } = placement.item;
+        const symbolSize = shortSide * placement.size;
+        const symbolY = placedSymbolY(placement, height, symbolSize);
+        const ratio = symbol.aspectRatio ?? 1;
+        const silhouette = resolveSilhouette(
+          symbol,
+          symbolSize * ratio,
+          symbolSize,
+          1,
+          {
+            centerX: width * placement.x,
+            centerY: symbolY,
+            strokeWidth: symbol.strokeWidth,
+          },
+          SILHOUETTE_N,
+        );
+        return silhouette.contours.map(pts => {
+          const center = centroid(pts);
+          return {
+            symbolIndex,
+            pts,
+            cx: center.x,
+            cy: center.y,
+          } satisfies TargetModel;
+        });
+      },
+    );
+
+    const exactCount = targetsBySymbol.reduce(
+      (sum, targets) => sum + targets.length,
+      0,
+    );
+    if (exactCount > laid.length) {
+      throw new Error(
+        `intro: ${laid.length} Cantor bars cannot cover ${exactCount} exact glyph contours`,
+      );
+    }
+    // Font glyphs currently need 25 rings. The remaining four bars do not
+    // fade: each becomes a degenerate zero-area ring inside one symbol.
+    const paddingOrder = [0, 9, 2, 5, 4, 7, 1, 8, 3, 6];
+    for (let i = 0; i < laid.length - exactCount; i++) {
+      const symbolIndex = paddingOrder[i % paddingOrder.length];
+      const placement = CONSTELLATION_PLACEMENTS[symbolIndex];
+      const symbolSize = shortSide * placement.size;
+      const point = {
+        x: width * placement.x,
+        y: placedSymbolY(placement, height, symbolSize),
+      };
+      targetsBySymbol[symbolIndex].push({
+        symbolIndex,
+        pts: Array.from({ length: SILHOUETTE_N }, () => ({ ...point })),
+        cx: point.x,
+        cy: point.y,
+      });
+    }
+
+    const targets = targetsBySymbol.flat();
+
+    // Preserve spatial order on both sides so paths fan outward instead of
+    // tangling through one another on their way to the constellation.
+    const barOrder = laid
+      .map((_, i) => i)
+      .sort((a, b) => laid[a].cy - laid[b].cy || laid[a].cx - laid[b].cx);
+    const targetOrder = targets
+      .map((_, i) => i)
+      .sort(
+        (a, b) =>
+          targets[a].cy - targets[b].cy || targets[a].cx - targets[b].cx,
+      );
+    const pairsBySymbol: {
+      from: TargetModel['pts'];
+      to: TargetModel['pts'];
+    }[][] = CONSTELLATION_PLACEMENTS.map(() => []);
+    barOrder.forEach((barIndex, rank) => {
+      const target = targets[targetOrder[rank]];
+      const source = homeContours[barIndex];
+      pairsBySymbol[target.symbolIndex].push({
+        from: source,
+        to: alignClosed(source, target.pts),
+      });
+    });
+
+    const morphStep =
+      (MORPH_TOTAL - MORPH_DUR) /
+      Math.max(1, CONSTELLATION_PLACEMENTS.length - 1);
+    const glyphs = pairsBySymbol.map((pairs, symbolIndex) => {
+      const morphStart = MORPH_BASE + symbolIndex * morphStep;
+      return {
+        fromPath: compoundPolygonPath(pairs.map(pair => pair.from)),
+        toPath: compoundPolygonPath(pairs.map(pair => pair.to)),
+        out: Skia.Path.Make(),
+        morphStart: morphStart * sec,
+        morphEnd: (morphStart + MORPH_DUR) * sec,
+        settledOpacity: CONSTELLATION_PLACEMENTS[symbolIndex].opacity,
+      };
+    });
+
+    return { bars, glyphs };
   }, [width, height]);
 
   useEffect(() => {
@@ -199,7 +448,10 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     if (ready) {
       onNext();
     } else {
-      p.value = withTiming(1, { duration: 420, easing: Easing.out(Easing.cubic) });
+      p.value = withTiming(1, {
+        duration: 420,
+        easing: Easing.out(Easing.cubic),
+      });
       setTimeout(() => setReady(true), 460);
     }
   };
@@ -208,8 +460,16 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     <View style={[styles.root, { backgroundColor: pal.bg }]}>
       <Pressable style={StyleSheet.absoluteFill} onPress={skip}>
         <Canvas style={StyleSheet.absoluteFill}>
-          {bars.map((m, i) => (
+          {scene.bars.map((m, i) => (
             <Bar key={i} m={m} p={p} color={pal.ink} />
+          ))}
+          {scene.glyphs.map((model, index) => (
+            <GlyphMorph
+              key={CONSTELLATION_PLACEMENTS[index].item.key}
+              model={model}
+              p={p}
+              color={pal.ink}
+            />
           ))}
         </Canvas>
       </Pressable>
@@ -223,8 +483,12 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
         <Animated.View
           entering={FadeIn.duration(360)}
           style={styles.footer}
-          pointerEvents="box-none">
-          <Pressable style={[styles.button, { borderColor: pal.ink }]} onPress={onNext}>
+          pointerEvents="box-none"
+        >
+          <Pressable
+            style={[styles.button, { borderColor: pal.ink }]}
+            onPress={onNext}
+          >
             <Text style={[styles.buttonLabel, { color: pal.ink }]}>Begin</Text>
           </Pressable>
         </Animated.View>

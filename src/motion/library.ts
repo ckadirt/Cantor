@@ -9,6 +9,9 @@
  * side, flags fall away from the stem.
  */
 import type { Shape } from './shapes';
+import { SYMBOL_LIBRARY } from './symbolLibrary';
+
+const { infinity: canonicalInfinity, ...ADDITIONAL_SYMBOLS } = SYMBOL_LIBRARY;
 
 /** Raw centerline strings shared with the intro's constellation (symbols.ts). */
 export const CENTERLINES = {
@@ -33,7 +36,8 @@ export const CENTERLINES = {
 const noteHead = (cx: number, cy: number): string => {
   const dx = cx - 37;
   const dy = cy - 78;
-  const f = (x: number, y: number) => `${(x + dx).toFixed(2)} ${(y + dy).toFixed(2)}`;
+  const f = (x: number, y: number) =>
+    `${(x + dx).toFixed(2)} ${(y + dy).toFixed(2)}`;
   return (
     `M ${f(45.46, 74.92)} ` +
     `C ${f(46.59, 78.03)} ${f(43.72, 81.94)} ${f(39.05, 83.64)} ` +
@@ -45,7 +49,9 @@ const noteHead = (cx: number, cy: number): string => {
 
 /** A small filled dot (question/exclamation points). */
 const dot = (cx: number, cy: number, r: number): string =>
-  `M ${cx} ${cy - r} C ${cx + 0.55 * r} ${cy - r} ${cx + r} ${cy - 0.55 * r} ${cx + r} ${cy} ` +
+  `M ${cx} ${cy - r} C ${cx + 0.55 * r} ${cy - r} ${cx + r} ${cy - 0.55 * r} ${
+    cx + r
+  } ${cy} ` +
   `C ${cx + r} ${cy + 0.55 * r} ${cx + 0.55 * r} ${cy + r} ${cx} ${cy + r} ` +
   `C ${cx - 0.55 * r} ${cy + r} ${cx - r} ${cy + 0.55 * r} ${cx - r} ${cy} ` +
   `C ${cx - r} ${cy - 0.55 * r} ${cx - 0.55 * r} ${cy - r} ${cx} ${cy - r} Z`;
@@ -85,7 +91,9 @@ export const LIBRARY = {
   waveform: {
     name: 'waveform',
     contours: [
-      stroke('M 18 50 L 28 50 L 34 36 L 42 64 L 50 28 L 58 70 L 64 44 L 72 56 L 82 50'),
+      stroke(
+        'M 18 50 L 28 50 L 34 36 L 42 64 L 50 28 L 58 70 L 64 44 L 72 56 L 82 50',
+      ),
     ],
   },
 
@@ -103,13 +111,16 @@ export const LIBRARY = {
   /** ♭ */
   flat: {
     name: 'flat',
-    contours: [stroke('M 41 20 L 41 76'), stroke('M 41 50 C 60 42 63 58 41 76')],
+    contours: [
+      stroke('M 41 20 L 41 76'),
+      stroke('M 41 50 C 60 42 63 58 41 76'),
+    ],
   },
 
   /* ------------------------------------------------------------------- math */
 
   integral: { name: 'integral', contours: [stroke(CENTERLINES.integral)] },
-  infinity: { name: 'infinity', contours: [stroke(CENTERLINES.infinity)] },
+  infinity: canonicalInfinity,
   spiral: { name: 'spiral', contours: [stroke(CENTERLINES.spiral)] },
 
   /** ℵ — Cantor's own letter. Diagonal spine, two arms reaching its middle. */
@@ -230,6 +241,10 @@ export const LIBRARY = {
     name: 'vault',
     contours: [stroke('M 42 31 L 31 31 L 31 69 L 69 69 L 69 31 L 58 31')],
   },
+
+  /* ------------------------------------------ canonical reusable symbols */
+
+  ...ADDITIONAL_SYMBOLS,
 } satisfies Record<string, Shape>;
 
 export type LibraryName = keyof typeof LIBRARY;

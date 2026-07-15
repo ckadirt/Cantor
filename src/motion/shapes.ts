@@ -23,8 +23,12 @@ export type Contour = {
 export type Shape = {
   name: string;
   contours: Contour[];
+  /** Optional exact compound silhouette used when the motion settles. */
+  artwork?: { d: string };
   /** Centerline thickness in the 0..100 authoring box. */
   strokeWidth?: number;
+  /** Optical width / height. The default authoring box is square. */
+  aspectRatio?: number;
 };
 
 /** Default centerline thickness in authoring units (scales with placement). */
@@ -39,10 +43,26 @@ export type ContourGeom = {
   alpha: number;
 };
 
+export type ResolveShapeOptions = {
+  /** Per-instance optical width / height override. */
+  aspectRatio?: number;
+  /** Per-instance stroke thickness in authoring units. */
+  strokeWidth?: number;
+  /** Destination centre in canvas pixels; defaults to the canvas centre. */
+  centerX?: number;
+  centerY?: number;
+};
+
 /** Dev-time validation: fail loudly at author time, not mid-morph. */
 export function validateShape(shape: Shape): void {
   if (!__DEV__) {
     return;
+  }
+  if ((shape.aspectRatio ?? 1) <= 0) {
+    throw new Error(`shape "${shape.name}": aspectRatio must be positive`);
+  }
+  if ((shape.strokeWidth ?? AUTHOR_STROKE) <= 0) {
+    throw new Error(`shape "${shape.name}": strokeWidth must be positive`);
   }
   shape.contours.forEach((c, i) => {
     const path = Skia.Path.MakeFromSVGString(c.d);
@@ -82,24 +102,37 @@ export function resolveShape(
   height: number,
   scale: number,
   n = N,
+  options: ResolveShapeOptions = {},
 ): ContourGeom[] {
   if (!validated.has(shape.name)) {
     validateShape(shape);
     validated.add(shape.name);
   }
-  const cx = width / 2;
-  const cy = height / 2;
-  const size = Math.min(width, height) * scale;
-  const strokeDp = ((shape.strokeWidth ?? AUTHOR_STROKE) * size) / 100;
+  const cx = options.centerX ?? width / 2;
+  const cy = options.centerY ?? height / 2;
+  const aspectRatio = options.aspectRatio ?? shape.aspectRatio ?? 1;
+  if (aspectRatio <= 0) {
+    throw new Error(
+      `shape "${shape.name}": resolved aspectRatio must be positive`,
+    );
+  }
+  // `size` is the authored height. Cap it by both canvas axes so wide and
+  // narrow symbols retain their optical ratio without clipping.
+  const size = Math.min(height * scale, (width * scale) / aspectRatio);
+  const strokeDp =
+    ((options.strokeWidth ?? shape.strokeWidth ?? AUTHOR_STROKE) * size) / 100;
   const geoms = shape.contours.map((c): ContourGeom => {
     const s = samplePathString(c.d, n);
     return {
-      pts: placePts(s.pts, cx, cy, size),
+      pts: placePts(s.pts, cx, cy, size, 0, aspectRatio),
       closed: s.closed,
       mode: c.mode,
       width: c.mode === 'stroke' ? strokeDp : 0,
       alpha: 1,
     };
   });
-  return [...geoms.filter(g => g.mode === 'fill'), ...geoms.filter(g => g.mode === 'stroke')];
+  return [
+    ...geoms.filter(g => g.mode === 'fill'),
+    ...geoms.filter(g => g.mode === 'stroke'),
+  ];
 }

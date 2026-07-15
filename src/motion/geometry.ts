@@ -15,7 +15,13 @@
  * Everything here is pure math on JS-side arrays; it runs once when a
  * transition is built, never per frame.
  */
-import { PathVerb, Skia, StrokeCap, StrokeJoin, type SkPath } from '@shopify/react-native-skia';
+import {
+  PathVerb,
+  Skia,
+  StrokeCap,
+  StrokeJoin,
+  type SkPath,
+} from '@shopify/react-native-skia';
 
 export type Pt = { x: number; y: number };
 
@@ -45,7 +51,9 @@ export function smootherstep(a: number, b: number, x: number): number {
 /* ------------------------------------------------------------------ sampling */
 
 /** True when every verb is Move/Line/Close — a polyline whose corners matter. */
-function polylineVertices(path: SkPath): { verts: Pt[]; closed: boolean } | null {
+function polylineVertices(
+  path: SkPath,
+): { verts: Pt[]; closed: boolean } | null {
   const cmds = path.toCmds();
   const verts: Pt[] = [];
   let closed = false;
@@ -99,7 +107,10 @@ function samplePolyline(verts: Pt[], closed: boolean, n: number): Sampled {
   segs.forEach((g, si) => {
     for (let j = 0; j < counts[si]; j++) {
       const f = j / counts[si];
-      pts.push({ x: g.a.x + (g.b.x - g.a.x) * f, y: g.a.y + (g.b.y - g.a.y) * f });
+      pts.push({
+        x: g.a.x + (g.b.x - g.a.x) * f,
+        y: g.a.y + (g.b.y - g.a.y) * f,
+      });
     }
   });
   pts.push(closed ? { ...pts[0] } : { ...ring[ring.length - 1] });
@@ -165,6 +176,35 @@ export function sampleOutline(path: SkPath, n = N): Pt[] {
   return sampleByLength(path, true, n + 1).pts.slice(0, n);
 }
 
+/** Sample every contour in a compound path as a closed N-point ring. */
+export function sampleCompoundPath(path: SkPath, n = N): Pt[][] {
+  const contours: Pt[][] = [];
+  const it = Skia.ContourMeasureIter(path, false, 1);
+  let contour = it.next();
+  while (contour) {
+    const len = contour.length();
+    if (len > 1e-6) {
+      const pts: Pt[] = [];
+      for (let i = 0; i < n; i++) {
+        const [pos] = contour.getPosTan((len * i) / n);
+        pts.push({ x: pos.x, y: pos.y });
+      }
+      contours.push(pts);
+    }
+    contour = it.next();
+  }
+  return contours;
+}
+
+/** Parse and sample all counters/components of a compound SVG path. */
+export function sampleCompoundPathString(d: string, n = N): Pt[][] {
+  const path = Skia.Path.MakeFromSVGString(d);
+  if (!path) {
+    throw new Error(`motion: unparseable compound path "${d.slice(0, 40)}…"`);
+  }
+  return sampleCompoundPath(path, n);
+}
+
 /**
  * Thicken a centerline SVG into a thin ribbon (Path.stroke) and sample its
  * outline — the intro morphs solid bars into these. New engine strokes render
@@ -212,9 +252,31 @@ export function polygonPath(pts: Pt[]): SkPath {
   return builder.build();
 }
 
+/** Multiple closed rings in one verb-compatible, even-odd-fillable path. */
+export function compoundPolygonPath(contours: Pt[][]): SkPath {
+  const builder = Skia.PathBuilder.Make();
+  for (const pts of contours) {
+    if (pts.length === 0) {
+      continue;
+    }
+    builder.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) {
+      builder.lineTo(pts[i].x, pts[i].y);
+    }
+    builder.close();
+  }
+  return builder.build();
+}
+
 /* ----------------------------------------------------------------- alignment */
 
-function score(a: Pt[], b: Pt[], bOffset: number, bLen: number, reversed: boolean): number {
+function score(
+  a: Pt[],
+  b: Pt[],
+  bOffset: number,
+  bLen: number,
+  reversed: boolean,
+): number {
   let s = 0;
   const n = Math.min(a.length, bLen);
   for (let i = 0; i < n; i++) {
@@ -241,13 +303,7 @@ export function alignSampled(a: Sampled, b: Sampled): Pt[] {
   }
   if (!b.closed) {
     const fwd = score(a.pts, b.pts, 0, b.pts.length, false);
-    const rev = score(
-      a.pts,
-      [...b.pts].reverse(),
-      0,
-      b.pts.length,
-      false,
-    );
+    const rev = score(a.pts, [...b.pts].reverse(), 0, b.pts.length, false);
     return rev < fwd ? [...b.pts].reverse() : b.pts;
   }
   // closed: rotate the unique cycle (last point duplicates the first)
@@ -284,13 +340,24 @@ export function alignClosed(a: Pt[], b: Pt[]): Pt[] {
 
 /* ------------------------------------------------------------------- affines */
 
-/** Place a 0..100-box contour into the canvas: rotate, scale, translate. */
-export function placePts(pts: Pt[], cx: number, cy: number, size: number, angle = 0): Pt[] {
+/**
+ * Place a 0..100-box contour into the canvas: stretch, rotate, scale, translate.
+ * `aspectRatio` is width / height; keeping it here means authored symbol
+ * proportions survive both the reusable shape renderer and bespoke scenes.
+ */
+export function placePts(
+  pts: Pt[],
+  cx: number,
+  cy: number,
+  size: number,
+  angle = 0,
+  aspectRatio = 1,
+): Pt[] {
   const s = size / 100;
   const cos = Math.cos(angle);
   const sin = Math.sin(angle);
   return pts.map(({ x, y }) => {
-    const lx = (x - 50) * s;
+    const lx = (x - 50) * s * aspectRatio;
     const ly = (y - 50) * s;
     return {
       x: cx + lx * cos - ly * sin,

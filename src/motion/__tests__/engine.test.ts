@@ -4,12 +4,16 @@
  * geometry; transitions stay verb-identical end to end; capture reproduces
  * the endpoints it should.
  */
+import { Skia } from '@shopify/react-native-skia';
 import {
   buildTransition,
+  buildSilhouetteTransition,
   captureTransition,
   LIBRARY,
   N,
   resolveShape,
+  resolveSilhouette,
+  SYMBOL_LIBRARY,
   validateShape,
 } from '../index';
 
@@ -48,9 +52,122 @@ describe('shape library', () => {
     ];
     for (const c of corners) {
       expect(
-        geoms[0].pts.some(p => Math.abs(p.x - c.x) < 1e-6 && Math.abs(p.y - c.y) < 1e-6),
+        geoms[0].pts.some(
+          p => Math.abs(p.x - c.x) < 1e-6 && Math.abs(p.y - c.y) < 1e-6,
+        ),
       ).toBe(true);
     }
+  });
+});
+
+describe('canonical symbol primitives', () => {
+  const names = [
+    'alephNull',
+    'infinity',
+    'cantorSet',
+    'contourIntegral',
+    'trebleClef',
+    'segno',
+    'fermata',
+    'partial',
+    'nabla',
+    'continuum',
+  ];
+
+  it('contains the selected semantic set and exactly 29 contours', () => {
+    expect(Object.keys(SYMBOL_LIBRARY)).toEqual(names);
+    expect(
+      Object.values(SYMBOL_LIBRARY).reduce(
+        (sum, shape) => sum + shape.contours.length,
+        0,
+      ),
+    ).toBe(29);
+    for (const shape of Object.values(SYMBOL_LIBRARY)) {
+      expect(shape.glyph.length).toBeGreaterThan(0);
+      expect(shape.label.length).toBeGreaterThan(0);
+      expect(shape.meaning.length).toBeGreaterThan(0);
+      expect(shape.aspectRatio).toBeGreaterThan(0);
+      expect(shape.strokeWidth).toBeGreaterThan(0);
+      expect(['STIX Math', 'Noto Music']).toContain(shape.artwork.source);
+      const artwork = Skia.Path.MakeFromSVGString(shape.artwork.d);
+      expect(artwork).not.toBeNull();
+      const contours = Skia.ContourMeasureIter(artwork!, false, 1);
+      expect(contours.next()).not.toBeNull();
+    }
+  });
+
+  it('supports per-instance aspect, stroke, and centre overrides', () => {
+    const narrow = resolveShape(SYMBOL_LIBRARY.nabla, 300, 200, 0.8, N, {
+      aspectRatio: 0.5,
+      strokeWidth: 1,
+      centerX: 80,
+      centerY: 60,
+    });
+    const wide = resolveShape(SYMBOL_LIBRARY.nabla, 300, 200, 0.8, N, {
+      aspectRatio: 1.5,
+      strokeWidth: 1,
+      centerX: 80,
+      centerY: 60,
+    });
+    const bounds = (geoms: typeof narrow) => {
+      const pts = geoms.flatMap(g => g.pts);
+      const xs = pts.map(p => p.x);
+      const ys = pts.map(p => p.y);
+      return {
+        width: Math.max(...xs) - Math.min(...xs),
+        centerX: (Math.max(...xs) + Math.min(...xs)) / 2,
+        centerY: (Math.max(...ys) + Math.min(...ys)) / 2,
+      };
+    };
+    expect(bounds(wide).width).toBeGreaterThan(bounds(narrow).width * 2);
+    expect(bounds(narrow).centerX).toBeCloseTo(80, 5);
+    expect(bounds(narrow).centerY).toBeCloseTo(64, 0); // optical triangle centre
+    expect(narrow.every(g => g.width === 1.6)).toBe(true);
+  });
+
+  it('morphs the canonical compound outlines directly', () => {
+    const from = resolveSilhouette(SYMBOL_LIBRARY.infinity, 320, 220, 0.8);
+    const to = resolveSilhouette(SYMBOL_LIBRARY.trebleClef, 320, 220, 0.8);
+    const transition = buildSilhouetteTransition(from, to);
+
+    expect(transition.from.isInterpolatable(transition.to)).toBe(true);
+    expect(transition.toContours).toHaveLength(
+      Math.max(from.contours.length, to.contours.length),
+    );
+    expect(transition.to.toCmds()).toHaveLength(
+      transition.from.toCmds().length,
+    );
+  });
+
+  it('uses strokeWidth to make canonical artwork lighter or heavier', () => {
+    const shape = SYMBOL_LIBRARY.infinity;
+    const base = shape.strokeWidth;
+    const bounds = (strokeWidth: number) => {
+      const points = resolveSilhouette(shape, 320, 220, 0.8, {
+        strokeWidth,
+      }).contours.flat();
+      const xs = points.map(point => point.x);
+      return Math.max(...xs) - Math.min(...xs);
+    };
+
+    expect(bounds(base + 0.8)).toBeGreaterThan(bounds(base));
+    expect(bounds(Math.max(0.25, base - 0.5))).toBeLessThan(bounds(base));
+  });
+
+  it('morphs through the complete symbol set with compatible slots', () => {
+    const symbols = Object.values(SYMBOL_LIBRARY);
+    symbols.forEach((shape, index) => {
+      const next = symbols[(index + 1) % symbols.length];
+      const transition = buildTransition(
+        resolveShape(shape, 240, 180, 0.8),
+        resolveShape(next, 240, 180, 0.8),
+      );
+      expect(transition.slots.length).toBeGreaterThan(0);
+      transition.slots.forEach(slot => {
+        expect(slot.fromPts).toHaveLength(N);
+        expect(slot.toPts).toHaveLength(N);
+      });
+    });
   });
 });
 

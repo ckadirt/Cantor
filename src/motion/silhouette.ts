@@ -1,0 +1,173 @@
+/**
+ * Filled silhouette geometry for true glyph-to-glyph morphs.
+ *
+ * Canonical artwork is compound: an outer ring plus counters/holes. Keeping
+ * every ring inside one even-odd path means the good glyph itself—not a
+ * centerline proxy—is the interpolation target.
+ */
+import {
+  FillType,
+  PathOp,
+  Skia,
+  StrokeCap,
+  StrokeJoin,
+  type SkPath,
+} from '@shopify/react-native-skia';
+import {
+  alignClosed,
+  centroid,
+  compoundPolygonPath,
+  lerpPts,
+  placePts,
+  sampleCompoundPath,
+  type Pt,
+} from './geometry';
+import { AUTHOR_STROKE, type ResolveShapeOptions, type Shape } from './shapes';
+
+/** Extra detail matters on the long flourishes of the music glyphs. */
+export const SILHOUETTE_N = 96;
+
+export type Silhouette = { contours: Pt[][] };
+
+export type SilhouetteTransition = {
+  from: SkPath;
+  to: SkPath;
+  out: SkPath;
+  fromContours: Pt[][];
+  toContours: Pt[][];
+};
+
+function authoredContours(
+  shape: Shape,
+  strokeWidth: number,
+  n: number,
+): Pt[][] {
+  if (shape.artwork) {
+    const parsed = Skia.Path.MakeFromSVGString(shape.artwork.d);
+    if (!parsed) {
+      return [];
+    }
+    const builder = Skia.PathBuilder.MakeFromPath(parsed);
+    builder.setFillType(FillType.EvenOdd);
+    const original = builder.build();
+    const baseline = shape.strokeWidth ?? AUTHOR_STROKE;
+    const weightDelta = strokeWidth - baseline;
+    if (Math.abs(weightDelta) < 1e-3) {
+      return sampleCompoundPath(original, n);
+    }
+    // A centred boundary stroke adds half its width on the ink side. Union
+    // expands the glyph; Difference removes the same amount from every edge,
+    // including counters, so weight remains optically consistent.
+    const boundary = Skia.Path.Stroke(original, {
+      width: Math.abs(weightDelta) * 2,
+      cap: StrokeCap.Round,
+      join: StrokeJoin.Round,
+    });
+    const weighted = boundary
+      ? Skia.Path.MakeFromOp(
+          original,
+          boundary,
+          weightDelta > 0 ? PathOp.Union : PathOp.Difference,
+        )
+      : null;
+    return sampleCompoundPath(weighted ?? original, n);
+  }
+  return shape.contours.flatMap(contour => {
+    const path = Skia.Path.MakeFromSVGString(contour.d);
+    if (!path) {
+      return [];
+    }
+    if (contour.mode === 'fill') {
+      return sampleCompoundPath(path, n);
+    }
+    const ribbon = Skia.Path.Stroke(path, {
+      width: strokeWidth,
+      cap: StrokeCap.Round,
+      join: StrokeJoin.Round,
+    });
+    return ribbon ? sampleCompoundPath(ribbon, n) : [];
+  });
+}
+
+export function resolveSilhouette(
+  shape: Shape,
+  width: number,
+  height: number,
+  scale: number,
+  options: ResolveShapeOptions = {},
+  n = SILHOUETTE_N,
+): Silhouette {
+  const centerX = options.centerX ?? width / 2;
+  const centerY = options.centerY ?? height / 2;
+  const aspectRatio = options.aspectRatio ?? shape.aspectRatio ?? 1;
+  const size = Math.min(height * scale, (width * scale) / aspectRatio);
+  const strokeWidth = options.strokeWidth ?? shape.strokeWidth ?? AUTHOR_STROKE;
+  return {
+    contours: authoredContours(shape, strokeWidth, n).map(pts =>
+      placePts(pts, centerX, centerY, size, 0, aspectRatio),
+    ),
+  };
+}
+
+function signedArea(pts: Pt[]): number {
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i];
+    const b = pts[(i + 1) % pts.length];
+    area += a.x * b.y - b.x * a.y;
+  }
+  return area / 2;
+}
+
+function largestFirst(contours: Pt[][]): Pt[][] {
+  return [...contours].sort(
+    (a, b) => Math.abs(signedArea(b)) - Math.abs(signedArea(a)),
+  );
+}
+
+function collapsedLike(pts: Pt[]): Pt[] {
+  const center = centroid(pts);
+  return pts.map(() => ({ ...center }));
+}
+
+/** Pair/pad rings, then build two compound paths with identical verbs. */
+export function buildSilhouetteTransition(
+  source: Silhouette,
+  target: Silhouette,
+): SilhouetteTransition {
+  const from = largestFirst(source.contours);
+  const to = largestFirst(target.contours);
+  const count = Math.max(from.length, to.length);
+  const fromContours: Pt[][] = [];
+  const toContours: Pt[][] = [];
+
+  for (let i = 0; i < count; i++) {
+    const sourceRing = from[i] ?? collapsedLike(to[i]);
+    const targetRing = to[i] ?? collapsedLike(from[i]);
+    fromContours.push(sourceRing);
+    toContours.push(alignClosed(sourceRing, targetRing));
+  }
+
+  return {
+    from: compoundPolygonPath(fromContours),
+    to: compoundPolygonPath(toContours),
+    out: Skia.Path.Make(),
+    fromContours,
+    toContours,
+  };
+}
+
+export function collapsedSilhouette(target: Silhouette): Silhouette {
+  return { contours: target.contours.map(collapsedLike) };
+}
+
+export function captureSilhouette(
+  transition: SilhouetteTransition,
+  t: number,
+): Silhouette {
+  return {
+    contours: transition.fromContours.map((from, index) =>
+      lerpPts(from, transition.toContours[index], t),
+    ),
+  };
+}

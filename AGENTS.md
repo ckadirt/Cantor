@@ -33,15 +33,19 @@ The motion system follows a **Shapes + Verbs + Clock** model:
 - Verbs define transformations and transitions between shapes/states.
 - A shared clock coordinates the motion deterministically.
 
-Geometry is sampled and validated before animation. The slot model owns visual
-state and transitions. Retargeting must support a mid-morph interrupt by starting
+Geometry is sampled and validated before animation. The transition model owns
+visual state. Retargeting must support a mid-morph interrupt by starting
 the new transition from the currently rendered/interpolated state—not by snapping
 to either the previous source or destination.
 
-Text and symbols use Skia glyph-outline morphing in the spirit of Manim. There
-are 27 established math and musical primitives. Preserve the reduced-motion path:
-when morphing is inappropriate, use a clean crossfade rather than decorative
-movement.
+Text and symbols use Skia glyph-outline morphing in the spirit of Manim. The
+canonical reusable symbol set lives in `src/motion/symbolLibrary.ts`; each entry
+owns semantic metadata, exact source-derived compound artwork, authored regular
+weight, and optical aspect ratio. `AnimatedSymbol`/`WriteSymbol` are the semantic
+entrypoints. Compound silhouettes—including holes—must morph directly; never
+morph through a centerline proxy and fade to the real glyph. `strokeWidth`
+offsets the canonical outline inward/outward, while `aspectRatio` controls optical
+width. Preserve the reduced-motion crossfade.
 
 ### Text motion
 
@@ -89,7 +93,13 @@ shared morphing system.
 Panel 1 is the Cantor introduction:
 
 - A regular set of 29 bars draws in.
-- The bars disperse into a constellation of mathematical and musical marks.
+- The bars resolve into a constellation built directly from the ten canonical
+  primitives: ℵ₀, ∞, 𝒞, ∮, 𝄞, 𝄋, 𝄐, ∂, ∇, and 𝔠.
+- At the morph boundary, the 29 bars become source subpaths of ten compound
+  glyph transitions. Exact font counters stay in even-odd paths; surplus source
+  bars collapse into zero-area contours rather than fading away.
+- The middle of the viewport is a hard quiet zone for the Cantor wordmark and
+  slogan; their reveal begins only after the final morph has cleared that zone.
 - The Cantor wordmark fades in.
 
 Keep panels declarative where possible; avoid panel-specific animation machinery

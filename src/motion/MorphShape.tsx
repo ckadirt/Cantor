@@ -1,12 +1,10 @@
 /**
- * A drawn mark that morphs to whatever `shape` it is given — the engine's
- * shape component. Change the prop and the geometry flows from wherever it is
- * right now (captureTransition), so BACK mid-morph or rapid retargets never
- * snap. All per-frame work is interpolatePaths + ramps on the UI thread; the
- * JS thread only builds slots once per target change.
+ * True silhouette morphing for reusable shapes and canonical symbols.
  *
- * Pass `progress` to drive the clock yourself (MotionLab's scrubber); without
- * it the component owns a withTiming clock.
+ * Every visible mark is reduced to one compound even-odd path: outer rings,
+ * counters, dots, and disconnected components. Source and target rings are
+ * resampled to identical verbs, so interpolatePaths moves the actual rendered
+ * silhouette. There is no proxy drawing and no final artwork crossfade.
  */
 import React, { useEffect, useState } from 'react';
 import { Canvas, interpolatePaths, Path } from '@shopify/react-native-skia';
@@ -20,84 +18,106 @@ import {
 } from 'react-native-reanimated';
 import { bornClock } from './clock';
 import { smootherstep } from './geometry';
-import { resolveShape, type Shape } from './shapes';
 import {
-  buildTransition,
-  captureTransition,
-  crossfadeTransition,
-  settledTransition,
-  type Slot,
-  type Transition,
-} from './transition';
+  buildSilhouetteTransition,
+  captureSilhouette,
+  collapsedSilhouette,
+  resolveSilhouette,
+  type SilhouetteTransition,
+} from './silhouette';
+import type { Shape } from './shapes';
 
-/** Mark size as a fraction of the canvas's short side. */
 const DEFAULT_SCALE = 0.82;
-
-function SlotPath({
-  s,
-  t,
-  color,
-}: {
-  s: Slot;
-  t: SharedValue<number>;
-  color: string;
-}) {
-  const path = useDerivedValue(() =>
-    interpolatePaths(
-      smootherstep(s.winA, s.winB, t.value),
-      [0, 1],
-      [s.from, s.to],
-      undefined,
-      s.out,
-    ),
-  );
-  const alpha = useDerivedValue(
-    () => s.fromA + (s.toA - s.fromA) * smootherstep(s.alphaA, s.alphaB, t.value),
-  );
-  const width = useDerivedValue(
-    () => s.fromW + (s.toW - s.fromW) * smootherstep(s.winA, s.winB, t.value),
-  );
-  if (s.mode === 'fill') {
-    return <Path path={path} style="fill" color={color} opacity={alpha} />;
-  }
-  return (
-    <Path
-      path={path}
-      style="stroke"
-      strokeWidth={width}
-      strokeCap="round"
-      strokeJoin="round"
-      color={color}
-      opacity={alpha}
-    />
-  );
-}
 
 type Built = {
   key: string;
-  shapeName: string;
-  transition: Transition;
-  /** Born at 0 when animating, 1 when settled — never reset across builds. */
+  transition: SilhouetteTransition;
+  /** Born with the new model, so a retarget never observes a stale clock. */
   clock: SharedValue<number>;
   animate: boolean;
+  reducedCrossfade?: {
+    from: SilhouetteTransition['from'];
+    to: SilhouetteTransition['to'];
+  };
 };
 
-type Props = {
+function ShapeCanvas({
+  built,
+  progress,
+  width,
+  height,
+  color,
+}: {
+  built: Built;
+  progress?: SharedValue<number>;
+  width: number;
+  height: number;
+  color: string;
+}) {
+  const t = progress ?? built.clock;
+  const path = useDerivedValue(() =>
+    interpolatePaths(
+      smootherstep(0, 1, t.value),
+      [0, 1],
+      [built.transition.from, built.transition.to],
+      undefined,
+      built.transition.out,
+    ),
+  );
+  const fromOpacity = useDerivedValue(() => 1 - smootherstep(0, 0.65, t.value));
+  const toOpacity = useDerivedValue(() => smootherstep(0.35, 1, t.value));
+  return (
+    <Canvas style={{ width, height }}>
+      {built.reducedCrossfade ? (
+        <>
+          <Path
+            path={built.reducedCrossfade.from}
+            style="fill"
+            fillType="evenOdd"
+            color={color}
+            opacity={fromOpacity}
+          />
+          <Path
+            path={built.reducedCrossfade.to}
+            style="fill"
+            fillType="evenOdd"
+            color={color}
+            opacity={toOpacity}
+          />
+        </>
+      ) : (
+        <Path path={path} style="fill" fillType="evenOdd" color={color} />
+      )}
+    </Canvas>
+  );
+}
+
+export type ShapeAppearance = 'none' | 'write';
+
+export type MorphShapeProps = {
   shape: Shape;
   width: number;
   height: number;
   color: string;
   duration?: number;
-  /** Fraction of the short side the mark occupies. */
+  /** Fraction of the available canvas axes occupied by the mark. */
   scale?: number;
-  /** External clock (0..1) — the component stops driving its own. */
+  /** Optical width / height override; defaults to the authored ratio. */
+  aspectRatio?: number;
+  /**
+   * Symbol weight in authoring units. For canonical filled glyphs this offsets
+   * the real outline inward/outward; for line-authored shapes it is ribbon width.
+   */
+  strokeWidth?: number;
+  /** Destination centre. Changes morph the same geometry into its new place. */
+  centerX?: number;
+  centerY?: number;
+  /** First-mount growth from the real target silhouette's own contour centres. */
+  appearance?: ShapeAppearance;
+  /** External 0..1 clock; when present, the component never drives timing. */
   progress?: SharedValue<number>;
 };
 
-/**
- * Memoized so unrelated parent commits can't re-render the canvas: a Skia
- * re-record while its mapper is ticking is the partial-frame race.
- */
 export const MorphShape = React.memo(MorphShapeImpl);
 
 function MorphShapeImpl({
@@ -107,32 +127,48 @@ function MorphShapeImpl({
   color,
   duration = 700,
   scale = DEFAULT_SCALE,
+  aspectRatio,
+  strokeWidth,
+  centerX,
+  centerY,
+  appearance = 'none',
   progress,
-}: Props) {
+}: MorphShapeProps) {
   const reduced = useReducedMotion();
   const [built, setBuilt] = useState<Built | null>(null);
+  const key =
+    `${shape.name}|${width}x${height}|${scale}|` +
+    `${aspectRatio ?? 'auto'}|${strokeWidth ?? 'auto'}|${centerX ?? 'cx'}|${
+      centerY ?? 'cy'
+    }`;
 
-  const key = `${shape.name}|${width}x${height}|${scale}`;
   if (width > 0 && height > 0 && built?.key !== key) {
-    const to = resolveShape(shape, width, height, scale);
-    // Same canvas, new shape → animate from the live geometry. Anything else
-    // (mount, resize) just sits at the target.
-    const retarget = built && built.shapeName !== shape.name;
+    const target = resolveSilhouette(shape, width, height, scale, {
+      aspectRatio,
+      strokeWidth,
+      centerX,
+      centerY,
+    });
+    const retarget = !!built;
+    const writing = !retarget && appearance === 'write';
     const captureT = progress ? progress.value : built?.clock.value ?? 1;
-    const transition = retarget
-      ? (reduced ? crossfadeTransition : buildTransition)(
-          captureTransition(built.transition, captureT),
-          to,
-        )
-      : settledTransition(to);
-    // Each build owns a clock born at its start value — the new tree can
-    // never paint against a stale clock from the previous transition.
+    const source = built
+      ? captureSilhouette(built.transition, smootherstep(0, 1, captureT))
+      : writing
+      ? collapsedSilhouette(target)
+      : target;
+    const transition = buildSilhouetteTransition(source, target);
+    const animate = retarget || (!reduced && writing);
+
     setBuilt({
       key,
-      shapeName: shape.name,
       transition,
-      clock: bornClock(retarget && !progress ? 0 : 1),
-      animate: !!retarget,
+      clock: bornClock(animate && !progress ? 0 : 1),
+      animate,
+      reducedCrossfade:
+        reduced && retarget
+          ? { from: transition.from, to: transition.to }
+          : undefined,
     });
   }
 
@@ -143,17 +179,18 @@ function MorphShapeImpl({
     const clock = built.clock;
     clock.value = withTiming(1, { duration, easing: Easing.linear });
     return () => cancelAnimation(clock);
-  }, [built, progress, duration]);
+  }, [built, duration, progress]);
 
   if (!built) {
     return null;
   }
-  const t = progress ?? built.clock;
   return (
-    <Canvas style={{ width, height }}>
-      {built.transition.slots.map((s, i) => (
-        <SlotPath key={`${built.key}#${i}`} s={s} t={t} color={color} />
-      ))}
-    </Canvas>
+    <ShapeCanvas
+      built={built}
+      progress={progress}
+      width={width}
+      height={height}
+      color={color}
+    />
   );
 }

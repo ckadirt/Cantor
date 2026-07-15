@@ -9,20 +9,41 @@
  *    real fonts; remount the lab to replay the initial Write appearance.
  */
 import React, { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
-import { Gesture, GestureDetector } from 'react-native-gesture-handler';
-import Animated, { useAnimatedStyle, useSharedValue } from 'react-native-reanimated';
 import {
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
+import { Gesture, GestureDetector } from 'react-native-gesture-handler';
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+} from 'react-native-reanimated';
+import {
+  AUTHOR_STROKE,
   LIBRARY,
   MorphShape,
   MorphText,
   type LibraryName,
+  type Shape,
   type TextMotionVariant,
 } from '../motion';
 import { space, type, usePalette } from '../theme/tokens';
 
 const NAMES = Object.keys(LIBRARY) as LibraryName[];
-const TEXT_VARIANTS: TextMotionVariant[] = ['transform', 'matching', 'crossfade'];
+const TEXT_VARIANTS: TextMotionVariant[] = [
+  'transform',
+  'matching',
+  'crossfade',
+];
+const WEIGHTS = [
+  { label: 'LIGHT', delta: -0.55 },
+  { label: 'REGULAR', delta: 0 },
+  { label: 'BOLD', delta: 0.85 },
+] as const;
 
 const PHRASES = [
   'What Cantor is',
@@ -39,10 +60,12 @@ const STRIP_H = 44;
 export function MotionLab() {
   const pal = usePalette();
   const { width } = useWindowDimensions();
-  const [shape, setShape] = useState<LibraryName>('note');
+  const [shape, setShape] = useState<LibraryName>('alephNull');
   const [scrubbing, setScrubbing] = useState(false);
+  const [weightDelta, setWeightDelta] = useState(0);
   const [phrase, setPhrase] = useState(0);
-  const [textVariant, setTextVariant] = useState<TextMotionVariant>('transform');
+  const [textVariant, setTextVariant] =
+    useState<TextMotionVariant>('transform');
   const progress = useSharedValue(1);
   const [stripW, setStripW] = useState(1);
 
@@ -72,10 +95,32 @@ export function MotionLab() {
       <View style={styles.header}>
         <Text style={[type.eyebrow, { color: pal.muted }]}>MOTION LAB</Text>
         <Pressable onPress={() => setScrubbing(s => !s)} hitSlop={12}>
-          <Text style={[type.eyebrow, { color: scrubbing ? pal.ink : pal.faint }]}>
+          <Text
+            style={[type.eyebrow, { color: scrubbing ? pal.ink : pal.faint }]}
+          >
             {scrubbing ? '● SCRUB' : '○ SCRUB'}
           </Text>
         </Pressable>
+      </View>
+
+      <View style={styles.weightModes}>
+        <Text style={[type.eyebrow, { color: pal.faint }]}>WEIGHT</Text>
+        {WEIGHTS.map(weight => (
+          <Pressable
+            key={weight.label}
+            onPress={() => setWeightDelta(weight.delta)}
+            hitSlop={6}
+          >
+            <Text
+              style={[
+                type.mono,
+                { color: weight.delta === weightDelta ? pal.ink : pal.faint },
+              ]}
+            >
+              {weight.label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
 
       <View style={styles.stage}>
@@ -85,6 +130,12 @@ export function MotionLab() {
           height={STAGE_H}
           color={pal.ink}
           duration={700}
+          appearance="write"
+          strokeWidth={Math.max(
+            0.25,
+            ((LIBRARY[shape] as Shape).strokeWidth ?? AUTHOR_STROKE) +
+              weightDelta,
+          )}
           progress={scrubbing ? progress : undefined}
         />
       </View>
@@ -93,8 +144,15 @@ export function MotionLab() {
         <GestureDetector gesture={pan}>
           <View
             style={[styles.strip, { borderColor: pal.line }]}
-            onLayout={e => setStripW(Math.max(1, e.nativeEvent.layout.width))}>
-            <Animated.View style={[styles.stripFill, { backgroundColor: pal.ink }, fillStyle]} />
+            onLayout={e => setStripW(Math.max(1, e.nativeEvent.layout.width))}
+          >
+            <Animated.View
+              style={[
+                styles.stripFill,
+                { backgroundColor: pal.ink },
+                fillStyle,
+              ]}
+            />
           </View>
         </GestureDetector>
       )}
@@ -107,8 +165,14 @@ export function MotionLab() {
             style={[
               styles.chip,
               { borderColor: name === shape ? pal.ink : pal.line },
-            ]}>
-            <Text style={[type.mono, { color: name === shape ? pal.ink : pal.muted }]}>
+            ]}
+          >
+            <Text
+              style={[
+                type.mono,
+                { color: name === shape ? pal.ink : pal.muted },
+              ]}
+            >
               {name}
             </Text>
           </Pressable>
@@ -117,12 +181,17 @@ export function MotionLab() {
 
       <View style={styles.textModes}>
         {TEXT_VARIANTS.map(name => (
-          <Pressable key={name} onPress={() => setTextVariant(name)} hitSlop={6}>
+          <Pressable
+            key={name}
+            onPress={() => setTextVariant(name)}
+            hitSlop={6}
+          >
             <Text
               style={[
                 type.mono,
                 { color: name === textVariant ? pal.ink : pal.faint },
-              ]}>
+              ]}
+            >
               {name.toUpperCase()}
             </Text>
           </Pressable>
@@ -155,6 +224,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingTop: space.xxl,
     paddingBottom: space.sm,
+  },
+  weightModes: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: space.xs,
   },
   stage: { height: STAGE_H, marginVertical: space.sm },
   strip: {

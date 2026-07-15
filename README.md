@@ -49,7 +49,7 @@ A device on USB has to forward port 8081 back to your machine:
 adb reverse tcp:8081 tcp:8081
 ```
 
-> **Trap:** unplugging/replugging USB drops the reverse mapping. The app then red-screens *"Unable to load script"* on the next cold start. Just re-run the `adb reverse` line above.
+> **Trap:** unplugging/replugging USB drops the reverse mapping. The app then red-screens _"Unable to load script"_ on the next cold start. Just re-run the `adb reverse` line above.
 
 ---
 
@@ -122,6 +122,46 @@ Version is set in `android/app/build.gradle` (`versionCode` / `versionName`) —
 npm test      # Jest
 npm run lint  # ESLint
 ```
+
+### Reusable animated symbols
+
+The canonical symbol set is exported from `src/motion` as `SYMBOL_LIBRARY`,
+`AnimatedSymbol`, `WriteSymbol`, and `CanonicalSymbol`. The first ten
+primitives are ℵ₀, ∞, 𝒞, ∮, 𝄞, 𝄋, 𝄐, ∂, ∇, and 𝔠.
+
+```tsx
+<AnimatedSymbol
+  symbol="alephNull"
+  width={320}
+  height={220}
+  color={palette.ink}
+  appearance="write"
+  duration={900}
+  centerX={160}
+  centerY={110}
+  scale={0.8}
+  strokeWidth={1.5}
+  aspectRatio={0.82}
+/>
+```
+
+Changing `symbol` morphs from the currently rendered geometry. Changing
+`centerX`/`centerY`, scale, or aspect ratio animates the same geometry to its new
+placement. Pass a Reanimated `SharedValue<number>` as `progress` to scrub the
+shared 0…1 clock. `WriteSymbol` is the convenience form for first-mount Write.
+
+`strokeWidth` is also the canonical weight control. Its authored value is the
+regular weight; pass a smaller value for lighter outlines or a larger value for
+heavier ones. The source silhouette itself is offset inward/outward before it
+is sampled, so both the morph and its final frame use that weight. The Motion
+Lab exposes LIGHT / REGULAR / BOLD presets for inspection.
+
+Each primitive carries a source-derived compound silhouette, and
+`AnimatedSymbol` interpolates that silhouette directly—including its holes. Use
+`CanonicalSymbol` for a static standalone canvas, or `SymbolArtworkPath` to
+compose the raw silhouette inside an existing Skia canvas. Mathematical outlines
+come from STIX Math and musical outlines from Noto Music; attribution is in
+`THIRD_PARTY_NOTICES.md`.
 
 ---
 
