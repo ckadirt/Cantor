@@ -1,6 +1,6 @@
 /** Real BIP39 material: word count, wordlist membership, checksum, stability. */
 import { validateMnemonic } from '@scure/bip39';
-import { wordlist } from '@scure/bip39/wordlists/english';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
 import { getIdentityPhrase, mintPhrase } from '../mnemonic';
 
 describe('identity mnemonic', () => {

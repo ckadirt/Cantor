@@ -11,10 +11,12 @@ module.exports = {
   moduleNameMapper: {
     '^react-native-reanimated$': 'react-native-reanimated/mock',
     '^react-native-worklets$': 'react-native-worklets/src/mock',
+    '^@react-native-clipboard/clipboard$':
+      '@react-native-clipboard/clipboard/jest/clipboard-mock.js',
     '\\.(ttf|otf)$': '<rootDir>/jest/assetStub.js',
   },
-  // react-navigation and friends ship untranspiled ESM
+  // react-navigation and friends ship untranspiled ESM; @scure/@noble are ESM-only
   transformIgnorePatterns: [
-    'node_modules/(?!(react-native|@react-native|@react-navigation|react-native-screens|react-native-safe-area-context|react-native-reanimated|react-native-worklets|react-native-gesture-handler|@shopify/react-native-skia|moti)/)',
+    'node_modules/(?!(react-native|@react-native|@react-navigation|react-native-screens|react-native-safe-area-context|react-native-reanimated|react-native-worklets|react-native-gesture-handler|@shopify/react-native-skia|moti|@scure|@noble)/)',
   ],
 };

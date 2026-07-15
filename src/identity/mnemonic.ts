@@ -15,7 +15,13 @@
  * key in Android Keystore, and set FLAG_SECURE on screens that show the words.
  */
 import { entropyToMnemonic, validateMnemonic } from '@scure/bip39';
-import { wordlist } from '@scure/bip39/wordlists/english';
+import { wordlist } from '@scure/bip39/wordlists/english.js';
+
+// crypto.getRandomValues exists at runtime (polyfill on device, WebCrypto in
+// node/jest) but React Native's TS lib doesn't declare it.
+const { crypto } = globalThis as unknown as {
+  crypto: { getRandomValues: (buf: Uint8Array) => Uint8Array };
+};
 
 const ENTROPY_BITS = 128; // → 12 words
 
