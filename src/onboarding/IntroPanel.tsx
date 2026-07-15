@@ -450,11 +450,9 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     Math.min(1, Math.max(0, (p.value - SLOGAN_A) / (SLOGAN_B - SLOGAN_A))),
   );
 
-  // Tap anywhere to fast-forward the reveal; once it's done, tap advances.
+  // Tap anywhere only fast-forwards the intro; advancing is Begin's job.
   const skip = () => {
-    if (ready) {
-      onNext();
-    } else {
+    if (!ready) {
       p.value = withTiming(1, {
         duration: 420,
         easing: Easing.out(Easing.cubic),
