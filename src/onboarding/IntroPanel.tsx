@@ -15,6 +15,7 @@ import {
   Text,
   useWindowDimensions,
   View,
+  type TextStyle,
 } from 'react-native';
 import {
   Canvas,
@@ -27,7 +28,6 @@ import {
 import Animated, {
   Easing,
   FadeIn,
-  useAnimatedStyle,
   useDerivedValue,
   useSharedValue,
   withTiming,
@@ -38,10 +38,12 @@ import {
   alignClosed,
   centroid,
   compoundPolygonPath,
+  meanInkThickness,
   resolveSilhouette,
   sampleOutline,
   SILHOUETTE_N,
   smootherstep,
+  WriteText,
 } from '../motion';
 import {
   CONSTELLATION_SYMBOLS,
@@ -53,6 +55,18 @@ import { space, type, usePalette } from '../theme/tokens';
 /** The slogan under the wordmark. One line; keep it short. */
 const SLOGAN = 'The beautiful way to interact with music.';
 
+// Stable charStyle objects — MorphText is memo'd; fresh objects would defeat it.
+const WORDMARK_STYLE: TextStyle = {
+  ...type.wordmark,
+  fontSize: 52,
+  textAlign: 'center',
+};
+const SLOGAN_STYLE: TextStyle = {
+  ...type.small,
+  letterSpacing: 0.3,
+  textAlign: 'center',
+};
+
 // Timeline, all in real seconds — the whole intro is scheduled off these, so
 // changing one phase never quietly speeds up another. Tune freely.
 const BUILD_BASE = 0.15; // first bar draws in — the Cantor set, kept as it was
@@ -61,11 +75,13 @@ const BUILD_DUR = 0.5;
 const MORPH_BASE = 1.1; // first bar starts morphing
 const MORPH_TOTAL = 1.5; // the whole cascade of morphs spans exactly this
 const MORPH_DUR = 0.5; // each bar's own morph
-const REVEAL_START = 2.62; // copy starts only after the final morph clears centre
-const REVEAL_DUR = 0.65;
+const NAME_WRITE_START = 2.55; // the wordmark writes itself as the frame settles
+const NAME_WRITE_DUR = 1.05;
+const SLOGAN_WRITE_START = 3.35; // slogan starts while the name finishes
+const SLOGAN_WRITE_DUR = 1.45;
 const FRAME_START = 2.0; // symbols settle to a faint constellation
 const FRAME_DUR = 1.0;
-const DURATION_S = 3.3; // whole intro, seconds
+const DURATION_S = 4.95; // whole intro, seconds
 const DURATION = DURATION_S * 1000; // ms
 
 // Geometry knobs — positions are fractions of the live viewport. The middle
@@ -77,12 +93,21 @@ const COPY_CLEAR_BOTTOM = 0.56;
 const COPY_CLEAR_GAP = 16; // px between final ink and the reserved copy zone
 const FOOTER_CLEARANCE = 132; // px kept clear for Begin and its breathing room
 
+// Constellation normalization: every symbol's INK (tight artwork bounds, true
+// font proportions — no aspect stretch) is fit into one shared target box, so
+// no sign renders bigger or smaller than its neighbours. Two knobs only.
+const SYMBOL_BOX = 0.13; // box height as a fraction of the short side
+const SYMBOL_BOX_RATIO = 1.25; // wide glyphs (∞, fermata) may run this much wider
+// Ink weight is normalized too: each glyph's mean stroke thickness is pulled
+// toward one rendered target, so hairline clefs and bold lemniscates read as
+// one family. MIX < 1 keeps some of each glyph's native character.
+const SYMBOL_WEIGHT = 0.00305; // target mean ink thickness, fraction of short side
+const SYMBOL_WEIGHT_MIX = 0.65; // 0 = native weights, 1 = fully equalized
+
 type ConstellationPlacement = {
   item: ConstellationSymbol;
   x: number;
   y: number;
-  size: number;
-  spin: number;
   opacity: number;
 };
 
@@ -91,84 +116,23 @@ const byKey = Object.fromEntries(
 ) as Record<ConstellationSymbol['key'], ConstellationSymbol>;
 
 const CONSTELLATION_PLACEMENTS: readonly ConstellationPlacement[] = [
-  {
-    item: byKey.alephNull,
-    x: 0.1,
-    y: 0.16,
-    size: 0.17,
-    spin: 0,
-    opacity: 0.5,
-  },
-  {
-    item: byKey.infinity,
-    x: 0.29,
-    y: 0.19,
-    size: 0.12,
-    spin: 0,
-    opacity: 0.43,
-  },
-  {
-    item: byKey.cantorSet,
-    x: 0.49,
-    y: 0.14,
-    size: 0.18,
-    spin: 0,
-    opacity: 0.47,
-  },
-  {
-    item: byKey.contourIntegral,
-    x: 0.69,
-    y: 0.19,
-    size: 0.17,
-    spin: 0,
-    opacity: 0.44,
-  },
-  {
-    item: byKey.trebleClef,
-    x: 0.9,
-    y: 0.15,
-    size: 0.2,
-    spin: 0,
-    opacity: 0.5,
-  },
-  {
-    item: byKey.segno,
-    x: 0.1,
-    y: 0.68,
-    size: 0.18,
-    spin: 0,
-    opacity: 0.47,
-  },
-  {
-    item: byKey.fermata,
-    x: 0.3,
-    y: 0.72,
-    size: 0.13,
-    spin: 0,
-    opacity: 0.42,
-  },
-  {
-    item: byKey.partial,
-    x: 0.5,
-    y: 0.67,
-    size: 0.18,
-    spin: 0,
-    opacity: 0.47,
-  },
-  { item: byKey.nabla, x: 0.7, y: 0.72, size: 0.15, spin: 0, opacity: 0.42 },
-  {
-    item: byKey.continuum,
-    x: 0.9,
-    y: 0.68,
-    size: 0.18,
-    spin: 0,
-    opacity: 0.47,
-  },
+  { item: byKey.alephNull, x: 0.1, y: 0.16, opacity: 0.5 },
+  { item: byKey.infinity, x: 0.29, y: 0.19, opacity: 0.43 },
+  { item: byKey.cantorSet, x: 0.49, y: 0.14, opacity: 0.47 },
+  { item: byKey.contourIntegral, x: 0.69, y: 0.19, opacity: 0.44 },
+  { item: byKey.trebleClef, x: 0.9, y: 0.15, opacity: 0.5 },
+  { item: byKey.segno, x: 0.1, y: 0.68, opacity: 0.47 },
+  { item: byKey.fermata, x: 0.3, y: 0.72, opacity: 0.42 },
+  { item: byKey.partial, x: 0.5, y: 0.67, opacity: 0.47 },
+  { item: byKey.nabla, x: 0.7, y: 0.72, opacity: 0.42 },
+  { item: byKey.continuum, x: 0.9, y: 0.68, opacity: 0.47 },
 ];
 
-// The same windows on the 0..1 master clock, for the worklet-side reveal/fade.
-const REVEAL_A = REVEAL_START / DURATION_S;
-const REVEAL_B = (REVEAL_START + REVEAL_DUR) / DURATION_S;
+// The same windows on the 0..1 master clock, for the worklet-side writes/fade.
+const NAME_A = NAME_WRITE_START / DURATION_S;
+const NAME_B = (NAME_WRITE_START + NAME_WRITE_DUR) / DURATION_S;
+const SLOGAN_A = SLOGAN_WRITE_START / DURATION_S;
+const SLOGAN_B = (SLOGAN_WRITE_START + SLOGAN_WRITE_DUR) / DURATION_S;
 const FRAME_A = FRAME_START / DURATION_S;
 const FRAME_B = (FRAME_START + FRAME_DUR) / DURATION_S;
 const MORPH_SWITCH = MORPH_BASE / DURATION_S;
@@ -197,14 +161,52 @@ type TargetModel = {
   cy: number;
 };
 
+/**
+ * How a symbol's ink maps to the screen: a uniform scale that fits the
+ * artwork's tight bounds into the shared SYMBOL_BOX, plus the offset that
+ * centres the INK (not the authoring box) on the placement point.
+ */
+type SymbolFit = {
+  scale: number; // px per authored unit
+  inkWidth: number;
+  inkHeight: number;
+  offsetX: number; // authoring-box centre → ink centre correction, px
+  offsetY: number;
+  strokeWidth: number; // weight-normalized, in authored units
+};
+
+function fitSymbol(item: ConstellationSymbol, shortSide: number): SymbolFit {
+  const { symbol } = item;
+  const bounds = Skia.Path.MakeFromSVGString(
+    symbol.artwork.d,
+  )!.computeTightBounds();
+  const boxH = shortSide * SYMBOL_BOX;
+  const boxW = boxH * SYMBOL_BOX_RATIO;
+  const scale = Math.min(boxH / bounds.height, boxW / bounds.width);
+  // Rendered thickness is native·scale; move it toward the shared target.
+  // The resolver inflates/deflates every edge by (strokeWidth − baseline),
+  // which changes ribbon thickness by twice that — hence the /2.
+  const native = meanInkThickness(symbol);
+  const target = (shortSide * SYMBOL_WEIGHT) / scale;
+  const baseline = symbol.strokeWidth ?? 0;
+  return {
+    scale,
+    inkWidth: bounds.width * scale,
+    inkHeight: bounds.height * scale,
+    offsetX: (bounds.x + bounds.width / 2 - 50) * scale,
+    offsetY: (bounds.y + bounds.height / 2 - 50) * scale,
+    strokeWidth: baseline + (SYMBOL_WEIGHT_MIX * (target - native)) / 2,
+  };
+}
+
 function placedSymbolY(
   placement: ConstellationPlacement,
   height: number,
-  symbolSize: number,
+  inkHeight: number,
 ): number {
   const desiredY = height * placement.y;
   const isUpper = placement.y < COPY_CLEAR_TOP;
-  const symbolExtent = symbolSize * 0.5;
+  const symbolExtent = inkHeight * 0.5;
   return isUpper
     ? Math.min(
       desiredY,
@@ -326,22 +328,30 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     });
 
     // Resolve the actual STIX/Noto compound outlines—not the animation
-    // centerlines—at their final constellation positions.
+    // centerlines—at their final constellation positions. Every symbol's ink
+    // is fit into the same SYMBOL_BOX at true font proportions, so size and
+    // width are uniform across signs.
+    const fits = CONSTELLATION_PLACEMENTS.map(placement =>
+      fitSymbol(placement.item, shortSide),
+    );
+    const anchors = CONSTELLATION_PLACEMENTS.map((placement, symbolIndex) => ({
+      x: width * placement.x,
+      y: placedSymbolY(placement, height, fits[symbolIndex].inkHeight),
+    }));
     const targetsBySymbol = CONSTELLATION_PLACEMENTS.map(
       (placement, symbolIndex) => {
         const { symbol } = placement.item;
-        const symbolSize = shortSide * placement.size;
-        const symbolY = placedSymbolY(placement, height, symbolSize);
-        const ratio = symbol.aspectRatio ?? 1;
+        const fit = fits[symbolIndex];
         const silhouette = resolveSilhouette(
           symbol,
-          symbolSize * ratio,
-          symbolSize,
+          100 * fit.scale,
+          100 * fit.scale,
           1,
           {
-            centerX: width * placement.x,
-            centerY: symbolY,
-            strokeWidth: symbol.strokeWidth,
+            centerX: anchors[symbolIndex].x - fit.offsetX,
+            centerY: anchors[symbolIndex].y - fit.offsetY,
+            aspectRatio: 1,
+            strokeWidth: fit.strokeWidth,
           },
           SILHOUETTE_N,
         );
@@ -371,12 +381,7 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     const paddingOrder = [0, 9, 2, 5, 4, 7, 1, 8, 3, 6];
     for (let i = 0; i < laid.length - exactCount; i++) {
       const symbolIndex = paddingOrder[i % paddingOrder.length];
-      const placement = CONSTELLATION_PLACEMENTS[symbolIndex];
-      const symbolSize = shortSide * placement.size;
-      const point = {
-        x: width * placement.x,
-        y: placedSymbolY(placement, height, symbolSize),
-      };
+      const point = anchors[symbolIndex];
       targetsBySymbol[symbolIndex].push({
         symbolIndex,
         pts: Array.from({ length: SILHOUETTE_N }, () => ({ ...point })),
@@ -435,13 +440,15 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     return () => clearTimeout(t);
   }, [p]);
 
-  const nameStyle = useAnimatedStyle(() => {
-    const a = smootherstep(REVEAL_A, REVEAL_B, p.value);
-    return {
-      opacity: a,
-      transform: [{ translateY: (1 - a) * 12 }, { scale: 0.97 + 0.03 * a }],
-    };
-  });
+  // The copy is WRITTEN, not faded: each line gets its own linear window of
+  // the master clock, and WriteText's DrawBorderThenFill does the rest. Linear
+  // (not smootherstep) — the write cascade eases per glyph internally.
+  const nameClock = useDerivedValue(() =>
+    Math.min(1, Math.max(0, (p.value - NAME_A) / (NAME_B - NAME_A))),
+  );
+  const sloganClock = useDerivedValue(() =>
+    Math.min(1, Math.max(0, (p.value - SLOGAN_A) / (SLOGAN_B - SLOGAN_A))),
+  );
 
   // Tap anywhere to fast-forward the reveal; once it's done, tap advances.
   const skip = () => {
@@ -474,10 +481,22 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
         </Canvas>
       </Pressable>
 
-      <Animated.View style={[styles.center, nameStyle]} pointerEvents="none">
-        <Text style={[styles.wordmark, { color: pal.ink }]}>Cantor</Text>
-        <Text style={[styles.slogan, { color: pal.muted }]}>{SLOGAN}</Text>
-      </Animated.View>
+      <View style={styles.center} pointerEvents="none">
+        <WriteText
+          text="Cantor"
+          charStyle={WORDMARK_STYLE}
+          color={pal.ink}
+          progress={nameClock}
+          style={styles.wordmarkZone}
+        />
+        <WriteText
+          text={SLOGAN}
+          charStyle={SLOGAN_STYLE}
+          color={pal.muted}
+          progress={sloganClock}
+          style={styles.sloganZone}
+        />
+      </View>
 
       {ready && (
         <Animated.View
@@ -513,16 +532,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: -24,
   },
-  wordmark: {
-    ...type.wordmark,
-    fontSize: 52,
+  // Fixed-height zones for the written lines (Canvas needs real bounds).
+  wordmarkZone: {
+    alignSelf: 'stretch',
+    height: 72,
   },
-  slogan: {
-    ...type.small,
+  sloganZone: {
+    alignSelf: 'stretch',
+    height: 22,
     marginTop: space.sm,
-    textAlign: 'center',
-    paddingHorizontal: space.xl,
-    letterSpacing: 0.3,
+    marginHorizontal: space.xl,
   },
   footer: {
     position: 'absolute',

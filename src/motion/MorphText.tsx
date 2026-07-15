@@ -36,6 +36,7 @@ import {
   useReducedMotion,
   useSharedValue,
   withTiming,
+  type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
 import { bornClock } from './clock';
@@ -429,8 +430,9 @@ export type MorphTextProps = {
   appearance?: TextAppearance;
   /** Outer container — reserve a fixed height so the page never shifts. */
   style?: StyleProp<ViewStyle>;
-  /** External 0..1 clock; the component stops driving its own. */
-  progress?: SharedValue<number>;
+  /** External 0..1 clock; the component stops driving its own. Read-only
+   *  derived clocks are fine — the component never writes to it. */
+  progress?: SharedValue<number> | DerivedValue<number>;
 };
 
 /**
@@ -464,7 +466,14 @@ function MorphTextImpl({
       (model.kind !== 'write' && model.kind !== 'settled' && model.kind !== variant && !reduced))
   ) {
     const lineHeight = charStyle.lineHeight ?? (charStyle.fontSize ?? 14) * 1.35;
-    const next = layoutText(text, font, charStyle.letterSpacing ?? 0, width, lineHeight);
+    const next = layoutText(
+      text,
+      font,
+      charStyle.letterSpacing ?? 0,
+      width,
+      lineHeight,
+      charStyle.textAlign === 'center' ? 'center' : 'left',
+    );
     const retarget = model !== null && model.width === width && model.font === font;
     const captureT = progress ? progress.value : model?.clock.value ?? 1;
     const prev = retarget && model ? captureModel(model, captureT) : [];
@@ -516,7 +525,8 @@ function MorphTextImpl({
     });
   }
 
-  const tt = progress ?? model?.clock ?? idle;
+  // Safe narrowing: everything downstream only ever reads tt.value.
+  const tt = (progress ?? model?.clock ?? idle) as SharedValue<number>;
 
   // No completion commit: all outline→glyph ownership changes stay UI-thread-only.
   useEffect(() => {

@@ -109,6 +109,34 @@ export function resolveSilhouette(
   };
 }
 
+/**
+ * Mean stroke thickness of a shape's ink, in authored 0..100 units. For a
+ * ribbon of length L and thickness t: area ≈ t·L and boundary ≈ 2L, so
+ * t ≈ 2·area/perimeter. Counters subtract from area via ring orientation.
+ * Feeds weight normalization: pass a strokeWidth of
+ * `baseline + (targetThickness − thickness) / 2` to resolveSilhouette.
+ */
+export function meanInkThickness(shape: Shape, n = SILHOUETTE_N): number {
+  const rings = authoredContours(
+    shape,
+    shape.strokeWidth ?? AUTHOR_STROKE,
+    n,
+  );
+  const area = Math.abs(
+    rings.reduce((sum, ring) => sum + signedArea(ring), 0),
+  );
+  const perimeter = rings.reduce((sum, ring) => {
+    let len = 0;
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i];
+      const b = ring[(i + 1) % ring.length];
+      len += Math.hypot(b.x - a.x, b.y - a.y);
+    }
+    return sum + len;
+  }, 0);
+  return perimeter > 0 ? (2 * area) / perimeter : 0;
+}
+
 function signedArea(pts: Pt[]): number {
   let area = 0;
   for (let i = 0; i < pts.length; i++) {

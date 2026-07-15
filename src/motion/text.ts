@@ -159,6 +159,7 @@ export function layoutText(
   letterSpacing: number,
   maxWidth: number,
   lineHeight: number,
+  align: 'left' | 'center' = 'left',
 ): CharBox[] {
   if (text.length === 0) {
     return [];
@@ -196,6 +197,27 @@ export function layoutText(
     }
     pen += spaceW;
   });
+  if (align === 'center') {
+    // Shift each baseline row so its ink centres inside maxWidth. Every box
+    // carries one trailing letterSpacing; the last one is not visible ink.
+    const rows = new Map<number, CharBox[]>();
+    for (const box of boxes) {
+      const row = rows.get(box.y);
+      if (row) {
+        row.push(box);
+      } else {
+        rows.set(box.y, [box]);
+      }
+    }
+    for (const row of rows.values()) {
+      const last = row[row.length - 1];
+      const rowWidth = last.x + last.w - letterSpacing;
+      const dx = Math.max(0, (maxWidth - rowWidth) / 2);
+      for (const box of row) {
+        box.x += dx;
+      }
+    }
+  }
   return boxes;
 }
 
