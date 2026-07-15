@@ -1,7 +1,9 @@
 /** Text planners and Manim timing laws. CanvasKit remains the real test env. */
+import { Skia } from '@shopify/react-native-skia';
 import {
   buildFlights,
   buildTransformFlights,
+  layoutText,
   writeDurationMs,
   writeLagRatio,
   writePhase,
@@ -57,6 +59,20 @@ describe('plain text Transform', () => {
       'B'.charCodeAt(0),
       'A'.charCodeAt(0),
     ]);
+  });
+});
+
+describe('layoutText alignment', () => {
+  it('centers a line by shifting every box uniformly inside maxWidth', () => {
+    const font = Skia.Font(undefined, 14);
+    const left = layoutText('to the centre', font, 0, 300, 20, 'left');
+    const centered = layoutText('to the centre', font, 0, 300, 20, 'center');
+    const last = left[left.length - 1];
+    const dx = (300 - (last.x + last.w)) / 2;
+    for (let i = 0; i < left.length; i++) {
+      expect(centered[i].x - left[i].x).toBeCloseTo(dx, 5);
+      expect(centered[i].y).toBe(left[i].y);
+    }
   });
 });
 
