@@ -448,6 +448,116 @@ function WriteFallbackGlyph({
   return <Glyphs font={font} glyphs={toGlyphs([box])} color={color} opacity={opacity} />;
 }
 
+/**
+ * Everything a non-Write transition paints: exits, shape-morphs (or fused
+ * transform layers), movers, and entrances. One instance per committed
+ * generation, so every reanimated binding here is born on this model's clock
+ * and dies with it. Were these derived values owned by MorphText itself, a
+ * generation swap would re-register them against the newborn clock while the
+ * outgoing nodes can still paint a frame — and a settled exit layer (opacity
+ * 0 on the old clock) would light back up at full alpha (t=0 on the new one):
+ * the "finished title flashes before it writes" race.
+ */
+function TransitionGlyphs({
+  model,
+  tt,
+  font,
+  color,
+}: {
+  model: Model;
+  tt: SharedValue<number>;
+  font: SkFont;
+  color: string;
+}) {
+  const matching = model.kind === 'matching';
+  const movers = model.flights.movers;
+  const moverGlyphs = useDerivedValue(() => {
+    const out: Glyph[] = [];
+    for (const m of movers) {
+      const u = smootherstep(m.a, m.b, tt.value);
+      const arc = 4 * u * (1 - u);
+      const x = m.fx + (m.tx - m.fx) * u + m.px * arc;
+      const y = m.fy + (m.ty - m.fy) * u + m.py * arc;
+      for (let i = 0; i < m.ids.length; i++) {
+        out.push({ id: m.ids[i], pos: { x: x + m.xo[i], y } });
+      }
+    }
+    return out;
+  }, [movers, tt]);
+  const morphDip = useDerivedValue(() => {
+    if (!matching) {
+      return 1;
+    }
+    const p = smootherstep(MOVE_START, MOVE_END, tt.value);
+    return 1 - MOVER_DIP * 4 * p * (1 - p);
+  }, [matching, tt]);
+  const exitAlpha = useDerivedValue(() =>
+    matching
+      ? 1 - smootherstep(0, EXIT_END, tt.value)
+      : 1 - smootherstep(0, 1, tt.value),
+  [matching, tt]);
+  const exitShift = useDerivedValue(() => [
+    { translateY: matching ? -EXIT_RISE * smootherstep(0, EXIT_END, tt.value) : 0 },
+  ], [matching, tt]);
+  const enterAlpha = useDerivedValue(() =>
+    matching
+      ? smootherstep(ENTER_START, 1, tt.value)
+      : smootherstep(0, 1, tt.value),
+  [matching, tt]);
+  const enterShift = useDerivedValue(() => [
+    {
+      translateY: matching
+        ? ENTER_RISE * (1 - smootherstep(ENTER_START, 1, tt.value))
+        : 0,
+    },
+  ], [matching, tt]);
+
+  return (
+    <>
+      <Glyphs
+        font={font}
+        glyphs={model.exitGlyphs}
+        transform={exitShift}
+        color={color}
+        opacity={exitAlpha}
+      />
+      {model.kind === 'transform'
+        ? model.transformLayers.map((layer, i) => (
+            <TransformLayer
+              key={`#transform${i}`}
+              model={layer}
+              tt={tt}
+              font={font}
+              color={color}
+            />
+          ))
+        : model.morphModels.map((m, i) => (
+            <MorphGlyph
+              key={`#morph${i}`}
+              m={m}
+              tt={tt}
+              font={font}
+              color={color}
+              dip={morphDip}
+            />
+          ))}
+      <Glyphs
+        font={font}
+        glyphs={moverGlyphs}
+        color={color}
+        opacity={morphDip}
+      />
+      <Glyphs
+        font={font}
+        glyphs={model.enterGlyphs}
+        transform={enterShift}
+        color={color}
+        opacity={enterAlpha}
+      />
+    </>
+  );
+}
+
 export type MorphTextProps = {
   text: string;
   charStyle: TextStyle;
@@ -569,49 +679,6 @@ function MorphTextImpl({
     return () => cancelAnimation(clock);
   }, [model, progress]);
 
-  const matching = model?.kind === 'matching';
-  const movers = model?.flights.movers ?? [];
-  const moverGlyphs = useDerivedValue(() => {
-    const out: Glyph[] = [];
-    for (const m of movers) {
-      const u = smootherstep(m.a, m.b, tt.value);
-      const arc = 4 * u * (1 - u);
-      const x = m.fx + (m.tx - m.fx) * u + m.px * arc;
-      const y = m.fy + (m.ty - m.fy) * u + m.py * arc;
-      for (let i = 0; i < m.ids.length; i++) {
-        out.push({ id: m.ids[i], pos: { x: x + m.xo[i], y } });
-      }
-    }
-    return out;
-  }, [movers, tt]);
-  const morphDip = useDerivedValue(() => {
-    if (!matching) {
-      return 1;
-    }
-    const p = smootherstep(MOVE_START, MOVE_END, tt.value);
-    return 1 - MOVER_DIP * 4 * p * (1 - p);
-  }, [matching, tt]);
-  const exitAlpha = useDerivedValue(() =>
-    matching
-      ? 1 - smootherstep(0, EXIT_END, tt.value)
-      : 1 - smootherstep(0, 1, tt.value),
-  [matching, tt]);
-  const exitShift = useDerivedValue(() => [
-    { translateY: matching ? -EXIT_RISE * smootherstep(0, EXIT_END, tt.value) : 0 },
-  ], [matching, tt]);
-  const enterAlpha = useDerivedValue(() =>
-    matching
-      ? smootherstep(ENTER_START, 1, tt.value)
-      : smootherstep(0, 1, tt.value),
-  [matching, tt]);
-  const enterShift = useDerivedValue(() => [
-    {
-      translateY: matching
-        ? ENTER_RISE * (1 - smootherstep(ENTER_START, 1, tt.value))
-        : 0,
-    },
-  ], [matching, tt]);
-
   return (
     <View
       style={style}
@@ -652,53 +719,16 @@ function MorphTextImpl({
               color={color}
             />
           ) : (
-            <>
-              {/* Layers remount per generation. Updating live Skia node props
-                  across a React commit is the known one-frame flicker race. */}
-              <Glyphs
-                key={`ex${model.gen}`}
-                font={font}
-                glyphs={model.exitGlyphs}
-                transform={exitShift}
-                color={color}
-                opacity={exitAlpha}
-              />
-              {model.kind === 'transform'
-                ? model.transformLayers.map((layer, i) => (
-                    <TransformLayer
-                      key={`${model.gen}#transform${i}`}
-                      model={layer}
-                      tt={tt}
-                      font={font}
-                      color={color}
-                    />
-                  ))
-                : model.morphModels.map((m, i) => (
-                    <MorphGlyph
-                      key={`${model.gen}#morph${i}`}
-                      m={m}
-                      tt={tt}
-                      font={font}
-                      color={color}
-                      dip={morphDip}
-                    />
-                  ))}
-              <Glyphs
-                key={`mv${model.gen}`}
-                font={font}
-                glyphs={moverGlyphs}
-                color={color}
-                opacity={morphDip}
-              />
-              <Glyphs
-                key={`en${model.gen}`}
-                font={font}
-                glyphs={model.enterGlyphs}
-                transform={enterShift}
-                color={color}
-                opacity={enterAlpha}
-              />
-            </>
+            /* One keyed instance per generation: layers AND their reanimated
+               bindings remount together, so an outgoing generation can never
+               repaint against the next generation's newborn clock. */
+            <TransitionGlyphs
+              key={`tr${model.gen}`}
+              model={model}
+              tt={tt}
+              font={font}
+              color={color}
+            />
           )}
         </Canvas>
       )}
