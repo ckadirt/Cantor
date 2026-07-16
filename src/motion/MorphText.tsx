@@ -23,15 +23,17 @@ import {
   Canvas,
   Glyphs,
   Group,
+  interpolatePaths,
+  notifyChange,
   Path,
   Skia,
-  usePathInterpolation,
   type SkFont,
   type SkPath,
 } from '@shopify/react-native-skia';
 import {
   cancelAnimation,
   Easing,
+  useAnimatedReaction,
   useDerivedValue,
   useReducedMotion,
   useSharedValue,
@@ -279,6 +281,33 @@ function buildWriteModels(font: SkFont, boxes: CharBox[]) {
   return { models, fallback };
 }
 
+/**
+ * Skia's usePathInterpolation, but born already holding the path at the
+ * clock's current value. The library hook is born holding an empty path that
+ * its reaction only replaces one mapper tick after the commit — so a freshly
+ * mounted generation paints nothing for a frame (the step-change flicker).
+ * The reaction (with notifyChange) is kept as-is: it invalidates the canvas
+ * on every tick, which a plain derived value of immutable paths does not.
+ */
+function useSeededPathInterpolation(
+  amount: SharedValue<number> | DerivedValue<number>,
+  fromPath: SkPath,
+  toPath: SkPath,
+) {
+  const path = useSharedValue(
+    interpolatePaths(amount.value, [0, 1], [fromPath, toPath]),
+  );
+  useAnimatedReaction(
+    () => amount.value,
+    value => {
+      path.value = interpolatePaths(value, [0, 1], [fromPath, toPath]);
+      notifyChange(path);
+    },
+    [fromPath, toPath],
+  );
+  return path;
+}
+
 function MorphGlyph({
   m,
   tt,
@@ -293,11 +322,7 @@ function MorphGlyph({
   dip: SharedValue<number>;
 }) {
   const amount = useDerivedValue(() => smootherstep(m.a, m.b, tt.value));
-  // Skia paths are immutable as of RN Skia 2.6. usePathInterpolation drives
-  // the same native interpolation while explicitly invalidating the canvas on
-  // every mapper tick; a plain derived value can otherwise coalesce the new
-  // host objects into only a handful of visible frames.
-  const path = usePathInterpolation(amount, [0, 1], [m.fromPath, m.toPath]);
+  const path = useSeededPathInterpolation(amount, m.fromPath, m.toPath);
   const shift = useDerivedValue(() => {
     const arc = 4 * amount.value * (1 - amount.value);
     return [{ translateX: m.px * arc }, { translateY: m.py * arc }];
@@ -332,7 +357,7 @@ function TransformLayer({
   color: string;
 }) {
   const amount = useDerivedValue(() => smootherstep(0, 1, tt.value));
-  const path = usePathInterpolation(amount, [0, 1], [model.fromPath, model.toPath]);
+  const path = useSeededPathInterpolation(amount, model.fromPath, model.toPath);
   const pathAlpha = useDerivedValue(() => {
     const eased = smootherstep(0, 1, tt.value);
     if (eased >= 1) {
