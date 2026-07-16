@@ -36,8 +36,10 @@ import type { PanelBodyProps, PanelDef } from './types';
 /* -------------------------------------------------------------- motion knobs */
 /** Lets all 12 prebuilt canvas models paint their source before time advances. */
 const CANVAS_PREPARE_MS = 600;
-/** How long all byte groups rest in their final positions before morphing. */
-const BITS_HOLD_MS = 450;
+/** All 12 bit groups use this simultaneous DrawBorderThenFill runtime. */
+const BITS_WRITE_MS = 800;
+/** Quiet beat between the completed write and the first word morph. */
+const BITS_HOLD_MS = 180;
 /** Delay between consecutive word morph starts. */
 const MORPH_STAGGER_MS = 100;
 /** Runtime of each byte-to-word transform. */
@@ -56,6 +58,7 @@ const BITS_LEN = 11;
 const BITS_W = BITS_LEN * MONO_ADVANCE + 2;
 const NUMBER_W = 16;
 const NUMBER_SLOT_GAP = 4;
+const NUMBER_LINE_H = 13;
 const CONTINUE_SLOT_H = 48;
 
 const WORD_STYLE: TextStyle = {
@@ -72,7 +75,14 @@ function Body({ onNext }: PanelBodyProps) {
   const clock = useSharedValue(reduced ? 1 : 0);
   const words = getIdentityPhrase();
   const timelineMs =
-    BITS_HOLD_MS + (words.length - 1) * MORPH_STAGGER_MS + MORPH_MS;
+    BITS_WRITE_MS +
+    BITS_HOLD_MS +
+    (words.length - 1) * MORPH_STAGGER_MS +
+    MORPH_MS;
+  const writeWindow = useMemo(
+    () => [0, BITS_WRITE_MS / timelineMs] as const,
+    [timelineMs],
+  );
   const rows = useMemo(
     () =>
       Array.from({ length: Math.ceil(words.length / WORDS_PER_ROW) }, (_, row) =>
@@ -90,7 +100,8 @@ function Body({ onNext }: PanelBodyProps) {
     return words.map((word, index) => {
       const row = Math.floor(index / WORDS_PER_ROW);
       const column = index % WORDS_PER_ROW;
-      const startMs = BITS_HOLD_MS + index * MORPH_STAGGER_MS;
+      const startMs =
+        BITS_WRITE_MS + BITS_HOLD_MS + index * MORPH_STAGGER_MS;
       return {
         key: `${index}-${word}`,
         initialText: wordBits(word),
@@ -183,6 +194,7 @@ function Body({ onNext }: PanelBodyProps) {
             charStyle={WORD_STYLE}
             color={pal.ink}
             progress={clock}
+            writeWindow={writeWindow}
             style={styles.phraseCanvas}
           />
         )}
@@ -229,7 +241,7 @@ const styles = StyleSheet.create({
   word: {
     flex: 1,
     flexDirection: 'row',
-    alignItems: 'baseline',
+    alignItems: 'flex-start',
     gap: NUMBER_SLOT_GAP,
   },
   slot: { width: BITS_W, height: WORD_H, overflow: 'hidden' },
@@ -237,6 +249,8 @@ const styles = StyleSheet.create({
     width: NUMBER_W,
     fontFamily: type.mono.fontFamily,
     fontSize: 10,
+    lineHeight: NUMBER_LINE_H,
+    includeFontPadding: false,
     fontVariant: ['tabular-nums'],
   },
   phraseCanvas: {

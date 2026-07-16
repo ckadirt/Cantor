@@ -327,20 +327,21 @@ function TransformLayer({
   color,
 }: {
   model: TransformLayerModel;
-  tt: SharedValue<number>;
+  tt: SharedValue<number> | DerivedValue<number>;
   font: SkFont;
   color: string;
 }) {
   const amount = useDerivedValue(() => smootherstep(0, 1, tt.value));
   const path = usePathInterpolation(amount, [0, 1], [model.fromPath, model.toPath]);
   const pathAlpha = useDerivedValue(() => {
-    if (amount.value >= 1) {
+    const eased = smootherstep(0, 1, tt.value);
+    if (eased >= 1) {
       return 0;
     }
-    return model.fromAlpha + (model.toAlpha - model.fromAlpha) * amount.value;
+    return model.fromAlpha + (model.toAlpha - model.fromAlpha) * eased;
   });
   const glyphAlpha = useDerivedValue(() =>
-    amount.value >= 1 ? model.toAlpha : 0,
+    smootherstep(0, 1, tt.value) >= 1 ? model.toAlpha : 0,
   );
   return (
     <>
@@ -359,18 +360,23 @@ function WriteGlyph({
   color,
 }: {
   model: WriteModel;
-  tt: SharedValue<number>;
+  tt: SharedValue<number> | DerivedValue<number>;
   font: SkFont;
   color: string;
 }) {
-  const alpha = useDerivedValue(() => writeSubAlpha(tt.value, model.index, model.count));
-  const borderEnd = useDerivedValue(() => writePhase(alpha.value).borderEnd);
-  const borderAlpha = useDerivedValue(() => writePhase(alpha.value).borderAlpha);
+  const borderEnd = useDerivedValue(() =>
+    writePhase(writeSubAlpha(tt.value, model.index, model.count)).borderEnd,
+  );
+  const borderAlpha = useDerivedValue(() =>
+    writePhase(writeSubAlpha(tt.value, model.index, model.count)).borderAlpha,
+  );
   const fillPathAlpha = useDerivedValue(() => {
-    const phase = writePhase(alpha.value);
+    const phase = writePhase(writeSubAlpha(tt.value, model.index, model.count));
     return phase.settled ? 0 : phase.fillAlpha;
   });
-  const glyphAlpha = useDerivedValue(() => (writePhase(alpha.value).settled ? 1 : 0));
+  const glyphAlpha = useDerivedValue(() =>
+    writePhase(writeSubAlpha(tt.value, model.index, model.count)).settled ? 1 : 0,
+  );
   return (
     <>
       <Path
@@ -407,7 +413,7 @@ function WriteFallbackGlyph({
   box: CharBox;
   index: number;
   count: number;
-  tt: SharedValue<number>;
+  tt: SharedValue<number> | DerivedValue<number>;
   font: SkFont;
   color: string;
 }) {
@@ -693,6 +699,8 @@ export type MorphTextSequenceProps = {
   charStyle: TextStyle;
   color: string;
   progress: SharedValue<number> | DerivedValue<number>;
+  /** All initial texts write together inside this normalized clock window. */
+  writeWindow: readonly [number, number];
   style: StyleProp<ViewStyle>;
 };
 
@@ -705,8 +713,59 @@ type SequenceItemModel = {
   enterGlyphs: Glyph[];
 };
 
+type SequenceWriteFallback = {
+  box: CharBox;
+  index: number;
+  count: number;
+};
+
+type SequenceScene = {
+  items: SequenceItemModel[];
+  writeModels: WriteModel[];
+  writeFallback: SequenceWriteFallback[];
+};
+
 function offsetBoxes(boxes: CharBox[], x: number, y: number): CharBox[] {
   return boxes.map(box => ({ ...box, x: box.x + x, y: box.y + y }));
+}
+
+/** Fuse the same character index from every source into one write path. */
+function buildSequenceWriteModels(
+  font: SkFont,
+  layouts: CharBox[][],
+): Pick<SequenceScene, 'writeModels' | 'writeFallback'> {
+  const count = layouts.reduce((max, layout) => Math.max(max, layout.length), 0);
+  const pathGroups: SkPath[][] = Array.from({ length: count }, () => []);
+  const glyphGroups: Glyph[][] = Array.from({ length: count }, () => []);
+  const fallback: { box: CharBox; index: number }[] = [];
+  for (const layout of layouts) {
+    layout.forEach((box, index) => {
+      const path = placedGlyphPath(font, box);
+      if (path) {
+        pathGroups[index].push(path);
+        glyphGroups[index].push(...toGlyphs([box]));
+      } else {
+        fallback.push({ box, index });
+      }
+    });
+  }
+  const writeModels = pathGroups.flatMap((paths, index) => {
+    if (paths.length === 0) {
+      return [];
+    }
+    const builder = Skia.PathBuilder.Make();
+    paths.forEach(path => builder.addPath(path));
+    return [{
+      path: builder.build(),
+      glyphs: glyphGroups[index],
+      index,
+      count,
+    }];
+  });
+  return {
+    writeModels,
+    writeFallback: fallback.map(item => ({ ...item, count })),
+  };
 }
 
 function SequenceTransform({
@@ -726,8 +785,12 @@ function SequenceTransform({
       Math.max(0, (progress.value - model.start) / (model.end - model.start)),
     ),
   );
-  const exitAlpha = useDerivedValue(() => 1 - smootherstep(0, 1, tt.value));
-  const enterAlpha = useDerivedValue(() => smootherstep(0, 1, tt.value));
+  const exitAlpha = useDerivedValue(() =>
+    1 - smootherstep(model.start, model.end, progress.value),
+  );
+  const enterAlpha = useDerivedValue(() =>
+    smootherstep(model.start, model.end, progress.value),
+  );
   return (
     <>
       {model.exitGlyphs.length > 0 && (
@@ -769,6 +832,7 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
   charStyle,
   color,
   progress,
+  writeWindow,
   style,
 }: MorphTextSequenceProps) {
   const font = useMorphFont(charStyle);
@@ -776,11 +840,12 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
   const lineHeight = charStyle.lineHeight ?? fontSize * 1.35;
   const letterSpacing = charStyle.letterSpacing ?? 0;
   const centered = charStyle.textAlign === 'center';
-  const models = useMemo<SequenceItemModel[]>(() => {
+  const scene = useMemo<SequenceScene>(() => {
     if (!font) {
-      return [];
+      return { items: [], writeModels: [], writeFallback: [] };
     }
-    return items.map(item => {
+    const sourceLayouts: CharBox[][] = [];
+    const itemModels = items.map(item => {
       const from = offsetBoxes(
         layoutText(
           item.initialText,
@@ -793,6 +858,7 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
         item.x,
         item.y,
       );
+      sourceLayouts.push(from);
       const to = offsetBoxes(
         layoutText(
           item.text,
@@ -816,19 +882,66 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
         enterGlyphs: toGlyphs(flights.enters),
       };
     });
+    return {
+      items: itemModels,
+      ...buildSequenceWriteModels(font, sourceLayouts),
+    };
   }, [centered, font, items, letterSpacing, lineHeight]);
+  const writeT = useDerivedValue(() =>
+    Math.min(
+      1,
+      Math.max(
+        0,
+        (progress.value - writeWindow[0]) / (writeWindow[1] - writeWindow[0]),
+      ),
+    ),
+  );
+  const writeOwner = useDerivedValue<number>(() =>
+    progress.value < writeWindow[1] ? 1 : 0,
+  );
+  const transformOwner = useDerivedValue<number>(() =>
+    progress.value >= writeWindow[1] ? 1 : 0,
+  );
 
   return (
     <Canvas style={style}>
-      {font && models.map(model => (
-        <SequenceTransform
-          key={model.key}
-          model={model}
-          progress={progress}
-          font={font}
-          color={color}
-        />
-      ))}
+      {font && (
+        <>
+          <Group opacity={writeOwner}>
+            {scene.writeModels.map((model, index) => (
+              <WriteGlyph
+                key={`sequence-write-${index}`}
+                model={model}
+                tt={writeT}
+                font={font}
+                color={color}
+              />
+            ))}
+            {scene.writeFallback.map((fallback, index) => (
+              <WriteFallbackGlyph
+                key={`sequence-write-fallback-${index}`}
+                box={fallback.box}
+                index={fallback.index}
+                count={fallback.count}
+                tt={writeT}
+                font={font}
+                color={color}
+              />
+            ))}
+          </Group>
+          <Group opacity={transformOwner}>
+            {scene.items.map(model => (
+              <SequenceTransform
+                key={model.key}
+                model={model}
+                progress={progress}
+                font={font}
+                color={color}
+              />
+            ))}
+          </Group>
+        </>
+      )}
     </Canvas>
   );
 });
