@@ -1,20 +1,19 @@
 /**
  * One drawn mark per onboarding panel — the visual argument for what the text
- * says. All live in the motion library now; the frame morphs between them with
- * MorphShape (splits, merges, and the note's filled head included).
+ * says. Every selection comes from the canonical SVG-backed symbol library,
+ * so settled marks use the exact STIX Math / Noto Music compound artwork.
  */
-import { LIBRARY } from '../motion';
-import type { Shape } from '../motion';
+import { SYMBOL_LIBRARY, type SymbolPrimitive } from '../motion';
 
-export const SIGILS: Record<string, Shape> = {
+export const SIGILS = {
   /** ♪ — a song, singular and whole: music that's only yours. */
-  what: LIBRARY.note,
-  /** Three strata, widest at the base — the three engines; also a Cantor cut. */
-  backends: LIBRARY.strata,
-  /** The inward curl — bits wound into words, a signature only you can draw. */
-  identity: LIBRARY.spiral,
-  /** The vault the twelve words go into. */
-  backup: LIBRARY.vault,
+  what: SYMBOL_LIBRARY.eighthNote,
+  /** ⇄ — the generation engine can move between interchangeable backends. */
+  backends: SYMBOL_LIBRARY.interchange,
+  /** ⊛ — one distinct identity held inside its own boundary. */
+  identity: SYMBOL_LIBRARY.identityMark,
+  /** ⟲ — the recovery phrase brings an identity back. */
+  backup: SYMBOL_LIBRARY.restore,
   /** ∞ — Cantor's paradise, the threshold into the app. */
-  threshold: LIBRARY.infinity,
-};
+  threshold: SYMBOL_LIBRARY.infinity,
+} satisfies Record<string, SymbolPrimitive>;

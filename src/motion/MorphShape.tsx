@@ -102,13 +102,15 @@ export type MorphShapeProps = {
   duration?: number;
   /** Fraction of the available canvas axes occupied by the mark. */
   scale?: number;
-  /** Optical width / height override; defaults to the authored ratio. */
+  /** Optional non-uniform override; exact artwork defaults to uniform scale. */
   aspectRatio?: number;
   /**
    * Symbol weight in authoring units. For canonical filled glyphs this offsets
    * the real outline inward/outward; for line-authored shapes it is ribbon width.
    */
   strokeWidth?: number;
+  /** Uniform inward offset for SVG artwork, in authored 0..100 units. */
+  inkInset?: number;
   /** Destination centre. Changes morph the same geometry into its new place. */
   centerX?: number;
   centerY?: number;
@@ -129,6 +131,7 @@ function MorphShapeImpl({
   scale = DEFAULT_SCALE,
   aspectRatio,
   strokeWidth,
+  inkInset,
   centerX,
   centerY,
   appearance = 'none',
@@ -138,14 +141,14 @@ function MorphShapeImpl({
   const [built, setBuilt] = useState<Built | null>(null);
   const key =
     `${shape.name}|${width}x${height}|${scale}|` +
-    `${aspectRatio ?? 'auto'}|${strokeWidth ?? 'auto'}|${centerX ?? 'cx'}|${
-      centerY ?? 'cy'
-    }`;
+    `${aspectRatio ?? 'auto'}|${strokeWidth ?? 'auto'}|${inkInset ?? 0}|` +
+    `${centerX ?? 'cx'}|${centerY ?? 'cy'}`;
 
   if (width > 0 && height > 0 && built?.key !== key) {
     const target = resolveSilhouette(shape, width, height, scale, {
       aspectRatio,
       strokeWidth,
+      inkInset,
       centerX,
       centerY,
     });

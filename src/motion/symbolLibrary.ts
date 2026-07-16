@@ -217,6 +217,56 @@ export const SYMBOL_LIBRARY = {
       stroke('M 65 72 L 75 67 L 70 77'),
     ],
   },
+
+  /* ------------------------------------- SVG-backed onboarding additions */
+
+  /** ♪ — an exact Noto Music eighth note, singular and self-contained. */
+  eighthNote: {
+    name: 'eighth-note',
+    glyph: '♪',
+    label: 'Eighth note',
+    meaning: 'A single musical sound and the smallest seed of a song.',
+    artwork: SYMBOL_ARTWORK.eighthNote,
+    aspectRatio: 0.56,
+    strokeWidth: 1.55,
+    contours: SYMBOL_ARTWORK.eighthNote.contours.map(d => fill(d)),
+  },
+
+  /** ⇄ — opposite paths over one another; engines remain interchangeable. */
+  interchange: {
+    name: 'interchange',
+    glyph: '⇄',
+    label: 'Interchange',
+    meaning: 'Movement in either direction between interchangeable systems.',
+    artwork: SYMBOL_ARTWORK.interchange,
+    aspectRatio: 1.14,
+    strokeWidth: 1.55,
+    contours: SYMBOL_ARTWORK.interchange.contours.map(d => fill(d)),
+  },
+
+  /** ⊛ — one distinct mark held inside a complete boundary. */
+  identityMark: {
+    name: 'identity-mark',
+    glyph: '⊛',
+    label: 'Circled asterisk',
+    meaning: 'A distinct identity held inside its own boundary.',
+    artwork: SYMBOL_ARTWORK.identityMark,
+    aspectRatio: 1,
+    strokeWidth: 1.55,
+    contours: SYMBOL_ARTWORK.identityMark.contours.map(d => fill(d)),
+  },
+
+  /** ⟲ — the recovery gesture: follow the phrase back to the beginning. */
+  restore: {
+    name: 'restore',
+    glyph: '⟲',
+    label: 'Restore',
+    meaning: 'Return to an earlier state and recover what was preserved.',
+    artwork: SYMBOL_ARTWORK.restore,
+    aspectRatio: 1.12,
+    strokeWidth: 1.55,
+    contours: SYMBOL_ARTWORK.restore.contours.map(d => fill(d)),
+  },
 } satisfies Record<string, SymbolPrimitive>;
 
 export type SymbolName = keyof typeof SYMBOL_LIBRARY;

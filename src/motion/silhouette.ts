@@ -41,6 +41,7 @@ function authoredContours(
   shape: Shape,
   strokeWidth: number,
   n: number,
+  inkInset = 0,
 ): Pt[][] {
   if (shape.artwork) {
     const parsed = Skia.Path.MakeFromSVGString(shape.artwork.d);
@@ -51,7 +52,7 @@ function authoredContours(
     builder.setFillType(FillType.EvenOdd);
     const original = builder.build();
     const baseline = shape.strokeWidth ?? AUTHOR_STROKE;
-    const weightDelta = strokeWidth - baseline;
+    const weightDelta = strokeWidth - baseline - inkInset;
     if (Math.abs(weightDelta) < 1e-3) {
       return sampleCompoundPath(original, n);
     }
@@ -99,11 +100,20 @@ export function resolveSilhouette(
 ): Silhouette {
   const centerX = options.centerX ?? width / 2;
   const centerY = options.centerY ?? height / 2;
-  const aspectRatio = options.aspectRatio ?? shape.aspectRatio ?? 1;
+  // Exact SVG/font artwork already contains its intrinsic proportions. Its
+  // centerline skeleton may still carry an optical ratio, but applying that
+  // ratio to the finished silhouette would stretch the source artwork twice.
+  const aspectRatio =
+    options.aspectRatio ?? (shape.artwork ? 1 : shape.aspectRatio ?? 1);
   const size = Math.min(height * scale, (width * scale) / aspectRatio);
   const strokeWidth = options.strokeWidth ?? shape.strokeWidth ?? AUTHOR_STROKE;
   return {
-    contours: authoredContours(shape, strokeWidth, n).map(pts =>
+    contours: authoredContours(
+      shape,
+      strokeWidth,
+      n,
+      options.inkInset ?? 0,
+    ).map(pts =>
       placePts(pts, centerX, centerY, size, 0, aspectRatio),
     ),
   };

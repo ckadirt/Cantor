@@ -43,6 +43,8 @@ const BODY_SHIFT = 14; // px the incoming body rises
 
 // Fixed frame zones so nothing shifts while letters fly between panels.
 const SIGIL_H = 168;
+const SIGIL_ASPECT_RATIO = 1; // uniform scale preserves the source SVG exactly
+const SIGIL_INK_INSET = 2; // authored units removed uniformly from SVG boundaries
 const EYEBROW_H = 20;
 const TITLE_H = 78;
 
@@ -133,6 +135,8 @@ export function Onboarding({ onDone }: Props) {
           width={width - space.lg * 2}
           height={SIGIL_H}
           color={pal.ink}
+          aspectRatio={SIGIL_ASPECT_RATIO}
+          inkInset={SIGIL_INK_INSET}
           appearance="write"
         />
       </View>

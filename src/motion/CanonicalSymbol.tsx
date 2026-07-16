@@ -37,7 +37,9 @@ export function SymbolArtworkPath({
   strokeWidth,
 }: SymbolArtworkPathProps) {
   const primitive = SYMBOL_LIBRARY[symbol];
-  const ratio = aspectRatio ?? primitive.aspectRatio ?? 1;
+  // The compound SVG already owns its width/height relationship. Only an
+  // explicit caller override may opt into non-uniform scaling.
+  const ratio = aspectRatio ?? 1;
   const silhouette = resolveSilhouette(primitive, size * ratio, size, 1, {
     centerX,
     centerY,
@@ -84,7 +86,7 @@ export const CanonicalSymbol = React.memo(function CanonicalSymbolComponent({
   aspectRatio,
   strokeWidth,
 }: CanonicalSymbolProps) {
-  const ratio = aspectRatio ?? SYMBOL_LIBRARY[symbol].aspectRatio ?? 1;
+  const ratio = aspectRatio ?? 1;
   const size = Math.min(height * scale, (width * scale) / ratio);
   return (
     <Canvas style={{ width, height }}>

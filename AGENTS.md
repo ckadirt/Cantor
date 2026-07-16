@@ -112,6 +112,9 @@ idea.
 - Use mathematical easing such as smoothstep/smootherstep or deliberate cubic
   Bezier curves. Never introduce bouncy, elastic, or spring-like motion.
 - Prefer thin, delicate, intricate, single-stroke forms over chunky graphics.
+- Preserve the intrinsic aspect ratio of source-derived SVG/font artwork. Fit
+  it with uniform scaling; never stretch a finished silhouette to an optical
+  width or height.
 - Favor larger, elegant forms with clean negative space.
 - Prefer uniform spacing, even rhythm, regularity, and clear spatial order over
   deliberately uneven or noisy layouts.

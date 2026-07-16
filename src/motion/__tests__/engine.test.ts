@@ -72,16 +72,14 @@ describe('canonical symbol primitives', () => {
     'partial',
     'nabla',
     'continuum',
+    'eighthNote',
+    'interchange',
+    'identityMark',
+    'restore',
   ];
 
-  it('contains the selected semantic set and exactly 29 contours', () => {
+  it('contains the selected SVG-backed semantic set', () => {
     expect(Object.keys(SYMBOL_LIBRARY)).toEqual(names);
-    expect(
-      Object.values(SYMBOL_LIBRARY).reduce(
-        (sum, shape) => sum + shape.contours.length,
-        0,
-      ),
-    ).toBe(29);
     for (const shape of Object.values(SYMBOL_LIBRARY)) {
       expect(shape.glyph.length).toBeGreaterThan(0);
       expect(shape.label.length).toBeGreaterThan(0);
@@ -93,6 +91,25 @@ describe('canonical symbol primitives', () => {
       expect(artwork).not.toBeNull();
       const contours = Skia.ContourMeasureIter(artwork!, false, 1);
       expect(contours.next()).not.toBeNull();
+    }
+  });
+
+  it('preserves exact artwork aspect ratios by default', () => {
+    for (const shape of Object.values(SYMBOL_LIBRARY)) {
+      const source = Skia.Path.MakeFromSVGString(shape.artwork.d)!;
+      const sourceBounds = source.computeTightBounds();
+      const resolved = resolveSilhouette(shape, 300, 300, 1);
+      const points = resolved.contours.flat();
+      const xs = points.map(point => point.x);
+      const ys = points.map(point => point.y);
+      const resolvedRatio =
+        (Math.max(...xs) - Math.min(...xs)) /
+        (Math.max(...ys) - Math.min(...ys));
+
+      expect(resolvedRatio).toBeCloseTo(
+        sourceBounds.width / sourceBounds.height,
+        1,
+      );
     }
   });
 

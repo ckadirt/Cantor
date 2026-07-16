@@ -27,7 +27,7 @@ export type Shape = {
   artwork?: { d: string };
   /** Centerline thickness in the 0..100 authoring box. */
   strokeWidth?: number;
-  /** Optical width / height. The default authoring box is square. */
+  /** Optical ratio for centerlines; exact artwork keeps its intrinsic ratio. */
   aspectRatio?: number;
 };
 
@@ -48,6 +48,8 @@ export type ResolveShapeOptions = {
   aspectRatio?: number;
   /** Per-instance stroke thickness in authoring units. */
   strokeWidth?: number;
+  /** Uniform inward offset for exact filled artwork; preserves proportions. */
+  inkInset?: number;
   /** Destination centre in canvas pixels; defaults to the canvas centre. */
   centerX?: number;
   centerY?: number;
