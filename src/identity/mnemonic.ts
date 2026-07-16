@@ -45,3 +45,16 @@ export function getIdentityPhrase(): readonly string[] {
   }
   return phrase;
 }
+
+/**
+ * The 11 bits a mnemonic word actually encodes: its index in the 2,048-word
+ * list, zero-padded. This is real — the reveal animation shows the genuine
+ * entropy each word came from, not decorative noise.
+ */
+export function wordBits(word: string): string {
+  const index = wordlist.indexOf(word);
+  if (index < 0) {
+    throw new Error(`identity: '${word}' is not a BIP39 word`);
+  }
+  return index.toString(2).padStart(11, '0');
+}
