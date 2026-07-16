@@ -1,163 +1,191 @@
 /**
  * Panel 3 — the reveal. The 12-word identity, freshly minted on-device.
  *
- * No grid: each slot first WRITES the word's true entropy — the 11 bits that
- * are its index in the BIP39 wordlist — then morphs those bits into the word
- * (the engine's Write and Transform gestures). While bits are on screen every
- * slot is 11 characters wide, so the cascade never reflows; when the last
- * word lands, one condense beat relaxes the slots to their words and the
- * phrase settles into prose.
+ * Each fixed slot starts with the word's true entropy — the 11 bits that are
+ * its index in the BIP39 wordlist — then morphs those bits into the word. The
+ * three-column grid and slot widths never change, so neither representation can
+ * reflow the phrase while the reveal is running.
  *
- * Flicker law notes: RevealWord is memoized with stable prop identities
- * (module-const styles, per-word booleans), so a cascade commit re-records
- * only the one canvas whose text changes — and that canvas is quiescent at
- * both of its commits (before its write, after its morph). The condense is a
- * shared-value width ramp: no React commit at all.
+ * Flicker law notes: every source and destination is installed in one sequence
+ * canvas before its shared UI clock starts. There are no text swaps, width
+ * commits, or ownership hand-offs through React during the cascade. The only
+ * later commit reveals Continue after the canvas paints its terminal frame.
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View, type TextStyle } from 'react-native';
 import Animated, {
+  cancelAnimation,
   Easing,
   FadeIn,
-  useAnimatedStyle,
+  runOnJS,
   useReducedMotion,
   useSharedValue,
+  withDelay,
   withTiming,
-  type SharedValue,
 } from 'react-native-reanimated';
-import { MorphText, smootherstep } from '../../motion';
+import {
+  MorphTextSequence,
+  type MorphTextSequenceItem,
+} from '../../motion';
 import { Button, PanelBody } from './kit';
 import { getIdentityPhrase, wordBits } from '../../identity/mnemonic';
 import { SIGILS } from '../sigils';
 import { space, type, usePalette } from '../../theme/tokens';
 import type { PanelBodyProps, PanelDef } from './types';
 
-// The ceremony: each slot writes its 11 bits, holds them, morphs to the word;
-// after the last morph the whole phrase condenses to word-width in one beat.
-const WRITE_BASE_MS = 400;
-const WRITE_STAGGER_MS = 90;
-const BITS_WRITE_MS = 650;
-const MORPH_AFTER_MS = 950; // write start → morph start, per word
-const RESOLVE_MS = 480;
-const CONDENSE_MS = 420;
-const CONDENSE_AFTER_MS =
-  WRITE_BASE_MS + 11 * WRITE_STAGGER_MS + MORPH_AFTER_MS + RESOLVE_MS + 150;
+/* -------------------------------------------------------------- motion knobs */
+/** Lets all 12 prebuilt canvas models paint their source before time advances. */
+const CANVAS_PREPARE_MS = 600;
+/** How long all byte groups rest in their final positions before morphing. */
+const BITS_HOLD_MS = 450;
+/** Delay between consecutive word morph starts. */
+const MORPH_STAGGER_MS = 100;
+/** Runtime of each byte-to-word transform. */
+const MORPH_MS = 480;
+/** Soft reveal after the last word is completely settled. */
+const BUTTON_REVEAL_MS = 180;
 
-// Word geometry — mono metrics are uniform, so widths are exact.
-const WORD_SIZE = 15;
+/* -------------------------------------------------------------- layout knobs */
+/** A stable three-column phrase: four rows before, during, and after the morph. */
+const WORDS_PER_ROW = 3;
+/** Fits every 11-bit source in one third of the 392 dp reference viewport. */
+const WORD_SIZE = 13;
 const MONO_ADVANCE = WORD_SIZE * 0.6;
 const WORD_H = 20;
 const BITS_LEN = 11;
 const BITS_W = BITS_LEN * MONO_ADVANCE + 2;
+const NUMBER_W = 16;
+const NUMBER_SLOT_GAP = 4;
+const CONTINUE_SLOT_H = 48;
 
 const WORD_STYLE: TextStyle = {
   fontFamily: type.mono.fontFamily,
   fontSize: WORD_SIZE,
 };
 
-/** Stable identity — a fresh object here would defeat MorphText's memo. */
-const SLOT_TEXT_STYLE = { width: BITS_W, height: WORD_H } as const;
-
-const RevealWord = React.memo(function RevealWordImpl({
-  word,
-  index,
-  written,
-  resolved,
-  condense,
-}: {
-  word: string;
-  index: number;
-  written: boolean;
-  resolved: boolean;
-  condense: SharedValue<number>;
-}) {
-  const pal = usePalette();
-  const bits = useMemo(() => wordBits(word), [word]);
-  const wordW = word.length * MONO_ADVANCE + 2;
-  const slotStyle = useAnimatedStyle(() => ({
-    width: BITS_W + (wordW - BITS_W) * smootherstep(0, 1, condense.value),
-  }));
-  return (
-    <View style={styles.word}>
-      <Text style={[styles.num, { color: pal.faint }]}>
-        {String(index + 1).padStart(2, '0')}
-      </Text>
-      <Animated.View style={[styles.slot, slotStyle]}>
-        <MorphText
-          text={resolved ? word : written ? bits : ''}
-          charStyle={WORD_STYLE}
-          color={resolved ? pal.ink : pal.faint}
-          variant="transform"
-          appearance="write"
-          writeDuration={BITS_WRITE_MS}
-          duration={RESOLVE_MS}
-          style={SLOT_TEXT_STYLE}
-        />
-      </Animated.View>
-    </View>
-  );
-});
-
 function Body({ onNext }: PanelBodyProps) {
   const pal = usePalette();
   const reduced = useReducedMotion();
   const [open, setOpen] = useState(false);
-  const [writtenCount, setWrittenCount] = useState(0);
-  const [resolvedCount, setResolvedCount] = useState(0);
-  const condense = useSharedValue(0);
+  const [ready, setReady] = useState(reduced);
+  const [phraseWidth, setPhraseWidth] = useState(0);
+  const clock = useSharedValue(reduced ? 1 : 0);
   const words = getIdentityPhrase();
+  const timelineMs =
+    BITS_HOLD_MS + (words.length - 1) * MORPH_STAGGER_MS + MORPH_MS;
+  const rows = useMemo(
+    () =>
+      Array.from({ length: Math.ceil(words.length / WORDS_PER_ROW) }, (_, row) =>
+        words.slice(row * WORDS_PER_ROW, (row + 1) * WORDS_PER_ROW),
+      ),
+    [words],
+  );
+  const sequenceItems = useMemo<readonly MorphTextSequenceItem[]>(() => {
+    if (phraseWidth <= 0) {
+      return [];
+    }
+    const columnGap = space.sm;
+    const columnWidth =
+      (phraseWidth - columnGap * (WORDS_PER_ROW - 1)) / WORDS_PER_ROW;
+    return words.map((word, index) => {
+      const row = Math.floor(index / WORDS_PER_ROW);
+      const column = index % WORDS_PER_ROW;
+      const startMs = BITS_HOLD_MS + index * MORPH_STAGGER_MS;
+      return {
+        key: `${index}-${word}`,
+        initialText: wordBits(word),
+        text: word,
+        x:
+          column * (columnWidth + columnGap) +
+          NUMBER_W +
+          NUMBER_SLOT_GAP,
+        y: row * (WORD_H + space.sm),
+        width: BITS_W,
+        start: startMs / timelineMs,
+        end: (startMs + MORPH_MS) / timelineMs,
+      };
+    });
+  }, [phraseWidth, timelineMs, words]);
+  const revealContinue = useCallback(() => setReady(true), []);
 
   useEffect(() => {
     if (reduced) {
-      setWrittenCount(words.length);
-      setResolvedCount(words.length);
-      condense.value = 1;
+      clock.value = 1;
+      setReady(true);
       return;
     }
-    const timers: ReturnType<typeof setTimeout>[] = [];
-    words.forEach((_, i) => {
-      const t0 = WRITE_BASE_MS + i * WRITE_STAGGER_MS;
-      timers.push(
-        setTimeout(() => setWrittenCount(n => Math.max(n, i + 1)), t0),
-      );
-      timers.push(
-        setTimeout(
-          () => setResolvedCount(n => Math.max(n, i + 1)),
-          t0 + MORPH_AFTER_MS,
-        ),
-      );
-    });
-    timers.push(
-      setTimeout(() => {
-        condense.value = withTiming(1, {
-          duration: CONDENSE_MS,
-          easing: Easing.out(Easing.cubic),
-        });
-      }, CONDENSE_AFTER_MS),
+    if (phraseWidth <= 0) {
+      return;
+    }
+    setReady(false);
+    clock.value = 0;
+    clock.value = withDelay(
+      CANVAS_PREPARE_MS,
+      withTiming(
+        1,
+        { duration: timelineMs, easing: Easing.linear },
+        finished => {
+          if (finished) {
+            runOnJS(revealContinue)();
+          }
+        },
+      ),
     );
-    return () => timers.forEach(clearTimeout);
-  }, [words, reduced, condense]);
+    return () => cancelAnimation(clock);
+  }, [clock, phraseWidth, reduced, revealContinue, timelineMs]);
 
   const toggle = () => setOpen(o => !o);
 
   return (
-    <PanelBody footer={<Button label="Continue" onPress={onNext} />}>
+    <PanelBody
+      footer={
+        <View style={styles.continueSlot}>
+          {ready && (
+            <Animated.View entering={FadeIn.duration(BUTTON_REVEAL_MS)}>
+              <Button label="Continue" onPress={onNext} />
+            </Animated.View>
+          )}
+        </View>
+      }>
       <Text style={[type.small, styles.lede, { color: pal.muted }]}>
         These twelve words are your identity in Cantor. They were just created on
         this device — no password behind them, and no one else has them.
       </Text>
 
-      <View style={styles.phrase} accessible accessibilityLabel={words.join(', ')}>
-        {words.map((w, i) => (
-          <RevealWord
-            key={`${i}-${w}`}
-            word={w}
-            index={i}
-            written={i < writtenCount}
-            resolved={i < resolvedCount}
-            condense={condense}
-          />
+      <View
+        style={styles.phrase}
+        accessible
+        accessibilityLabel={words.join(', ')}
+        onLayout={event => {
+          const nextWidth = event.nativeEvent.layout.width;
+          setPhraseWidth(current =>
+            Math.abs(current - nextWidth) < 0.5 ? current : nextWidth,
+          );
+        }}>
+        {rows.map((row, rowIndex) => (
+          <View key={rowIndex} style={styles.phraseRow}>
+            {row.map((word, columnIndex) => {
+              const index = rowIndex * WORDS_PER_ROW + columnIndex;
+              return (
+                <View key={`${index}-${word}`} style={styles.word}>
+                  <Text style={[styles.num, { color: pal.faint }]}>
+                    {String(index + 1).padStart(2, '0')}
+                  </Text>
+                  <View style={styles.slot} />
+                </View>
+              );
+            })}
+          </View>
         ))}
+        {sequenceItems.length > 0 && (
+          <MorphTextSequence
+            items={sequenceItems}
+            charStyle={WORD_STYLE}
+            color={pal.ink}
+            progress={clock}
+            style={styles.phraseCanvas}
+          />
+        )}
       </View>
 
       <Pressable onPress={toggle} style={styles.howHead} hitSlop={8}>
@@ -193,19 +221,32 @@ export const identityPanel: PanelDef = {
 const styles = StyleSheet.create({
   lede: { marginBottom: space.lg },
   phrase: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    columnGap: space.lg,
+    position: 'relative',
     rowGap: space.sm,
     paddingVertical: space.sm,
   },
-  word: { flexDirection: 'row', alignItems: 'baseline', gap: 6 },
-  slot: { height: WORD_H, overflow: 'hidden' },
+  phraseRow: { flexDirection: 'row', columnGap: space.sm },
+  word: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    gap: NUMBER_SLOT_GAP,
+  },
+  slot: { width: BITS_W, height: WORD_H, overflow: 'hidden' },
   num: {
+    width: NUMBER_W,
     fontFamily: type.mono.fontFamily,
     fontSize: 10,
     fontVariant: ['tabular-nums'],
   },
+  phraseCanvas: {
+    position: 'absolute',
+    top: space.sm,
+    left: 0,
+    right: 0,
+    bottom: space.sm,
+  },
   howHead: { marginTop: space.xl },
   howBody: { marginTop: space.sm },
+  continueSlot: { minHeight: CONTINUE_SLOT_H },
 });

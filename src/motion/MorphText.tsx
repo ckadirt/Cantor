@@ -17,7 +17,7 @@
  * the tree: animated outlines hand ownership to mounted Glyphs on the UI
  * thread, preserving the Flicker Law across React commits and Skia mapper ticks.
  */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 import {
   Canvas,
@@ -674,6 +674,164 @@ function MorphTextImpl({
     </View>
   );
 }
+
+export type MorphTextSequenceItem = {
+  key: string;
+  initialText: string;
+  text: string;
+  /** Fixed canvas coordinates for this text slot. */
+  x: number;
+  y: number;
+  width: number;
+  /** Normalized window on the sequence's external 0..1 clock. */
+  start: number;
+  end: number;
+};
+
+export type MorphTextSequenceProps = {
+  items: readonly MorphTextSequenceItem[];
+  charStyle: TextStyle;
+  color: string;
+  progress: SharedValue<number> | DerivedValue<number>;
+  style: StyleProp<ViewStyle>;
+};
+
+type SequenceItemModel = {
+  key: string;
+  start: number;
+  end: number;
+  transformLayers: TransformLayerModel[];
+  exitGlyphs: Glyph[];
+  enterGlyphs: Glyph[];
+};
+
+function offsetBoxes(boxes: CharBox[], x: number, y: number): CharBox[] {
+  return boxes.map(box => ({ ...box, x: box.x + x, y: box.y + y }));
+}
+
+function SequenceTransform({
+  model,
+  progress,
+  font,
+  color,
+}: {
+  model: SequenceItemModel;
+  progress: SharedValue<number> | DerivedValue<number>;
+  font: SkFont;
+  color: string;
+}) {
+  const tt = useDerivedValue(() =>
+    Math.min(
+      1,
+      Math.max(0, (progress.value - model.start) / (model.end - model.start)),
+    ),
+  );
+  const exitAlpha = useDerivedValue(() => 1 - smootherstep(0, 1, tt.value));
+  const enterAlpha = useDerivedValue(() => smootherstep(0, 1, tt.value));
+  return (
+    <>
+      {model.exitGlyphs.length > 0 && (
+        <Glyphs
+          font={font}
+          glyphs={model.exitGlyphs}
+          color={color}
+          opacity={exitAlpha}
+        />
+      )}
+      {model.transformLayers.map((layer, index) => (
+        <TransformLayer
+          key={`${model.key}#${index}`}
+          model={layer}
+          tt={tt}
+          font={font}
+          color={color}
+        />
+      ))}
+      {model.enterGlyphs.length > 0 && (
+        <Glyphs
+          font={font}
+          glyphs={model.enterGlyphs}
+          color={color}
+          opacity={enterAlpha}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * Several planned text transforms on one canvas. Every endpoint is prepared
+ * together, but each item owns a clock window. This avoids a native surface
+ * per short label while preserving MorphText's UI-thread terminal hand-off.
+ */
+export const MorphTextSequence = React.memo(function MorphTextSequenceComponent({
+  items,
+  charStyle,
+  color,
+  progress,
+  style,
+}: MorphTextSequenceProps) {
+  const font = useMorphFont(charStyle);
+  const fontSize = charStyle.fontSize ?? 14;
+  const lineHeight = charStyle.lineHeight ?? fontSize * 1.35;
+  const letterSpacing = charStyle.letterSpacing ?? 0;
+  const centered = charStyle.textAlign === 'center';
+  const models = useMemo<SequenceItemModel[]>(() => {
+    if (!font) {
+      return [];
+    }
+    return items.map(item => {
+      const from = offsetBoxes(
+        layoutText(
+          item.initialText,
+          font,
+          letterSpacing,
+          item.width,
+          lineHeight,
+          centered ? 'center' : 'left',
+        ),
+        item.x,
+        item.y,
+      );
+      const to = offsetBoxes(
+        layoutText(
+          item.text,
+          font,
+          letterSpacing,
+          item.width,
+          lineHeight,
+          centered ? 'center' : 'left',
+        ),
+        item.x,
+        item.y,
+      );
+      const flights = buildTransformFlights(from, to);
+      const morphModels = buildMorphModels(font, flights);
+      return {
+        key: item.key,
+        start: item.start,
+        end: item.end,
+        transformLayers: buildTransformLayers(morphModels),
+        exitGlyphs: toGlyphs(flights.exits),
+        enterGlyphs: toGlyphs(flights.enters),
+      };
+    });
+  }, [centered, font, items, letterSpacing, lineHeight]);
+
+  return (
+    <Canvas style={style}>
+      {font && models.map(model => (
+        <SequenceTransform
+          key={model.key}
+          model={model}
+          progress={progress}
+          font={font}
+          color={color}
+        />
+      ))}
+    </Canvas>
+  );
+});
 
 /** Convenience primitives: one engine, explicit vocabulary at call sites. */
 type VariantTextProps = Omit<MorphTextProps, 'variant'>;

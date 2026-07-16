@@ -44,7 +44,10 @@ export {
   CrossfadeText,
   MatchingText,
   MorphText,
+  MorphTextSequence,
   TransformText,
   WriteText,
   type MorphTextProps,
+  type MorphTextSequenceItem,
+  type MorphTextSequenceProps,
 } from './MorphText';
