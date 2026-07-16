@@ -135,6 +135,89 @@ idea.
 - See `README.md` for the current build, Metro, device, NDK, and environment-trap
   workflow.
 
+## On-device visual debugging playbook
+
+Use this loop for layout, typography, SVG/Skia, and flicker work. A full-screen
+screenshot is useful for composition; also make a focused crop so small type and
+alignment differences are not judged from a downscaled image.
+
+### Target the physical phone explicitly
+
+As of 2026-07-16 the authorized Xiaomi phone is `6b1f6ba8629c` (1080×2400).
+Another ADB entry may be present but unauthorized, so first check the list and
+always pass `-s` when more than one device appears:
+
+```sh
+adb devices -l
+adb -s 6b1f6ba8629c reverse tcp:8081 tcp:8081
+```
+
+The package is `com.cantor.app`. A debug build can be reloaded without opening
+the Dev Menu:
+
+```sh
+adb -s 6b1f6ba8629c shell am broadcast -a com.cantor.app.RELOAD_APP_ACTION
+```
+
+Fast Refresh is normally enough for TypeScript/style edits. Use the broadcast
+when a deterministic replay from the beginning of an animation is needed.
+
+### Reliable screenshot and crop workflow
+
+Device-side capture plus `adb pull` has been more reliable here than shell
+redirection or Android `screenrecord`:
+
+```sh
+adb -s 6b1f6ba8629c shell screencap -p /sdcard/cantor-check.png
+adb -s 6b1f6ba8629c pull /sdcard/cantor-check.png /tmp/cantor-check.png
+```
+
+Android screenshots are RGBA. Some image viewers render large white regions as
+black even though their pixels are correct; flatten the alpha channel before
+judging the result. ImageMagick can also make a focused crop (adjust geometry to
+the area under inspection):
+
+```sh
+convert /tmp/cantor-check.png -background white -alpha remove /tmp/cantor-check.jpg
+convert /tmp/cantor-check.png -background white -alpha remove \
+  -crop 1080x900+0+950 /tmp/cantor-check-crop.jpg
+```
+
+Use the local image viewer on the flattened full screenshot and crop. Keep both
+the before and after captures for any spacing or scale change. On this Xiaomi,
+`screenrecord` has produced tiny/truncated MP4 files; verify a recording before
+depending on it, and prefer a short screencap sequence for discrete states.
+
+### Inspect native text and touch bounds
+
+UIAutomator exposes React Native accessibility text, button bounds, and scroll
+containers even when Skia artwork itself is not inspectable:
+
+```sh
+adb -s 6b1f6ba8629c shell uiautomator dump /sdcard/cantor-ui.xml
+adb -s 6b1f6ba8629c pull /sdcard/cantor-ui.xml /tmp/cantor-ui.xml
+rg -o 'text="[^"]*"[^>]*bounds="\[[0-9,]+\]\[[0-9,]+\]"' /tmp/cantor-ui.xml
+```
+
+MIUI may print a `theme_compatibility.xml` stack trace during the dump. If the
+command ends with `UI hierarchy dumped to`, the XML was still written and can
+be pulled normally.
+
+### Close every visual pass
+
+After checking the real device, run the repository checks from `cantor/`:
+
+```sh
+npm test -- --runInBand
+npm run lint
+git diff --check
+```
+
+At the time of writing, lint has two pre-existing inline-style warnings in
+`App.tsx` and `src/onboarding/panels/kit.tsx`, and no errors. Treat new warnings
+as regressions; do not mistake the existing two for changes from the current
+task.
+
 ## How Cesar prefers to work
 
 - Expose every tunable duration and size as a named constant in real units (for

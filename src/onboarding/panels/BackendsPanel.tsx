@@ -56,25 +56,61 @@ const W_CAPTION: Win = [0.78, 0.98];
 
 /** One quiet line under the drawing; the diagram carries the argument. */
 const CAPTION =
-  'Only the engine changes — the songs stay yours. ' +
-  'This phone works today; PC and cloud pair up soon.';
+  'Only the engine changes. Your songs stay yours. ' +
+  'This phone works today. PC and cloud are coming soon.';
 
-// ---- geometry --------------------------------------------------------------
-const DIAG_H = 212; // canvas height, dp; label rows live inside it
-const STROKE = 1.8; // device outlines
-const LINK_STROKE = 1.4;
+// ---- geometry knobs --------------------------------------------------------
+// Step 2 carries more information than the other panels. Keep its illustration
+// compact so the caption and action retain a quiet amount of space below it.
+// Every authored device dimension is scaled by the same value; no silhouette
+// is stretched to make it fit.
+const DIAGRAM_SCALE = 0.84;
+const DIAGRAM_BASE_H = 212; // original composition height, dp
+const DIAG_H = DIAGRAM_BASE_H * DIAGRAM_SCALE;
+const DIAGRAM_META_OVERFLOW_H = 26; // room for the cloud's stacked status tag
+const DIAGRAM_STAGE_H = DIAG_H + DIAGRAM_META_OVERFLOW_H;
+const CAPTION_GAP = space.lg; // clear separation from the illustration
+const CLOUD_BASE_SCALE = 1.28; // wide enough for the full-size cloud label
+const CLOUD_CENTER_Y = 0.75; // clears the PC row after the uniform size increase
+const REMOTE_TAG_HALF_H = 10; // centres SOON inside PC and cloud outlines
+const STROKE = 1.8 * DIAGRAM_SCALE; // device outlines
+const LINK_STROKE = 1.4 * DIAGRAM_SCALE;
 const DASH: number[] = [7, 6];
 const LABEL_H = 16;
 
 const LABEL_STYLE: TextStyle = { ...type.eyebrow, textAlign: 'center' };
 
-// Label + tag sit side by side under each device (like the sketch). Mono
-// metrics are uniform, so fixed widths are exact: 11pt ≈ 6.6/char + 2 spacing.
-const STATION_META = [
+// Labels use the same fixed mono metrics. The short device rows remain
+// horizontal; the cloud status sits inside its outline so its full-size label
+// can stay centred below it.
+type StationMeta = {
+  label: string;
+  labelW: number;
+  tag: string;
+  tagW: number;
+  strong: boolean;
+  tagInside?: boolean;
+};
+
+const STATION_META: readonly StationMeta[] = [
   { label: 'THIS DEVICE', labelW: 104, tag: 'NOW', tagW: 40, strong: true },
-  { label: 'YOUR PC', labelW: 70, tag: 'SOON', tagW: 48, strong: false },
-  { label: 'CANTOR’S CLOUD', labelW: 130, tag: 'SOON', tagW: 48, strong: false },
-] as const;
+  {
+    label: 'YOUR PC',
+    labelW: 70,
+    tag: 'SOON',
+    tagW: 48,
+    strong: false,
+    tagInside: true,
+  },
+  {
+    label: 'CANTOR’S CLOUD',
+    labelW: 130,
+    tag: 'SOON',
+    tagW: 48,
+    strong: false,
+    tagInside: true,
+  },
+];
 const ROW_GAP = 8;
 
 type Piece = {
@@ -86,17 +122,30 @@ type Piece = {
   dashed?: boolean;
 };
 
-type Station = { x: number; labelY: number };
+type Station = { x: number; labelY: number; tagY?: number };
 
 function buildDiagram(w: number): { pieces: Piece[]; stations: Station[] } {
+  const scaled = (value: number) => value * DIAGRAM_SCALE;
   // Anchors — fractions of the canvas, phone left of centre, peers stacked
   // on the right like the corners of a small constellation.
-  const phone = { cx: w * 0.23, cy: DIAG_H * 0.44, w: 60, h: 116, r: 14 };
-  const pc = { cx: w * 0.74, cy: DIAG_H * 0.19, w: 92, h: 58, r: 6 };
-  const cloudScale = 0.82; // of the authored 128×72 box
+  const phone = {
+    cx: w * 0.23,
+    cy: DIAG_H * 0.44,
+    w: scaled(60),
+    h: scaled(116),
+    r: scaled(14),
+  };
+  const pc = {
+    cx: w * 0.74,
+    cy: DIAG_H * 0.19,
+    w: scaled(92),
+    h: scaled(58),
+    r: scaled(6),
+  };
+  const cloudScale = CLOUD_BASE_SCALE * DIAGRAM_SCALE; // authored 128×72 box
   const cloud = {
     cx: w * 0.73,
-    cy: DIAG_H * 0.66,
+    cy: DIAG_H * CLOUD_CENTER_Y,
     hw: 64 * cloudScale,
     hh: 36 * cloudScale,
   };
@@ -110,8 +159,14 @@ function buildDiagram(w: number): { pieces: Piece[]; stations: Station[] } {
     ),
   );
   const phoneHome = Skia.Path.Make();
-  phoneHome.moveTo(phone.cx - 8, phone.cy + phone.h / 2 - 12);
-  phoneHome.lineTo(phone.cx + 8, phone.cy + phone.h / 2 - 12);
+  phoneHome.moveTo(
+    phone.cx - scaled(8),
+    phone.cy + phone.h / 2 - scaled(12),
+  );
+  phoneHome.lineTo(
+    phone.cx + scaled(8),
+    phone.cy + phone.h / 2 - scaled(12),
+  );
 
   const pcScreen = Skia.Path.Make();
   pcScreen.addRRect(
@@ -122,8 +177,14 @@ function buildDiagram(w: number): { pieces: Piece[]; stations: Station[] } {
     ),
   );
   const pcBase = Skia.Path.Make();
-  pcBase.moveTo(pc.cx - pc.w / 2 - 12, pc.cy + pc.h / 2 + 5);
-  pcBase.lineTo(pc.cx + pc.w / 2 + 12, pc.cy + pc.h / 2 + 5);
+  pcBase.moveTo(
+    pc.cx - pc.w / 2 - scaled(12),
+    pc.cy + pc.h / 2 + scaled(5),
+  );
+  pcBase.lineTo(
+    pc.cx + pc.w / 2 + scaled(12),
+    pc.cy + pc.h / 2 + scaled(5),
+  );
 
   // A soft cumulus authored in a 128×72 box, then scaled and moved into place.
   const cloudPath = Skia.Path.MakeFromSVGString(
@@ -143,11 +204,23 @@ function buildDiagram(w: number): { pieces: Piece[]; stations: Station[] } {
 
   // Peer-to-peer links, leaving from the phone's right edge.
   const linkPc = Skia.Path.Make();
-  linkPc.moveTo(phone.cx + phone.w / 2 + 10, phone.cy - 22);
-  linkPc.lineTo(pc.cx - pc.w / 2 - 20, pc.cy + 8);
+  linkPc.moveTo(
+    phone.cx + phone.w / 2 + scaled(10),
+    phone.cy - scaled(22),
+  );
+  linkPc.lineTo(
+    pc.cx - pc.w / 2 - scaled(20),
+    pc.cy + scaled(8),
+  );
   const linkCloud = Skia.Path.Make();
-  linkCloud.moveTo(phone.cx + phone.w / 2 + 10, phone.cy + 22);
-  linkCloud.lineTo(cloud.cx - cloud.hw - 10, cloud.cy + 4);
+  linkCloud.moveTo(
+    phone.cx + phone.w / 2 + scaled(10),
+    phone.cy + scaled(22),
+  );
+  linkCloud.lineTo(
+    cloud.cx - cloud.hw - scaled(10),
+    cloud.cy + scaled(4),
+  );
 
   return {
     pieces: [
@@ -160,9 +233,17 @@ function buildDiagram(w: number): { pieces: Piece[]; stations: Station[] } {
       { key: 'cloud', path: cloudPath, win: W_CLOUD, tone: 'muted', width: STROKE },
     ],
     stations: [
-      { x: phone.cx, labelY: phone.cy + phone.h / 2 + 12 },
-      { x: pc.cx, labelY: pc.cy + pc.h / 2 + 5 + 12 },
-      { x: cloud.cx, labelY: cloud.cy + cloud.hh + 12 },
+      { x: phone.cx, labelY: phone.cy + phone.h / 2 + scaled(12) },
+      {
+        x: pc.cx,
+        labelY: pc.cy + pc.h / 2 + scaled(5) + scaled(12),
+        tagY: pc.cy - REMOTE_TAG_HALF_H,
+      },
+      {
+        x: cloud.cx,
+        labelY: cloud.cy + cloud.hh + scaled(12),
+        tagY: cloud.cy - REMOTE_TAG_HALF_H,
+      },
     ],
   };
 }
@@ -281,21 +362,57 @@ function Body({ onNext }: PanelBodyProps) {
           ] as const
         ).map(({ st, t, win }, i) => {
           const meta = STATION_META[i];
-          const rowW = meta.labelW + ROW_GAP + meta.tagW;
+          const rowW = meta.tagInside
+            ? meta.labelW
+            : meta.labelW + ROW_GAP + meta.tagW;
           return (
-            <View
-              key={meta.label}
-              style={[styles.station, { left: st.x - rowW / 2, top: st.labelY }]}
-            >
-              <WriteText
-                text={meta.label}
-                charStyle={LABEL_STYLE}
-                color={meta.strong ? pal.ink : pal.muted}
-                progress={t}
-                style={{ width: meta.labelW, height: LABEL_H }}
-              />
-              <Tag label={meta.tag} strong={meta.strong} clock={clock} win={win} />
-            </View>
+            <React.Fragment key={meta.label}>
+              {meta.tagInside ? (
+                <View
+                  style={[
+                    styles.stationTag,
+                    {
+                      left: st.x - meta.tagW / 2,
+                      top: st.tagY,
+                      width: meta.tagW,
+                    },
+                  ]}
+                >
+                  <Tag
+                    label={meta.tag}
+                    strong={meta.strong}
+                    clock={clock}
+                    win={win}
+                  />
+                </View>
+              ) : null}
+              <View
+                style={[
+                  styles.station,
+                  {
+                    left: st.x - rowW / 2,
+                    top: st.labelY,
+                    width: meta.tagInside ? rowW : undefined,
+                  },
+                ]}
+              >
+                <WriteText
+                  text={meta.label}
+                  charStyle={LABEL_STYLE}
+                  color={meta.strong ? pal.ink : pal.muted}
+                  progress={t}
+                  style={{ width: meta.labelW, height: LABEL_H }}
+                />
+                {meta.tagInside ? null : (
+                  <Tag
+                    label={meta.tag}
+                    strong={meta.strong}
+                    clock={clock}
+                    win={win}
+                  />
+                )}
+              </View>
+            </React.Fragment>
           );
         })}
       </View>
@@ -320,13 +437,17 @@ export const backendsPanel: PanelDef = {
 const styles = StyleSheet.create({
   stage: {
     marginTop: space.sm,
-    height: DIAG_H + 2, // label rows live inside the canvas bounds
+    height: DIAGRAM_STAGE_H,
   },
   station: {
     position: 'absolute',
     flexDirection: 'row',
     alignItems: 'center',
     gap: ROW_GAP,
+  },
+  stationTag: {
+    position: 'absolute',
+    alignItems: 'center',
   },
   tag: {
     borderWidth: 1,
@@ -339,6 +460,6 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   caption: {
-    marginTop: space.sm,
+    marginTop: CAPTION_GAP,
   },
 });
