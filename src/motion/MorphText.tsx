@@ -685,6 +685,10 @@ export type MorphTextSequenceItem = {
   key: string;
   initialText: string;
   text: string;
+  /** Optional distinct source slot, used when text travels between panels. */
+  initialX?: number;
+  initialY?: number;
+  initialWidth?: number;
   /** Fixed canvas coordinates for this text slot. */
   x: number;
   y: number;
@@ -700,7 +704,7 @@ export type MorphTextSequenceProps = {
   color: string;
   progress: SharedValue<number> | DerivedValue<number>;
   /** All initial texts write together inside this normalized clock window. */
-  writeWindow: readonly [number, number];
+  writeWindow?: readonly [number, number];
   style: StyleProp<ViewStyle>;
 };
 
@@ -851,12 +855,12 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
           item.initialText,
           font,
           letterSpacing,
-          item.width,
+          item.initialWidth ?? item.width,
           lineHeight,
           centered ? 'center' : 'left',
         ),
-        item.x,
-        item.y,
+        item.initialX ?? item.x,
+        item.initialY ?? item.y,
       );
       sourceLayouts.push(from);
       const to = offsetBoxes(
@@ -887,20 +891,23 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
       ...buildSequenceWriteModels(font, sourceLayouts),
     };
   }, [centered, font, items, letterSpacing, lineHeight]);
+  const hasWriteWindow =
+    writeWindow !== undefined && writeWindow[1] > writeWindow[0];
+  const writeStart = writeWindow?.[0] ?? 0;
+  const writeEnd = writeWindow?.[1] ?? 0;
   const writeT = useDerivedValue(() =>
-    Math.min(
-      1,
-      Math.max(
-        0,
-        (progress.value - writeWindow[0]) / (writeWindow[1] - writeWindow[0]),
-      ),
-    ),
+    hasWriteWindow
+      ? Math.min(
+          1,
+          Math.max(0, (progress.value - writeStart) / (writeEnd - writeStart)),
+        )
+      : 1,
   );
   const writeOwner = useDerivedValue<number>(() =>
-    progress.value < writeWindow[1] ? 1 : 0,
+    hasWriteWindow && progress.value < writeEnd ? 1 : 0,
   );
   const transformOwner = useDerivedValue<number>(() =>
-    progress.value >= writeWindow[1] ? 1 : 0,
+    !hasWriteWindow || progress.value >= writeEnd ? 1 : 0,
   );
 
   return (

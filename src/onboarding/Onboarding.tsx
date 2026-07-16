@@ -5,24 +5,36 @@
  * title use whole-object Manim transforms, and bodies exchange on the same
  * clock. Their first appearance uses Manim's Write gesture. Nothing just cuts.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
   runOnJS,
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withTiming,
+  withDelay,
+  type SharedValue,
 } from 'react-native-reanimated';
 import { IntroPanel } from './IntroPanel';
-import { MorphShape, TransformText } from '../motion';
+import {
+  MorphShape,
+  MorphTextSequence,
+  TransformText,
+  type MorphTextSequenceItem,
+} from '../motion';
 import { whatPanel } from './panels/WhatPanel';
 import { backendsPanel } from './panels/BackendsPanel';
 import { identityPanel } from './panels/IdentityPanel';
 import { backupPanel } from './panels/BackupPanel';
 import { thresholdPanel } from './panels/ThresholdPanel';
-import type { PanelDef } from './panels/types';
+import type {
+  PanelDef,
+  PanelTransitionRequest,
+  PhraseHandoffLayout,
+} from './panels/types';
 import { space, type, usePalette } from '../theme/tokens';
 
 // Flow order: orient → engines → identity → backup → threshold.
@@ -41,6 +53,12 @@ const BODY_EXIT_MS = 260; // old body fades (content swaps at the bottom)…
 const BODY_ENTER_MS = 380; // …then the new one rises in
 const BODY_SHIFT = 14; // px the incoming body rises
 
+// The phrase layer paints before it moves, then stays alive through the body
+// swap so the twelve words never disappear between panels.
+const PHRASE_FLIGHT_PREPARE_MS = 120;
+const PHRASE_FLIGHT_MS = 760;
+const PHRASE_WORD_SIZE = 13;
+
 // Fixed frame zones so nothing shifts while letters fly between panels.
 const SIGIL_H = 168;
 const SIGIL_ASPECT_RATIO = 1; // uniform scale preserves the source SVG exactly
@@ -52,11 +70,75 @@ type Props = {
   onDone: () => void;
 };
 
+type PhraseHandoff = {
+  source: PhraseHandoffLayout;
+  target?: PhraseHandoffLayout;
+};
+
+const PHRASE_FLIGHT_TEXT_STYLE = {
+  fontFamily: type.mono.fontFamily,
+  fontSize: PHRASE_WORD_SIZE,
+};
+
+function PhraseHandoffOverlay({
+  handoff,
+  progress,
+  animatedStyle,
+  color,
+}: {
+  handoff: PhraseHandoff;
+  progress: SharedValue<number>;
+  animatedStyle: ReturnType<typeof useAnimatedStyle>;
+  color: string;
+}) {
+  const items = useMemo<readonly MorphTextSequenceItem[]>(() => {
+    const targets = new Map(
+      (handoff.target ?? handoff.source).words.map(word => [word.key, word]),
+    );
+    return handoff.source.words.map(source => {
+      const target = targets.get(source.key) ?? source;
+      return {
+        key: source.key,
+        initialText: source.text,
+        text: source.text,
+        initialX: source.x,
+        initialY: source.y,
+        initialWidth: source.width,
+        x: target.x,
+        y: target.y,
+        width: target.width,
+        start: 0,
+        end: 1,
+      };
+    });
+  }, [handoff]);
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[StyleSheet.absoluteFill, animatedStyle]}>
+      <MorphTextSequence
+        items={items}
+        charStyle={PHRASE_FLIGHT_TEXT_STYLE}
+        color={color}
+        progress={progress}
+        style={StyleSheet.absoluteFill}
+      />
+    </Animated.View>
+  );
+}
+
 /** Full-screen overlay rendered above MainScreen until the flow completes. */
 export function Onboarding({ onDone }: Props) {
   const pal = usePalette();
+  const reduced = useReducedMotion();
   const { width } = useWindowDimensions();
   const [step, setStep] = useState(-1); // -1 = intro panel
+  const [phraseHandoff, setPhraseHandoff] = useState<PhraseHandoff | null>(null);
+  const rootRef = useRef<View>(null);
+  const rootOriginRef = useRef({ x: 0, y: 0 });
+  const phraseFlight = useSharedValue(0);
+  const phraseOverlayA = useSharedValue(0);
 
   // The body swaps by hand, not with entering/exiting layout animations —
   // those flash the incoming view for a frame on the new architecture. One
@@ -105,8 +187,94 @@ export function Onboarding({ onDone }: Props) {
   }, [step, headerA]);
   const headerStyle = useAnimatedStyle(() => ({ opacity: headerA.value }));
 
+  const phraseOverlayStyle = useAnimatedStyle(() => ({
+    opacity: phraseOverlayA.value,
+  }));
+
+  const clearPhraseHandoff = useCallback(() => setPhraseHandoff(null), []);
+
+  useEffect(() => {
+    if (!phraseHandoff?.target) {
+      return;
+    }
+    phraseFlight.value = 0;
+    phraseFlight.value = withDelay(
+      PHRASE_FLIGHT_PREPARE_MS,
+      withTiming(1, {
+        duration: PHRASE_FLIGHT_MS,
+        easing: Easing.inOut(Easing.cubic),
+      }),
+    );
+    return () => cancelAnimation(phraseFlight);
+  }, [phraseFlight, phraseHandoff?.target]);
+
   const go = (next: number) => {
+    if (step === 3 && next !== 3 && phraseHandoff) {
+      cancelAnimation(phraseFlight);
+      phraseOverlayA.value = withTiming(
+        0,
+        { duration: BODY_EXIT_MS, easing: Easing.linear },
+        finished => {
+          if (finished) {
+            runOnJS(clearPhraseHandoff)();
+          }
+        },
+      );
+    }
     setStep(Math.max(-1, next));
+  };
+
+  const beginPhraseHandoff = (transition: PanelTransitionRequest) => {
+    if (reduced || !rootRef.current) {
+      go(step + 1);
+      return;
+    }
+    rootRef.current.measureInWindow((rootX, rootY) => {
+      rootOriginRef.current = { x: rootX, y: rootY };
+      const source = {
+        words: transition.source.words.map(word => ({
+          ...word,
+          x: word.x - rootX,
+          y: word.y - rootY,
+        })),
+      };
+      phraseFlight.value = 0;
+      phraseOverlayA.value = 1;
+      setPhraseHandoff({ source });
+      setStep(step + 1);
+    });
+  };
+
+  const handleBodyNext = (transition?: PanelTransitionRequest) => {
+    if (shownStep !== step) {
+      return;
+    }
+    if (step === 2 && transition?.kind === 'identity-to-backup') {
+      beginPhraseHandoff(transition);
+      return;
+    }
+    go(step + 1);
+  };
+
+  const handlePhraseTarget = (target: PhraseHandoffLayout) => {
+    if (!phraseHandoff || phraseHandoff.target) {
+      return;
+    }
+    const { x: rootX, y: rootY } = rootOriginRef.current;
+    setPhraseHandoff(current =>
+      current && !current.target
+        ? {
+            ...current,
+            target: {
+              words: target.words.map(word => ({
+                ...word,
+                x: word.x - rootX,
+                y: word.y - rootY,
+              })),
+            },
+          }
+        : current,
+    );
   };
 
   if (step < 0) {
@@ -117,7 +285,7 @@ export function Onboarding({ onDone }: Props) {
   const Body = PANELS[shownStep].Body;
 
   return (
-    <View style={[styles.root, { backgroundColor: pal.bg }]}>
+    <View ref={rootRef} style={[styles.root, { backgroundColor: pal.bg }]}>
       <Animated.View style={[styles.header, headerStyle]}>
         <Pressable onPress={() => go(step - 1)} hitSlop={12} style={styles.back}>
           <Text style={[type.eyebrow, { color: pal.faint }]}>‹ BACK</Text>
@@ -163,10 +331,21 @@ export function Onboarding({ onDone }: Props) {
       <Animated.View style={[styles.body, bodyStyle]}>
         <Body
           key={PANELS[shownStep].key}
-          onNext={() => shownStep === step && go(step + 1)}
+          onNext={handleBodyNext}
           onDone={() => shownStep === step && onDone()}
+          phraseHandoffActive={shownStep === 3 && phraseHandoff !== null}
+          onPhraseTarget={shownStep === 3 ? handlePhraseTarget : undefined}
         />
       </Animated.View>
+
+      {phraseHandoff && (
+        <PhraseHandoffOverlay
+          handoff={phraseHandoff}
+          progress={phraseFlight}
+          animatedStyle={phraseOverlayStyle}
+          color={pal.ink}
+        />
+      )}
     </View>
   );
 }

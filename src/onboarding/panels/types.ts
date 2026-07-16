@@ -2,10 +2,30 @@
 import type * as React from 'react';
 import type { Shape } from '../../motion';
 
-/** What a panel body receives: just its exits. */
+export type PhraseHandoffWord = {
+  key: string;
+  text: string;
+  /** Window coordinates, converted to the onboarding frame by its owner. */
+  x: number;
+  y: number;
+  width: number;
+};
+
+export type PhraseHandoffLayout = {
+  words: readonly PhraseHandoffWord[];
+};
+
+export type PanelTransitionRequest = {
+  kind: 'identity-to-backup';
+  source: PhraseHandoffLayout;
+};
+
+/** What a panel body receives from the persistent onboarding frame. */
 export type PanelBodyProps = {
-  onNext: () => void;
+  onNext: (transition?: PanelTransitionRequest) => void;
   onDone: () => void;
+  phraseHandoffActive?: boolean;
+  onPhraseTarget?: (target: PhraseHandoffLayout) => void;
 };
 
 /**

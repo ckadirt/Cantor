@@ -11,7 +11,7 @@
  * commits, or ownership hand-offs through React during the cascade. The only
  * later commit reveals Continue after the canvas paints its terminal frame.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View, type TextStyle } from 'react-native';
 import Animated, {
   cancelAnimation,
@@ -72,6 +72,7 @@ function Body({ onNext }: PanelBodyProps) {
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState(reduced);
   const [phraseWidth, setPhraseWidth] = useState(0);
+  const phraseRef = useRef<View>(null);
   const clock = useSharedValue(reduced ? 1 : 0);
   const words = getIdentityPhrase();
   const timelineMs =
@@ -118,6 +119,27 @@ function Body({ onNext }: PanelBodyProps) {
     });
   }, [phraseWidth, timelineMs, words]);
   const revealContinue = useCallback(() => setReady(true), []);
+  const advance = useCallback(() => {
+    const phrase = phraseRef.current;
+    if (!phrase || sequenceItems.length === 0) {
+      onNext();
+      return;
+    }
+    phrase.measureInWindow((x, y) => {
+      onNext({
+        kind: 'identity-to-backup',
+        source: {
+          words: sequenceItems.map(item => ({
+            key: item.key,
+            text: item.text,
+            x: x + item.x,
+            y: y + space.sm + item.y,
+            width: item.width,
+          })),
+        },
+      });
+    });
+  }, [onNext, sequenceItems]);
 
   useEffect(() => {
     if (reduced) {
@@ -153,7 +175,7 @@ function Body({ onNext }: PanelBodyProps) {
         <View style={styles.continueSlot}>
           {ready && (
             <Animated.View entering={FadeIn.duration(BUTTON_REVEAL_MS)}>
-              <Button label="Continue" onPress={onNext} />
+              <Button label="Continue" onPress={advance} />
             </Animated.View>
           )}
         </View>
@@ -164,6 +186,7 @@ function Body({ onNext }: PanelBodyProps) {
       </Text>
 
       <View
+        ref={phraseRef}
         style={styles.phrase}
         accessible
         accessibilityLabel={words.join(', ')}
