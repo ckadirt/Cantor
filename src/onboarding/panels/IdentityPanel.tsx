@@ -160,7 +160,7 @@ function Body({ onNext }: PanelBodyProps) {
       }>
       <Text style={[type.small, styles.lede, { color: pal.muted }]}>
         These twelve words are your identity in Cantor. They were just created on
-        this device — no password behind them, and no one else has them.
+        this device. There is no password behind them, and no one else has them.
       </Text>
 
       <View
@@ -209,10 +209,10 @@ function Body({ onNext }: PanelBodyProps) {
         <Animated.Text
           entering={FadeIn.duration(200)}
           style={[type.small, styles.howBody, { color: pal.muted }]}>
-          Your device generated 128 random bits and turned them into these words
-          — the digits you saw are each word&#8217;s real slice of them. Cantor
-          derives a cryptographic key from the words that is your identity —
-          sharing a song means signing it with that key, and anyone can verify
+          Your device generated 128 random bits and turned them into these words.
+          The digits you saw are each word&#8217;s real slice of them. Cantor derives
+          a cryptographic key from the words that is your identity. Sharing a
+          song means signing it with that key, and anyone can verify
           it&#8217;s you without a server. The words come from a fixed list of
           2,048 with a built-in checksum, so a typo won&#8217;t validate. Re-enter
           them on a new device and you&#8217;re back.
