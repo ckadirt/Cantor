@@ -8,7 +8,13 @@
  * clock, nothing bouncy. Morphing is the manim trick (resample → interpolate)
  * running on the UI thread via Skia's interpolatePaths. See src/motion.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
   Pressable,
   StyleSheet,
@@ -26,8 +32,8 @@ import {
   type SkPath,
 } from '@shopify/react-native-skia';
 import Animated, {
+  cancelAnimation,
   Easing,
-  FadeIn,
   runOnJS,
   useAnimatedStyle,
   useDerivedValue,
@@ -81,6 +87,10 @@ const NAME_WRITE_START = 2.55; // the wordmark writes itself as the frame settle
 const NAME_WRITE_DUR = 1.05;
 const SLOGAN_WRITE_START = 3.35; // slogan starts while the name finishes
 const SLOGAN_WRITE_DUR = 1.45;
+const FOOTER_REVEAL_DELAY_MS = 150; // quiet beat after the intro timeline parks
+const FOOTER_REVEAL_MS = 360; // persistent Begin footer fades in on the UI thread
+const SKIP_MS = 420; // tap-to-finish duration for the main intro clock
+const SKIP_FOOTER_DELAY_MS = 460; // reveal after the shortened clock settles
 
 // Exit — Begin plays the reveal backwards instead of cutting: the slogan and
 // wordmark UNWRITE (their write clocks run home to 0), the constellation fades
@@ -313,8 +323,23 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
   const { width, height } = useWindowDimensions();
   const p = useSharedValue(0);
   const x = useSharedValue(0); // exit clock — 0 until Begin, then 0→1 once
+  const footerA = useSharedValue(0); // persistent footer; one opacity owner
   const exitingRef = useRef(false);
+  const readyRef = useRef(false);
+  const revealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [ready, setReady] = useState(false);
+
+  const revealFooter = useCallback(() => {
+    if (readyRef.current) {
+      return;
+    }
+    readyRef.current = true;
+    setReady(true);
+    footerA.value = withTiming(1, {
+      duration: FOOTER_REVEAL_MS,
+      easing: Easing.out(Easing.cubic),
+    });
+  }, [footerA]);
 
   const scene = useMemo<{
     bars: BarModel[];
@@ -461,9 +486,17 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
 
   useEffect(() => {
     p.value = withTiming(1, { duration: DURATION, easing: Easing.linear });
-    const t = setTimeout(() => setReady(true), DURATION + 150);
-    return () => clearTimeout(t);
-  }, [p]);
+    revealTimerRef.current = setTimeout(
+      revealFooter,
+      DURATION + FOOTER_REVEAL_DELAY_MS,
+    );
+    return () => {
+      if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current);
+      }
+      cancelAnimation(footerA);
+    };
+  }, [footerA, p, revealFooter]);
 
   // The copy is WRITTEN, not faded: each line gets its own linear window of
   // the master clock, and WriteText's DrawBorderThenFill does the rest. Linear
@@ -485,17 +518,24 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
     );
   });
   const footerStyle = useAnimatedStyle(() => ({
-    opacity: 1 - smootherstep(0, EXIT_FOOTER_B, x.value),
+    opacity:
+      footerA.value * (1 - smootherstep(0, EXIT_FOOTER_B, x.value)),
   }));
 
   // Tap anywhere only fast-forwards the intro; advancing is Begin's job.
   const skip = () => {
-    if (!ready) {
+    if (!readyRef.current) {
       p.value = withTiming(1, {
-        duration: 420,
+        duration: SKIP_MS,
         easing: Easing.out(Easing.cubic),
       });
-      setTimeout(() => setReady(true), 460);
+      if (revealTimerRef.current) {
+        clearTimeout(revealTimerRef.current);
+      }
+      revealTimerRef.current = setTimeout(
+        revealFooter,
+        SKIP_FOOTER_DELAY_MS,
+      );
     }
   };
 
@@ -553,20 +593,18 @@ export function IntroPanel({ onNext }: { onNext: () => void }) {
         />
       </View>
 
-      {ready && (
-        <Animated.View
-          entering={FadeIn.duration(360)}
-          style={[styles.footer, footerStyle]}
-          pointerEvents="box-none"
+      <Animated.View
+        style={[styles.footer, footerStyle]}
+        pointerEvents={ready ? 'box-none' : 'none'}
+      >
+        <Pressable
+          disabled={!ready}
+          style={[styles.button, { borderColor: pal.ink }]}
+          onPress={begin}
         >
-          <Pressable
-            style={[styles.button, { borderColor: pal.ink }]}
-            onPress={begin}
-          >
-            <Text style={[styles.buttonLabel, { color: pal.ink }]}>Begin</Text>
-          </Pressable>
-        </Animated.View>
-      )}
+          <Text style={[styles.buttonLabel, { color: pal.ink }]}>Begin</Text>
+        </Pressable>
+      </Animated.View>
     </View>
   );
 }
@@ -603,6 +641,8 @@ const styles = StyleSheet.create({
     left: space.lg,
     right: space.lg,
     bottom: space.xl,
+    // Native commit starts hidden; the persistent animated style takes over.
+    opacity: 0,
   },
   button: {
     borderWidth: 1,
