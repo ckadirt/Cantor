@@ -70,8 +70,9 @@ function Body({ onNext }: PanelBodyProps) {
       </View>
 
       <Text style={[type.small, styles.note, { color: pal.muted }]}>
-        If you lose this device, these words are the only way back. Cantor
-        cannot recover them — keep them somewhere safe.
+        These words are the only way to recover your identity, and how you sync
+        it to other devices. Cantor cannot recover them. Keep them somewhere
+        safe.
       </Text>
 
       <View style={styles.confirm}>
