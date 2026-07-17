@@ -25,6 +25,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import {
   MorphTextSequence,
+  useMorphFont,
   type MorphTextSequenceItem,
 } from '../../motion';
 import { Button, PanelBody } from './kit';
@@ -50,17 +51,22 @@ const BUTTON_REVEAL_MS = 180;
 /* -------------------------------------------------------------- layout knobs */
 /** A stable three-column phrase: four rows before, during, and after the morph. */
 const WORDS_PER_ROW = 3;
-/** Fits every 11-bit source in one third of the 392 dp reference viewport. */
+/** Reference size; narrow viewports step the whole phrase down from here. */
 const WORD_SIZE = 13;
+/** The phrase never shrinks below this, even on the narrowest columns. */
+const MIN_WORD_SIZE = 9;
+/** Estimated mono advance — only until the real font metrics arrive. */
 const MONO_ADVANCE = WORD_SIZE * 0.6;
 const WORD_H = 20;
 const BITS_LEN = 11;
-const BITS_W = BITS_LEN * MONO_ADVANCE + 2;
+/** Slack over the measured bits width so layout can never wrap a digit. */
+const BITS_PAD = 2;
 const NUMBER_W = 16;
 const NUMBER_SLOT_GAP = 4;
 const NUMBER_LINE_H = 13;
 const CONTINUE_SLOT_H = 48;
 
+/** Reference style: real metrics are measured at this size, then scaled. */
 const WORD_STYLE: TextStyle = {
   fontFamily: type.mono.fontFamily,
   fontSize: WORD_SIZE,
@@ -74,6 +80,54 @@ function Body({ onNext }: PanelBodyProps) {
   const [phraseWidth, setPhraseWidth] = useState(0);
   const clock = useSharedValue(reduced ? 1 : 0);
   const words = getIdentityPhrase();
+
+  // The bits width comes from the font's REAL digit advance, not an estimate
+  // — an estimate a hair too small wraps the 11th digit onto its own line.
+  const font = useMorphFont(WORD_STYLE);
+  const refAdvance = useMemo(() => {
+    if (!font) {
+      return MONO_ADVANCE;
+    }
+    const widths = font.getGlyphWidths(font.getGlyphIDs('01'));
+    return Math.max(widths[0], widths[1]);
+  }, [font]);
+  const columnGap = space.sm;
+  const columnWidth =
+    phraseWidth > 0
+      ? (phraseWidth - columnGap * (WORDS_PER_ROW - 1)) / WORDS_PER_ROW
+      : 0;
+  const slotAvail = columnWidth - NUMBER_W - NUMBER_SLOT_GAP;
+  // Each 11-bit group must fit its column whole; narrow viewports step the
+  // entire phrase down in half-point sizes instead of wrapping a digit.
+  const fit =
+    slotAvail > 0
+      ? Math.min(1, slotAvail / (refAdvance * BITS_LEN + BITS_PAD))
+      : 1;
+  const wordSize = Math.max(MIN_WORD_SIZE, Math.floor(WORD_SIZE * fit * 2) / 2);
+  const wordStyle = useMemo<TextStyle>(
+    () => ({ fontFamily: type.mono.fontFamily, fontSize: wordSize }),
+    [wordSize],
+  );
+  // The slot width comes from measuring the ACTUAL bit strings with the SAME
+  // font+size the canvas lays out with. Scaling the reference measurement down
+  // is not enough: the device hints advances per size, so a 13 pt measurement
+  // scaled to 11.5 pt undershoots and wraps the last digit.
+  const sizedFont = useMorphFont(wordStyle);
+  const bitsW = useMemo(() => {
+    if (!sizedFont) {
+      return (refAdvance * BITS_LEN * wordSize) / WORD_SIZE + BITS_PAD;
+    }
+    let widest = 0;
+    for (const word of words) {
+      const ids = sizedFont.getGlyphIDs(wordBits(word));
+      const width = sizedFont
+        .getGlyphWidths(ids)
+        .reduce((sum, w) => sum + w, 0);
+      widest = Math.max(widest, width);
+    }
+    return widest + BITS_PAD;
+  }, [refAdvance, sizedFont, wordSize, words]);
+
   const timelineMs =
     BITS_WRITE_MS +
     BITS_HOLD_MS +
@@ -94,9 +148,6 @@ function Body({ onNext }: PanelBodyProps) {
     if (phraseWidth <= 0) {
       return [];
     }
-    const columnGap = space.sm;
-    const columnWidth =
-      (phraseWidth - columnGap * (WORDS_PER_ROW - 1)) / WORDS_PER_ROW;
     return words.map((word, index) => {
       const row = Math.floor(index / WORDS_PER_ROW);
       const column = index % WORDS_PER_ROW;
@@ -111,12 +162,14 @@ function Body({ onNext }: PanelBodyProps) {
           NUMBER_W +
           NUMBER_SLOT_GAP,
         y: row * (WORD_H + space.sm),
-        width: BITS_W,
+        // One extra character of layout width guards wrapping against any
+        // residual metric drift; ink stays inside bitsW, so it is invisible.
+        width: bitsW + wordSize,
         start: startMs / timelineMs,
         end: (startMs + MORPH_MS) / timelineMs,
       };
     });
-  }, [phraseWidth, timelineMs, words]);
+  }, [bitsW, columnGap, columnWidth, phraseWidth, timelineMs, words, wordSize]);
   const revealContinue = useCallback(() => setReady(true), []);
 
   useEffect(() => {
@@ -182,7 +235,7 @@ function Body({ onNext }: PanelBodyProps) {
                   <Text style={[styles.num, { color: pal.faint }]}>
                     {String(index + 1).padStart(2, '0')}
                   </Text>
-                  <View style={styles.slot} />
+                  <View style={[styles.slot, { width: bitsW }]} />
                 </View>
               );
             })}
@@ -191,7 +244,7 @@ function Body({ onNext }: PanelBodyProps) {
         {sequenceItems.length > 0 && (
           <MorphTextSequence
             items={sequenceItems}
-            charStyle={WORD_STYLE}
+            charStyle={wordStyle}
             color={pal.ink}
             progress={clock}
             writeWindow={writeWindow}
@@ -244,7 +297,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     gap: NUMBER_SLOT_GAP,
   },
-  slot: { width: BITS_W, height: WORD_H, overflow: 'hidden' },
+  slot: { height: WORD_H, overflow: 'hidden' },
   num: {
     width: NUMBER_W,
     fontFamily: type.mono.fontFamily,

@@ -1,7 +1,16 @@
 /** Text planners and Manim timing laws. CanvasKit remains the real test env. */
-import { readFileSync } from 'fs';
-import { join } from 'path';
 import { Skia } from '@shopify/react-native-skia';
+
+// Jest runs on Node, but the RN tsconfig ships no Node types — type the two
+// pieces this file needs locally instead of widening the app's globals.
+declare const __dirname: string;
+declare function require(id: string): unknown;
+const { readFileSync } = require('fs') as {
+  readFileSync: (path: string) => Uint8Array;
+};
+const { join } = require('path') as {
+  join: (...parts: string[]) => string;
+};
 import {
   buildFlights,
   buildTransformFlights,
@@ -115,6 +124,18 @@ describe('layoutText robustness', () => {
     expect(byRow(rows[1])).toBe('two');
     // the two words must not merge into one gliding unit
     expect(new Set(boxes.map(b => b.word)).size).toBe(2);
+  });
+
+  it('never wraps a word that exactly fits its measured width', () => {
+    // the IdentityPanel bug: an 11-bit group sized from real metrics must
+    // lay out on one line, not drop its last digit onto a second one
+    const bits = '10110100101';
+    const width = [...bits]
+      .map(ch => font.getGlyphWidths(font.getGlyphIDs(ch))[0])
+      .reduce((s, w) => s + w, 0);
+    const boxes = layoutText(bits, font, 0, width + 1e-6, 20);
+    expect(boxes).toHaveLength(bits.length);
+    expect(new Set(boxes.map(b => b.y)).size).toBe(1);
   });
 
   it('breaks an over-wide word mid-word instead of overflowing', () => {
