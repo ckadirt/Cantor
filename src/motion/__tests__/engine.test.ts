@@ -6,15 +6,22 @@
  */
 import { Skia } from '@shopify/react-native-skia';
 import {
+  alignSampled,
+  assertInterpolatable,
   buildTransition,
   buildSilhouetteTransition,
   captureTransition,
   LIBRARY,
+  mulberry32,
   N,
+  polygonPath,
+  polylinePath,
   resolveShape,
   resolveSilhouette,
   SYMBOL_LIBRARY,
   validateShape,
+  type ContourGeom,
+  type Pt,
 } from '../index';
 
 const SHAPES = Object.values(LIBRARY);
@@ -230,5 +237,82 @@ describe('transitions', () => {
     for (const s of back.slots) {
       expect(s.fromPts).toHaveLength(s.toPts.length);
     }
+  });
+});
+
+describe('robustness invariants', () => {
+  const strokeGeom = (offset: number): ContourGeom => ({
+    pts: Array.from({ length: N }, (_, i) => ({
+      x: i * 2 + offset,
+      y: 40 + offset,
+    })),
+    closed: false,
+    mode: 'stroke',
+    width: 2,
+    alpha: 1,
+  });
+
+  it('staggered windows never invert, however many slots', () => {
+    const many = Array.from({ length: 20 }, (_, i) => strokeGeom(i * 5));
+    const tr = buildTransition(many, many);
+    expect(tr.slots).toHaveLength(20);
+    for (const s of tr.slots) {
+      expect(s.winB).toBeGreaterThan(s.winA);
+      // every slot keeps a real share of the clock to move in
+      expect(s.winB - s.winA).toBeGreaterThanOrEqual(0.5 - 1e-9);
+      expect(s.winA).toBeGreaterThanOrEqual(0);
+      expect(s.winB).toBeLessThanOrEqual(1 + 1e-9);
+    }
+  });
+
+  it('few slots keep the full authored stagger', () => {
+    const three = Array.from({ length: 3 }, (_, i) => strokeGeom(i * 5));
+    const tr = buildTransition(three, three);
+    expect(tr.slots[1].winA - tr.slots[0].winA).toBeCloseTo(0.08, 9);
+  });
+
+  it('alignment never increases total travel over the naive pairing', () => {
+    const rand = mulberry32(7);
+    const ringOf = (n: number): Pt[] => {
+      const pts: Pt[] = [];
+      for (let i = 0; i < n; i++) {
+        const a = (i / n) * 2 * Math.PI;
+        const r = 40 + rand() * 25;
+        pts.push({ x: 100 + Math.cos(a) * r, y: 100 + Math.sin(a) * r });
+      }
+      pts.push({ ...pts[0] });
+      return pts;
+    };
+    const travel = (a: Pt[], b: Pt[]) =>
+      a.reduce(
+        (s, p, i) => s + (p.x - b[i].x) ** 2 + (p.y - b[i].y) ** 2,
+        0,
+      );
+    for (let trial = 0; trial < 8; trial++) {
+      const a = { pts: ringOf(N), closed: true };
+      const b = { pts: [...ringOf(N)].reverse(), closed: true };
+      const aligned = alignSampled(a, b);
+      expect(aligned).toHaveLength(b.pts.length);
+      expect(aligned[0]).toEqual(aligned[aligned.length - 1]);
+      expect(travel(a.pts, aligned)).toBeLessThanOrEqual(
+        travel(a.pts, b.pts) + 1e-9,
+      );
+    }
+  });
+
+  it('assertInterpolatable rejects verb drift in dev', () => {
+    const open = polylinePath([
+      { x: 0, y: 0 },
+      { x: 10, y: 10 },
+    ]);
+    const closed = polygonPath([
+      { x: 0, y: 0 },
+      { x: 10, y: 0 },
+      { x: 10, y: 10 },
+    ]);
+    expect(() => assertInterpolatable(open, closed, 'test')).toThrow(
+      /non-interpolatable/,
+    );
+    expect(() => assertInterpolatable(open, open, 'test')).not.toThrow();
   });
 });

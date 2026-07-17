@@ -1,8 +1,11 @@
 /** Text planners and Manim timing laws. CanvasKit remains the real test env. */
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { Skia } from '@shopify/react-native-skia';
 import {
   buildFlights,
   buildTransformFlights,
+  graphemes,
   layoutText,
   writeDurationMs,
   writeLagRatio,
@@ -73,6 +76,54 @@ describe('layoutText alignment', () => {
       expect(centered[i].x - left[i].x).toBeCloseTo(dx, 5);
       expect(centered[i].y).toBe(left[i].y);
     }
+  });
+});
+
+describe('layoutText robustness', () => {
+  // The jest default font has no typeface (all widths 0), which would make
+  // wrapping untestable — use the real bundled face the app lays out with.
+  const bytes = readFileSync(
+    join(__dirname, '../../../assets/fonts/cmu-serif.ttf'),
+  );
+  const typeface = Skia.Typeface.MakeFreeTypeFaceFromData(
+    Skia.Data.fromBytes(new Uint8Array(bytes)),
+  );
+  const font = Skia.Font(typeface ?? undefined, 14);
+
+  it('keeps combining marks attached to their base character', () => {
+    // decomposed e + U+0301 must stay one CharBox, not shatter into marks
+    const accented = 'e\u0301';
+    expect(graphemes(`caf${accented}`)).toEqual(['c', 'a', 'f', accented]);
+    const boxes = layoutText(`caf${accented}`, font, 0, 300, 20);
+    expect(boxes.map(b => b.ch)).toEqual(['c', 'a', 'f', accented]);
+  });
+
+  it('keeps emoji ZWJ sequences whole', () => {
+    const family = '👨‍👩‍👧';
+    expect(graphemes(`a ${family}`)).toEqual(['a', ' ', family]);
+    const boxes = layoutText(`a ${family}`, font, 0, 300, 20);
+    expect(boxes.map(b => b.ch)).toEqual(['a', family]);
+  });
+
+  it('treats \\n as a forced line break in a distinct word', () => {
+    const boxes = layoutText('one\ntwo', font, 0, 300, 20);
+    const rows = [...new Set(boxes.map(b => b.y))];
+    expect(rows).toHaveLength(2);
+    const byRow = (y: number) =>
+      boxes.filter(b => b.y === y).map(b => b.ch).join('');
+    expect(byRow(rows[0])).toBe('one');
+    expect(byRow(rows[1])).toBe('two');
+    // the two words must not merge into one gliding unit
+    expect(new Set(boxes.map(b => b.word)).size).toBe(2);
+  });
+
+  it('breaks an over-wide word mid-word instead of overflowing', () => {
+    const maxWidth = 40;
+    const boxes = layoutText('incomprehensibilities', font, 0, maxWidth, 20);
+    for (const b of boxes) {
+      expect(b.x + b.w).toBeLessThanOrEqual(maxWidth + 1e-6);
+    }
+    expect(new Set(boxes.map(b => b.y)).size).toBeGreaterThan(1);
   });
 });
 

@@ -152,7 +152,49 @@ export function writeDurationMs(glyphCount: number): number {
   return glyphCount < WRITE_LONG_TEXT_AT ? WRITE_SHORT_MS : WRITE_LONG_MS;
 }
 
-/** Word-wrap `text` against the font's real metrics. Baseline coordinates. */
+/* ------------------------------------------------------------- segmentation */
+
+type GraphemeSegmenter = {
+  segment(input: string): Iterable<{ segment: string }>;
+};
+
+// Hermes ships without Intl.Segmenter (the RN tsconfig lib predates its
+// types); probe for it once and keep the code-point fallback.
+const graphemeSegmenter: GraphemeSegmenter | null = (() => {
+  const Ctor = (
+    Intl as {
+      Segmenter?: new (
+        locales?: string,
+        options?: { granularity: 'grapheme' },
+      ) => GraphemeSegmenter;
+    }
+  ).Segmenter;
+  return Ctor ? new Ctor(undefined, { granularity: 'grapheme' }) : null;
+})();
+
+/**
+ * Split text into user-perceived characters. é (e + combining accent), emoji,
+ * and ZWJ families stay whole, so each lays out and animates as one CharBox
+ * instead of shattering into marks. Where Intl.Segmenter is unavailable
+ * (older Hermes) this degrades to code points, which is correct for the
+ * Latin-plus-punctuation copy the app ships.
+ */
+export function graphemes(text: string): string[] {
+  if (graphemeSegmenter) {
+    const out: string[] = [];
+    for (const { segment } of graphemeSegmenter.segment(text)) {
+      out.push(segment);
+    }
+    return out;
+  }
+  return [...text];
+}
+
+/**
+ * Word-wrap `text` against the font's real metrics. Baseline coordinates.
+ * `\n` forces a line break; a word wider than maxWidth breaks mid-word
+ * instead of overflowing; characters are grapheme clusters, not code points.
+ */
 export function layoutText(
   text: string,
   font: SkFont,
@@ -168,34 +210,50 @@ export function layoutText(
   const spaceIds = font.getGlyphIDs(' ');
   const spaceW = font.getGlyphWidths(spaceIds)[0] + letterSpacing;
 
+  const measure = (ch: string) => {
+    const ids = font.getGlyphIDs(ch);
+    const widths = font.getGlyphWidths(ids);
+    const xo: number[] = [];
+    let acc = 0;
+    for (const w of widths) {
+      xo.push(acc);
+      acc += w;
+    }
+    return { ch, ids, xo, w: acc + letterSpacing };
+  };
+
   const boxes: CharBox[] = [];
   let pen = 0;
   let line = 0;
-  text.split(' ').forEach((word, wi) => {
-    if (word.length === 0) {
-      return;
-    }
-    const chars = [...word].map(ch => {
-      const ids = font.getGlyphIDs(ch);
-      const widths = font.getGlyphWidths(ids);
-      const xo: number[] = [];
-      let acc = 0;
-      for (const w of widths) {
-        xo.push(acc);
-        acc += w;
-      }
-      return { ch, ids, xo, w: acc + letterSpacing };
-    });
-    const wordW = chars.reduce((s, c) => s + c.w, 0);
-    if (pen > 0 && pen + wordW > maxWidth) {
+  let wi = 0;
+  text.split('\n').forEach((row, ri) => {
+    if (ri > 0) {
       pen = 0;
       line++;
+      wi++; // words never merge across a forced break
     }
-    for (const c of chars) {
-      boxes.push({ ...c, x: pen, y: ascent + line * lineHeight, word: wi });
-      pen += c.w;
+    for (const word of row.split(' ')) {
+      wi++;
+      if (word.length === 0) {
+        continue;
+      }
+      const chars = graphemes(word).map(measure);
+      const wordW = chars.reduce((s, c) => s + c.w, 0);
+      if (pen > 0 && pen + wordW > maxWidth) {
+        pen = 0;
+        line++;
+      }
+      for (const c of chars) {
+        // an over-wide word breaks mid-word rather than overflowing the line
+        if (pen > 0 && pen + c.w > maxWidth) {
+          pen = 0;
+          line++;
+        }
+        boxes.push({ ...c, x: pen, y: ascent + line * lineHeight, word: wi });
+        pen += c.w;
+      }
+      pen += spaceW;
     }
-    pen += spaceW;
   });
   if (align === 'center') {
     // Shift each baseline row so its ink centres inside maxWidth. Every box

@@ -225,6 +225,23 @@ export function ribbonOutline(svg: string, width: number, n = N): Pt[] {
 
 /* --------------------------------------------------------------------- paths */
 
+/**
+ * Dev-only invariant: interpolatePaths silently misdraws if from/to verbs
+ * ever diverge. The builders guarantee identity by construction; this makes
+ * the guarantee loud where pairs are produced, not subtle where they render.
+ */
+export function assertInterpolatable(
+  from: SkPath,
+  to: SkPath,
+  label: string,
+): void {
+  if (__DEV__ && !from.isInterpolatable(to)) {
+    throw new Error(
+      `motion: ${label} built non-interpolatable paths (verb drift)`,
+    );
+  }
+}
+
 /** An open polyline as an SkPath — the one verb structure everything shares. */
 export function polylinePath(pts: Pt[]): SkPath {
   const builder = Skia.PathBuilder.Make();

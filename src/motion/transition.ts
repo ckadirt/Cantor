@@ -13,6 +13,7 @@
 import { Skia, type SkPath } from '@shopify/react-native-skia';
 import {
   alignSampled,
+  assertInterpolatable,
   centroid,
   collapsedAt,
   lerpPts,
@@ -24,6 +25,12 @@ import type { ContourGeom, ContourMode } from './shapes';
 
 /** Per-slot start offset on the 0..1 clock; the cascade that reads as manim. */
 const STAGGER = 0.08;
+/**
+ * However many slots there are, each keeps at least this much of the clock to
+ * move in. Without the floor, 13+ slots at full STAGGER would invert their
+ * windows (winB < winA) and every ramp would run backwards.
+ */
+const MIN_SPAN = 0.5;
 /** Fading slots do it inside a sub-window so merges/splits stay thin. */
 const FADE_OUT_WIN: [number, number] = [0.1, 0.6];
 const FADE_IN_WIN: [number, number] = [0.4, 0.9];
@@ -94,10 +101,12 @@ export function buildTransition(from: ContourGeom[], to: ContourGeom[]): Transit
     ),
   );
   const total = pairs.length;
-  const span = 1 - STAGGER * (total - 1);
+  const stagger =
+    total > 1 ? Math.min(STAGGER, (1 - MIN_SPAN) / (total - 1)) : 0;
+  const span = 1 - stagger * (total - 1);
   return {
     slots: pairs.map((p, i) => {
-      const winA = STAGGER * i;
+      const winA = stagger * i;
       const winB = winA + span;
       const toPts = alignSampled(
         { pts: p.src.pts, closed: p.src.closed },
@@ -105,9 +114,12 @@ export function buildTransition(from: ContourGeom[], to: ContourGeom[]): Transit
       );
       const fading = p.toA < p.fromA ? FADE_OUT_WIN : p.toA > p.fromA ? FADE_IN_WIN : null;
       const [alphaA, alphaB] = fading ? within(fading, winA, winB) : [winA, winB];
+      const fromPath = polylinePath(p.src.pts);
+      const toPath = polylinePath(toPts);
+      assertInterpolatable(fromPath, toPath, 'buildTransition');
       return {
-        from: polylinePath(p.src.pts),
-        to: polylinePath(toPts),
+        from: fromPath,
+        to: toPath,
         out: Skia.Path.Make(),
         fromPts: p.src.pts,
         toPts,

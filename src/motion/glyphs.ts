@@ -13,6 +13,7 @@
 import { Skia, type SkFont, type SkPath } from '@shopify/react-native-skia';
 import {
   alignSampled,
+  assertInterpolatable,
   centroid,
   collapsedAt,
   type Pt,
@@ -145,5 +146,8 @@ export function buildGlyphMorphPaths(
     fromC.push(src.pts);
     toC.push(alignSampled(src, dst));
   }
-  return { from: multiPolylinePath(fromC), to: multiPolylinePath(toC) };
+  const fromPath = multiPolylinePath(fromC);
+  const toPath = multiPolylinePath(toC);
+  assertInterpolatable(fromPath, toPath, 'buildGlyphMorphPaths');
+  return { from: fromPath, to: toPath };
 }

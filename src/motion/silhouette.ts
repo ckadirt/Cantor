@@ -15,6 +15,7 @@ import {
 } from '@shopify/react-native-skia';
 import {
   alignClosed,
+  assertInterpolatable,
   centroid,
   compoundPolygonPath,
   lerpPts,
@@ -186,9 +187,12 @@ export function buildSilhouetteTransition(
     toContours.push(alignClosed(sourceRing, targetRing));
   }
 
+  const fromPath = compoundPolygonPath(fromContours);
+  const toPath = compoundPolygonPath(toContours);
+  assertInterpolatable(fromPath, toPath, 'buildSilhouetteTransition');
   return {
-    from: compoundPolygonPath(fromContours),
-    to: compoundPolygonPath(toContours),
+    from: fromPath,
+    to: toPath,
     out: Skia.Path.Make(),
     fromContours,
     toContours,

@@ -895,6 +895,7 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
   style,
 }: MorphTextSequenceProps) {
   const font = useMorphFont(charStyle);
+  const reduced = useReducedMotion();
   const fontSize = charStyle.fontSize ?? 14;
   const lineHeight = charStyle.lineHeight ?? fontSize * 1.35;
   const letterSpacing = charStyle.letterSpacing ?? 0;
@@ -930,7 +931,11 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
         item.x,
         item.y,
       );
-      const flights = buildTransformFlights(from, to);
+      // Reduced motion: no geometry travels — the old text crossfades into
+      // the new one inside the same clock window (exits fade, enters rise-less).
+      const flights = reduced
+        ? buildCrossfadeFlights(from, to)
+        : buildTransformFlights(from, to);
       const morphModels = buildMorphModels(font, flights);
       return {
         key: item.key,
@@ -943,11 +948,14 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
     });
     return {
       items: itemModels,
-      ...buildSequenceWriteModels(font, sourceLayouts),
+      // Under reduced motion the initial texts simply exist — no write trace.
+      ...(reduced
+        ? { writeModels: [], writeFallback: [] }
+        : buildSequenceWriteModels(font, sourceLayouts)),
     };
-  }, [centered, font, items, letterSpacing, lineHeight]);
+  }, [centered, font, items, letterSpacing, lineHeight, reduced]);
   const hasWriteWindow =
-    writeWindow !== undefined && writeWindow[1] > writeWindow[0];
+    !reduced && writeWindow !== undefined && writeWindow[1] > writeWindow[0];
   const writeStart = writeWindow?.[0] ?? 0;
   const writeEnd = writeWindow?.[1] ?? 0;
   const writeT = useDerivedValue(() =>
@@ -966,45 +974,51 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
   );
 
   return (
-    <Canvas style={style}>
-      {font && (
-        <>
-          <Group opacity={writeOwner}>
-            {scene.writeModels.map((model, index) => (
-              <WriteGlyph
-                key={`sequence-write-${index}`}
-                model={model}
-                tt={writeT}
-                font={font}
-                color={color}
-              />
-            ))}
-            {scene.writeFallback.map((fallback, index) => (
-              <WriteFallbackGlyph
-                key={`sequence-write-fallback-${index}`}
-                box={fallback.box}
-                index={fallback.index}
-                count={fallback.count}
-                tt={writeT}
-                font={font}
-                color={color}
-              />
-            ))}
-          </Group>
-          <Group opacity={transformOwner}>
-            {scene.items.map(model => (
-              <SequenceTransform
-                key={model.key}
-                model={model}
-                progress={progress}
-                font={font}
-                color={color}
-              />
-            ))}
-          </Group>
-        </>
-      )}
-    </Canvas>
+    <View
+      style={style}
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={items.map(item => item.text).join('\n')}>
+      <Canvas style={StyleSheet.absoluteFill}>
+        {font && (
+          <>
+            <Group opacity={writeOwner}>
+              {scene.writeModels.map((model, index) => (
+                <WriteGlyph
+                  key={`sequence-write-${index}`}
+                  model={model}
+                  tt={writeT}
+                  font={font}
+                  color={color}
+                />
+              ))}
+              {scene.writeFallback.map((fallback, index) => (
+                <WriteFallbackGlyph
+                  key={`sequence-write-fallback-${index}`}
+                  box={fallback.box}
+                  index={fallback.index}
+                  count={fallback.count}
+                  tt={writeT}
+                  font={font}
+                  color={color}
+                />
+              ))}
+            </Group>
+            <Group opacity={transformOwner}>
+              {scene.items.map(model => (
+                <SequenceTransform
+                  key={model.key}
+                  model={model}
+                  progress={progress}
+                  font={font}
+                  color={color}
+                />
+              ))}
+            </Group>
+          </>
+        )}
+      </Canvas>
+    </View>
   );
 });
 

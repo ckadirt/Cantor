@@ -27,6 +27,11 @@ or domain logic to a single inference location.
 
 ## Motion language and engine
 
+**Read `src/motion/README.md` before touching motion code** — it documents the
+architecture, the trigger model, component recipes, the house rules (linear
+clocks, fixed-height containers, stable charStyle objects, born clocks,
+verb-identity), authoring, tuning constants, and known limits.
+
 The motion system follows a **Shapes + Verbs + Clock** model:
 
 - Shapes define geometry and visual primitives.
