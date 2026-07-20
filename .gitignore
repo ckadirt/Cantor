@@ -33,3 +33,5 @@ icons/
 
 # Plan/scratch HTML kept at root, not committed
 /*.html
+
+implementation-notes.md
