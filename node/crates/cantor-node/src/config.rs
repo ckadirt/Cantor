@@ -144,6 +144,56 @@ impl NodeConfig {
         Ok(url)
     }
 
+    pub fn authorize_key(&mut self, path: &Path, public_key: &str) -> Result<bool> {
+        if self
+            .allowed_keys
+            .iter()
+            .any(|allowed| allowed == public_key)
+        {
+            return Ok(false);
+        }
+
+        self.allowed_keys.push(public_key.to_owned());
+        if let Err(error) = self.save_atomically(path) {
+            self.allowed_keys.pop();
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    fn save_atomically(&self, path: &Path) -> Result<()> {
+        self.validate()?;
+        let parent = path
+            .parent()
+            .context("node config path has no parent directory")?;
+        let serialized = toml::to_string_pretty(self).context("failed to serialize node config")?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".node.toml.")
+            .tempfile_in(parent)
+            .with_context(|| {
+                format!("failed to create temporary config in {}", parent.display())
+            })?;
+        temporary
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(CONFIG_FILE_MODE))
+            .context("failed to restrict temporary node config")?;
+        temporary
+            .write_all(serialized.as_bytes())
+            .context("failed to write temporary node config")?;
+        temporary
+            .as_file()
+            .sync_all()
+            .context("failed to sync temporary node config")?;
+        temporary
+            .persist(path)
+            .map_err(|error| error.error)
+            .with_context(|| format!("failed to replace node config {}", path.display()))?;
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .with_context(|| format!("failed to sync config directory {}", parent.display()))?;
+        Ok(())
+    }
+
     fn load(path: &Path) -> Result<Self> {
         reject_symlink(path)?;
         fs::set_permissions(path, fs::Permissions::from_mode(CONFIG_FILE_MODE))
@@ -264,5 +314,29 @@ mod tests {
             config.room_url("public-key").expect("room URL").as_str(),
             "wss://example.test/cantor/v1/room/public-key?role=node"
         );
+    }
+
+    #[test]
+    fn authorizing_a_key_is_atomic_and_idempotent() {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("prepare directory");
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+
+        assert!(
+            config
+                .authorize_key(&paths.config, "client-key")
+                .expect("authorize")
+        );
+        assert!(
+            !config
+                .authorize_key(&paths.config, "client-key")
+                .expect("idempotent")
+        );
+
+        let (reloaded, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
+        assert_eq!(reloaded.allowed_keys, vec!["client-key"]);
     }
 }

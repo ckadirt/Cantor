@@ -66,4 +66,68 @@ Started: 2026-07-20
 
 ## Deviations
 
-- None.
+- The plan's linked protocol artifact is not accessible from this environment
+  (the host returns an authorization challenge), and no copy of its schema is
+  present in the repository. Phase 2 therefore uses the smallest versioned
+  `NodeInfo` and `JobView` shapes needed by the written plan, without adding
+  speculative engine controls.
+- The documented pairing URI carries only the node identity and relay address,
+  but the node is also required to reject clients outside its allowlist. To
+  close that authorization gap conservatively, `cantor-node pair` adds a
+  single-use random token to the QR URI. A client proves possession of its key
+  during the normal signed handshake and presents that token once; the node
+  then atomically adds the verified client key to its allowlist and invalidates
+  the token. The relay remains unaware of both the token and the handshake.
+
+## Phase 2 — Protocol + node handshake
+
+Started: 2026-07-20
+
+### Scope
+
+- Add a shared Rust protocol crate and committed generated TypeScript types.
+- Complete the end-to-end client/node challenge-response handshake.
+- Enforce the client-key allowlist and the single-use pairing enrollment path.
+- Return static node capabilities and an empty job status snapshot.
+- Add `pair` terminal output and a reconnecting node relay loop.
+- Exercise accepted and rejected clients against the local relay.
+
+### Implementation log
+
+- Added the `cantor-proto` workspace crate with the flat versioned
+  `hello`/`challenge`/`auth`/`welcome`/`status`/`jobs`/`error` vocabulary,
+  minimal `NodeInfo`, and `JobView`. `ts-rs` tests regenerate the committed
+  TypeScript definitions under `protocol/`.
+- Implemented an independent handshake state machine per relay-assigned
+  session. It validates base58 Ed25519 keys, binds `auth` to the request and
+  32-byte challenge, verifies the signature, and rejects status requests until
+  authentication succeeds.
+- Added allowlist enforcement and atomic owner-only config replacement for
+  one-time enrollment. Invalid signatures cannot consume a pairing token or
+  alter the allowlist.
+- Added `cantor-node pair`, terminal Unicode QR output, and a copyable
+  percent-encoded pairing URI. `run` accepts only previously paired keys.
+- Added static Phase 2 capability data and the empty `jobs` status response;
+  engine execution remains deliberately stubbed.
+- Reworked the node relay connection into a persistent loop with a 1–30 second
+  capped exponential delay and up to 250 ms of operating-system-random jitter.
+  A successful claim resets the retry attempt.
+- Added `node/scripts/protocol-client.mjs` for the complete handshake/status
+  demo and documented pairing, allowlist, and binding generation behavior.
+
+### Validation
+
+- `cargo test --workspace` in `node/`: 15 tests passed, including generated
+  TypeScript exports, wire shape, pairing enrollment, rejection, atomic config
+  persistence, QR fields, and reconnect-delay bounds.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- Live local relay/client: a new Ed25519 client enrolled with the one-time
+  token, received `welcome` with the static `NodeInfo`, requested `status`, and
+  received `jobs: []`.
+- Repeated live client with the persisted identity and no token: accepted.
+- Fresh live client with no token: received application error `rejected` and
+  did not enter the allowlist.
+- Relay restart demo: the running node observed the disconnect, retried with
+  jittered 1/2/4/8/16-second backoff, and reclaimed the same room once the
+  local relay returned.
+- `git diff --check`: passed.
