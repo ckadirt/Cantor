@@ -1,6 +1,6 @@
 import type { AppIdentity } from '../identity/derive';
 import { signChallenge } from '../identity/derive';
-import { backendRoomUrl } from './pairing';
+import { backendRoomUrl, createPairProof } from './pairing';
 import {
   isRecord,
   parseJobs,
@@ -142,12 +142,25 @@ export class BackendConnection {
   private beginHandshake(): void {
     this.handshakeId = this.nextRequestId('hello');
     this.setSnapshot({ phase: 'handshaking', error: null, jobs: [] });
+    let pairProof: string | undefined;
+    try {
+      pairProof = this.pairToken
+        ? createPairProof(
+            this.pairToken,
+            this.backend.nodePubkey,
+            this.identity.publicKey,
+          )
+        : undefined;
+    } catch (error) {
+      this.fail(readError(error), true);
+      return;
+    }
     this.sendApplication({
       t: 'hello',
       v: PROTOCOL_VERSION,
       id: this.handshakeId,
       pubkey: this.identity.publicKey,
-      ...(this.pairToken ? { pair_token: this.pairToken } : {}),
+      ...(pairProof ? { pair_proof: pairProof } : {}),
     });
   }
 

@@ -1,5 +1,5 @@
 import {readFile, writeFile} from 'node:fs/promises';
-import {webcrypto} from 'node:crypto';
+import {createHmac, webcrypto} from 'node:crypto';
 
 const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token]';
 const pairValue = process.argv[2];
@@ -35,6 +35,7 @@ try {
 
 const rawPublicKey = new Uint8Array(await webcrypto.subtle.exportKey('raw', keyPair.publicKey));
 const clientKey = base58Encode(rawPublicKey);
+const pairProof = token === null ? null : createPairProof(token, nodeKey, clientKey);
 const roomUrl = new URL(relayValue);
 roomUrl.pathname = `${roomUrl.pathname.replace(/\/$/, '')}/v1/room/${nodeKey}`;
 roomUrl.search = '';
@@ -46,7 +47,7 @@ socket.addEventListener('message', async event => {
   const frame = JSON.parse(event.data);
   if (frame.t === 'relay.presence') {
     console.log(`presence: ${frame.online ? 'online' : 'offline'}`);
-    if (frame.online) send({t: 'hello', v: 1, id: 'handshake-1', pubkey: clientKey, ...(token ? {pair_token: token} : {})});
+    if (frame.online) send({t: 'hello', v: 1, id: 'handshake-1', pubkey: clientKey, ...(pairProof ? {pair_proof: pairProof} : {})});
     return;
   }
   if (frame.t === 'relay.error') throw new Error(`relay error [${frame.code}]: ${frame.msg}`);
@@ -103,4 +104,38 @@ function base58Encode(bytes) {
     encoded = `1${encoded}`;
   }
   return encoded || '1';
+}
+
+function base58Decode(value) {
+  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+  let decoded = 0n;
+  for (const character of value) {
+    const index = alphabet.indexOf(character);
+    if (index < 0) throw new Error('Invalid base58 public key.');
+    decoded = decoded * 58n + BigInt(index);
+  }
+  const bytes = [];
+  while (decoded > 0n) {
+    bytes.unshift(Number(decoded & 0xffn));
+    decoded >>= 8n;
+  }
+  for (const character of value) {
+    if (character !== '1') break;
+    bytes.unshift(0);
+  }
+  return Uint8Array.from(bytes);
+}
+
+function createPairProof(pairToken, nodePublicKey, clientPublicKey) {
+  const tokenBytes = Buffer.from(pairToken, 'base64url');
+  const nodeKeyBytes = base58Decode(nodePublicKey);
+  const clientKeyBytes = base58Decode(clientPublicKey);
+  if (tokenBytes.length !== 32 || nodeKeyBytes.length !== 32 || clientKeyBytes.length !== 32) {
+    throw new Error('Invalid pairing proof material.');
+  }
+  return createHmac('sha256', tokenBytes)
+    .update('cantor-pair-proof-v1')
+    .update(nodeKeyBytes)
+    .update(clientKeyBytes)
+    .digest('base64url');
 }

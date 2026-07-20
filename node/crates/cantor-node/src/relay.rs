@@ -21,6 +21,7 @@ const CHALLENGE_BYTES: usize = 32;
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
 const RECONNECT_JITTER_MS: u64 = 250;
+const MAX_CLIENT_SESSIONS: usize = 1_024;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t")]
@@ -31,6 +32,8 @@ enum IncomingFrame {
     Ok { v: u8 },
     #[serde(rename = "relay.error")]
     Error { v: u8, code: String, msg: String },
+    #[serde(rename = "relay.detached")]
+    Detached { v: u8, sid: String },
     #[serde(rename = "tunnel")]
     Tunnel { v: u8, sid: String, payload: Value },
 }
@@ -156,14 +159,23 @@ async fn serve_once(
                     serde_json::from_str(text.as_ref()).context("relay sent an invalid frame")?;
                 match frame {
                     IncomingFrame::Tunnel { v, sid, payload } if v == RELAY_VERSION => {
-                        let response = sessions.entry(sid.clone()).or_default().handle(
-                            payload,
-                            config,
-                            config_path,
-                            pair_token,
-                            &public_key,
-                            &node_info,
-                        )?;
+                        let response =
+                            if can_open_client_session(&sessions, &sid, MAX_CLIENT_SESSIONS) {
+                                sessions.entry(sid.clone()).or_default().handle(
+                                    payload,
+                                    config,
+                                    config_path,
+                                    pair_token,
+                                    &public_key,
+                                    &node_info,
+                                )?
+                            } else {
+                                NodeMessage::error(
+                                    request_id(&payload),
+                                    "too-many-sessions",
+                                    "This node has reached its client session limit.",
+                                )
+                            };
                         let tunnel = RelayTunnel {
                             v: RELAY_VERSION,
                             t: "tunnel",
@@ -175,6 +187,12 @@ async fn serve_once(
                     IncomingFrame::Tunnel { v, .. } => {
                         bail!("relay protocol version {v} is not supported")
                     }
+                    IncomingFrame::Detached { v, sid } if v == RELAY_VERSION => {
+                        sessions.remove(&sid);
+                    }
+                    IncomingFrame::Detached { v, .. } => {
+                        bail!("relay protocol version {v} is not supported")
+                    }
                     IncomingFrame::Error { v, code, msg } => bail_relay_error(v, &code, &msg)?,
                     _ => bail!("relay sent an unexpected control frame after relay.ok"),
                 }
@@ -183,6 +201,22 @@ async fn serve_once(
         }
     }
     bail!("relay disconnected")
+}
+
+fn can_open_client_session(
+    sessions: &HashMap<String, ClientSession>,
+    sid: &str,
+    limit: usize,
+) -> bool {
+    sessions.contains_key(sid) || sessions.len() < limit
+}
+
+fn request_id(payload: &Value) -> String {
+    payload
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_owned()
 }
 
 fn static_node_info(config: &NodeConfig) -> NodeInfo {
@@ -259,12 +293,25 @@ fn bail_relay_error<T>(v: u8, code: &str, msg: &str) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RECONNECT_MAX_MS, reconnect_delay};
+    use std::collections::HashMap;
+
+    use crate::session::ClientSession;
+
+    use super::{RECONNECT_MAX_MS, can_open_client_session, reconnect_delay};
 
     #[test]
     fn reconnect_delay_is_exponential_and_capped() {
         assert!(reconnect_delay(0).as_millis() >= 1_000);
         assert!(reconnect_delay(1).as_millis() >= 2_000);
         assert!(reconnect_delay(20).as_millis() <= u128::from(RECONNECT_MAX_MS + 250));
+    }
+
+    #[test]
+    fn client_session_limit_allows_existing_sessions_only_when_full() {
+        let mut sessions = HashMap::<String, ClientSession>::new();
+        sessions.insert("existing".to_owned(), ClientSession::default());
+
+        assert!(can_open_client_session(&sessions, "existing", 1));
+        assert!(!can_open_client_session(&sessions, "new", 1));
     }
 }

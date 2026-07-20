@@ -2,7 +2,8 @@
 
 The relay is a Cloudflare Worker backed by one hibernating `NodeRoom` Durable
 Object per node public key. It verifies node ownership, reports node presence,
-and splices opaque tunnel payloads between a node and its attached clients.
+splices opaque tunnel payloads between a node and its attached clients, and
+notifies the node when a relay-assigned client session detaches.
 
 ## Local development
 

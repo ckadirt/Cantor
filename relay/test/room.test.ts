@@ -145,6 +145,35 @@ describe('NodeRoom', () => {
     });
   });
 
+  it('notifies the node when a client session detaches', async () => {
+    const identity = await createNodeIdentity();
+    const client = await connect(identity.pubkey, 'client');
+    expect((await client.firstFrame).online).toBe(false);
+
+    const online = nextJsonFrame(client.socket);
+    const node = await claimNode(identity);
+    expect((await online).online).toBe(true);
+
+    const tunnel = nextJsonFrame(node);
+    sendJson(client.socket, {
+      v: 1,
+      t: 'tunnel',
+      payload: {t: 'hello'},
+    });
+    const relayed = await tunnel;
+    expect(relayed.sid).toEqual(expect.any(String));
+
+    const detached = nextJsonFrame(node);
+    const closed = nextClose(client.socket);
+    client.socket.close(1000, 'client-stopped');
+    await closed;
+    expect(await detached).toEqual({
+      v: 1,
+      t: 'relay.detached',
+      sid: relayed.sid,
+    });
+  });
+
   it('makes the newest valid node claim replace the prior node', async () => {
     const identity = await createNodeIdentity();
     const client = await connect(identity.pubkey, 'client');

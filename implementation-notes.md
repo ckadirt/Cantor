@@ -257,20 +257,93 @@ Started: 2026-07-20
   style warning in `src/onboarding/panels/kit.tsx`.
 - `git diff --check`: passed.
 
+## Post-Phase 4 — High-priority hardening
+
+Started: 2026-07-20
+
+### Scope
+
+- Keep the one-time pairing secret out of relay-visible application frames.
+- Reclaim per-client node handshake state on disconnect and cap retained state.
+- Prevent transient or permanent secure-storage read failures from opening the
+  identity-creation path.
+- Leave generation-specific protocol and transport work for the later
+  generation phase requested by the user.
+
+### Implementation log
+
+- Replaced the plaintext `pair_token` hello field with `pair_proof`, computed as
+  HMAC-SHA256 over a domain separator plus the raw node and client public keys.
+  The app and command-line client derive the proof locally from the QR token;
+  the node verifies it in constant time and still consumes the token only after
+  a valid Ed25519 challenge signature and atomic allowlist persistence.
+- Added one cross-language golden proof vector to the Rust and TypeScript test
+  suites so encoding, domain separation, and key order cannot silently drift.
+- Added the relay-only `relay.detached` frame. A client close/error notifies the
+  currently authenticated node, which idempotently removes that session's
+  handshake/authentication state.
+- Added a hard ceiling of 1,024 simultaneous client sessions per node relay
+  connection. Existing sessions continue at the ceiling; a new session gets a
+  versioned `too-many-sessions` application error without allocating state.
+- Changed app identity boot failures to a dedicated `IDENTITY LOCKED` screen
+  with an explicit retry action. Onboarding is never rendered after a Keychain
+  read error, so the stable identity cannot be overwritten through that error
+  path.
+- Updated the node and relay operator documentation for the proof and detach
+  behavior. The QR format remains unchanged and the raw one-time token remains
+  local to the QR holder and node process.
+
+### Validation
+
+- `cargo test --workspace` in `node/`: 18 tests passed, including pairing-proof
+  binding and session-limit behavior; generated TypeScript bindings are current.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo build --workspace --release` in `node/`: passed.
+- `npm test` in `relay/`: 5 tests passed, including detach notification.
+- `npm test -- --runInBand` in `cantor/`: 120 tests passed across 7 suites,
+  including pairing proof and non-destructive identity retry coverage.
+- `npm run check` in `relay/`, `npx tsc --noEmit` in `cantor/`, and
+  `node --check node/scripts/protocol-client.mjs`: passed.
+- `npm run deploy:dry-run` and `npx wrangler check startup` in `relay/`:
+  passed; no production deployment was performed.
+- Reviewed the complete Worker against current Cloudflare Workers and Durable
+  Objects guidance plus the latest published Workers type definitions. The
+  hibernation attachments, close/error handlers, generated `Env`, current
+  compatibility date, SQLite migration, and observability configuration match
+  the current APIs and recommendations.
+- Live local end-to-end pairing: the command-line client sent the new proof,
+  the node persisted its verified Ed25519 key, returned `welcome`, and returned
+  `jobs: []`; the relay observed the normal client detach afterward.
+- `./gradlew app:assembleDebug` in `cantor/android/`: passed.
+- Physical Android device `6b1f6ba8629c`: after wake and cold launch, the app
+  loaded the same saved app key directly into Backends with no onboarding or
+  fatal React Native/Android errors. The card correctly showed `NODE OFFLINE`
+  because no production node process was running. The protected identity was
+  not modified to induce the tested failure path.
+- `npm run lint` in `cantor/`: zero errors and the same pre-existing inline
+  style warning in `src/onboarding/panels/kit.tsx`.
+- `git diff --check`: passed.
+
 ## Deviations
 
-- The plan's linked protocol artifact is not accessible from this environment
-  (the host returns an authorization challenge), and no copy of its schema is
-  present in the repository. Phase 2 therefore uses the smallest versioned
-  `NodeInfo` and `JobView` shapes needed by the written plan, without adding
-  speculative engine controls.
+- During Phases 1–4, the plan's linked protocol artifact was inaccessible from
+  this environment, so Phase 2 used the smallest versioned `NodeInfo` and
+  `JobView` shapes needed by the final written plan. The user later supplied
+  local copies of the protocol and network guides at the repository root. The
+  final phased implementation plan remains authoritative where they differ;
+  the earlier guides now provide referenced detail where it does not conflict.
+- The supplied guides describe generation data-plane records and transports,
+  but the final plan and the user's explicit sequencing put generation after
+  first connection. This hardening pass therefore leaves those additions for
+  the generation phase instead of expanding the current protocol speculatively.
 - The documented pairing URI carries only the node identity and relay address,
   but the node is also required to reject clients outside its allowlist. To
   close that authorization gap conservatively, `cantor-node pair` adds a
   single-use random token to the QR URI. A client proves possession of its key
-  during the normal signed handshake and presents that token once; the node
-  then atomically adds the verified client key to its allowlist and invalidates
-  the token. The relay remains unaware of both the token and the handshake.
+  during the normal signed handshake and presents a domain-separated, key-bound
+  HMAC proof of the token; the node then atomically adds the verified client key
+  to its allowlist and invalidates the token. The relay remains unaware of the
+  raw token and cannot reuse the observed proof with a different client key.
 - Hermes on the physical Android device does not expose custom `cantor://`
   hosts or `ws://` URLs consistently through `URL`. Phase 3 therefore validates
   both prefixes explicitly, parses only their remaining standard components

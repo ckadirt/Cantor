@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
+  Pressable,
   StatusBar,
   StyleSheet,
   Text,
@@ -18,7 +19,7 @@ import {
   loadStoredIdentity,
 } from './src/identity/secureIdentity';
 import type { AppIdentity } from './src/identity/derive';
-import { type, usePalette } from './src/theme/tokens';
+import { space, touch, type, usePalette } from './src/theme/tokens';
 
 // Dev workbench for the motion engine (src/dev/MotionLab). Flip to true to
 // iterate on shapes/text morphs with the scrubber; never ship it on.
@@ -27,12 +28,14 @@ const MOTION_LAB = false;
 type IdentityBoot =
   | { state: 'loading' }
   | { state: 'onboarding' }
+  | { state: 'identity-error'; message: string }
   | { state: 'ready'; identity: AppIdentity };
 
 export default function App() {
   const pal = usePalette();
   const scheme = useColorScheme();
   const [boot, setBoot] = useState<IdentityBoot>({ state: 'loading' });
+  const [identityLoadAttempt, setIdentityLoadAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -46,13 +49,17 @@ export default function App() {
       })
       .catch(error => {
         if (active) {
-          Alert.alert('Could not open identity', readError(error));
-          setBoot({ state: 'onboarding' });
+          setBoot({ state: 'identity-error', message: readError(error) });
         }
       });
     return () => {
       active = false;
     };
+  }, [identityLoadAttempt]);
+
+  const retryIdentityLoad = useCallback(() => {
+    setBoot({ state: 'loading' });
+    setIdentityLoadAttempt(attempt => attempt + 1);
   }, []);
 
   const finishOnboarding = useCallback(() => {
@@ -78,6 +85,19 @@ export default function App() {
               OPENING CANTOR
             </Text>
           </View>
+        ) : boot.state === 'identity-error' ? (
+          <View style={[styles.identityError, { backgroundColor: pal.bg }]}>
+            <Text style={[type.eyebrow, { color: pal.muted }]}>IDENTITY LOCKED</Text>
+            <Text style={[type.title, { color: pal.ink }]}>Could not open identity</Text>
+            <Text style={[type.body, { color: pal.muted }]}>{boot.message}</Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel="Retry identity load"
+              onPress={retryIdentityLoad}
+              style={[styles.retry, { borderColor: pal.ink }]}>
+              <Text style={[type.mono, { color: pal.ink }]}>Retry</Text>
+            </Pressable>
+          </View>
         ) : (
           <>
             {boot.state === 'ready' ? (
@@ -102,4 +122,17 @@ function readError(error: unknown): string {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   loading: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  identityError: {
+    flex: 1,
+    justifyContent: 'center',
+    padding: space.xl,
+    gap: space.md,
+  },
+  retry: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: touch.min,
+    marginTop: space.sm,
+    borderWidth: 1,
+  },
 });

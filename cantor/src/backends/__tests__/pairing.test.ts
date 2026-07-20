@@ -1,4 +1,9 @@
-import { backendRoomUrl, parsePairingUri } from '../pairing';
+import { base58, base64urlnopad } from '@scure/base';
+import {
+  backendRoomUrl,
+  createPairProof,
+  parsePairingUri,
+} from '../pairing';
 
 const NODE_KEY = 'DqyQzbgwRSDtTkvrVHTpbGLb6AeLPzCjF3GYnPr6LxtS';
 const TOKEN = 'UOxCvNCWW6t1ug0lFJWTmldtueKLsPzS5GpbRBZbgOc';
@@ -43,6 +48,20 @@ describe('backend pairing URI', () => {
     );
     expect(() => parsePairingUri('https://pair?pk=x')).toThrow(
       'Pairing links must start with cantor://pair.',
+    );
+  });
+
+  it('binds the one-time pairing proof to both public keys', () => {
+    const token = base64urlnopad.encode(new Uint8Array(32).fill(7));
+    const nodeKey = base58.encode(new Uint8Array(32).fill(8));
+    const clientKey = base58.encode(new Uint8Array(32).fill(9));
+    const otherClientKey = base58.encode(new Uint8Array(32).fill(10));
+
+    expect(createPairProof(token, nodeKey, clientKey)).toBe(
+      'TRxB3DSdiDNGhZCqqfIZZdpJpTVdGqw-xKWuHtLPegY',
+    );
+    expect(createPairProof(token, nodeKey, otherClientKey)).not.toBe(
+      createPairProof(token, nodeKey, clientKey),
     );
   });
 });

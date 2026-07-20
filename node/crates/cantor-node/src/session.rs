@@ -24,7 +24,7 @@ struct PendingAuth {
     public_key: String,
     verifying_key: VerifyingKey,
     nonce: [u8; CHALLENGE_BYTES],
-    pair_token: Option<String>,
+    pair_proof: Option<String>,
 }
 
 impl ClientSession {
@@ -58,7 +58,7 @@ impl ClientSession {
                 v,
                 id,
                 pubkey,
-                pair_token,
+                pair_proof,
             } => {
                 self.authenticated = false;
                 self.pending = None;
@@ -95,7 +95,7 @@ impl ClientSession {
                     public_key: pubkey,
                     verifying_key,
                     nonce,
-                    pair_token,
+                    pair_proof,
                 });
                 Ok(NodeMessage::Challenge {
                     v: PROTOCOL_VERSION,
@@ -146,8 +146,15 @@ impl ClientSession {
                     .any(|allowed| allowed == &pending.public_key);
                 let may_enroll = active_pair_token
                     .as_ref()
-                    .zip(pending.pair_token.as_ref())
-                    .is_some_and(|(active, supplied)| active == supplied);
+                    .zip(pending.pair_proof.as_ref())
+                    .is_some_and(|(active, supplied)| {
+                        crate::pairing::verify_pair_proof(
+                            active,
+                            supplied,
+                            node_public_key,
+                            &pending.public_key,
+                        )
+                    });
                 if !already_allowed && !may_enroll {
                     return Ok(NodeMessage::error(
                         id,
@@ -241,15 +248,29 @@ mod tests {
         let (mut config, paths) = config(temporary.path());
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let public_key = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
+        let node_signing_key = SigningKey::from_bytes(&[8_u8; 32]);
+        let node_public_key =
+            bs58::encode(node_signing_key.verifying_key().as_bytes()).into_string();
+        let pair_proof = token.map(|token| {
+            use hmac::{Hmac, Mac};
+            use sha2::Sha256;
+
+            let token = URL_SAFE_NO_PAD.decode(token).expect("pair token");
+            let mut mac = Hmac::<Sha256>::new_from_slice(&token).expect("HMAC key");
+            mac.update(b"cantor-pair-proof-v1");
+            mac.update(node_signing_key.verifying_key().as_bytes());
+            mac.update(signing_key.verifying_key().as_bytes());
+            URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
+        });
         let mut session = ClientSession::default();
         let mut active_token = token.map(str::to_owned);
         let challenge = session
             .handle(
-                json!({"t":"hello","v":1,"id":"1","pubkey":public_key,"pair_token":token}),
+                json!({"t":"hello","v":1,"id":"1","pubkey":public_key,"pair_proof":pair_proof}),
                 &mut config,
                 &paths.config,
                 &mut active_token,
-                "node-key",
+                &node_public_key,
                 &info(),
             )
             .expect("hello");
@@ -264,7 +285,7 @@ mod tests {
                 &mut config,
                 &paths.config,
                 &mut active_token,
-                "node-key",
+                &node_public_key,
                 &info(),
             )
             .expect("auth");
@@ -273,7 +294,8 @@ mod tests {
 
     #[test]
     fn pairing_token_enrolls_a_verified_key_once() {
-        let (response, config, active_token) = authenticate(Some("one-time-token"));
+        let token = URL_SAFE_NO_PAD.encode([6_u8; 32]);
+        let (response, config, active_token) = authenticate(Some(&token));
         assert!(matches!(response, NodeMessage::Welcome { .. }));
         assert_eq!(config.allowed_keys.len(), 1);
         assert_eq!(active_token, None);

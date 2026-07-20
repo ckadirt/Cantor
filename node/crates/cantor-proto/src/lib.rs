@@ -50,7 +50,7 @@ pub enum ClientMessage {
         pubkey: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
-        pair_token: Option<String>,
+        pair_proof: Option<String>,
     },
     #[serde(rename = "auth")]
     #[ts(rename = "auth")]
@@ -113,7 +113,7 @@ mod tests {
             v: PROTOCOL_VERSION,
             id: "request-1".to_owned(),
             pubkey: "client-key".to_owned(),
-            pair_token: None,
+            pair_proof: None,
         };
 
         assert_eq!(

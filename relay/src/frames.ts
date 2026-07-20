@@ -24,6 +24,12 @@ export interface RelayPresence {
   online: boolean;
 }
 
+export interface RelayDetached {
+  v: typeof RELAY_VERSION;
+  t: 'relay.detached';
+  sid: string;
+}
+
 export interface RelayTunnel {
   v: typeof RELAY_VERSION;
   t: 'tunnel';
@@ -42,6 +48,7 @@ export type RelayOutboundFrame =
   | RelayChallenge
   | RelayOk
   | RelayPresence
+  | RelayDetached
   | RelayTunnel
   | RelayError;
 

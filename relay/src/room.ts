@@ -151,6 +151,8 @@ export class NodeRoom extends DurableObject<Env> {
     const attachment = parseSocketAttachment(socket.deserializeAttachment());
     if (attachment?.role === 'node' && attachment.authed) {
       this.broadcastPresence(this.currentNode() !== null);
+    } else if (attachment?.role === 'client') {
+      this.notifyClientDetached(attachment.sid);
     }
 
     console.log(
@@ -179,6 +181,8 @@ export class NodeRoom extends DurableObject<Env> {
     const attachment = parseSocketAttachment(socket.deserializeAttachment());
     if (attachment?.role === 'node' && attachment.authed) {
       this.broadcastPresence(this.currentNode() !== null);
+    } else if (attachment?.role === 'client') {
+      this.notifyClientDetached(attachment.sid);
     }
 
     console.error(
@@ -404,6 +408,17 @@ export class NodeRoom extends DurableObject<Env> {
       }
     }
     return null;
+  }
+
+  private notifyClientDetached(sid: string): void {
+    const node = this.currentNode();
+    if (node !== null) {
+      sendJson(node, {
+        v: RELAY_VERSION,
+        t: 'relay.detached',
+        sid,
+      });
+    }
   }
 
   private broadcastPresence(online: boolean): void {

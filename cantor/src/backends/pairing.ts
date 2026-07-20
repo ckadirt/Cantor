@@ -1,9 +1,13 @@
 import { base58, base64urlnopad } from '@scure/base';
+import { hmac } from '@noble/hashes/hmac.js';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { PairingRequest } from './types';
 
 const ED25519_PUBLIC_KEY_BYTES = 32;
 const PAIR_TOKEN_BYTES = 32;
 const MAX_PETNAME_BYTES = 64;
+const PAIR_PROOF_DOMAIN = utf8ToBytes('cantor-pair-proof-v1');
 
 export function parsePairingUri(value: string): PairingRequest {
   const trimmed = value.trim();
@@ -86,4 +90,24 @@ export function backendRoomUrl(backend: PairingRequest['backend']): string {
   return `${backend.relayUrl.replace(/\/$/, '')}/v1/room/${
     backend.nodePubkey
   }?role=client`;
+}
+
+export function createPairProof(
+  pairToken: string,
+  nodePublicKey: string,
+  clientPublicKey: string,
+): string {
+  const token = base64urlnopad.decode(pairToken);
+  const nodeKey = base58.decode(nodePublicKey);
+  const clientKey = base58.decode(clientPublicKey);
+  if (
+    token.length !== PAIR_TOKEN_BYTES ||
+    nodeKey.length !== ED25519_PUBLIC_KEY_BYTES ||
+    clientKey.length !== ED25519_PUBLIC_KEY_BYTES
+  ) {
+    throw new Error('Cannot create a pairing proof from invalid key material.');
+  }
+  return base64urlnopad.encode(
+    hmac(sha256, token, concatBytes(PAIR_PROOF_DOMAIN, nodeKey, clientKey)),
+  );
 }
