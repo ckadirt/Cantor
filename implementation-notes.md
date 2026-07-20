@@ -324,6 +324,52 @@ Started: 2026-07-20
   style warning in `src/onboarding/panels/kit.tsx`.
 - `git diff --check`: passed.
 
+## Production hardening redeploy + stakeholder packet
+
+Started: 2026-07-20
+
+### Deployment log
+
+- Re-ran the relay's Workers-runtime tests, generated-type checks, Worker and
+  test TypeScript checks, and deployment dry run after commit `68ff3b8`.
+- Deployed the hardened relay to the existing `cantor.ckadirt.xyz` Custom
+  Domain. Cloudflare assigned Worker version
+  `db43626e-1ab1-4382-8f4b-85dcc643d861` with a reported 5 ms startup time.
+- Confirmed through Wrangler deployment status that the new version receives
+  100% of production traffic.
+- Confirmed the public HTTPS endpoint returns the expected JSON `404` at `/`
+  and JSON `426` for a valid room route without a WebSocket upgrade.
+- Connected the updated release node using the existing `studio-linux`
+  identity/config and observed `relay.ok`, proving its production room could be
+  reclaimed after the deployment. After the user noted the expected offline
+  state from that stop, restarted the node and cold-relaunched the app to force
+  a fresh relay socket; the physical device returned to `READY`. The node was
+  left running at the user's request.
+
+### Stakeholder packet
+
+- The Slack-ready packet combines a current executive/prototype overview, the
+  authoritative first-connection plan, the earlier backend protocol and network
+  rationale as supporting references, and these complete implementation notes.
+- The packet states the source precedence explicitly: the locked final plan is
+  authoritative where the earlier guides differ, and generation work remains a
+  later phase.
+- Rendered the source bundle as one 47-page, approximately 0.8 MB PDF. Verified
+  the three-page decision brief visually, checked the first page of every source
+  section, and confirmed the merged document remained text-extractable through
+  its final paragraphs.
+
+### Validation
+
+- `npm test` in `relay/`: 5 tests passed.
+- `npm run check` and `npm run deploy:dry-run` in `relay/`: passed.
+- `npx wrangler deployments status`: production is 100% on version
+  `db43626e-1ab1-4382-8f4b-85dcc643d861`.
+- Production `studio-linux` node claim: passed.
+- Physical Android app cold-reconnect through the redeployed relay: `READY`.
+- Stakeholder packet page count, visual samples, and full-text extraction:
+  passed.
+
 ## Deviations
 
 - During Phases 1–4, the plan's linked protocol artifact was inaccessible from
