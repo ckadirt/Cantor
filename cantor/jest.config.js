@@ -13,6 +13,10 @@ module.exports = {
     '^react-native-worklets$': 'react-native-worklets/src/mock',
     '^@react-native-clipboard/clipboard$':
       '@react-native-clipboard/clipboard/jest/clipboard-mock.js',
+    '^@react-native-async-storage/async-storage$':
+      '<rootDir>/jest/asyncStorageMock.js',
+    '^react-native-keychain$': '<rootDir>/jest/keychainMock.js',
+    '^react-native-vision-camera$': '<rootDir>/jest/visionCameraMock.js',
     '\\.(ttf|otf)$': '<rootDir>/jest/assetStub.js',
   },
   // react-navigation and friends ship untranspiled ESM; @scure/@noble are ESM-only

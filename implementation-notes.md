@@ -64,21 +64,6 @@ Started: 2026-07-20
   resumed activity (PID 11180), with no recent fatal Android/React Native errors.
 - `git diff --check`: passed.
 
-## Deviations
-
-- The plan's linked protocol artifact is not accessible from this environment
-  (the host returns an authorization challenge), and no copy of its schema is
-  present in the repository. Phase 2 therefore uses the smallest versioned
-  `NodeInfo` and `JobView` shapes needed by the written plan, without adding
-  speculative engine controls.
-- The documented pairing URI carries only the node identity and relay address,
-  but the node is also required to reject clients outside its allowlist. To
-  close that authorization gap conservatively, `cantor-node pair` adds a
-  single-use random token to the QR URI. A client proves possession of its key
-  during the normal signed handshake and presents that token once; the node
-  then atomically adds the verified client key to its allowlist and invalidates
-  the token. The relay remains unaware of both the token and the handshake.
-
 ## Phase 2 — Protocol + node handshake
 
 Started: 2026-07-20
@@ -131,3 +116,91 @@ Started: 2026-07-20
   jittered 1/2/4/8/16-second backoff, and reclaimed the same room once the
   local relay returned.
 - `git diff --check`: passed.
+
+## Phase 3 — App identity + first backend
+
+Started: 2026-07-20
+
+### Scope
+
+- Derive a stable Ed25519 app identity from the onboarding mnemonic and protect
+  its secret with Android Keystore.
+- Persist paired backend records locally.
+- Add QR scanning with a clipboard fallback.
+- Implement the app connection lifecycle, signed handshake, reconnect, and
+  status refresh.
+- Render the paired node's capability card and exercise the flow on the
+  physical Android device over the LAN relay.
+
+### Implementation log
+
+- Derived a domain-separated 32-byte Ed25519 secret from the BIP39 seed with
+  HKDF-SHA256 (`cantor-identity-v1`), encoded the public key as base58, and
+  added challenge signing with Noble's primitives. The temporary BIP39
+  seed buffer is cleared after derivation.
+- Stored the derived secret with `react-native-keychain` under the app-specific
+  service using AES-GCM Keystore storage and a secure-software minimum. App boot
+  now loads that identity before deciding whether onboarding is required.
+- Added validated AsyncStorage persistence for the exact backend record shape:
+  node public key, relay URL, petname, and last known `NodeInfo`.
+- Added the Android camera permission, VisionCamera's built-in QR code scanner,
+  an explicit camera-permission action, and the planned clipboard fallback.
+- Added strict pairing URI validation, including base58 public-key and
+  base64url token lengths, safe WebSocket relay normalization, and rejection of
+  custom-scheme lookalikes.
+- Implemented the app relay lifecycle (`disconnected`, `connecting`,
+  `attached`, `handshaking`, `ready`), node-key verification, signed challenge
+  response, one-time enrollment, status request, validated capability/job
+  parsing, and jittered reconnect capped at 30 seconds.
+- Added the Backends screen with persisted capability facts, live connection
+  labels, zero-job/load status, and a green ready state. Added native-module
+  Jest mocks plus identity and pairing parser coverage.
+
+### Validation
+
+- `npm test -- --runInBand` in `cantor/`: 118 tests passed across 7 suites.
+- `npx tsc --noEmit` in `cantor/`: passed.
+- `npm run lint` in `cantor/`: zero errors; the single inline-style warning in
+  `src/onboarding/panels/kit.tsx` predates Phase 3.
+- `./gradlew app:assembleDebug` in `cantor/android/`: passed, including native
+  Keychain, AsyncStorage, and VisionCamera compilation with QR scanning enabled.
+- Installed the debug APK on physical Android device `6b1f6ba8629c`. Completed
+  onboarding once, then restarted the app and confirmed it opened directly to
+  Backends with the same app key (`AaEmzBWq…bgoZpE`).
+- Granted camera access through the in-app action and confirmed a live rear
+  camera preview and QR detection on the device.
+- Scanned the live LAN pairing QR. The node authenticated and persisted the app
+  key; the app reached `READY` and rendered `studio-linux`, `linux-x86_64`,
+  `ace-step-1.5-stub`, `ace-step-1.5`, advertised limits, zero load, and zero
+  jobs.
+- Stopped the node and observed `NODE OFFLINE` while the last capability data
+  remained visible; restarted it without a pairing token and observed an
+  automatic return to `READY`.
+- Force-stopped and relaunched the app after pairing. The stored identity and
+  backend loaded without onboarding and automatically reconnected to `READY`.
+- Recent device logs contained no fatal Android or React Native errors.
+- `git diff --check`: passed.
+
+## Deviations
+
+- The plan's linked protocol artifact is not accessible from this environment
+  (the host returns an authorization challenge), and no copy of its schema is
+  present in the repository. Phase 2 therefore uses the smallest versioned
+  `NodeInfo` and `JobView` shapes needed by the written plan, without adding
+  speculative engine controls.
+- The documented pairing URI carries only the node identity and relay address,
+  but the node is also required to reject clients outside its allowlist. To
+  close that authorization gap conservatively, `cantor-node pair` adds a
+  single-use random token to the QR URI. A client proves possession of its key
+  during the normal signed handshake and presents that token once; the node
+  then atomically adds the verified client key to its allowlist and invalidates
+  the token. The relay remains unaware of both the token and the handshake.
+- Hermes on the physical Android device does not expose custom `cantor://`
+  hosts or `ws://` URLs consistently through `URL`. Phase 3 therefore validates
+  both prefixes explicitly, parses only their remaining standard components
+  through HTTP(S) sentinel URLs, and reconstructs the WebSocket URL. Lookalike
+  schemes and hosts are rejected before query parsing.
+- Requesting camera permission as soon as the pairing modal mounted raced the
+  MIUI activity lifecycle and returned `NO_ACTIVITY`. Phase 3 conservatively
+  requests permission only after the user presses `Allow camera`; the native
+  permission dialog and camera preview were verified on the device.

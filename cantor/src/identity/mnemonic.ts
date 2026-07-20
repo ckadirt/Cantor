@@ -6,13 +6,10 @@
  * index.js). The mnemonic carries a checksum, so a mistyped word won't
  * validate on re-entry.
  *
- * One phrase per app run: the panels (reveal, backup) must all show the same
- * words, and remounting a panel must never mint a new identity. Persistence
- * (encrypted MMKV / Keystore) and the derived ed25519 keypair are the next
- * identity milestone — until then the phrase lives only in memory.
- *
- * TODO(identity): derive ed25519 keypair (SLIP-0010, @noble/curves), store the
- * key in Android Keystore, and set FLAG_SECURE on screens that show the words.
+ * One phrase per onboarding run: the panels (reveal, backup) must all show the
+ * same words, and remounting a panel must never mint a new identity. Completion
+ * derives the app's Ed25519 secret and stores it behind Android Keystore; the
+ * phrase itself is deliberately not copied into ordinary app storage.
  */
 import { entropyToMnemonic, validateMnemonic } from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
