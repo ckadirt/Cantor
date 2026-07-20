@@ -30,3 +30,6 @@ node.toml
 # Local scratch, not part of the project
 cantor-design-v1-backup/
 icons/
+
+# Plan/scratch HTML kept at root, not committed
+/*.html
