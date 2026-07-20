@@ -181,6 +181,82 @@ Started: 2026-07-20
 - Recent device logs contained no fatal Android or React Native errors.
 - `git diff --check`: passed.
 
+## Phase 4 — Deploy + real-world test
+
+Started: 2026-07-20
+
+### Scope
+
+- Deploy the tested relay and Durable Object migration to Cloudflare.
+- Attach the relay to `cantor.ckadirt.xyz` as a Worker Custom Domain.
+- Add a Linux node installer stub covering the binary, private config, and a
+  systemd service.
+- Validate the production `wss://` path with the node behind the home router and
+  the physical phone on LTE, with no inbound port forwarding.
+
+### Implementation log
+
+- Confirmed Wrangler 4.112.0 is installed and authenticated with Worker,
+  Durable Object route, certificate, and zone access.
+- Confirmed `relay/wrangler.jsonc` already declares the current compatibility
+  date, SQLite `NodeRoom` migration, observability, and the exact
+  `cantor.ckadirt.xyz` Custom Domain. The hostname has no pre-existing DNS
+  record, so Wrangler can create the originless Custom Domain record and
+  certificate without replacing user DNS.
+- Deployed Worker version `9e11285c-54ed-45ed-aa0a-31872e12b5b5`; the Custom
+  Domain now resolves on public DNS and serves the expected Worker responses
+  over a valid TLS certificate.
+- Added the non-root Linux installer stub with checksum-verified release
+  downloads, owner-only config, symlink/unmanaged-unit refusal, and a hardened
+  per-user systemd service that remains stopped until pairing is complete.
+- The first production `wss://` attempt exposed that `tokio-tungstenite` 0.30's
+  Rustls feature does not select a process crypto provider. Added an explicit
+  Ring provider installation at process startup so secure WebSockets cannot
+  reach Rustls's ambiguous-provider panic.
+- Paired the existing physical app with the production relay. The deployed
+  path reached `READY`, reported `NODE OFFLINE` when the production-connected
+  node stopped, and returned automatically to `READY` when normal node run mode
+  restarted.
+- Cold-launched the app after restoring the phone's original DNS settings. Its
+  persisted identity and production backend reconnected to `READY` without
+  onboarding or another pairing scan.
+- A final installer test found that line-oriented `grep` does not treat an
+  embedded newline as a matched control character. Added an explicit newline
+  guard before the general control-character check.
+- Phase 4 implementation is complete, subject to the documented no-SIM
+  cross-network acceptance limitation.
+
+### Validation
+
+- `npm test` in `relay/`: 4 tests passed.
+- `npm run check`, `npm run deploy:dry-run`, and
+  `npx wrangler check startup` in `relay/`: passed.
+- Production deployment: Worker version
+  `9e11285c-54ed-45ed-aa0a-31872e12b5b5` is attached to
+  `cantor.ckadirt.xyz`; Cloudflare and Google public resolvers return the
+  Custom Domain addresses, HTTPS presents a valid certificate, `/` returns the
+  expected JSON 404, and a room route without an upgrade returns the expected
+  JSON 426.
+- `cargo test --workspace` in `node/`: 16 tests passed, including explicit TLS
+  provider installation.
+- `cargo clippy --workspace --all-targets -- -D warnings` and
+  `cargo build --workspace --release` in `node/`: passed.
+- Installer: shell syntax, local-binary installation, managed reinstall with
+  config preservation, owner-only config modes, executable/service modes,
+  installed binary startup, `systemd-analyze --user verify`, newline/control
+  rejection, symlink refusal, and unmanaged-unit refusal passed. ShellCheck is
+  not installed in this environment.
+- Physical Android device `6b1f6ba8629c`: paired through
+  `wss://cantor.ckadirt.xyz` and reached `READY`; stopping the node produced
+  `NODE OFFLINE`; restarting it in normal `run` mode restored `READY`; a cold
+  app relaunch under the phone's restored default DNS settings also reached
+  `READY`.
+- `npm test -- --runInBand` in `cantor/`: 118 tests passed across 7 suites.
+- `npx tsc --noEmit` in `cantor/`: passed.
+- `npm run lint` in `cantor/`: zero errors and the same pre-existing inline
+  style warning in `src/onboarding/panels/kit.tsx`.
+- `git diff --check`: passed.
+
 ## Deviations
 
 - The plan's linked protocol artifact is not accessible from this environment
@@ -204,3 +280,20 @@ Started: 2026-07-20
   MIUI activity lifecycle and returned `NO_ACTIVITY`. Phase 3 conservatively
   requests permission only after the user presses `Allow camera`; the native
   permission dialog and camera preview were verified on the device.
+- Phase 4 uses a per-user systemd service instead of a root-owned system unit.
+  This keeps installation non-privileged and confines the node identity/config
+  to the owning user; the service is intentionally not enabled until the app
+  has completed its first pairing.
+- The home ISP resolver retained the pre-deploy NXDOMAIN response after public
+  resolvers had the new Custom Domain. The initial node activation used an
+  unprivileged, process-local hosts overlay pinned to a current Cloudflare edge
+  address. The router later returned the public records, and the final phone
+  cold-launch passed with its original DNS settings restored; the Linux host's
+  stub resolver still held its own stale negative cache during the test.
+- The physical phone has no SIM card, so disabling Wi-Fi removes its only
+  internet path. The attempted Wi-Fi-off check correctly became disconnected
+  but cannot serve as the plan's LTE acceptance test. Conservatively, Phase 4
+  verifies both peers using outbound-only production WSS over home Wi-Fi, with
+  no inbound port forwarding, and records the literal cross-network/LTE test as
+  not run rather than claiming it passed. The phone's Wi-Fi and original
+  Private DNS settings were restored afterward.

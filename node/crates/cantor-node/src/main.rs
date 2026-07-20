@@ -9,6 +9,7 @@ use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
+use rustls::crypto::CryptoProvider;
 
 use crate::config::{ConfigSeed, NodeConfig, NodePaths};
 use crate::identity::NodeIdentity;
@@ -82,6 +83,7 @@ fn next_utf8_value(args: &mut impl Iterator<Item = OsString>, option: &str) -> R
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_tls_crypto_provider()?;
     let cli = Cli::parse()?;
     let paths = NodePaths::resolve(cli.config_dir)?;
     paths.prepare_directory()?;
@@ -109,4 +111,26 @@ async fn main() -> Result<()> {
     };
 
     relay::run_forever(config, &paths.config, &identity, pair_token).await
+}
+
+fn install_tls_crypto_provider() -> Result<()> {
+    if CryptoProvider::get_default().is_none() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .map_err(|_| anyhow::anyhow!("failed to install the Rustls Ring crypto provider"))?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use rustls::crypto::CryptoProvider;
+
+    use super::install_tls_crypto_provider;
+
+    #[test]
+    fn installs_tls_crypto_provider() {
+        install_tls_crypto_provider().expect("install TLS provider");
+        assert!(CryptoProvider::get_default().is_some());
+    }
 }

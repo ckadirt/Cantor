@@ -42,3 +42,16 @@ npm test
 npm run check
 npm run deploy:dry-run
 ```
+
+## Production
+
+`wrangler.jsonc` binds the Worker to the `cantor.ckadirt.xyz` Custom Domain.
+After the local checks pass, deploy it with:
+
+```sh
+npx wrangler deploy
+```
+
+Nodes and apps use `wss://cantor.ckadirt.xyz` as their base relay URL. The
+Worker remains the origin for every path on that hostname; Cloudflare creates
+and manages the DNS record and certificate declared by the Custom Domain.
