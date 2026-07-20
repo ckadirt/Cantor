@@ -18,6 +18,19 @@ export interface RelayOk {
   t: 'relay.ok';
 }
 
+export interface RelayPresence {
+  v: typeof RELAY_VERSION;
+  t: 'relay.presence';
+  online: boolean;
+}
+
+export interface RelayTunnel {
+  v: typeof RELAY_VERSION;
+  t: 'tunnel';
+  sid?: string;
+  payload: unknown;
+}
+
 export interface RelayError {
   v: typeof RELAY_VERSION;
   t: 'relay.error';
@@ -25,12 +38,29 @@ export interface RelayError {
   msg: string;
 }
 
+export type RelayOutboundFrame =
+  | RelayChallenge
+  | RelayOk
+  | RelayPresence
+  | RelayTunnel
+  | RelayError;
+
 export interface NodeSocketAttachment {
   role: 'node';
   roomPubkey: string;
   nonce: string;
   authed: boolean;
 }
+
+export interface ClientSocketAttachment {
+  role: 'client';
+  roomPubkey: string;
+  sid: string;
+}
+
+export type SocketAttachment =
+  | NodeSocketAttachment
+  | ClientSocketAttachment;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
@@ -58,26 +88,60 @@ export function parseRelayClaim(value: unknown): RelayClaim | null {
   };
 }
 
-export function parseNodeSocketAttachment(
-  value: unknown,
-): NodeSocketAttachment | null {
+export function parseRelayTunnel(value: unknown): RelayTunnel | null {
   if (!isRecord(value)) {
     return null;
   }
 
   if (
-    value.role !== 'node' ||
-    typeof value.roomPubkey !== 'string' ||
-    typeof value.nonce !== 'string' ||
-    typeof value.authed !== 'boolean'
+    value.v !== RELAY_VERSION ||
+    value.t !== 'tunnel' ||
+    !Object.prototype.hasOwnProperty.call(value, 'payload') ||
+    (value.sid !== undefined &&
+      (typeof value.sid !== 'string' || value.sid.length === 0))
   ) {
     return null;
   }
 
   return {
-    role: 'node',
-    roomPubkey: value.roomPubkey,
-    nonce: value.nonce,
-    authed: value.authed,
+    v: RELAY_VERSION,
+    t: 'tunnel',
+    ...(typeof value.sid === 'string' ? {sid: value.sid} : {}),
+    payload: value.payload,
   };
+}
+
+export function parseSocketAttachment(
+  value: unknown,
+): SocketAttachment | null {
+  if (!isRecord(value) || typeof value.roomPubkey !== 'string') {
+    return null;
+  }
+
+  if (
+    value.role === 'node' &&
+    typeof value.nonce === 'string' &&
+    typeof value.authed === 'boolean'
+  ) {
+    return {
+      role: 'node',
+      roomPubkey: value.roomPubkey,
+      nonce: value.nonce,
+      authed: value.authed,
+    };
+  }
+
+  if (
+    value.role === 'client' &&
+    typeof value.sid === 'string' &&
+    value.sid.length > 0
+  ) {
+    return {
+      role: 'client',
+      roomPubkey: value.roomPubkey,
+      sid: value.sid,
+    };
+  }
+
+  return null;
 }
