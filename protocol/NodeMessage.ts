@@ -2,4 +2,4 @@
 import type { JobView } from "./JobView";
 import type { NodeInfo } from "./NodeInfo";
 
-export type NodeMessage = { "t": "challenge", v: number, id: string, nonce: string, node_pubkey: string, } | { "t": "welcome", v: number, id: string, node: NodeInfo, } | { "t": "jobs", v: number, id: string, jobs: Array<JobView>, } | { "t": "error", v: number, id: string, code: string, msg: string, };
+export type NodeMessage = { "t": "challenge", v: number, id: string, nonce: string, node_pubkey: string, } | { "t": "welcome", v: number, id: string, node: NodeInfo, } | { "t": "jobs", v: number, id: string, jobs: Array<JobView>, } | { "t": "error", v: number, id: string, code: string, msg: string, } | { "t": "node.info", v: number, node: NodeInfo, };

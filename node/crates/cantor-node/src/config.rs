@@ -232,6 +232,78 @@ impl NodeConfig {
         Ok(true)
     }
 
+    /// Accepts a full public key or an exact petname. An ambiguous petname is an
+    /// error rather than a guess: revoking the wrong device is not recoverable
+    /// without physical access to the one that was actually cut off.
+    pub fn resolve_pairing(&self, selector: &str) -> Result<String> {
+        if self.is_authorized(selector) {
+            return Ok(selector.to_owned());
+        }
+        let matches: Vec<&Pairing> = self
+            .pairings
+            .iter()
+            .filter(|pairing| pairing.petname.as_deref() == Some(selector))
+            .collect();
+        match matches.as_slice() {
+            [pairing] => Ok(pairing.key.clone()),
+            [] => bail!("no pairing matches {selector}"),
+            _ => bail!("{selector} matches {} pairings; use the key", matches.len()),
+        }
+    }
+
+    pub fn revoke_key(&mut self, path: &Path, public_key: &str) -> Result<bool> {
+        let Some(index) = self
+            .pairings
+            .iter()
+            .position(|pairing| pairing.key == public_key)
+        else {
+            return Ok(false);
+        };
+
+        let removed = self.pairings.remove(index);
+        if let Err(error) = self.save_atomically(path) {
+            self.pairings.insert(index, removed);
+            return Err(error);
+        }
+        Ok(true)
+    }
+
+    pub fn rename_pairing(&mut self, path: &Path, public_key: &str, petname: &str) -> Result<()> {
+        let Some(petname) = sanitize_petname(petname) else {
+            bail!("a petname must be 1-{MAX_PETNAME_BYTES} bytes with no control characters");
+        };
+        let Some(pairing) = self
+            .pairings
+            .iter_mut()
+            .find(|pairing| pairing.key == public_key)
+        else {
+            bail!("no pairing matches {public_key}");
+        };
+
+        let previous = pairing.petname.replace(petname);
+        if let Err(error) = self.save_atomically(path) {
+            if let Some(pairing) = self
+                .pairings
+                .iter_mut()
+                .find(|pairing| pairing.key == public_key)
+            {
+                pairing.petname = previous;
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Renaming the node itself is what makes `NodeInfo` change at runtime.
+    pub fn rename_node(&mut self, path: &Path, name: &str) -> Result<()> {
+        let previous = std::mem::replace(&mut self.name, name.trim().to_owned());
+        if let Err(error) = self.save_atomically(path) {
+            self.name = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
     fn save_atomically(&self, path: &Path) -> Result<()> {
         self.validate()?;
         let parent = path

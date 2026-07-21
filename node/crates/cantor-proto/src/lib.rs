@@ -93,6 +93,11 @@ pub enum NodeMessage {
         code: String,
         msg: String,
     },
+    /// Unsolicited: sent whenever the node's capabilities change after `welcome`.
+    /// It carries no `id` because no request asked for it.
+    #[serde(rename = "node.info")]
+    #[ts(rename = "node.info")]
+    NodeInfoChanged { v: u8, node: NodeInfo },
 }
 
 impl NodeMessage {

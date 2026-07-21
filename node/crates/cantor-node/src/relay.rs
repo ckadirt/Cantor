@@ -15,6 +15,7 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::NodeConfig;
+use crate::control::{ControlEvent, SharedState};
 use crate::identity::NodeIdentity;
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
@@ -78,21 +79,14 @@ struct RelayTunnel<'a> {
 }
 
 pub async fn run_forever(
-    mut config: NodeConfig,
-    config_path: &Path,
+    state: SharedState,
     identity: &NodeIdentity,
-    mut pair_token: Option<String>,
+    events: &mut mpsc::UnboundedReceiver<ControlEvent>,
 ) -> Result<()> {
     let mut reconnect_attempt = 0_u32;
 
     loop {
-        let connection = serve_once(
-            &mut config,
-            config_path,
-            identity,
-            &mut pair_token,
-            &mut reconnect_attempt,
-        );
+        let connection = serve_once(&state, identity, events, &mut reconnect_attempt);
         tokio::select! {
             signal_result = tokio::signal::ctrl_c() => {
                 signal_result.context("failed to listen for Ctrl-C")?;
@@ -121,14 +115,16 @@ pub async fn run_forever(
 }
 
 async fn serve_once(
-    config: &mut NodeConfig,
-    config_path: &Path,
+    state: &SharedState,
     identity: &NodeIdentity,
-    pair_token: &mut Option<String>,
+    events: &mut mpsc::UnboundedReceiver<ControlEvent>,
     reconnect_attempt: &mut u32,
 ) -> Result<()> {
     let public_key = identity.public_key_base58();
-    let room_url = config.room_url(&public_key)?;
+    let (room_url, config_path) = {
+        let locked = lock(state)?;
+        (locked.config.room_url(&public_key)?, locked.config_path.clone())
+    };
     let (mut socket, _) = connect_async(room_url.as_str())
         .await
         .with_context(|| format!("failed to connect to relay at {room_url}"))?;
@@ -167,9 +163,13 @@ async fn serve_once(
         _ => bail!("relay sent an unexpected frame after the room claim"),
     }
 
-    println!("relay.ok — room claimed as {}", config.name);
+    let mut node_info = {
+        let mut locked = lock(state)?;
+        locked.connected = true;
+        static_node_info(&locked.config)
+    };
+    println!("relay.ok — room claimed as {}", node_info.name);
     *reconnect_attempt = 0;
-    let node_info = static_node_info(config);
     let mut sessions = HashMap::<String, ClientSession>::new();
 
     // The write half moves into its own task and is fed by a queue. Anything
@@ -202,6 +202,21 @@ async fn serve_once(
                     Err(error) => Err(error).context("relay writer task panicked"),
                 };
             }
+            event = events.recv() => {
+                let Some(event) = event else {
+                    break Err(anyhow::anyhow!("control surface stopped"));
+                };
+                match apply_control_event(event, &mut sessions, state, &mut node_info) {
+                    Ok(frames) => {
+                        for frame in frames {
+                            if outbound.send(frame).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(error) => break Err(error),
+                }
+            }
             message = reader.next() => {
                 let Some(message) = message else {
                     break Err(anyhow::anyhow!("relay disconnected"));
@@ -226,9 +241,8 @@ async fn serve_once(
                         let Some(response) = handle_relay_text(
                             text.as_ref(),
                             &mut sessions,
-                            config,
-                            config_path,
-                            pair_token,
+                            state,
+                            &config_path,
                             &public_key,
                             &node_info,
                         )? else {
@@ -246,7 +260,72 @@ async fn serve_once(
 
     drop(outbound);
     writes.abort();
+    if let Ok(mut locked) = state.lock() {
+        locked.connected = false;
+    }
     outcome
+}
+
+fn lock(state: &SharedState) -> Result<std::sync::MutexGuard<'_, crate::control::NodeState>> {
+    state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("node state is poisoned"))
+}
+
+/// Turns a control command into the frames that have to go out over the relay.
+fn apply_control_event(
+    event: ControlEvent,
+    sessions: &mut HashMap<String, ClientSession>,
+    state: &SharedState,
+    node_info: &mut NodeInfo,
+) -> Result<Vec<Message>> {
+    match event {
+        ControlEvent::Revoked(key) => {
+            let mut frames = Vec::new();
+            for (sid, session) in sessions.iter_mut() {
+                if session.authenticated_key() != Some(key.as_str()) {
+                    continue;
+                }
+                session.deauthenticate();
+                // `rejected` is the one code the app treats as final, so the
+                // device stops retrying instead of spinning against a node that
+                // has already said no.
+                frames.push(tunnel_frame(
+                    sid,
+                    &NodeMessage::error(
+                        "",
+                        "rejected",
+                        "This client key is no longer authorized.",
+                    ),
+                )?);
+            }
+            println!("revoked {key}; dropped {} live session(s)", frames.len());
+            Ok(frames)
+        }
+        ControlEvent::NodeInfoChanged => {
+            *node_info = static_node_info(&lock(state)?.config);
+            let push = NodeMessage::NodeInfoChanged {
+                v: cantor_proto::PROTOCOL_VERSION,
+                node: node_info.clone(),
+            };
+            sessions
+                .iter()
+                .filter(|(_, session)| session.authenticated_key().is_some())
+                .map(|(sid, _)| tunnel_frame(sid, &push))
+                .collect()
+        }
+    }
+}
+
+fn tunnel_frame(sid: &str, payload: &NodeMessage) -> Result<Message> {
+    let tunnel = RelayTunnel {
+        v: RELAY_VERSION,
+        t: "tunnel",
+        sid,
+        payload,
+    };
+    let json = serde_json::to_string(&tunnel).context("failed to encode tunnel frame")?;
+    Ok(Message::text(json))
 }
 
 /// Returns the frame to send back, if any. `Ok(None)` means the frame needed no
@@ -255,9 +334,8 @@ async fn serve_once(
 fn handle_relay_text(
     text: &str,
     sessions: &mut HashMap<String, ClientSession>,
-    config: &mut NodeConfig,
+    state: &SharedState,
     config_path: &Path,
-    pair_token: &mut Option<String>,
     public_key: &str,
     node_info: &NodeInfo,
 ) -> Result<Option<Message>> {
@@ -272,11 +350,13 @@ fn handle_relay_text(
     match frame {
         IncomingFrame::Tunnel { v, sid, payload } if v == RELAY_VERSION => {
             let response = if can_open_client_session(sessions, &sid, MAX_CLIENT_SESSIONS) {
+                let mut locked = lock(state)?;
+                let locked = &mut *locked;
                 sessions.entry(sid.clone()).or_default().handle(
                     payload,
-                    config,
+                    &mut locked.config,
                     config_path,
-                    pair_token,
+                    &mut locked.pair_offer,
                     public_key,
                     node_info,
                 )?
@@ -418,26 +498,39 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
+    use crate::control::{NodeState, SharedState, shared};
     use crate::session::ClientSession;
 
     use super::{
-        RECONNECT_MAX_MS, can_open_client_session, handle_relay_text, reconnect_delay,
-        static_node_info,
+        ControlEvent, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
+        handle_relay_text, reconnect_delay, static_node_info,
     };
+
+    fn fixture() -> (SharedState, std::path::PathBuf, tempfile::TempDir) {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("directory");
+        let (config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+        let config_path = paths.config.clone();
+        let state = shared(NodeState {
+            config,
+            config_path: paths.config,
+            node_public_key: "node-key".to_owned(),
+            pair_offer: None,
+            connected: true,
+        });
+        (state, config_path, temporary)
+    }
 
     /// Every frame this build does not understand must be skipped rather than
     /// ending the connection, so a newer relay can add frames without knocking
     /// already-installed nodes offline in a reconnect loop.
     #[test]
     fn unrecognised_frames_are_skipped_without_ending_the_connection() {
-        let temporary = tempdir().expect("temporary directory");
-        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
-        paths.prepare_directory().expect("directory");
-        let (mut config, _) =
-            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
-        let node_info = static_node_info(&config);
+        let (state, config_path, _guard) = fixture();
+        let node_info = static_node_info(&state.lock().expect("state").config);
         let mut sessions = HashMap::new();
-        let mut pair_token = None;
 
         for frame in [
             r#"{"v":1,"t":"relay.somethingNew","detail":"from a newer relay"}"#,
@@ -449,9 +542,8 @@ mod tests {
             let response = handle_relay_text(
                 frame,
                 &mut sessions,
-                &mut config,
-                &paths.config,
-                &mut pair_token,
+                &state,
+                &config_path,
                 "node-key",
                 &node_info,
             )
@@ -464,24 +556,90 @@ mod tests {
     /// unknown frame it still ends it.
     #[test]
     fn a_relay_error_still_ends_the_connection() {
-        let temporary = tempdir().expect("temporary directory");
-        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
-        paths.prepare_directory().expect("directory");
-        let (mut config, _) =
-            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
-        let node_info = static_node_info(&config);
+        let (state, config_path, _guard) = fixture();
+        let node_info = static_node_info(&state.lock().expect("state").config);
 
         let result = handle_relay_text(
             r#"{"v":1,"t":"relay.error","code":"bad-claim","msg":"nope"}"#,
             &mut HashMap::new(),
-            &mut config,
-            &paths.config,
-            &mut None,
+            &state,
+            &config_path,
             "node-key",
             &node_info,
         );
 
         assert!(result.is_err());
+    }
+
+    /// Revoking someone who is connected right now has to cut them off, not wait
+    /// for their next handshake. `rejected` is the code the app treats as final.
+    #[test]
+    fn revoking_drops_the_live_sessions_that_used_that_key() {
+        let (state, _config_path, _guard) = fixture();
+        let mut node_info = static_node_info(&state.lock().expect("state").config);
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "session-a".to_owned(),
+            ClientSession::authenticated_for_test("revoked-key"),
+        );
+        sessions.insert(
+            "session-b".to_owned(),
+            ClientSession::authenticated_for_test("other-key"),
+        );
+
+        let frames = apply_control_event(
+            ControlEvent::Revoked("revoked-key".to_owned()),
+            &mut sessions,
+            &state,
+            &mut node_info,
+        )
+        .expect("revoke");
+
+        assert_eq!(frames.len(), 1);
+        let sent = frames[0].to_text().expect("text frame");
+        assert!(sent.contains("\"sid\":\"session-a\""));
+        assert!(sent.contains("\"code\":\"rejected\""));
+        assert_eq!(sessions["session-a"].authenticated_key(), None);
+        // The device that was not revoked keeps its session.
+        assert_eq!(
+            sessions["session-b"].authenticated_key(),
+            Some("other-key")
+        );
+    }
+
+    /// A connected app is told about a rename rather than showing the old name
+    /// until it happens to reconnect.
+    #[test]
+    fn renaming_the_node_pushes_node_info_to_authenticated_sessions_only() {
+        let (state, config_path, _guard) = fixture();
+        let mut node_info = static_node_info(&state.lock().expect("state").config);
+        let mut sessions = HashMap::new();
+        sessions.insert(
+            "authed".to_owned(),
+            ClientSession::authenticated_for_test("key"),
+        );
+        sessions.insert("anonymous".to_owned(), ClientSession::default());
+        state
+            .lock()
+            .expect("state")
+            .config
+            .rename_node(&config_path, "studio-node")
+            .expect("rename");
+
+        let frames = apply_control_event(
+            ControlEvent::NodeInfoChanged,
+            &mut sessions,
+            &state,
+            &mut node_info,
+        )
+        .expect("push");
+
+        assert_eq!(frames.len(), 1);
+        let sent = frames[0].to_text().expect("text frame");
+        assert!(sent.contains("\"sid\":\"authed\""));
+        assert!(sent.contains("node.info"));
+        assert!(sent.contains("studio-node"));
+        assert_eq!(node_info.name, "studio-node");
     }
 
     #[test]
