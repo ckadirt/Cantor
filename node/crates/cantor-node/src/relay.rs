@@ -123,7 +123,10 @@ async fn serve_once(
     let public_key = identity.public_key_base58();
     let (room_url, config_path) = {
         let locked = lock(state)?;
-        (locked.config.room_url(&public_key)?, locked.config_path.clone())
+        (
+            locked.config.room_url(&public_key)?,
+            locked.config_path.clone(),
+        )
     };
     let (mut socket, _) = connect_async(room_url.as_str())
         .await
@@ -142,8 +145,9 @@ async fn serve_once(
     let nonce_bytes = URL_SAFE_NO_PAD
         .decode(&nonce)
         .context("relay challenge nonce is not valid base64url")?;
-    let nonce_bytes = <[u8; CHALLENGE_BYTES]>::try_from(nonce_bytes.as_slice())
-        .map_err(|_| anyhow::anyhow!("relay challenge nonce must contain {CHALLENGE_BYTES} bytes"))?;
+    let nonce_bytes = <[u8; CHALLENGE_BYTES]>::try_from(nonce_bytes.as_slice()).map_err(|_| {
+        anyhow::anyhow!("relay challenge nonce must contain {CHALLENGE_BYTES} bytes")
+    })?;
 
     // Signed over a domain-separated preimage bound to this room, so the
     // signature cannot double as a client authentication proof (or vice versa).
@@ -292,11 +296,7 @@ fn apply_control_event(
                 // has already said no.
                 frames.push(tunnel_frame(
                     sid,
-                    &NodeMessage::error(
-                        "",
-                        "rejected",
-                        "This client key is no longer authorized.",
-                    ),
+                    &NodeMessage::error("", "rejected", "This client key is no longer authorized."),
                 )?);
             }
             println!("revoked {key}; dropped {} live session(s)", frames.len());
@@ -373,7 +373,8 @@ fn handle_relay_text(
                 sid: &sid,
                 payload: &response,
             };
-            let json = serde_json::to_string(&tunnel).context("failed to encode tunnel response")?;
+            let json =
+                serde_json::to_string(&tunnel).context("failed to encode tunnel response")?;
             Ok(Some(Message::text(json)))
         }
         IncomingFrame::Detached { v, sid } if v == RELAY_VERSION => {
@@ -601,10 +602,7 @@ mod tests {
         assert!(sent.contains("\"code\":\"rejected\""));
         assert_eq!(sessions["session-a"].authenticated_key(), None);
         // The device that was not revoked keeps its session.
-        assert_eq!(
-            sessions["session-b"].authenticated_key(),
-            Some("other-key")
-        );
+        assert_eq!(sessions["session-b"].authenticated_key(), Some("other-key"));
     }
 
     /// A connected app is told about a rename rather than showing the old name

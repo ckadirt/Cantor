@@ -171,8 +171,7 @@ pub fn bind(socket_path: &Path) -> Result<UnixListener> {
     // pre-existing one would mean chmod'ing /tmp for `--control-socket
     // /tmp/x.sock`, which is not ours to do.
     let created_parent = !parent.exists();
-    fs::create_dir_all(parent)
-        .with_context(|| format!("failed to create {}", parent.display()))?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
     if created_parent {
         fs::set_permissions(parent, fs::Permissions::from_mode(SOCKET_DIRECTORY_MODE))
             .with_context(|| format!("failed to restrict {}", parent.display()))?;
@@ -348,7 +347,11 @@ impl Response {
     }
 }
 
-fn dispatch(line: &str, state: &SharedState, events: &mpsc::UnboundedSender<ControlEvent>) -> Response {
+fn dispatch(
+    line: &str,
+    state: &SharedState,
+    events: &mpsc::UnboundedSender<ControlEvent>,
+) -> Response {
     let fallback_id = serde_json::from_str::<Value>(line)
         .ok()
         .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_owned))
@@ -372,7 +375,9 @@ fn handle(
     state: &SharedState,
     events: &mpsc::UnboundedSender<ControlEvent>,
 ) -> Result<Response> {
-    let mut state = state.lock().map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+    let mut state = state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
 
     match request {
         Request::Status { v, id } => {
@@ -487,7 +492,8 @@ pub async fn request(socket_path: &Path, request: &Value) -> Result<Value> {
         .next_line()
         .await?
         .context("the node closed the control connection without answering")?;
-    let response: Value = serde_json::from_str(&line).context("the node sent an invalid response")?;
+    let response: Value =
+        serde_json::from_str(&line).context("the node sent an invalid response")?;
 
     if response.get("t").and_then(Value::as_str) == Some("error") {
         let code = response
@@ -576,7 +582,13 @@ mod tests {
         );
 
         assert_eq!(encode(&response)["t"], "ok");
-        assert!(!state.lock().expect("state").config.is_authorized("device-key"));
+        assert!(
+            !state
+                .lock()
+                .expect("state")
+                .config
+                .is_authorized("device-key")
+        );
         assert!(matches!(
             received.try_recv().expect("event"),
             ControlEvent::Revoked(key) if key == "device-key"

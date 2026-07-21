@@ -1,0 +1,98 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Native builds on the oldest runner still supported, because a binary
+          # links the glibc it was built against and only runs on that version
+          # or newer. Building on 24.04 would exclude every 22.04 host.
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+          key: ${{ matrix.target }}
+
+      # A tag that disagrees with the manifest would ship a binary whose
+      # `cantor --version` contradicts the release it came from, and `cantor
+      # upgrade` compares exactly those two things.
+      - name: tag matches the crate version
+        working-directory: node
+        run: |
+          set -eu
+          crate=$(cargo metadata --no-deps --format-version 1 \
+            | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"] == "cantor"))')
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$crate" != "$tag" ]; then
+            echo "tag $GITHUB_REF_NAME does not match crate version $crate" >&2
+            exit 1
+          fi
+
+      - name: build
+        working-directory: node
+        run: cargo build --release -p cantor
+
+      # The installer downloads exactly these names and the .sha256 beside each,
+      # reading the first field of the first line. Do not rename them without
+      # changing node/install.sh in the same commit.
+      - name: package
+        working-directory: node
+        run: |
+          set -eu
+          asset="cantor-${{ matrix.target }}"
+          cp target/release/cantor "$asset"
+          sha256sum "$asset" > "$asset.sha256"
+          ls -l "$asset" "$asset.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            node/cantor-${{ matrix.target }}
+            node/cantor-${{ matrix.target }}.sha256
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: assets
+          merge-multiple: true
+
+      - name: checksums are self-consistent
+        working-directory: assets
+        run: |
+          set -eu
+          ls -l
+          for sum in *.sha256; do sha256sum --check "$sum"; done
+
+      # The GitHub CLI is preinstalled on the runner, so publishing needs no
+      # third-party action with write access to the repository.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            assets/*
