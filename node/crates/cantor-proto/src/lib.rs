@@ -51,6 +51,9 @@ pub enum ClientMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         pair_proof: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        petname: Option<String>,
     },
     #[serde(rename = "auth")]
     #[ts(rename = "auth")]
@@ -114,6 +117,7 @@ mod tests {
             id: "request-1".to_owned(),
             pubkey: "client-key".to_owned(),
             pair_proof: None,
+            petname: None,
         };
 
         assert_eq!(

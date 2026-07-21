@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 import type { AppIdentity } from '../identity/derive';
 import { signChallenge } from '../identity/derive';
 import { backendRoomUrl, createPairProof } from './pairing';
@@ -22,6 +23,8 @@ const RECONNECT_JITTER_MS = 250;
 const KEEPALIVE_INTERVAL_MS = 25_000;
 const KEEPALIVE_PING = 'ping';
 const KEEPALIVE_PONG = 'pong';
+/** Matches `MAX_PETNAME_BYTES` in the node's `config.rs`. */
+const MAX_PETNAME_BYTES = 64;
 
 type ConnectionCallbacks = {
   onSnapshot: (snapshot: ConnectionSnapshot) => void;
@@ -186,12 +189,14 @@ export class BackendConnection {
       this.fail(readError(error), true);
       return;
     }
+    const petname = devicePetname();
     this.sendApplication({
       t: 'hello',
       v: PROTOCOL_VERSION,
       id: this.handshakeId,
       pubkey: this.identity.publicKey,
       ...(pairProof ? { pair_proof: pairProof } : {}),
+      ...(petname ? { petname } : {}),
     });
   }
 
@@ -324,4 +329,66 @@ export class BackendConnection {
 
 function readError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * How this phone names itself in the node's pairing list. `Platform.constants`
+ * already carries the Android brand and model, so this needs no dependency.
+ * The node applies the same rules again and drops anything that fails them.
+ */
+export function devicePetname(): string | undefined {
+  const constants = Platform.constants as Partial<{
+    Brand: string;
+    Model: string;
+  }>;
+  const parts = [constants.Brand, constants.Model].filter(
+    (part): part is string => typeof part === 'string' && part.length > 0,
+  );
+  // A model that already repeats the brand ("Google Pixel 8") should not
+  // become "Google Google Pixel 8".
+  const name = (
+    parts.length === 2 && parts[1].toLowerCase().startsWith(parts[0].toLowerCase())
+      ? parts[1]
+      : parts.join(' ')
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (name.length === 0 || /\p{Cc}/u.test(name)) {
+    return undefined;
+  }
+  return truncateToBytes(name, MAX_PETNAME_BYTES);
+}
+
+function truncateToBytes(value: string, maxBytes: number): string {
+  if (utf8ByteLength(value) <= maxBytes) {
+    return value;
+  }
+  // Trim whole code points so a truncated name never becomes invalid UTF-8.
+  const codePoints = [...value];
+  while (codePoints.length > 0) {
+    codePoints.pop();
+    const candidate = codePoints.join('').trimEnd();
+    if (utf8ByteLength(candidate) <= maxBytes) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+/** The node counts bytes, so the app has to as well. */
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x7f) {
+      bytes += 1;
+    } else if (code <= 0x7ff) {
+      bytes += 2;
+    } else if (code <= 0xffff) {
+      bytes += 3;
+    } else {
+      bytes += 4;
+    }
+  }
+  return bytes;
 }

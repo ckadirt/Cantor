@@ -1,7 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
 import {createHmac, webcrypto} from 'node:crypto';
 
-const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token]';
+const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME]';
 const pairValue = process.argv[2];
 const identityIndex = process.argv.indexOf('--identity');
 if (pairValue === undefined || identityIndex < 0 || process.argv[identityIndex + 1] === undefined) {
@@ -18,6 +18,8 @@ if (pairUri.protocol !== 'cantor:' || nodeKey === null || relayValue === null) {
 }
 
 const identityPath = process.argv[identityIndex + 1];
+const petnameIndex = process.argv.indexOf('--petname');
+const petname = petnameIndex < 0 ? 'protocol-client demo' : process.argv[petnameIndex + 1];
 let keyPair;
 try {
   const jwk = JSON.parse(await readFile(identityPath, 'utf8'));
@@ -47,7 +49,7 @@ socket.addEventListener('message', async event => {
   const frame = JSON.parse(event.data);
   if (frame.t === 'relay.presence') {
     console.log(`presence: ${frame.online ? 'online' : 'offline'}`);
-    if (frame.online) send({t: 'hello', v: 1, id: 'handshake-1', pubkey: clientKey, ...(pairProof ? {pair_proof: pairProof} : {})});
+    if (frame.online) send({t: 'hello', v: 1, id: 'handshake-1', pubkey: clientKey, ...(pairProof ? {pair_proof: pairProof} : {}), petname});
     return;
   }
   if (frame.t === 'relay.error') throw new Error(`relay error [${frame.code}]: ${frame.msg}`);

@@ -1,5 +1,6 @@
 import { base58 } from '@scure/base';
-import { BackendConnection } from '../connection';
+import { Platform } from 'react-native';
+import { BackendConnection, devicePetname } from '../connection';
 import { deriveIdentity } from '../../identity/derive';
 import type { BackendRecord, ConnectionSnapshot } from '../types';
 
@@ -179,5 +180,45 @@ describe('BackendConnection', () => {
     const socketCount = FakeSocket.instances.length;
     jest.advanceTimersByTime(120_000);
     expect(FakeSocket.instances).toHaveLength(socketCount);
+  });
+});
+
+describe('devicePetname', () => {
+  const constants = Platform.constants as Record<string, unknown>;
+  const original = { ...constants };
+
+  afterEach(() => {
+    for (const key of Object.keys(constants)) delete constants[key];
+    Object.assign(constants, original);
+  });
+
+  function setConstants(next: Record<string, unknown>): void {
+    for (const key of ['Brand', 'Model']) delete constants[key];
+    Object.assign(constants, next);
+  }
+
+  it('joins the brand and model this phone reports', () => {
+    setConstants({ Brand: 'Xiaomi', Model: 'Redmi Note 11' });
+    expect(devicePetname()).toBe('Xiaomi Redmi Note 11');
+  });
+
+  it('does not repeat a brand the model already carries', () => {
+    setConstants({ Brand: 'Google', Model: 'Google Pixel 8' });
+    expect(devicePetname()).toBe('Google Pixel 8');
+  });
+
+  it('yields nothing when the platform reports no device name', () => {
+    setConstants({});
+    expect(devicePetname()).toBeUndefined();
+  });
+
+  // The node caps petnames at 64 bytes and drops anything longer, so a long
+  // name has to be shortened here rather than silently discarded there.
+  it('truncates to the byte budget the node enforces', () => {
+    setConstants({ Brand: 'B'.repeat(40), Model: 'M'.repeat(40) });
+    const petname = devicePetname() ?? '';
+    expect(petname).toMatch(/^[ -~]+$/);
+    expect(petname.length).toBeLessThanOrEqual(64);
+    expect(petname.startsWith('B'.repeat(40))).toBe(true);
   });
 });

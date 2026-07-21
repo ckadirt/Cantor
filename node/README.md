@@ -22,8 +22,11 @@ cargo run -p cantor-node -- pair
 Scan the terminal QR from Cantor, or paste the printed `cantor://pair` URI. The
 app sends a key-bound HMAC proof rather than the raw pairing token. The token is
 invalidated after the first client proves possession of its Ed25519 key; that
-public key is written to `allowed_keys` in `node.toml`. Subsequent launches use
-`run` and accept only keys already in that allowlist.
+public key is written as a `[[pairings]]` record in `node.toml`, alongside the
+device name the app reported and the time it paired. Subsequent launches use
+`run` and accept only keys already in that allowlist. A `node.toml` from an
+earlier build carrying a flat `allowed_keys` array still loads; it is converted
+to records the next time the file is written.
 
 The first run creates `node.key` and `node.toml` under the platform config
 directory (`~/.config/cantor` on Linux). Both files are owner-only, and the key

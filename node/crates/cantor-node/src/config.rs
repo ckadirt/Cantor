@@ -5,12 +5,15 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use url::Url;
 
 const CONFIG_DIRECTORY_MODE: u32 = 0o700;
 const CONFIG_FILE_MODE: u32 = 0o600;
 const DEFAULT_RELAY_URL: &str = "ws://localhost:8787";
 const MAX_NODE_NAME_BYTES: usize = 64;
+pub const MAX_PETNAME_BYTES: usize = 64;
 
 #[derive(Debug)]
 pub struct NodePaths {
@@ -80,12 +83,63 @@ impl ConfigSeed {
     }
 }
 
+/// One paired client. `petname` and `paired_at` are optional so that records
+/// folded up from the legacy `allowed_keys` array stay representable.
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Pairing {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub petname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paired_at: Option<String>,
+}
+
+impl Pairing {
+    pub fn new(key: String, petname: Option<String>, paired_at: Option<String>) -> Self {
+        Self {
+            key,
+            petname,
+            paired_at,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(from = "RawNodeConfig")]
 pub struct NodeConfig {
     pub name: String,
     pub relay_url: String,
     #[serde(default)]
-    pub allowed_keys: Vec<String>,
+    pub pairings: Vec<Pairing>,
+}
+
+/// Read-side shape only. Nodes installed before pairings became records still
+/// carry a flat `allowed_keys` array; it is folded into records on load and
+/// never written back.
+#[derive(Deserialize)]
+struct RawNodeConfig {
+    name: String,
+    relay_url: String,
+    #[serde(default)]
+    pairings: Vec<Pairing>,
+    #[serde(default)]
+    allowed_keys: Vec<String>,
+}
+
+impl From<RawNodeConfig> for NodeConfig {
+    fn from(raw: RawNodeConfig) -> Self {
+        let mut pairings = raw.pairings;
+        for key in raw.allowed_keys {
+            if !pairings.iter().any(|pairing| pairing.key == key) {
+                pairings.push(Pairing::new(key, None, None));
+            }
+        }
+        Self {
+            name: raw.name,
+            relay_url: raw.relay_url,
+            pairings,
+        }
+    }
 }
 
 impl NodeConfig {
@@ -106,7 +160,7 @@ impl NodeConfig {
             relay_url: seed
                 .relay_url
                 .unwrap_or_else(|| DEFAULT_RELAY_URL.to_owned()),
-            allowed_keys: Vec::new(),
+            pairings: Vec::new(),
         };
         config.validate()?;
 
@@ -144,18 +198,27 @@ impl NodeConfig {
         Ok(url)
     }
 
-    pub fn authorize_key(&mut self, path: &Path, public_key: &str) -> Result<bool> {
-        if self
-            .allowed_keys
-            .iter()
-            .any(|allowed| allowed == public_key)
-        {
+    pub fn is_authorized(&self, public_key: &str) -> bool {
+        self.pairings.iter().any(|pairing| pairing.key == public_key)
+    }
+
+    pub fn authorize_key(
+        &mut self,
+        path: &Path,
+        public_key: &str,
+        petname: Option<String>,
+    ) -> Result<bool> {
+        if self.is_authorized(public_key) {
             return Ok(false);
         }
 
-        self.allowed_keys.push(public_key.to_owned());
+        self.pairings.push(Pairing::new(
+            public_key.to_owned(),
+            petname,
+            Some(now_rfc3339()),
+        ));
         if let Err(error) = self.save_atomically(path) {
-            self.allowed_keys.pop();
+            self.pairings.pop();
             return Err(error);
         }
         Ok(true)
@@ -221,8 +284,42 @@ impl NodeConfig {
         if relay_url.query().is_some() || relay_url.fragment().is_some() {
             bail!("relay_url must not contain a query string or fragment");
         }
+
+        // A petname reaching this point unsanitised would be written to disk and
+        // later printed to a terminal; refuse rather than persist it.
+        for pairing in &self.pairings {
+            if pairing
+                .petname
+                .as_deref()
+                .is_some_and(|petname| sanitize_petname(petname).is_none())
+            {
+                bail!("pairing petnames must be 1-{MAX_PETNAME_BYTES} bytes with no control characters");
+            }
+        }
         Ok(())
     }
+}
+
+/// Petnames are attacker-supplied, persisted, and later printed to a terminal.
+/// Rejecting control characters is what stops a paired device from injecting
+/// ANSI escape sequences into `cantor pairings` output.
+pub fn sanitize_petname(petname: &str) -> Option<String> {
+    let trimmed = petname.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > MAX_PETNAME_BYTES
+        || trimmed.chars().any(char::is_control)
+    {
+        return None;
+    }
+    Some(trimmed.to_owned())
+}
+
+fn now_rfc3339() -> String {
+    OffsetDateTime::now_utc()
+        .replace_nanosecond(0)
+        .unwrap_or_else(|_| OffsetDateTime::now_utc())
+        .format(&Rfc3339)
+        .unwrap_or_default()
 }
 
 fn default_node_name() -> String {
@@ -276,7 +373,7 @@ mod tests {
 
         assert!(was_created);
         assert_eq!(created.name, "cesar-desktop");
-        assert!(created.allowed_keys.is_empty());
+        assert!(created.pairings.is_empty());
         let mode = std::fs::metadata(&paths.config)
             .expect("config metadata")
             .permissions()
@@ -307,7 +404,7 @@ mod tests {
         let config = NodeConfig {
             name: "node".to_owned(),
             relay_url: "wss://example.test/cantor/".to_owned(),
-            allowed_keys: Vec::new(),
+            pairings: Vec::new(),
         };
 
         assert_eq!(
@@ -326,17 +423,75 @@ mod tests {
 
         assert!(
             config
-                .authorize_key(&paths.config, "client-key")
+                .authorize_key(&paths.config, "client-key", Some("Redmi Note 11".to_owned()))
                 .expect("authorize")
         );
         assert!(
             !config
-                .authorize_key(&paths.config, "client-key")
+                .authorize_key(&paths.config, "client-key", Some("second try".to_owned()))
                 .expect("idempotent")
         );
 
         let (reloaded, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
-        assert_eq!(reloaded.allowed_keys, vec!["client-key"]);
+        assert_eq!(reloaded.pairings.len(), 1);
+        assert_eq!(reloaded.pairings[0].key, "client-key");
+        assert_eq!(reloaded.pairings[0].petname.as_deref(), Some("Redmi Note 11"));
+        assert!(
+            reloaded.pairings[0]
+                .paired_at
+                .as_deref()
+                .is_some_and(|stamp| stamp.ends_with('Z') && stamp.contains('T'))
+        );
+    }
+
+    /// Nodes installed before pairings became records must keep working, and
+    /// must be rewritten in the new form the first time anything is written.
+    #[test]
+    fn a_legacy_allowed_keys_config_loads_and_is_rewritten_as_records() {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("prepare directory");
+        std::fs::write(
+            &paths.config,
+            "name = \"legacy\"\nrelay_url = \"ws://localhost:8787\"\nallowed_keys = [\"old-key\"]\n",
+        )
+        .expect("write legacy config");
+
+        let (mut config, was_created) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("load legacy");
+        assert!(!was_created);
+        assert!(config.is_authorized("old-key"));
+        assert_eq!(config.pairings[0].petname, None);
+        assert_eq!(config.pairings[0].paired_at, None);
+
+        config
+            .authorize_key(&paths.config, "new-key", Some("Phone".to_owned()))
+            .expect("authorize");
+
+        let rewritten = std::fs::read_to_string(&paths.config).expect("read config");
+        assert!(rewritten.contains("[[pairings]]"));
+        assert!(!rewritten.contains("allowed_keys"));
+
+        let (reloaded, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
+        assert!(reloaded.is_authorized("old-key"));
+        assert!(reloaded.is_authorized("new-key"));
+    }
+
+    #[test]
+    fn petnames_with_control_characters_or_excess_length_are_refused() {
+        assert_eq!(
+            super::sanitize_petname("  Redmi Note 11  ").as_deref(),
+            Some("Redmi Note 11")
+        );
+        assert_eq!(super::sanitize_petname("   "), None);
+        assert_eq!(super::sanitize_petname("evil\u{1b}[2Kname"), None);
+        assert_eq!(super::sanitize_petname("wrapped\nname"), None);
+        assert_eq!(super::sanitize_petname(&"x".repeat(65)), None);
+        assert_eq!(
+            super::sanitize_petname(&"x".repeat(64)).as_deref(),
+            Some("x".repeat(64).as_str())
+        );
     }
 }
