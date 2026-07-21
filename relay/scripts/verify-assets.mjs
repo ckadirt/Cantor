@@ -26,4 +26,27 @@ if (!script.startsWith('#!/bin/sh')) {
   throw new Error('the served installer does not start with a shebang');
 }
 
+// The catalog is what every node reads to find models; a malformed one takes
+// `cantor pull` down for everybody at once.
+const catalogPath = join(here, '..', 'public', 'catalog', 'v1.json');
+const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+if (catalog.schema !== 1) {
+  throw new Error(`catalog schema must be 1, found ${catalog.schema}`);
+}
+if (!Array.isArray(catalog.models)) {
+  throw new Error('catalog.models must be an array');
+}
+for (const model of catalog.models) {
+  for (const variant of model.variants ?? []) {
+    for (const component of variant.components ?? []) {
+      if (!/^sha256:[0-9a-f]{64}$/.test(component.blob ?? '')) {
+        throw new Error(
+          `${model.name}:${variant.tag} component ${component.role} has a malformed blob digest`,
+        );
+      }
+    }
+  }
+}
+
 console.log('assets ok: public/install.sh -> node/install.sh');
+console.log(`catalog ok: schema ${catalog.schema}, ${catalog.models.length} model(s)`);

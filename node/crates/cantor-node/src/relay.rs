@@ -407,11 +407,18 @@ fn request_id(payload: &Value) -> String {
 }
 
 fn static_node_info(config: &NodeConfig) -> NodeInfo {
+    // What is actually on disk, so the app never offers a model this node
+    // cannot load. Phase C's push is what keeps it current after a pull.
+    let models = crate::store::Store::new(config.model_root())
+        .installed()
+        .into_iter()
+        .map(|variant| variant.selector())
+        .collect();
     NodeInfo {
         name: config.name.clone(),
         device_type: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
         engine_version: "ace-step-1.5-stub".to_owned(),
-        models: vec!["ace-step-1.5".to_owned()],
+        models,
         limits: NodeLimits {
             max_concurrent_jobs: 0,
             max_song_seconds: 0,

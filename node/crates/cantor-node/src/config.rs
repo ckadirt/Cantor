@@ -109,10 +109,12 @@ impl Pairing {
 pub struct NodeConfig {
     pub name: String,
     pub relay_url: String,
-    /// Where pulled model blobs live. The installer writes it; Phase E is what
-    /// starts reading it. Carried here so rewriting the file never drops it.
+    /// Where pulled model blobs live. The installer writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
+    /// Overridable so a node can be pointed at a staging catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_url: Option<String>,
     #[serde(default)]
     pub pairings: Vec<Pairing>,
 }
@@ -126,6 +128,8 @@ struct RawNodeConfig {
     relay_url: String,
     #[serde(default)]
     model_dir: Option<String>,
+    #[serde(default)]
+    catalog_url: Option<String>,
     #[serde(default)]
     pairings: Vec<Pairing>,
     #[serde(default)]
@@ -144,6 +148,7 @@ impl From<RawNodeConfig> for NodeConfig {
             name: raw.name,
             relay_url: raw.relay_url,
             model_dir: raw.model_dir,
+            catalog_url: raw.catalog_url,
             pairings,
         }
     }
@@ -168,6 +173,7 @@ impl NodeConfig {
                 .relay_url
                 .unwrap_or_else(|| DEFAULT_RELAY_URL.to_owned()),
             model_dir: None,
+            catalog_url: None,
             pairings: Vec::new(),
         };
         config.validate()?;
@@ -398,7 +404,27 @@ pub fn sanitize_petname(petname: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
-fn now_rfc3339() -> String {
+impl NodeConfig {
+    /// Where the blob store lives. The installer writes `model_dir`; this
+    /// fallback keeps a hand-made config working without one.
+    pub fn model_root(&self) -> PathBuf {
+        if let Some(configured) = &self.model_dir {
+            return PathBuf::from(configured);
+        }
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("/var/lib"))
+            .join("cantor")
+            .join("models")
+    }
+
+    pub fn catalog_url(&self) -> String {
+        self.catalog_url
+            .clone()
+            .unwrap_or_else(|| crate::catalog::DEFAULT_CATALOG_URL.to_owned())
+    }
+}
+
+pub fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
         .replace_nanosecond(0)
         .unwrap_or_else(|_| OffsetDateTime::now_utc())
@@ -489,6 +515,7 @@ mod tests {
             name: "node".to_owned(),
             relay_url: "wss://example.test/cantor/".to_owned(),
             model_dir: None,
+            catalog_url: None,
             pairings: Vec::new(),
         };
 

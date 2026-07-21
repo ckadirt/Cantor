@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "name": "acestep",
+      "licence": "Apache-2.0",
+      "variants": []
+    }
+  ]
+}
