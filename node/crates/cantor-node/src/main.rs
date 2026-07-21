@@ -3,6 +3,7 @@ mod identity;
 mod pairing;
 mod relay;
 mod session;
+mod signing;
 
 use std::env;
 use std::ffi::{OsStr, OsString};

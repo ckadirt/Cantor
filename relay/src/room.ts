@@ -16,6 +16,13 @@ import {
 const CHALLENGE_BYTES = 32;
 const ED25519_PUBLIC_KEY_BYTES = 32;
 const ED25519_SIGNATURE_BYTES = 64;
+/**
+ * Room claims are signed over `domain || room pubkey || nonce` rather than the
+ * bare nonce. Nodes sign a 32-byte nonce in the application handshake too, so
+ * without this separation a signature collected there could be replayed here to
+ * claim someone else's room. Must match `signing.rs` in the node.
+ */
+const RELAY_CLAIM_DOMAIN = new TextEncoder().encode('cantor-relay-claim-v1');
 const NODE_TAG = 'node';
 const CLIENT_TAG = 'client';
 const SESSION_TAG_PREFIX = 'session:';
@@ -289,6 +296,13 @@ export class NodeRoom extends DurableObject<Env> {
       return false;
     }
 
+    const signed = new Uint8Array(
+      RELAY_CLAIM_DOMAIN.length + publicKeyBytes.length + nonceBytes.length,
+    );
+    signed.set(RELAY_CLAIM_DOMAIN, 0);
+    signed.set(publicKeyBytes, RELAY_CLAIM_DOMAIN.length);
+    signed.set(nonceBytes, RELAY_CLAIM_DOMAIN.length + publicKeyBytes.length);
+
     try {
       const publicKey = await crypto.subtle.importKey(
         'raw',
@@ -301,7 +315,7 @@ export class NodeRoom extends DurableObject<Env> {
         {name: 'Ed25519'},
         publicKey,
         signatureBytes,
-        nonceBytes,
+        signed,
       );
     } catch {
       return false;

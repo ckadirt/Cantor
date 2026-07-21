@@ -9,12 +9,15 @@ use cantor_proto::{NodeInfo, NodeLimits, NodeLoad, NodeMessage};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::NodeConfig;
 use crate::identity::NodeIdentity;
 use crate::session::ClientSession;
+use crate::signing::relay_claim_message;
 
 const RELAY_VERSION: u8 = 1;
 const CHALLENGE_BYTES: usize = 32;
@@ -22,6 +25,22 @@ const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
 const RECONNECT_JITTER_MS: u64 = 250;
 const MAX_CLIENT_SESSIONS: usize = 1_024;
+
+/// Carrier NAT and intermediate proxies drop idle WebSocket connections after
+/// roughly a minute. The relay answers this text frame from
+/// `setWebSocketAutoResponse` without waking the Durable Object, so keeping the
+/// path warm costs nothing on the relay side.
+const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
+const KEEPALIVE_PING: &str = "ping";
+const KEEPALIVE_PONG: &str = "pong";
+
+/// Outbound frames are queued rather than written inline so one slow socket
+/// write cannot stall the read loop (and, with it, every other client session).
+const OUTBOUND_QUEUE_DEPTH: usize = 256;
+
+/// Bounds how many frames the node will skip while waiting for an expected
+/// control frame, so an unrecognised relay cannot stall the handshake forever.
+const MAX_SKIPPED_HANDSHAKE_FRAMES: usize = 8;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t")]
@@ -36,6 +55,10 @@ enum IncomingFrame {
     Detached { v: u8, sid: String },
     #[serde(rename = "tunnel")]
     Tunnel { v: u8, sid: String, payload: Value },
+    /// Frame types added by a newer relay. Ignored rather than fatal so a relay
+    /// deployment can introduce frames without bricking existing nodes.
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Serialize)]
@@ -123,15 +146,17 @@ async fn serve_once(
     let nonce_bytes = URL_SAFE_NO_PAD
         .decode(&nonce)
         .context("relay challenge nonce is not valid base64url")?;
-    if nonce_bytes.len() != CHALLENGE_BYTES {
-        bail!("relay challenge nonce must contain {CHALLENGE_BYTES} bytes");
-    }
+    let nonce_bytes = <[u8; CHALLENGE_BYTES]>::try_from(nonce_bytes.as_slice())
+        .map_err(|_| anyhow::anyhow!("relay challenge nonce must contain {CHALLENGE_BYTES} bytes"))?;
 
+    // Signed over a domain-separated preimage bound to this room, so the
+    // signature cannot double as a client authentication proof (or vice versa).
+    let claim_message = relay_claim_message(&identity.public_key_bytes(), &nonce_bytes);
     let claim = RelayClaim {
         v: RELAY_VERSION,
         t: "relay.claim",
         pubkey: &public_key,
-        sig: URL_SAFE_NO_PAD.encode(identity.sign(&nonce_bytes).to_bytes()),
+        sig: URL_SAFE_NO_PAD.encode(identity.sign(&claim_message).to_bytes()),
     };
     send_json(&mut socket, &claim, "relay claim").await?;
 
@@ -147,60 +172,141 @@ async fn serve_once(
     let node_info = static_node_info(config);
     let mut sessions = HashMap::<String, ClientSession>::new();
 
-    while let Some(message) = socket.next().await {
-        match message.context("relay WebSocket failed")? {
-            Message::Ping(payload) => socket
-                .send(Message::Pong(payload))
-                .await
-                .context("failed to answer relay ping")?,
-            Message::Close(frame) => bail!("relay closed the room socket: {frame:?}"),
-            Message::Text(text) => {
-                let frame: IncomingFrame =
-                    serde_json::from_str(text.as_ref()).context("relay sent an invalid frame")?;
-                match frame {
-                    IncomingFrame::Tunnel { v, sid, payload } if v == RELAY_VERSION => {
-                        let response =
-                            if can_open_client_session(&sessions, &sid, MAX_CLIENT_SESSIONS) {
-                                sessions.entry(sid.clone()).or_default().handle(
-                                    payload,
-                                    config,
-                                    config_path,
-                                    pair_token,
-                                    &public_key,
-                                    &node_info,
-                                )?
-                            } else {
-                                NodeMessage::error(
-                                    request_id(&payload),
-                                    "too-many-sessions",
-                                    "This node has reached its client session limit.",
-                                )
-                            };
-                        let tunnel = RelayTunnel {
-                            v: RELAY_VERSION,
-                            t: "tunnel",
-                            sid: &sid,
-                            payload: &response,
-                        };
-                        send_json(&mut socket, &tunnel, "tunnel response").await?;
-                    }
-                    IncomingFrame::Tunnel { v, .. } => {
-                        bail!("relay protocol version {v} is not supported")
-                    }
-                    IncomingFrame::Detached { v, sid } if v == RELAY_VERSION => {
-                        sessions.remove(&sid);
-                    }
-                    IncomingFrame::Detached { v, .. } => {
-                        bail!("relay protocol version {v} is not supported")
-                    }
-                    IncomingFrame::Error { v, code, msg } => bail_relay_error(v, &code, &msg)?,
-                    _ => bail!("relay sent an unexpected control frame after relay.ok"),
+    // The write half moves into its own task and is fed by a queue. Anything
+    // holding an `outbound` clone can push a frame at any time, which is what
+    // unsolicited job-progress updates will need.
+    let (mut writer, mut reader) = socket.split();
+    let (outbound, mut queued) = mpsc::channel::<Message>(OUTBOUND_QUEUE_DEPTH);
+    let mut writes = tokio::spawn(async move {
+        while let Some(message) = queued.recv().await {
+            writer.send(message).await?;
+        }
+        writer.close().await
+    });
+
+    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
+    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    keepalive.tick().await; // The first tick completes immediately.
+
+    let outcome = loop {
+        tokio::select! {
+            _ = keepalive.tick() => {
+                if outbound.send(Message::text(KEEPALIVE_PING)).await.is_err() {
+                    break Err(anyhow::anyhow!("relay writer stopped"));
                 }
             }
-            _ => {}
+            joined = &mut writes => {
+                break match joined {
+                    Ok(Ok(())) => Err(anyhow::anyhow!("relay writer closed the room socket")),
+                    Ok(Err(error)) => Err(error).context("relay WebSocket write failed"),
+                    Err(error) => Err(error).context("relay writer task panicked"),
+                };
+            }
+            message = reader.next() => {
+                let Some(message) = message else {
+                    break Err(anyhow::anyhow!("relay disconnected"));
+                };
+                let message = match message.context("relay WebSocket failed") {
+                    Ok(message) => message,
+                    Err(error) => break Err(error),
+                };
+                match message {
+                    Message::Ping(payload) => {
+                        if outbound.send(Message::Pong(payload)).await.is_err() {
+                            break Err(anyhow::anyhow!("relay writer stopped"));
+                        }
+                    }
+                    Message::Close(frame) => {
+                        break Err(anyhow::anyhow!("relay closed the room socket: {frame:?}"));
+                    }
+                    Message::Text(text) => {
+                        if text.as_str() == KEEPALIVE_PONG {
+                            continue;
+                        }
+                        let Some(response) = handle_relay_text(
+                            text.as_ref(),
+                            &mut sessions,
+                            config,
+                            config_path,
+                            pair_token,
+                            &public_key,
+                            &node_info,
+                        )? else {
+                            continue;
+                        };
+                        if outbound.send(response).await.is_err() {
+                            break Err(anyhow::anyhow!("relay writer stopped"));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    };
+
+    drop(outbound);
+    writes.abort();
+    outcome
+}
+
+/// Returns the frame to send back, if any. `Ok(None)` means the frame needed no
+/// reply — including frames this node does not recognise, which are logged and
+/// skipped so a newer relay cannot take the node down.
+fn handle_relay_text(
+    text: &str,
+    sessions: &mut HashMap<String, ClientSession>,
+    config: &mut NodeConfig,
+    config_path: &Path,
+    pair_token: &mut Option<String>,
+    public_key: &str,
+    node_info: &NodeInfo,
+) -> Result<Option<Message>> {
+    let frame: IncomingFrame = match serde_json::from_str(text) {
+        Ok(frame) => frame,
+        Err(error) => {
+            eprintln!("ignoring unparseable relay frame: {error}");
+            return Ok(None);
+        }
+    };
+
+    match frame {
+        IncomingFrame::Tunnel { v, sid, payload } if v == RELAY_VERSION => {
+            let response = if can_open_client_session(sessions, &sid, MAX_CLIENT_SESSIONS) {
+                sessions.entry(sid.clone()).or_default().handle(
+                    payload,
+                    config,
+                    config_path,
+                    pair_token,
+                    public_key,
+                    node_info,
+                )?
+            } else {
+                NodeMessage::error(
+                    request_id(&payload),
+                    "too-many-sessions",
+                    "This node has reached its client session limit.",
+                )
+            };
+            let tunnel = RelayTunnel {
+                v: RELAY_VERSION,
+                t: "tunnel",
+                sid: &sid,
+                payload: &response,
+            };
+            let json = serde_json::to_string(&tunnel).context("failed to encode tunnel response")?;
+            Ok(Some(Message::text(json)))
+        }
+        IncomingFrame::Detached { v, sid } if v == RELAY_VERSION => {
+            sessions.remove(&sid);
+            Ok(None)
+        }
+        // A relay-level error is about this connection, so it still ends it.
+        IncomingFrame::Error { v, code, msg } => bail_relay_error(v, &code, &msg)?,
+        other => {
+            eprintln!("ignoring unexpected relay frame: {other:?}");
+            Ok(None)
         }
     }
-    bail!("relay disconnected")
 }
 
 fn can_open_client_session(
@@ -267,11 +373,25 @@ async fn next_control_frame<S>(socket: &mut S) -> Result<IncomingFrame>
 where
     S: StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin,
 {
+    let mut skipped = 0_usize;
     loop {
         match socket.next().await {
             Some(Ok(Message::Text(text))) => {
-                return serde_json::from_str(text.as_ref())
-                    .context("relay sent an invalid control frame");
+                if text.as_str() == KEEPALIVE_PONG {
+                    continue;
+                }
+                match serde_json::from_str::<IncomingFrame>(text.as_ref()) {
+                    // Unrecognised frames are skipped rather than fatal, but only
+                    // a bounded number of them, so the handshake cannot hang.
+                    Ok(IncomingFrame::Unknown) | Err(_) => {
+                        skipped += 1;
+                        if skipped > MAX_SKIPPED_HANDSHAKE_FRAMES {
+                            bail!("relay sent only unrecognised frames during the room claim");
+                        }
+                        eprintln!("ignoring unrecognised relay frame during the room claim");
+                    }
+                    Ok(frame) => return Ok(frame),
+                }
             }
             Some(Ok(Message::Ping(_))) => continue,
             Some(Ok(Message::Close(frame))) => {
@@ -295,9 +415,74 @@ fn bail_relay_error<T>(v: u8, code: &str, msg: &str) -> Result<T> {
 mod tests {
     use std::collections::HashMap;
 
+    use tempfile::tempdir;
+
+    use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::session::ClientSession;
 
-    use super::{RECONNECT_MAX_MS, can_open_client_session, reconnect_delay};
+    use super::{
+        RECONNECT_MAX_MS, can_open_client_session, handle_relay_text, reconnect_delay,
+        static_node_info,
+    };
+
+    /// Every frame this build does not understand must be skipped rather than
+    /// ending the connection, so a newer relay can add frames without knocking
+    /// already-installed nodes offline in a reconnect loop.
+    #[test]
+    fn unrecognised_frames_are_skipped_without_ending_the_connection() {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("directory");
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+        let node_info = static_node_info(&config);
+        let mut sessions = HashMap::new();
+        let mut pair_token = None;
+
+        for frame in [
+            r#"{"v":1,"t":"relay.somethingNew","detail":"from a newer relay"}"#,
+            r#"{"v":2,"t":"tunnel","sid":"s","payload":{}}"#,
+            r#"{"v":2,"t":"relay.detached","sid":"s"}"#,
+            "not json at all",
+            "",
+        ] {
+            let response = handle_relay_text(
+                frame,
+                &mut sessions,
+                &mut config,
+                &paths.config,
+                &mut pair_token,
+                "node-key",
+                &node_info,
+            )
+            .expect("unrecognised frames must not be errors");
+            assert!(response.is_none(), "unexpected reply to {frame}");
+        }
+    }
+
+    /// A relay-level error is about this connection specifically, so unlike an
+    /// unknown frame it still ends it.
+    #[test]
+    fn a_relay_error_still_ends_the_connection() {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("directory");
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+        let node_info = static_node_info(&config);
+
+        let result = handle_relay_text(
+            r#"{"v":1,"t":"relay.error","code":"bad-claim","msg":"nope"}"#,
+            &mut HashMap::new(),
+            &mut config,
+            &paths.config,
+            &mut None,
+            "node-key",
+            &node_info,
+        );
+
+        assert!(result.is_err());
+    }
 
     #[test]
     fn reconnect_delay_is_exponential_and_capped() {

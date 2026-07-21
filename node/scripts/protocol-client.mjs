@@ -55,7 +55,11 @@ socket.addEventListener('message', async event => {
   const message = frame.payload;
   if (message.t === 'challenge') {
     if (message.node_pubkey !== nodeKey) throw new Error('Node handshake key does not match pairing URI.');
-    const signature = await webcrypto.subtle.sign('Ed25519', keyPair.privateKey, base64urlDecode(message.nonce));
+    const signature = await webcrypto.subtle.sign(
+      'Ed25519',
+      keyPair.privateKey,
+      nodeAuthMessage(message.node_pubkey, clientKey, base64urlDecode(message.nonce)),
+    );
     send({t: 'auth', v: 1, id: message.id, sig: base64urlEncode(new Uint8Array(signature))});
   } else if (message.t === 'welcome') {
     console.log(`welcome: ${JSON.stringify(message.node)}`);
@@ -124,6 +128,21 @@ function base58Decode(value) {
     bytes.unshift(0);
   }
   return Uint8Array.from(bytes);
+}
+
+/** Must match `node_auth_message` in crates/cantor-node/src/signing.rs. */
+function nodeAuthMessage(nodePublicKey, clientPublicKey, nonce) {
+  const nodeKeyBytes = base58Decode(nodePublicKey);
+  const clientKeyBytes = base58Decode(clientPublicKey);
+  if (nodeKeyBytes.length !== 32 || clientKeyBytes.length !== 32 || nonce.length !== 32) {
+    throw new Error('Invalid node authentication material.');
+  }
+  return Buffer.concat([
+    Buffer.from('cantor-node-auth-v1'),
+    Buffer.from(nodeKeyBytes),
+    Buffer.from(clientKeyBytes),
+    Buffer.from(nonce),
+  ]);
 }
 
 function createPairProof(pairToken, nodePublicKey, clientPublicKey) {

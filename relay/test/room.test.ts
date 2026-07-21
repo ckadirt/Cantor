@@ -233,8 +233,9 @@ describe('NodeRoom', () => {
     expect(challenge).toMatchObject({v: 1, t: 'relay.challenge'});
     expect(challenge.nonce).toEqual(expect.any(String));
 
-    const signature = await signNonce(
+    const signature = await signRoomClaim(
       impostorIdentity.keyPair.privateKey,
+      roomIdentity.pubkey,
       challenge.nonce,
     );
     const error = nextJsonFrame(node.socket);
@@ -260,6 +261,35 @@ describe('NodeRoom', () => {
       t: 'relay.presence',
       online: false,
     });
+  });
+
+  // A bare-nonce signature is exactly what the application handshake produces.
+  // Accepting one here would let a node that a user paired with relay this
+  // room's challenge as its own client challenge and replay the answer to take
+  // over the room.
+  it('rejects a claim signed over the bare nonce', async () => {
+    const identity = await createNodeIdentity();
+    const node = await connect(identity.pubkey, 'node');
+    const challenge = await node.firstFrame;
+
+    const signature = await signBareNonce(
+      identity.keyPair.privateKey,
+      challenge.nonce,
+    );
+    const error = nextJsonFrame(node.socket);
+    const closed = nextClose(node.socket);
+    sendJson(node.socket, {
+      v: 1,
+      t: 'relay.claim',
+      pubkey: identity.pubkey,
+      sig: signature,
+    });
+
+    expect(await error).toMatchObject({t: 'relay.error', code: 'bad-claim'});
+    expect(await closed).toMatchObject({code: 1008, reason: 'bad-claim'});
+
+    // This room never reached a claimed state, so nothing else will close it.
+    await evictDurableObject(env.ROOMS.getByName(identity.pubkey));
   });
 });
 
@@ -294,7 +324,11 @@ async function claimNode(identity: NodeIdentity): Promise<WebSocket> {
     throw new Error('Relay challenge did not contain a nonce.');
   }
 
-  const signature = await signNonce(identity.keyPair.privateKey, challenge.nonce);
+  const signature = await signRoomClaim(
+    identity.keyPair.privateKey,
+    identity.pubkey,
+    challenge.nonce,
+  );
   const accepted = nextJsonFrame(connection.socket);
   sendJson(connection.socket, {
     v: 1,
@@ -306,12 +340,40 @@ async function claimNode(identity: NodeIdentity): Promise<WebSocket> {
   return connection.socket;
 }
 
-async function signNonce(privateKey: CryptoKey, nonce: unknown): Promise<string> {
+async function signRoomClaim(
+  privateKey: CryptoKey,
+  roomPubkey: string,
+  nonce: unknown,
+): Promise<string> {
   if (typeof nonce !== 'string') {
     throw new Error('Cannot sign a non-string relay nonce.');
   }
+  const domain = new TextEncoder().encode('cantor-relay-claim-v1');
+  const roomBytes = base58.decode(roomPubkey);
   const nonceBytes = base64urlnopad.decode(nonce);
-  const signature = await crypto.subtle.sign('Ed25519', privateKey, nonceBytes);
+  const signed = new Uint8Array(
+    domain.length + roomBytes.length + nonceBytes.length,
+  );
+  signed.set(domain, 0);
+  signed.set(roomBytes, domain.length);
+  signed.set(nonceBytes, domain.length + roomBytes.length);
+
+  const signature = await crypto.subtle.sign('Ed25519', privateKey, signed);
+  return base64urlnopad.encode(new Uint8Array(signature));
+}
+
+async function signBareNonce(
+  privateKey: CryptoKey,
+  nonce: unknown,
+): Promise<string> {
+  if (typeof nonce !== 'string') {
+    throw new Error('Cannot sign a non-string relay nonce.');
+  }
+  const signature = await crypto.subtle.sign(
+    'Ed25519',
+    privateKey,
+    base64urlnopad.decode(nonce),
+  );
   return base64urlnopad.encode(new Uint8Array(signature));
 }
 
