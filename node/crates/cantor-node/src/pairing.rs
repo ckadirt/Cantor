@@ -84,6 +84,7 @@ mod tests {
         let config = NodeConfig {
             name: "studio node".to_owned(),
             relay_url: "ws://192.0.2.1:8787".to_owned(),
+            model_dir: None,
             pairings: Vec::new(),
         };
         let uri = pairing_uri(&config, "node-key", "secret").expect("pairing URI");

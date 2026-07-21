@@ -109,6 +109,10 @@ impl Pairing {
 pub struct NodeConfig {
     pub name: String,
     pub relay_url: String,
+    /// Where pulled model blobs live. The installer writes it; Phase E is what
+    /// starts reading it. Carried here so rewriting the file never drops it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_dir: Option<String>,
     #[serde(default)]
     pub pairings: Vec<Pairing>,
 }
@@ -120,6 +124,8 @@ pub struct NodeConfig {
 struct RawNodeConfig {
     name: String,
     relay_url: String,
+    #[serde(default)]
+    model_dir: Option<String>,
     #[serde(default)]
     pairings: Vec<Pairing>,
     #[serde(default)]
@@ -137,6 +143,7 @@ impl From<RawNodeConfig> for NodeConfig {
         Self {
             name: raw.name,
             relay_url: raw.relay_url,
+            model_dir: raw.model_dir,
             pairings,
         }
     }
@@ -160,6 +167,7 @@ impl NodeConfig {
             relay_url: seed
                 .relay_url
                 .unwrap_or_else(|| DEFAULT_RELAY_URL.to_owned()),
+            model_dir: None,
             pairings: Vec::new(),
         };
         config.validate()?;
@@ -404,6 +412,7 @@ mod tests {
         let config = NodeConfig {
             name: "node".to_owned(),
             relay_url: "wss://example.test/cantor/".to_owned(),
+            model_dir: None,
             pairings: Vec::new(),
         };
 
@@ -477,6 +486,31 @@ mod tests {
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
         assert!(reloaded.is_authorized("old-key"));
         assert!(reloaded.is_authorized("new-key"));
+    }
+
+    /// The installer writes `model_dir` and nothing reads it until Phase E, so
+    /// a pairing rewrite in between must not quietly drop it.
+    #[test]
+    fn a_model_dir_written_by_the_installer_survives_a_pairing() {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("prepare directory");
+        std::fs::write(
+            &paths.config,
+            "name = \"n\"\nrelay_url = \"ws://localhost:8787\"\nmodel_dir = \"/var/lib/cantor/models\"\npairings = []\n",
+        )
+        .expect("write config");
+
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("load");
+        assert_eq!(config.model_dir.as_deref(), Some("/var/lib/cantor/models"));
+        config
+            .authorize_key(&paths.config, "key", None)
+            .expect("authorize");
+
+        let (reloaded, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
+        assert_eq!(reloaded.model_dir.as_deref(), Some("/var/lib/cantor/models"));
     }
 
     #[test]
