@@ -17,13 +17,15 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
+use crate::catalog::Catalog;
 use crate::config::{NodeConfig, Pairing};
 use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer, new_pair_token, pairing_uri};
+use crate::store::{InstalledVariant, Store, human_bytes};
 
 pub const CONTROL_VERSION: u8 = 1;
 const SOCKET_DIRECTORY_MODE: u32 = 0o750;
@@ -266,6 +268,14 @@ async fn serve_connection(
         if line.trim().is_empty() {
             continue;
         }
+        // A pull runs for minutes and reports as it goes, so it writes many
+        // lines rather than one. Everything else is request/response.
+        if let Some(kind) = frame_kind(&line)
+            && (kind == "pull" || kind == "catalog")
+        {
+            stream_long_request(&line, &state, &events, &mut writer, kind == "pull").await?;
+            continue;
+        }
         let response = dispatch(&line, &state, &events);
         let mut encoded = serde_json::to_string(&response).context("failed to encode response")?;
         encoded.push('\n');
@@ -273,6 +283,198 @@ async fn serve_connection(
         writer.flush().await?;
     }
     Ok(())
+}
+
+fn frame_kind(line: &str) -> Option<String> {
+    serde_json::from_str::<Value>(line)
+        .ok()
+        .and_then(|value| value.get("t").and_then(Value::as_str).map(str::to_owned))
+}
+
+/// Everything a pull needs, copied out under the lock so the download itself
+/// never holds it — a multi-gigabyte transfer must not block `cantor status`.
+struct PullPlan {
+    store_root: PathBuf,
+    catalog_url: String,
+}
+
+fn pull_plan(state: &SharedState) -> Result<PullPlan> {
+    let locked = state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+    Ok(PullPlan {
+        store_root: locked.config.model_root(),
+        catalog_url: locked.config.catalog_url(),
+    })
+}
+
+async fn write_line<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> Result<()> {
+    let mut encoded = serde_json::to_string(value).context("failed to encode a response")?;
+    encoded.push('\n');
+    writer.write_all(encoded.as_bytes()).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
+    line: &str,
+    state: &SharedState,
+    events: &mpsc::UnboundedSender<ControlEvent>,
+    writer: &mut W,
+    is_pull: bool,
+) -> Result<()> {
+    let request: Value = match serde_json::from_str(line) {
+        Ok(value) => value,
+        Err(error) => {
+            return write_line(
+                writer,
+                &json!({"v": CONTROL_VERSION, "id": "", "t": "error",
+                        "code": "invalid-request", "msg": error.to_string()}),
+            )
+            .await;
+        }
+    };
+    let id = request
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+
+    let outcome = if is_pull {
+        let selector = request
+            .get("selector")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        run_pull(&selector, state, events, writer, &id).await
+    } else {
+        run_catalog(state, writer, &id).await
+    };
+
+    if let Err(error) = outcome {
+        write_line(
+            writer,
+            &json!({"v": CONTROL_VERSION, "id": id, "t": "error",
+                    "code": "failed", "msg": format!("{error:#}")}),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn run_catalog<W: tokio::io::AsyncWrite + Unpin>(
+    state: &SharedState,
+    writer: &mut W,
+    id: &str,
+) -> Result<()> {
+    let plan = pull_plan(state)?;
+    let catalog = Catalog::fetch(&plan.catalog_url).await?;
+    let store = Store::new(&plan.store_root);
+    let installed: Vec<String> = store
+        .installed()
+        .into_iter()
+        .map(|variant| variant.selector())
+        .collect();
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "catalog",
+                "models": catalog.models, "installed": installed,
+                "available_bytes": store.available_bytes().unwrap_or(0)}),
+    )
+    .await
+}
+
+async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
+    selector: &str,
+    state: &SharedState,
+    events: &mpsc::UnboundedSender<ControlEvent>,
+    writer: &mut W,
+    id: &str,
+) -> Result<()> {
+    let plan = pull_plan(state)?;
+    let store = Store::new(&plan.store_root);
+    store.prepare()?;
+
+    let catalog = Catalog::fetch(&plan.catalog_url).await?;
+    let (model, variant) = catalog.resolve(selector)?;
+
+    let missing = store.missing(variant)?;
+    let needed: u64 = missing.iter().map(|c| c.bytes).sum();
+    let shared = variant.total_bytes() - needed;
+
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "plan",
+                "model": model.name, "tag": variant.tag, "licence": model.licence,
+                "total_bytes": variant.total_bytes(), "needed_bytes": needed,
+                "already_have_bytes": shared,
+                "components": missing.iter().map(|c| json!({
+                    "role": c.role, "bytes": c.bytes, "quant": c.quant
+                })).collect::<Vec<_>>()}),
+    )
+    .await?;
+
+    // Before the first byte, not as the disk fills.
+    store.check_space_for(needed)?;
+
+    if missing.is_empty() && store.is_installed(&model.name, &variant.tag) {
+        return write_line(
+            writer,
+            &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "msg": "already installed"}),
+        )
+        .await;
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("cantor/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to build an HTTP client")?;
+
+    let mut completed: u64 = 0;
+    for component in &missing {
+        let role = component.role.clone();
+        let mut last_report = 0_u64;
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(u64, u64)>();
+        let fetch = store.fetch(&client, component, move |done, total| {
+            // Throttled to whole percent so a slow link does not drown the
+            // socket in frames nobody can read.
+            let step = total / 100 + 1;
+            if done >= last_report + step || done == total {
+                last_report = done;
+                let _ = progress_tx.send((done, total));
+            }
+        });
+        tokio::pin!(fetch);
+        loop {
+            tokio::select! {
+                Some((done, total)) = progress_rx.recv() => {
+                    write_line(writer, &json!({
+                        "v": CONTROL_VERSION, "id": id, "t": "progress",
+                        "role": role, "done": done, "total": total,
+                        "overall_done": completed + done,
+                        "overall_total": needed
+                    })).await?;
+                }
+                result = &mut fetch => {
+                    result?;
+                    break;
+                }
+            }
+        }
+        completed += component.bytes;
+    }
+
+    // Only now does the variant count as installed.
+    store.mark_installed(model, variant)?;
+    let _ = events.send(ControlEvent::NodeInfoChanged);
+
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok",
+                "msg": format!("installed {}:{} ({})", model.name, variant.tag,
+                               human_bytes(variant.total_bytes()))}),
+    )
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,6 +502,10 @@ enum Request {
     },
     #[serde(rename = "rename-node")]
     RenameNode { v: u8, id: String, name: String },
+    #[serde(rename = "list")]
+    List { v: u8, id: String },
+    #[serde(rename = "rm")]
+    Remove { v: u8, id: String, selector: String },
 }
 
 #[derive(Debug, Serialize)]
@@ -331,6 +537,19 @@ pub enum Response {
     },
     #[serde(rename = "ok")]
     Ok { v: u8, id: String },
+    #[serde(rename = "list")]
+    List {
+        v: u8,
+        id: String,
+        installed: Vec<InstalledVariant>,
+        available_bytes: u64,
+    },
+    #[serde(rename = "removed")]
+    Removed {
+        v: u8,
+        id: String,
+        reclaimed_bytes: u64,
+    },
     #[serde(rename = "error")]
     Error {
         v: u8,
@@ -454,6 +673,30 @@ fn handle(
                 id,
             })
         }
+        Request::List { v, id } => {
+            reject_version(v, &id)?;
+            let store = Store::new(state.config.model_root());
+            Ok(Response::List {
+                v: CONTROL_VERSION,
+                id,
+                installed: store.installed(),
+                available_bytes: store.available_bytes().unwrap_or(0),
+            })
+        }
+        Request::Remove { v, id, selector } => {
+            reject_version(v, &id)?;
+            let (model, tag) = selector
+                .split_once(':')
+                .context("expected a model and tag like `acestep:1.5-fast`")?;
+            let store = Store::new(state.config.model_root());
+            let reclaimed = store.remove(model, tag)?;
+            let _ = events.send(ControlEvent::NodeInfoChanged);
+            Ok(Response::Removed {
+                v: CONTROL_VERSION,
+                id,
+                reclaimed_bytes: reclaimed,
+            })
+        }
         Request::RenameNode { v, id, name } => {
             reject_version(v, &id)?;
             let config_path = state.config_path.clone();
@@ -511,6 +754,51 @@ pub async fn request(socket_path: &Path, request: &Value) -> Result<Value> {
         bail!("{msg} [{code}]");
     }
     Ok(response)
+}
+
+/// Client half for commands that report as they go. `on_line` sees every frame;
+/// the call ends on the terminal `ok` or `error`.
+pub async fn request_streaming(
+    socket_path: &Path,
+    request: &Value,
+    mut on_line: impl FnMut(&Value),
+) -> Result<Value> {
+    let stream = UnixStream::connect(socket_path).await.with_context(|| {
+        format!(
+            "could not reach the node at {}. Is it running?",
+            socket_path.display()
+        )
+    })?;
+    let (reader, mut writer) = stream.into_split();
+
+    let mut encoded = serde_json::to_string(request).context("failed to encode request")?;
+    encoded.push('\n');
+    writer.write_all(encoded.as_bytes()).await?;
+    writer.flush().await?;
+
+    // No overall deadline: a pull legitimately runs for many minutes. The
+    // transfer's own timeouts are what bound it.
+    let mut lines = BufReader::new(reader).lines();
+    while let Some(line) = lines.next_line().await? {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let frame: Value =
+            serde_json::from_str(&line).context("the node sent an invalid response")?;
+        match frame.get("t").and_then(Value::as_str) {
+            Some("error") => {
+                let code = frame.get("code").and_then(Value::as_str).unwrap_or("error");
+                let msg = frame
+                    .get("msg")
+                    .and_then(Value::as_str)
+                    .unwrap_or("the node reported an error");
+                bail!("{msg} [{code}]");
+            }
+            Some("ok") | Some("catalog") => return Ok(frame),
+            _ => on_line(&frame),
+        }
+    }
+    bail!("the node closed the control connection without finishing")
 }
 
 #[cfg(test)]

@@ -79,6 +79,7 @@ dependencies = [
  "getrandom 0.4.3",
  "hmac",
  "hostname",
+ "libc",
  "qrcode",
  "reqwest",
  "rustls",
