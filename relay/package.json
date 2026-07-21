@@ -6,10 +6,11 @@
   "scripts": {
     "client": "node scripts/client.mjs",
     "dev": "wrangler dev --port 8787",
-    "check": "wrangler types --include-runtime false --check && tsc --noEmit && tsc --noEmit -p test/tsconfig.json",
+    "check": "wrangler types --include-runtime false --check && tsc --noEmit && tsc --noEmit -p test/tsconfig.json && node scripts/verify-assets.mjs",
     "test": "vitest run",
     "types": "wrangler types --include-runtime false",
-    "deploy:dry-run": "wrangler deploy --dry-run"
+    "deploy:dry-run": "wrangler deploy --dry-run",
+    "verify:assets": "node scripts/verify-assets.mjs"
   },
   "dependencies": {
     "@scure/base": "2.2.0"

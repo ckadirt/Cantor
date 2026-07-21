@@ -4,14 +4,12 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-07-20",
   "compatibility_flags": ["nodejs_compat"],
-  "rules": [
-    {
-      "type": "Text",
-      "globs": ["**/*.sh"],
-      // Keep wrangler's default Text rules for .txt/.html/.sql alive.
-      "fallthrough": true
-    }
-  ],
+  // install.sh is served as a static asset rather than inlined into the script
+  // body: Cloudflare's WAF rejects a Worker upload that carries a shell
+  // installer, and assets upload through a separate path anyway.
+  "assets": {
+    "directory": "./public"
+  },
   "durable_objects": {
     "bindings": [
       {
