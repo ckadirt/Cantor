@@ -62,10 +62,21 @@ jobs:
         run: npx wrangler deploy
 
       # Proves the asset that actually shipped is the file in this commit,
-      # which is the specific thing that silently drifted before.
+      # which is the specific thing that silently drifted before. A fresh deploy
+      # takes a moment to reach every edge, so a single immediate fetch would
+      # fail intermittently and teach everyone to ignore this step.
       - name: the published installer matches this commit
         run: |
           set -eu
-          curl -fsSL https://cantor.ckadirt.xyz/install.sh -o published-install.sh
-          diff -u node/install.sh published-install.sh
-          echo "published install.sh matches node/install.sh"
+          for attempt in 1 2 3 4 5 6; do
+            curl -fsSL https://cantor.ckadirt.xyz/install.sh -o published-install.sh || true
+            if [ -s published-install.sh ] && diff -q node/install.sh published-install.sh >/dev/null; then
+              echo "published install.sh matches node/install.sh (attempt $attempt)"
+              exit 0
+            fi
+            echo "not live yet; retrying in 10s (attempt $attempt)"
+            sleep 10
+          done
+          echo "the published installer never matched this commit:" >&2
+          diff -u node/install.sh published-install.sh >&2 || true
+          exit 1
