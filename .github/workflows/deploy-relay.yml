@@ -1,0 +1,71 @@
+name: deploy-relay
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'relay/**'
+      # install.sh ships as a Worker asset, so editing it changes nothing for
+      # anyone until the relay is redeployed. Leaving it out of this list is
+      # what let the published installer go stale during Phase D.
+      - 'node/install.sh'
+      - '.github/workflows/deploy-relay.yml'
+  workflow_dispatch:
+
+# Never let two deploys race; a queued one should wait rather than be dropped,
+# because the later commit is the one that must end up live.
+concurrency:
+  group: deploy-relay
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: the deploy credential is present
+        env:
+          TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          set -eu
+          if [ -z "${TOKEN:-}" ]; then
+            echo "CLOUDFLARE_API_TOKEN is not set." >&2
+            echo "Add it under Settings → Secrets and variables → Actions." >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+
+      - working-directory: relay
+        run: npm ci
+
+      # The same gates CI runs. A relay that fails its own tests should never
+      # reach the domain the installer is served from.
+      - working-directory: relay
+        run: npx vitest run
+      - working-directory: relay
+        run: npm run check
+
+      - name: deploy
+        working-directory: relay
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler deploy
+
+      # Proves the asset that actually shipped is the file in this commit,
+      # which is the specific thing that silently drifted before.
+      - name: the published installer matches this commit
+        run: |
+          set -eu
+          curl -fsSL https://cantor.ckadirt.xyz/install.sh -o published-install.sh
+          diff -u node/install.sh published-install.sh
+          echo "published install.sh matches node/install.sh"
