@@ -47,6 +47,10 @@ impl NodeIdentity {
         bs58::encode(self.signing_key.verifying_key().as_bytes()).into_string()
     }
 
+    pub fn public_key_bytes(&self) -> [u8; ED25519_SECRET_BYTES] {
+        self.signing_key.verifying_key().to_bytes()
+    }
+
     pub fn sign(&self, message: &[u8]) -> Signature {
         self.signing_key.sign(message)
     }

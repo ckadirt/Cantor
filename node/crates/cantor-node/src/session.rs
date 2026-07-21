@@ -123,15 +123,29 @@ impl ClientSession {
                     ));
                 }
 
+                let node_key_bytes = match bs58::decode(node_public_key).into_vec() {
+                    Ok(bytes) => <[u8; PUBLIC_KEY_BYTES]>::try_from(bytes.as_slice()).ok(),
+                    Err(_) => None,
+                };
+                let Some(node_key_bytes) = node_key_bytes else {
+                    return Ok(NodeMessage::error(
+                        id,
+                        "invalid-key",
+                        "This node's own public key is not valid Ed25519 base58.",
+                    ));
+                };
+                let expected = crate::signing::node_auth_message(
+                    &node_key_bytes,
+                    &pending.verifying_key.to_bytes(),
+                    &pending.nonce,
+                );
+
                 let signature = URL_SAFE_NO_PAD
                     .decode(sig)
                     .ok()
                     .and_then(|bytes| Signature::from_slice(&bytes).ok());
                 if signature.as_ref().is_none_or(|signature| {
-                    pending
-                        .verifying_key
-                        .verify(&pending.nonce, signature)
-                        .is_err()
+                    pending.verifying_key.verify(&expected, signature).is_err()
                 }) {
                     return Ok(NodeMessage::error(
                         id,
@@ -278,7 +292,13 @@ mod tests {
             NodeMessage::Challenge { nonce, .. } => URL_SAFE_NO_PAD.decode(nonce).expect("nonce"),
             other => panic!("unexpected: {other:?}"),
         };
-        let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(&nonce).to_bytes());
+        let nonce = <[u8; 32]>::try_from(nonce.as_slice()).expect("32-byte nonce");
+        let message = crate::signing::node_auth_message(
+            &node_signing_key.verifying_key().to_bytes(),
+            &signing_key.verifying_key().to_bytes(),
+            &nonce,
+        );
+        let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(&message).to_bytes());
         let response = session
             .handle(
                 json!({"t":"auth","v":1,"id":"1","sig":signature}),
@@ -306,5 +326,50 @@ mod tests {
         let (response, config, _) = authenticate(None);
         assert!(matches!(response, NodeMessage::Error { code, .. } if code == "rejected"));
         assert!(config.allowed_keys.is_empty());
+    }
+
+    /// A bare-nonce signature is what the relay's room claim produces. Accepting
+    /// one here would let a hostile node relay its room challenge through a
+    /// paired client and replay the answer as that client's room claim.
+    #[test]
+    fn a_signature_over_the_bare_nonce_is_rejected() {
+        let temporary = tempdir().expect("temporary directory");
+        let (mut config, paths) = config(temporary.path());
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let public_key = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
+        let node_public_key =
+            bs58::encode(SigningKey::from_bytes(&[8_u8; 32]).verifying_key().as_bytes())
+                .into_string();
+        config.allowed_keys.push(public_key.clone());
+
+        let mut session = ClientSession::default();
+        let mut active_token = None;
+        let challenge = session
+            .handle(
+                json!({"t":"hello","v":1,"id":"1","pubkey":public_key}),
+                &mut config,
+                &paths.config,
+                &mut active_token,
+                &node_public_key,
+                &info(),
+            )
+            .expect("hello");
+        let nonce = match challenge {
+            NodeMessage::Challenge { nonce, .. } => URL_SAFE_NO_PAD.decode(nonce).expect("nonce"),
+            other => panic!("unexpected: {other:?}"),
+        };
+        let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(&nonce).to_bytes());
+
+        let response = session
+            .handle(
+                json!({"t":"auth","v":1,"id":"1","sig":signature}),
+                &mut config,
+                &paths.config,
+                &mut active_token,
+                &node_public_key,
+                &info(),
+            )
+            .expect("auth");
+        assert!(matches!(response, NodeMessage::Error { code, .. } if code == "bad-signature"));
     }
 }

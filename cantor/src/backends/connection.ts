@@ -14,6 +14,14 @@ const PROTOCOL_VERSION = 1;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_JITTER_MS = 250;
+/**
+ * Mobile networks drop idle sockets well before the relay would notice. The
+ * relay answers this exact text frame from `setWebSocketAutoResponse` without
+ * waking the Durable Object, so the keepalive is free on its side.
+ */
+const KEEPALIVE_INTERVAL_MS = 25_000;
+const KEEPALIVE_PING = 'ping';
+const KEEPALIVE_PONG = 'pong';
 
 type ConnectionCallbacks = {
   onSnapshot: (snapshot: ConnectionSnapshot) => void;
@@ -24,6 +32,7 @@ type ConnectionCallbacks = {
 export class BackendConnection {
   private socket: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
   private stopped = false;
   private fatal = false;
   private reconnectAttempt = 0;
@@ -58,6 +67,7 @@ export class BackendConnection {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+    this.stopKeepalive();
     const socket = this.socket;
     this.socket = null;
     if (socket?.readyState === WebSocket.OPEN) {
@@ -78,6 +88,11 @@ export class BackendConnection {
       return;
     }
     this.socket = socket;
+    socket.onopen = () => {
+      if (this.socket === socket) {
+        this.startKeepalive();
+      }
+    };
     socket.onmessage = event => this.handleRelayMessage(event.data);
     socket.onerror = () => {
       // React Native follows this with onclose; that event owns retry timing.
@@ -85,6 +100,7 @@ export class BackendConnection {
     socket.onclose = event => {
       if (this.socket === socket) {
         this.socket = null;
+        this.stopKeepalive();
       }
       if (!this.stopped && !this.fatal) {
         this.scheduleReconnect(
@@ -94,20 +110,36 @@ export class BackendConnection {
     };
   }
 
+  private startKeepalive(): void {
+    this.stopKeepalive();
+    this.keepaliveTimer = setInterval(() => {
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.socket.send(KEEPALIVE_PING);
+      }
+    }, KEEPALIVE_INTERVAL_MS);
+  }
+
+  private stopKeepalive(): void {
+    if (this.keepaliveTimer !== null) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+  }
+
+  // Anything this build does not understand is skipped rather than treated as
+  // an error. A frame type added by a newer relay must not be able to take a
+  // deployed app offline permanently.
   private handleRelayMessage(data: unknown): void {
-    if (typeof data !== 'string') {
-      this.fail('Relay sent a binary frame.', true);
+    if (typeof data !== 'string' || data === KEEPALIVE_PONG) {
       return;
     }
     let frame: unknown;
     try {
       frame = JSON.parse(data);
     } catch {
-      this.fail('Relay sent invalid JSON.', true);
       return;
     }
     if (!isRecord(frame) || frame.v !== PROTOCOL_VERSION) {
-      this.fail('Relay protocol version is not supported.', true);
       return;
     }
     if (frame.t === 'relay.presence' && typeof frame.online === 'boolean') {
@@ -123,20 +155,19 @@ export class BackendConnection {
       if (frame.code === 'node-offline') {
         this.setSnapshot({ phase: 'attached', error: null, jobs: [] });
       } else {
+        // The relay closes the socket after most errors; onclose owns retrying.
         this.fail(
           typeof frame.msg === 'string'
             ? frame.msg
             : 'Relay rejected the connection.',
-          true,
+          false,
         );
       }
       return;
     }
     if (frame.t === 'tunnel' && 'payload' in frame) {
       this.handleNodeMessage(frame.payload);
-      return;
     }
-    this.fail('Relay sent an unexpected frame.', true);
   }
 
   private beginHandshake(): void {
@@ -166,7 +197,6 @@ export class BackendConnection {
 
   private handleNodeMessage(payload: unknown): void {
     if (!isRecord(payload) || payload.v !== PROTOCOL_VERSION) {
-      this.fail('Node sent an invalid application message.', true);
       return;
     }
     if (
@@ -175,8 +205,8 @@ export class BackendConnection {
       typeof payload.nonce === 'string' &&
       typeof payload.node_pubkey === 'string'
     ) {
+      // A challenge for a superseded handshake is stale, not hostile.
       if (payload.id !== this.handshakeId) {
-        this.fail('Node challenge does not match this handshake.', true);
         return;
       }
       if (payload.node_pubkey !== this.backend.nodePubkey) {
@@ -185,7 +215,11 @@ export class BackendConnection {
       }
       let signature: string;
       try {
-        signature = signChallenge(this.identity, payload.nonce);
+        signature = signChallenge(
+          this.identity,
+          payload.nonce,
+          payload.node_pubkey,
+        );
       } catch (error) {
         this.fail(readError(error), true);
         return;
@@ -201,7 +235,7 @@ export class BackendConnection {
     if (payload.t === 'welcome' && payload.id === this.handshakeId) {
       const nodeInfo = parseNodeInfo(payload.node);
       if (nodeInfo === null) {
-        this.fail('Node capability data is invalid.', true);
+        this.fail('Node capability data is invalid.', false);
         return;
       }
       this.handshakeId = null;
@@ -222,7 +256,7 @@ export class BackendConnection {
     if (payload.t === 'jobs') {
       const jobs = parseJobs(payload.jobs);
       if (jobs === null) {
-        this.fail('Node job status is invalid.', true);
+        this.fail('Node job status is invalid.', false);
         return;
       }
       this.setSnapshot({ ...this.snapshot, jobs });
@@ -233,10 +267,10 @@ export class BackendConnection {
       typeof payload.code === 'string' &&
       typeof payload.msg === 'string'
     ) {
+      // Only an explicit authorization refusal is worth giving up on; retrying
+      // it would just spin against a node that has already said no.
       this.fail(payload.msg, payload.code === 'rejected');
-      return;
     }
-    this.fail('Node sent an unexpected application message.', true);
   }
 
   private sendApplication(payload: Record<string, unknown>): void {
