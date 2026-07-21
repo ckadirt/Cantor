@@ -207,7 +207,9 @@ impl NodeConfig {
     }
 
     pub fn is_authorized(&self, public_key: &str) -> bool {
-        self.pairings.iter().any(|pairing| pairing.key == public_key)
+        self.pairings
+            .iter()
+            .any(|pairing| pairing.key == public_key)
     }
 
     pub fn authorize_key(
@@ -373,7 +375,9 @@ impl NodeConfig {
                 .as_deref()
                 .is_some_and(|petname| sanitize_petname(petname).is_none())
             {
-                bail!("pairing petnames must be 1-{MAX_PETNAME_BYTES} bytes with no control characters");
+                bail!(
+                    "pairing petnames must be 1-{MAX_PETNAME_BYTES} bytes with no control characters"
+                );
             }
         }
         Ok(())
@@ -504,7 +508,11 @@ mod tests {
 
         assert!(
             config
-                .authorize_key(&paths.config, "client-key", Some("Redmi Note 11".to_owned()))
+                .authorize_key(
+                    &paths.config,
+                    "client-key",
+                    Some("Redmi Note 11".to_owned())
+                )
                 .expect("authorize")
         );
         assert!(
@@ -517,7 +525,10 @@ mod tests {
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
         assert_eq!(reloaded.pairings.len(), 1);
         assert_eq!(reloaded.pairings[0].key, "client-key");
-        assert_eq!(reloaded.pairings[0].petname.as_deref(), Some("Redmi Note 11"));
+        assert_eq!(
+            reloaded.pairings[0].petname.as_deref(),
+            Some("Redmi Note 11")
+        );
         assert!(
             reloaded.pairings[0]
                 .paired_at
@@ -582,7 +593,10 @@ mod tests {
 
         let (reloaded, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
-        assert_eq!(reloaded.model_dir.as_deref(), Some("/var/lib/cantor/models"));
+        assert_eq!(
+            reloaded.model_dir.as_deref(),
+            Some("/var/lib/cantor/models")
+        );
     }
 
     #[test]

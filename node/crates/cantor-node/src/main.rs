@@ -5,6 +5,7 @@ mod pairing;
 mod relay;
 mod session;
 mod signing;
+mod update;
 
 use std::env;
 use std::ffi::{OsStr, OsString};
@@ -30,9 +31,11 @@ Usage:
   cantor rename    --node <new-name>
   cantor start | stop | restart
   cantor logs      [--follow] [--lines N]
+  cantor upgrade   [--check]
 
 Options common to every command:
   --control-socket PATH   where the running node listens (default: per install)
+  -V, --version           print the version
   -h, --help              show this message";
 
 /// The service unit both installers write.
@@ -51,6 +54,7 @@ enum Command_ {
     Stop,
     Restart,
     Logs,
+    Upgrade,
 }
 
 #[derive(Debug)]
@@ -64,6 +68,7 @@ struct Cli {
     follow: bool,
     lines: String,
     rename_node: bool,
+    check_only: bool,
     positional: Vec<String>,
 }
 
@@ -81,6 +86,11 @@ impl Cli {
             Some(value) if value == OsStr::new("stop") => Command_::Stop,
             Some(value) if value == OsStr::new("restart") => Command_::Restart,
             Some(value) if value == OsStr::new("logs") => Command_::Logs,
+            Some(value) if value == OsStr::new("upgrade") => Command_::Upgrade,
+            Some(value) if value == OsStr::new("--version") || value == OsStr::new("-V") => {
+                println!("cantor {}", update::CURRENT_VERSION);
+                std::process::exit(0);
+            }
             Some(value) if value == OsStr::new("--help") || value == OsStr::new("-h") => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -98,6 +108,7 @@ impl Cli {
             follow: false,
             lines: DEFAULT_LOG_LINES.to_owned(),
             rename_node: false,
+            check_only: false,
             positional: Vec::new(),
         };
         while let Some(option) = args.next() {
@@ -115,15 +126,19 @@ impl Cli {
                 }
                 Some("--expires-in") => {
                     let value = next_utf8_value(&mut args, "--expires-in")?;
-                    cli.expires_in = Some(
-                        value
-                            .parse()
-                            .with_context(|| format!("--expires-in must be a number, got {value}"))?,
-                    );
+                    cli.expires_in =
+                        Some(value.parse().with_context(|| {
+                            format!("--expires-in must be a number, got {value}")
+                        })?);
                 }
                 Some("--lines") => cli.lines = next_utf8_value(&mut args, "--lines")?,
                 Some("--follow") | Some("-f") => cli.follow = true,
                 Some("--node") => cli.rename_node = true,
+                Some("--check") => cli.check_only = true,
+                Some("--version") | Some("-V") => {
+                    println!("cantor {}", update::CURRENT_VERSION);
+                    std::process::exit(0);
+                }
                 Some("--help") | Some("-h") => {
                     println!("{USAGE}");
                     std::process::exit(0);
@@ -169,10 +184,21 @@ async fn main() -> Result<()> {
     install_tls_crypto_provider()?;
     let cli = Cli::parse()?;
 
+    // `run` is the daemon and never nags; the notice belongs on the commands a
+    // person types.
     match cli.command {
         Command_::Run => run(cli).await,
-        Command_::Start | Command_::Stop | Command_::Restart | Command_::Logs => lifecycle(&cli),
-        _ => talk_to_daemon(cli).await,
+        Command_::Upgrade => update::upgrade(cli.check_only).await,
+        Command_::Start | Command_::Stop | Command_::Restart | Command_::Logs => {
+            let result = lifecycle(&cli);
+            update::print_notice_if_stale().await;
+            result
+        }
+        _ => {
+            let result = talk_to_daemon(cli).await;
+            update::print_notice_if_stale().await;
+            result
+        }
     }
 }
 
@@ -322,7 +348,10 @@ fn print_response(command: Command_, response: &Value) -> Result<()> {
                     .get("paired_at")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown");
-                println!("{petname}\n  key    {}\n  paired {paired_at}", string_field(pairing, "key"));
+                println!(
+                    "{petname}\n  key    {}\n  paired {paired_at}",
+                    string_field(pairing, "key")
+                );
             }
         }
         _ => println!("ok"),
@@ -350,7 +379,10 @@ fn use_user_scope() -> bool {
     if user_unit.is_some_and(|path| path.exists()) {
         return true;
     }
-    !PathBuf::from("/etc/systemd/system").join(SERVICE_UNIT).exists() && !running_as_root()
+    !PathBuf::from("/etc/systemd/system")
+        .join(SERVICE_UNIT)
+        .exists()
+        && !running_as_root()
 }
 
 /// `start`, `stop`, `restart` and `logs` are thin wrappers: systemd already owns

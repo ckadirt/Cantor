@@ -401,9 +401,12 @@ mod tests {
         let (mut config, paths) = config(temporary.path());
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let public_key = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
-        let node_public_key =
-            bs58::encode(SigningKey::from_bytes(&[8_u8; 32]).verifying_key().as_bytes())
-                .into_string();
+        let node_public_key = bs58::encode(
+            SigningKey::from_bytes(&[8_u8; 32])
+                .verifying_key()
+                .as_bytes(),
+        )
+        .into_string();
         config
             .pairings
             .push(crate::config::Pairing::new(public_key.clone(), None, None));

@@ -1,0 +1,73 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    name: node (rust)
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: node
+      - name: fmt
+        working-directory: node
+        run: cargo fmt --check
+      - name: clippy
+        working-directory: node
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      # `cargo test` also regenerates protocol/*.ts through ts-rs, so a type
+      # change that was never committed shows up as a dirty tree below.
+      - name: test
+        working-directory: node
+        run: cargo test --workspace
+      - name: protocol bindings are committed
+        run: git diff --exit-code -- protocol
+
+  relay:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: relay/package-lock.json
+      - working-directory: relay
+        run: npm ci
+      - working-directory: relay
+        run: npx vitest run
+      - working-directory: relay
+        run: npm run check
+
+  app:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: cantor/package-lock.json
+      - working-directory: cantor
+        run: npm ci
+      - working-directory: cantor
+        run: npx tsc --noEmit
+      - working-directory: cantor
+        run: npx eslint .
+      - working-directory: cantor
+        run: npx jest
