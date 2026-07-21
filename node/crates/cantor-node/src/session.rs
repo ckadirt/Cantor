@@ -8,6 +8,7 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 
 use crate::config::{NodeConfig, sanitize_petname};
+use crate::pairing::PairOffer;
 
 const CHALLENGE_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
@@ -15,7 +16,30 @@ const PUBLIC_KEY_BYTES: usize = 32;
 #[derive(Debug, Default)]
 pub struct ClientSession {
     pending: Option<PendingAuth>,
-    authenticated: bool,
+    /// The key this session authenticated with, so a revocation can find and
+    /// cut off the sessions it applies to instead of waiting for a reconnect.
+    authenticated_key: Option<String>,
+}
+
+impl ClientSession {
+    pub fn authenticated_key(&self) -> Option<&str> {
+        self.authenticated_key.as_deref()
+    }
+
+    /// Undoes authentication in place. The caller is responsible for telling the
+    /// client why; this only makes sure nothing further is served on the session.
+    pub fn deauthenticate(&mut self) {
+        self.authenticated_key = None;
+        self.pending = None;
+    }
+
+    #[cfg(test)]
+    pub fn authenticated_for_test(key: &str) -> Self {
+        Self {
+            pending: None,
+            authenticated_key: Some(key.to_owned()),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -34,7 +58,7 @@ impl ClientSession {
         payload: Value,
         config: &mut NodeConfig,
         config_path: &Path,
-        active_pair_token: &mut Option<String>,
+        active_pair_offer: &mut Option<PairOffer>,
         node_public_key: &str,
         node_info: &NodeInfo,
     ) -> Result<NodeMessage> {
@@ -62,7 +86,7 @@ impl ClientSession {
                 pair_proof,
                 petname,
             } => {
-                self.authenticated = false;
+                self.authenticated_key = None;
                 self.pending = None;
                 if v != PROTOCOL_VERSION {
                     return Ok(unsupported_version(id));
@@ -160,12 +184,20 @@ impl ClientSession {
                 }
 
                 let already_allowed = config.is_authorized(&pending.public_key);
-                let may_enroll = active_pair_token
+                // An expired offer is dropped here rather than merely ignored, so
+                // a stale token cannot sit in memory for the life of the daemon.
+                if active_pair_offer
+                    .as_ref()
+                    .is_some_and(PairOffer::is_expired)
+                {
+                    *active_pair_offer = None;
+                }
+                let may_enroll = active_pair_offer
                     .as_ref()
                     .zip(pending.pair_proof.as_ref())
-                    .is_some_and(|(active, supplied)| {
+                    .is_some_and(|(offer, supplied)| {
                         crate::pairing::verify_pair_proof(
-                            active,
+                            &offer.token,
                             supplied,
                             node_public_key,
                             &pending.public_key,
@@ -181,10 +213,10 @@ impl ClientSession {
 
                 if !already_allowed {
                     config.authorize_key(config_path, &pending.public_key, pending.petname)?;
-                    *active_pair_token = None;
+                    *active_pair_offer = None;
                     println!("paired client {}", pending.public_key);
                 }
-                self.authenticated = true;
+                self.authenticated_key = Some(pending.public_key);
                 Ok(NodeMessage::Welcome {
                     v: PROTOCOL_VERSION,
                     id,
@@ -195,7 +227,7 @@ impl ClientSession {
                 if v != PROTOCOL_VERSION {
                     return Ok(unsupported_version(id));
                 }
-                if !self.authenticated {
+                if self.authenticated_key.is_none() {
                     return Ok(NodeMessage::error(
                         id,
                         "handshake-required",
@@ -233,6 +265,7 @@ mod tests {
 
     use super::ClientSession;
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
+    use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
 
     fn info() -> NodeInfo {
         NodeInfo {
@@ -259,14 +292,14 @@ mod tests {
         (config, paths)
     }
 
-    fn authenticate(token: Option<&str>) -> (NodeMessage, NodeConfig, Option<String>) {
+    fn authenticate(token: Option<&str>) -> (NodeMessage, NodeConfig, Option<PairOffer>) {
         authenticate_with_petname(token, None)
     }
 
     fn authenticate_with_petname(
         token: Option<&str>,
         petname: Option<&str>,
-    ) -> (NodeMessage, NodeConfig, Option<String>) {
+    ) -> (NodeMessage, NodeConfig, Option<PairOffer>) {
         let temporary = tempdir().expect("temporary directory");
         let (mut config, paths) = config(temporary.path());
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
@@ -286,7 +319,8 @@ mod tests {
             URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
         });
         let mut session = ClientSession::default();
-        let mut active_token = token.map(str::to_owned);
+        let mut active_token =
+            token.map(|token| PairOffer::new(token.to_owned(), DEFAULT_PAIR_TTL));
         let challenge = session
             .handle(
                 json!({"t":"hello","v":1,"id":"1","pubkey":public_key,"pair_proof":pair_proof,"petname":petname}),
@@ -327,7 +361,7 @@ mod tests {
         let (response, config, active_token) = authenticate(Some(&token));
         assert!(matches!(response, NodeMessage::Welcome { .. }));
         assert_eq!(config.pairings.len(), 1);
-        assert_eq!(active_token, None);
+        assert!(active_token.is_none());
     }
 
     #[test]

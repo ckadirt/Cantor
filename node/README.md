@@ -103,10 +103,44 @@ symlinked config/service targets and unmanaged `cantor.service` files, and says
 so plainly when systemd is absent (Docker, WSL1) rather than writing a unit
 nothing will read.
 
-After installation, use the printed `cantor pair --config-dir …` command, scan
-its QR, then stop the foreground process and enable the service:
+The installer offers to start the node and then pair, in that order: pairing is
+a daemon operation over the control socket, so the service has to be running
+first.
+
+## Controlling a running node
+
+The daemon owns `node.toml` and the in-memory allowlist, so the CLI talks to it
+over a unix socket rather than writing those files behind its back — changes
+apply immediately instead of at the next restart.
 
 ```sh
-systemctl --user enable --now cantor.service   # or: systemctl enable --now cantor.service
-systemctl --user status cantor.service
+cantor status                      # name, key, relay link, pairing count
+cantor pair [--expires-in 300]     # prints a QR; the offer expires on its own
+cantor pairings                    # paired devices, by petname
+cantor rename "Old name" "New"     # rename a paired device
+cantor rename --node studio-rig    # rename this node; connected apps are pushed the change
+cantor revoke "New"                # drops the key *and* any live session using it
+cantor start | stop | restart      # wraps systemctl
+cantor logs [--follow] [--lines N] # wraps journalctl
 ```
+
+Every command accepts a key or an exact petname where a device is named. An
+ambiguous petname is refused rather than guessed: revoking the wrong device is
+not recoverable without physical access to the one that was cut off.
+
+The socket is `/run/cantor/control.sock` (`root:cantor`, mode `0660`) for a
+system install and `$XDG_RUNTIME_DIR/cantor/control.sock` for a user install.
+The installer creates the `cantor` group and adds the invoking operator to it.
+**Group membership only applies to new logins**, so log out and back in before
+running control commands, or use `sudo`.
+
+Neither the socket nor the systemd scope is chosen from the privileges of
+whoever runs the CLI — an operator in the `cantor` group is deliberately not
+root, and the daemon they need to reach is the system one. Both are resolved by
+looking for what actually exists, preferring a user install when both are
+present.
+
+`cantor logs` reads the system journal for a system install, which journald
+restricts to the `adm` and `systemd-journal` groups. The installer does not add
+the operator to those, since that would grant visibility of every service's
+logs; use `sudo cantor logs` instead.

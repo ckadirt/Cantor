@@ -258,6 +258,15 @@ export class BackendConnection {
       });
       return;
     }
+    // Unsolicited, so it carries no request id: the node sends this whenever its
+    // capabilities change rather than letting a connected app show stale ones.
+    if (payload.t === 'node.info') {
+      const nodeInfo = parseNodeInfo(payload.node);
+      if (nodeInfo !== null) {
+        this.callbacks.onNodeInfo(nodeInfo);
+      }
+      return;
+    }
     if (payload.t === 'jobs') {
       const jobs = parseJobs(payload.jobs);
       if (jobs === null) {

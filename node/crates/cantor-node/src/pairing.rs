@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -11,6 +13,33 @@ use crate::config::NodeConfig;
 
 const PAIR_TOKEN_BYTES: usize = 32;
 const PAIR_PROOF_DOMAIN: &[u8] = b"cantor-pair-proof-v1";
+/// A pairing token used to die with the foreground `pair` process. Once pairing
+/// is a daemon operation nothing would ever retire it, so it expires on its own.
+pub const DEFAULT_PAIR_TTL: Duration = Duration::from_secs(300);
+
+/// A live pairing offer: single-use, and now also time-bounded.
+#[derive(Clone, Debug)]
+pub struct PairOffer {
+    pub token: String,
+    pub expires_at: Instant,
+}
+
+impl PairOffer {
+    pub fn new(token: String, ttl: Duration) -> Self {
+        Self {
+            token,
+            expires_at: Instant::now() + ttl,
+        }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+
+    pub fn remaining(&self) -> Duration {
+        self.expires_at.saturating_duration_since(Instant::now())
+    }
+}
 
 pub fn new_pair_token() -> Result<String> {
     let mut bytes = [0_u8; PAIR_TOKEN_BYTES];
@@ -64,7 +93,6 @@ pub fn print_pairing_code(uri: &Url) -> Result<()> {
     let rendered = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
     println!("Scan this one-time pairing code in Cantor:\n\n{rendered}");
     println!("Pairing URI (copy/paste fallback):\n{uri}\n");
-    println!("Waiting for a client. Press Ctrl-C to stop.");
     Ok(())
 }
 

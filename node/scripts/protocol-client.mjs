@@ -1,7 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
 import {createHmac, webcrypto} from 'node:crypto';
 
-const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME]';
+const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--watch]';
 const pairValue = process.argv[2];
 const identityIndex = process.argv.indexOf('--identity');
 if (pairValue === undefined || identityIndex < 0 || process.argv[identityIndex + 1] === undefined) {
@@ -18,6 +18,7 @@ if (pairUri.protocol !== 'cantor:' || nodeKey === null || relayValue === null) {
 }
 
 const identityPath = process.argv[identityIndex + 1];
+const watch = process.argv.includes('--watch');
 const petnameIndex = process.argv.indexOf('--petname');
 const petname = petnameIndex < 0 ? 'protocol-client demo' : process.argv[petnameIndex + 1];
 let keyPair;
@@ -69,7 +70,11 @@ socket.addEventListener('message', async event => {
   } else if (message.t === 'jobs') {
     console.log(`jobs: ${JSON.stringify(message.jobs)}`);
     completed = true;
-    socket.close(1000, 'demo-complete');
+    // --watch stays attached so unsolicited pushes and revocations are visible.
+    if (!watch) socket.close(1000, 'demo-complete');
+    else console.log('watching for pushes; Ctrl-C to stop');
+  } else if (message.t === 'node.info') {
+    console.log(`node.info push: ${JSON.stringify(message.node)}`);
   } else if (message.t === 'error') {
     console.error(`application error [${message.code}]: ${message.msg}`);
     process.exitCode = message.code === 'rejected' ? 2 : 1;

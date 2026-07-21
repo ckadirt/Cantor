@@ -2,7 +2,7 @@ import { base58 } from '@scure/base';
 import { Platform } from 'react-native';
 import { BackendConnection, devicePetname } from '../connection';
 import { deriveIdentity } from '../../identity/derive';
-import type { BackendRecord, ConnectionSnapshot } from '../types';
+import type { BackendRecord, ConnectionSnapshot, NodeInfo } from '../types';
 
 const PHRASE =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -54,19 +54,32 @@ const backend: BackendRecord = {
   lastNodeInfo: null,
 };
 
+function nodeInfoFixture(name: string): Record<string, unknown> {
+  return {
+    name,
+    device_type: 'linux-x86_64',
+    engine_version: 'ace-step-1.5-stub',
+    models: ['ace-step-1.5'],
+    limits: { max_concurrent_jobs: 0, max_song_seconds: 0 },
+    load: { active_jobs: 0, queued_jobs: 0 },
+  };
+}
+
 function connect(): {
   socket: FakeSocket;
   snapshots: ConnectionSnapshot[];
+  nodeInfos: NodeInfo[];
   connection: BackendConnection;
 } {
   const snapshots: ConnectionSnapshot[] = [];
+  const nodeInfos: NodeInfo[] = [];
   const connection = new BackendConnection(
     backend,
     deriveIdentity(PHRASE),
     undefined,
     {
       onSnapshot: snapshot => snapshots.push(snapshot),
-      onNodeInfo: () => {},
+      onNodeInfo: nodeInfo => nodeInfos.push(nodeInfo),
       onPairTokenConsumed: () => {},
     },
   );
@@ -76,7 +89,7 @@ function connect(): {
     throw new Error('BackendConnection did not open a socket.');
   }
   socket.open();
-  return { socket, snapshots, connection };
+  return { socket, snapshots, nodeInfos, connection };
 }
 
 describe('BackendConnection', () => {
@@ -157,6 +170,44 @@ describe('BackendConnection', () => {
     const auth = JSON.parse(socket.sent.at(-1) ?? '{}');
     expect(auth.payload.t).toBe('auth');
     expect(auth.payload.sig).toEqual(expect.any(String));
+  });
+
+  it('applies an unsolicited node.info push after welcome', () => {
+    const { socket, snapshots, nodeInfos } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 1,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 1,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('first-name'),
+      },
+    });
+    expect(nodeInfos.at(-1)?.name).toBe('first-name');
+
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {v: 1, t: 'node.info', node: nodeInfoFixture('renamed-node')},
+    });
+
+    expect(nodeInfos.at(-1)?.name).toBe('renamed-node');
+    // A push is not a failure and must not disturb the connection.
+    expect(snapshots.at(-1)?.phase).toBe('ready');
   });
 
   // The one case that should still give up: an explicit authorization refusal.

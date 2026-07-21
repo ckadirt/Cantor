@@ -31,6 +31,14 @@ cantor_reject_control() {
   fi
 }
 
+cantor_group_exists() {
+  if command -v getent >/dev/null 2>&1; then
+    getent group "$1" >/dev/null 2>&1
+  else
+    LC_ALL=C grep -q "^$1:" /etc/group 2>/dev/null
+  fi
+}
+
 cantor_toml_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
@@ -134,6 +142,15 @@ cantor_relay_url=${CANTOR_RELAY_URL:-wss://cantor.ckadirt.xyz}
 cantor_node_name=${CANTOR_NODE_NAME:-$(hostname)}
 cantor_model_dir=${CANTOR_MODEL_DIR:-"$cantor_default_model_dir"}
 
+# Must match CONTROL_GROUP in crates/cantor-node/src/control.rs.
+CANTOR_GROUP_NAME=${CANTOR_GROUP_NAME:-cantor}
+# Under sudo the operator is the invoking user, not root; a direct root login
+# has no one to enrol, and adding root to the group would be pointless.
+cantor_operator=${CANTOR_OPERATOR:-${SUDO_USER:-}}
+if [ "$cantor_operator" = 'root' ]; then
+  cantor_operator=''
+fi
+
 # Each prompt is skipped when its variable was supplied, so a CANTOR_* override
 # always wins and a scripted install never becomes interactive.
 if [ -z "${CANTOR_NODE_NAME:-}" ]; then
@@ -155,6 +172,7 @@ cantor_reject_control CANTOR_CONFIG_DIR "$cantor_config_dir"
 cantor_reject_control CANTOR_MODEL_DIR "$cantor_model_dir"
 cantor_reject_control CANTOR_SERVICE_PATH "$cantor_service_path"
 cantor_reject_control CANTOR_RELAY_URL "$cantor_relay_url"
+cantor_reject_control CANTOR_GROUP_NAME "$CANTOR_GROUP_NAME"
 case "$cantor_relay_url" in
   ws://* | wss://*) ;;
   *) cantor_fail 'CANTOR_RELAY_URL must start with ws:// or wss://' ;;
@@ -258,6 +276,30 @@ else
   cantor_config_result='preserved existing'
 fi
 
+# The control socket is root:cantor 0660, so an operator needs to be in the
+# group. Group membership is only picked up at login, which is worth saying out
+# loud rather than letting the first `cantor status` fail with EACCES.
+cantor_group_result='skipped'
+if [ "$cantor_privileged" = '1' ]; then
+  if command -v groupadd >/dev/null 2>&1; then
+    if cantor_group_exists "$CANTOR_GROUP_NAME"; then
+      cantor_group_result='existed'
+    elif groupadd --system "$CANTOR_GROUP_NAME" >/dev/null 2>&1; then
+      cantor_group_result='created'
+    else
+      cantor_group_result='unavailable'
+    fi
+    if [ "$cantor_group_result" != 'unavailable' ] && [ -n "$cantor_operator" ]; then
+      if command -v usermod >/dev/null 2>&1 &&
+        usermod -aG "$CANTOR_GROUP_NAME" "$cantor_operator" >/dev/null 2>&1; then
+        cantor_group_added=$cantor_operator
+      fi
+    fi
+  else
+    cantor_group_result='unavailable'
+  fi
+fi
+
 cantor_service_result='skipped'
 if [ "$cantor_has_systemd" = '1' ]; then
   install -d -m 0755 "$cantor_service_dir"
@@ -288,6 +330,17 @@ if [ "$cantor_has_systemd" = '1' ]; then
     printf 'ReadWritePaths="%s" "%s"\n' "$cantor_escaped_config_dir" "$cantor_escaped_service_model_dir"
     printf '%s\n' 'RestrictSUIDSGID=true'
     printf '%s\n' 'LockPersonality=true'
+    # systemd creates and tears down the control socket's directory, so a
+    # killed daemon never leaves an unreachable one behind. It owns that
+    # directory as the unit's User:Group, so without Group= it would be
+    # root:root 0750 and no group member could traverse it to reach the socket.
+    if [ "$cantor_privileged" = '1' ]; then
+      printf '%s\n' 'RuntimeDirectory=cantor'
+      printf '%s\n' 'RuntimeDirectoryMode=0750'
+      case "$cantor_group_result" in
+        created | existed) printf 'Group=%s\n' "$CANTOR_GROUP_NAME" ;;
+      esac
+    fi
     printf '\n%s\n' '[Install]'
     if [ "$cantor_privileged" = '1' ]; then
       printf '%s\n' 'WantedBy=multi-user.target'
@@ -339,6 +392,23 @@ else
   printf '%s\n' 'keep the node running yourself.'
 fi
 
+if [ "$cantor_privileged" = '1' ]; then
+  case "$cantor_group_result" in
+    created | existed)
+      printf 'Control group %s (%s)\n' "$CANTOR_GROUP_NAME" "$cantor_group_result"
+      if [ -n "${cantor_group_added:-}" ]; then
+        printf '\n%s\n' "Added $cantor_group_added to the $CANTOR_GROUP_NAME group."
+        printf '%s\n' 'Group membership only applies to new logins: log out and back in'
+        printf '%s\n' 'before running cantor status, pair, pairings or revoke.'
+      fi
+      ;;
+    unavailable)
+      printf '\n%s\n' "warning: could not create the $CANTOR_GROUP_NAME group."
+      printf '%s\n' 'The control socket will be root-only, so control commands need sudo.'
+      ;;
+  esac
+fi
+
 # Debian only adds ~/.local/bin from ~/.profile, at login, and only when the
 # directory already existed — so it is reliably absent in the shell that just
 # ran this. Root's profile usually never adds it at all.
@@ -353,27 +423,49 @@ case ":$PATH:" in
 esac
 
 printf '\n'
-if [ "$cantor_has_systemd" != '1' ]; then
-  cantor_enable_command="$cantor_binary_path run --config-dir $cantor_config_dir"
-elif [ "$cantor_privileged" = '1' ]; then
-  cantor_enable_command="systemctl enable --now cantor.service"
+
+# Pairing is now a daemon operation over the control socket, so the service has
+# to be running first. That also means the pair command no longer needs
+# --config-dir: it reaches whichever node is actually running.
+cantor_pair_command="$cantor_binary_path pair"
+if [ "$cantor_privileged" = '1' ]; then
+  cantor_enable_command='systemctl enable --now cantor.service'
 else
-  cantor_enable_command="systemctl --user enable --now cantor.service"
+  cantor_enable_command='systemctl --user enable --now cantor.service'
 fi
 
-# The pair command always carries --config-dir: a system install keeps its
-# config in /etc/cantor, while a bare `cantor pair` would default to the running
-# user's own config directory and pair into a file the service never reads.
-cantor_pair_command="$cantor_binary_path pair --config-dir $cantor_config_dir"
+cantor_started=0
+if [ "$cantor_has_systemd" = '1' ] && cantor_confirm 'Start the node now?'; then
+  if $cantor_enable_command; then
+    cantor_started=1
+    # The socket appears a moment after the unit does; pairing right away would
+    # otherwise race it and look like the daemon is missing.
+    cantor_waited=0
+    while [ "$cantor_waited" -lt 10 ]; do
+      if "$cantor_binary_path" status >/dev/null 2>&1; then
+        break
+      fi
+      sleep 1
+      cantor_waited=$((cantor_waited + 1))
+    done
+  else
+    cantor_warn 'could not start the service; start it yourself and then pair'
+  fi
+fi
 
-if cantor_confirm 'Pair a phone with this node now?'; then
-  printf '\n%s\n\n' 'Starting pairing. Press Ctrl-C once Cantor shows the node as READY.'
-  $cantor_pair_command || true
-  printf '\n%s\n' 'Pairing finished. Start the node with:'
+if [ "$cantor_started" = '1' ] && cantor_confirm 'Pair a phone with this node now?'; then
+  printf '\n'
+  "$cantor_binary_path" pair || cantor_warn 'pairing could not be started'
+  printf '\n%s\n' 'Scan that code in Cantor, then check it arrived with:'
+  printf '  %s pairings\n' "$cantor_binary_path"
+elif [ "$cantor_has_systemd" = '1' ]; then
+  printf '%s\n' 'Start the node, then pair a phone with it:'
   printf '  %s\n' "$cantor_enable_command"
-else
-  printf '%s\n' 'Pair this node before starting it:'
   printf '  %s\n' "$cantor_pair_command"
-  printf '%s\n' 'After Cantor reaches READY, stop the foreground pair process and run:'
-  printf '  %s\n' "$cantor_enable_command"
+  printf '%s\n' 'Then confirm the phone arrived:'
+  printf '  %s pairings\n' "$cantor_binary_path"
+else
+  printf '%s\n' 'Run the node, and pair a phone from a second shell:'
+  printf '  %s run --config-dir %s\n' "$cantor_binary_path" "$cantor_config_dir"
+  printf '  %s\n' "$cantor_pair_command"
 fi
