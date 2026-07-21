@@ -15,7 +15,7 @@ use rustls::crypto::CryptoProvider;
 use crate::config::{ConfigSeed, NodeConfig, NodePaths};
 use crate::identity::NodeIdentity;
 
-const USAGE: &str = "Usage:\n  cantor-node run  [--config-dir PATH] [--name NAME] [--relay-url URL]\n  cantor-node pair [--config-dir PATH] [--name NAME] [--relay-url URL]";
+const USAGE: &str = "Usage:\n  cantor run  [--config-dir PATH] [--name NAME] [--relay-url URL]\n  cantor pair [--config-dir PATH] [--name NAME] [--relay-url URL]";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Command {
@@ -37,7 +37,7 @@ impl Cli {
         let command = match args.next().as_deref() {
             Some(value) if value == OsStr::new("run") => Command::Run,
             Some(value) if value == OsStr::new("pair") => Command::Pair,
-            Some(value) if value == OsStr::new("--help") => {
+            Some(value) if value == OsStr::new("--help") || value == OsStr::new("-h") => {
                 println!("{USAGE}");
                 std::process::exit(0);
             }
@@ -59,7 +59,7 @@ impl Cli {
                 Some("--relay-url") => {
                     cli.relay_url = Some(next_utf8_value(&mut args, "--relay-url")?);
                 }
-                Some("--help") => {
+                Some("--help") | Some("-h") => {
                     println!("{USAGE}");
                     std::process::exit(0);
                 }

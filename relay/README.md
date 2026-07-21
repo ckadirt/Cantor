@@ -44,7 +44,7 @@ Run a node in another terminal:
 
 ```sh
 cd ../node
-cargo run -p cantor-node -- run
+cargo run -p cantor -- run
 ```
 
 Copy the public key from the relay terminal's
