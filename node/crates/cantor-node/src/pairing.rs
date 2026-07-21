@@ -84,7 +84,7 @@ mod tests {
         let config = NodeConfig {
             name: "studio node".to_owned(),
             relay_url: "ws://192.0.2.1:8787".to_owned(),
-            allowed_keys: Vec::new(),
+            pairings: Vec::new(),
         };
         let uri = pairing_uri(&config, "node-key", "secret").expect("pairing URI");
         let fields: std::collections::HashMap<_, _> = uri.query_pairs().into_owned().collect();

@@ -133,7 +133,7 @@ if [ ! -e "$cantor_config_path" ]; then
   {
     printf 'name = "%s"\n' "$cantor_escaped_name"
     printf 'relay_url = "%s"\n' "$cantor_escaped_relay"
-    printf 'allowed_keys = []\n'
+    printf 'pairings = []\n'
   } > "$cantor_config_path"
   chmod 0600 "$cantor_config_path"
   cantor_config_result='created'

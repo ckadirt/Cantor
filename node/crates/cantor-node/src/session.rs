@@ -7,7 +7,7 @@ use cantor_proto::{ClientMessage, NodeInfo, NodeMessage, PROTOCOL_VERSION};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 
-use crate::config::NodeConfig;
+use crate::config::{NodeConfig, sanitize_petname};
 
 const CHALLENGE_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
@@ -25,6 +25,7 @@ struct PendingAuth {
     verifying_key: VerifyingKey,
     nonce: [u8; CHALLENGE_BYTES],
     pair_proof: Option<String>,
+    petname: Option<String>,
 }
 
 impl ClientSession {
@@ -59,6 +60,7 @@ impl ClientSession {
                 id,
                 pubkey,
                 pair_proof,
+                petname,
             } => {
                 self.authenticated = false;
                 self.pending = None;
@@ -96,6 +98,9 @@ impl ClientSession {
                     verifying_key,
                     nonce,
                     pair_proof,
+                    // A petname the node will not accept is dropped here rather
+                    // than failing an otherwise valid pairing.
+                    petname: petname.as_deref().and_then(sanitize_petname),
                 });
                 Ok(NodeMessage::Challenge {
                     v: PROTOCOL_VERSION,
@@ -154,10 +159,7 @@ impl ClientSession {
                     ));
                 }
 
-                let already_allowed = config
-                    .allowed_keys
-                    .iter()
-                    .any(|allowed| allowed == &pending.public_key);
+                let already_allowed = config.is_authorized(&pending.public_key);
                 let may_enroll = active_pair_token
                     .as_ref()
                     .zip(pending.pair_proof.as_ref())
@@ -178,7 +180,7 @@ impl ClientSession {
                 }
 
                 if !already_allowed {
-                    config.authorize_key(config_path, &pending.public_key)?;
+                    config.authorize_key(config_path, &pending.public_key, pending.petname)?;
                     *active_pair_token = None;
                     println!("paired client {}", pending.public_key);
                 }
@@ -258,6 +260,13 @@ mod tests {
     }
 
     fn authenticate(token: Option<&str>) -> (NodeMessage, NodeConfig, Option<String>) {
+        authenticate_with_petname(token, None)
+    }
+
+    fn authenticate_with_petname(
+        token: Option<&str>,
+        petname: Option<&str>,
+    ) -> (NodeMessage, NodeConfig, Option<String>) {
         let temporary = tempdir().expect("temporary directory");
         let (mut config, paths) = config(temporary.path());
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
@@ -280,7 +289,7 @@ mod tests {
         let mut active_token = token.map(str::to_owned);
         let challenge = session
             .handle(
-                json!({"t":"hello","v":1,"id":"1","pubkey":public_key,"pair_proof":pair_proof}),
+                json!({"t":"hello","v":1,"id":"1","pubkey":public_key,"pair_proof":pair_proof,"petname":petname}),
                 &mut config,
                 &paths.config,
                 &mut active_token,
@@ -317,15 +326,36 @@ mod tests {
         let token = URL_SAFE_NO_PAD.encode([6_u8; 32]);
         let (response, config, active_token) = authenticate(Some(&token));
         assert!(matches!(response, NodeMessage::Welcome { .. }));
-        assert_eq!(config.allowed_keys.len(), 1);
+        assert_eq!(config.pairings.len(), 1);
         assert_eq!(active_token, None);
+    }
+
+    #[test]
+    fn a_petname_from_hello_is_recorded_on_the_pairing() {
+        let token = URL_SAFE_NO_PAD.encode([6_u8; 32]);
+        let (response, config, _) =
+            authenticate_with_petname(Some(&token), Some("  Redmi Note 11  "));
+        assert!(matches!(response, NodeMessage::Welcome { .. }));
+        assert_eq!(config.pairings[0].petname.as_deref(), Some("Redmi Note 11"));
+    }
+
+    /// A device that could smuggle an escape sequence into the config file would
+    /// own the terminal of whoever later runs `cantor pairings`.
+    #[test]
+    fn a_hostile_petname_is_dropped_without_failing_the_pairing() {
+        let token = URL_SAFE_NO_PAD.encode([6_u8; 32]);
+        let (response, config, _) =
+            authenticate_with_petname(Some(&token), Some("pwned\u{1b}[2K\u{1b}[1A"));
+        assert!(matches!(response, NodeMessage::Welcome { .. }));
+        assert_eq!(config.pairings.len(), 1);
+        assert_eq!(config.pairings[0].petname, None);
     }
 
     #[test]
     fn non_allowlisted_client_is_rejected() {
         let (response, config, _) = authenticate(None);
         assert!(matches!(response, NodeMessage::Error { code, .. } if code == "rejected"));
-        assert!(config.allowed_keys.is_empty());
+        assert!(config.pairings.is_empty());
     }
 
     /// A bare-nonce signature is what the relay's room claim produces. Accepting
@@ -340,7 +370,9 @@ mod tests {
         let node_public_key =
             bs58::encode(SigningKey::from_bytes(&[8_u8; 32]).verifying_key().as_bytes())
                 .into_string();
-        config.allowed_keys.push(public_key.clone());
+        config
+            .pairings
+            .push(crate::config::Pairing::new(public_key.clone(), None, None));
 
         let mut session = ClientSession::default();
         let mut active_token = None;
