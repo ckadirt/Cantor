@@ -127,6 +127,10 @@ pub fn client_socket_path() -> Result<PathBuf> {
     }
 }
 
+pub fn running_as_root() -> bool {
+    is_root()
+}
+
 fn is_root() -> bool {
     // Avoids a libc dependency for the one bit of identity that is needed.
     fs::metadata("/proc/self")

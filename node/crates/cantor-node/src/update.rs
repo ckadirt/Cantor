@@ -242,6 +242,9 @@ pub async fn upgrade(check_only: bool) -> Result<()> {
         .with_context(|| format!("failed to replace {}", target.display()))?;
 
     println!("installed cantor {latest} at {}", target.display());
+    // Replacing the file leaves the running daemon on the old, now-unlinked
+    // inode: without this the upgrade appears to work and changes nothing.
+    crate::service::restart_after_upgrade();
     Ok(())
 }
 

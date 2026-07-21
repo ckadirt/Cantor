@@ -3,6 +3,7 @@ mod control;
 mod identity;
 mod pairing;
 mod relay;
+mod service;
 mod session;
 mod signing;
 mod update;
@@ -10,7 +11,6 @@ mod update;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
-use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use rustls::crypto::CryptoProvider;
@@ -38,8 +38,6 @@ Options common to every command:
   -V, --version           print the version
   -h, --help              show this message";
 
-/// The service unit both installers write.
-const SERVICE_UNIT: &str = "cantor.service";
 const DEFAULT_LOG_LINES: &str = "50";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -367,71 +365,15 @@ fn string_field(value: &Value, field: &str) -> String {
         .to_owned()
 }
 
-/// Which systemd scope actually holds the unit. Like the control socket, this
-/// cannot be read off the caller's own privileges: an operator in the `cantor`
-/// group is not root, and the unit they need is the system one. Prefer a user
-/// unit when one exists, mirroring how the socket is resolved.
-fn use_user_scope() -> bool {
-    let user_unit = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|config| config.join("systemd").join("user").join(SERVICE_UNIT));
-    if user_unit.is_some_and(|path| path.exists()) {
-        return true;
-    }
-    !PathBuf::from("/etc/systemd/system")
-        .join(SERVICE_UNIT)
-        .exists()
-        && !running_as_root()
-}
-
-/// `start`, `stop`, `restart` and `logs` are thin wrappers: systemd already owns
-/// the lifecycle, and reimplementing it here would only add a second answer.
+/// `start`, `stop`, `restart` and `logs` are thin wrappers over systemd.
 fn lifecycle(cli: &Cli) -> Result<()> {
-    let user_scope = use_user_scope();
-    let status = match cli.command {
-        Command_::Logs => {
-            let mut command = Command::new("journalctl");
-            if user_scope {
-                command.arg("--user");
-            }
-            command.args(["-u", SERVICE_UNIT, "-n", &cli.lines]);
-            if cli.follow {
-                command.arg("-f");
-            }
-            command.status()
-        }
-        other => {
-            let action = match other {
-                Command_::Start => "start",
-                Command_::Stop => "stop",
-                Command_::Restart => "restart",
-                _ => unreachable!("only lifecycle commands reach here"),
-            };
-            let mut command = Command::new("systemctl");
-            if user_scope {
-                command.arg("--user");
-            }
-            command.args([action, SERVICE_UNIT]);
-            command.status()
-        }
+    match cli.command {
+        Command_::Logs => service::logs(&cli.lines, cli.follow),
+        Command_::Start => service::run_action("start"),
+        Command_::Stop => service::run_action("stop"),
+        Command_::Restart => service::run_action("restart"),
+        other => bail!("{other:?} is not a lifecycle command"),
     }
-    .context("failed to run systemctl/journalctl; is systemd available here?")?;
-
-    if !status.success() {
-        bail!("{:?} failed", cli.command);
-    }
-    Ok(())
-}
-
-fn running_as_root() -> bool {
-    std::fs::metadata("/proc/self")
-        .ok()
-        .map(|metadata| {
-            use std::os::unix::fs::MetadataExt;
-            metadata.uid() == 0
-        })
-        .unwrap_or(false)
 }
 
 fn install_tls_crypto_provider() -> Result<()> {
