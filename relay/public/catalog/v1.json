@@ -4,7 +4,146 @@
     {
       "name": "acestep",
       "licence": "Apache-2.0",
-      "variants": []
+      "variants": [
+        {
+          "tag": "1.5-fast",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:bdaf9e292d4470f31c19cafeaca1b74936a114667e3a85e5d33b65247e9908ec",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/acestep-5Hz-lm-0.6B-Q8_0.gguf",
+              "bytes": 709846656,
+              "quant": "Q8_0"
+            },
+            {
+              "role": "dit",
+              "blob": "sha256:a241c9a721e3704cb04b17ce6a40c9aa714d3ee5cf49c2219972020eb761f5a4",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/acestep-v15-turbo-Q5_K_M.gguf",
+              "bytes": 1700140224,
+              "quant": "Q5_K_M"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:0599862ac5d15cd308e1d2e368373aea6c02e25ebd1737ad4a4562a0901b0ef8",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/vae-BF16.gguf",
+              "bytes": 337420928,
+              "quant": "BF16"
+            },
+            {
+              "role": "embed",
+              "blob": "sha256:972f23255e46adfe744a0eb9a0039f3c63988f65753b0968d776e8b27168c321",
+              "url": "https://cantor-ckpts.ckadirt.xyz/shared/Qwen3-Embedding-0.6B-Q8_0.gguf",
+              "bytes": 784144960,
+              "quant": "Q8_0"
+            }
+          ],
+          "defaults": {
+            "steps": 8,
+            "cfg": 1.0
+          },
+          "needs": {
+            "vram_bytes": 4294967296,
+            "vram_bytes_resident": 5368709120,
+            "backends": [
+              "cuda12",
+              "vulkan",
+              "cpu"
+            ]
+          }
+        },
+        {
+          "tag": "1.5-balanced",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:726f99a82f050b32ebc5c5e36acaa9d7acd06bfe5e579a62b00e0d0d6d0b7ec6",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/acestep-5Hz-lm-1.7B-Q8_0.gguf",
+              "bytes": 1975837568,
+              "quant": "Q8_0"
+            },
+            {
+              "role": "dit",
+              "blob": "sha256:3fab14cf0d8efa249edf49b6fd0392bac54f1a80514567a5ae4164853339ecb3",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/acestep-v15-sftturbo50-Q8_0.gguf",
+              "bytes": 2549527936,
+              "quant": "Q8_0"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:0599862ac5d15cd308e1d2e368373aea6c02e25ebd1737ad4a4562a0901b0ef8",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/vae-BF16.gguf",
+              "bytes": 337420928,
+              "quant": "BF16"
+            },
+            {
+              "role": "embed",
+              "blob": "sha256:972f23255e46adfe744a0eb9a0039f3c63988f65753b0968d776e8b27168c321",
+              "url": "https://cantor-ckpts.ckadirt.xyz/shared/Qwen3-Embedding-0.6B-Q8_0.gguf",
+              "bytes": 784144960,
+              "quant": "Q8_0"
+            }
+          ],
+          "defaults": {
+            "steps": 28,
+            "cfg": 1.0
+          },
+          "needs": {
+            "vram_bytes": 6442450944,
+            "vram_bytes_resident": 7516192768,
+            "backends": [
+              "cuda12",
+              "vulkan",
+              "cpu"
+            ]
+          }
+        },
+        {
+          "tag": "1.5-quality",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:d39b8b5070fa617a0f57dcc26e710f8096a293c21721c5f714318bab7b40cfdb",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/acestep-5Hz-lm-4B-Q6_K.gguf",
+              "bytes": 3442713504,
+              "quant": "Q6_K"
+            },
+            {
+              "role": "dit",
+              "blob": "sha256:d43bad21c85c7a250815367b4c5f7fafdf6b8f7d21f9f27d8a3c47171cf79e7f",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/acestep-v15-xl-sftturbo50-Q6_K.gguf",
+              "bytes": 4098813024,
+              "quant": "Q6_K"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:0599862ac5d15cd308e1d2e368373aea6c02e25ebd1737ad4a4562a0901b0ef8",
+              "url": "https://cantor-ckpts.ckadirt.xyz/acestep-1.5/vae-BF16.gguf",
+              "bytes": 337420928,
+              "quant": "BF16"
+            },
+            {
+              "role": "embed",
+              "blob": "sha256:972f23255e46adfe744a0eb9a0039f3c63988f65753b0968d776e8b27168c321",
+              "url": "https://cantor-ckpts.ckadirt.xyz/shared/Qwen3-Embedding-0.6B-Q8_0.gguf",
+              "bytes": 784144960,
+              "quant": "Q8_0"
+            }
+          ],
+          "defaults": {
+            "steps": 28,
+            "cfg": 1.0
+          },
+          "needs": {
+            "vram_bytes": 8589934592,
+            "vram_bytes_resident": 10737418240,
+            "backends": [
+              "cuda12",
+              "vulkan",
+              "cpu"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
