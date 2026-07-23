@@ -121,8 +121,45 @@ pub struct NodeConfig {
     /// whose GPU is known-bad; empty means "choose".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<String>,
+    #[serde(default, skip_serializing_if = "EngineTuning::is_default")]
+    pub engine: EngineTuning,
     #[serde(default)]
     pub pairings: Vec<Pairing>,
+}
+
+/// Device knobs passed straight to the engine. Every field defaults to zero,
+/// which the ABI defines as "use the engine's own default", so an absent
+/// `[engine]` table changes nothing.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+pub struct EngineTuning {
+    /// VAE tile size. The VAE, not the DiT, is the memory peak: on a machine
+    /// with little RAM the engine's default of 1024 swaps rather than fails,
+    /// which looks like a hang. 256 is the documented figure for constrained
+    /// devices.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub vae_chunk: i32,
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub vae_overlap: i32,
+    /// 0 uses the engine's physical-core heuristic, which is wrong on
+    /// big.LITTLE — set it to the big-core count there.
+    #[serde(default, skip_serializing_if = "is_zero_i32")]
+    pub n_threads: i32,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub keep_loaded: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_flash_attn: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_batch_cfg: bool,
+}
+
+impl EngineTuning {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+fn is_zero_i32(value: &i32) -> bool {
+    *value == 0
 }
 
 /// Read-side shape only. Nodes installed before pairings became records still
@@ -140,6 +177,8 @@ struct RawNodeConfig {
     backends_url: Option<String>,
     #[serde(default)]
     backend: Option<String>,
+    #[serde(default)]
+    engine: EngineTuning,
     #[serde(default)]
     pairings: Vec<Pairing>,
     #[serde(default)]
@@ -161,6 +200,7 @@ impl From<RawNodeConfig> for NodeConfig {
             catalog_url: raw.catalog_url,
             backends_url: raw.backends_url,
             backend: raw.backend,
+            engine: raw.engine,
             pairings,
         }
     }
@@ -188,6 +228,7 @@ impl NodeConfig {
             catalog_url: None,
             backends_url: None,
             backend: None,
+            engine: EngineTuning::default(),
             pairings: Vec::new(),
         };
         config.validate()?;
@@ -311,6 +352,17 @@ impl NodeConfig {
             {
                 pairing.petname = previous;
             }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Persists the chosen backend. `None` clears the pin and returns the node
+    /// to measuring on each load.
+    pub fn set_backend(&mut self, path: &Path, backend: Option<String>) -> Result<()> {
+        let previous = std::mem::replace(&mut self.backend, backend);
+        if let Err(error) = self.save_atomically(path) {
+            self.backend = previous;
             return Err(error);
         }
         Ok(())
@@ -538,6 +590,7 @@ mod tests {
             catalog_url: None,
             backends_url: None,
             backend: None,
+            engine: super::EngineTuning::default(),
             pairings: Vec::new(),
         };
 
@@ -646,6 +699,59 @@ mod tests {
             reloaded.model_dir.as_deref(),
             Some("/var/lib/cantor/models")
         );
+    }
+
+    /// An absent `[engine]` table must behave exactly like no tuning at all,
+    /// and must not appear in a rewritten config.
+    #[test]
+    fn engine_tuning_is_absent_until_it_is_set() {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("prepare directory");
+        std::fs::write(
+            &paths.config,
+            "name = \"n\"\nrelay_url = \"ws://localhost:8787\"\npairings = []\n",
+        )
+        .expect("write config");
+
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("load");
+        assert_eq!(config.engine, super::EngineTuning::default());
+        assert_eq!(config.engine.vae_chunk, 0, "zero means the engine decides");
+
+        config
+            .authorize_key(&paths.config, "key", None)
+            .expect("authorize");
+        let rewritten = std::fs::read_to_string(&paths.config).expect("read");
+        assert!(
+            !rewritten.contains("[engine]"),
+            "default tuning must not be written out: {rewritten}"
+        );
+    }
+
+    #[test]
+    fn engine_tuning_round_trips_when_set() {
+        let temporary = tempdir().expect("temporary directory");
+        let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
+        paths.prepare_directory().expect("prepare directory");
+        std::fs::write(
+            &paths.config,
+            "name = \"n\"\nrelay_url = \"ws://localhost:8787\"\npairings = []\n\n[engine]\nvae_chunk = 256\nn_threads = 8\n",
+        )
+        .expect("write config");
+
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("load");
+        assert_eq!(config.engine.vae_chunk, 256);
+        assert_eq!(config.engine.n_threads, 8);
+
+        config
+            .authorize_key(&paths.config, "key", None)
+            .expect("authorize");
+        let (reloaded, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("reload");
+        assert_eq!(reloaded.engine.vae_chunk, 256, "tuning survives a rewrite");
+        assert_eq!(reloaded.engine.n_threads, 8);
     }
 
     #[test]

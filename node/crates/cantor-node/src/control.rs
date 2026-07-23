@@ -23,7 +23,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use crate::accel;
-use crate::backends::{BackendManifest, EngineStore, machine_arch};
+use crate::backends::{BackendManifest, EngineStore, engine_for_model, machine_arch};
 use crate::catalog::Catalog;
 use crate::config::{NodeConfig, Pairing};
 use crate::engine::{self, LoadOptions};
@@ -300,6 +300,8 @@ fn frame_kind(line: &str) -> Option<String> {
 struct PullPlan {
     store_root: PathBuf,
     catalog_url: String,
+    backends_url: String,
+    backend: Option<String>,
 }
 
 fn pull_plan(state: &SharedState) -> Result<PullPlan> {
@@ -309,6 +311,8 @@ fn pull_plan(state: &SharedState) -> Result<PullPlan> {
     Ok(PullPlan {
         store_root: locked.config.model_root(),
         catalog_url: locked.config.catalog_url(),
+        backends_url: locked.config.backends_url(),
+        backend: locked.config.backend.clone(),
     })
 }
 
@@ -359,7 +363,11 @@ async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
                 .get("install")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            run_backends(state, writer, &id, install).await
+            let use_backend = request
+                .get("use")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            run_backends(state, writer, &id, install, use_backend).await
         }
         _ => run_catalog(state, writer, &id).await,
     };
@@ -397,6 +405,58 @@ async fn run_catalog<W: tokio::io::AsyncWrite + Unpin>(
     .await
 }
 
+/// The distinct engines the installed models require. A backend is per
+/// (engine, arch) — not per model — so pulling five acestep variants still
+/// needs exactly one acestep engine.
+fn required_engines(store: &Store) -> Vec<String> {
+    let mut engines: Vec<String> = store
+        .installed()
+        .iter()
+        .map(|variant| engine_for_model(&variant.model).to_owned())
+        .collect();
+    engines.sort();
+    engines.dedup();
+    engines
+}
+
+/// Installs `backend` for every engine the installed models need, so switching
+/// backends never leaves a model that cannot run. Returns what was installed.
+async fn install_backend_for_engines(
+    manifest: &BackendManifest,
+    engine_store: &EngineStore,
+    engines: &[String],
+    backend: &str,
+    arch: &str,
+    client: &reqwest::Client,
+    mut on_progress: impl FnMut(&str, u64, u64),
+) -> Result<Vec<(String, PathBuf)>> {
+    let mut installed = Vec::new();
+    for engine in engines {
+        let Some(artifact) = manifest.find(engine, backend, arch) else {
+            bail!("no {backend} build of the {engine} engine is published for {arch}");
+        };
+        let label = engine.clone();
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(u64, u64)>();
+        let mut last = 0_u64;
+        let fetch = engine_store.install(client, artifact, move |done, total| {
+            let step = total / 50 + 1;
+            if done >= last + step || done == total {
+                last = done;
+                let _ = progress_tx.send((done, total));
+            }
+        });
+        tokio::pin!(fetch);
+        let directory = loop {
+            tokio::select! {
+                Some((done, total)) = progress_rx.recv() => on_progress(&label, done, total),
+                result = &mut fetch => break result?,
+            }
+        };
+        installed.push((engine.clone(), directory));
+    }
+    Ok(installed)
+}
+
 /// Reports what this machine can run and, with `install`, fetches and selects a
 /// backend for real. Selection is measured: each candidate is actually loaded,
 /// and the first that works wins — a GPU that is present but broken falls
@@ -406,8 +466,9 @@ async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
     writer: &mut W,
     id: &str,
     install: bool,
+    use_backend: Option<String>,
 ) -> Result<()> {
-    let (store_root, backends_url, pinned) = {
+    let (store_root, backends_url, pinned, config_path) = {
         let locked = state
             .lock()
             .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
@@ -415,6 +476,7 @@ async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
             locked.config.model_root(),
             locked.config.backends_url(),
             locked.config.backend.clone(),
+            locked.config_path.clone(),
         )
     };
 
@@ -431,8 +493,80 @@ async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
     .await?;
 
     let manifest = BackendManifest::fetch(&backends_url).await?;
-    let engine_name = "acestep";
     let store = EngineStore::new(&store_root);
+    let model_store = Store::new(&store_root);
+
+    // `--use` is the switch: fetch the requested backend for every engine the
+    // installed models need, prove it loads, and only then persist the choice.
+    // Persisting first would leave a node pinned to something unusable.
+    if let Some(backend) = use_backend {
+        let engines = required_engines(&model_store);
+        if engines.is_empty() {
+            bail!("no models are installed, so there is nothing to select a backend for");
+        }
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("cantor/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .context("failed to build an HTTP client")?;
+
+        let mut progress = Vec::new();
+        let installed = install_backend_for_engines(
+            &manifest,
+            &store,
+            &engines,
+            &backend,
+            arch,
+            &client,
+            |engine, done, total| progress.push((engine.to_owned(), done, total)),
+        )
+        .await?;
+        for (engine, done, total) in progress.iter().rev().take(1) {
+            write_line(
+                writer,
+                &json!({"v": CONTROL_VERSION, "id": id, "t": "progress",
+                        "role": engine, "done": done, "total": total,
+                        "overall_done": done, "overall_total": total}),
+            )
+            .await?;
+        }
+
+        let attempts: Vec<(String, PathBuf)> = installed
+            .iter()
+            .map(|(_, directory)| (backend.clone(), directory.clone()))
+            .collect();
+        let selection = engine::select(&attempts)?;
+        let engine_version = selection.engine.version.clone();
+        drop(selection);
+
+        {
+            let mut locked = state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+            locked
+                .config
+                .set_backend(&config_path, Some(backend.clone()))?;
+        }
+
+        write_line(
+            writer,
+            &json!({"v": CONTROL_VERSION, "id": id, "t": "selected",
+                    "backend": backend, "model": engines.join(", "),
+                    "engine_version": engine_version, "abi": 1,
+                    "directory": installed.first().map(|(_, d)| d.display().to_string())
+                        .unwrap_or_default(),
+                    "stages": ["plan", "codes", "diffuse", "decode"]}),
+        )
+        .await?;
+        return write_line(
+            writer,
+            &json!({"v": CONTROL_VERSION, "id": id, "t": "ok",
+                    "msg": format!("switched to {backend} for {} engine(s); it is now the default",
+                                   engines.len())}),
+        )
+        .await;
+    }
+
+    let engine_name = "acestep";
 
     // A pinned backend narrows the list; otherwise try them in preference order.
     let wanted: Vec<String> = match &pinned {
@@ -556,7 +690,7 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
         .context("generate needs an output path")?
         .to_owned();
 
-    let (store_root, backends_url, pinned) = {
+    let (store_root, backends_url, pinned, tuning) = {
         let locked = state
             .lock()
             .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
@@ -564,6 +698,7 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
             locked.config.model_root(),
             locked.config.backends_url(),
             locked.config.backend.clone(),
+            locked.config.engine.clone(),
         )
     };
 
@@ -623,7 +758,12 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
     // engine keeps at most one module resident, which is its own safe default.
     let options = LoadOptions {
         vram_budget_bytes: variant.vram_bytes,
-        ..LoadOptions::default()
+        keep_loaded: i32::from(tuning.keep_loaded),
+        vae_chunk: tuning.vae_chunk,
+        vae_overlap: tuning.vae_overlap,
+        n_threads: tuning.n_threads,
+        disable_flash_attn: i32::from(tuning.disable_flash_attn),
+        disable_batch_cfg: i32::from(tuning.disable_batch_cfg),
     };
 
     let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(&'static str, i32, i32)>();
@@ -750,6 +890,70 @@ async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     // Only now does the variant count as installed.
     store.mark_installed(model, variant)?;
     let _ = events.send(ControlEvent::NodeInfoChanged);
+
+    // A model with no engine cannot run, so pulling one fetches the backend it
+    // needs. Best-effort: the weights are installed either way, and a failure
+    // here is reported rather than losing a multi-gigabyte download.
+    let engine_name = engine_for_model(&model.name).to_owned();
+    let engine_store = EngineStore::new(&plan.store_root);
+    let arch = machine_arch();
+    let wanted = plan
+        .backend
+        .clone()
+        .or_else(|| accel::candidates().first().map(|a| a.backend.clone()));
+    if let Some(backend) = wanted {
+        match BackendManifest::fetch(&plan.backends_url).await {
+            Ok(manifest) => match manifest.find(&engine_name, &backend, arch) {
+                Some(artifact) if !engine_store.is_installed(artifact).unwrap_or(false) => {
+                    write_line(
+                        writer,
+                        &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
+                                "msg": format!("fetching the {backend} engine for {engine_name}")}),
+                    )
+                    .await?;
+                    let mut last = 0_u64;
+                    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(u64, u64)>();
+                    let fetch = engine_store.install(&client, artifact, move |done, total| {
+                        let step = total / 25 + 1;
+                        if done >= last + step || done == total {
+                            last = done;
+                            let _ = progress_tx.send((done, total));
+                        }
+                    });
+                    tokio::pin!(fetch);
+                    loop {
+                        tokio::select! {
+                            Some((done, total)) = progress_rx.recv() => {
+                                write_line(writer, &json!({
+                                    "v": CONTROL_VERSION, "id": id, "t": "progress",
+                                    "role": backend, "done": done, "total": total,
+                                    "overall_done": done, "overall_total": total
+                                })).await?;
+                            }
+                            result = &mut fetch => { result?; break; }
+                        }
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    write_line(
+                        writer,
+                        &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
+                                "msg": format!("no {backend} engine published for {engine_name} on {arch}; run `cantor backends --use <other>`")}),
+                    )
+                    .await?;
+                }
+            },
+            Err(error) => {
+                write_line(
+                    writer,
+                    &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
+                            "msg": format!("could not check for an engine: {error:#}")}),
+                )
+                .await?;
+            }
+        }
+    }
 
     write_line(
         writer,
