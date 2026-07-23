@@ -89,6 +89,44 @@ one of its components has landed.
 Installed variants become `NodeInfo.models`, pushed to connected apps as they
 change.
 
+## Backends and generating
+
+A backend is the inference engine as a set of shared libraries, downloaded and
+loaded at runtime. It is keyed by **(engine, backend, arch)** — *not* per model:
+one `acestep` CPU engine serves every ACE-Step variant you have pulled.
+
+```sh
+cantor backends                    # what this machine can run, and why
+cantor backends --install          # fetch candidates, load each, keep the first that works
+cantor backends --use cuda12       # switch: fetches it for every engine your models need
+cantor generate "a slow blues" -o out.wav
+```
+
+Selection is **measured, not assumed**. Detection only decides what is worth
+trying — an NVIDIA driver node for CUDA, a DRM render node for Vulkan — and then
+each candidate is actually loaded in preference order (`cuda12`, `vulkan`,
+`cpu`). A backend that is present but broken falls through to the next, and CPU
+is always last and always present, so selection can never come up empty.
+`--use` verifies the new backend loads *before* persisting it, so a node is
+never pinned to something unusable.
+
+Pulling a model also fetches the engine it needs, so a freshly pulled variant
+can run without a second command.
+
+### Tuning
+
+```toml
+[engine]
+vae_chunk = 256    # the VAE is the memory peak, not the DiT
+n_threads = 8      # 0 uses a physical-core heuristic, wrong on big.LITTLE
+```
+
+Every field defaults to zero, which the ABI defines as "use the engine's own
+default", so an absent `[engine]` table changes nothing. `vae_chunk` is the one
+worth knowing: at the engine default of 1024 a 7 GB machine swaps rather than
+fails, which looks like a hang. 256 is the documented figure for constrained
+devices.
+
 ## Where the engine lives
 
 The GGML ports are **not** vendored here, and deliberately so. A backend is a
