@@ -22,8 +22,12 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
+use crate::accel;
+use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::catalog::Catalog;
 use crate::config::{NodeConfig, Pairing};
+use crate::engine::{self, LoadOptions};
+use crate::generate::{Generation, components_for};
 use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer, new_pair_token, pairing_uri};
 use crate::store::{InstalledVariant, Store, human_bytes};
 
@@ -271,9 +275,9 @@ async fn serve_connection(
         // A pull runs for minutes and reports as it goes, so it writes many
         // lines rather than one. Everything else is request/response.
         if let Some(kind) = frame_kind(&line)
-            && (kind == "pull" || kind == "catalog")
+            && matches!(kind.as_str(), "pull" | "catalog" | "backends" | "generate")
         {
-            stream_long_request(&line, &state, &events, &mut writer, kind == "pull").await?;
+            stream_long_request(&line, &state, &events, &mut writer, &kind).await?;
             continue;
         }
         let response = dispatch(&line, &state, &events);
@@ -321,7 +325,7 @@ async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
     state: &SharedState,
     events: &mpsc::UnboundedSender<ControlEvent>,
     writer: &mut W,
-    is_pull: bool,
+    kind: &str,
 ) -> Result<()> {
     let request: Value = match serde_json::from_str(line) {
         Ok(value) => value,
@@ -340,15 +344,24 @@ async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
         .unwrap_or_default()
         .to_owned();
 
-    let outcome = if is_pull {
-        let selector = request
-            .get("selector")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_owned();
-        run_pull(&selector, state, events, writer, &id).await
-    } else {
-        run_catalog(state, writer, &id).await
+    let outcome = match kind {
+        "pull" => {
+            let selector = request
+                .get("selector")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_owned();
+            run_pull(&selector, state, events, writer, &id).await
+        }
+        "generate" => run_generate(&request, state, writer, &id).await,
+        "backends" => {
+            let install = request
+                .get("install")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            run_backends(state, writer, &id, install).await
+        }
+        _ => run_catalog(state, writer, &id).await,
     };
 
     if let Err(error) = outcome {
@@ -380,6 +393,276 @@ async fn run_catalog<W: tokio::io::AsyncWrite + Unpin>(
         &json!({"v": CONTROL_VERSION, "id": id, "t": "catalog",
                 "models": catalog.models, "installed": installed,
                 "available_bytes": store.available_bytes().unwrap_or(0)}),
+    )
+    .await
+}
+
+/// Reports what this machine can run and, with `install`, fetches and selects a
+/// backend for real. Selection is measured: each candidate is actually loaded,
+/// and the first that works wins — a GPU that is present but broken falls
+/// through to the next rather than being trusted.
+async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
+    state: &SharedState,
+    writer: &mut W,
+    id: &str,
+    install: bool,
+) -> Result<()> {
+    let (store_root, backends_url, pinned) = {
+        let locked = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+        (
+            locked.config.model_root(),
+            locked.config.backends_url(),
+            locked.config.backend.clone(),
+        )
+    };
+
+    let detected = accel::candidates();
+    let arch = machine_arch();
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "detected",
+                "arch": arch, "pinned": pinned,
+                "accelerators": detected.iter().map(|a| json!({
+                    "backend": a.backend, "evidence": a.evidence, "device": a.device
+                })).collect::<Vec<_>>()}),
+    )
+    .await?;
+
+    let manifest = BackendManifest::fetch(&backends_url).await?;
+    let engine_name = "acestep";
+    let store = EngineStore::new(&store_root);
+
+    // A pinned backend narrows the list; otherwise try them in preference order.
+    let wanted: Vec<String> = match &pinned {
+        Some(backend) => vec![backend.clone()],
+        None => detected.iter().map(|a| a.backend.clone()).collect(),
+    };
+
+    let mut available = Vec::new();
+    for backend in &wanted {
+        match manifest.find(engine_name, backend, arch) {
+            Some(artifact) => available.push((backend.clone(), artifact)),
+            None => {
+                write_line(
+                    writer,
+                    &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
+                            "msg": format!("no {backend} build published for {arch}")}),
+                )
+                .await?;
+            }
+        }
+    }
+    if available.is_empty() {
+        bail!("the manifest publishes no backend this machine can use ({arch})");
+    }
+
+    if !install {
+        return write_line(
+            writer,
+            &json!({"v": CONTROL_VERSION, "id": id, "t": "ok",
+                    "msg": format!("{} candidate backend(s); run `cantor backends --install` to fetch and select",
+                                   available.len())}),
+        )
+        .await;
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("cantor/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("failed to build an HTTP client")?;
+
+    let mut attempts = Vec::new();
+    for (backend, artifact) in &available {
+        let label = backend.clone();
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(u64, u64)>();
+        let mut last = 0_u64;
+        let fetch = store.install(&client, artifact, move |done, total| {
+            let step = total / 50 + 1;
+            if done >= last + step || done == total {
+                last = done;
+                let _ = progress_tx.send((done, total));
+            }
+        });
+        tokio::pin!(fetch);
+        let directory = loop {
+            tokio::select! {
+                Some((done, total)) = progress_rx.recv() => {
+                    write_line(writer, &json!({
+                        "v": CONTROL_VERSION, "id": id, "t": "progress",
+                        "role": label, "done": done, "total": total,
+                        "overall_done": done, "overall_total": total
+                    })).await?;
+                }
+                result = &mut fetch => break result?,
+            }
+        };
+        attempts.push((backend.clone(), directory));
+    }
+
+    // The measured part: load each in turn, keep the first that works.
+    let selection = engine::select(&attempts)?;
+    for (backend, why) in &selection.rejected {
+        write_line(
+            writer,
+            &json!({"v": CONTROL_VERSION, "id": id, "t": "rejected",
+                    "backend": backend, "reason": why}),
+        )
+        .await?;
+    }
+
+    let engine = &selection.engine;
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "selected",
+                "backend": engine.backend, "model": engine.model,
+                "engine_version": engine.version, "abi": engine.abi,
+                "directory": engine.directory.display().to_string(),
+                "stages": engine.supported_stages().iter()
+                    .map(|s| s.as_str()).collect::<Vec<_>>()}),
+    )
+    .await?;
+
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok",
+                "msg": format!("selected {} ({})", engine.backend, engine.version)}),
+    )
+    .await
+}
+
+/// Loads an engine and runs a generation. This happens on a blocking thread:
+/// the engine is synchronous, holds device state, and a diffuse stage runs for
+/// minutes — parking it on the async runtime would stall every other request.
+async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
+    request: &Value,
+    state: &SharedState,
+    writer: &mut W,
+    id: &str,
+) -> Result<()> {
+    let caption = request
+        .get("caption")
+        .and_then(Value::as_str)
+        .context("generate needs a caption")?
+        .to_owned();
+    let selector = request
+        .get("model")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let output = request
+        .get("output")
+        .and_then(Value::as_str)
+        .context("generate needs an output path")?
+        .to_owned();
+
+    let (store_root, backends_url, pinned) = {
+        let locked = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+        (
+            locked.config.model_root(),
+            locked.config.backends_url(),
+            locked.config.backend.clone(),
+        )
+    };
+
+    let store = Store::new(&store_root);
+    let installed = store.installed();
+    let variant = match &selector {
+        Some(selector) => installed
+            .iter()
+            .find(|variant| &variant.selector() == selector)
+            .with_context(|| {
+                format!("{selector} is not installed — run `cantor pull {selector}`")
+            })?,
+        None => installed
+            .first()
+            .context("no model is installed — run `cantor pull acestep:1.5-fast`")?,
+    }
+    .clone();
+
+    let components = components_for(&variant, &store.blob_dir())?;
+
+    // Reuse whichever backend is already unpacked; selection itself happened in
+    // `cantor backends --install`.
+    let manifest = BackendManifest::fetch(&backends_url).await?;
+    let engine_store = EngineStore::new(&store_root);
+    let arch = machine_arch();
+    let wanted: Vec<String> = match &pinned {
+        Some(backend) => vec![backend.clone()],
+        None => accel::candidates().into_iter().map(|a| a.backend).collect(),
+    };
+    let mut attempts = Vec::new();
+    for backend in &wanted {
+        if let Some(artifact) = manifest.find("acestep", backend, arch)
+            && engine_store.is_installed(artifact)?
+        {
+            attempts.push((backend.clone(), engine_store.directory_for(artifact)?));
+        }
+    }
+    if attempts.is_empty() {
+        bail!("no backend is installed — run `cantor backends --install`");
+    }
+
+    let selection = engine::select(&attempts)?;
+    let backend = selection.engine.backend.clone();
+    let engine_version = selection.engine.version.clone();
+
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "generating",
+                "model": variant.selector(), "backend": backend,
+                "engine_version": engine_version, "caption": caption,
+                "vram_budget": variant.vram_bytes, "output": output}),
+    )
+    .await?;
+
+    // The catalog's own figure for this variant, so residency is bounded by
+    // what the publisher measured rather than by a guess here. Zero means the
+    // engine keeps at most one module resident, which is its own safe default.
+    let options = LoadOptions {
+        vram_budget_bytes: variant.vram_bytes,
+        ..LoadOptions::default()
+    };
+
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(&'static str, i32, i32)>();
+    let generation = tokio::task::spawn_blocking(move || -> Result<crate::generate::Audio> {
+        let engine = selection.engine;
+        let mut generation = Generation::start(&engine, &components, options)?;
+        eprintln!(
+            "engine resident: {}",
+            human_bytes(generation.resident_bytes())
+        );
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let request = crate::generate::Request::new(caption);
+        generation.run(&request, cancel, |progress| {
+            let _ = progress_tx.send((progress.stage.as_str(), progress.done, progress.total));
+        })
+    });
+    tokio::pin!(generation);
+
+    let audio = loop {
+        tokio::select! {
+            Some((stage, done, total)) = progress_rx.recv() => {
+                write_line(writer, &json!({
+                    "v": CONTROL_VERSION, "id": id, "t": "progress",
+                    "role": stage, "done": done, "total": total,
+                    "overall_done": done, "overall_total": total.max(1)
+                })).await?;
+            }
+            joined = &mut generation => {
+                break joined.context("the generation task panicked")??;
+            }
+        }
+    };
+
+    let path = PathBuf::from(&output);
+    audio.write_wav(&path)?;
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok",
+                "msg": format!("wrote {} ({:.1}s, {} Hz)", output, audio.seconds(), audio.sample_rate)}),
     )
     .await
 }

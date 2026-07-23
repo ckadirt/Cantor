@@ -20,6 +20,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 hostname.workspace = true
 libc.workspace = true
+libloading.workspace = true
 hmac.workspace = true
 qrcode.workspace = true
 reqwest.workspace = true

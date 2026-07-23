@@ -115,6 +115,12 @@ pub struct NodeConfig {
     /// Overridable so a node can be pointed at a staging catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backends_url: Option<String>,
+    /// Pins the backend instead of measuring. For debugging and for a machine
+    /// whose GPU is known-bad; empty means "choose".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
     #[serde(default)]
     pub pairings: Vec<Pairing>,
 }
@@ -130,6 +136,10 @@ struct RawNodeConfig {
     model_dir: Option<String>,
     #[serde(default)]
     catalog_url: Option<String>,
+    #[serde(default)]
+    backends_url: Option<String>,
+    #[serde(default)]
+    backend: Option<String>,
     #[serde(default)]
     pairings: Vec<Pairing>,
     #[serde(default)]
@@ -149,6 +159,8 @@ impl From<RawNodeConfig> for NodeConfig {
             relay_url: raw.relay_url,
             model_dir: raw.model_dir,
             catalog_url: raw.catalog_url,
+            backends_url: raw.backends_url,
+            backend: raw.backend,
             pairings,
         }
     }
@@ -174,6 +186,8 @@ impl NodeConfig {
                 .unwrap_or_else(|| DEFAULT_RELAY_URL.to_owned()),
             model_dir: None,
             catalog_url: None,
+            backends_url: None,
+            backend: None,
             pairings: Vec::new(),
         };
         config.validate()?;
@@ -422,6 +436,12 @@ impl NodeConfig {
             .clone()
             .unwrap_or_else(|| crate::catalog::DEFAULT_CATALOG_URL.to_owned())
     }
+
+    pub fn backends_url(&self) -> String {
+        self.backends_url
+            .clone()
+            .unwrap_or_else(|| crate::backends::DEFAULT_BACKENDS_URL.to_owned())
+    }
 }
 
 pub fn now_rfc3339() -> String {
@@ -516,6 +536,8 @@ mod tests {
             relay_url: "wss://example.test/cantor/".to_owned(),
             model_dir: None,
             catalog_url: None,
+            backends_url: None,
+            backend: None,
             pairings: Vec::new(),
         };
 

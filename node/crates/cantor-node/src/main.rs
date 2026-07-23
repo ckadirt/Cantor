@@ -1,6 +1,10 @@
+mod accel;
+mod backends;
 mod catalog;
 mod config;
 mod control;
+mod engine;
+mod generate;
 mod identity;
 mod pairing;
 mod relay;
@@ -36,6 +40,8 @@ Usage:
   cantor pull      <model:tag>
   cantor list      [--all]
   cantor rm        <model:tag>
+  cantor backends  [--install]
+  cantor generate  <caption> [--model model:tag] [-o out.wav]
   cantor upgrade   [--check]
 
 Options common to every command:
@@ -61,6 +67,8 @@ enum Command_ {
     Pull,
     List,
     Remove,
+    Backends,
+    Generate,
 }
 
 #[derive(Debug)]
@@ -76,6 +84,9 @@ struct Cli {
     rename_node: bool,
     check_only: bool,
     all: bool,
+    install: bool,
+    model: Option<String>,
+    output: Option<String>,
     positional: Vec<String>,
 }
 
@@ -97,6 +108,8 @@ impl Cli {
             Some(value) if value == OsStr::new("pull") => Command_::Pull,
             Some(value) if value == OsStr::new("list") => Command_::List,
             Some(value) if value == OsStr::new("rm") => Command_::Remove,
+            Some(value) if value == OsStr::new("backends") => Command_::Backends,
+            Some(value) if value == OsStr::new("generate") => Command_::Generate,
             Some(value) if value == OsStr::new("--version") || value == OsStr::new("-V") => {
                 println!("cantor {}", update::CURRENT_VERSION);
                 std::process::exit(0);
@@ -120,6 +133,9 @@ impl Cli {
             rename_node: false,
             check_only: false,
             all: false,
+            install: false,
+            model: None,
+            output: None,
             positional: Vec::new(),
         };
         while let Some(option) = args.next() {
@@ -147,6 +163,13 @@ impl Cli {
                 Some("--node") => cli.rename_node = true,
                 Some("--check") => cli.check_only = true,
                 Some("--all") => cli.all = true,
+                Some("--install") => cli.install = true,
+                Some("--model") | Some("-m") => {
+                    cli.model = Some(next_utf8_value(&mut args, "--model")?);
+                }
+                Some("--output") | Some("-o") => {
+                    cli.output = Some(next_utf8_value(&mut args, "--output")?);
+                }
                 Some("--version") | Some("-V") => {
                     println!("cantor {}", update::CURRENT_VERSION);
                     std::process::exit(0);
@@ -204,6 +227,7 @@ async fn main() -> Result<()> {
         // A pull, and `list --all`, report as they go rather than answering once.
         Command_::Pull => streaming_command(cli).await,
         Command_::List if cli.all => streaming_command(cli).await,
+        Command_::Backends | Command_::Generate => streaming_command(cli).await,
         Command_::Start | Command_::Stop | Command_::Restart | Command_::Logs => {
             let result = lifecycle(&cli);
             update::print_notice_if_stale().await;
@@ -324,6 +348,23 @@ async fn streaming_command(cli: Cli) -> Result<()> {
                 .context("pull needs a model and tag, like `cantor pull acestep:1.5-fast`")?;
             json!({"v": 1, "id": id, "t": "pull", "selector": selector})
         }
+        Command_::Backends => json!({"v": 1, "id": id, "t": "backends", "install": cli.install}),
+        Command_::Generate => {
+            let caption = cli
+                .positional
+                .first()
+                .context("generate needs a caption, like `cantor generate \"a slow blues\"`")?;
+            // Resolved here rather than in the daemon: a relative path means
+            // relative to where the person typed the command.
+            let output = cli
+                .output
+                .clone()
+                .unwrap_or_else(|| "cantor.wav".to_owned());
+            let absolute =
+                std::path::absolute(&output).unwrap_or_else(|_| std::path::PathBuf::from(&output));
+            json!({"v": 1, "id": id, "t": "generate", "caption": caption,
+                   "model": cli.model, "output": absolute.display().to_string()})
+        }
         _ => json!({"v": 1, "id": id, "t": "catalog"}),
     };
 
@@ -334,7 +375,19 @@ async fn streaming_command(cli: Cli) -> Result<()> {
                 planned = true;
                 print_pull_plan(frame);
             }
-            Some("progress") => print_progress(frame),
+            Some("progress") => {
+                planned = true;
+                print_progress(frame);
+            }
+            Some("generating") => print_generating(frame),
+            Some("detected") => print_detected(frame),
+            Some("selected") => print_selected(frame),
+            Some("rejected") => eprintln!(
+                "  {} unavailable: {}",
+                string_field(frame, "backend"),
+                string_field(frame, "reason").lines().next().unwrap_or("")
+            ),
+            Some("note") => eprintln!("  {}", string_field(frame, "msg")),
             _ => {}
         }
     })
@@ -357,6 +410,69 @@ async fn streaming_command(cli: Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn print_generating(frame: &Value) {
+    println!("{}", string_field(frame, "caption"));
+    println!("  model     {}", string_field(frame, "model"));
+    println!(
+        "  backend   {} · {}",
+        string_field(frame, "backend"),
+        string_field(frame, "engine_version")
+    );
+    println!("  output    {}\n", string_field(frame, "output"));
+}
+
+fn print_detected(frame: &Value) {
+    println!("architecture  {}", string_field(frame, "arch"));
+    if let Some(pinned) = frame.get("pinned").and_then(Value::as_str) {
+        println!("pinned        {pinned} (from node.toml)");
+    }
+    println!("\nDetected, in preference order:");
+    for accelerator in frame
+        .get("accelerators")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let device = accelerator
+            .get("device")
+            .and_then(Value::as_str)
+            .map(|d| format!(" · {d}"))
+            .unwrap_or_default();
+        println!(
+            "  {:<8} {}{device}",
+            string_field(accelerator, "backend"),
+            string_field(accelerator, "evidence")
+        );
+    }
+    println!();
+}
+
+fn print_selected(frame: &Value) {
+    println!("\nSelected {}", string_field(frame, "backend"));
+    println!(
+        "  engine    {} {}",
+        string_field(frame, "model"),
+        string_field(frame, "engine_version")
+    );
+    println!(
+        "  abi       {}",
+        frame.get("abi").and_then(Value::as_u64).unwrap_or(0)
+    );
+    println!(
+        "  stages    {}",
+        frame
+            .get("stages")
+            .and_then(Value::as_array)
+            .map(|stages| stages
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>()
+                .join(", "))
+            .unwrap_or_default()
+    );
+    println!("  path      {}", string_field(frame, "directory"));
 }
 
 fn print_pull_plan(frame: &Value) {
@@ -421,12 +537,19 @@ fn print_progress(frame: &Value) {
         .unwrap_or(1)
         .max(1);
     let percent = (done * 100 / total).min(100);
-    eprint!(
-        "\r  {percent:>3}%  {} / {}  ({})   ",
-        store::human_bytes(done),
-        store::human_bytes(total),
-        string_field(frame, "role")
-    );
+    let role = string_field(frame, "role");
+    // A generation stage counts tokens, steps or tiles; a download counts
+    // bytes. Rendering "215 B / 765 B" for a token count reads as nonsense, so
+    // the unit follows the source.
+    if matches!(role.as_str(), "plan" | "codes" | "diffuse" | "decode") {
+        eprint!("\r  {percent:>3}%  {role:<8} {done} / {total}        ");
+    } else {
+        eprint!(
+            "\r  {percent:>3}%  {} / {}  ({role})   ",
+            store::human_bytes(done),
+            store::human_bytes(total),
+        );
+    }
 }
 
 fn print_catalog(response: &Value) -> Result<()> {
