@@ -162,6 +162,14 @@ pub fn machine_arch() -> &'static str {
     std::env::consts::ARCH
 }
 
+/// Which engine a model's weights need. Today every model family is served by
+/// an engine of the same name — `acestep` weights need the `acestep` engine —
+/// but they are separate namespaces, and a future port could name them apart.
+/// Keeping the mapping in one place makes that a one-line change.
+pub fn engine_for_model(model: &str) -> &str {
+    model
+}
+
 /// Where downloaded engines are unpacked. Sibling of the model store rather
 /// than inside it: models and engines have independent lifecycles.
 pub struct EngineStore {

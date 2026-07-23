@@ -40,7 +40,7 @@ Usage:
   cantor pull      <model:tag>
   cantor list      [--all]
   cantor rm        <model:tag>
-  cantor backends  [--install]
+  cantor backends  [--install] [--use cpu|cuda12|vulkan]
   cantor generate  <caption> [--model model:tag] [-o out.wav]
   cantor upgrade   [--check]
 
@@ -85,6 +85,7 @@ struct Cli {
     check_only: bool,
     all: bool,
     install: bool,
+    use_backend: Option<String>,
     model: Option<String>,
     output: Option<String>,
     positional: Vec<String>,
@@ -134,6 +135,7 @@ impl Cli {
             check_only: false,
             all: false,
             install: false,
+            use_backend: None,
             model: None,
             output: None,
             positional: Vec::new(),
@@ -164,6 +166,7 @@ impl Cli {
                 Some("--check") => cli.check_only = true,
                 Some("--all") => cli.all = true,
                 Some("--install") => cli.install = true,
+                Some("--use") => cli.use_backend = Some(next_utf8_value(&mut args, "--use")?),
                 Some("--model") | Some("-m") => {
                     cli.model = Some(next_utf8_value(&mut args, "--model")?);
                 }
@@ -348,7 +351,8 @@ async fn streaming_command(cli: Cli) -> Result<()> {
                 .context("pull needs a model and tag, like `cantor pull acestep:1.5-fast`")?;
             json!({"v": 1, "id": id, "t": "pull", "selector": selector})
         }
-        Command_::Backends => json!({"v": 1, "id": id, "t": "backends", "install": cli.install}),
+        Command_::Backends => json!({"v": 1, "id": id, "t": "backends",
+                                     "install": cli.install, "use": cli.use_backend}),
         Command_::Generate => {
             let caption = cli
                 .positional

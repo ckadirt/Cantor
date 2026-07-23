@@ -116,6 +116,7 @@ mod tests {
             catalog_url: None,
             backends_url: None,
             backend: None,
+            engine: crate::config::EngineTuning::default(),
             pairings: Vec::new(),
         };
         let uri = pairing_uri(&config, "node-key", "secret").expect("pairing URI");
