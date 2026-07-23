@@ -37,6 +37,11 @@ pub struct InstalledVariant {
     pub components: Vec<Component>,
     #[serde(default)]
     pub installed_at: String,
+    /// Copied from the catalog at install time so residency can be bounded
+    /// without a network round trip. Absent on records written before this
+    /// field existed, which reads as "no budget" — the engine's own default.
+    #[serde(default)]
+    pub vram_bytes: u64,
 }
 
 impl InstalledVariant {
@@ -69,6 +74,10 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    pub fn blob_dir(&self) -> PathBuf {
+        self.root.join(BLOBS_DIRECTORY)
     }
 
     pub fn blob_path(&self, digest: &str) -> PathBuf {
@@ -130,6 +139,7 @@ impl Store {
             licence: model.licence.clone(),
             components: variant.components.clone(),
             installed_at: crate::config::now_rfc3339(),
+            vram_bytes: variant.needs.vram_bytes,
         };
         let path = self.marker_path(&model.name, &variant.tag);
         let encoded =
