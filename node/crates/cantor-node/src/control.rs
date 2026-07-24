@@ -23,7 +23,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use crate::accel;
-use crate::backends::{BackendManifest, EngineStore, engine_for_model, machine_arch};
+use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::catalog::Catalog;
 use crate::config::{NodeConfig, Pairing};
 use crate::engine::{self, LoadOptions};
@@ -412,7 +412,7 @@ fn required_engines(store: &Store) -> Vec<String> {
     let mut engines: Vec<String> = store
         .installed()
         .iter()
-        .map(|variant| engine_for_model(&variant.model).to_owned())
+        .map(|variant| variant.engine().to_owned())
         .collect();
     engines.sort();
     engines.dedup();
@@ -566,7 +566,17 @@ async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
         .await;
     }
 
-    let engine_name = "acestep";
+    // Which engines this machine's installed models need. With nothing
+    // installed, fall back to acestep so `cantor backends` still reports what
+    // the machine could run.
+    let engine_names = {
+        let needed = required_engines(&Store::new(&store_root));
+        if needed.is_empty() {
+            vec!["acestep".to_owned()]
+        } else {
+            needed
+        }
+    };
 
     // A pinned backend narrows the list; otherwise try them in preference order.
     let wanted: Vec<String> = match &pinned {
@@ -576,13 +586,30 @@ async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
 
     let mut available = Vec::new();
     for backend in &wanted {
-        match manifest.find(engine_name, backend, arch) {
-            Some(artifact) => available.push((backend.clone(), artifact)),
+        // A backend is usable only if EVERY needed engine publishes it, since a
+        // model with no engine for the chosen backend could not run.
+        let mut per_engine = Vec::new();
+        let mut missing_engine = None;
+        for engine_name in &engine_names {
+            match manifest.find(engine_name, backend, arch) {
+                Some(artifact) => per_engine.push(artifact),
+                None => {
+                    missing_engine = Some(engine_name.clone());
+                    break;
+                }
+            }
+        }
+        match missing_engine {
             None => {
+                for artifact in per_engine {
+                    available.push((backend.clone(), artifact));
+                }
+            }
+            Some(engine_name) => {
                 write_line(
                     writer,
                     &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
-                            "msg": format!("no {backend} build published for {arch}")}),
+                            "msg": format!("no {backend} build of the {engine_name} engine for {arch}")}),
                 )
                 .await?;
             }
@@ -730,7 +757,7 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
     };
     let mut attempts = Vec::new();
     for backend in &wanted {
-        if let Some(artifact) = manifest.find("acestep", backend, arch)
+        if let Some(artifact) = manifest.find(variant.engine(), backend, arch)
             && engine_store.is_installed(artifact)?
         {
             attempts.push((backend.clone(), engine_store.directory_for(artifact)?));
@@ -894,7 +921,7 @@ async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     // A model with no engine cannot run, so pulling one fetches the backend it
     // needs. Best-effort: the weights are installed either way, and a failure
     // here is reported rather than losing a multi-gigabyte download.
-    let engine_name = engine_for_model(&model.name).to_owned();
+    let engine_name = model.engine().to_owned();
     let engine_store = EngineStore::new(&plan.store_root);
     let arch = machine_arch();
     let wanted = plan

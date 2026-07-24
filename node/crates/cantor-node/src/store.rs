@@ -37,6 +37,11 @@ pub struct InstalledVariant {
     pub components: Vec<Component>,
     #[serde(default)]
     pub installed_at: String,
+    /// Which engine runs this model. Persisted so backend selection and
+    /// residency work without the catalog. Empty on records written before this
+    /// field existed, which falls back to the model name.
+    #[serde(default)]
+    pub engine: String,
     /// Copied from the catalog at install time so residency can be bounded
     /// without a network round trip. Absent on records written before this
     /// field existed, which reads as "no budget" — the engine's own default.
@@ -47,6 +52,16 @@ pub struct InstalledVariant {
 impl InstalledVariant {
     pub fn selector(&self) -> String {
         format!("{}:{}", self.model, self.tag)
+    }
+
+    /// The engine this model needs, falling back to the model name for records
+    /// that predate the field.
+    pub fn engine(&self) -> &str {
+        if self.engine.is_empty() {
+            &self.model
+        } else {
+            &self.engine
+        }
     }
 }
 
@@ -139,6 +154,7 @@ impl Store {
             licence: model.licence.clone(),
             components: variant.components.clone(),
             installed_at: crate::config::now_rfc3339(),
+            engine: model.engine().to_owned(),
             vram_bytes: variant.needs.vram_bytes,
         };
         let path = self.marker_path(&model.name, &variant.tag);
@@ -412,6 +428,7 @@ mod tests {
         Model {
             name: "acestep".to_owned(),
             licence: "Apache-2.0".to_owned(),
+            engine: None,
             variants: Vec::new(),
         }
     }
