@@ -74,7 +74,20 @@ pub struct Model {
     /// and someone should know which they are generating with.
     #[serde(default)]
     pub licence: String,
+    /// Which engine runs this model's weights. Absent means "an engine of the
+    /// same name" — true for acestep today. It is a separate field precisely so
+    /// that a future model can name an engine that is not its own name: Shao's
+    /// weights could run on a "shao" engine, or two models could share one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
     pub variants: Vec<Variant>,
+}
+
+impl Model {
+    /// The engine this model needs, falling back to the model name.
+    pub fn engine(&self) -> &str {
+        self.engine.as_deref().unwrap_or(&self.name)
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -139,9 +152,14 @@ impl Catalog {
             if variants.is_empty() {
                 continue;
             }
+            let engine = entry
+                .get("engine")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             models.push(Model {
                 name: name.to_owned(),
                 licence,
+                engine,
                 variants,
             });
         }
@@ -245,6 +263,26 @@ mod tests {
         let model = &catalog.models[0];
         assert_eq!(model.variants.len(), 1, "the malformed variant is dropped");
         assert_eq!(model.variants[0].tag, "1.5-fast");
+    }
+
+    /// A model may declare an engine whose name is not its own — the seam a
+    /// second model family needs. Absent, it defaults to the model name.
+    #[test]
+    fn a_model_can_name_an_engine_distinct_from_itself() {
+        let default_engine = Catalog::parse(SAMPLE).expect("parse");
+        assert_eq!(default_engine.models[0].engine(), "acestep");
+
+        let explicit = SAMPLE.replace(
+            "\"name\": \"acestep\",",
+            "\"name\": \"acestep-xl\", \"engine\": \"acestep\",",
+        );
+        let catalog = Catalog::parse(&explicit).expect("parse");
+        assert_eq!(catalog.models[0].name, "acestep-xl");
+        assert_eq!(
+            catalog.models[0].engine(),
+            "acestep",
+            "the model runs on the acestep engine despite its different name"
+        );
     }
 
     #[test]
