@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Cantor M1 — Durable Submission</title>
+  <style>
+    :root{--bg:#090c10;--panel:#111820;--ink:#eef5f7;--muted:#a8b6bf;--line:#293844;
+      --mint:#6be8d5;--green:#94eca1;--amber:#ffd27d;--red:#ff91a4;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif}
+    *{box-sizing:border-box}body{margin:0;color:var(--ink);background:var(--bg);line-height:1.52}
+    main{width:min(820px,100%);margin:auto;padding:52px 22px 76px}h1{margin:0;font-size:clamp(2.5rem,8vw,4.7rem);line-height:.96;letter-spacing:-.05em}
+    h2{margin:0 0 13px;font-size:1.65rem}p{margin:0 0 11px}section{padding:31px 0;border-bottom:1px solid var(--line)}
+    .kicker{color:var(--mint);font:700 .72rem monospace;letter-spacing:.13em;text-transform:uppercase}.intro{margin-top:20px;color:#c5d1d7;font-size:1.1rem;max-width:700px}
+    .answer{color:var(--mint);font-weight:750}code,pre{font-family:"SFMono-Regular",Consolas,monospace}code{color:#cafff7;background:#132029;padding:.07rem .27rem;border-radius:4px}
+    pre{padding:14px;overflow:auto;background:#070b0e;border:1px solid var(--line);border-radius:8px;font-size:.82rem}pre code{padding:0;background:none}
+    .flow{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}.flow div,.card{padding:14px;background:var(--panel);border:1px solid var(--line);border-radius:8px}.flow b{display:block;color:var(--mint);font-size:.82rem}.flow span{color:var(--muted);font-size:.79rem}
+    table{width:100%;border-collapse:collapse;margin:14px 0;font-size:.84rem}td,th{padding:9px;text-align:left;vertical-align:top;border:1px solid var(--line)}th{color:var(--mint);background:var(--panel)}td{color:#c7d3d9}
+    a{color:var(--mint);text-decoration:none}.code-link{display:block;margin:7px 0;padding:10px 12px;background:var(--panel);border:1px solid var(--line);border-radius:7px;font:650 .78rem monospace}
+    .note{margin-top:15px;padding:13px 15px;border-left:3px solid var(--amber);background:#17150f;border-radius:7px}ul{padding-left:1.2rem}li{margin:.35rem 0}
+    fieldset{margin:14px 0;padding:13px;border:1px solid var(--line);border-radius:8px}legend{padding:0 6px;font-weight:700}label{display:block;padding:5px 0;color:#c9d4da}input{margin-right:8px;accent-color:var(--mint)}
+    button{padding:11px 16px;border:0;border-radius:7px;color:#06110f;background:var(--mint);font-weight:800}#result{display:none;margin-top:13px;padding:12px;border-radius:7px}#result.pass{display:block;color:var(--green);border:1px solid var(--green)}#result.fail{display:block;color:var(--red);border:1px solid var(--red)}
+    @media(max-width:650px){.flow{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><main>
+  <header>
+    <p class="kicker">Cantor · private library · milestone 1</p>
+    <h1>A submit is now<br>a durable fact.</h1>
+    <p class="intro">M1 makes one guarantee: <span class="answer">if the phone sees “Queued,” the request already exists on the node's disk—and retrying cannot create a duplicate.</span></p>
+  </header>
+
+  <section>
+    <h2>The whole idea</h2>
+    <div class="flow">
+      <div><b>1 · Phone</b><span>Freezes request and persists its UUID.</span></div>
+      <div><b>2 · Node</b><span>Validates, fsyncs files, commits SQLite.</span></div>
+      <div><b>3 · Reply</b><span>Returns the node's permanent job ID.</span></div>
+    </div>
+    <pre><code>persist locally → send → fsync sidecars → COMMIT → acknowledge</code></pre>
+    <p>The ordering is the feature. A network reply is never evidence for data that only existed in RAM.</p>
+  </section>
+
+  <section>
+    <h2>Node storage: two tools, two jobs</h2>
+    <table><tr><th>SQLite</th><th>Per-job files</th></tr>
+      <tr><td>Uniqueness, ownership, state, ordering, indexed lookup.</td><td>Immutable request, model provenance, status, future checkpoints/artifacts.</td></tr></table>
+    <pre><code>library/
+├── library.db
+└── jobs/&lt;principal hash&gt;/&lt;UUIDv7&gt;/
+    ├── request.json
+    ├── status.json
+    ├── manifest.json
+    ├── checkpoints/
+    └── artifacts/</code></pre>
+    <p>Directories are 0700, files 0600, client strings never become paths, SQLite runs WAL + foreign keys + full synchronous durability.</p>
+    <a class="code-link" href="../../node/crates/cantor-node/src/library.rs">Code → migration, acceptance, sidecars, reconciliation · library.rs</a>
+  </section>
+
+  <section>
+    <h2>Why retries produce one job</h2>
+    <p>The uniqueness key is <code>(authenticated principal, client_request_id)</code>. The node also hashes the normalized model + generation request.</p>
+    <table><tr><th>What the node finds</th><th>Result</th></tr>
+      <tr><td>No existing key</td><td>Create one UUIDv7 job.</td></tr>
+      <tr><td>Same key + same hash</td><td>Return the existing job ID.</td></tr>
+      <tr><td>Same key + different hash</td><td><code>idempotency_conflict</code>; mutate nothing.</td></tr></table>
+    <p>This lookup runs before queue and disk checks. Even a newly full queue cannot block recovery of an earlier acceptance.</p>
+    <a class="code-link" href="../../node/crates/cantor-node/src/session.rs">Code → authenticated validation and protocol mapping · session.rs</a>
+  </section>
+
+  <section>
+    <h2>The phone has an outbox, not hope</h2>
+    <pre><code>draft ──tap──▶ pending ──job.accepted──▶ accepted
+                     └──terminal error──▶ rejected</code></pre>
+    <ul>
+      <li><code>pending</code> is persisted before the WebSocket send.</li>
+      <li>Timeout/reconnect/relaunch resends the same UUID and frozen bytes.</li>
+      <li>Only a non-retryable node error becomes <code>rejected</code>.</li>
+      <li>A synchronous guard prevents two taps creating two intentions.</li>
+    </ul>
+    <a class="code-link" href="../../cantor/src/jobs/outbox.ts">Code → serialized durable outbox · outbox.ts</a>
+    <a class="code-link" href="../../cantor/src/backends/connection.ts">Code → correlated create promise and typed errors · connection.ts</a>
+    <a class="code-link" href="../../cantor/src/screens/MainScreen.tsx">Code → explicit model picker and submit flow · MainScreen.tsx</a>
+  </section>
+
+  <section>
+    <h2>Admission is cheap and explicit</h2>
+    <p>Before creating files, the node checks UUID/field bounds, exact installed model, per-principal queue capacity, and its free-space reserve.</p>
+    <pre><code>[jobs]
+max_queued_per_principal = 20
+minimum_free_bytes = 2147483648</code></pre>
+    <p>The same configured queue limit is advertised to the phone. After acceptance, the node pushes a refreshed aggregate queue count.</p>
+    <a class="code-link" href="../../node/crates/cantor-node/src/config.rs">Code → safe defaults and validation · config.rs</a>
+    <a class="code-link" href="../../node/install.sh">Code → library paths and systemd write access · install.sh</a>
+  </section>
+
+  <section>
+    <h2>Failure policy</h2>
+    <table><tr><th>Failure point</th><th>Safe outcome</th></tr>
+      <tr><td>Before database commit</td><td>No acknowledgement; recognizable orphan is removed, unknown content quarantined.</td></tr>
+      <tr><td>After commit, before reply</td><td>Retry returns the committed job.</td></tr>
+      <tr><td>Another identity lists/gets it</td><td><code>not_found</code> / empty page; every query includes principal.</td></tr></table>
+    <div class="note"><strong>Privacy boundary:</strong> durable and private-by-owner does not mean encrypted-in-transit. The relay carrier can still read prompt JSON until the secure-tunnel milestone.</div>
+  </section>
+
+  <section>
+    <h2>What M1 does not do</h2>
+    <p>No scheduler consumes the queue. No model loads, progress, audio, pause, or cancellation occurs. The node truthfully advertises <code>max_concurrent_jobs: 0</code> and <code>execution_starts_in_m2</code>.</p>
+    <a class="code-link" href="implementation-notes.md">Evidence + conservative deviations → implementation-notes.md</a>
+  </section>
+
+  <section>
+    <h2>Proof</h2>
+    <p><span class="answer">87 Rust tests · 142 app tests · physical Android gate passed</span></p>
+    <p>The phone persisted a frozen outbox row, submitted through a real relay, received its canonical UUIDv7, survived app + node restart, and restored exactly its one private job. A second principal's job affected aggregate load but never appeared in the phone's job list.</p>
+  </section>
+
+  <section>
+    <h2>Quiz — pass 4 of 5</h2>
+    <form id="quiz">
+      <fieldset><legend>1. When may the node send <code>job.accepted</code>?</legend>
+        <label><input type="radio" name="q1" value="a">After putting the request in memory.</label>
+        <label><input type="radio" name="q1" value="b">After sidecar fsync and SQLite commit.</label></fieldset>
+      <fieldset><legend>2. A reply is lost. What changes on retry?</legend>
+        <label><input type="radio" name="q2" value="a">Nothing: same request UUID and same canonical job ID.</label>
+        <label><input type="radio" name="q2" value="b">The phone creates a new request UUID.</label></fieldset>
+      <fieldset><legend>3. Where does job ownership come from?</legend>
+        <label><input type="radio" name="q3" value="a">An authenticated-key-derived principal.</label>
+        <label><input type="radio" name="q3" value="b">A principal field supplied by the app.</label></fieldset>
+      <fieldset><legend>4. Does a timeout delete the phone outbox row?</legend>
+        <label><input type="radio" name="q4" value="a">Yes.</label>
+        <label><input type="radio" name="q4" value="b">No; uncertain delivery remains pending.</label></fieldset>
+      <fieldset><legend>5. Does M1 execute queued jobs?</legend>
+        <label><input type="radio" name="q5" value="a">No. Execution begins in M2.</label>
+        <label><input type="radio" name="q5" value="b">Yes, without progress.</label></fieldset>
+      <button type="submit">Grade</button><div id="result" role="status"></div>
+    </form>
+  </section>
+  <script>
+    const expected={q1:'b',q2:'a',q3:'a',q4:'b',q5:'a'};
+    document.getElementById('quiz').addEventListener('submit',event=>{event.preventDefault();let score=0;
+      for(const [q,a] of Object.entries(expected)){if(document.querySelector(`input[name="${q}"]:checked`)?.value===a)score++}
+      const result=document.getElementById('result'),pass=score>=4;result.className=pass?'pass':'fail';
+      result.textContent=`${pass?'PASS':'REVIEW THE REPORT'} — ${score}/5`});
+  </script>
+</main></body>
+</html>

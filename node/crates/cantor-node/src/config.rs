@@ -14,6 +14,8 @@ const CONFIG_FILE_MODE: u32 = 0o600;
 const DEFAULT_RELAY_URL: &str = "ws://localhost:8787";
 const MAX_NODE_NAME_BYTES: usize = 64;
 pub const MAX_PETNAME_BYTES: usize = 64;
+pub const DEFAULT_MAX_QUEUED_PER_PRINCIPAL: u32 = 20;
+pub const DEFAULT_MINIMUM_FREE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[derive(Debug)]
 pub struct NodePaths {
@@ -112,6 +114,9 @@ pub struct NodeConfig {
     /// Where pulled model blobs live. The installer writes it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_dir: Option<String>,
+    /// Durable private jobs, metadata, checkpoints, and artifacts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_dir: Option<String>,
     /// Overridable so a node can be pointed at a staging catalog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_url: Option<String>,
@@ -123,8 +128,41 @@ pub struct NodeConfig {
     pub backend: Option<String>,
     #[serde(default, skip_serializing_if = "EngineTuning::is_default")]
     pub engine: EngineTuning,
+    #[serde(default, skip_serializing_if = "JobsConfig::is_default")]
+    pub jobs: JobsConfig,
     #[serde(default)]
     pub pairings: Vec<Pairing>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct JobsConfig {
+    #[serde(default = "default_max_queued_per_principal")]
+    pub max_queued_per_principal: u32,
+    #[serde(default = "default_minimum_free_bytes")]
+    pub minimum_free_bytes: u64,
+}
+
+impl Default for JobsConfig {
+    fn default() -> Self {
+        Self {
+            max_queued_per_principal: DEFAULT_MAX_QUEUED_PER_PRINCIPAL,
+            minimum_free_bytes: DEFAULT_MINIMUM_FREE_BYTES,
+        }
+    }
+}
+
+impl JobsConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+const fn default_max_queued_per_principal() -> u32 {
+    DEFAULT_MAX_QUEUED_PER_PRINCIPAL
+}
+
+const fn default_minimum_free_bytes() -> u64 {
+    DEFAULT_MINIMUM_FREE_BYTES
 }
 
 /// Device knobs passed straight to the engine. Every field defaults to zero,
@@ -172,6 +210,8 @@ struct RawNodeConfig {
     #[serde(default)]
     model_dir: Option<String>,
     #[serde(default)]
+    library_dir: Option<String>,
+    #[serde(default)]
     catalog_url: Option<String>,
     #[serde(default)]
     backends_url: Option<String>,
@@ -179,6 +219,8 @@ struct RawNodeConfig {
     backend: Option<String>,
     #[serde(default)]
     engine: EngineTuning,
+    #[serde(default)]
+    jobs: JobsConfig,
     #[serde(default)]
     pairings: Vec<Pairing>,
     #[serde(default)]
@@ -197,10 +239,12 @@ impl From<RawNodeConfig> for NodeConfig {
             name: raw.name,
             relay_url: raw.relay_url,
             model_dir: raw.model_dir,
+            library_dir: raw.library_dir,
             catalog_url: raw.catalog_url,
             backends_url: raw.backends_url,
             backend: raw.backend,
             engine: raw.engine,
+            jobs: raw.jobs,
             pairings,
         }
     }
@@ -225,10 +269,12 @@ impl NodeConfig {
                 .relay_url
                 .unwrap_or_else(|| DEFAULT_RELAY_URL.to_owned()),
             model_dir: None,
+            library_dir: None,
             catalog_url: None,
             backends_url: None,
             backend: None,
             engine: EngineTuning::default(),
+            jobs: JobsConfig::default(),
             pairings: Vec::new(),
         };
         config.validate()?;
@@ -438,6 +484,9 @@ impl NodeConfig {
         if relay_url.query().is_some() || relay_url.fragment().is_some() {
             bail!("relay_url must not contain a query string or fragment");
         }
+        if self.jobs.max_queued_per_principal == 0 || self.jobs.max_queued_per_principal > 1_000 {
+            bail!("jobs.max_queued_per_principal must be between 1 and 1000");
+        }
 
         // A petname reaching this point unsanitised would be written to disk and
         // later printed to a terminal; refuse rather than persist it.
@@ -481,6 +530,16 @@ impl NodeConfig {
             .unwrap_or_else(|| PathBuf::from("/var/lib"))
             .join("cantor")
             .join("models")
+    }
+
+    pub fn library_root(&self) -> PathBuf {
+        if let Some(configured) = &self.library_dir {
+            return PathBuf::from(configured);
+        }
+        dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("/var/lib"))
+            .join("cantor")
+            .join("library")
     }
 
     pub fn catalog_url(&self) -> String {
@@ -587,10 +646,12 @@ mod tests {
             name: "node".to_owned(),
             relay_url: "wss://example.test/cantor/".to_owned(),
             model_dir: None,
+            library_dir: None,
             catalog_url: None,
             backends_url: None,
             backend: None,
             engine: super::EngineTuning::default(),
+            jobs: super::JobsConfig::default(),
             pairings: Vec::new(),
         };
 

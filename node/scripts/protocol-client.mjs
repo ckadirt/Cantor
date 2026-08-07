@@ -1,7 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
-import {createHmac, webcrypto} from 'node:crypto';
+import {createHmac, randomUUID, webcrypto} from 'node:crypto';
 
-const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--watch]';
+const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--client-request-id UUID] [--retry] [--watch]';
 const pairValue = process.argv[2];
 const identityIndex = process.argv.indexOf('--identity');
 if (pairValue === undefined || identityIndex < 0 || process.argv[identityIndex + 1] === undefined) {
@@ -21,6 +21,20 @@ const identityPath = process.argv[identityIndex + 1];
 const watch = process.argv.includes('--watch');
 const petnameIndex = process.argv.indexOf('--petname');
 const petname = petnameIndex < 0 ? 'protocol-client demo' : process.argv[petnameIndex + 1];
+const createIndex = process.argv.indexOf('--create');
+const captionIndex = process.argv.indexOf('--caption');
+const requestIdIndex = process.argv.indexOf('--client-request-id');
+const createModel = createIndex < 0 ? null : process.argv[createIndex + 1];
+const caption = captionIndex < 0 ? null : process.argv[captionIndex + 1];
+const clientRequestId = requestIdIndex < 0 ? randomUUID() : process.argv[requestIdIndex + 1];
+if ((createModel === null) !== (caption === null) || createModel === undefined || caption === undefined) {
+  throw new Error('--create MODEL and --caption TEXT must be provided together.');
+}
+const createRequest = createModel === null ? null : {
+  t: 'job.create', v: 2, id: 'create-1', client_request_id: clientRequestId,
+  model: createModel, generation: {caption},
+};
+const retry = process.argv.includes('--retry');
 let keyPair;
 try {
   const jwk = JSON.parse(await readFile(identityPath, 'utf8'));
@@ -46,6 +60,8 @@ roomUrl.searchParams.set('role', 'client');
 
 const socket = new WebSocket(roomUrl);
 let completed = false;
+let acceptedJobId = null;
+let retried = false;
 socket.addEventListener('message', async event => {
   const frame = JSON.parse(event.data);
   if (frame.t === 'relay.presence') {
@@ -66,7 +82,19 @@ socket.addEventListener('message', async event => {
     send({t: 'auth', v: 2, id: message.id, sig: base64urlEncode(new Uint8Array(signature))});
   } else if (message.t === 'welcome') {
     console.log(`welcome: ${JSON.stringify(message.node)}`);
-    send({t: 'status', v: 2, id: 'status-1'});
+    send(createRequest ?? {t: 'status', v: 2, id: 'status-1'});
+  } else if (message.t === 'job.accepted') {
+    console.log(`accepted: ${JSON.stringify(message.job)}`);
+    if (acceptedJobId !== null && message.job.id !== acceptedJobId) {
+      throw new Error('Idempotent retry returned a different canonical job ID.');
+    }
+    acceptedJobId = message.job.id;
+    if (retry && !retried) {
+      retried = true;
+      send({...createRequest, id: 'create-retry'});
+    } else {
+      send({t: 'jobs.list', v: 2, id: 'list-1', limit: 20});
+    }
   } else if (message.t === 'jobs.page') {
     console.log(`jobs: ${JSON.stringify(message.jobs)}`);
     completed = true;

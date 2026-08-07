@@ -1,5 +1,7 @@
 import { Platform } from 'react-native';
 import type { AppIdentity } from '../identity/derive';
+import type { GenerationRequest } from '../../../protocol/GenerationRequest';
+import type { JobView } from '../../../protocol/JobView';
 import { signChallenge } from '../identity/derive';
 import { backendRoomUrl, createPairProof } from './pairing';
 import {
@@ -17,6 +19,7 @@ import {
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_JITTER_MS = 250;
+const REQUEST_TIMEOUT_MS = 15_000;
 /**
  * Mobile networks drop idle sockets well before the relay would notice. The
  * relay answers this exact text frame from `setWebSocketAutoResponse` without
@@ -34,6 +37,24 @@ type ConnectionCallbacks = {
   onPairTokenConsumed: () => void;
 };
 
+type PendingRequest = {
+  expected: 'jobs.page' | 'job.accepted';
+  resolve?: (value: JobView) => void;
+  reject?: (error: Error) => void;
+  timer?: ReturnType<typeof setTimeout>;
+};
+
+export class NodeRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly retryable: boolean,
+  ) {
+    super(message);
+    this.name = 'NodeRequestError';
+  }
+}
+
 export class BackendConnection {
   private socket: WebSocket | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -44,7 +65,7 @@ export class BackendConnection {
   private pairToken: string | undefined;
   private handshakeId: string | null = null;
   private requestSequence = 0;
-  private pendingRequests = new Map<string, 'jobs.page'>();
+  private pendingRequests = new Map<string, PendingRequest>();
   private snapshot: ConnectionSnapshot = {
     phase: 'disconnected',
     error: null,
@@ -69,7 +90,7 @@ export class BackendConnection {
 
   stop(): void {
     this.stopped = true;
-    this.pendingRequests.clear();
+    this.clearPending('Backend connection stopped.');
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -86,7 +107,7 @@ export class BackendConnection {
     if (this.stopped || this.fatal) {
       return;
     }
-    this.pendingRequests.clear();
+    this.clearPending('Backend reconnected before the request completed.');
     this.setSnapshot({ phase: 'connecting', error: null, jobs: [] });
     let socket: WebSocket;
     try {
@@ -261,7 +282,7 @@ export class BackendConnection {
       this.callbacks.onNodeInfo(nodeInfo);
       this.setSnapshot({ phase: 'ready', error: null, jobs: [] });
       const statusId = this.nextRequestId('status');
-      this.pendingRequests.set(statusId, 'jobs.page');
+      this.pendingRequests.set(statusId, { expected: 'jobs.page' });
       this.sendApplication({
         t: 'status',
         v: APPLICATION_PROTOCOL_VERSION,
@@ -279,7 +300,7 @@ export class BackendConnection {
       return;
     }
     if (payload.t === 'jobs.page' && typeof payload.id === 'string') {
-      if (this.pendingRequests.get(payload.id) !== 'jobs.page') {
+      if (this.pendingRequests.get(payload.id)?.expected !== 'jobs.page') {
         return;
       }
       this.pendingRequests.delete(payload.id);
@@ -289,6 +310,19 @@ export class BackendConnection {
         return;
       }
       this.setSnapshot({ ...this.snapshot, jobs });
+      return;
+    }
+    if (payload.t === 'job.accepted' && typeof payload.id === 'string') {
+      const pending = this.pendingRequests.get(payload.id);
+      if (pending?.expected !== 'job.accepted') return;
+      const job = parseJob(payload.job);
+      if (job === null) return;
+      this.finishPending(payload.id);
+      pending.resolve?.(job);
+      this.setSnapshot({
+        ...this.snapshot,
+        jobs: [job, ...this.snapshot.jobs.filter(item => item.id !== job.id)],
+      });
       return;
     }
     if (payload.t === 'job.updated') {
@@ -302,7 +336,10 @@ export class BackendConnection {
       }
       this.setSnapshot({
         ...this.snapshot,
-        jobs: [updated, ...this.snapshot.jobs.filter(job => job.id !== updated.id)],
+        jobs: [
+          updated,
+          ...this.snapshot.jobs.filter(job => job.id !== updated.id),
+        ],
       });
       return;
     }
@@ -313,7 +350,21 @@ export class BackendConnection {
       typeof payload.retryable === 'boolean'
     ) {
       if (typeof payload.id === 'string') {
-        this.pendingRequests.delete(payload.id);
+        const pending = this.pendingRequests.get(payload.id);
+        this.finishPending(payload.id);
+        pending?.reject?.(
+          new NodeRequestError(
+            payload.message,
+            payload.code,
+            payload.retryable,
+          ),
+        );
+        if (pending !== undefined && payload.code !== 'unsupported_version') {
+          return;
+        }
+        if (pending === undefined && payload.id !== this.handshakeId) {
+          return;
+        }
       }
       // Only an explicit authorization refusal is worth giving up on; retrying
       // it would just spin against a node that has already said no.
@@ -332,6 +383,51 @@ export class BackendConnection {
     this.socket.send(
       JSON.stringify({ v: RELAY_PROTOCOL_VERSION, t: 'tunnel', payload }),
     );
+  }
+
+  createJob(
+    clientRequestId: string,
+    model: string,
+    generation: GenerationRequest,
+  ): Promise<JobView> {
+    if (this.snapshot.phase !== 'ready') {
+      return Promise.reject(new Error('Backend is not ready.'));
+    }
+    const id = this.nextRequestId('create');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error('Job submission timed out. It is safe to retry.'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pendingRequests.set(id, {
+        expected: 'job.accepted',
+        resolve,
+        reject,
+        timer,
+      });
+      this.sendApplication({
+        t: 'job.create',
+        v: APPLICATION_PROTOCOL_VERSION,
+        id,
+        client_request_id: clientRequestId,
+        model,
+        generation,
+      });
+    });
+  }
+
+  private finishPending(id: string): void {
+    const pending = this.pendingRequests.get(id);
+    if (pending?.timer !== undefined) clearTimeout(pending.timer);
+    this.pendingRequests.delete(id);
+  }
+
+  private clearPending(message: string): void {
+    for (const [id, pending] of this.pendingRequests) {
+      if (pending.timer !== undefined) clearTimeout(pending.timer);
+      pending.reject?.(new Error(message));
+      this.pendingRequests.delete(id);
+    }
   }
 
   private fail(message: string, fatal: boolean): void {
@@ -393,7 +489,8 @@ export function devicePetname(): string | undefined {
   // A model that already repeats the brand ("Google Pixel 8") should not
   // become "Google Google Pixel 8".
   const name = (
-    parts.length === 2 && parts[1].toLowerCase().startsWith(parts[0].toLowerCase())
+    parts.length === 2 &&
+    parts[1].toLowerCase().startsWith(parts[0].toLowerCase())
       ? parts[1]
       : parts.join(' ')
   )

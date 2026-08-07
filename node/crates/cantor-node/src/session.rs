@@ -3,13 +3,20 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use cantor_proto::{ClientMessage, ErrorCode, NodeInfo, NodeMessage, PROTOCOL_VERSION};
+use cantor_proto::{
+    ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails, MAX_CAPTION_BYTES, MAX_CFG,
+    MAX_CLIENT_REQUEST_ID_BYTES, MAX_LYRICS_BYTES, MAX_MODEL_SELECTOR_BYTES, MAX_PAGE_LIMIT,
+    MAX_SONG_SECONDS, MAX_STEPS, MIN_CFG, MIN_SONG_SECONDS, MIN_STEPS, NodeInfo, NodeMessage,
+    PROTOCOL_VERSION,
+};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::config::{NodeConfig, sanitize_petname};
+use crate::library::{Library, Submission, SubmitResult};
 use crate::pairing::PairOffer;
+use crate::store::Store;
 
 const CHALLENGE_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
@@ -98,6 +105,7 @@ struct PendingAuth {
 }
 
 impl ClientSession {
+    #[allow(clippy::too_many_arguments)]
     pub fn handle(
         &mut self,
         payload: Value,
@@ -106,6 +114,7 @@ impl ClientSession {
         active_pair_offer: &mut Option<PairOffer>,
         node_public_key: &str,
         node_info: &NodeInfo,
+        library: &mut Library,
     ) -> Result<NodeMessage> {
         let fallback_id = payload.get("id").and_then(Value::as_str).map(str::to_owned);
         let message: ClientMessage = match serde_json::from_value(payload) {
@@ -283,46 +292,133 @@ impl ClientSession {
                 let Some(context) = self.authenticated() else {
                     return Ok(unauthenticated(id, "status"));
                 };
-                Ok(empty_jobs_page(context, id))
+                Ok(NodeMessage::JobsPage {
+                    v: PROTOCOL_VERSION,
+                    id,
+                    jobs: library.list(&context.principal_id, DEFAULT_PAGE_LIMIT)?,
+                    next_cursor: None,
+                })
             }
-            ClientMessage::JobsList { v, id, .. } => {
+            ClientMessage::JobsList {
+                v,
+                id,
+                states,
+                cursor,
+                limit,
+            } => {
                 if v != PROTOCOL_VERSION {
                     return Ok(NodeMessage::unsupported_version(Some(id)));
                 }
                 let Some(context) = self.authenticated() else {
                     return Ok(unauthenticated(id, "jobs"));
                 };
-                Ok(empty_jobs_page(context, id))
+                if cursor.is_some() {
+                    return Ok(invalid_field(id, "cursor"));
+                }
+                let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
+                if limit == 0 || limit > MAX_PAGE_LIMIT {
+                    return Ok(invalid_field(id, "limit"));
+                }
+                let mut jobs = library.list(&context.principal_id, limit)?;
+                if let Some(states) = states {
+                    jobs.retain(|job| states.contains(&job.state));
+                }
+                Ok(NodeMessage::JobsPage {
+                    v: PROTOCOL_VERSION,
+                    id,
+                    jobs,
+                    next_cursor: None,
+                })
             }
-            ClientMessage::JobCreate { v, id, .. } | ClientMessage::JobGet { v, id, .. } => {
+            ClientMessage::JobCreate {
+                v,
+                id,
+                client_request_id,
+                model,
+                generation,
+            } => {
                 if v != PROTOCOL_VERSION {
                     return Ok(NodeMessage::unsupported_version(Some(id)));
                 }
                 let Some(context) = self.authenticated() else {
                     return Ok(unauthenticated(id, "jobs"));
                 };
-                Ok(jobs_unavailable(context, id))
+                if let Some(field) = invalid_submission(&client_request_id, &model, &generation) {
+                    return Ok(invalid_field(id, field));
+                }
+                let variants = Store::new(config.model_root()).installed();
+                let Some(variant) = variants.iter().find(|variant| variant.selector() == model)
+                else {
+                    return Ok(NodeMessage::Error {
+                        v: PROTOCOL_VERSION,
+                        id: Some(id),
+                        code: ErrorCode::ModelNotInstalled,
+                        message: "That model is not installed on this node.".into(),
+                        retryable: false,
+                        details: Some(ErrorDetails::Model { selector: model }),
+                    });
+                };
+                let submission = Submission {
+                    client_request_id,
+                    model,
+                    generation,
+                };
+                match library.submit(
+                    &context.principal_id,
+                    &context.client_public_key,
+                    &submission,
+                    variant,
+                    config.jobs.max_queued_per_principal,
+                    config.jobs.minimum_free_bytes,
+                )? {
+                    SubmitResult::Accepted(job) => Ok(NodeMessage::JobAccepted {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        job,
+                    }),
+                    SubmitResult::Conflict => Ok(NodeMessage::error(
+                        Some(id),
+                        ErrorCode::IdempotencyConflict,
+                        "That submission ID was already used for different content.",
+                        false,
+                    )),
+                    SubmitResult::QueueFull => Ok(NodeMessage::error(
+                        Some(id),
+                        ErrorCode::QueueFull,
+                        "This client's durable queue is full.",
+                        true,
+                    )),
+                    SubmitResult::InsufficientDisk => Ok(NodeMessage::error(
+                        Some(id),
+                        ErrorCode::InsufficientDisk,
+                        "The node is below its configured free-space reserve.",
+                        true,
+                    )),
+                }
+            }
+            ClientMessage::JobGet { v, id, job_id } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "jobs"));
+                };
+                match library.get(&context.principal_id, &job_id)? {
+                    Some(job) => Ok(NodeMessage::JobDetail {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        job,
+                    }),
+                    None => Ok(NodeMessage::error(
+                        Some(id),
+                        ErrorCode::NotFound,
+                        "That job was not found.",
+                        false,
+                    )),
+                }
             }
         }
     }
-}
-
-fn empty_jobs_page(_context: &AuthenticatedSession, id: String) -> NodeMessage {
-    NodeMessage::JobsPage {
-        v: PROTOCOL_VERSION,
-        id,
-        jobs: Vec::new(),
-        next_cursor: None,
-    }
-}
-
-fn jobs_unavailable(_context: &AuthenticatedSession, id: String) -> NodeMessage {
-    NodeMessage::error(
-        Some(id),
-        ErrorCode::FeatureUnavailable,
-        "Durable jobs are not enabled on this node yet.",
-        false,
-    )
 }
 
 fn unauthenticated(id: String, resource: &str) -> NodeMessage {
@@ -332,6 +428,67 @@ fn unauthenticated(id: String, resource: &str) -> NodeMessage {
         format!("Authenticate before requesting {resource}."),
         false,
     )
+}
+
+fn invalid_field(id: String, field: &str) -> NodeMessage {
+    NodeMessage::Error {
+        v: PROTOCOL_VERSION,
+        id: Some(id),
+        code: ErrorCode::InvalidRequest,
+        message: format!("The {field} field is invalid."),
+        retryable: false,
+        details: Some(ErrorDetails::InvalidField {
+            field: field.to_owned(),
+        }),
+    }
+}
+
+fn invalid_submission(
+    client_request_id: &str,
+    model: &str,
+    generation: &cantor_proto::GenerationRequest,
+) -> Option<&'static str> {
+    if client_request_id.len() > MAX_CLIENT_REQUEST_ID_BYTES
+        || uuid::Uuid::parse_str(client_request_id).is_err()
+    {
+        return Some("client_request_id");
+    }
+    if model.is_empty() || model.len() > MAX_MODEL_SELECTOR_BYTES {
+        return Some("model");
+    }
+    if generation.caption.trim().is_empty()
+        || generation.caption.len() > MAX_CAPTION_BYTES as usize
+        || generation.caption.chars().any(char::is_control)
+    {
+        return Some("caption");
+    }
+    if generation.lyrics.as_ref().is_some_and(|lyrics| {
+        lyrics.len() > MAX_LYRICS_BYTES as usize
+            || lyrics
+                .chars()
+                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+    }) {
+        return Some("lyrics");
+    }
+    if generation
+        .duration
+        .is_some_and(|v| !(MIN_SONG_SECONDS..=MAX_SONG_SECONDS).contains(&v))
+    {
+        return Some("duration");
+    }
+    if generation
+        .steps
+        .is_some_and(|v| !(MIN_STEPS..=MAX_STEPS).contains(&v))
+    {
+        return Some("steps");
+    }
+    if generation
+        .cfg
+        .is_some_and(|v| !v.is_finite() || !(MIN_CFG..=MAX_CFG).contains(&v))
+    {
+        return Some("cfg");
+    }
+    None
 }
 
 fn unsupported_version(id: String) -> NodeMessage {
@@ -353,6 +510,7 @@ mod tests {
 
     use super::{ClientSession, StoredAuthentication};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
+    use crate::library::Library;
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
 
     fn info() -> NodeInfo {
@@ -425,6 +583,7 @@ mod tests {
     ) -> (NodeMessage, NodeConfig, Option<PairOffer>) {
         let temporary = tempdir().expect("temporary directory");
         let (mut config, paths) = config(temporary.path());
+        let mut library = Library::open(temporary.path().join("library")).expect("library");
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let public_key = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
         let node_signing_key = SigningKey::from_bytes(&[8_u8; 32]);
@@ -452,6 +611,7 @@ mod tests {
                 &mut active_token,
                 &node_public_key,
                 &info(),
+                &mut library,
             )
             .expect("hello");
         let nonce = match challenge {
@@ -473,6 +633,7 @@ mod tests {
                 &mut active_token,
                 &node_public_key,
                 &info(),
+                &mut library,
             )
             .expect("auth");
         (response, config, active_token)
@@ -528,6 +689,7 @@ mod tests {
     fn a_signature_over_the_bare_nonce_is_rejected() {
         let temporary = tempdir().expect("temporary directory");
         let (mut config, paths) = config(temporary.path());
+        let mut library = Library::open(temporary.path().join("library")).expect("library");
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let public_key = bs58::encode(signing_key.verifying_key().as_bytes()).into_string();
         let node_public_key = bs58::encode(
@@ -550,6 +712,7 @@ mod tests {
                 &mut active_token,
                 &node_public_key,
                 &info(),
+                &mut library,
             )
             .expect("hello");
         let nonce = match challenge {
@@ -566,6 +729,7 @@ mod tests {
                 &mut active_token,
                 &node_public_key,
                 &info(),
+                &mut library,
             )
             .expect("auth");
         assert!(matches!(

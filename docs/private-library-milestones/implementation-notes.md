@@ -80,3 +80,118 @@ completed on 2026-08-07.
   page, and applied an unsolicited `node.info` rename push without reconnecting.
   The temporary backend was then removed from phone storage and the test node
   was stopped.
+
+---
+
+# Milestone 1 — Durable Submission
+
+## Status
+
+Implementation and the physical-phone exit gate completed on 2026-08-07.
+
+## Decisions
+
+- The node uses `rusqlite` with bundled SQLite. Acceptance runs through one
+  connection under the existing node-state lock, giving idempotency and queue
+  admission one serialization point.
+- SQLite owns identity, uniqueness, order, and state. Per-job JSON sidecars own
+  immutable accepted request/provenance bytes. The durable order is sidecar
+  fsync, database commit, then `job.accepted`.
+- Job IDs are UUIDv7; client UUIDs never become paths. Principal directories
+  use the SHA-256 identity derived after authentication.
+- The canonical idempotency hash covers the resolved model selector and the
+  node-serialized `GenerationRequest`; it deliberately excludes the
+  `client_request_id` that selects the uniqueness row.
+- Idempotent lookup precedes queue and disk admission. A retry can therefore
+  recover an acknowledged-or-not job even if the queue filled after acceptance.
+- Initial admission defaults are 20 queued jobs per principal and a 2 GiB free
+  space reserve. Both are node configuration, and the advertised limit is read
+  from the same configuration.
+- The phone freezes and persists the generation payload before the first send.
+  Only non-retryable protocol errors move it to `rejected`; timeouts,
+  disconnects, and retryable capacity errors keep it `pending`.
+- Terminal protocol errors carry code/retryability through a typed
+  `NodeRequestError`; an ordinary request rejection does not tear down an
+  otherwise healthy authenticated connection.
+
+## Implementation Log
+
+- Added configurable library roots and `[jobs]` admission policy, including
+  system/user installer paths and systemd `ReadWritePaths`.
+- Added migration 001, WAL/full-synchronous startup policy, owner-only modes,
+  startup `quick_check`, durable sidecars, idempotent insert, private list/get,
+  queue/disk admission, and conservative orphan reconciliation.
+- Routed `job.create`, `jobs.list`, `job.get`, and status through the
+  authenticated session principal. Successful acceptance refreshes aggregate
+  load and pushes `node.info` to authenticated sessions.
+- Added the app composer with explicit installed-model selection, correlated
+  request promises, durable outbox recovery, accepted-ID mapping, and
+  synchronous duplicate-tap exclusion.
+- Extended the manual protocol client with create, fixed request ID, retry, and
+  canonical-ID verification modes.
+
+## Deviations
+
+- The draft splits storage across `library.rs`, `job_store.rs`, and `jobs.rs`.
+  M1 keeps the transaction, paths, and reconciliation in one `Library` module;
+  separating them now would allow filesystem and SQL ordering to drift. M2 can
+  add a scheduler facade without weakening that boundary.
+- The draft suggests adding a second mobile SQLite binding. M1 uses the
+  existing AsyncStorage native persistence behind a dedicated outbox
+  repository and serializes its read-modify-write operations. This avoids an
+  unproven React Native 0.86 native dependency for one small key-value table.
+  M3 must introduce a queryable cache/migration before relational library data
+  needs joins or pagination.
+- `jobs.list` rejects a non-null cursor in M1. With a per-principal queue capped
+  at 20 and no completed library yet, returning partial cursor semantics would
+  be less safe than a clear `invalid_request`; cursor paging is implemented
+  with the M3 library index.
+- The first composer exposes caption, lyrics, and duration but not steps/CFG/
+  seed. `NodeInfo` does not yet publish authoritative bounds for those advanced
+  fields; hardcoding app-only limits would let UI and node policy drift. The
+  wire/outbox/node support them now, and a later capability addition can expose
+  honest controls.
+- Startup deletes only recognizable uncommitted M1 residue. Unknown content is
+  moved to quarantine, never guessed at or deleted. Damage to a committed job
+  is not silently reconstructed; M2 recovery owns its explicit state outcome.
+- A database open, migration, or `quick_check` failure stops daemon startup
+  instead of serving a partially functional relay presence. This is the
+  conservative fail-closed behavior for irreplaceable state; offline config and
+  model commands remain available, and a later maintenance mode may expose
+  richer diagnostics without pretending the library is healthy.
+- M1 does not bring the encrypted tunnel forward. Prompt/lyrics payloads remain
+  readable inside the relay carrier until the planned privacy milestone, so
+  physical validation uses non-sensitive fixture text.
+
+## Verification
+
+- `cargo fmt --check`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace --no-fail-fast`: 87 tests passed (66 node, 21
+  protocol).
+- `npx tsc --noEmit`: passed.
+- `npx jest --runInBand`: 142 tests passed.
+- `npx eslint .`: passed with one pre-existing inline-style warning in
+  `src/onboarding/panels/kit.tsx`.
+- `sh -n node/install.sh`: passed. A real unprivileged installer fixture
+  created mode-0700 model/library roots, a mode-0600 config with `[jobs]`, and a
+  hardened service whose `ReadWritePaths` contains config, models, and library.
+- Host release build passed. The x86_64 binary is 11,829,072 bytes unstripped
+  and 9,178,456 bytes stripped; `ldd` shows no SQLite dependency, confirming the
+  database is bundled. An aarch64 release artifact was not built locally because
+  that target/toolchain is absent; the dependency configuration is target-
+  independent and remains covered by the existing release workflow.
+- Relay regression gate: 6 tests plus worker types, TypeScript, test TypeScript,
+  static assets, catalog, and backend-manifest verification passed.
+- Hosted-relay drill: a real node accepted one non-sensitive request, returned
+  the same canonical UUIDv7 for an immediate retry, pushed aggregate load 0→1,
+  and returned the same private job after a node restart.
+- Physical Android `6b1f6ba8629c`: the current Metro bundle ran in the existing
+  debug shell (M1 adds no native dependency). Because the phone temporarily had
+  no working DNS route, its submission used the same relay locally through ADB
+  reverse; the separate hosted-relay drill above covered production routing.
+  The phone explicitly selected `acestep:m1-fixture`, persisted request UUID
+  `db1037c0-9a9f-411c-9f6a-4067db09234d` before send, and mapped it to canonical
+  job `019fde5c-2ba5-7cc2-a4dd-80997a5db365`. After both app kill and node
+  restart it showed one private queued job while global load showed two; the
+  other principal's queued job remained absent from its list.

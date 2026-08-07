@@ -6,6 +6,7 @@ mod control;
 mod engine;
 mod generate;
 mod identity;
+mod library;
 mod pairing;
 mod relay;
 mod service;
@@ -25,6 +26,7 @@ use serde_json::{Value, json};
 use crate::config::{ConfigSeed, NodeConfig, NodePaths};
 use crate::control::{ControlEvent, NodeState};
 use crate::identity::NodeIdentity;
+use crate::library::Library;
 
 const USAGE: &str = "\
 Usage:
@@ -265,12 +267,15 @@ async fn run(cli: Cli) -> Result<()> {
     let listener = control::bind(&socket_path)?;
     println!("control socket at {}", socket_path.display());
 
+    let library = Library::open(config.library_root())?;
+    println!("library at {}", library.root().display());
     let state = control::shared(NodeState {
         config,
         config_path: paths.config.clone(),
         node_public_key: identity.public_key_base58(),
         pair_offer: None,
         connected: false,
+        library,
     });
     let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<ControlEvent>();
     tokio::spawn(control::serve(listener, state.clone(), events_tx));
