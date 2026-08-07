@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Cantor M0 — What Changed</title>
+  <style>
+    :root { --bg:#090c10; --panel:#111820; --ink:#eef5f7; --muted:#a8b6bf;
+      --line:#293844; --mint:#6be8d5; --green:#94eca1; --amber:#ffd27d; --red:#ff91a4;
+      font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    * { box-sizing:border-box } body { margin:0; color:var(--ink); background:var(--bg); line-height:1.55 }
+    main { width:min(820px,100%); margin:auto; padding:56px 22px 80px }
+    h1 { margin:0; font-size:clamp(2.5rem,8vw,4.8rem); line-height:.95; letter-spacing:-.055em }
+    h2 { margin:0 0 14px; font-size:1.7rem; letter-spacing:-.025em }
+    h3 { margin:22px 0 7px; font-size:1.04rem } p { margin:0 0 12px }
+    .kicker { color:var(--mint); font:700 .72rem monospace; letter-spacing:.13em; text-transform:uppercase }
+    .intro { margin:21px 0 0; color:#c5d1d7; font-size:1.12rem; max-width:700px }
+    section { padding:36px 0; border-bottom:1px solid var(--line) }
+    .answer { color:var(--mint); font-weight:750 }
+    code,pre { font-family:"SFMono-Regular",Consolas,monospace }
+    code { color:#cafff7; background:rgba(107,232,213,.08); padding:.08rem .28rem; border-radius:4px }
+    pre { padding:15px; overflow:auto; color:#dce8ed; background:#070b0e; border:1px solid var(--line);
+      border-radius:9px; font-size:.81rem; line-height:1.5 }
+    pre code { padding:0; background:none }
+    .flow { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:18px }
+    .flow div,.card { padding:15px; background:var(--panel); border:1px solid var(--line); border-radius:9px }
+    .flow b { display:block; color:var(--mint); font-size:.82rem }.flow span { color:var(--muted); font-size:.79rem }
+    table { width:100%; border-collapse:collapse; margin-top:15px; font-size:.84rem }
+    td,th { padding:10px; text-align:left; vertical-align:top; border:1px solid var(--line) }
+    th { color:var(--mint); background:var(--panel) } td { color:#c7d3d9 }
+    a { color:var(--mint); text-decoration:none } a:hover { text-decoration:underline }
+    .code-link { display:block; margin:7px 0; padding:10px 12px; color:#cafff7; background:var(--panel);
+      border:1px solid var(--line); border-radius:7px; font:650 .78rem monospace }
+    .note { margin-top:17px; padding:14px 16px; border-left:3px solid var(--amber);
+      background:rgba(255,210,125,.06); border-radius:7px }
+    ul { padding-left:1.25rem } li { margin:.4rem 0 }
+    fieldset { margin:16px 0; padding:14px; border:1px solid var(--line); border-radius:8px }
+    legend { padding:0 6px; font-weight:700 } label { display:block; padding:6px 0; color:#c9d4da }
+    input { margin-right:8px; accent-color:var(--mint) }
+    button { padding:11px 16px; border:0; border-radius:7px; color:#06110f; background:var(--mint);
+      font-weight:800; cursor:pointer } #result { display:none; margin-top:14px; padding:13px; border-radius:7px }
+    #result.pass { display:block; color:var(--green); border:1px solid var(--green) }
+    #result.fail { display:block; color:var(--red); border:1px solid var(--red) }
+    @media(max-width:650px){.flow{grid-template-columns:1fr}}
+  </style>
+</head>
+<body><main>
+  <header>
+    <p class="kicker">Cantor · private library · milestone 0</p>
+    <h1>What changed,<br>and why.</h1>
+    <p class="intro">M0 did not build the library. It made one promise executable: <span class="answer">before the node stores a job, the phone and node must agree exactly on its owner, identity, state, and wire format.</span></p>
+  </header>
+
+  <section>
+    <h2>Start with the system</h2>
+    <div class="flow">
+      <div><b>Phone</b><span>Sends requests and validates replies.</span></div>
+      <div><b>Relay</b><span>Routes frames between phone and node.</span></div>
+      <div><b>Node</b><span>Authenticates the phone and will own durable jobs.</span></div>
+    </div>
+    <p style="margin-top:16px">There are two protocols, not one:</p>
+    <pre><code>relay envelope v1
+└── application message v2</code></pre>
+    <p>This separation matters: Cantor can change job semantics without changing how the relay routes bytes.</p>
+    <a class="code-link" href="../../cantor/src/backends/types.ts">Code → app version constants · cantor/src/backends/types.ts</a>
+    <a class="code-link" href="../../node/crates/cantor-proto/src/lib.rs">Code → application v2 source of truth · cantor-proto/src/lib.rs</a>
+  </section>
+
+  <section>
+    <h2>1. Ownership is now safe</h2>
+    <p><strong>The danger:</strong> if <code>job.create</code> accepted an owner field, a client could ask the node to create a job for somebody else.</p>
+    <p><strong>The rule:</strong> requests contain no trusted owner. After signature verification, the node derives:</p>
+    <pre><code>principal_id = SHA-256(canonical 32-byte Ed25519 public key)</code></pre>
+    <p>Typed handlers receive that authenticated context. Ownership therefore comes from cryptographic proof, not JSON.</p>
+    <a class="code-link" href="../../node/crates/cantor-node/src/session.rs">Code → AuthenticatedSession and typed dispatch · session.rs</a>
+  </section>
+
+  <section>
+    <h2>2. Retries can be made durable</h2>
+    <p>Three IDs solve three different problems:</p>
+    <table><tr><th>ID</th><th>Meaning</th></tr>
+      <tr><td><code>id</code></td><td>One network attempt. Matches a reply to a pending request.</td></tr>
+      <tr><td><code>client_request_id</code></td><td>One intended creation across reconnects. M1 will use it to prevent duplicates.</td></tr>
+      <tr><td><code>job.id</code></td><td>The node's permanent identity for the accepted job.</td></tr></table>
+    <p style="margin-top:13px">The app now ignores responses whose request ID is no longer pending.</p>
+    <a class="code-link" href="../../cantor/src/backends/connection.ts">Code → pending request correlation · connection.ts</a>
+  </section>
+
+  <section>
+    <h2>3. Jobs are no longer arbitrary strings</h2>
+    <p>State, generation stage, progress unit, and errors are strict enums. A job also carries a monotonic revision.</p>
+    <pre><code>state: queued | preparing | running | ... | completed | failed
+stage: plan | codes | diffuse | decode
+revision: 1, 2, 3, ...</code></pre>
+    <p>The app accepts <code>job.updated</code> only when its revision is newer. Timestamps remain useful for display, but revisions decide ordering because clocks can move.</p>
+    <a class="code-link" href="../../protocol/JobView.ts">Generated type → protocol/JobView.ts</a>
+    <a class="code-link" href="../../cantor/src/backends/types.ts">Code → strict job parser · types.ts</a>
+  </section>
+
+  <section>
+    <h2>4. The network boundary is real now</h2>
+    <p>Generated TypeScript does not validate runtime data. WebSocket JSON arrives as <code>unknown</code>, so the app now checks it before creating trusted objects.</p>
+    <table><tr><th>Rejected</th><th>Allowed</th></tr>
+      <tr><td>Unknown required enum<br>Negative progress<br>Progress above total<br>Incomplete objects</td>
+          <td>Extra optional fields<br>Unknown message tags<br>Newer valid revisions</td></tr></table>
+    <a class="code-link" href="../../cantor/src/backends/types.ts">Code → parseNodeInfo, parseJob, parseJobs</a>
+    <a class="code-link" href="../../protocol/fixtures/v2/">Examples → shared v2 fixtures</a>
+  </section>
+
+  <section>
+    <h2>5. Node capabilities are explicit</h2>
+    <p><code>NodeInfo</code> now reports structured installed models, limits, live load, and feature flags. The app does not guess support from “v2”.</p>
+    <pre><code>model: { selector, family, engine }
+limits: { duration, caption bytes, lyrics bytes, page size, queue size }
+features: { jobs_create, library_list, secure_tunnel, ... }</code></pre>
+    <p>M0 advertises later features as <code>false</code>. Job mutations return <code>feature_unavailable</code>; there is still no database or queue.</p>
+    <a class="code-link" href="../../node/crates/cantor-node/src/relay.rs">Code → structured NodeInfo · relay.rs</a>
+  </section>
+
+  <section>
+    <h2>What was deliberately not built</h2>
+    <ul><li>No SQLite job store.</li><li>No scheduler or generation mutation.</li><li>No library UI.</li><li>No pause/resume/cancel contract.</li><li>No end-to-end encryption yet.</li></ul>
+    <div class="note"><strong>Recommended next step:</strong> implement the authenticated encrypted tunnel as M0.5, then send private prompts and lyrics in M1.</div>
+  </section>
+
+  <section>
+    <h2>Proof</h2>
+    <p><span class="answer">82 Rust tests · 137 app tests · 6 relay tests</span></p>
+    <p>A physical Android phone paired through <code>wss://cantor.ckadirt.xyz</code>, authenticated, reached <code>READY</code>, parsed the v2 status page, and applied a live unsolicited <code>node.info</code> update.</p>
+    <a class="code-link" href="implementation-notes.md">Full evidence and deviations → implementation-notes.md</a>
+  </section>
+
+  <section>
+    <h2>Quiz — pass 5 of 6</h2>
+    <form id="quiz">
+      <fieldset><legend>1. Who chooses the owner of a job?</legend>
+        <label><input type="radio" name="q1" value="a">The <code>owner</code> field in the request.</label>
+        <label><input type="radio" name="q1" value="b">The node, from the authenticated Ed25519 key.</label></fieldset>
+      <fieldset><legend>2. Why are <code>id</code> and <code>client_request_id</code> different?</legend>
+        <label><input type="radio" name="q2" value="a"><code>id</code> correlates one attempt; <code>client_request_id</code> deduplicates retries.</label>
+        <label><input type="radio" name="q2" value="b">They are aliases.</label></fieldset>
+      <fieldset><legend>3. What decides whether <code>job.updated</code> is newer?</legend>
+        <label><input type="radio" name="q3" value="a">Timestamp.</label>
+        <label><input type="radio" name="q3" value="b">Revision.</label></fieldset>
+      <fieldset><legend>4. Why validate JSON when TypeScript types exist?</legend>
+        <label><input type="radio" name="q4" value="a">Static types cannot validate runtime WebSocket input.</label>
+        <label><input type="radio" name="q4" value="b">Rust cannot serialize JSON.</label></fieldset>
+      <fieldset><legend>5. What happens if an M0 client sends <code>job.create</code>?</legend>
+        <label><input type="radio" name="q5" value="a">The node stores it.</label>
+        <label><input type="radio" name="q5" value="b">The node returns <code>feature_unavailable</code>.</label></fieldset>
+      <fieldset><legend>6. Can the hosted relay read application JSON today?</legend>
+        <label><input type="radio" name="q6" value="a">Yes. E2E encryption is not implemented yet.</label>
+        <label><input type="radio" name="q6" value="b">No. Protocol v2 automatically encrypts it.</label></fieldset>
+      <button type="submit">Grade</button><div id="result" role="status"></div>
+    </form>
+  </section>
+  <script>
+    const expected={q1:'b',q2:'a',q3:'b',q4:'a',q5:'b',q6:'a'};
+    document.getElementById('quiz').addEventListener('submit',event=>{
+      event.preventDefault(); let score=0;
+      for(const [q,a] of Object.entries(expected)){
+        if(document.querySelector(`input[name="${q}"]:checked`)?.value===a)score++;
+      }
+      const result=document.getElementById('result'),pass=score>=5;
+      result.className=pass?'pass':'fail';
+      result.textContent=`${pass?'PASS':'REVIEW THE REPORT'} — ${score}/6`;
+    });
+  </script>
+</main></body>
+</html>

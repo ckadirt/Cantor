@@ -3,9 +3,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use cantor_proto::{ClientMessage, NodeInfo, NodeMessage, PROTOCOL_VERSION};
+use cantor_proto::{ClientMessage, ErrorCode, NodeInfo, NodeMessage, PROTOCOL_VERSION};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::config::{NodeConfig, sanitize_petname};
 use crate::pairing::PairOffer;
@@ -16,20 +17,39 @@ const PUBLIC_KEY_BYTES: usize = 32;
 #[derive(Debug, Default)]
 pub struct ClientSession {
     pending: Option<PendingAuth>,
-    /// The key this session authenticated with, so a revocation can find and
-    /// cut off the sessions it applies to instead of waiting for a reconnect.
-    authenticated_key: Option<String>,
+    relay_session_id: String,
+    authenticated: Option<StoredAuthentication>,
+}
+
+/// Identity context constructed only after challenge verification succeeds.
+/// Typed application handlers receive this rather than trusting owner data
+/// supplied in request payloads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuthenticatedSession {
+    pub relay_session_id: String,
+    pub principal_id: [u8; 32],
+    pub client_public_key: [u8; 32],
 }
 
 impl ClientSession {
     pub fn authenticated_key(&self) -> Option<&str> {
-        self.authenticated_key.as_deref()
+        self.authenticated
+            .as_ref()
+            .map(|session| session.client_public_key_base58.as_str())
+    }
+
+    pub fn authenticated(&self) -> Option<&AuthenticatedSession> {
+        self.authenticated.as_ref().map(|stored| &stored.context)
+    }
+
+    pub fn set_relay_session_id(&mut self, relay_session_id: &str) {
+        self.relay_session_id = relay_session_id.to_owned();
     }
 
     /// Undoes authentication in place. The caller is responsible for telling the
     /// client why; this only makes sure nothing further is served on the session.
     pub fn deauthenticate(&mut self) {
-        self.authenticated_key = None;
+        self.authenticated = None;
         self.pending = None;
     }
 
@@ -37,7 +57,32 @@ impl ClientSession {
     pub fn authenticated_for_test(key: &str) -> Self {
         Self {
             pending: None,
-            authenticated_key: Some(key.to_owned()),
+            relay_session_id: String::new(),
+            authenticated: Some(StoredAuthentication::new(
+                String::new(),
+                key.to_owned(),
+                [1_u8; 32],
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct StoredAuthentication {
+    context: AuthenticatedSession,
+    client_public_key_base58: String,
+}
+
+impl StoredAuthentication {
+    fn new(relay_session_id: String, encoded_key: String, key: [u8; 32]) -> Self {
+        let principal_id: [u8; 32] = Sha256::digest(key).into();
+        Self {
+            context: AuthenticatedSession {
+                relay_session_id,
+                principal_id,
+                client_public_key: key,
+            },
+            client_public_key_base58: encoded_key,
         }
     }
 }
@@ -62,18 +107,15 @@ impl ClientSession {
         node_public_key: &str,
         node_info: &NodeInfo,
     ) -> Result<NodeMessage> {
-        let fallback_id = payload
-            .get("id")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
+        let fallback_id = payload.get("id").and_then(Value::as_str).map(str::to_owned);
         let message: ClientMessage = match serde_json::from_value(payload) {
             Ok(message) => message,
             Err(_) => {
                 return Ok(NodeMessage::error(
                     fallback_id,
-                    "invalid-message",
+                    ErrorCode::InvalidRequest,
                     "The application message is not valid.",
+                    false,
                 ));
             }
         };
@@ -86,7 +128,7 @@ impl ClientSession {
                 pair_proof,
                 petname,
             } => {
-                self.authenticated_key = None;
+                self.authenticated = None;
                 self.pending = None;
                 if v != PROTOCOL_VERSION {
                     return Ok(unsupported_version(id));
@@ -96,9 +138,10 @@ impl ClientSession {
                     Ok(bytes) if bytes.len() == PUBLIC_KEY_BYTES => bytes,
                     _ => {
                         return Ok(NodeMessage::error(
-                            id,
-                            "invalid-key",
+                            Some(id),
+                            ErrorCode::InvalidRequest,
                             "The client public key is not valid Ed25519 base58.",
+                            false,
                         ));
                     }
                 };
@@ -108,9 +151,10 @@ impl ClientSession {
                     Ok(key) => key,
                     Err(_) => {
                         return Ok(NodeMessage::error(
-                            id,
-                            "invalid-key",
+                            Some(id),
+                            ErrorCode::InvalidRequest,
                             "The client public key is not valid Ed25519 base58.",
+                            false,
                         ));
                     }
                 };
@@ -139,16 +183,18 @@ impl ClientSession {
                 }
                 let Some(pending) = self.pending.take() else {
                     return Ok(NodeMessage::error(
-                        id,
-                        "handshake-required",
+                        Some(id),
+                        ErrorCode::Unauthenticated,
                         "Send hello before auth.",
+                        false,
                     ));
                 };
                 if pending.id != id {
                     return Ok(NodeMessage::error(
-                        id,
-                        "request-mismatch",
+                        Some(id),
+                        ErrorCode::InvalidRequest,
                         "The auth request does not match its challenge.",
+                        false,
                     ));
                 }
 
@@ -158,9 +204,10 @@ impl ClientSession {
                 };
                 let Some(node_key_bytes) = node_key_bytes else {
                     return Ok(NodeMessage::error(
-                        id,
-                        "invalid-key",
+                        Some(id),
+                        ErrorCode::Internal,
                         "This node's own public key is not valid Ed25519 base58.",
+                        false,
                     ));
                 };
                 let expected = crate::signing::node_auth_message(
@@ -177,9 +224,10 @@ impl ClientSession {
                     pending.verifying_key.verify(&expected, signature).is_err()
                 }) {
                     return Ok(NodeMessage::error(
-                        id,
-                        "bad-signature",
+                        Some(id),
+                        ErrorCode::Rejected,
                         "The client challenge signature is invalid.",
+                        false,
                     ));
                 }
 
@@ -205,9 +253,10 @@ impl ClientSession {
                     });
                 if !already_allowed && !may_enroll {
                     return Ok(NodeMessage::error(
-                        id,
-                        "rejected",
+                        Some(id),
+                        ErrorCode::Rejected,
                         "This client key is not authorized.",
+                        false,
                     ));
                 }
 
@@ -216,7 +265,11 @@ impl ClientSession {
                     *active_pair_offer = None;
                     println!("paired client {}", pending.public_key);
                 }
-                self.authenticated_key = Some(pending.public_key);
+                self.authenticated = Some(StoredAuthentication::new(
+                    self.relay_session_id.clone(),
+                    pending.public_key,
+                    pending.verifying_key.to_bytes(),
+                ));
                 Ok(NodeMessage::Welcome {
                     v: PROTOCOL_VERSION,
                     id,
@@ -227,29 +280,62 @@ impl ClientSession {
                 if v != PROTOCOL_VERSION {
                     return Ok(unsupported_version(id));
                 }
-                if self.authenticated_key.is_none() {
-                    return Ok(NodeMessage::error(
-                        id,
-                        "handshake-required",
-                        "Authenticate before requesting status.",
-                    ));
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "status"));
+                };
+                Ok(empty_jobs_page(context, id))
+            }
+            ClientMessage::JobsList { v, id, .. } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
                 }
-                Ok(NodeMessage::Jobs {
-                    v: PROTOCOL_VERSION,
-                    id,
-                    jobs: Vec::new(),
-                })
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "jobs"));
+                };
+                Ok(empty_jobs_page(context, id))
+            }
+            ClientMessage::JobCreate { v, id, .. } | ClientMessage::JobGet { v, id, .. } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "jobs"));
+                };
+                Ok(jobs_unavailable(context, id))
             }
         }
     }
 }
 
-fn unsupported_version(id: String) -> NodeMessage {
-    NodeMessage::error(
+fn empty_jobs_page(_context: &AuthenticatedSession, id: String) -> NodeMessage {
+    NodeMessage::JobsPage {
+        v: PROTOCOL_VERSION,
         id,
-        "unsupported-version",
-        format!("Only application protocol version {PROTOCOL_VERSION} is supported."),
+        jobs: Vec::new(),
+        next_cursor: None,
+    }
+}
+
+fn jobs_unavailable(_context: &AuthenticatedSession, id: String) -> NodeMessage {
+    NodeMessage::error(
+        Some(id),
+        ErrorCode::FeatureUnavailable,
+        "Durable jobs are not enabled on this node yet.",
+        false,
     )
+}
+
+fn unauthenticated(id: String, resource: &str) -> NodeMessage {
+    NodeMessage::error(
+        Some(id),
+        ErrorCode::Unauthenticated,
+        format!("Authenticate before requesting {resource}."),
+        false,
+    )
+}
+
+fn unsupported_version(id: String) -> NodeMessage {
+    NodeMessage::unsupported_version(Some(id))
 }
 
 #[cfg(test)]
@@ -258,12 +344,14 @@ mod tests {
 
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    use cantor_proto::{NodeInfo, NodeLimits, NodeLoad, NodeMessage};
+    use cantor_proto::{
+        ErrorCode, ModelView, NodeFeatures, NodeInfo, NodeLimits, NodeLoad, NodeMessage,
+    };
     use ed25519_dalek::{Signer, SigningKey};
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::ClientSession;
+    use super::{ClientSession, StoredAuthentication};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
 
@@ -272,14 +360,32 @@ mod tests {
             name: "test-node".to_owned(),
             device_type: "linux".to_owned(),
             engine_version: "ace-step-1.5-stub".to_owned(),
-            models: vec!["ace-step-1.5".to_owned()],
+            models: vec![ModelView {
+                selector: "acestep:1.5-fast".to_owned(),
+                family: "acestep".to_owned(),
+                engine: "acestep".to_owned(),
+            }],
             limits: NodeLimits {
                 max_concurrent_jobs: 0,
-                max_song_seconds: 0,
+                max_queued_jobs_per_principal: 32,
+                min_song_seconds: 15,
+                max_song_seconds: 600,
+                max_caption_bytes: 1_024,
+                max_lyrics_bytes: 65_536,
+                max_page_limit: 100,
             },
             load: NodeLoad {
                 active_jobs: 0,
                 queued_jobs: 0,
+                accepting_jobs: false,
+                unavailable_reason: Some("durable_jobs_not_enabled".to_owned()),
+            },
+            features: NodeFeatures {
+                jobs_create: false,
+                library_list: false,
+                artifacts_transfer: false,
+                secure_tunnel: false,
+                job_controls: false,
             },
         }
     }
@@ -290,6 +396,23 @@ mod tests {
         let (config, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
         (config, paths)
+    }
+
+    #[test]
+    fn principal_id_hashes_canonical_public_key_bytes() {
+        let stored = StoredAuthentication::new(
+            "relay-session".to_owned(),
+            bs58::encode([1_u8; 32]).into_string(),
+            [1_u8; 32],
+        );
+        assert_eq!(
+            stored.context.principal_id,
+            [
+                0x72, 0xcd, 0x6e, 0x84, 0x22, 0xc4, 0x07, 0xfb, 0x6d, 0x09, 0x86, 0x90, 0xf1, 0x13,
+                0x0b, 0x7d, 0xed, 0x7e, 0xc2, 0xf7, 0xf5, 0xe1, 0xd3, 0x0b, 0xd9, 0xd5, 0x21, 0xf0,
+                0x15, 0x36, 0x37, 0x93,
+            ]
+        );
     }
 
     fn authenticate(token: Option<&str>) -> (NodeMessage, NodeConfig, Option<PairOffer>) {
@@ -323,7 +446,7 @@ mod tests {
             token.map(|token| PairOffer::new(token.to_owned(), DEFAULT_PAIR_TTL));
         let challenge = session
             .handle(
-                json!({"t":"hello","v":1,"id":"1","pubkey":public_key,"pair_proof":pair_proof,"petname":petname}),
+                json!({"t":"hello","v":2,"id":"1","pubkey":public_key,"pair_proof":pair_proof,"petname":petname}),
                 &mut config,
                 &paths.config,
                 &mut active_token,
@@ -344,7 +467,7 @@ mod tests {
         let signature = URL_SAFE_NO_PAD.encode(signing_key.sign(&message).to_bytes());
         let response = session
             .handle(
-                json!({"t":"auth","v":1,"id":"1","sig":signature}),
+                json!({"t":"auth","v":2,"id":"1","sig":signature}),
                 &mut config,
                 &paths.config,
                 &mut active_token,
@@ -388,7 +511,13 @@ mod tests {
     #[test]
     fn non_allowlisted_client_is_rejected() {
         let (response, config, _) = authenticate(None);
-        assert!(matches!(response, NodeMessage::Error { code, .. } if code == "rejected"));
+        assert!(matches!(
+            response,
+            NodeMessage::Error {
+                code: ErrorCode::Rejected,
+                ..
+            }
+        ));
         assert!(config.pairings.is_empty());
     }
 
@@ -415,7 +544,7 @@ mod tests {
         let mut active_token = None;
         let challenge = session
             .handle(
-                json!({"t":"hello","v":1,"id":"1","pubkey":public_key}),
+                json!({"t":"hello","v":2,"id":"1","pubkey":public_key}),
                 &mut config,
                 &paths.config,
                 &mut active_token,
@@ -431,7 +560,7 @@ mod tests {
 
         let response = session
             .handle(
-                json!({"t":"auth","v":1,"id":"1","sig":signature}),
+                json!({"t":"auth","v":2,"id":"1","sig":signature}),
                 &mut config,
                 &paths.config,
                 &mut active_token,
@@ -439,6 +568,12 @@ mod tests {
                 &info(),
             )
             .expect("auth");
-        assert!(matches!(response, NodeMessage::Error { code, .. } if code == "bad-signature"));
+        assert!(matches!(
+            response,
+            NodeMessage::Error {
+                code: ErrorCode::Rejected,
+                ..
+            }
+        ));
     }
 }
