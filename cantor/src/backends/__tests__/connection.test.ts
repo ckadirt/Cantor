@@ -1,6 +1,10 @@
 import { base58 } from '@scure/base';
 import { Platform } from 'react-native';
-import { BackendConnection, devicePetname } from '../connection';
+import {
+  BackendConnection,
+  NodeRequestError,
+  devicePetname,
+} from '../connection';
 import { deriveIdentity } from '../../identity/derive';
 import type { BackendRecord, ConnectionSnapshot, NodeInfo } from '../types';
 
@@ -59,19 +63,29 @@ function nodeInfoFixture(name: string): Record<string, unknown> {
     name,
     device_type: 'linux-x86_64',
     engine_version: 'ace-step-1.5-stub',
-    models: [{
-      selector: 'acestep:1.5-fast', family: 'acestep',
-      engine: 'acestep',
-    }],
+    models: [
+      {
+        selector: 'acestep:1.5-fast',
+        family: 'acestep',
+        engine: 'acestep',
+      },
+    ],
     limits: {
-      max_concurrent_jobs: 0, max_queued_jobs_per_principal: 32,
-      min_song_seconds: 15, max_song_seconds: 600,
-      max_caption_bytes: 1024, max_lyrics_bytes: 65536, max_page_limit: 100,
+      max_concurrent_jobs: 0,
+      max_queued_jobs_per_principal: 32,
+      min_song_seconds: 15,
+      max_song_seconds: 600,
+      max_caption_bytes: 1024,
+      max_lyrics_bytes: 65536,
+      max_page_limit: 100,
     },
-    load: {active_jobs: 0, queued_jobs: 0, accepting_jobs: false},
+    load: { active_jobs: 0, queued_jobs: 0, accepting_jobs: false },
     features: {
-      jobs_create: false, library_list: false, artifacts_transfer: false,
-      secure_tunnel: false, job_controls: false,
+      jobs_create: false,
+      library_list: false,
+      artifacts_transfer: false,
+      secure_tunnel: false,
+      job_controls: false,
     },
   };
 }
@@ -147,7 +161,11 @@ describe('BackendConnection', () => {
   it('survives frames it does not understand', () => {
     const { socket, snapshots } = connect();
 
-    socket.receive({ v: 1, t: 'relay.somethingNew', detail: 'from a newer relay' });
+    socket.receive({
+      v: 1,
+      t: 'relay.somethingNew',
+      detail: 'from a newer relay',
+    });
     socket.receive({ v: 99, t: 'relay.presence', online: true });
     socket.receive('not json at all');
 
@@ -213,7 +231,7 @@ describe('BackendConnection', () => {
     socket.receive({
       v: 1,
       t: 'tunnel',
-      payload: {v: 2, t: 'node.info', node: nodeInfoFixture('renamed-node')},
+      payload: { v: 2, t: 'node.info', node: nodeInfoFixture('renamed-node') },
     });
 
     expect(nodeInfos.at(-1)?.name).toBe('renamed-node');
@@ -222,30 +240,136 @@ describe('BackendConnection', () => {
   });
 
   it('does not let a stale response resolve a newer request', () => {
-    const {socket, snapshots} = connect();
-    socket.receive({v: 1, t: 'relay.presence', online: true});
+    const { socket, snapshots } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
     const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
-    socket.receive({v: 1, t: 'tunnel', payload: {
-      v: 2, t: 'challenge', id: hello.payload.id,
-      nonce: 'A'.repeat(43), node_pubkey: NODE_PUBKEY,
-    }});
-    socket.receive({v: 1, t: 'tunnel', payload: {
-      v: 2, t: 'welcome', id: hello.payload.id, node: nodeInfoFixture('node'),
-    }});
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
     const status = JSON.parse(socket.sent.at(-1) ?? '{}');
-    socket.receive({v: 1, t: 'tunnel', payload: {
-      v: 2, t: 'jobs.page', id: 'stale-status', jobs: [],
-    }});
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'jobs.page',
+        id: 'stale-status',
+        jobs: [],
+      },
+    });
     expect(snapshots.at(-1)?.jobs).toEqual([]);
-    socket.receive({v: 1, t: 'tunnel', payload: {
-      v: 2, t: 'jobs.page', id: status.payload.id, jobs: [],
-    }});
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'jobs.page',
+        id: status.payload.id,
+        jobs: [],
+      },
+    });
     expect(snapshots.at(-1)?.phase).toBe('ready');
   });
 
+  it('correlates job acceptance and keeps terminal request errors local', async () => {
+    const { socket, snapshots, connection } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+
+    const rejected = connection.createJob(
+      '11111111-1111-4111-8111-111111111111',
+      'acestep:1.5-fast',
+      { caption: 'one' },
+    );
+    const rejectedFrame = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'error',
+        id: rejectedFrame.payload.id,
+        code: 'invalid_request',
+        message: 'Bad caption.',
+        retryable: false,
+      },
+    });
+    const rejection = await rejected.catch(error => error);
+    expect(rejection).toBeInstanceOf(NodeRequestError);
+    expect(rejection).toMatchObject({
+      code: 'invalid_request',
+      retryable: false,
+    });
+    expect(snapshots.at(-1)?.phase).toBe('ready');
+
+    const accepted = connection.createJob(
+      '22222222-2222-4222-8222-222222222222',
+      'acestep:1.5-fast',
+      { caption: 'two' },
+    );
+    const acceptedFrame = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.accepted',
+        id: acceptedFrame.payload.id,
+        job: {
+          id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+          revision: 1,
+          state: 'queued',
+          model: 'acestep:1.5-fast',
+          created_at: '2026-08-07T00:00:00Z',
+          updated_at: '2026-08-07T00:00:00Z',
+        },
+      },
+    });
+    await expect(accepted).resolves.toMatchObject({ state: 'queued' });
+  });
+
   it('surfaces an application protocol mismatch', () => {
-    const {socket, snapshots} = connect();
-    socket.receive({v: 1, t: 'tunnel', payload: {v: 1, t: 'challenge'}});
+    const { socket, snapshots } = connect();
+    socket.receive({ v: 1, t: 'tunnel', payload: { v: 1, t: 'challenge' } });
     expect(snapshots.at(-1)?.error).toBe(
       'This app and node use incompatible protocol versions.',
     );
@@ -255,13 +379,14 @@ describe('BackendConnection', () => {
   it('stops retrying once the node rejects the key', () => {
     const { socket, snapshots } = connect();
     socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
     socket.receive({
       v: 1,
       t: 'tunnel',
       payload: {
         v: 2,
         t: 'error',
-        id: 'hello-1',
+        id: hello.payload.id,
         code: 'rejected',
         message: 'This client key is not authorized.',
         retryable: false,

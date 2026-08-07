@@ -173,7 +173,7 @@ async fn serve_once(
     let mut node_info = {
         let mut locked = lock(state)?;
         locked.connected = true;
-        static_node_info(&locked.config)
+        static_node_info(&locked.config, &locked.library)
     };
     println!("relay.ok — room claimed as {}", node_info.name);
     *reconnect_attempt = 0;
@@ -245,7 +245,7 @@ async fn serve_once(
                         if text.as_str() == KEEPALIVE_PONG {
                             continue;
                         }
-                        let Some(response) = handle_relay_text(
+                        let Some((response, load_changed)) = handle_relay_text(
                             text.as_ref(),
                             &mut sessions,
                             state,
@@ -257,6 +257,26 @@ async fn serve_once(
                         };
                         if outbound.send(response).await.is_err() {
                             break Err(anyhow::anyhow!("relay writer stopped"));
+                        }
+                        if load_changed {
+                            node_info = {
+                                let locked = lock(state)?;
+                                static_node_info(&locked.config, &locked.library)
+                            };
+                            let push = NodeMessage::NodeInfoChanged {
+                                v: cantor_proto::PROTOCOL_VERSION,
+                                node: node_info.clone(),
+                            };
+                            for (session_id, session) in &sessions {
+                                if session.authenticated_key().is_some()
+                                    && outbound
+                                        .send(tunnel_frame(session_id, &push)?)
+                                        .await
+                                        .is_err()
+                                {
+                                    break;
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -311,7 +331,8 @@ fn apply_control_event(
             Ok(frames)
         }
         ControlEvent::NodeInfoChanged => {
-            *node_info = static_node_info(&lock(state)?.config);
+            let locked = lock(state)?;
+            *node_info = static_node_info(&locked.config, &locked.library);
             let push = NodeMessage::NodeInfoChanged {
                 v: cantor_proto::PROTOCOL_VERSION,
                 node: node_info.clone(),
@@ -346,7 +367,7 @@ fn handle_relay_text(
     config_path: &Path,
     public_key: &str,
     node_info: &NodeInfo,
-) -> Result<Option<Message>> {
+) -> Result<Option<(Message, bool)>> {
     let frame: IncomingFrame = match serde_json::from_str(text) {
         Ok(frame) => frame,
         Err(error) => {
@@ -369,6 +390,7 @@ fn handle_relay_text(
                     &mut locked.pair_offer,
                     public_key,
                     node_info,
+                    &mut locked.library,
                 )?
             } else {
                 NodeMessage::error(
@@ -378,6 +400,7 @@ fn handle_relay_text(
                     true,
                 )
             };
+            let load_changed = matches!(response, NodeMessage::JobAccepted { .. });
             let tunnel = RelayTunnel {
                 v: RELAY_VERSION,
                 t: "tunnel",
@@ -386,7 +409,7 @@ fn handle_relay_text(
             };
             let json =
                 serde_json::to_string(&tunnel).context("failed to encode tunnel response")?;
-            Ok(Some(Message::text(json)))
+            Ok(Some((Message::text(json), load_changed)))
         }
         IncomingFrame::Detached { v, sid } if v == RELAY_VERSION => {
             sessions.remove(&sid);
@@ -413,7 +436,7 @@ fn request_id(payload: &Value) -> Option<String> {
     payload.get("id").and_then(Value::as_str).map(str::to_owned)
 }
 
-fn static_node_info(config: &NodeConfig) -> NodeInfo {
+fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> NodeInfo {
     // What is actually on disk, so the app never offers a model this node
     // cannot load. Phase C's push is what keeps it current after a pull.
     let models = crate::store::Store::new(config.model_root())
@@ -432,7 +455,7 @@ fn static_node_info(config: &NodeConfig) -> NodeInfo {
         models,
         limits: NodeLimits {
             max_concurrent_jobs: 0,
-            max_queued_jobs_per_principal: 32,
+            max_queued_jobs_per_principal: config.jobs.max_queued_per_principal,
             min_song_seconds: MIN_SONG_SECONDS,
             max_song_seconds: MAX_SONG_SECONDS,
             max_caption_bytes: MAX_CAPTION_BYTES,
@@ -441,12 +464,12 @@ fn static_node_info(config: &NodeConfig) -> NodeInfo {
         },
         load: NodeLoad {
             active_jobs: 0,
-            queued_jobs: 0,
-            accepting_jobs: false,
-            unavailable_reason: Some("durable_jobs_not_enabled".to_owned()),
+            queued_jobs: library.queued_count().unwrap_or(0),
+            accepting_jobs: true,
+            unavailable_reason: Some("execution_starts_in_m2".to_owned()),
         },
         features: NodeFeatures {
-            jobs_create: false,
+            jobs_create: true,
             library_list: false,
             artifacts_transfer: false,
             secure_tunnel: false,
@@ -546,12 +569,15 @@ mod tests {
         let (config, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
         let config_path = paths.config.clone();
+        let library =
+            crate::library::Library::open(temporary.path().join("library")).expect("library");
         let state = shared(NodeState {
             config,
             config_path: paths.config,
             node_public_key: "node-key".to_owned(),
             pair_offer: None,
             connected: true,
+            library,
         });
         (state, config_path, temporary)
     }
@@ -562,7 +588,9 @@ mod tests {
     #[test]
     fn unrecognised_frames_are_skipped_without_ending_the_connection() {
         let (state, config_path, _guard) = fixture();
-        let node_info = static_node_info(&state.lock().expect("state").config);
+        let locked = state.lock().expect("state");
+        let node_info = static_node_info(&locked.config, &locked.library);
+        drop(locked);
         let mut sessions = HashMap::new();
 
         for frame in [
@@ -590,7 +618,9 @@ mod tests {
     #[test]
     fn a_relay_error_still_ends_the_connection() {
         let (state, config_path, _guard) = fixture();
-        let node_info = static_node_info(&state.lock().expect("state").config);
+        let locked = state.lock().expect("state");
+        let node_info = static_node_info(&locked.config, &locked.library);
+        drop(locked);
 
         let result = handle_relay_text(
             r#"{"v":1,"t":"relay.error","code":"bad-claim","msg":"nope"}"#,
@@ -609,7 +639,9 @@ mod tests {
     #[test]
     fn revoking_drops_the_live_sessions_that_used_that_key() {
         let (state, _config_path, _guard) = fixture();
-        let mut node_info = static_node_info(&state.lock().expect("state").config);
+        let locked = state.lock().expect("state");
+        let mut node_info = static_node_info(&locked.config, &locked.library);
+        drop(locked);
         let mut sessions = HashMap::new();
         sessions.insert(
             "session-a".to_owned(),
@@ -642,7 +674,9 @@ mod tests {
     #[test]
     fn renaming_the_node_pushes_node_info_to_authenticated_sessions_only() {
         let (state, config_path, _guard) = fixture();
-        let mut node_info = static_node_info(&state.lock().expect("state").config);
+        let locked = state.lock().expect("state");
+        let mut node_info = static_node_info(&locked.config, &locked.library);
+        drop(locked);
         let mut sessions = HashMap::new();
         sessions.insert(
             "authed".to_owned(),

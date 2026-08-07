@@ -126,12 +126,14 @@ cantor_install_dir=${CANTOR_INSTALL_DIR:-"$(cantor_default_install_dir)"}
 if [ "$cantor_privileged" = '1' ]; then
   cantor_config_dir=${CANTOR_CONFIG_DIR:-/etc/cantor}
   cantor_default_model_dir=/var/lib/cantor/models
+  cantor_default_library_dir=/var/lib/cantor/library
   cantor_service_path=${CANTOR_SERVICE_PATH:-/etc/systemd/system/cantor.service}
   cantor_systemctl_scope='--system'
   cantor_service_dir=$(dirname "$cantor_service_path")
 else
   cantor_config_dir=${CANTOR_CONFIG_DIR:-"$cantor_config_home/cantor"}
   cantor_default_model_dir="$cantor_data_home/cantor/models"
+  cantor_default_library_dir="$cantor_data_home/cantor/library"
   cantor_systemd_user_dir=${CANTOR_SYSTEMD_USER_DIR:-"$cantor_config_home/systemd/user"}
   cantor_service_path=${CANTOR_SERVICE_PATH:-"$cantor_systemd_user_dir/cantor.service"}
   cantor_systemctl_scope='--user'
@@ -141,6 +143,7 @@ fi
 cantor_relay_url=${CANTOR_RELAY_URL:-wss://cantor.ckadirt.xyz}
 cantor_node_name=${CANTOR_NODE_NAME:-$(hostname)}
 cantor_model_dir=${CANTOR_MODEL_DIR:-"$cantor_default_model_dir"}
+cantor_library_dir=${CANTOR_LIBRARY_DIR:-"$cantor_default_library_dir"}
 
 # Must match CONTROL_GROUP in crates/cantor-node/src/control.rs.
 CANTOR_GROUP_NAME=${CANTOR_GROUP_NAME:-cantor}
@@ -165,11 +168,16 @@ if [ -z "${CANTOR_MODEL_DIR:-}" ]; then
   cantor_prompt 'Model directory' "$cantor_model_dir"
   cantor_model_dir=$cantor_prompt_result
 fi
+if [ -z "${CANTOR_LIBRARY_DIR:-}" ]; then
+  cantor_prompt 'Library directory' "$cantor_library_dir"
+  cantor_library_dir=$cantor_prompt_result
+fi
 
 cantor_reject_control CANTOR_NODE_NAME "$cantor_node_name"
 cantor_reject_control CANTOR_INSTALL_DIR "$cantor_install_dir"
 cantor_reject_control CANTOR_CONFIG_DIR "$cantor_config_dir"
 cantor_reject_control CANTOR_MODEL_DIR "$cantor_model_dir"
+cantor_reject_control CANTOR_LIBRARY_DIR "$cantor_library_dir"
 cantor_reject_control CANTOR_SERVICE_PATH "$cantor_service_path"
 cantor_reject_control CANTOR_RELAY_URL "$cantor_relay_url"
 cantor_reject_control CANTOR_GROUP_NAME "$CANTOR_GROUP_NAME"
@@ -191,6 +199,10 @@ case "$cantor_model_dir" in
   /*) ;;
   *) cantor_fail 'CANTOR_MODEL_DIR must be an absolute path' ;;
 esac
+case "$cantor_library_dir" in
+  /*) ;;
+  *) cantor_fail 'CANTOR_LIBRARY_DIR must be an absolute path' ;;
+esac
 
 cantor_binary_path="$cantor_install_dir/cantor"
 cantor_config_path="$cantor_config_dir/node.toml"
@@ -208,6 +220,7 @@ umask 077
 install -d -m 0755 "$cantor_install_dir"
 install -d -m 0700 "$cantor_config_dir"
 install -d -m 0700 "$cantor_model_dir"
+install -d -m 0700 "$cantor_library_dir"
 
 cantor_source_binary=${CANTOR_NODE_BINARY:-}
 if [ -n "$cantor_source_binary" ]; then
@@ -263,11 +276,16 @@ if [ ! -e "$cantor_config_path" ]; then
   cantor_escaped_name=$(cantor_toml_escape "$cantor_node_name")
   cantor_escaped_relay=$(cantor_toml_escape "$cantor_relay_url")
   cantor_escaped_model_dir=$(cantor_toml_escape "$cantor_model_dir")
+  cantor_escaped_library_dir=$(cantor_toml_escape "$cantor_library_dir")
   {
     printf 'name = "%s"\n' "$cantor_escaped_name"
     printf 'relay_url = "%s"\n' "$cantor_escaped_relay"
     printf 'model_dir = "%s"\n' "$cantor_escaped_model_dir"
+    printf 'library_dir = "%s"\n' "$cantor_escaped_library_dir"
     printf 'pairings = []\n'
+    printf '\n[jobs]\n'
+    printf 'max_queued_per_principal = 20\n'
+    printf 'minimum_free_bytes = 2147483648\n'
   } > "$cantor_config_path"
   chmod 0600 "$cantor_config_path"
   cantor_config_result='created'
@@ -312,6 +330,7 @@ if [ "$cantor_has_systemd" = '1' ]; then
   cantor_escaped_binary=$(cantor_systemd_escape "$cantor_binary_path")
   cantor_escaped_config_dir=$(cantor_systemd_escape "$cantor_config_dir")
   cantor_escaped_service_model_dir=$(cantor_systemd_escape "$cantor_model_dir")
+  cantor_escaped_service_library_dir=$(cantor_systemd_escape "$cantor_library_dir")
   {
     printf '%s\n' '# Managed by Cantor install.sh'
     printf '%s\n' '[Unit]'
@@ -327,7 +346,7 @@ if [ "$cantor_has_systemd" = '1' ]; then
     printf '%s\n' 'PrivateTmp=true'
     printf '%s\n' 'ProtectSystem=strict'
     printf '%s\n' 'ProtectHome=read-only'
-    printf 'ReadWritePaths="%s" "%s"\n' "$cantor_escaped_config_dir" "$cantor_escaped_service_model_dir"
+    printf 'ReadWritePaths="%s" "%s" "%s"\n' "$cantor_escaped_config_dir" "$cantor_escaped_service_model_dir" "$cantor_escaped_service_library_dir"
     printf '%s\n' 'RestrictSUIDSGID=true'
     printf '%s\n' 'LockPersonality=true'
     # systemd creates and tears down the control socket's directory, so a
@@ -377,6 +396,7 @@ printf '\n'
 printf 'Installed cantor at %s\n' "$cantor_binary_path"
 printf '%s config at %s\n' "$cantor_config_result" "$cantor_config_path"
 printf 'Model directory %s\n' "$cantor_model_dir"
+printf 'Library directory %s\n' "$cantor_library_dir"
 
 if [ "$cantor_has_systemd" = '1' ]; then
   printf 'Installed %s service at %s\n' \

@@ -41,3 +41,4 @@ docs/*
 docs/private-library-milestones/*
 !docs/private-library-milestones/implementation-notes.md
 !docs/private-library-milestones/milestone-0-implementation-report.html
+!docs/private-library-milestones/milestone-1-implementation-report.html

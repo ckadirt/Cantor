@@ -54,6 +54,7 @@ pub struct NodeState {
     pub node_public_key: String,
     pub pair_offer: Option<PairOffer>,
     pub connected: bool,
+    pub library: crate::library::Library,
 }
 
 pub type SharedState = Arc<Mutex<NodeState>>;
@@ -1330,12 +1331,15 @@ mod tests {
         paths.prepare_directory().expect("directory");
         let (config, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+        let library =
+            crate::library::Library::open(temporary.path().join("library")).expect("library");
         let state = shared(NodeState {
             config,
             config_path: paths.config,
             node_public_key: bs58::encode([9_u8; 32]).into_string(),
             pair_offer: None,
             connected: true,
+            library,
         });
         (state, temporary)
     }
