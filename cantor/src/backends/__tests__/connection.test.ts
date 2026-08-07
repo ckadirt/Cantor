@@ -59,9 +59,20 @@ function nodeInfoFixture(name: string): Record<string, unknown> {
     name,
     device_type: 'linux-x86_64',
     engine_version: 'ace-step-1.5-stub',
-    models: ['ace-step-1.5'],
-    limits: { max_concurrent_jobs: 0, max_song_seconds: 0 },
-    load: { active_jobs: 0, queued_jobs: 0 },
+    models: [{
+      selector: 'acestep:1.5-fast', family: 'acestep',
+      engine: 'acestep',
+    }],
+    limits: {
+      max_concurrent_jobs: 0, max_queued_jobs_per_principal: 32,
+      min_song_seconds: 15, max_song_seconds: 600,
+      max_caption_bytes: 1024, max_lyrics_bytes: 65536, max_page_limit: 100,
+    },
+    load: {active_jobs: 0, queued_jobs: 0, accepting_jobs: false},
+    features: {
+      jobs_create: false, library_list: false, artifacts_transfer: false,
+      secure_tunnel: false, job_controls: false,
+    },
   };
 }
 
@@ -159,7 +170,7 @@ describe('BackendConnection', () => {
       v: 1,
       t: 'tunnel',
       payload: {
-        v: 1,
+        v: 2,
         t: 'challenge',
         id: hello.payload.id,
         nonce: 'A'.repeat(43),
@@ -180,7 +191,7 @@ describe('BackendConnection', () => {
       v: 1,
       t: 'tunnel',
       payload: {
-        v: 1,
+        v: 2,
         t: 'challenge',
         id: hello.payload.id,
         nonce: 'A'.repeat(43),
@@ -191,7 +202,7 @@ describe('BackendConnection', () => {
       v: 1,
       t: 'tunnel',
       payload: {
-        v: 1,
+        v: 2,
         t: 'welcome',
         id: hello.payload.id,
         node: nodeInfoFixture('first-name'),
@@ -202,12 +213,42 @@ describe('BackendConnection', () => {
     socket.receive({
       v: 1,
       t: 'tunnel',
-      payload: {v: 1, t: 'node.info', node: nodeInfoFixture('renamed-node')},
+      payload: {v: 2, t: 'node.info', node: nodeInfoFixture('renamed-node')},
     });
 
     expect(nodeInfos.at(-1)?.name).toBe('renamed-node');
     // A push is not a failure and must not disturb the connection.
     expect(snapshots.at(-1)?.phase).toBe('ready');
+  });
+
+  it('does not let a stale response resolve a newer request', () => {
+    const {socket, snapshots} = connect();
+    socket.receive({v: 1, t: 'relay.presence', online: true});
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({v: 1, t: 'tunnel', payload: {
+      v: 2, t: 'challenge', id: hello.payload.id,
+      nonce: 'A'.repeat(43), node_pubkey: NODE_PUBKEY,
+    }});
+    socket.receive({v: 1, t: 'tunnel', payload: {
+      v: 2, t: 'welcome', id: hello.payload.id, node: nodeInfoFixture('node'),
+    }});
+    const status = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({v: 1, t: 'tunnel', payload: {
+      v: 2, t: 'jobs.page', id: 'stale-status', jobs: [],
+    }});
+    expect(snapshots.at(-1)?.jobs).toEqual([]);
+    socket.receive({v: 1, t: 'tunnel', payload: {
+      v: 2, t: 'jobs.page', id: status.payload.id, jobs: [],
+    }});
+    expect(snapshots.at(-1)?.phase).toBe('ready');
+  });
+
+  it('surfaces an application protocol mismatch', () => {
+    const {socket, snapshots} = connect();
+    socket.receive({v: 1, t: 'tunnel', payload: {v: 1, t: 'challenge'}});
+    expect(snapshots.at(-1)?.error).toBe(
+      'This app and node use incompatible protocol versions.',
+    );
   });
 
   // The one case that should still give up: an explicit authorization refusal.
@@ -218,11 +259,12 @@ describe('BackendConnection', () => {
       v: 1,
       t: 'tunnel',
       payload: {
-        v: 1,
+        v: 2,
         t: 'error',
         id: 'hello-1',
         code: 'rejected',
-        msg: 'This client key is not authorized.',
+        message: 'This client key is not authorized.',
+        retryable: false,
       },
     });
 

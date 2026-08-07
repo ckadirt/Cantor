@@ -5,7 +5,10 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use cantor_proto::{NodeInfo, NodeLimits, NodeLoad, NodeMessage};
+use cantor_proto::{
+    ErrorCode, MAX_CAPTION_BYTES, MAX_LYRICS_BYTES, MAX_PAGE_LIMIT, MAX_SONG_SECONDS,
+    MIN_SONG_SECONDS, ModelView, NodeFeatures, NodeInfo, NodeLimits, NodeLoad, NodeMessage,
+};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -296,7 +299,12 @@ fn apply_control_event(
                 // has already said no.
                 frames.push(tunnel_frame(
                     sid,
-                    &NodeMessage::error("", "rejected", "This client key is no longer authorized."),
+                    &NodeMessage::error(
+                        None,
+                        ErrorCode::Rejected,
+                        "This client key is no longer authorized.",
+                        false,
+                    ),
                 )?);
             }
             println!("revoked {key}; dropped {} live session(s)", frames.len());
@@ -352,7 +360,9 @@ fn handle_relay_text(
             let response = if can_open_client_session(sessions, &sid, MAX_CLIENT_SESSIONS) {
                 let mut locked = lock(state)?;
                 let locked = &mut *locked;
-                sessions.entry(sid.clone()).or_default().handle(
+                let session = sessions.entry(sid.clone()).or_default();
+                session.set_relay_session_id(&sid);
+                session.handle(
                     payload,
                     &mut locked.config,
                     config_path,
@@ -363,8 +373,9 @@ fn handle_relay_text(
             } else {
                 NodeMessage::error(
                     request_id(&payload),
-                    "too-many-sessions",
+                    ErrorCode::TemporarilyUnavailable,
                     "This node has reached its client session limit.",
+                    true,
                 )
             };
             let tunnel = RelayTunnel {
@@ -398,12 +409,8 @@ fn can_open_client_session(
     sessions.contains_key(sid) || sessions.len() < limit
 }
 
-fn request_id(payload: &Value) -> String {
-    payload
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_owned()
+fn request_id(payload: &Value) -> Option<String> {
+    payload.get("id").and_then(Value::as_str).map(str::to_owned)
 }
 
 fn static_node_info(config: &NodeConfig) -> NodeInfo {
@@ -412,7 +419,11 @@ fn static_node_info(config: &NodeConfig) -> NodeInfo {
     let models = crate::store::Store::new(config.model_root())
         .installed()
         .into_iter()
-        .map(|variant| variant.selector())
+        .map(|variant| ModelView {
+            selector: variant.selector(),
+            family: variant.model.clone(),
+            engine: variant.engine().to_owned(),
+        })
         .collect();
     NodeInfo {
         name: config.name.clone(),
@@ -421,11 +432,25 @@ fn static_node_info(config: &NodeConfig) -> NodeInfo {
         models,
         limits: NodeLimits {
             max_concurrent_jobs: 0,
-            max_song_seconds: 0,
+            max_queued_jobs_per_principal: 32,
+            min_song_seconds: MIN_SONG_SECONDS,
+            max_song_seconds: MAX_SONG_SECONDS,
+            max_caption_bytes: MAX_CAPTION_BYTES,
+            max_lyrics_bytes: MAX_LYRICS_BYTES,
+            max_page_limit: MAX_PAGE_LIMIT,
         },
         load: NodeLoad {
             active_jobs: 0,
             queued_jobs: 0,
+            accepting_jobs: false,
+            unavailable_reason: Some("durable_jobs_not_enabled".to_owned()),
+        },
+        features: NodeFeatures {
+            jobs_create: false,
+            library_list: false,
+            artifacts_transfer: false,
+            secure_tunnel: false,
+            job_controls: false,
         },
     }
 }

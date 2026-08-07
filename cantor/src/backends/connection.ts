@@ -4,14 +4,16 @@ import { signChallenge } from '../identity/derive';
 import { backendRoomUrl, createPairProof } from './pairing';
 import {
   isRecord,
+  parseJob,
   parseJobs,
   parseNodeInfo,
+  APPLICATION_PROTOCOL_VERSION,
+  RELAY_PROTOCOL_VERSION,
   type BackendRecord,
   type ConnectionSnapshot,
   type NodeInfo,
 } from './types';
 
-const PROTOCOL_VERSION = 1;
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_JITTER_MS = 250;
@@ -42,6 +44,7 @@ export class BackendConnection {
   private pairToken: string | undefined;
   private handshakeId: string | null = null;
   private requestSequence = 0;
+  private pendingRequests = new Map<string, 'jobs.page'>();
   private snapshot: ConnectionSnapshot = {
     phase: 'disconnected',
     error: null,
@@ -66,6 +69,7 @@ export class BackendConnection {
 
   stop(): void {
     this.stopped = true;
+    this.pendingRequests.clear();
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -82,6 +86,7 @@ export class BackendConnection {
     if (this.stopped || this.fatal) {
       return;
     }
+    this.pendingRequests.clear();
     this.setSnapshot({ phase: 'connecting', error: null, jobs: [] });
     let socket: WebSocket;
     try {
@@ -142,7 +147,7 @@ export class BackendConnection {
     } catch {
       return;
     }
-    if (!isRecord(frame) || frame.v !== PROTOCOL_VERSION) {
+    if (!isRecord(frame) || frame.v !== RELAY_PROTOCOL_VERSION) {
       return;
     }
     if (frame.t === 'relay.presence' && typeof frame.online === 'boolean') {
@@ -192,7 +197,7 @@ export class BackendConnection {
     const petname = devicePetname();
     this.sendApplication({
       t: 'hello',
-      v: PROTOCOL_VERSION,
+      v: APPLICATION_PROTOCOL_VERSION,
       id: this.handshakeId,
       pubkey: this.identity.publicKey,
       ...(pairProof ? { pair_proof: pairProof } : {}),
@@ -201,7 +206,11 @@ export class BackendConnection {
   }
 
   private handleNodeMessage(payload: unknown): void {
-    if (!isRecord(payload) || payload.v !== PROTOCOL_VERSION) {
+    if (!isRecord(payload)) {
+      return;
+    }
+    if (payload.v !== APPLICATION_PROTOCOL_VERSION) {
+      this.fail('This app and node use incompatible protocol versions.', true);
       return;
     }
     if (
@@ -231,7 +240,7 @@ export class BackendConnection {
       }
       this.sendApplication({
         t: 'auth',
-        v: PROTOCOL_VERSION,
+        v: APPLICATION_PROTOCOL_VERSION,
         id: payload.id,
         sig: signature,
       });
@@ -251,10 +260,12 @@ export class BackendConnection {
       }
       this.callbacks.onNodeInfo(nodeInfo);
       this.setSnapshot({ phase: 'ready', error: null, jobs: [] });
+      const statusId = this.nextRequestId('status');
+      this.pendingRequests.set(statusId, 'jobs.page');
       this.sendApplication({
         t: 'status',
-        v: PROTOCOL_VERSION,
-        id: this.nextRequestId('status'),
+        v: APPLICATION_PROTOCOL_VERSION,
+        id: statusId,
       });
       return;
     }
@@ -267,7 +278,11 @@ export class BackendConnection {
       }
       return;
     }
-    if (payload.t === 'jobs') {
+    if (payload.t === 'jobs.page' && typeof payload.id === 'string') {
+      if (this.pendingRequests.get(payload.id) !== 'jobs.page') {
+        return;
+      }
+      this.pendingRequests.delete(payload.id);
       const jobs = parseJobs(payload.jobs);
       if (jobs === null) {
         this.fail('Node job status is invalid.', false);
@@ -276,14 +291,36 @@ export class BackendConnection {
       this.setSnapshot({ ...this.snapshot, jobs });
       return;
     }
+    if (payload.t === 'job.updated') {
+      const updated = parseJob(payload.job);
+      if (updated === null) {
+        return;
+      }
+      const existing = this.snapshot.jobs.find(job => job.id === updated.id);
+      if (existing !== undefined && existing.revision >= updated.revision) {
+        return;
+      }
+      this.setSnapshot({
+        ...this.snapshot,
+        jobs: [updated, ...this.snapshot.jobs.filter(job => job.id !== updated.id)],
+      });
+      return;
+    }
     if (
       payload.t === 'error' &&
       typeof payload.code === 'string' &&
-      typeof payload.msg === 'string'
+      typeof payload.message === 'string' &&
+      typeof payload.retryable === 'boolean'
     ) {
+      if (typeof payload.id === 'string') {
+        this.pendingRequests.delete(payload.id);
+      }
       // Only an explicit authorization refusal is worth giving up on; retrying
       // it would just spin against a node that has already said no.
-      this.fail(payload.msg, payload.code === 'rejected');
+      this.fail(
+        payload.message,
+        payload.code === 'rejected' || payload.code === 'unsupported_version',
+      );
     }
   }
 
@@ -293,7 +330,7 @@ export class BackendConnection {
       return;
     }
     this.socket.send(
-      JSON.stringify({ v: PROTOCOL_VERSION, t: 'tunnel', payload }),
+      JSON.stringify({ v: RELAY_PROTOCOL_VERSION, t: 'tunnel', payload }),
     );
   }
 

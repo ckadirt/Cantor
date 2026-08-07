@@ -1,0 +1,1 @@
+{"t":"error","v":2,"id":"req-00042","code":"model_not_installed","message":"That model is not installed on this node.","retryable":false,"details":{"kind":"model","selector":"acestep:1.5-quality"}}

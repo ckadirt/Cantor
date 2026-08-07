@@ -1,0 +1,1 @@
+{"t":"jobs.page","v":2,"id":"req-00043","jobs":[{"id":"019c8f7e-5f2b-7a21-9ee0-8efb630bcb17","revision":3,"state":"running","stage":"diffuse","progress":{"completed":12,"total":50,"unit":"steps"},"model":"acestep:1.5-fast","created_at":"2026-07-24T18:05:12.483Z","updated_at":"2026-07-24T18:06:01.000Z"}]}

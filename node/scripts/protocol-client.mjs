@@ -50,7 +50,7 @@ socket.addEventListener('message', async event => {
   const frame = JSON.parse(event.data);
   if (frame.t === 'relay.presence') {
     console.log(`presence: ${frame.online ? 'online' : 'offline'}`);
-    if (frame.online) send({t: 'hello', v: 1, id: 'handshake-1', pubkey: clientKey, ...(pairProof ? {pair_proof: pairProof} : {}), petname});
+    if (frame.online) send({t: 'hello', v: 2, id: 'handshake-1', pubkey: clientKey, ...(pairProof ? {pair_proof: pairProof} : {}), petname});
     return;
   }
   if (frame.t === 'relay.error') throw new Error(`relay error [${frame.code}]: ${frame.msg}`);
@@ -63,11 +63,11 @@ socket.addEventListener('message', async event => {
       keyPair.privateKey,
       nodeAuthMessage(message.node_pubkey, clientKey, base64urlDecode(message.nonce)),
     );
-    send({t: 'auth', v: 1, id: message.id, sig: base64urlEncode(new Uint8Array(signature))});
+    send({t: 'auth', v: 2, id: message.id, sig: base64urlEncode(new Uint8Array(signature))});
   } else if (message.t === 'welcome') {
     console.log(`welcome: ${JSON.stringify(message.node)}`);
-    send({t: 'status', v: 1, id: 'status-1'});
-  } else if (message.t === 'jobs') {
+    send({t: 'status', v: 2, id: 'status-1'});
+  } else if (message.t === 'jobs.page') {
     console.log(`jobs: ${JSON.stringify(message.jobs)}`);
     completed = true;
     // --watch stays attached so unsolicited pushes and revocations are visible.
@@ -76,7 +76,7 @@ socket.addEventListener('message', async event => {
   } else if (message.t === 'node.info') {
     console.log(`node.info push: ${JSON.stringify(message.node)}`);
   } else if (message.t === 'error') {
-    console.error(`application error [${message.code}]: ${message.msg}`);
+    console.error(`application error [${message.code}]: ${message.message}`);
     process.exitCode = message.code === 'rejected' ? 2 : 1;
     socket.close(1000, 'application-error');
   }
