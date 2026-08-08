@@ -84,7 +84,7 @@ struct RelayTunnel<'a> {
 pub async fn run_forever(
     state: SharedState,
     identity: &NodeIdentity,
-    events: &mut mpsc::UnboundedReceiver<ControlEvent>,
+    events: &mut mpsc::Receiver<ControlEvent>,
 ) -> Result<()> {
     let mut reconnect_attempt = 0_u32;
 
@@ -120,7 +120,7 @@ pub async fn run_forever(
 async fn serve_once(
     state: &SharedState,
     identity: &NodeIdentity,
-    events: &mut mpsc::UnboundedReceiver<ControlEvent>,
+    events: &mut mpsc::Receiver<ControlEvent>,
     reconnect_attempt: &mut u32,
 ) -> Result<()> {
     let public_key = identity.public_key_base58();
@@ -343,6 +343,36 @@ fn apply_control_event(
                 .map(|(sid, _)| tunnel_frame(sid, &push))
                 .collect()
         }
+        ControlEvent::JobUpdated { principal_id, job } => {
+            let locked = lock(state)?;
+            let refreshed = static_node_info(&locked.config, &locked.library);
+            drop(locked);
+            let load_changed = node_info.load != refreshed.load;
+            *node_info = refreshed;
+            let private = NodeMessage::JobUpdated {
+                v: cantor_proto::PROTOCOL_VERSION,
+                job,
+            };
+            let mut frames = Vec::new();
+            for (sid, session) in sessions.iter() {
+                let Some(authenticated) = session.authenticated() else {
+                    continue;
+                };
+                if authenticated.principal_id == principal_id {
+                    frames.push(tunnel_frame(sid, &private)?);
+                }
+                if load_changed {
+                    frames.push(tunnel_frame(
+                        sid,
+                        &NodeMessage::NodeInfoChanged {
+                            v: cantor_proto::PROTOCOL_VERSION,
+                            node: node_info.clone(),
+                        },
+                    )?);
+                }
+            }
+            Ok(frames)
+        }
     }
 }
 
@@ -383,7 +413,7 @@ fn handle_relay_text(
                 let locked = &mut *locked;
                 let session = sessions.entry(sid.clone()).or_default();
                 session.set_relay_session_id(&sid);
-                session.handle(
+                let response = session.handle(
                     payload,
                     &mut locked.config,
                     config_path,
@@ -391,7 +421,11 @@ fn handle_relay_text(
                     public_key,
                     node_info,
                     &mut locked.library,
-                )?
+                )?;
+                if matches!(response, NodeMessage::JobAccepted { .. }) {
+                    locked.job_notify.notify_one();
+                }
+                response
             } else {
                 NodeMessage::error(
                     request_id(&payload),
@@ -448,13 +482,16 @@ fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> N
             engine: variant.engine().to_owned(),
         })
         .collect();
+    let has_disk = library
+        .available_bytes()
+        .is_ok_and(|bytes| bytes >= config.jobs.minimum_free_bytes);
     NodeInfo {
         name: config.name.clone(),
         device_type: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
-        engine_version: "ace-step-1.5-stub".to_owned(),
+        engine_version: "engine-abi-1".to_owned(),
         models,
         limits: NodeLimits {
-            max_concurrent_jobs: 0,
+            max_concurrent_jobs: 1,
             max_queued_jobs_per_principal: config.jobs.max_queued_per_principal,
             min_song_seconds: MIN_SONG_SECONDS,
             max_song_seconds: MAX_SONG_SECONDS,
@@ -463,10 +500,10 @@ fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> N
             max_page_limit: MAX_PAGE_LIMIT,
         },
         load: NodeLoad {
-            active_jobs: 0,
+            active_jobs: library.active_count().unwrap_or(0),
             queued_jobs: library.queued_count().unwrap_or(0),
-            accepting_jobs: true,
-            unavailable_reason: Some("execution_starts_in_m2".to_owned()),
+            accepting_jobs: has_disk,
+            unavailable_reason: (!has_disk).then(|| "insufficient_disk".to_owned()),
         },
         features: NodeFeatures {
             jobs_create: true,
@@ -556,6 +593,8 @@ mod tests {
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::control::{NodeState, SharedState, shared};
     use crate::session::ClientSession;
+    use cantor_proto::{JobState, JobView};
+    use sha2::{Digest, Sha256};
 
     use super::{
         ControlEvent, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
@@ -578,8 +617,75 @@ mod tests {
             pair_offer: None,
             connected: true,
             library,
+            job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         });
         (state, config_path, temporary)
+    }
+
+    #[test]
+    fn private_job_updates_are_sent_only_to_the_owner_principal() {
+        let (state, _config_path, _guard) = fixture();
+        let mut node_info = {
+            let locked = state.lock().expect("state");
+            static_node_info(&locked.config, &locked.library)
+        };
+        let mut sessions = HashMap::from([
+            (
+                "owner".to_owned(),
+                ClientSession::authenticated_with_bytes_for_test("owner-key", [1; 32]),
+            ),
+            (
+                "other".to_owned(),
+                ClientSession::authenticated_with_bytes_for_test("other-key", [2; 32]),
+            ),
+        ]);
+        let principal_id: [u8; 32] = Sha256::digest([1_u8; 32]).into();
+        let frames = apply_control_event(
+            ControlEvent::JobUpdated {
+                principal_id,
+                job: JobView {
+                    id: "job".into(),
+                    revision: 2,
+                    state: JobState::Running,
+                    stage: None,
+                    progress: None,
+                    model: "model:tag".into(),
+                    created_at: "now".into(),
+                    updated_at: "now".into(),
+                    error: None,
+                },
+            },
+            &mut sessions,
+            &state,
+            &mut node_info,
+        )
+        .expect("event");
+        let text = frames
+            .iter()
+            .map(|frame| frame.to_text().expect("text"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            text.iter()
+                .filter(|frame| frame.contains("job.updated"))
+                .count(),
+            1
+        );
+        assert!(
+            text.iter()
+                .any(|frame| frame.contains("job.updated") && frame.contains("owner"))
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|frame| frame.contains("job.updated") && frame.contains("other"))
+        );
+        assert_eq!(
+            text.iter()
+                .filter(|frame| frame.contains("node.info"))
+                .count(),
+            0,
+            "progress-only updates must not rebroadcast unchanged aggregate load"
+        );
     }
 
     /// Every frame this build does not understand must be skipped rather than

@@ -195,3 +195,153 @@ Implementation and the physical-phone exit gate completed on 2026-08-07.
   job `019fde5c-2ba5-7cc2-a4dd-80997a5db365`. After both app kill and node
   restart it showed one private queued job while global load showed two; the
   other principal's queued job remained absent from its list.
+
+---
+
+# Milestone 2 — Generation Progress
+
+## Status
+
+Implementation and the bounded physical-phone real-engine exit gate completed
+on 2026-08-08.
+
+## Decisions
+
+- Exactly one daemon scheduler owns claims. The SQL claim also refuses work
+  while any job is preparing/running/finalizing, so the invariant survives an
+  accidental second manager.
+- A claim increments `attempt` and `revision` transactionally. Every worker
+  mutation includes `(job_id, attempt)`, making callbacks from an older attempt
+  harmless.
+- Progress is durable at stage changes, stage completion, and at most once per
+  second otherwise. The engine callback only uses a bounded `try_send`; it
+  performs no database, filesystem, async, or WebSocket work.
+- Automatic execution retry is capped at three total claims. Startup observes
+  an interruption without incrementing the attempt, records
+  `recovering -> queued`, and the next actual claim consumes the attempt.
+- The canonical artifact is always `artifacts/master.wav`. Completion follows
+  write/fsync, independent WAV inspection, SHA-256, atomic rename, directory
+  fsync, manifest write, then the artifact/job database transaction.
+- CLI generation uses a SHA-256-derived reserved local-operator principal.
+  Ctrl-C only drops its observer; `--detach` is explicit, and `-o` exports the
+  already-verified canonical master rather than becoming an engine output path.
+- The app snapshot repository is keyed by node public key and job ID. Both list
+  pages and pushes use the same higher-revision-only reducer; disconnect changes
+  presentation to stale/offline without mutating canonical job state.
+
+## Implementation Log
+
+- Added migration 002 artifact metadata and scheduler/progress columns.
+- Added transactional FIFO claims, durable transition helpers, restart-from-
+  request recovery, three-attempt failure policy, artifact verification/export,
+  and focused lifecycle tests.
+- Added the single async scheduler, blocking real engine adapter, bounded
+  progress channel, stable error classification, and truthful aggregate load.
+- Added principal-targeted `job.updated` relay fan-out; only aggregate load is
+  sent to other authenticated principals.
+- Replaced direct CLI inference with durable local submission/follow/export.
+- Added a serialized mobile job repository, revision reducer, offline-retained
+  queue, technical stage labels, real unit progress, and safe terminal errors.
+- Proved the light engine path independently of the node on CPU: 0.6B LM
+  planning peaked at 1.5 GiB and a one-step, 15-second Q4 turbo synthesis
+  completed in 39.35 seconds at a 4.8 GiB peak with no swap.
+- Copied the reusable GGUF set from the external partition into persistent
+  `/home/ckadirt/Projects/Cantor/ckpts`, verified all six SHA-256 digests, and
+  kept the source partition mounted read-only. The physical gate node references
+  the required blobs through same-filesystem hard links rather than duplicating
+  them.
+- Suppressed aggregate `node.info` fan-out for progress-only job revisions.
+  Private `job.updated` remains immediate for the owner; aggregate load is
+  broadcast only when its computed value actually changes.
+- Reasserted the accepted request's explicit lyrics, duration, steps, CFG, and
+  seed after the engine planning phase. Planning may enrich a caption, but it
+  cannot silently replace user controls. Protocol `steps` and `cfg` map to the
+  engine's `inference_steps` and `guidance_scale` fields.
+- Unified normal completion, interrupted-finalization adoption, and completed-
+  job startup reconciliation on the job-root `manifest.json`. A verified
+  artifact advances that file from the empty schema-1 acceptance manifest to
+  the canonical schema-2 artifact manifest before the completion transaction.
+
+## Deviations
+
+- The draft proposes a separate command actor around all M1 submit/list/get
+  calls. The existing `NodeState` mutex already provides the same single
+  serialization boundary, while the new scheduler copies owned work out before
+  inference. M2 therefore adds a bounded event/progress channel and scheduler
+  facade without duplicating SQLite ownership in a second actor. No lock is
+  held during manifest fetch, engine load, inference, or WAV writing.
+- App job snapshots and submission outbox use two AsyncStorage keys, so linking
+  acceptance and the first snapshot cannot be one native cross-key transaction.
+  The outbox remains accepted with the canonical ID and `jobs.list` repairs the
+  snapshot idempotently after any crash. Introducing a second mobile database
+  solely for this link remains less conservative than the existing proven
+  native store; M3 owns richer query/cache migration.
+- M2 keeps the protocol's existing stable `internal` code for repeat-engine
+  interruption and corrupt-artifact diagnostics because M0 did not reserve
+  narrower codes. Messages are safe and actionable; expanding a frozen enum
+  without a coordinated protocol revision would be a breaking deviation.
+- Progress events use a bounded best-effort relay queue. If it fills, durable
+  SQLite revision state wins and the next correlated list repairs the app; the
+  engine is never stalled by a slow relay.
+- The physical phone uses the already-established local real relay through ADB
+  reverse because that phone still lacks DNS. Hosted carrier behavior was
+  exercised separately in M1; M2's new privacy/property is node-side targeted
+  fan-out and is covered by a two-principal relay test plus the local real relay.
+- The first real-engine harness copied required GGUFs under `/tmp`, which is a
+  7.3 GiB RAM-backed tmpfs on this workstation, and selected Vulkan on an
+  integrated AMD GPU that shares system RAM. During the run, the kernel's prior-
+  boot log records a global OOM kill with AMD TTM allocation frames, and the
+  desktop became unresponsive. The conservative correction is disk-backed
+  persistent weights/library, CPU-only inference, six worker threads, a 6 GiB
+  hard cgroup memory limit, 512 MiB swap limit, and monitored memory before the
+  phone submits. The external source disk remains read-only. This changes only
+  the validation harness; production storage was never specified as tmpfs.
+- The published engine backend used by the installed node rewrote an explicit
+  15-second request to 203 seconds when lyrics were absent, unlike the newer
+  source checkout. The first bounded phone run was stopped conservatively at
+  diffusion step 1/8; a second `[Instrumental]` run was rejected by a temporary
+  duration ceiling. The durable recovery path safely exhausted/recovered those
+  jobs. The adapter now restores every explicit accepted control after planning
+  and retains the ceiling as defense in depth. The final request stayed at 15
+  seconds. No engine checkout or external-disk file was modified.
+- Completion originally wrote finalized metadata as
+  `artifacts/artifacts.json`, leaving the job-root schema-1 manifest stale. The
+  conservative fix preserves the documented single manifest: all completion
+  paths atomically replace job-root `manifest.json`, and startup repairs a stale
+  manifest only after the indexed master passes digest verification. A legacy
+  nested metadata file is left untouched rather than silently deleted.
+
+## Verification
+
+- `cargo fmt --check`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace --no-fail-fast`: 95 tests passed (74 node, 21
+  protocol).
+- `npx tsc --noEmit`: passed.
+- `npx jest --runInBand`: 145 tests passed.
+- `npx eslint .`: passed with the same pre-existing inline-style warning in
+  `src/onboarding/panels/kit.tsx`.
+- Relay `npm run check` and Vitest: passed; worker types, TypeScript, assets,
+  catalogs, backend manifests, and 6 tests are clean.
+- `git diff --check`: passed.
+- Persistent model copy: 8,278,926,368 bytes across six GGUF files; source and
+  destination SHA-256 digests match. Destination is the main ext4 filesystem;
+  source is a read-only ext4 mount.
+- Isolated published CPU engine: 0.6B LM completed in 10.45 seconds at 1.5 GiB
+  peak; Q4 turbo synthesis completed a valid 14.4-second, 48 kHz stereo WAV in
+  39.35 seconds at 4.8 GiB peak. Both ran with cgroup limits and zero swap.
+- Physical Android `6b1f6ba8629c`: its existing app identity was already paired
+  with `ckadirt-mf-m2`. A phone request with caption
+  `final_phone_instrumental_smoke`, explicit `[Instrumental]`, and 15-second
+  duration completed on attempt 1 in about 54 seconds as job
+  `019fe1cb-a56a-7591-a7c1-2d577c1d01fc`, revision 33. The node stayed below
+  its 6 GiB hard memory limit (5,369,511,936-byte peak) and 512 MiB swap cap.
+- The canonical output is 2,734,124 bytes, PCM 16-bit, 48 kHz stereo, 14.240
+  seconds, SHA-256
+  `4c85f3284c88520949315d21e0be171a164ebfa08213889e2124832caf1b3aea`.
+  The filesystem, schema-2 manifest, SQLite artifact row, and independent
+  `ffprobe` inspection agree; `PRAGMA quick_check` returns `ok`.
+- After node restart and Android force-stop/relaunch, the same pairing returned
+  READY with `0 active · 0 queued`; the phone restored all three job snapshots,
+  including `Generation complete r33`. Startup repaired the real job's stale
+  root manifest without regenerating or changing the WAV.

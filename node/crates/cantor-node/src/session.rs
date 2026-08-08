@@ -62,13 +62,18 @@ impl ClientSession {
 
     #[cfg(test)]
     pub fn authenticated_for_test(key: &str) -> Self {
+        Self::authenticated_with_bytes_for_test(key, [1_u8; 32])
+    }
+
+    #[cfg(test)]
+    pub fn authenticated_with_bytes_for_test(key: &str, bytes: [u8; 32]) -> Self {
         Self {
             pending: None,
             relay_session_id: String::new(),
             authenticated: Some(StoredAuthentication::new(
                 String::new(),
                 key.to_owned(),
-                [1_u8; 32],
+                bytes,
             )),
         }
     }

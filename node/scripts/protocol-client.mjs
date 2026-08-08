@@ -1,7 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
 import {createHmac, randomUUID, webcrypto} from 'node:crypto';
 
-const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--client-request-id UUID] [--retry] [--watch]';
+const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--duration SECONDS] [--steps COUNT] [--client-request-id UUID] [--retry] [--follow] [--watch]';
 const pairValue = process.argv[2];
 const identityIndex = process.argv.indexOf('--identity');
 if (pairValue === undefined || identityIndex < 0 || process.argv[identityIndex + 1] === undefined) {
@@ -19,20 +19,25 @@ if (pairUri.protocol !== 'cantor:' || nodeKey === null || relayValue === null) {
 
 const identityPath = process.argv[identityIndex + 1];
 const watch = process.argv.includes('--watch');
+const follow = process.argv.includes('--follow');
 const petnameIndex = process.argv.indexOf('--petname');
 const petname = petnameIndex < 0 ? 'protocol-client demo' : process.argv[petnameIndex + 1];
 const createIndex = process.argv.indexOf('--create');
 const captionIndex = process.argv.indexOf('--caption');
+const durationIndex = process.argv.indexOf('--duration');
+const stepsIndex = process.argv.indexOf('--steps');
 const requestIdIndex = process.argv.indexOf('--client-request-id');
 const createModel = createIndex < 0 ? null : process.argv[createIndex + 1];
 const caption = captionIndex < 0 ? null : process.argv[captionIndex + 1];
+const duration = optionalInteger('--duration', durationIndex);
+const steps = optionalInteger('--steps', stepsIndex);
 const clientRequestId = requestIdIndex < 0 ? randomUUID() : process.argv[requestIdIndex + 1];
 if ((createModel === null) !== (caption === null) || createModel === undefined || caption === undefined) {
   throw new Error('--create MODEL and --caption TEXT must be provided together.');
 }
 const createRequest = createModel === null ? null : {
   t: 'job.create', v: 2, id: 'create-1', client_request_id: clientRequestId,
-  model: createModel, generation: {caption},
+  model: createModel, generation: {caption, ...(duration === null ? {} : {duration}), ...(steps === null ? {} : {steps})},
 };
 const retry = process.argv.includes('--retry');
 let keyPair;
@@ -97,10 +102,20 @@ socket.addEventListener('message', async event => {
     }
   } else if (message.t === 'jobs.page') {
     console.log(`jobs: ${JSON.stringify(message.jobs)}`);
+    if (follow && acceptedJobId !== null) {
+      console.log('following durable job updates');
+      return;
+    }
     completed = true;
     // --watch stays attached so unsolicited pushes and revocations are visible.
     if (!watch) socket.close(1000, 'demo-complete');
     else console.log('watching for pushes; Ctrl-C to stop');
+  } else if (message.t === 'job.updated') {
+    console.log(`job.updated: ${JSON.stringify(message.job)}`);
+    if (follow && message.job.id === acceptedJobId && ['completed', 'failed', 'cancelled'].includes(message.job.state)) {
+      completed = true;
+      if (!watch) socket.close(1000, 'job-terminal');
+    }
   } else if (message.t === 'node.info') {
     console.log(`node.info push: ${JSON.stringify(message.node)}`);
   } else if (message.t === 'error') {
@@ -112,6 +127,15 @@ socket.addEventListener('message', async event => {
 socket.addEventListener('close', () => {
   if (!completed && process.exitCode === undefined) process.exitCode = 1;
 });
+
+function optionalInteger(flag, index) {
+  if (index < 0) return null;
+  const value = Number(process.argv[index + 1]);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${flag} requires a positive integer.`);
+  }
+  return value;
+}
 socket.addEventListener('error', () => {
   console.error('WebSocket error.');
   process.exitCode = 1;

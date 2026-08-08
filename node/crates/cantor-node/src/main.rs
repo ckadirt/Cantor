@@ -6,6 +6,7 @@ mod control;
 mod engine;
 mod generate;
 mod identity;
+mod jobs;
 mod library;
 mod pairing;
 mod relay;
@@ -43,7 +44,7 @@ Usage:
   cantor list      [--all]
   cantor rm        <model:tag>
   cantor backends  [--install] [--use cpu|cuda12|vulkan]
-  cantor generate  <caption> [--model model:tag] [-o out.wav]
+  cantor generate  <caption> [--model model:tag] [-o out.wav] [--detach]
   cantor upgrade   [--check]
 
 Options common to every command:
@@ -90,6 +91,7 @@ struct Cli {
     use_backend: Option<String>,
     model: Option<String>,
     output: Option<String>,
+    detach: bool,
     positional: Vec<String>,
 }
 
@@ -140,6 +142,7 @@ impl Cli {
             use_backend: None,
             model: None,
             output: None,
+            detach: false,
             positional: Vec::new(),
         };
         while let Some(option) = args.next() {
@@ -175,6 +178,7 @@ impl Cli {
                 Some("--output") | Some("-o") => {
                     cli.output = Some(next_utf8_value(&mut args, "--output")?);
                 }
+                Some("--detach") => cli.detach = true,
                 Some("--version") | Some("-V") => {
                     println!("cantor {}", update::CURRENT_VERSION);
                     std::process::exit(0);
@@ -276,9 +280,11 @@ async fn run(cli: Cli) -> Result<()> {
         pair_offer: None,
         connected: false,
         library,
+        job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
     });
-    let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel::<ControlEvent>();
-    tokio::spawn(control::serve(listener, state.clone(), events_tx));
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<ControlEvent>(128);
+    tokio::spawn(control::serve(listener, state.clone(), events_tx.clone()));
+    tokio::spawn(jobs::run(state.clone(), events_tx));
 
     let result = relay::run_forever(state, &identity, &mut events_rx).await;
     // The socket is not reusable once this process is gone, and a stale one
@@ -363,16 +369,16 @@ async fn streaming_command(cli: Cli) -> Result<()> {
                 .positional
                 .first()
                 .context("generate needs a caption, like `cantor generate \"a slow blues\"`")?;
-            // Resolved here rather than in the daemon: a relative path means
-            // relative to where the person typed the command.
-            let output = cli
-                .output
-                .clone()
-                .unwrap_or_else(|| "cantor.wav".to_owned());
-            let absolute =
-                std::path::absolute(&output).unwrap_or_else(|_| std::path::PathBuf::from(&output));
+            // Resolved here rather than in the daemon: a relative export path
+            // means relative to where the person typed the command.
+            let output = cli.output.as_ref().map(|output| {
+                std::path::absolute(output)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(output))
+                    .display()
+                    .to_string()
+            });
             json!({"v": 1, "id": id, "t": "generate", "caption": caption,
-                   "model": cli.model, "output": absolute.display().to_string()})
+                   "model": cli.model, "output": output, "detach": cli.detach})
         }
         _ => json!({"v": 1, "id": id, "t": "catalog"}),
     };
