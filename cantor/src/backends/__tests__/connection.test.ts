@@ -365,6 +365,49 @@ describe('BackendConnection', () => {
       },
     });
     await expect(accepted).resolves.toMatchObject({ state: 'queued' });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.updated',
+        job: {
+          id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+          revision: 3,
+          state: 'running',
+          stage: 'diffuse',
+          progress: { completed: 2, total: 10, unit: 'steps' },
+          model: 'acestep:1.5-fast',
+          created_at: '2026-08-07T00:00:00Z',
+          updated_at: '2026-08-07T00:00:02Z',
+        },
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.updated',
+        job: {
+          id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+          revision: 2,
+          state: 'queued',
+          model: 'acestep:1.5-fast',
+          created_at: '2026-08-07T00:00:00Z',
+          updated_at: '2026-08-07T00:00:01Z',
+        },
+      },
+    });
+    expect(snapshots.at(-1)?.jobs[0]).toMatchObject({
+      revision: 3,
+      state: 'running',
+    });
+    socket.receive({ v: 1, t: 'relay.presence', online: false });
+    expect(snapshots.at(-1)).toMatchObject({
+      phase: 'attached',
+      jobs: [{ revision: 3, state: 'running' }],
+    });
   });
 
   it('surfaces an application protocol mismatch', () => {

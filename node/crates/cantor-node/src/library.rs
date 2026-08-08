@@ -6,15 +6,19 @@
 
 use std::ffi::CString;
 use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use cantor_proto::{GenerationRequest, JobState, JobView};
+use cantor_proto::{
+    ErrorCode, GenerationRequest, GenerationStage, JobError, JobProgress, JobState, JobView,
+    ProgressUnit,
+};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
@@ -52,11 +56,66 @@ CREATE INDEX IF NOT EXISTS jobs_owner_created
   ON jobs(principal_id, created_at DESC, id DESC);
 "#;
 
+const MIGRATION_002: &str = r#"
+CREATE TABLE IF NOT EXISTS artifacts (
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  kind TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  byte_length INTEGER NOT NULL CHECK(byte_length > 0),
+  sha256 TEXT NOT NULL,
+  sample_rate INTEGER NOT NULL CHECK(sample_rate > 0),
+  channels INTEGER NOT NULL CHECK(channels > 0),
+  duration_ms INTEGER NOT NULL CHECK(duration_ms > 0),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(job_id, kind)
+);
+CREATE INDEX IF NOT EXISTS jobs_scheduler
+  ON jobs(state, priority DESC, created_at ASC, id ASC);
+"#;
+
+const MAX_ATTEMPTS: u32 = 3;
+const JOB_VIEW_COLUMNS: &str = "id,revision,state,stage,progress_completed,progress_total,progress_unit,\
+     model_selector,created_at,updated_at,error_code,error_message";
+
 #[derive(Clone, Debug)]
 pub struct Submission {
     pub client_request_id: String,
     pub model: String,
     pub generation: GenerationRequest,
+}
+
+/// Immutable work copied out before inference. `attempt` is also the worker
+/// token, preventing a late callback from mutating a newer claim.
+#[derive(Clone, Debug)]
+pub struct WorkItem {
+    pub id: String,
+    pub principal_id: [u8; 32],
+    pub model: String,
+    pub generation: GenerationRequest,
+    pub engine: String,
+    pub component_digests: Vec<String>,
+    pub attempt: u32,
+    pub artifact_directory: PathBuf,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ArtifactRecord {
+    pub kind: String,
+    pub relative_path: String,
+    pub media_type: String,
+    pub byte_length: u64,
+    pub sha256: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub duration_ms: u64,
+    pub created_at: String,
+}
+
+#[derive(Debug)]
+pub enum FinishResult {
+    Requeued(JobView),
+    Failed(JobView),
 }
 
 #[derive(Debug, PartialEq)]
@@ -85,6 +144,22 @@ struct AcceptedModel<'a> {
     component_digests: Vec<&'a str>,
 }
 
+#[derive(Deserialize)]
+struct AcceptedRequestSidecar {
+    schema: u8,
+    job_id: String,
+    principal_id: String,
+    model: AcceptedModelOwned,
+    generation: GenerationRequest,
+}
+
+#[derive(Deserialize)]
+struct AcceptedModelOwned {
+    selector: String,
+    engine: String,
+    component_digests: Vec<String>,
+}
+
 pub struct Library {
     root: PathBuf,
     connection: Connection,
@@ -109,13 +184,28 @@ impl Library {
             "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(1,?1,?2)",
             params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
         )?;
+        add_column_if_missing(
+            &connection,
+            "jobs",
+            "priority",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(&connection, "jobs", "progress_completed", "INTEGER")?;
+        add_column_if_missing(&connection, "jobs", "progress_total", "INTEGER")?;
+        add_column_if_missing(&connection, "jobs", "progress_unit", "TEXT")?;
+        connection.execute_batch(MIGRATION_002)?;
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(2,?1,?2)",
+            params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
+        )?;
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         if check != "ok" {
             bail!("library database quick_check failed");
         }
         fs::set_permissions(&database, fs::Permissions::from_mode(FILE_MODE))?;
-        let library = Self { root, connection };
+        let mut library = Self { root, connection };
         library.reconcile_startup()?;
+        library.recover_interrupted_jobs()?;
         Ok(library)
     }
 
@@ -136,8 +226,10 @@ impl Library {
         if let Some((existing_hash, job)) = self
             .connection
             .query_row(
-                "SELECT request_hash,id,revision,state,model_selector,created_at,updated_at,error_code,error_message
-                 FROM jobs WHERE principal_id=?1 AND client_request_id=?2",
+                &format!(
+                    "SELECT request_hash,{JOB_VIEW_COLUMNS}
+                     FROM jobs WHERE principal_id=?1 AND client_request_id=?2"
+                ),
                 params![principal, submission.client_request_id],
                 |row| Ok((row.get::<_, String>(0)?, job_from_row(row, 1)?)),
             )
@@ -218,10 +310,10 @@ impl Library {
     }
 
     pub fn list(&self, principal: &[u8; 32], limit: u32) -> Result<Vec<JobView>> {
-        let mut statement = self.connection.prepare(
-            "SELECT id,revision,state,model_selector,created_at,updated_at,error_code,error_message
-             FROM jobs WHERE principal_id=?1 ORDER BY created_at DESC,id DESC LIMIT ?2",
-        )?;
+        let mut statement = self.connection.prepare(&format!(
+            "SELECT {JOB_VIEW_COLUMNS} FROM jobs
+             WHERE principal_id=?1 ORDER BY created_at DESC,id DESC LIMIT ?2"
+        ))?;
         statement
             .query_map(params![hex(principal), limit], |row| job_from_row(row, 0))?
             .collect::<rusqlite::Result<Vec<_>>>()
@@ -231,8 +323,7 @@ impl Library {
     pub fn get(&self, principal: &[u8; 32], id: &str) -> Result<Option<JobView>> {
         self.connection
             .query_row(
-                "SELECT id,revision,state,model_selector,created_at,updated_at,error_code,error_message
-                 FROM jobs WHERE principal_id=?1 AND id=?2",
+                &format!("SELECT {JOB_VIEW_COLUMNS} FROM jobs WHERE principal_id=?1 AND id=?2"),
                 params![hex(principal), id],
                 |row| job_from_row(row, 0),
             )
@@ -247,6 +338,312 @@ impl Library {
                 [],
                 |row| row.get(0),
             )
+            .map_err(Into::into)
+    }
+
+    pub fn active_count(&self) -> Result<u32> {
+        self.connection
+            .query_row(
+                "SELECT count(*) FROM jobs WHERE state IN ('preparing','running','finalizing')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+    }
+
+    /// Atomically claims the oldest eligible job. With one manager this also
+    /// documents the global single-worker invariant in the database boundary.
+    pub fn claim_next(&mut self) -> Result<Option<(WorkItem, JobView)>> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let candidate = transaction
+            .query_row(
+                "SELECT id,principal_id,model_selector,request_json,attempt
+                 FROM jobs WHERE state='queued' AND attempt < ?1
+                   AND NOT EXISTS (
+                     SELECT 1 FROM jobs active
+                     WHERE active.state IN ('preparing','running','finalizing')
+                   )
+                 ORDER BY priority DESC,created_at ASC,id ASC LIMIT 1",
+                params![MAX_ATTEMPTS],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, u32>(4)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((id, principal_hex, model, request_json, previous_attempt)) = candidate else {
+            transaction.commit()?;
+            return Ok(None);
+        };
+        let attempt = previous_attempt + 1;
+        let now = now_rfc3339();
+        let changed = transaction.execute(
+            "UPDATE jobs SET state='preparing',stage=NULL,progress_completed=NULL,
+             progress_total=NULL,progress_unit=NULL,error_code=NULL,error_message=NULL,
+             attempt=?2,revision=revision+1,updated_at=?3
+             WHERE id=?1 AND state='queued' AND attempt=?4",
+            params![id, attempt, now, previous_attempt],
+        )?;
+        if changed != 1 {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        let job = transaction.query_row(
+            &format!("SELECT {JOB_VIEW_COLUMNS} FROM jobs WHERE id=?1"),
+            params![id],
+            |row| job_from_row(row, 0),
+        )?;
+        let principal_id = decode_hex_32(&principal_hex)?;
+        let generation = serde_json::from_str(&request_json)
+            .context("accepted generation request is not valid JSON")?;
+        let artifact_directory = self
+            .root
+            .join("jobs")
+            .join(&principal_hex)
+            .join(&id)
+            .join("artifacts");
+        let sidecar_path = artifact_directory
+            .parent()
+            .context("artifact directory has no job parent")?
+            .join("request.json");
+        let sidecar: AcceptedRequestSidecar =
+            serde_json::from_reader(File::open(&sidecar_path)?)
+                .with_context(|| format!("failed to read {}", sidecar_path.display()))?;
+        if sidecar.schema != 1
+            || sidecar.job_id != id
+            || sidecar.principal_id != principal_hex
+            || sidecar.model.selector != model
+            || sidecar.generation != generation
+        {
+            bail!("accepted request sidecar does not match its database row");
+        }
+        write_status(&artifact_directory, &job, attempt)?;
+        transaction.commit()?;
+        Ok(Some((
+            WorkItem {
+                id,
+                principal_id,
+                model,
+                generation,
+                engine: sidecar.model.engine,
+                component_digests: sidecar.model.component_digests,
+                attempt,
+                artifact_directory,
+            },
+            job,
+        )))
+    }
+
+    /// Persists one already-throttled engine callback. The expected attempt
+    /// check rejects stale callbacks after recovery or retry.
+    pub fn record_progress(
+        &mut self,
+        work: &WorkItem,
+        stage: GenerationStage,
+        completed: u32,
+        total: Option<u32>,
+        unit: ProgressUnit,
+    ) -> Result<Option<JobView>> {
+        let now = now_rfc3339();
+        let stage = enum_text(stage)?;
+        let unit = enum_text(unit)?;
+        let changed = self.connection.execute(
+            "UPDATE jobs SET state='running',stage=?3,progress_completed=?4,
+             progress_total=?5,progress_unit=?6,revision=revision+1,updated_at=?7
+             WHERE id=?1 AND attempt=?2 AND state IN ('preparing','running')",
+            params![work.id, work.attempt, stage, completed, total, unit, now],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .job_by_id(&work.id)?
+            .context("updated job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(job))
+    }
+
+    pub fn begin_finalizing(&mut self, work: &WorkItem) -> Result<Option<JobView>> {
+        let now = now_rfc3339();
+        let changed = self.connection.execute(
+            "UPDATE jobs SET state='finalizing',stage=NULL,progress_completed=NULL,
+             progress_total=NULL,progress_unit=NULL,revision=revision+1,updated_at=?3
+             WHERE id=?1 AND attempt=?2 AND state='running'",
+            params![work.id, work.attempt, now],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .job_by_id(&work.id)?
+            .context("finalizing job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(job))
+    }
+
+    /// Writes, verifies, atomically publishes and indexes the canonical WAV.
+    /// The completed transition happens last, in the artifact transaction.
+    pub fn complete(
+        &mut self,
+        work: &WorkItem,
+        audio: &crate::generate::Audio,
+    ) -> Result<Option<(JobView, ArtifactRecord)>> {
+        prepare_real_directory(&work.artifact_directory)?;
+        let temporary = work
+            .artifact_directory
+            .join(format!(".master.{}.tmp", Uuid::new_v4()));
+        audio.write_wav(&temporary)?;
+        let inspected = inspect_wav(&temporary)?;
+        if inspected.sample_rate != audio.sample_rate || inspected.frames != audio.frames() as u64 {
+            bail!("written WAV properties do not match the engine output");
+        }
+        let final_path = work.artifact_directory.join("master.wav");
+        if final_path.exists() {
+            bail!("a canonical master already exists for job {}", work.id);
+        }
+        fs::rename(&temporary, &final_path)?;
+        File::open(&work.artifact_directory)?.sync_all()?;
+
+        let now = now_rfc3339();
+        let record = ArtifactRecord {
+            kind: "master".into(),
+            relative_path: "artifacts/master.wav".into(),
+            media_type: "audio/wav".into(),
+            byte_length: inspected.byte_length,
+            sha256: inspected.sha256,
+            sample_rate: inspected.sample_rate,
+            channels: inspected.channels,
+            duration_ms: inspected.duration_ms,
+            created_at: now.clone(),
+        };
+        write_artifact_manifest(&work.artifact_directory, &work.id, &record)?;
+
+        let transaction = self.connection.transaction()?;
+        let state: Option<(String, u32)> = transaction
+            .query_row(
+                "SELECT state,attempt FROM jobs WHERE id=?1",
+                params![work.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        if state != Some(("finalizing".into(), work.attempt)) {
+            transaction.rollback()?;
+            return Ok(None);
+        }
+        insert_artifact(&transaction, &work.id, &record)?;
+        transaction.execute(
+            "UPDATE jobs SET state='completed',revision=revision+1,updated_at=?2
+             WHERE id=?1 AND state='finalizing' AND attempt=?3",
+            params![work.id, now, work.attempt],
+        )?;
+        let job = transaction.query_row(
+            &format!("SELECT {JOB_VIEW_COLUMNS} FROM jobs WHERE id=?1"),
+            params![work.id],
+            |row| job_from_row(row, 0),
+        )?;
+        transaction.commit()?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some((job, record)))
+    }
+
+    pub fn finish_failure(
+        &mut self,
+        work: &WorkItem,
+        code: ErrorCode,
+        message: &str,
+        retryable: bool,
+    ) -> Result<Option<FinishResult>> {
+        let requeue = retryable && work.attempt < MAX_ATTEMPTS;
+        let state = if requeue { "queued" } else { "failed" };
+        let (code, message) = if requeue {
+            (None, None)
+        } else {
+            (Some(enum_text(code)?), Some(message))
+        };
+        let now = now_rfc3339();
+        let changed = self.connection.execute(
+            "UPDATE jobs SET state=?3,stage=NULL,progress_completed=NULL,
+             progress_total=NULL,progress_unit=NULL,error_code=?4,error_message=?5,
+             revision=revision+1,updated_at=?6
+             WHERE id=?1 AND attempt=?2 AND state IN ('preparing','running','finalizing')",
+            params![work.id, work.attempt, state, code, message, now],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .job_by_id(&work.id)?
+            .context("failed job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(if requeue {
+            FinishResult::Requeued(job)
+        } else {
+            FinishResult::Failed(job)
+        }))
+    }
+
+    pub fn verified_master_path(&self, principal: &[u8; 32], id: &str) -> Result<PathBuf> {
+        let artifact = self
+            .connection
+            .query_row(
+                "SELECT a.relative_path,a.sha256 FROM artifacts a
+                 JOIN jobs j ON j.id=a.job_id
+                 WHERE j.principal_id=?1 AND j.id=?2 AND j.state='completed' AND a.kind='master'",
+                params![hex(principal), id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()?
+            .context("completed job has no indexed master artifact")?;
+        if artifact.0 != "artifacts/master.wav" {
+            bail!("master artifact path is not canonical");
+        }
+        let path = self
+            .root
+            .join("jobs")
+            .join(hex(principal))
+            .join(id)
+            .join(&artifact.0);
+        let inspected = inspect_wav(&path)?;
+        if inspected.sha256 != artifact.1 {
+            bail!("master artifact digest does not match its index");
+        }
+        Ok(path)
+    }
+
+    pub fn export_master(&self, principal: &[u8; 32], id: &str, destination: &Path) -> Result<()> {
+        let source = self.verified_master_path(principal, id)?;
+        let parent = destination
+            .parent()
+            .context("export destination has no parent directory")?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".cantor-export.")
+            .tempfile_in(parent)?;
+        let mut input = File::open(&source)?;
+        std::io::copy(&mut input, temporary.as_file_mut())?;
+        temporary.as_file().sync_all()?;
+        let temporary = temporary.into_temp_path();
+        temporary
+            .persist(destination)
+            .map_err(|error| error.error)?;
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    }
+
+    fn job_by_id(&self, id: &str) -> Result<Option<JobView>> {
+        self.connection
+            .query_row(
+                &format!("SELECT {JOB_VIEW_COLUMNS} FROM jobs WHERE id=?1"),
+                params![id],
+                |row| job_from_row(row, 0),
+            )
+            .optional()
             .map_err(Into::into)
     }
 
@@ -316,6 +713,142 @@ impl Library {
         Ok(())
     }
 
+    /// M2 has no opaque checkpoints: interrupted inference restarts from the
+    /// immutable request. A durable final WAV is adopted instead of generated
+    /// twice when the crash landed between rename and the DB commit.
+    fn recover_interrupted_jobs(&mut self) -> Result<()> {
+        let mut statement = self.connection.prepare(
+            "SELECT id,principal_id,state,attempt FROM jobs
+             WHERE state IN ('preparing','running','finalizing')",
+        )?;
+        let interrupted = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+
+        for (id, principal, state, attempt) in interrupted {
+            let artifacts = self
+                .root
+                .join("jobs")
+                .join(&principal)
+                .join(&id)
+                .join("artifacts");
+            let master = artifacts.join("master.wav");
+            if state == "finalizing" && master.is_file() {
+                let inspected = match inspect_wav(&master) {
+                    Ok(inspected) => inspected,
+                    Err(error) => {
+                        eprintln!("quarantining interrupted invalid master for {id}: {error:#}");
+                        self.quarantine(&master)?;
+                        // With no valid canonical artifact, recovery below
+                        // restarts from the immutable request.
+                        continue_recovery(&self.connection, &id, attempt, &artifacts)?;
+                        continue;
+                    }
+                };
+                let record = ArtifactRecord {
+                    kind: "master".into(),
+                    relative_path: "artifacts/master.wav".into(),
+                    media_type: "audio/wav".into(),
+                    byte_length: inspected.byte_length,
+                    sha256: inspected.sha256,
+                    sample_rate: inspected.sample_rate,
+                    channels: inspected.channels,
+                    duration_ms: inspected.duration_ms,
+                    created_at: now_rfc3339(),
+                };
+                write_artifact_manifest(&artifacts, &id, &record)?;
+                let transaction = self.connection.transaction()?;
+                insert_artifact(&transaction, &id, &record)?;
+                transaction.execute(
+                    "UPDATE jobs SET state='completed',stage=NULL,
+                     progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
+                     revision=revision+1,updated_at=?2
+                     WHERE id=?1 AND state='finalizing'",
+                    params![id, now_rfc3339()],
+                )?;
+                transaction.commit()?;
+                continue;
+            }
+            if artifacts.is_dir() {
+                for entry in fs::read_dir(&artifacts)? {
+                    let entry = entry?;
+                    let name = entry.file_name().to_string_lossy().into_owned();
+                    if name.starts_with(".master.") && name.ends_with(".tmp") {
+                        fs::remove_file(entry.path())?;
+                    }
+                }
+            }
+            continue_recovery(&self.connection, &id, attempt, &artifacts)?;
+        }
+
+        let mut statement = self
+            .connection
+            .prepare("SELECT j.id,j.principal_id FROM jobs j WHERE j.state='completed'")?;
+        let completed = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(statement);
+        for (id, principal) in completed {
+            let principal_id = decode_hex_32(&principal)?;
+            if let Err(error) = self.verified_master_path(&principal_id, &id) {
+                eprintln!("completed artifact check failed for {id}: {error:#}");
+                let path = self
+                    .root
+                    .join("jobs")
+                    .join(&principal)
+                    .join(&id)
+                    .join("artifacts/master.wav");
+                if path.exists() {
+                    self.quarantine(&path)?;
+                }
+                self.connection.execute(
+                    "UPDATE jobs SET state='failed',error_code='internal',
+                     error_message='The completed audio artifact is missing or corrupt.',
+                     revision=revision+1,updated_at=?2 WHERE id=?1 AND state='completed'",
+                    params![id, now_rfc3339()],
+                )?;
+            } else {
+                let record = self.connection.query_row(
+                    "SELECT kind,relative_path,media_type,byte_length,sha256,
+                     sample_rate,channels,duration_ms,created_at
+                     FROM artifacts WHERE job_id=?1 AND kind='master'",
+                    params![id],
+                    |row| {
+                        Ok(ArtifactRecord {
+                            kind: row.get(0)?,
+                            relative_path: row.get(1)?,
+                            media_type: row.get(2)?,
+                            byte_length: row.get(3)?,
+                            sha256: row.get(4)?,
+                            sample_rate: row.get(5)?,
+                            channels: row.get(6)?,
+                            duration_ms: row.get(7)?,
+                            created_at: row.get(8)?,
+                        })
+                    },
+                )?;
+                let artifacts = self
+                    .root
+                    .join("jobs")
+                    .join(&principal)
+                    .join(&id)
+                    .join("artifacts");
+                write_artifact_manifest(&artifacts, &id, &record)?;
+            }
+        }
+        Ok(())
+    }
+
     fn quarantine(&self, path: &Path) -> Result<()> {
         let destination = self
             .root
@@ -326,32 +859,242 @@ impl Library {
     }
 }
 
+fn continue_recovery(
+    connection: &Connection,
+    id: &str,
+    attempt: u32,
+    artifacts: &Path,
+) -> Result<()> {
+    if artifacts.is_dir() {
+        for entry in fs::read_dir(artifacts)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with(".master.") && name.ends_with(".tmp") {
+                fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    connection.execute(
+        "UPDATE jobs SET state='recovering',stage=NULL,
+         progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
+         revision=revision+1,updated_at=?2 WHERE id=?1",
+        params![id, now_rfc3339()],
+    )?;
+    let terminal = attempt >= MAX_ATTEMPTS;
+    connection.execute(
+        "UPDATE jobs SET state=?2,error_code=?3,error_message=?4,
+         revision=revision+1,updated_at=?5 WHERE id=?1 AND state='recovering'",
+        params![
+            id,
+            if terminal { "failed" } else { "queued" },
+            terminal.then_some("internal"),
+            terminal.then_some("Generation was interrupted three times."),
+            now_rfc3339()
+        ],
+    )?;
+    let job = connection.query_row(
+        &format!("SELECT {JOB_VIEW_COLUMNS} FROM jobs WHERE id=?1"),
+        params![id],
+        |row| job_from_row(row, 0),
+    )?;
+    write_status(artifacts, &job, attempt)
+}
+
 fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<JobView> {
     let state: String = row.get(offset + 2)?;
-    let state = serde_json::from_value(serde_json::Value::String(state)).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            offset + 2,
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
-    })?;
-    let error_code: Option<String> = row.get(offset + 6)?;
-    let error_message: Option<String> = row.get(offset + 7)?;
+    let state = enum_from_sql(&state, offset + 2)?;
+    let stage: Option<String> = row.get(offset + 3)?;
+    let stage = stage
+        .as_deref()
+        .map(|value| enum_from_sql(value, offset + 3))
+        .transpose()?;
+    let completed: Option<u32> = row.get(offset + 4)?;
+    let total: Option<u32> = row.get(offset + 5)?;
+    let unit: Option<String> = row.get(offset + 6)?;
+    let progress = completed
+        .zip(unit)
+        .map(|(completed, unit)| {
+            Ok::<JobProgress, rusqlite::Error>(JobProgress {
+                completed,
+                total,
+                unit: enum_from_sql(&unit, offset + 6)?,
+            })
+        })
+        .transpose()?;
+    let error_code: Option<String> = row.get(offset + 10)?;
+    let error_message: Option<String> = row.get(offset + 11)?;
     let error = error_code.zip(error_message).and_then(|(code, message)| {
-        serde_json::from_value(serde_json::Value::String(code))
+        serde_json::from_value::<ErrorCode>(serde_json::Value::String(code))
             .ok()
-            .map(|code| cantor_proto::JobError { code, message })
+            .map(|code| JobError { code, message })
     });
     Ok(JobView {
         id: row.get(offset)?,
         revision: row.get(offset + 1)?,
         state,
-        stage: None,
-        progress: None,
-        model: row.get(offset + 3)?,
-        created_at: row.get(offset + 4)?,
-        updated_at: row.get(offset + 5)?,
+        stage,
+        progress,
+        model: row.get(offset + 7)?,
+        created_at: row.get(offset + 8)?,
+        updated_at: row.get(offset + 9)?,
         error,
+    })
+}
+
+fn add_column_if_missing(
+    connection: &Connection,
+    table: &str,
+    column: &str,
+    declaration: &str,
+) -> Result<()> {
+    let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !columns.iter().any(|existing| existing == column) {
+        connection.execute_batch(&format!(
+            "ALTER TABLE {table} ADD COLUMN {column} {declaration}"
+        ))?;
+    }
+    Ok(())
+}
+
+fn enum_text(value: impl Serialize) -> Result<String> {
+    match serde_json::to_value(value)? {
+        serde_json::Value::String(value) => Ok(value),
+        _ => bail!("protocol enum did not serialize as text"),
+    }
+}
+
+fn enum_from_sql<T: serde::de::DeserializeOwned>(
+    value: &str,
+    column: usize,
+) -> rusqlite::Result<T> {
+    serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+fn decode_hex_32(value: &str) -> Result<[u8; 32]> {
+    if !is_lower_hex(value, 64) {
+        bail!("principal ID is not canonical hex");
+    }
+    let mut decoded = [0_u8; 32];
+    for (index, byte) in decoded.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)?;
+    }
+    Ok(decoded)
+}
+
+fn write_status(artifact_directory: &Path, job: &JobView, attempt: u32) -> Result<()> {
+    let job_directory = artifact_directory
+        .parent()
+        .context("artifact directory has no job parent")?;
+    write_json_atomic(
+        &job_directory.join("status.json"),
+        &serde_json::json!({
+            "schema": 2,
+            "state": job.state,
+            "stage": job.stage,
+            "progress": job.progress,
+            "revision": job.revision,
+            "attempt": attempt,
+            "updated_at": job.updated_at,
+            "error": job.error,
+        }),
+    )
+}
+
+fn insert_artifact(
+    transaction: &rusqlite::Transaction<'_>,
+    job_id: &str,
+    record: &ArtifactRecord,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT OR REPLACE INTO artifacts(job_id,kind,relative_path,media_type,
+         byte_length,sha256,sample_rate,channels,duration_ms,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![
+            job_id,
+            record.kind,
+            record.relative_path,
+            record.media_type,
+            record.byte_length,
+            record.sha256,
+            record.sample_rate,
+            record.channels,
+            record.duration_ms,
+            record.created_at
+        ],
+    )?;
+    Ok(())
+}
+
+struct InspectedWav {
+    byte_length: u64,
+    sha256: String,
+    sample_rate: u32,
+    channels: u16,
+    frames: u64,
+    duration_ms: u64,
+}
+
+fn inspect_wav(path: &Path) -> Result<InspectedWav> {
+    let mut file = File::open(path)?;
+    let byte_length = file.metadata()?.len();
+    if byte_length <= 44 {
+        bail!("WAV is empty or truncated");
+    }
+    let mut header = [0_u8; 44];
+    file.read_exact(&mut header)?;
+    if &header[0..4] != b"RIFF"
+        || &header[8..12] != b"WAVE"
+        || &header[12..16] != b"fmt "
+        || &header[36..40] != b"data"
+    {
+        bail!("WAV header is not canonical PCM");
+    }
+    let format = u16::from_le_bytes(header[20..22].try_into()?);
+    let channels = u16::from_le_bytes(header[22..24].try_into()?);
+    let sample_rate = u32::from_le_bytes(header[24..28].try_into()?);
+    let bits = u16::from_le_bytes(header[34..36].try_into()?);
+    let data_bytes = u32::from_le_bytes(header[40..44].try_into()?) as u64;
+    if format != 1 || channels == 0 || sample_rate == 0 || bits != 16 {
+        bail!("WAV properties are not supported PCM");
+    }
+    if data_bytes + 44 != byte_length {
+        bail!("WAV data length does not match the durable file");
+    }
+    let bytes_per_frame = u64::from(channels) * 2;
+    if data_bytes % bytes_per_frame != 0 {
+        bail!("WAV ends inside an audio frame");
+    }
+    let frames = data_bytes / bytes_per_frame;
+    if frames == 0 {
+        bail!("WAV contains no audio frames");
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let digest: [u8; 32] = hasher.finalize().into();
+    Ok(InspectedWav {
+        byte_length,
+        sha256: hex(&digest),
+        sample_rate,
+        channels,
+        frames,
+        duration_ms: frames.saturating_mul(1_000) / u64::from(sample_rate),
     })
 }
 
@@ -403,6 +1146,20 @@ fn is_known_incomplete_job(path: &Path) -> Result<bool> {
         }
     }
     Ok(true)
+}
+
+fn write_artifact_manifest(
+    artifact_directory: &Path,
+    job_id: &str,
+    record: &ArtifactRecord,
+) -> Result<()> {
+    let job_directory = artifact_directory
+        .parent()
+        .context("artifact directory has no job directory")?;
+    write_json_atomic(
+        &job_directory.join("manifest.json"),
+        &serde_json::json!({"schema":2,"job_id":job_id,"artifacts":[record]}),
+    )
 }
 
 fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
@@ -579,6 +1336,220 @@ mod tests {
         let reopened = Library::open(temporary.path()).unwrap();
         assert!(!safe.exists());
         assert!(!ambiguous.exists());
+        assert_eq!(
+            fs::read_dir(reopened.root().join("quarantine"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn fifo_claim_progress_and_verified_completion_are_durable() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        for caption in ["first", "second"] {
+            library
+                .submit(&[1; 32], &[2; 32], &submission(caption), &variant(), 20, 0)
+                .unwrap();
+        }
+        let (work, preparing) = library.claim_next().unwrap().unwrap();
+        assert_eq!(work.generation.caption, "first");
+        assert_eq!(work.attempt, 1);
+        assert_eq!(preparing.state, JobState::Preparing);
+        assert!(library.claim_next().unwrap().is_none());
+        let running = library
+            .record_progress(
+                &work,
+                GenerationStage::Diffuse,
+                2,
+                Some(10),
+                ProgressUnit::Steps,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.revision, preparing.revision + 1);
+        assert_eq!(running.progress.unwrap().completed, 2);
+        assert_eq!(
+            library.begin_finalizing(&work).unwrap().unwrap().state,
+            JobState::Finalizing
+        );
+        let audio = crate::generate::Audio {
+            planar: vec![0.0, 0.5, -0.5, 0.0],
+            sample_rate: 1_000,
+        };
+        let (completed, artifact) = library.complete(&work, &audio).unwrap().unwrap();
+        assert_eq!(completed.state, JobState::Completed);
+        assert!(artifact.byte_length > 44);
+        assert_eq!(artifact.channels, 2);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                work.artifact_directory
+                    .parent()
+                    .unwrap()
+                    .join("manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["schema"], 2);
+        assert_eq!(manifest["job_id"], work.id);
+        assert_eq!(manifest["artifacts"][0]["sha256"], artifact.sha256);
+        assert_eq!(
+            manifest["artifacts"][0]["relative_path"],
+            "artifacts/master.wav"
+        );
+        assert_eq!(
+            library.active_count().unwrap() + library.queued_count().unwrap(),
+            1
+        );
+        assert!(
+            library
+                .verified_master_path(&[1; 32], &work.id)
+                .unwrap()
+                .is_file()
+        );
+        assert!(
+            library
+                .record_progress(
+                    &work,
+                    GenerationStage::Decode,
+                    1,
+                    Some(1),
+                    ProgressUnit::Tiles,
+                )
+                .unwrap()
+                .is_none()
+        );
+        drop(library);
+        assert_eq!(
+            Library::open(temporary.path())
+                .unwrap()
+                .get(&[1; 32], &work.id)
+                .unwrap()
+                .unwrap()
+                .state,
+            JobState::Completed
+        );
+    }
+
+    #[test]
+    fn an_interrupted_claim_requeues_without_consuming_a_second_attempt() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                &[1; 32],
+                &[2; 32],
+                &submission("restart"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (first, _) = library.claim_next().unwrap().unwrap();
+        assert_eq!(first.attempt, 1);
+        drop(library);
+
+        let mut reopened = Library::open(temporary.path()).unwrap();
+        let recovered = reopened.get(&[1; 32], &first.id).unwrap().unwrap();
+        assert_eq!(recovered.state, JobState::Queued);
+        let (second, _) = reopened.claim_next().unwrap().unwrap();
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.attempt, 2);
+    }
+
+    #[test]
+    fn startup_adopts_a_finalizing_master_and_repairs_its_manifest() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(&[1; 32], &[2; 32], &submission("adopt"), &variant(), 20, 0)
+            .unwrap();
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .record_progress(
+                &work,
+                GenerationStage::Decode,
+                1,
+                Some(1),
+                ProgressUnit::Tiles,
+            )
+            .unwrap();
+        library.begin_finalizing(&work).unwrap();
+        let audio = crate::generate::Audio {
+            planar: vec![0.0, 0.5, -0.5, 0.0],
+            sample_rate: 1_000,
+        };
+        audio
+            .write_wav(&work.artifact_directory.join("master.wav"))
+            .unwrap();
+        drop(library);
+
+        let reopened = Library::open(temporary.path()).unwrap();
+        let recovered = reopened.get(&[1; 32], &work.id).unwrap().unwrap();
+        assert_eq!(recovered.state, JobState::Completed);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(
+                work.artifact_directory
+                    .parent()
+                    .unwrap()
+                    .join("manifest.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["schema"], 2);
+        assert_eq!(manifest["job_id"], work.id);
+        assert_eq!(
+            manifest["artifacts"][0]["relative_path"],
+            "artifacts/master.wav"
+        );
+    }
+
+    #[test]
+    fn corrupt_completed_audio_is_quarantined_and_never_served_as_complete() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                &[1; 32],
+                &[2; 32],
+                &submission("corrupt"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .record_progress(
+                &work,
+                GenerationStage::Decode,
+                1,
+                Some(1),
+                ProgressUnit::Tiles,
+            )
+            .unwrap();
+        library.begin_finalizing(&work).unwrap();
+        library
+            .complete(
+                &work,
+                &crate::generate::Audio {
+                    planar: vec![0.0, 0.0],
+                    sample_rate: 1_000,
+                },
+            )
+            .unwrap();
+        let master = library.verified_master_path(&[1; 32], &work.id).unwrap();
+        fs::write(&master, b"truncated").unwrap();
+        drop(library);
+
+        let reopened = Library::open(temporary.path()).unwrap();
+        let job = reopened.get(&[1; 32], &work.id).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Failed);
+        assert!(job.error.is_some());
+        assert!(!master.exists());
         assert_eq!(
             fs::read_dir(reopened.root().join("quarantine"))
                 .unwrap()

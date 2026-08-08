@@ -31,15 +31,24 @@ pub struct Request {
     pub lyrics: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "inference_steps",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub steps: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        rename = "guidance_scale",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub cfg: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub seed: Option<i64>,
+    pub seed: Option<u64>,
 }
 
 impl Request {
+    #[cfg(test)]
     pub fn new(caption: impl Into<String>) -> Self {
         Self {
             caption: caption.into(),
@@ -140,7 +149,15 @@ impl<'engine> Generation<'engine> {
                         .run_stage(stage, &blob, &mut report, &should_cancel)?;
                 blob = next;
                 match outcome {
-                    StageOutcome::Done => break,
+                    StageOutcome::Done => {
+                        if stage == Stage::Plan {
+                            reassert_explicit_inputs(&mut blob, request)?;
+                        }
+                        if matches!(stage, Stage::Plan | Stage::Codes) {
+                            enforce_duration_ceiling(&blob, request.duration)?;
+                        }
+                        break;
+                    }
                     StageOutcome::Paused => {
                         if cancel.load(Ordering::Relaxed) {
                             bail!("cancelled");
@@ -165,6 +182,63 @@ impl<'engine> Generation<'engine> {
     }
 }
 
+/// The plan is engine-enriched JSON, but fields the caller explicitly supplied
+/// remain node-authoritative. Older ABI-1 ACE-Step builds regenerated missing
+/// metadata and overwrote adjacent populated fields, so reassert them before
+/// code generation instead of letting a backend silently change the request.
+fn reassert_explicit_inputs(blob: &mut Vec<u8>, request: &Request) -> Result<()> {
+    let mut value: serde_json::Value = serde_json::from_slice(blob)
+        .context("engine returned non-JSON planning state for an explicit request")?;
+    let object = value
+        .as_object_mut()
+        .context("engine planning state is not a JSON object")?;
+    if let Some(lyrics) = request.lyrics.as_ref() {
+        object.insert("lyrics".to_owned(), serde_json::json!(lyrics));
+    }
+    if let Some(duration) = request.duration {
+        let planned = object.get("duration").and_then(serde_json::Value::as_f64);
+        if planned.is_some_and(|planned| (planned - f64::from(duration)).abs() > 0.5) {
+            eprintln!(
+                "engine.adjusted_duration planned={planned:?} requested={duration:.1}; restoring request"
+            );
+        }
+        object.insert("duration".to_owned(), serde_json::json!(duration));
+    }
+    if let Some(steps) = request.steps {
+        object.insert("inference_steps".to_owned(), serde_json::json!(steps));
+    }
+    if let Some(cfg) = request.cfg {
+        object.insert("guidance_scale".to_owned(), serde_json::json!(cfg));
+    }
+    if let Some(seed) = request.seed {
+        object.insert("seed".to_owned(), serde_json::json!(seed));
+    }
+    *blob = serde_json::to_vec(&value).context("failed to restore explicit engine inputs")?;
+    Ok(())
+}
+
+/// Published engines are outside the node's release cycle. Refuse an engine
+/// that silently expands an explicit duration before allocating its diffusion
+/// graph; otherwise a 15-second request can become minutes of work and memory.
+fn enforce_duration_ceiling(blob: &[u8], requested: Option<f32>) -> Result<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    let value: serde_json::Value = serde_json::from_slice(blob)
+        .context("engine returned non-JSON planning state for a bounded request")?;
+    let planned = value
+        .get("duration")
+        .and_then(serde_json::Value::as_f64)
+        .context("engine planning state dropped the requested duration")?;
+    if !planned.is_finite() || planned <= 0.0 || planned > f64::from(requested) + 0.5 {
+        bail!(
+            "engine expanded requested duration from {:.1}s to {planned:.1}s",
+            requested
+        );
+    }
+    Ok(())
+}
+
 pub struct Audio {
     /// Planar stereo: all of the left channel, then all of the right.
     pub planar: Vec<f32>,
@@ -176,6 +250,7 @@ impl Audio {
         self.planar.len() / usize::from(WAV_CHANNELS)
     }
 
+    #[cfg(test)]
     pub fn seconds(&self) -> f32 {
         if self.sample_rate == 0 {
             return 0.0;
@@ -235,7 +310,7 @@ fn to_i16(sample: f32) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Audio, Request, to_i16};
+    use super::{Audio, Request, enforce_duration_ceiling, reassert_explicit_inputs, to_i16};
 
     #[test]
     fn samples_are_clamped_not_wrapped() {
@@ -254,6 +329,47 @@ mod tests {
         assert!(json.contains("\"caption\":\"a quiet song\""));
         // Absent options must not appear as nulls; the engine owns the defaults.
         assert!(!json.contains("null"), "unexpected null in {json}");
+    }
+
+    #[test]
+    fn protocol_controls_map_to_engine_request_names() {
+        let mut request = Request::new("a quiet song");
+        request.steps = Some(1);
+        request.cfg = Some(1.25);
+        let json = String::from_utf8(request.to_json().expect("encode")).expect("utf8");
+        assert!(json.contains("\"inference_steps\":1"), "{json}");
+        assert!(json.contains("\"guidance_scale\":1.25"), "{json}");
+        assert!(!json.contains("\"steps\""), "{json}");
+        assert!(!json.contains("\"cfg\""), "{json}");
+    }
+
+    #[test]
+    fn an_engine_cannot_expand_an_explicit_duration() {
+        enforce_duration_ceiling(br#"{"duration":15.0}"#, Some(15.0)).expect("same duration");
+        enforce_duration_ceiling(br#"{"duration":14.5}"#, Some(15.0)).expect("shorter duration");
+        let error = enforce_duration_ceiling(br#"{"duration":203.0}"#, Some(15.0))
+            .expect_err("expanded duration");
+        assert!(error.to_string().contains("15.0s to 203.0s"));
+    }
+
+    #[test]
+    fn explicit_inputs_win_over_an_engine_plan() {
+        let mut request = Request::new("user caption");
+        request.lyrics = Some("user lyrics".into());
+        request.duration = Some(15.0);
+        request.steps = Some(1);
+        request.cfg = Some(1.25);
+        request.seed = Some(7);
+        let mut plan = br#"{"caption":"enriched","lyrics":"generated","duration":203}"#.to_vec();
+
+        reassert_explicit_inputs(&mut plan, &request).expect("restore");
+        let value: serde_json::Value = serde_json::from_slice(&plan).expect("json");
+        assert_eq!(value["caption"], "enriched");
+        assert_eq!(value["lyrics"], "user lyrics");
+        assert_eq!(value["duration"], 15.0);
+        assert_eq!(value["inference_steps"], 1);
+        assert_eq!(value["guidance_scale"], 1.25);
+        assert_eq!(value["seed"], 7);
     }
 
     #[test]

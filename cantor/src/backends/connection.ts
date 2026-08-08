@@ -2,6 +2,7 @@ import { Platform } from 'react-native';
 import type { AppIdentity } from '../identity/derive';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
 import type { JobView } from '../../../protocol/JobView';
+import { mergeJobViews } from '../jobs/repository';
 import { signChallenge } from '../identity/derive';
 import { backendRoomUrl, createPairProof } from './pairing';
 import {
@@ -108,7 +109,11 @@ export class BackendConnection {
       return;
     }
     this.clearPending('Backend reconnected before the request completed.');
-    this.setSnapshot({ phase: 'connecting', error: null, jobs: [] });
+    this.setSnapshot({
+      phase: 'connecting',
+      error: null,
+      jobs: this.snapshot.jobs,
+    });
     let socket: WebSocket;
     try {
       socket = new WebSocket(backendRoomUrl(this.backend));
@@ -176,13 +181,21 @@ export class BackendConnection {
         this.beginHandshake();
       } else {
         this.handshakeId = null;
-        this.setSnapshot({ phase: 'attached', error: null, jobs: [] });
+        this.setSnapshot({
+          phase: 'attached',
+          error: null,
+          jobs: this.snapshot.jobs,
+        });
       }
       return;
     }
     if (frame.t === 'relay.error') {
       if (frame.code === 'node-offline') {
-        this.setSnapshot({ phase: 'attached', error: null, jobs: [] });
+        this.setSnapshot({
+          phase: 'attached',
+          error: null,
+          jobs: this.snapshot.jobs,
+        });
       } else {
         // The relay closes the socket after most errors; onclose owns retrying.
         this.fail(
@@ -201,7 +214,11 @@ export class BackendConnection {
 
   private beginHandshake(): void {
     this.handshakeId = this.nextRequestId('hello');
-    this.setSnapshot({ phase: 'handshaking', error: null, jobs: [] });
+    this.setSnapshot({
+      phase: 'handshaking',
+      error: null,
+      jobs: this.snapshot.jobs,
+    });
     let pairProof: string | undefined;
     try {
       pairProof = this.pairToken
@@ -280,7 +297,11 @@ export class BackendConnection {
         this.callbacks.onPairTokenConsumed();
       }
       this.callbacks.onNodeInfo(nodeInfo);
-      this.setSnapshot({ phase: 'ready', error: null, jobs: [] });
+      this.setSnapshot({
+        phase: 'ready',
+        error: null,
+        jobs: this.snapshot.jobs,
+      });
       const statusId = this.nextRequestId('status');
       this.pendingRequests.set(statusId, { expected: 'jobs.page' });
       this.sendApplication({
@@ -309,7 +330,10 @@ export class BackendConnection {
         this.fail('Node job status is invalid.', false);
         return;
       }
-      this.setSnapshot({ ...this.snapshot, jobs });
+      this.setSnapshot({
+        ...this.snapshot,
+        jobs: mergeJobViews(this.snapshot.jobs, jobs),
+      });
       return;
     }
     if (payload.t === 'job.accepted' && typeof payload.id === 'string') {
@@ -432,7 +456,11 @@ export class BackendConnection {
 
   private fail(message: string, fatal: boolean): void {
     this.fatal = this.fatal || fatal;
-    this.setSnapshot({ phase: 'disconnected', error: message, jobs: [] });
+    this.setSnapshot({
+      phase: 'disconnected',
+      error: message,
+      jobs: this.snapshot.jobs,
+    });
     const socket = this.socket;
     if (socket?.readyState === WebSocket.OPEN) {
       socket.close(fatal ? 1008 : 1011, fatal ? 'backend-error' : 'retry');
@@ -445,7 +473,11 @@ export class BackendConnection {
     if (this.stopped || this.fatal || this.reconnectTimer !== null) {
       return;
     }
-    this.setSnapshot({ phase: 'disconnected', error: message, jobs: [] });
+    this.setSnapshot({
+      phase: 'disconnected',
+      error: message,
+      jobs: this.snapshot.jobs,
+    });
     const exponential = Math.min(
       RECONNECT_BASE_MS * 2 ** Math.min(this.reconnectAttempt, 15),
       RECONNECT_MAX_MS,

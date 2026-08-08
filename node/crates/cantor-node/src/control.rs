@@ -26,8 +26,7 @@ use crate::accel;
 use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::catalog::Catalog;
 use crate::config::{NodeConfig, Pairing};
-use crate::engine::{self, LoadOptions};
-use crate::generate::{Generation, components_for};
+use crate::engine;
 use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer, new_pair_token, pairing_uri};
 use crate::store::{InstalledVariant, Store, human_bytes};
 
@@ -55,6 +54,8 @@ pub struct NodeState {
     pub pair_offer: Option<PairOffer>,
     pub connected: bool,
     pub library: crate::library::Library,
+    /// Acceptance and model-readiness changes wake the single durable worker.
+    pub job_notify: Arc<tokio::sync::Notify>,
 }
 
 pub type SharedState = Arc<Mutex<NodeState>>;
@@ -67,6 +68,11 @@ pub enum ControlEvent {
     Revoked(String),
     /// Capabilities changed; push `node.info` to everyone authenticated.
     NodeInfoChanged,
+    /// Private durable state belongs only on sessions for this principal.
+    JobUpdated {
+        principal_id: [u8; 32],
+        job: cantor_proto::JobView,
+    },
 }
 
 pub fn shared(state: NodeState) -> SharedState {
@@ -238,11 +244,7 @@ pub fn bind(socket_path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-pub async fn serve(
-    listener: UnixListener,
-    state: SharedState,
-    events: mpsc::UnboundedSender<ControlEvent>,
-) {
+pub async fn serve(listener: UnixListener, state: SharedState, events: mpsc::Sender<ControlEvent>) {
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -264,7 +266,7 @@ pub async fn serve(
 async fn serve_connection(
     stream: UnixStream,
     state: SharedState,
-    events: mpsc::UnboundedSender<ControlEvent>,
+    events: mpsc::Sender<ControlEvent>,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader.take(MAX_REQUEST_BYTES)).lines();
@@ -328,7 +330,7 @@ async fn write_line<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: &Va
 async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
     line: &str,
     state: &SharedState,
-    events: &mpsc::UnboundedSender<ControlEvent>,
+    events: &mpsc::Sender<ControlEvent>,
     writer: &mut W,
     kind: &str,
 ) -> Result<()> {
@@ -694,9 +696,8 @@ async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
     .await
 }
 
-/// Loads an engine and runs a generation. This happens on a blocking thread:
-/// the engine is synchronous, holds device state, and a diffuse stage runs for
-/// minutes — parking it on the async runtime would stall every other request.
+/// Submits under the reserved local-operator principal and follows the same
+/// durable views the app receives. Inference belongs exclusively to `jobs`.
 async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
     request: &Value,
     state: &SharedState,
@@ -715,130 +716,154 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
     let output = request
         .get("output")
         .and_then(Value::as_str)
-        .context("generate needs an output path")?
-        .to_owned();
+        .map(PathBuf::from);
+    let detach = request
+        .get("detach")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let principal = local_operator_principal();
+    let local_key = [0_u8; 32];
 
-    let (store_root, backends_url, pinned, tuning) = {
-        let locked = state
+    let (job, notify) = {
+        let mut locked = state
             .lock()
             .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
-        (
-            locked.config.model_root(),
-            locked.config.backends_url(),
-            locked.config.backend.clone(),
-            locked.config.engine.clone(),
-        )
+        let installed = Store::new(locked.config.model_root()).installed();
+        let variant = match &selector {
+            Some(selector) => installed
+                .iter()
+                .find(|variant| &variant.selector() == selector)
+                .with_context(|| {
+                    format!("{selector} is not installed — run `cantor pull {selector}`")
+                })?,
+            None => installed
+                .first()
+                .context("no model is installed — run `cantor pull acestep:1.5-fast`")?,
+        };
+        let submission = crate::library::Submission {
+            client_request_id: uuid::Uuid::new_v4().to_string(),
+            model: variant.selector(),
+            generation: cantor_proto::GenerationRequest {
+                caption: caption.clone(),
+                lyrics: None,
+                duration: None,
+                steps: None,
+                cfg: None,
+                seed: None,
+            },
+        };
+        let max_queued = locked.config.jobs.max_queued_per_principal;
+        let minimum_free = locked.config.jobs.minimum_free_bytes;
+        let job = match locked.library.submit(
+            &principal,
+            &local_key,
+            &submission,
+            variant,
+            max_queued,
+            minimum_free,
+        )? {
+            crate::library::SubmitResult::Accepted(job) => job,
+            crate::library::SubmitResult::QueueFull => bail!("the local durable queue is full"),
+            crate::library::SubmitResult::InsufficientDisk => {
+                bail!("the node is below its free-space reserve")
+            }
+            crate::library::SubmitResult::Conflict => {
+                bail!("the generated local submission ID conflicted")
+            }
+        };
+        (job, Arc::clone(&locked.job_notify))
     };
-
-    let store = Store::new(&store_root);
-    let installed = store.installed();
-    let variant = match &selector {
-        Some(selector) => installed
-            .iter()
-            .find(|variant| &variant.selector() == selector)
-            .with_context(|| {
-                format!("{selector} is not installed — run `cantor pull {selector}`")
-            })?,
-        None => installed
-            .first()
-            .context("no model is installed — run `cantor pull acestep:1.5-fast`")?,
-    }
-    .clone();
-
-    let components = components_for(&variant, &store.blob_dir())?;
-
-    // Reuse whichever backend is already unpacked; selection itself happened in
-    // `cantor backends --install`.
-    let manifest = BackendManifest::fetch(&backends_url).await?;
-    let engine_store = EngineStore::new(&store_root);
-    let arch = machine_arch();
-    let wanted: Vec<String> = match &pinned {
-        Some(backend) => vec![backend.clone()],
-        None => accel::candidates().into_iter().map(|a| a.backend).collect(),
-    };
-    let mut attempts = Vec::new();
-    for backend in &wanted {
-        if let Some(artifact) = manifest.find(variant.engine(), backend, arch)
-            && engine_store.is_installed(artifact)?
-        {
-            attempts.push((backend.clone(), engine_store.directory_for(artifact)?));
-        }
-    }
-    if attempts.is_empty() {
-        bail!("no backend is installed — run `cantor backends --install`");
-    }
-
-    let selection = engine::select(&attempts)?;
-    let backend = selection.engine.backend.clone();
-    let engine_version = selection.engine.version.clone();
-
+    notify.notify_one();
     write_line(
         writer,
-        &json!({"v": CONTROL_VERSION, "id": id, "t": "generating",
-                "model": variant.selector(), "backend": backend,
-                "engine_version": engine_version, "caption": caption,
-                "vram_budget": variant.vram_bytes, "output": output}),
+        &json!({"v":CONTROL_VERSION,"id":id,"t":"generating",
+                "job_id":job.id,"model":job.model,"caption":caption,
+                "output":output.as_ref().map(|path| path.display().to_string())}),
     )
     .await?;
+    if detach {
+        return write_line(
+            writer,
+            &json!({"v":CONTROL_VERSION,"id":id,"t":"ok",
+                    "msg":format!("queued job {}", job.id)}),
+        )
+        .await;
+    }
 
-    // The catalog's own figure for this variant, so residency is bounded by
-    // what the publisher measured rather than by a guess here. Zero means the
-    // engine keeps at most one module resident, which is its own safe default.
-    let options = LoadOptions {
-        vram_budget_bytes: variant.vram_bytes,
-        keep_loaded: i32::from(tuning.keep_loaded),
-        vae_chunk: tuning.vae_chunk,
-        vae_overlap: tuning.vae_overlap,
-        n_threads: tuning.n_threads,
-        disable_flash_attn: i32::from(tuning.disable_flash_attn),
-        disable_batch_cfg: i32::from(tuning.disable_batch_cfg),
-    };
-
-    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(&'static str, i32, i32)>();
-    let generation = tokio::task::spawn_blocking(move || -> Result<crate::generate::Audio> {
-        let engine = selection.engine;
-        let mut generation = Generation::start(&engine, &components, options)?;
-        eprintln!(
-            "engine resident: {}",
-            human_bytes(generation.resident_bytes())
-        );
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let request = crate::generate::Request::new(caption);
-        generation.run(&request, cancel, |progress| {
-            let _ = progress_tx.send((progress.stage.as_str(), progress.done, progress.total));
-        })
-    });
-    tokio::pin!(generation);
-
-    let audio = loop {
-        tokio::select! {
-            Some((stage, done, total)) = progress_rx.recv() => {
-                write_line(writer, &json!({
-                    "v": CONTROL_VERSION, "id": id, "t": "progress",
-                    "role": stage, "done": done, "total": total,
-                    "overall_done": done, "overall_total": total.max(1)
-                })).await?;
-            }
-            joined = &mut generation => {
-                break joined.context("the generation task panicked")??;
-            }
+    let mut revision = job.revision;
+    loop {
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        let current = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
+            .library
+            .get(&principal, &job.id)?
+            .context("the local job disappeared")?;
+        if current.revision > revision {
+            revision = current.revision;
+            let done = current.progress.as_ref().map_or(0, |value| value.completed);
+            let total = current
+                .progress
+                .as_ref()
+                .and_then(|value| value.total)
+                .unwrap_or(1);
+            write_line(
+                writer,
+                &json!({"v":CONTROL_VERSION,"id":id,"t":"progress",
+                        "role":current.stage.map(|stage| format!("{stage:?}").to_lowercase())
+                            .unwrap_or_else(|| format!("{:?}", current.state).to_lowercase()),
+                        "done":done,"total":total,"overall_done":done,
+                        "overall_total":total,"revision":current.revision}),
+            )
+            .await?;
         }
-    };
+        match current.state {
+            cantor_proto::JobState::Completed => {
+                let canonical = state
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
+                    .library
+                    .verified_master_path(&principal, &job.id)?;
+                if let Some(destination) = output.as_ref() {
+                    state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
+                        .library
+                        .export_master(&principal, &job.id, destination)?;
+                }
+                return write_line(
+                    writer,
+                    &json!({"v":CONTROL_VERSION,"id":id,"t":"ok",
+                            "msg":match output.as_ref() {
+                                Some(path) => format!("completed {} (exported to {})", canonical.display(), path.display()),
+                                None => format!("completed {}", canonical.display()),
+                            }}),
+                )
+                .await;
+            }
+            cantor_proto::JobState::Failed => {
+                bail!(
+                    "job {} failed: {}",
+                    job.id,
+                    current
+                        .error
+                        .map_or_else(|| "unknown error".into(), |error| error.message)
+                )
+            }
+            _ => {}
+        }
+    }
+}
 
-    let path = PathBuf::from(&output);
-    audio.write_wav(&path)?;
-    write_line(
-        writer,
-        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok",
-                "msg": format!("wrote {} ({:.1}s, {} Hz)", output, audio.seconds(), audio.sample_rate)}),
-    )
-    .await
+fn local_operator_principal() -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b"cantor-local-operator-v1").into()
 }
 
 async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     selector: &str,
     state: &SharedState,
-    events: &mpsc::UnboundedSender<ControlEvent>,
+    events: &mpsc::Sender<ControlEvent>,
     writer: &mut W,
     id: &str,
 ) -> Result<()> {
@@ -917,7 +942,7 @@ async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
 
     // Only now does the variant count as installed.
     store.mark_installed(model, variant)?;
-    let _ = events.send(ControlEvent::NodeInfoChanged);
+    let _ = events.try_send(ControlEvent::NodeInfoChanged);
 
     // A model with no engine cannot run, so pulling one fetches the backend it
     // needs. Best-effort: the weights are installed either way, and a failure
@@ -1085,11 +1110,7 @@ impl Response {
     }
 }
 
-fn dispatch(
-    line: &str,
-    state: &SharedState,
-    events: &mpsc::UnboundedSender<ControlEvent>,
-) -> Response {
+fn dispatch(line: &str, state: &SharedState, events: &mpsc::Sender<ControlEvent>) -> Response {
     let fallback_id = serde_json::from_str::<Value>(line)
         .ok()
         .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_owned))
@@ -1111,7 +1132,7 @@ fn dispatch(
 fn handle(
     request: Request,
     state: &SharedState,
-    events: &mpsc::UnboundedSender<ControlEvent>,
+    events: &mpsc::Sender<ControlEvent>,
 ) -> Result<Response> {
     let mut state = state
         .lock()
@@ -1167,7 +1188,7 @@ fn handle(
             }
             // Only after the file is written, so a failed write never disconnects
             // a device that is in fact still authorized.
-            let _ = events.send(ControlEvent::Revoked(key));
+            let _ = events.try_send(ControlEvent::Revoked(key));
             Ok(Response::Ok {
                 v: CONTROL_VERSION,
                 id,
@@ -1205,7 +1226,7 @@ fn handle(
                 .context("expected a model and tag like `acestep:1.5-fast`")?;
             let store = Store::new(state.config.model_root());
             let reclaimed = store.remove(model, tag)?;
-            let _ = events.send(ControlEvent::NodeInfoChanged);
+            let _ = events.try_send(ControlEvent::NodeInfoChanged);
             Ok(Response::Removed {
                 v: CONTROL_VERSION,
                 id,
@@ -1218,7 +1239,7 @@ fn handle(
             state.config.rename_node(&config_path, &name)?;
             // The node's name is part of NodeInfo, so connected apps have to hear
             // about it rather than showing the old one until they reconnect.
-            let _ = events.send(ControlEvent::NodeInfoChanged);
+            let _ = events.try_send(ControlEvent::NodeInfoChanged);
             Ok(Response::Ok {
                 v: CONTROL_VERSION,
                 id,
@@ -1340,6 +1361,7 @@ mod tests {
             pair_offer: None,
             connected: true,
             library,
+            job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         });
         (state, temporary)
     }
@@ -1351,7 +1373,7 @@ mod tests {
     #[test]
     fn a_pair_request_creates_a_bounded_offer() {
         let (state, _guard) = state();
-        let (events, _rx) = mpsc::unbounded_channel();
+        let (events, _rx) = mpsc::channel(8);
 
         let response = dispatch(
             &json!({"v":1,"id":"1","t":"pair","expires_in":60}).to_string(),
@@ -1375,7 +1397,7 @@ mod tests {
     #[test]
     fn revoking_writes_the_config_and_signals_the_relay_loop() {
         let (state, _guard) = state();
-        let (events, mut received) = mpsc::unbounded_channel();
+        let (events, mut received) = mpsc::channel(8);
         {
             let mut locked = state.lock().expect("state");
             let path = locked.config_path.clone();
@@ -1408,7 +1430,7 @@ mod tests {
     #[test]
     fn renaming_the_node_asks_for_a_node_info_push() {
         let (state, _guard) = state();
-        let (events, mut received) = mpsc::unbounded_channel();
+        let (events, mut received) = mpsc::channel(8);
 
         let response = dispatch(
             &json!({"v":1,"id":"1","t":"rename-node","name":"studio"}).to_string(),
@@ -1427,7 +1449,7 @@ mod tests {
     #[test]
     fn an_unknown_selector_is_an_error_rather_than_a_guess() {
         let (state, _guard) = state();
-        let (events, _rx) = mpsc::unbounded_channel();
+        let (events, _rx) = mpsc::channel(8);
 
         let response = dispatch(
             &json!({"v":1,"id":"7","t":"revoke","selector":"nothing"}).to_string(),
@@ -1442,7 +1464,7 @@ mod tests {
     #[test]
     fn a_malformed_request_does_not_kill_the_connection() {
         let (state, _guard) = state();
-        let (events, _rx) = mpsc::unbounded_channel();
+        let (events, _rx) = mpsc::channel(8);
 
         let value = encode(&dispatch("{not json", &state, &events));
         assert_eq!(value["t"], "error");

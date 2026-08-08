@@ -9,6 +9,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
+import type { JobView } from '../../../protocol/JobView';
 import type { AppIdentity } from '../identity/derive';
 import { PairBackendModal } from '../backends/PairBackendModal';
 import { BackendConnection, NodeRequestError } from '../backends/connection';
@@ -28,6 +29,7 @@ import {
   putPending,
   type OutboxEntry,
 } from '../jobs/outbox';
+import { loadJobs, mergeJobs, mergeJobViews } from '../jobs/repository';
 
 const READY_BACKGROUND_LIGHT = '#EFF8F0';
 const READY_BACKGROUND_DARK = '#0B2110';
@@ -147,6 +149,20 @@ export function MainScreen({ identity }: Props) {
       }
     }
     for (const backend of backends) {
+      loadJobs(backend.nodePubkey)
+        .then(jobs =>
+          setSnapshots(previous => ({
+            ...previous,
+            [backend.nodePubkey]: {
+              ...(previous[backend.nodePubkey] ?? DEFAULT_SNAPSHOT),
+              jobs: mergeJobViews(
+                previous[backend.nodePubkey]?.jobs ?? [],
+                jobs,
+              ),
+            },
+          })),
+        )
+        .catch(error => setStorageError(readError(error)));
       const current = connections.current.get(backend.nodePubkey);
       if (current?.relayUrl === backend.relayUrl) {
         continue;
@@ -160,8 +176,30 @@ export function MainScreen({ identity }: Props) {
           onSnapshot: snapshot => {
             setSnapshots(previous => ({
               ...previous,
-              [backend.nodePubkey]: snapshot,
+              [backend.nodePubkey]: {
+                ...snapshot,
+                jobs: mergeJobViews(
+                  previous[backend.nodePubkey]?.jobs ?? [],
+                  snapshot.jobs,
+                ),
+              },
             }));
+            if (snapshot.jobs.length > 0) {
+              mergeJobs(backend.nodePubkey, snapshot.jobs)
+                .then(jobs =>
+                  setSnapshots(previous => ({
+                    ...previous,
+                    [backend.nodePubkey]: {
+                      ...(previous[backend.nodePubkey] ?? snapshot),
+                      jobs: mergeJobViews(
+                        previous[backend.nodePubkey]?.jobs ?? [],
+                        jobs,
+                      ),
+                    },
+                  })),
+                )
+                .catch(error => setStorageError(readError(error)));
+            }
             if (snapshot.phase === 'ready') {
               loadOutbox()
                 .then(entries =>
@@ -402,6 +440,7 @@ function BackendCard({
             value={`${node.load.active_jobs} active · ${node.load.queued_jobs} queued`}
           />
           <Fact label="JOBS" value={String(snapshot.jobs.length)} />
+          <JobQueue jobs={snapshot.jobs} stale={!ready} />
           {ready && node.features.jobs_create ? (
             <View style={styles.composer}>
               <Text style={[type.eyebrow, { color: pal.faint }]}>NEW JOB</Text>
@@ -528,6 +567,76 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
+function JobQueue({ jobs, stale }: { jobs: JobView[]; stale: boolean }) {
+  const pal = usePalette();
+  if (jobs.length === 0) return null;
+  return (
+    <View style={[styles.queue, { borderColor: pal.line }]}>
+      <Text style={[type.eyebrow, { color: pal.faint }]}>QUEUE</Text>
+      {jobs.map(job => {
+        const total = job.progress?.total;
+        const detail =
+          total === undefined
+            ? job.progress === undefined
+              ? null
+              : `${job.progress.completed} ${job.progress.unit}`
+            : `${job.progress?.completed}/${total} ${job.progress?.unit}`;
+        return (
+          <View key={job.id} style={styles.jobRow}>
+            <View style={styles.jobText}>
+              <Text style={[type.small, { color: pal.ink }]}>
+                {jobStateLabel(job)}
+              </Text>
+              <Text style={[type.small, { color: pal.muted }]}>
+                {job.model} · {shortKey(job.id)}
+              </Text>
+              {job.error ? (
+                <Text style={[type.small, { color: pal.muted }]}>
+                  {job.error.message}
+                </Text>
+              ) : null}
+            </View>
+            <Text style={[type.small, { color: pal.faint }]}>
+              {detail ?? (stale ? 'offline' : `r${job.revision}`)}
+            </Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
+
+function jobStateLabel(job: JobView): string {
+  if (job.state === 'running') {
+    switch (job.stage) {
+      case 'plan':
+        return 'Writing plan';
+      case 'codes':
+        return 'Generating codes';
+      case 'diffuse':
+        return 'Shaping audio';
+      case 'decode':
+        return 'Decoding';
+    }
+  }
+  switch (job.state) {
+    case 'queued':
+      return 'Waiting on node';
+    case 'preparing':
+      return 'Preparing model';
+    case 'finalizing':
+      return 'Saving song';
+    case 'completed':
+      return 'Generation complete';
+    case 'failed':
+      return 'Generation failed';
+    case 'recovering':
+      return 'Restarting from request';
+    default:
+      return job.state.replaceAll('_', ' ');
+  }
+}
+
 function phaseLabel(phase: ConnectionPhase): string {
   switch (phase) {
     case 'disconnected':
@@ -581,6 +690,13 @@ const styles = StyleSheet.create({
   facts: { marginTop: space.lg, gap: space.sm },
   fact: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm },
   factValue: { flex: 1, textAlign: 'right' },
+  queue: { borderTopWidth: 1, paddingTop: space.sm, gap: space.sm },
+  jobRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: space.sm,
+  },
+  jobText: { flex: 1 },
   awaiting: { marginTop: space.lg },
   cardError: { marginTop: space.md },
   composer: { marginTop: space.lg, gap: space.sm },
