@@ -65,6 +65,8 @@ type LiveConnection = {
   connection: BackendConnection;
 };
 
+type JobControl = 'pause' | 'resume' | 'cancel' | 'retry';
+
 export function MainScreen({ identity }: Props) {
   const pal = usePalette();
   const dark = pal.bg === '#000000';
@@ -332,6 +334,15 @@ export function MainScreen({ identity }: Props) {
     [],
   );
 
+  const handleJobControl = useCallback(
+    async (nodePublicKey: string, job: JobView, control: JobControl) => {
+      const live = connections.current.get(nodePublicKey);
+      if (live === undefined) throw new Error('Job node is not connected.');
+      await live.connection.controlJob(control, job.id, job.revision);
+    },
+    [],
+  );
+
   const handleSongPresence = useCallback(
     async (nodePublicKey: string, song: SongHeader) => {
       const live = connections.current.get(nodePublicKey);
@@ -447,6 +458,7 @@ export function MainScreen({ identity }: Props) {
               }
               readyBorder={dark ? READY_BORDER_DARK : READY_BORDER_LIGHT}
               onSubmit={handleSubmit}
+              onJobControl={handleJobControl}
             />
           ))
         )}
@@ -752,6 +764,7 @@ function BackendCard({
   readyBackground,
   readyBorder,
   onSubmit,
+  onJobControl,
 }: {
   backend: BackendRecord;
   snapshot: ConnectionSnapshot;
@@ -761,6 +774,11 @@ function BackendCard({
     nodePublicKey: string,
     model: string,
     generation: GenerationRequest,
+  ) => Promise<void>;
+  onJobControl: (
+    nodePublicKey: string,
+    job: JobView,
+    control: JobControl,
   ) => Promise<void>;
 }) {
   const pal = usePalette();
@@ -840,7 +858,14 @@ function BackendCard({
             value={`${node.load.active_jobs} active · ${node.load.queued_jobs} queued`}
           />
           <Fact label="JOBS" value={String(snapshot.jobs.length)} />
-          <JobQueue jobs={snapshot.jobs} stale={!ready} />
+          <JobQueue
+            jobs={snapshot.jobs}
+            online={ready}
+            controlsSupported={node.features.job_controls}
+            onControl={(job, control) =>
+              onJobControl(backend.nodePubkey, job, control)
+            }
+          />
           {ready && node.features.jobs_create ? (
             <View style={styles.composer}>
               <Text style={[type.eyebrow, { color: pal.faint }]}>NEW JOB</Text>
@@ -967,9 +992,45 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function JobQueue({ jobs, stale }: { jobs: JobView[]; stale: boolean }) {
+function JobQueue({
+  jobs,
+  online,
+  controlsSupported,
+  onControl,
+}: {
+  jobs: JobView[];
+  online: boolean;
+  controlsSupported: boolean;
+  onControl: (job: JobView, control: JobControl) => Promise<void>;
+}) {
   const pal = usePalette();
+  const [requesting, setRequesting] = useState<Record<string, JobControl>>({});
+  const [controlErrors, setControlErrors] = useState<Record<string, string>>(
+    {},
+  );
   if (jobs.length === 0) return null;
+  const runControl = async (job: JobView, control: JobControl) => {
+    setRequesting(current => ({ ...current, [job.id]: control }));
+    setControlErrors(current => {
+      const next = { ...current };
+      delete next[job.id];
+      return next;
+    });
+    try {
+      await onControl(job, control);
+    } catch (error) {
+      setControlErrors(current => ({
+        ...current,
+        [job.id]: readError(error),
+      }));
+    } finally {
+      setRequesting(current => {
+        const next = { ...current };
+        delete next[job.id];
+        return next;
+      });
+    }
+  };
   return (
     <View style={[styles.queue, { borderColor: pal.line }]}>
       <Text style={[type.eyebrow, { color: pal.faint }]}>QUEUE</Text>
@@ -981,29 +1042,82 @@ function JobQueue({ jobs, stale }: { jobs: JobView[]; stale: boolean }) {
               ? null
               : `${job.progress.completed} ${job.progress.unit}`
             : `${job.progress?.completed}/${total} ${job.progress?.unit}`;
+        const controls = controlsSupported ? jobControls(job) : [];
+        const pending = requesting[job.id];
         return (
-          <View key={job.id} style={styles.jobRow}>
-            <View style={styles.jobText}>
-              <Text style={[type.small, { color: pal.ink }]}>
-                {jobStateLabel(job)}
-              </Text>
-              <Text style={[type.small, { color: pal.muted }]}>
-                {job.model} · {shortKey(job.id)}
-              </Text>
-              {job.error ? (
-                <Text style={[type.small, { color: pal.muted }]}>
-                  {job.error.message}
+          <View key={job.id} style={styles.jobBlock}>
+            <View style={styles.jobRow}>
+              <View style={styles.jobText}>
+                <Text style={[type.small, { color: pal.ink }]}>
+                  {pending ? `Requesting ${pending}…` : jobStateLabel(job)}
                 </Text>
-              ) : null}
+                <Text style={[type.small, { color: pal.muted }]}>
+                  {job.model} · {shortKey(job.id)}
+                </Text>
+                {job.error ? (
+                  <Text style={[type.small, { color: pal.muted }]}>
+                    {job.error.message}
+                  </Text>
+                ) : null}
+              </View>
+              <Text style={[type.small, { color: pal.faint }]}>
+                {detail ?? (!online ? 'offline' : `r${job.revision}`)}
+              </Text>
             </View>
-            <Text style={[type.small, { color: pal.faint }]}>
-              {detail ?? (stale ? 'offline' : `r${job.revision}`)}
-            </Text>
+            {controls.length > 0 ? (
+              <View style={styles.jobActions}>
+                {controls.map(control => (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={!online || pending !== undefined}
+                    key={control}
+                    onPress={() => runControl(job, control)}
+                    style={[styles.jobAction, { borderColor: pal.line }]}
+                  >
+                    <Text
+                      style={[
+                        type.eyebrow,
+                        {
+                          color:
+                            online && pending === undefined
+                              ? pal.ink
+                              : pal.faint,
+                        },
+                      ]}
+                    >
+                      {control.toUpperCase()}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            {controlErrors[job.id] ? (
+              <Text style={[type.small, { color: pal.muted }]}>
+                {controlErrors[job.id]}
+              </Text>
+            ) : null}
           </View>
         );
       })}
     </View>
   );
+}
+
+function jobControls(job: JobView): JobControl[] {
+  switch (job.state) {
+    case 'queued':
+    case 'preparing':
+    case 'running':
+      return ['pause', 'cancel'];
+    case 'pause_requested':
+      return ['cancel'];
+    case 'paused':
+      return ['resume', 'cancel'];
+    case 'failed':
+      return job.error?.retryable ? ['retry'] : [];
+    default:
+      return [];
+  }
 }
 
 function jobStateLabel(job: JobView): string {
@@ -1026,6 +1140,14 @@ function jobStateLabel(job: JobView): string {
       return 'Preparing model';
     case 'finalizing':
       return 'Saving song';
+    case 'pause_requested':
+      return 'Pausing at a safe point';
+    case 'paused':
+      return `Paused${job.stage ? ` during ${job.stage}` : ''}`;
+    case 'cancel_requested':
+      return 'Cancelling at a safe point';
+    case 'cancelled':
+      return 'Generation cancelled';
     case 'completed':
       return 'Generation complete';
     case 'failed':
@@ -1128,6 +1250,9 @@ const styles = StyleSheet.create({
     gap: space.sm,
   },
   jobText: { flex: 1 },
+  jobBlock: { gap: space.xs },
+  jobActions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
+  jobAction: { borderWidth: 1, minHeight: touch.min, padding: space.sm },
   awaiting: { marginTop: space.lg },
   cardError: { marginTop: space.md },
   composer: { marginTop: space.lg, gap: space.sm },

@@ -1,6 +1,7 @@
 mod accel;
 mod backends;
 mod catalog;
+mod checkpoints;
 mod config;
 mod control;
 mod engine;
@@ -282,6 +283,8 @@ async fn run(cli: Cli) -> Result<()> {
         connected: false,
         library,
         job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        active_job: None,
+        shutting_down: false,
     });
     let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<ControlEvent>(128);
     tokio::spawn(control::serve(listener, state.clone(), events_tx.clone()));

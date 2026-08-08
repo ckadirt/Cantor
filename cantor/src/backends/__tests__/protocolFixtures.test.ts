@@ -1,4 +1,4 @@
-import {parseJobs, parseNodeInfo} from '../types';
+import { parseJob, parseJobs, parseNodeInfo } from '../types';
 
 const nodeInfo = require('../../../../protocol/fixtures/v2/node-info.json');
 const jobsPage = require('../../../../protocol/fixtures/v2/jobs-page.json');
@@ -10,7 +10,9 @@ describe('shared protocol v2 fixtures', () => {
   it('parses canonical node and job messages at the app boundary', () => {
     expect(parseNodeInfo(nodeInfo.node)?.name).toBe('fixture-node');
     expect(parseJobs(jobsPage.jobs)?.[0]).toMatchObject({
-      state: 'running', stage: 'diffuse', revision: 3,
+      state: 'running',
+      stage: 'diffuse',
+      revision: 3,
     });
   });
 
@@ -21,5 +23,19 @@ describe('shared protocol v2 fixtures', () => {
 
   it('ignores additive optional fields', () => {
     expect(parseNodeInfo(forward.node)?.name).toBe('fixture-node');
+  });
+
+  it('defaults legacy cached job errors to non-retryable', () => {
+    expect(
+      parseJob({
+        id: 'job',
+        revision: 1,
+        state: 'failed',
+        model: 'model',
+        created_at: '2026-08-08T00:00:00Z',
+        updated_at: '2026-08-08T00:00:00Z',
+        error: { code: 'internal', message: 'old cache' },
+      })?.error,
+    ).toMatchObject({ retryable: false });
   });
 });

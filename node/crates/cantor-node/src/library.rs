@@ -76,7 +76,7 @@ CREATE INDEX IF NOT EXISTS jobs_scheduler
 
 const MAX_ATTEMPTS: u32 = 3;
 const JOB_VIEW_COLUMNS: &str = "id,revision,state,stage,progress_completed,progress_total,progress_unit,\
-     model_selector,created_at,updated_at,error_code,error_message";
+     model_selector,created_at,updated_at,error_code,error_message,error_retryable";
 
 #[derive(Clone, Debug)]
 pub struct Submission {
@@ -95,8 +95,26 @@ pub struct WorkItem {
     pub generation: GenerationRequest,
     pub engine: String,
     pub component_digests: Vec<String>,
+    pub request_hash: String,
     pub attempt: u32,
     pub artifact_directory: PathBuf,
+}
+
+impl WorkItem {
+    pub fn job_directory(&self) -> &Path {
+        self.artifact_directory
+            .parent()
+            .expect("a work item artifact directory always has its job parent")
+    }
+
+    pub fn checkpoint_expectation(&self) -> crate::checkpoints::CheckpointExpectation<'_> {
+        crate::checkpoints::CheckpointExpectation {
+            job_id: &self.id,
+            request_hash: &self.request_hash,
+            model_selector: &self.model,
+            component_digests: &self.component_digests,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -116,6 +134,22 @@ pub struct ArtifactRecord {
 pub enum FinishResult {
     Requeued(JobView),
     Failed(JobView),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JobControl {
+    Pause,
+    Resume,
+    Cancel,
+    Retry,
+}
+
+#[derive(Debug)]
+pub enum ControlResult {
+    Updated(JobView),
+    Conflict(JobView),
+    NotFound,
+    InvalidTransition(JobView),
 }
 
 #[derive(Debug, PartialEq)]
@@ -200,6 +234,26 @@ impl Library {
             params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
         )?;
         crate::songs::migrate(&connection)?;
+        add_column_if_missing(&connection, "jobs", "active_checkpoint", "TEXT")?;
+        add_column_if_missing(&connection, "jobs", "checkpoint_outcome", "TEXT")?;
+        add_column_if_missing(&connection, "jobs", "control_requested_at", "TEXT")?;
+        add_column_if_missing(&connection, "jobs", "stop_reason", "TEXT")?;
+        add_column_if_missing(
+            &connection,
+            "jobs",
+            "error_retryable",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        add_column_if_missing(
+            &connection,
+            "jobs",
+            "consecutive_failures",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(4,?1,?2)",
+            params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
+        )?;
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         if check != "ok" {
             bail!("library database quick_check failed");
@@ -339,6 +393,181 @@ impl Library {
             .map_err(Into::into)
     }
 
+    pub fn control_job(
+        &mut self,
+        principal: &[u8; 32],
+        id: &str,
+        expected_revision: Option<u32>,
+        control: JobControl,
+    ) -> Result<ControlResult> {
+        let principal_hex = hex(principal);
+        let Some(current) = self.get(principal, id)? else {
+            return Ok(ControlResult::NotFound);
+        };
+        if expected_revision.is_some_and(|expected| expected != current.revision) {
+            return Ok(ControlResult::Conflict(current));
+        }
+        let stop_reason: Option<String> = self.connection.query_row(
+            "SELECT stop_reason FROM jobs WHERE principal_id=?1 AND id=?2",
+            params![principal_hex, id],
+            |row| row.get(0),
+        )?;
+
+        let now = now_rfc3339();
+        let changed = match control {
+            JobControl::Pause => match current.state {
+                JobState::Paused | JobState::PauseRequested => {
+                    return Ok(ControlResult::Updated(current));
+                }
+                JobState::Queued => self.connection.execute(
+                    "UPDATE jobs SET state='paused',stage='plan',stop_reason='pause',
+                     control_requested_at=?3,revision=revision+1,updated_at=?3
+                     WHERE principal_id=?1 AND id=?2 AND state='queued'",
+                    params![principal_hex, id, now],
+                )?,
+                JobState::Preparing | JobState::Running => self.connection.execute(
+                    "UPDATE jobs SET state='pause_requested',stop_reason='pause',
+                     control_requested_at=?3,revision=revision+1,updated_at=?3
+                     WHERE principal_id=?1 AND id=?2 AND state IN ('preparing','running')",
+                    params![principal_hex, id, now],
+                )?,
+                _ => return Ok(ControlResult::InvalidTransition(current)),
+            },
+            JobControl::Cancel => match current.state {
+                JobState::Cancelled => return Ok(ControlResult::Updated(current)),
+                JobState::Queued | JobState::Paused => self.connection.execute(
+                    "UPDATE jobs SET state='cancelled',stage=NULL,stop_reason='cancel',
+                     control_requested_at=?3,error_code=NULL,error_message=NULL,
+                     error_retryable=0,revision=revision+1,updated_at=?3
+                     WHERE principal_id=?1 AND id=?2 AND state IN ('queued','paused')",
+                    params![principal_hex, id, now],
+                )?,
+                JobState::Preparing
+                | JobState::Running
+                | JobState::PauseRequested
+                | JobState::CancelRequested => {
+                    if current.state == JobState::CancelRequested {
+                        return Ok(ControlResult::Updated(current));
+                    }
+                    self.connection.execute(
+                        "UPDATE jobs SET state='cancel_requested',stop_reason='cancel',
+                         control_requested_at=?3,revision=revision+1,updated_at=?3
+                         WHERE principal_id=?1 AND id=?2 AND state IN
+                           ('preparing','running','pause_requested')",
+                        params![principal_hex, id, now],
+                    )?
+                }
+                _ => return Ok(ControlResult::InvalidTransition(current)),
+            },
+            JobControl::Resume => match current.state {
+                JobState::Paused => {
+                    let sidecar = accepted_sidecar_for(&self.root, &principal_hex, id)?;
+                    let request_hash: String = self.connection.query_row(
+                        "SELECT request_hash FROM jobs WHERE principal_id=?1 AND id=?2",
+                        params![principal_hex, id],
+                        |row| row.get(0),
+                    )?;
+                    let expectation = crate::checkpoints::CheckpointExpectation {
+                        job_id: id,
+                        request_hash: &request_hash,
+                        model_selector: &sidecar.model.selector,
+                        component_digests: &sidecar.model.component_digests,
+                    };
+                    let job_directory = self.root.join("jobs").join(&principal_hex).join(id);
+                    let selection = crate::checkpoints::select(&job_directory, &expectation, None)?;
+                    for rejected in selection.rejected {
+                        eprintln!("checkpoint.rejected job={id} reason={rejected}");
+                    }
+                    let selected = selection
+                        .source
+                        .map(|source| {
+                            Ok::<_, anyhow::Error>((
+                                source.reference.metadata_path,
+                                enum_text(source.reference.outcome)?,
+                            ))
+                        })
+                        .transpose()?;
+                    let (checkpoint, outcome) = selected
+                        .map(|(checkpoint, outcome)| (Some(checkpoint), Some(outcome)))
+                        .unwrap_or((None, None));
+                    self.connection.execute(
+                        "UPDATE jobs SET state='queued',stage=NULL,active_checkpoint=?4,
+                         checkpoint_outcome=?5,stop_reason='resume',control_requested_at=?3,
+                         revision=revision+1,updated_at=?3
+                         WHERE principal_id=?1 AND id=?2 AND state='paused'",
+                        params![principal_hex, id, now, checkpoint, outcome],
+                    )?
+                }
+                JobState::Queued | JobState::Preparing | JobState::Running
+                    if matches!(stop_reason.as_deref(), Some("resume")) =>
+                {
+                    return Ok(ControlResult::Updated(current));
+                }
+                _ => return Ok(ControlResult::InvalidTransition(current)),
+            },
+            JobControl::Retry => match current.state {
+                JobState::Failed if current.error.as_ref().is_some_and(|error| error.retryable) => {
+                    self.connection.execute(
+                        "UPDATE jobs SET state='queued',stage=NULL,error_code=NULL,
+                         error_message=NULL,error_retryable=0,consecutive_failures=0,
+                         stop_reason='retry',control_requested_at=?3,
+                         revision=revision+1,updated_at=?3
+                         WHERE principal_id=?1 AND id=?2 AND state='failed' AND error_retryable=1",
+                        params![principal_hex, id, now],
+                    )?
+                }
+                JobState::Queued | JobState::Preparing | JobState::Running
+                    if matches!(stop_reason.as_deref(), Some("retry")) =>
+                {
+                    return Ok(ControlResult::Updated(current));
+                }
+                _ => return Ok(ControlResult::InvalidTransition(current)),
+            },
+        };
+        if changed != 1 {
+            let current = self
+                .get(principal, id)?
+                .context("controlled job disappeared")?;
+            return Ok(ControlResult::Conflict(current));
+        }
+        let updated = self
+            .get(principal, id)?
+            .context("controlled job disappeared")?;
+        let artifact_directory = self
+            .root
+            .join("jobs")
+            .join(&principal_hex)
+            .join(id)
+            .join("artifacts");
+        let attempt: u32 = self.connection.query_row(
+            "SELECT attempt FROM jobs WHERE id=?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        write_status(&artifact_directory, &updated, attempt)?;
+        Ok(ControlResult::Updated(updated))
+    }
+
+    pub fn hold_principal_jobs(&mut self, principal: &[u8; 32]) -> Result<Vec<JobView>> {
+        let principal = hex(principal);
+        let now = now_rfc3339();
+        self.connection.execute(
+            "UPDATE jobs SET state='paused',stage=COALESCE(stage,'plan'),
+             stop_reason='revoked',control_requested_at=?2,
+             revision=revision+1,updated_at=?2
+             WHERE principal_id=?1 AND state='queued'",
+            params![principal, now],
+        )?;
+        self.connection.execute(
+            "UPDATE jobs SET state='pause_requested',stop_reason='revoked',
+             control_requested_at=?2,revision=revision+1,updated_at=?2
+             WHERE principal_id=?1 AND state IN ('preparing','running')",
+            params![principal, now],
+        )?;
+        let principal = decode_hex_32(&principal)?;
+        self.list(&principal, cantor_proto::MAX_PAGE_LIMIT)
+    }
+
     pub fn queued_count(&self) -> Result<u32> {
         self.connection
             .query_row(
@@ -352,7 +581,8 @@ impl Library {
     pub fn active_count(&self) -> Result<u32> {
         self.connection
             .query_row(
-                "SELECT count(*) FROM jobs WHERE state IN ('preparing','running','finalizing')",
+                "SELECT count(*) FROM jobs WHERE state IN
+                 ('preparing','running','pause_requested','cancel_requested','finalizing')",
                 [],
                 |row| row.get(0),
             )
@@ -367,26 +597,30 @@ impl Library {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let candidate = transaction
             .query_row(
-                "SELECT id,principal_id,model_selector,request_json,attempt
-                 FROM jobs WHERE state='queued' AND attempt < ?1
+                "SELECT id,principal_id,model_selector,request_json,request_hash,attempt
+                 FROM jobs WHERE state='queued'
                    AND NOT EXISTS (
                      SELECT 1 FROM jobs active
-                     WHERE active.state IN ('preparing','running','finalizing')
+                     WHERE active.state IN
+                       ('preparing','running','pause_requested','cancel_requested','finalizing')
                    )
                  ORDER BY priority DESC,created_at ASC,id ASC LIMIT 1",
-                params![MAX_ATTEMPTS],
+                [],
                 |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, u32>(4)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, u32>(5)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((id, principal_hex, model, request_json, previous_attempt)) = candidate else {
+        let Some((id, principal_hex, model, request_json, request_hash, previous_attempt)) =
+            candidate
+        else {
             transaction.commit()?;
             return Ok(None);
         };
@@ -442,6 +676,7 @@ impl Library {
                 generation,
                 engine: sidecar.model.engine,
                 component_digests: sidecar.model.component_digests,
+                request_hash,
                 attempt,
                 artifact_directory,
             },
@@ -483,7 +718,7 @@ impl Library {
         let changed = self.connection.execute(
             "UPDATE jobs SET state='finalizing',stage=NULL,progress_completed=NULL,
              progress_total=NULL,progress_unit=NULL,revision=revision+1,updated_at=?3
-             WHERE id=?1 AND attempt=?2 AND state='running'",
+             WHERE id=?1 AND attempt=?2 AND state IN ('running','pause_requested')",
             params![work.id, work.attempt, now],
         )?;
         if changed != 1 {
@@ -492,6 +727,122 @@ impl Library {
         let job = self
             .job_by_id(&work.id)?
             .context("finalizing job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(job))
+    }
+
+    pub fn record_checkpoint(
+        &mut self,
+        work: &WorkItem,
+        reference: &crate::checkpoints::CheckpointReference,
+        resume_stage: GenerationStage,
+    ) -> Result<Option<JobView>> {
+        let now = now_rfc3339();
+        let stage = enum_text(resume_stage)?;
+        let outcome = enum_text(reference.outcome)?;
+        let changed = self.connection.execute(
+            "UPDATE jobs SET active_checkpoint=?3,checkpoint_outcome=?4,stage=?5,
+             progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
+             revision=revision+1,updated_at=?6
+             WHERE id=?1 AND attempt=?2 AND state IN
+               ('preparing','running','pause_requested','cancel_requested')",
+            params![
+                work.id,
+                work.attempt,
+                reference.metadata_path,
+                outcome,
+                stage,
+                now
+            ],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .job_by_id(&work.id)?
+            .context("checkpointed job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(job))
+    }
+
+    pub fn finish_paused(
+        &mut self,
+        work: &WorkItem,
+        reference: Option<&crate::checkpoints::CheckpointReference>,
+        stage: GenerationStage,
+        reason: &str,
+    ) -> Result<Option<JobView>> {
+        let now = now_rfc3339();
+        let stage = enum_text(stage)?;
+        let checkpoint = reference.map(|value| value.metadata_path.as_str());
+        let outcome = reference
+            .map(|value| enum_text(value.outcome))
+            .transpose()?;
+        let changed = self.connection.execute(
+            "UPDATE jobs SET state='paused',stage=?3,active_checkpoint=COALESCE(?4,active_checkpoint),
+             checkpoint_outcome=COALESCE(?5,checkpoint_outcome),stop_reason=?6,
+             progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
+             revision=revision+1,updated_at=?7
+             WHERE id=?1 AND attempt=?2 AND state IN
+               ('preparing','running','pause_requested')",
+            params![work.id, work.attempt, stage, checkpoint, outcome, reason, now],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .job_by_id(&work.id)?
+            .context("paused job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(job))
+    }
+
+    pub fn finish_cancelled(&mut self, work: &WorkItem) -> Result<Option<JobView>> {
+        let now = now_rfc3339();
+        let changed = self.connection.execute(
+            "UPDATE jobs SET state='cancelled',stage=NULL,progress_completed=NULL,
+             progress_total=NULL,progress_unit=NULL,error_code=NULL,error_message=NULL,
+             error_retryable=0,stop_reason='cancel',revision=revision+1,updated_at=?3
+             WHERE id=?1 AND attempt=?2 AND state IN
+               ('preparing','running','pause_requested','cancel_requested')",
+            params![work.id, work.attempt, now],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .job_by_id(&work.id)?
+            .context("cancelled job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(job))
+    }
+
+    pub fn finish_shutdown(
+        &mut self,
+        work: &WorkItem,
+        reference: Option<&crate::checkpoints::CheckpointReference>,
+        stage: GenerationStage,
+    ) -> Result<Option<JobView>> {
+        let now = now_rfc3339();
+        let stage = enum_text(stage)?;
+        let checkpoint = reference.map(|value| value.metadata_path.as_str());
+        let outcome = reference
+            .map(|value| enum_text(value.outcome))
+            .transpose()?;
+        let changed = self.connection.execute(
+            "UPDATE jobs SET state='queued',stage=?3,active_checkpoint=COALESCE(?4,active_checkpoint),
+             checkpoint_outcome=COALESCE(?5,checkpoint_outcome),stop_reason='shutdown',
+             progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
+             revision=revision+1,updated_at=?6
+             WHERE id=?1 AND attempt=?2 AND state IN ('preparing','running')",
+            params![work.id, work.attempt, stage, checkpoint, outcome, now],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .job_by_id(&work.id)?
+            .context("shutdown job disappeared")?;
         write_status(&work.artifact_directory, &job, work.attempt)?;
         Ok(Some(job))
     }
@@ -547,7 +898,8 @@ impl Library {
         }
         insert_artifact(&transaction, &work.id, &record)?;
         transaction.execute(
-            "UPDATE jobs SET state='completed',revision=revision+1,updated_at=?2
+            "UPDATE jobs SET state='completed',error_retryable=0,consecutive_failures=0,
+             revision=revision+1,updated_at=?2
              WHERE id=?1 AND state='finalizing' AND attempt=?3",
             params![work.id, now, work.attempt],
         )?;
@@ -569,7 +921,13 @@ impl Library {
         message: &str,
         retryable: bool,
     ) -> Result<Option<FinishResult>> {
-        let requeue = retryable && work.attempt < MAX_ATTEMPTS;
+        let previous_failures: u32 = self.connection.query_row(
+            "SELECT consecutive_failures FROM jobs WHERE id=?1 AND attempt=?2",
+            params![work.id, work.attempt],
+            |row| row.get(0),
+        )?;
+        let failures = previous_failures.saturating_add(1);
+        let requeue = retryable && failures < MAX_ATTEMPTS;
         let state = if requeue { "queued" } else { "failed" };
         let (code, message) = if requeue {
             (None, None)
@@ -580,9 +938,19 @@ impl Library {
         let changed = self.connection.execute(
             "UPDATE jobs SET state=?3,stage=NULL,progress_completed=NULL,
              progress_total=NULL,progress_unit=NULL,error_code=?4,error_message=?5,
-             revision=revision+1,updated_at=?6
+             error_retryable=?6,consecutive_failures=?7,
+             revision=revision+1,updated_at=?8
              WHERE id=?1 AND attempt=?2 AND state IN ('preparing','running','finalizing')",
-            params![work.id, work.attempt, state, code, message, now],
+            params![
+                work.id,
+                work.attempt,
+                state,
+                code,
+                message,
+                !requeue && retryable,
+                failures,
+                now
+            ],
         )?;
         if changed != 1 {
             return Ok(None);
@@ -705,16 +1073,31 @@ impl Library {
                     self.quarantine(&job_path)?;
                     continue;
                 }
-                let committed: bool = self.connection.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM jobs WHERE principal_id=?1 AND id=?2)",
-                    params![principal, id],
-                    |row| row.get(0),
-                )?;
-                if !committed {
+                let committed: Option<String> = self
+                    .connection
+                    .query_row(
+                        "SELECT state FROM jobs WHERE principal_id=?1 AND id=?2",
+                        params![principal, id],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                if committed.is_none() {
                     if is_known_incomplete_job(&job_path)? {
                         fs::remove_dir_all(&job_path)?;
                     } else {
                         self.quarantine(&job_path)?;
+                    }
+                } else {
+                    let checkpoints = job_path.join("checkpoints");
+                    crate::checkpoints::clear_temps(&checkpoints)?;
+                    if matches!(
+                        committed.as_deref(),
+                        Some("completed" | "cancelled" | "failed")
+                    ) && crate::checkpoints::prune_terminal(
+                        &checkpoints,
+                        Duration::from_secs(24 * 60 * 60),
+                    )? {
+                        eprintln!("checkpoint.gc job={id} reason=terminal-grace-expired");
                     }
                 }
             }
@@ -722,13 +1105,14 @@ impl Library {
         Ok(())
     }
 
-    /// M2 has no opaque checkpoints: interrupted inference restarts from the
-    /// immutable request. A durable final WAV is adopted instead of generated
-    /// twice when the crash landed between rename and the DB commit.
+    /// Interrupted work keeps user intent and the newest structurally valid
+    /// checkpoint. Exact engine/backend compatibility is checked immediately
+    /// before FFI; a durable final WAV is still adopted transactionally.
     fn recover_interrupted_jobs(&mut self) -> Result<()> {
         let mut statement = self.connection.prepare(
-            "SELECT id,principal_id,state,attempt FROM jobs
-             WHERE state IN ('preparing','running','finalizing')",
+            "SELECT id,principal_id,state,attempt,consecutive_failures FROM jobs
+             WHERE state IN
+               ('preparing','running','pause_requested','cancel_requested','finalizing')",
         )?;
         let interrupted = statement
             .query_map([], |row| {
@@ -737,12 +1121,14 @@ impl Library {
                     row.get::<_, String>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, u32>(3)?,
+                    row.get::<_, u32>(4)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(statement);
 
-        for (id, principal, state, attempt) in interrupted {
+        for (id, principal, state, attempt, failures) in interrupted {
+            let recovery = select_recovery_source(&self.root, &self.connection, &principal, &id)?;
             let artifacts = self
                 .root
                 .join("jobs")
@@ -758,7 +1144,14 @@ impl Library {
                         self.quarantine(&master)?;
                         // With no valid canonical artifact, recovery below
                         // restarts from the immutable request.
-                        continue_recovery(&self.connection, &id, attempt, &artifacts)?;
+                        continue_recovery(
+                            &self.connection,
+                            &id,
+                            attempt,
+                            failures,
+                            &artifacts,
+                            &recovery,
+                        )?;
                         continue;
                     }
                 };
@@ -796,7 +1189,49 @@ impl Library {
                     }
                 }
             }
-            continue_recovery(&self.connection, &id, attempt, &artifacts)?;
+            if state == "cancel_requested" {
+                self.connection.execute(
+                    "UPDATE jobs SET state='cancelled',stage=NULL,progress_completed=NULL,
+                     progress_total=NULL,progress_unit=NULL,error_code=NULL,error_message=NULL,
+                     error_retryable=0,stop_reason='cancel',revision=revision+1,updated_at=?2
+                     WHERE id=?1 AND state='cancel_requested'",
+                    params![id, now_rfc3339()],
+                )?;
+                let job = self
+                    .job_by_id(&id)?
+                    .context("cancelled recovery job disappeared")?;
+                write_status(&artifacts, &job, attempt)?;
+                continue;
+            }
+            if state == "pause_requested" {
+                self.connection.execute(
+                    "UPDATE jobs SET state='paused',stage=?3,active_checkpoint=?4,
+                     checkpoint_outcome=?5,progress_completed=NULL,progress_total=NULL,
+                     progress_unit=NULL,stop_reason=COALESCE(stop_reason,'pause'),
+                     revision=revision+1,updated_at=?2
+                     WHERE id=?1 AND state='pause_requested'",
+                    params![
+                        id,
+                        now_rfc3339(),
+                        recovery.stage,
+                        recovery.metadata_path,
+                        recovery.outcome
+                    ],
+                )?;
+                let job = self
+                    .job_by_id(&id)?
+                    .context("paused recovery job disappeared")?;
+                write_status(&artifacts, &job, attempt)?;
+                continue;
+            }
+            continue_recovery(
+                &self.connection,
+                &id,
+                attempt,
+                failures,
+                &artifacts,
+                &recovery,
+            )?;
         }
 
         let mut statement = self
@@ -868,7 +1303,9 @@ fn continue_recovery(
     connection: &Connection,
     id: &str,
     attempt: u32,
+    consecutive_failures: u32,
     artifacts: &Path,
+    recovery: &RecoverySource,
 ) -> Result<()> {
     if artifacts.is_dir() {
         for entry in fs::read_dir(artifacts)? {
@@ -880,20 +1317,31 @@ fn continue_recovery(
         }
     }
     connection.execute(
-        "UPDATE jobs SET state='recovering',stage=NULL,
+        "UPDATE jobs SET state='recovering',stage=?3,active_checkpoint=?4,
+         checkpoint_outcome=?5,
          progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
          revision=revision+1,updated_at=?2 WHERE id=?1",
-        params![id, now_rfc3339()],
+        params![
+            id,
+            now_rfc3339(),
+            recovery.stage,
+            recovery.metadata_path,
+            recovery.outcome
+        ],
     )?;
-    let terminal = attempt >= MAX_ATTEMPTS;
+    let failures = consecutive_failures.saturating_add(1);
+    let terminal = failures >= MAX_ATTEMPTS;
     connection.execute(
         "UPDATE jobs SET state=?2,error_code=?3,error_message=?4,
-         revision=revision+1,updated_at=?5 WHERE id=?1 AND state='recovering'",
+         error_retryable=?5,consecutive_failures=?6,
+         revision=revision+1,updated_at=?7 WHERE id=?1 AND state='recovering'",
         params![
             id,
             if terminal { "failed" } else { "queued" },
             terminal.then_some("internal"),
             terminal.then_some("Generation was interrupted three times."),
+            terminal,
+            failures,
             now_rfc3339()
         ],
     )?;
@@ -903,6 +1351,59 @@ fn continue_recovery(
         |row| job_from_row(row, 0),
     )?;
     write_status(artifacts, &job, attempt)
+}
+
+struct RecoverySource {
+    stage: String,
+    metadata_path: Option<String>,
+    outcome: Option<String>,
+}
+
+fn select_recovery_source(
+    root: &Path,
+    connection: &Connection,
+    principal: &str,
+    id: &str,
+) -> Result<RecoverySource> {
+    let sidecar = accepted_sidecar_for(root, principal, id)?;
+    let request_hash: String = connection.query_row(
+        "SELECT request_hash FROM jobs WHERE principal_id=?1 AND id=?2",
+        params![principal, id],
+        |row| row.get(0),
+    )?;
+    let expectation = crate::checkpoints::CheckpointExpectation {
+        job_id: id,
+        request_hash: &request_hash,
+        model_selector: &sidecar.model.selector,
+        component_digests: &sidecar.model.component_digests,
+    };
+    let job_directory = root.join("jobs").join(principal).join(id);
+    let selection = crate::checkpoints::select(&job_directory, &expectation, None)?;
+    for rejected in selection.rejected {
+        eprintln!("checkpoint.rejected job={id} reason={rejected}");
+    }
+    let Some(source) = selection.source else {
+        return Ok(RecoverySource {
+            stage: enum_text(GenerationStage::Plan)?,
+            metadata_path: None,
+            outcome: None,
+        });
+    };
+    Ok(RecoverySource {
+        stage: enum_text(crate::checkpoints::protocol_stage(source.stage))?,
+        metadata_path: Some(source.reference.metadata_path),
+        outcome: Some(enum_text(source.reference.outcome)?),
+    })
+}
+
+fn accepted_sidecar_for(root: &Path, principal: &str, id: &str) -> Result<AcceptedRequestSidecar> {
+    let path = root
+        .join("jobs")
+        .join(principal)
+        .join(id)
+        .join("request.json");
+    serde_json::from_reader(File::open(&path)?)
+        .with_context(|| format!("failed to read {}", path.display()))
 }
 
 fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<JobView> {
@@ -928,10 +1429,15 @@ fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<JobV
         .transpose()?;
     let error_code: Option<String> = row.get(offset + 10)?;
     let error_message: Option<String> = row.get(offset + 11)?;
+    let error_retryable: bool = row.get(offset + 12)?;
     let error = error_code.zip(error_message).and_then(|(code, message)| {
         serde_json::from_value::<ErrorCode>(serde_json::Value::String(code))
             .ok()
-            .map(|code| JobError { code, message })
+            .map(|code| JobError {
+                code,
+                message,
+                retryable: error_retryable,
+            })
     });
     Ok(JobView {
         id: row.get(offset)?,
@@ -1465,6 +1971,240 @@ mod tests {
         let (second, _) = reopened.claim_next().unwrap().unwrap();
         assert_eq!(second.id, first.id);
         assert_eq!(second.attempt, 2);
+    }
+
+    #[test]
+    fn controls_are_owner_scoped_idempotent_and_preserve_intent_across_restart() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        let accepted = match library
+            .submit(
+                &[1; 32],
+                &[2; 32],
+                &submission("controlled"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap()
+        {
+            SubmitResult::Accepted(job) => job,
+            other => panic!("unexpected submission: {other:?}"),
+        };
+        assert!(matches!(
+            library
+                .control_job(&[3; 32], &accepted.id, None, JobControl::Pause)
+                .unwrap(),
+            ControlResult::NotFound
+        ));
+        let paused = match library
+            .control_job(
+                &[1; 32],
+                &accepted.id,
+                Some(accepted.revision),
+                JobControl::Pause,
+            )
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected pause: {other:?}"),
+        };
+        assert_eq!(paused.state, JobState::Paused);
+        let repeated = match library
+            .control_job(&[1; 32], &accepted.id, None, JobControl::Pause)
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected repeat: {other:?}"),
+        };
+        assert_eq!(repeated.revision, paused.revision);
+        assert!(matches!(
+            library
+                .control_job(
+                    &[1; 32],
+                    &accepted.id,
+                    Some(accepted.revision),
+                    JobControl::Resume,
+                )
+                .unwrap(),
+            ControlResult::Conflict(_)
+        ));
+        let resumed = match library
+            .control_job(
+                &[1; 32],
+                &accepted.id,
+                Some(paused.revision),
+                JobControl::Resume,
+            )
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected resume: {other:?}"),
+        };
+        assert_eq!(resumed.state, JobState::Queued);
+
+        let (first_work, preparing) = library.claim_next().unwrap().unwrap();
+        let requested = match library
+            .control_job(
+                &[1; 32],
+                &accepted.id,
+                Some(preparing.revision),
+                JobControl::Pause,
+            )
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected active pause: {other:?}"),
+        };
+        assert_eq!(requested.state, JobState::PauseRequested);
+        drop(library);
+
+        let mut reopened = Library::open(temporary.path()).unwrap();
+        let held = reopened.get(&[1; 32], &accepted.id).unwrap().unwrap();
+        assert_eq!(held.state, JobState::Paused);
+        assert_eq!(held.stage, Some(GenerationStage::Plan));
+        let resumed = match reopened
+            .control_job(
+                &[1; 32],
+                &accepted.id,
+                Some(held.revision),
+                JobControl::Resume,
+            )
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected recovered resume: {other:?}"),
+        };
+        assert_eq!(resumed.state, JobState::Queued);
+        let (_second_work, preparing) = reopened.claim_next().unwrap().unwrap();
+        assert_eq!(first_work.id, accepted.id);
+        let cancelling = match reopened
+            .control_job(
+                &[1; 32],
+                &accepted.id,
+                Some(preparing.revision),
+                JobControl::Cancel,
+            )
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected cancel: {other:?}"),
+        };
+        assert_eq!(cancelling.state, JobState::CancelRequested);
+        drop(reopened);
+
+        let reopened = Library::open(temporary.path()).unwrap();
+        assert_eq!(
+            reopened.get(&[1; 32], &accepted.id).unwrap().unwrap().state,
+            JobState::Cancelled
+        );
+    }
+
+    #[test]
+    fn corrupt_paused_checkpoint_falls_back_to_the_immutable_request() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                &[1; 32],
+                &[2; 32],
+                &submission("fallback"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        let reference = crate::checkpoints::write(
+            &work.job_directory().join("checkpoints"),
+            &work.checkpoint_expectation(),
+            work.attempt,
+            crate::engine::Stage::Plan,
+            crate::checkpoints::CheckpointOutcome::Paused,
+            crate::checkpoints::EngineProvenance {
+                family: "acestep".into(),
+                abi: 1,
+                build: "build".into(),
+                backend: "cpu".into(),
+            },
+            b"opaque",
+        )
+        .unwrap();
+        library
+            .record_checkpoint(&work, &reference, GenerationStage::Plan)
+            .unwrap();
+        let paused = library
+            .finish_paused(&work, Some(&reference), GenerationStage::Plan, "pause")
+            .unwrap()
+            .unwrap();
+        let metadata_path = work.job_directory().join(&reference.metadata_path);
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+        let blob = metadata["blob"].as_str().unwrap();
+        fs::write(work.job_directory().join("checkpoints").join(blob), b"bad").unwrap();
+
+        let resumed = match library
+            .control_job(
+                &[1; 32],
+                &work.id,
+                Some(paused.revision),
+                JobControl::Resume,
+            )
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected resume fallback: {other:?}"),
+        };
+        assert_eq!(resumed.state, JobState::Queued);
+        let active: Option<String> = library
+            .connection
+            .query_row(
+                "SELECT active_checkpoint FROM jobs WHERE id=?1",
+                params![work.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(active.is_none());
+    }
+
+    #[test]
+    fn retry_is_exposed_only_after_bounded_automatic_attempts() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(&[1; 32], &[2; 32], &submission("retry"), &variant(), 20, 0)
+            .unwrap();
+        let mut final_job = None;
+        for expected_attempt in 1..=MAX_ATTEMPTS {
+            let (work, _) = library.claim_next().unwrap().unwrap();
+            assert_eq!(work.attempt, expected_attempt);
+            let result = library
+                .finish_failure(&work, ErrorCode::TemporarilyUnavailable, "temporary", true)
+                .unwrap()
+                .unwrap();
+            match result {
+                FinishResult::Requeued(job) => {
+                    assert!(expected_attempt < MAX_ATTEMPTS && job.error.is_none())
+                }
+                FinishResult::Failed(job) => final_job = Some(job),
+            }
+        }
+        let failed = final_job.unwrap();
+        assert!(failed.error.as_ref().unwrap().retryable);
+        let retried = match library
+            .control_job(
+                &[1; 32],
+                &failed.id,
+                Some(failed.revision),
+                JobControl::Retry,
+            )
+            .unwrap()
+        {
+            ControlResult::Updated(job) => job,
+            other => panic!("unexpected explicit retry: {other:?}"),
+        };
+        assert_eq!(retried.state, JobState::Queued);
+        assert!(retried.error.is_none());
     }
 
     fn complete_next(library: &mut Library) -> (WorkItem, cantor_proto::SongHeader) {

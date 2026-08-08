@@ -136,6 +136,7 @@ pub struct JobProgress {
 pub struct JobError {
     pub code: ErrorCode,
     pub message: String,
+    pub retryable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -276,6 +277,8 @@ pub enum ErrorCode {
     FeatureUnavailable,
     RevisionConflict,
     FullSyncRequired,
+    InvalidTransition,
+    CheckpointUnavailable,
     Internal,
 }
 
@@ -298,6 +301,12 @@ pub enum ErrorDetails {
     },
     RevisionConflict {
         current: SongHeader,
+    },
+    JobRevisionConflict {
+        current: JobView,
+    },
+    JobState {
+        current: JobView,
     },
     FullSync {
         #[ts(type = "number")]
@@ -355,6 +364,46 @@ pub enum ClientMessage {
     #[serde(rename = "job.get")]
     #[ts(rename = "job.get")]
     JobGet { v: u8, id: String, job_id: String },
+    #[serde(rename = "job.pause")]
+    #[ts(rename = "job.pause")]
+    JobPause {
+        v: u8,
+        id: String,
+        job_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        expected_revision: Option<u32>,
+    },
+    #[serde(rename = "job.resume")]
+    #[ts(rename = "job.resume")]
+    JobResume {
+        v: u8,
+        id: String,
+        job_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        expected_revision: Option<u32>,
+    },
+    #[serde(rename = "job.cancel")]
+    #[ts(rename = "job.cancel")]
+    JobCancel {
+        v: u8,
+        id: String,
+        job_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        expected_revision: Option<u32>,
+    },
+    #[serde(rename = "job.retry")]
+    #[ts(rename = "job.retry")]
+    JobRetry {
+        v: u8,
+        id: String,
+        job_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        expected_revision: Option<u32>,
+    },
     #[serde(rename = "library.list")]
     #[ts(rename = "library.list")]
     LibraryList {
@@ -444,6 +493,9 @@ pub enum NodeMessage {
     #[serde(rename = "job.updated")]
     #[ts(rename = "job.updated")]
     JobUpdated { v: u8, job: JobView },
+    #[serde(rename = "job.controlled")]
+    #[ts(rename = "job.controlled")]
+    JobControlled { v: u8, id: String, job: JobView },
     #[serde(rename = "library.page")]
     #[ts(rename = "library.page")]
     LibraryPage {
@@ -581,6 +633,7 @@ mod tests {
         let client = [
             include_str!("../../../../protocol/fixtures/v2/hello.json"),
             include_str!("../../../../protocol/fixtures/v2/job-create.json"),
+            include_str!("../../../../protocol/fixtures/v2/job-pause.json"),
             include_str!("../../../../protocol/fixtures/v2/library-list.json"),
         ];
         for fixture in client {

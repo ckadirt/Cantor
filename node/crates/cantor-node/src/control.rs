@@ -18,6 +18,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use sha2::Digest;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
@@ -56,6 +57,8 @@ pub struct NodeState {
     pub library: crate::library::Library,
     /// Acceptance and model-readiness changes wake the single durable worker.
     pub job_notify: Arc<tokio::sync::Notify>,
+    pub active_job: Option<crate::jobs::ActiveJobControl>,
+    pub shutting_down: bool,
 }
 
 pub type SharedState = Arc<Mutex<NodeState>>;
@@ -1187,9 +1190,24 @@ fn handle(
         Request::Revoke { v, id, selector } => {
             reject_version(v, &id)?;
             let key = state.config.resolve_pairing(&selector)?;
+            let principal_id = bs58::decode(&key)
+                .into_vec()
+                .ok()
+                .and_then(|decoded| <[u8; 32]>::try_from(decoded).ok())
+                .map(|key_bytes| sha2::Sha256::digest(key_bytes).into());
             let config_path = state.config_path.clone();
             if !state.config.revoke_key(&config_path, &key)? {
                 bail!("no pairing matches {selector}");
+            }
+            if let Some(principal_id) = principal_id {
+                state.library.hold_principal_jobs(&principal_id)?;
+                if let Some(active) = state
+                    .active_job
+                    .as_ref()
+                    .filter(|active| active.principal_id == principal_id)
+                {
+                    crate::jobs::request_stop(&active.signal, crate::jobs::StopReason::Revoked);
+                }
             }
             // Only after the file is written, so a failed write never disconnects
             // a device that is in fact still authorized.
@@ -1345,6 +1363,7 @@ pub async fn request_streaming(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    use sha2::Digest;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
@@ -1367,6 +1386,8 @@ mod tests {
             connected: true,
             library,
             job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            active_job: None,
+            shutting_down: false,
         });
         (state, temporary)
     }
@@ -1429,6 +1450,78 @@ mod tests {
         assert!(matches!(
             received.try_recv().expect("event"),
             ControlEvent::Revoked(key) if key == "device-key"
+        ));
+    }
+
+    #[test]
+    fn revoking_a_real_principal_holds_its_queued_work() {
+        let (state, _guard) = state();
+        let (events, mut received) = mpsc::channel(8);
+        let public_key_bytes = [7_u8; 32];
+        let public_key = bs58::encode(public_key_bytes).into_string();
+        let principal: [u8; 32] = sha2::Sha256::digest(public_key_bytes).into();
+        {
+            let mut locked = state.lock().expect("state");
+            let path = locked.config_path.clone();
+            locked
+                .config
+                .authorize_key(&path, &public_key, Some("Phone".to_owned()))
+                .expect("authorize");
+            let variant = crate::store::InstalledVariant {
+                model: "acestep".into(),
+                tag: "1.5-fast".into(),
+                licence: String::new(),
+                components: vec![crate::catalog::Component {
+                    role: "model".into(),
+                    blob: format!("sha256:{}", "a".repeat(64)),
+                    url: "u".into(),
+                    bytes: 1,
+                    quant: None,
+                }],
+                installed_at: String::new(),
+                engine: "acestep".into(),
+                vram_bytes: 0,
+            };
+            locked
+                .library
+                .submit(
+                    &principal,
+                    &public_key_bytes,
+                    &crate::library::Submission {
+                        client_request_id: uuid::Uuid::new_v4().to_string(),
+                        model: variant.selector(),
+                        generation: cantor_proto::GenerationRequest {
+                            caption: "held".into(),
+                            lyrics: None,
+                            duration: Some(15),
+                            steps: Some(1),
+                            cfg: None,
+                            seed: Some(7),
+                        },
+                    },
+                    &variant,
+                    20,
+                    0,
+                )
+                .expect("submit");
+        }
+
+        let response = dispatch(
+            &json!({"v":1,"id":"1","t":"revoke","selector":"Phone"}).to_string(),
+            &state,
+            &events,
+        );
+
+        assert_eq!(encode(&response)["t"], "ok");
+        let locked = state.lock().expect("state");
+        assert_eq!(
+            locked.library.list(&principal, 10).unwrap()[0].state,
+            cantor_proto::JobState::Paused
+        );
+        drop(locked);
+        assert!(matches!(
+            received.try_recv().expect("event"),
+            ControlEvent::Revoked(key) if key == public_key
         ));
     }
 

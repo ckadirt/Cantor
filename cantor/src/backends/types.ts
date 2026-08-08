@@ -55,6 +55,8 @@ const ERROR_CODES = new Set<ErrorCode>([
   'internal',
   'revision_conflict',
   'full_sync_required',
+  'invalid_transition',
+  'checkpoint_unavailable',
 ]);
 
 export type BackendRecord = {
@@ -233,12 +235,17 @@ export function parseJob(value: unknown): JobView | null {
       !isRecord(value.error) ||
       typeof value.error.code !== 'string' ||
       !ERROR_CODES.has(value.error.code as ErrorCode) ||
-      typeof value.error.message !== 'string'
+      typeof value.error.message !== 'string' ||
+      !(
+        value.error.retryable === undefined ||
+        typeof value.error.retryable === 'boolean'
+      )
     )
       return null;
     error = {
       code: value.error.code as ErrorCode,
       message: value.error.message,
+      retryable: value.error.retryable === true,
     };
   }
   if ((value.state === 'failed') !== (error !== undefined)) return null;

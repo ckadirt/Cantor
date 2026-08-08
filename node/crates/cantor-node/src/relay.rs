@@ -88,6 +88,8 @@ pub async fn run_forever(
     event_sender: &mpsc::Sender<ControlEvent>,
 ) -> Result<()> {
     let mut reconnect_attempt = 0_u32;
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("failed to listen for SIGTERM")?;
 
     loop {
         let connection = serve_once(
@@ -101,6 +103,12 @@ pub async fn run_forever(
             signal_result = tokio::signal::ctrl_c() => {
                 signal_result.context("failed to listen for Ctrl-C")?;
                 println!("shutting down");
+                crate::jobs::graceful_shutdown(&state).await;
+                return Ok(());
+            }
+            _ = terminate.recv() => {
+                println!("shutting down");
+                crate::jobs::graceful_shutdown(&state).await;
                 return Ok(());
             }
             result = connection => {
@@ -117,6 +125,12 @@ pub async fn run_forever(
             signal_result = tokio::signal::ctrl_c() => {
                 signal_result.context("failed to listen for Ctrl-C")?;
                 println!("shutting down");
+                crate::jobs::graceful_shutdown(&state).await;
+                return Ok(());
+            }
+            _ = terminate.recv() => {
+                println!("shutting down");
+                crate::jobs::graceful_shutdown(&state).await;
                 return Ok(());
             }
             () = tokio::time::sleep(delay) => {}
@@ -453,6 +467,34 @@ fn handle_relay_text(
                 if matches!(response, NodeMessage::JobAccepted { .. }) {
                     locked.job_notify.notify_one();
                 }
+                if let NodeMessage::JobControlled { job, .. } = &response
+                    && let Some(context) = session.authenticated()
+                {
+                    if let Some(active) = locked
+                        .active_job
+                        .as_ref()
+                        .filter(|active| active.job_id == job.id)
+                    {
+                        match job.state {
+                            cantor_proto::JobState::PauseRequested => crate::jobs::request_stop(
+                                &active.signal,
+                                crate::jobs::StopReason::Pause,
+                            ),
+                            cantor_proto::JobState::CancelRequested => crate::jobs::request_stop(
+                                &active.signal,
+                                crate::jobs::StopReason::Cancel,
+                            ),
+                            _ => {}
+                        }
+                    }
+                    if job.state == cantor_proto::JobState::Queued {
+                        locked.job_notify.notify_one();
+                    }
+                    let _ = event_sender.try_send(ControlEvent::JobUpdated {
+                        principal_id: context.principal_id,
+                        job: job.clone(),
+                    });
+                }
                 if matches!(response, NodeMessage::SongUpdated { .. })
                     && let Some(context) = session.authenticated()
                 {
@@ -471,7 +513,10 @@ fn handle_relay_text(
                     true,
                 )
             };
-            let load_changed = matches!(response, NodeMessage::JobAccepted { .. });
+            let load_changed = matches!(
+                response,
+                NodeMessage::JobAccepted { .. } | NodeMessage::JobControlled { .. }
+            );
             let tunnel = RelayTunnel {
                 v: RELAY_VERSION,
                 t: "tunnel",
@@ -547,7 +592,7 @@ fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> N
             library_list: true,
             artifacts_transfer: false,
             secure_tunnel: false,
-            job_controls: false,
+            job_controls: true,
         },
     }
 }
@@ -656,6 +701,8 @@ mod tests {
             connected: true,
             library,
             job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            active_job: None,
+            shutting_down: false,
         });
         (state, config_path, temporary)
     }
