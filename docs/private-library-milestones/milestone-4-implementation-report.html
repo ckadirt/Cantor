@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Cantor M4 — Recovery &amp; Controls</title>
+  <style>
+    :root { --bg:#090d10; --card:#111920; --ink:#edf5f3; --muted:#aab9b6; --line:#293b3d; --mint:#72ead2; --ok:#91e99c; --bad:#ff9aac; font-family:Inter,system-ui,sans-serif }
+    * { box-sizing:border-box }
+    body { margin:0; background:var(--bg); color:var(--ink); line-height:1.48 }
+    main { width:min(780px,100%); margin:auto; padding:42px 20px 70px }
+    h1 { margin:4px 0 14px; font-size:clamp(2.4rem,8vw,4.2rem); line-height:.98; letter-spacing:-.045em }
+    h2 { margin:0 0 12px; font-size:1.45rem }
+    p { margin:0 0 11px }
+    section { padding:25px 0; border-bottom:1px solid var(--line) }
+    code { color:#cafff5 }
+    .kicker { color:var(--mint); font:700 .75rem ui-monospace,monospace; letter-spacing:.13em }
+    .lead { color:#cad7d4; font-size:1.08rem }
+    .flow { display:grid; grid-template-columns:repeat(4,1fr); gap:8px }
+    .flow div,.box,fieldset { padding:13px; background:var(--card); border:1px solid var(--line); border-radius:8px }
+    .flow b { display:block; color:var(--mint) }
+    .flow span,.muted,li { color:var(--muted) }
+    .rule { display:grid; grid-template-columns:10rem 1fr; gap:12px; padding:10px 0; border-top:1px solid var(--line) }
+    .rule b { color:var(--mint) }
+    .code { display:block; margin:7px 0; padding:10px 12px; color:var(--mint); background:var(--card); border:1px solid var(--line); text-decoration:none; font:650 .82rem ui-monospace,monospace }
+    .proof { display:grid; grid-template-columns:repeat(2,1fr); gap:8px }
+    .proof strong { display:block; color:var(--ok); font-size:1.25rem }
+    .warn { border-left:4px solid #e4bd64 }
+    fieldset { margin:10px 0 }
+    legend { color:var(--mint); font-weight:750 }
+    label { display:block; padding:4px }
+    button { margin-top:8px; padding:11px 17px; border:0; border-radius:7px; background:var(--mint); color:#07110f; font-weight:850 }
+    #result { margin-top:12px; font-weight:750 }
+    .pass { color:var(--ok) } .fail { color:var(--bad) }
+    @media (max-width:620px) { .flow { grid-template-columns:1fr 1fr } .rule { grid-template-columns:1fr } }
+  </style>
+</head>
+<body>
+<main>
+  <p class="kicker">CANTOR · PRIVATE LIBRARY · MILESTONE 4</p>
+  <h1>Stop safely.<br>Continue honestly.</h1>
+  <p class="lead">
+    M4 makes generation recoverable. A phone can request pause, the node saves
+    an engine checkpoint, and a restarted daemon resumes the same stage only
+    after proving every byte still belongs to the exact job and engine.
+  </p>
+
+  <section>
+    <h2>The mental model</h2>
+    <div class="flow">
+      <div><b>Run</b><span>One engine stage does work.</span></div>
+      <div><b>Save</b><span>Node fsyncs an opaque blob.</span></div>
+      <div><b>Confirm</b><span>SQLite publishes the new revision.</span></div>
+      <div><b>Resume</b><span>Exact-compatible engine consumes it.</span></div>
+    </div>
+    <p class="muted" style="margin-top:10px">
+      The node never decodes checkpoint contents. It understands the envelope:
+      identity, stage, provenance, size and digest.
+    </p>
+  </section>
+
+  <section>
+    <h2>What changed</h2>
+    <div class="rule"><b>Stage driver</b><span><code>Done</code> advances; <code>Paused</code> re-enters the same stage.</span></div>
+    <div class="rule"><b>Durability</b><span>Blob + metadata + active pointer are fsynced before a paused update is sent.</span></div>
+    <div class="rule"><b>Compatibility</b><span>Request hash, model digests, engine family/ABI/build/backend and SHA-256 must all match.</span></div>
+    <div class="rule"><b>Controls</b><span>Pause, resume, cancel and retry return the canonical revisioned job—not optimistic UI fiction.</span></div>
+    <div class="rule"><b>Recovery</b><span>Paused stays paused after restart. Interrupted work selects the newest valid source or falls back safely.</span></div>
+    <div class="rule"><b>Retention</b><span>Keep the active source plus one prior boundary; terminal checkpoints expire after 24 hours. Audio is untouched.</span></div>
+  </section>
+
+  <section>
+    <h2>Read the implementation</h2>
+    <a class="code" href="../../node/crates/cantor-node/src/generate.rs#L105">generate.rs:105 — stage result and one-stage API</a>
+    <a class="code" href="../../node/crates/cantor-node/src/checkpoints.rs#L84">checkpoints.rs:84 — atomic checkpoint commit</a>
+    <a class="code" href="../../node/crates/cantor-node/src/checkpoints.rs#L173">checkpoints.rs:173 — validation and fallback selection</a>
+    <a class="code" href="../../node/crates/cantor-node/src/jobs.rs#L72">jobs.rs:72 — dedicated native worker/session owner</a>
+    <a class="code" href="../../node/crates/cantor-node/src/jobs.rs#L637">jobs.rs:637 — durable boundary publication</a>
+    <a class="code" href="../../node/crates/cantor-node/src/library.rs#L396">library.rs:396 — authoritative control transitions</a>
+    <a class="code" href="../../cantor/src/screens/MainScreen.tsx#L1090">MainScreen.tsx:1090 — controls allowed by canonical state</a>
+    <a class="code" href="../../cantor/src/backends/connection.ts#L660">connection.ts:660 — correlated control request/response</a>
+  </section>
+
+  <section>
+    <h2>Why the native worker is unusual</h2>
+    <div class="box warn">
+      <p><strong>The shipped ABI-1 engine cannot safely destroy and recreate contexts inside one process.</strong></p>
+      <p class="muted">
+        Real drills produced two reproducible segfaults: freeing between
+        diffusion/decode, and creating a second context after a completed job.
+        Cantor therefore owns one exact-compatible context on one dedicated
+        thread and reuses it across stages and sequential jobs. Durable stage
+        boundaries still exist; a daemon restart creates a fresh context and
+        loads the verified checkpoint.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>What the phone proved</h2>
+    <div class="proof">
+      <div class="box"><strong>2 / 8</strong><span class="muted">diffusion step where pause became durable</span></div>
+      <div class="box"><strong>same step</strong><span class="muted">resume point after daemon restart</span></div>
+      <div class="box"><strong>14.4 s</strong><span class="muted">verified 48 kHz stereo WAV</span></div>
+      <div class="box"><strong>2,764,844 B</strong><span class="muted">canonical artifact, one song publication</span></div>
+    </div>
+    <p style="margin-top:10px">
+      The app showed “Pausing at a safe point”, then “Paused during diffuse”
+      after restart. Resume completed at revision 47. The node stayed below its
+      6 GiB cgroup limit. A second-job probe reused the retained context and
+      paused in plan without another backend/model load.
+    </p>
+  </section>
+
+  <section>
+    <h2>Deliberately not claimed</h2>
+    <p>
+      M4 does not make relay traffic end-to-end encrypted—that remains M6. It
+      also does not physically purge trashed master audio: M5 must first define
+      transfer references and tombstones. The conservative rule today is to
+      refuse new work before deleting canonical user data.
+    </p>
+  </section>
+
+  <section id="quiz">
+    <p class="kicker">CHECK YOUR UNDERSTANDING · PASS = 4/5</p>
+    <h2>M4 quiz</h2>
+    <form id="q">
+      <fieldset><legend>1. What does a paused-stage blob do?</legend>
+        <label><input type="radio" name="q1" value="a"> Enters the next stage</label>
+        <label><input type="radio" name="q1" value="b"> Re-enters the same stage</label>
+        <label><input type="radio" name="q1" value="c"> Publishes audio</label>
+      </fieldset>
+      <fieldset><legend>2. When may the app say “Paused”?</legend>
+        <label><input type="radio" name="q2" value="a"> Immediately after the tap</label>
+        <label><input type="radio" name="q2" value="b"> After the canonical node update</label>
+        <label><input type="radio" name="q2" value="c"> When the relay disconnects</label>
+      </fieldset>
+      <fieldset><legend>3. Which mismatch rejects a checkpoint?</legend>
+        <label><input type="radio" name="q3" value="a"> Engine backend</label>
+        <label><input type="radio" name="q3" value="b"> Phone theme</label>
+        <label><input type="radio" name="q3" value="c"> Song favorite flag</label>
+      </fieldset>
+      <fieldset><legend>4. Why retain one native session?</legend>
+        <label><input type="radio" name="q4" value="a"> To bypass checkpoint validation</label>
+        <label><input type="radio" name="q4" value="b"> ABI-1 teardown/recreation segfaulted</label>
+        <label><input type="radio" name="q4" value="c"> To run concurrent jobs</label>
+      </fieldset>
+      <fieldset><legend>5. What may terminal checkpoint GC delete?</legend>
+        <label><input type="radio" name="q5" value="a"> The canonical WAV</label>
+        <label><input type="radio" name="q5" value="b"> The immutable request</label>
+        <label><input type="radio" name="q5" value="c"> Expired checkpoint state only</label>
+      </fieldset>
+      <button type="submit">Grade quiz</button>
+      <p id="result" aria-live="polite"></p>
+    </form>
+  </section>
+</main>
+<script>
+  document.getElementById('q').addEventListener('submit', event => {
+    event.preventDefault();
+    const answers = {q1:'b', q2:'b', q3:'a', q4:'b', q5:'c'};
+    let score = 0;
+    for (const [name, answer] of Object.entries(answers)) {
+      if (new FormData(event.currentTarget).get(name) === answer) score++;
+    }
+    const result = document.getElementById('result');
+    result.className = score >= 4 ? 'pass' : 'fail';
+    result.textContent = score >= 4 ? `${score}/5 — Passed.` : `${score}/5 — Review the rules above and retry.`;
+  });
+</script>
+</body>
+</html>

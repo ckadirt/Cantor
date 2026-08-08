@@ -18,7 +18,13 @@ function job(id: string, revision: number, state: JobView['state']): JobView {
     created_at: '2026-08-07T00:00:00Z',
     updated_at: `2026-08-07T00:00:0${revision}Z`,
     ...(state === 'failed'
-      ? { error: { code: 'internal', message: 'Generation failed.' } }
+      ? {
+          error: {
+            code: 'internal',
+            message: 'Generation failed.',
+            retryable: true,
+          },
+        }
       : {}),
   };
 }

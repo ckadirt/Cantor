@@ -119,6 +119,22 @@ function songFixture(id: string, revision = 1): Record<string, unknown> {
   };
 }
 
+function jobFixture(
+  state: string,
+  revision: number,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+    revision,
+    state,
+    model: 'acestep:1.5-fast',
+    created_at: '2026-08-07T00:00:00Z',
+    updated_at: `2026-08-07T00:00:0${revision}Z`,
+    ...extra,
+  };
+}
+
 function connect(): {
   socket: FakeSocket;
   snapshots: ConnectionSnapshot[];
@@ -600,6 +616,87 @@ describe('BackendConnection', () => {
     });
     await expect(update).rejects.toBeInstanceOf(SongRevisionConflict);
     expect(snapshots.at(-1)?.songs[0]).toMatchObject({ id: 'a', revision: 2 });
+  });
+
+  it('waits for canonical job control responses and adopts race winners', async () => {
+    const { socket, connection, snapshots } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+
+    const pause = connection.controlJob(
+      'pause',
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      1,
+    );
+    const pauseRequest = JSON.parse(socket.sent.at(-1) ?? '{}');
+    expect(pauseRequest.payload).toMatchObject({
+      t: 'job.pause',
+      expected_revision: 1,
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.controlled',
+        id: pauseRequest.payload.id,
+        job: jobFixture('pause_requested', 2, { stage: 'codes' }),
+      },
+    });
+    await expect(pause).resolves.toMatchObject({ state: 'pause_requested' });
+    expect(snapshots.at(-1)?.jobs[0]).toMatchObject({
+      state: 'pause_requested',
+      revision: 2,
+    });
+
+    const cancel = connection.controlJob(
+      'cancel',
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      2,
+    );
+    const cancelRequest = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'error',
+        id: cancelRequest.payload.id,
+        code: 'revision_conflict',
+        message: 'The job completed first.',
+        retryable: false,
+        details: {
+          kind: 'job_revision_conflict',
+          current: jobFixture('completed', 3),
+        },
+      },
+    });
+    await expect(cancel).rejects.toBeInstanceOf(NodeRequestError);
+    expect(snapshots.at(-1)?.jobs[0]).toMatchObject({
+      state: 'completed',
+      revision: 3,
+    });
   });
 
   it('surfaces an application protocol mismatch', () => {

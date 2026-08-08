@@ -14,7 +14,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::config::{NodeConfig, sanitize_petname};
-use crate::library::{Library, Submission, SubmitResult};
+use crate::library::{ControlResult, JobControl, Library, Submission, SubmitResult};
 use crate::pairing::PairOffer;
 use crate::songs::{ChangePageResult, MutationResult, PresenceMutation, SongPageResult};
 use crate::store::Store;
@@ -423,6 +423,62 @@ impl ClientSession {
                     )),
                 }
             }
+            ClientMessage::JobPause {
+                v,
+                id,
+                job_id,
+                expected_revision,
+            } => control_job(
+                self,
+                library,
+                v,
+                id,
+                job_id,
+                expected_revision,
+                JobControl::Pause,
+            ),
+            ClientMessage::JobResume {
+                v,
+                id,
+                job_id,
+                expected_revision,
+            } => control_job(
+                self,
+                library,
+                v,
+                id,
+                job_id,
+                expected_revision,
+                JobControl::Resume,
+            ),
+            ClientMessage::JobCancel {
+                v,
+                id,
+                job_id,
+                expected_revision,
+            } => control_job(
+                self,
+                library,
+                v,
+                id,
+                job_id,
+                expected_revision,
+                JobControl::Cancel,
+            ),
+            ClientMessage::JobRetry {
+                v,
+                id,
+                job_id,
+                expected_revision,
+            } => control_job(
+                self,
+                library,
+                v,
+                id,
+                job_id,
+                expected_revision,
+                JobControl::Retry,
+            ),
             ClientMessage::LibraryList {
                 v,
                 id,
@@ -579,6 +635,54 @@ impl ClientSession {
             }
         }
     }
+}
+
+fn control_job(
+    session: &ClientSession,
+    library: &mut Library,
+    version: u8,
+    id: String,
+    job_id: String,
+    expected_revision: Option<u32>,
+    control: JobControl,
+) -> Result<NodeMessage> {
+    if version != PROTOCOL_VERSION {
+        return Ok(NodeMessage::unsupported_version(Some(id)));
+    }
+    let Some(context) = session.authenticated() else {
+        return Ok(unauthenticated(id, "jobs"));
+    };
+    Ok(
+        match library.control_job(&context.principal_id, &job_id, expected_revision, control)? {
+            ControlResult::Updated(job) => NodeMessage::JobControlled {
+                v: PROTOCOL_VERSION,
+                id,
+                job,
+            },
+            ControlResult::Conflict(current) => NodeMessage::Error {
+                v: PROTOCOL_VERSION,
+                id: Some(id),
+                code: ErrorCode::RevisionConflict,
+                message: "The job changed before this control reached the node.".into(),
+                retryable: false,
+                details: Some(ErrorDetails::JobRevisionConflict { current }),
+            },
+            ControlResult::InvalidTransition(current) => NodeMessage::Error {
+                v: PROTOCOL_VERSION,
+                id: Some(id),
+                code: ErrorCode::InvalidTransition,
+                message: "That control is not valid in the job's current state.".into(),
+                retryable: false,
+                details: Some(ErrorDetails::JobState { current }),
+            },
+            ControlResult::NotFound => NodeMessage::error(
+                Some(id),
+                ErrorCode::NotFound,
+                "That job was not found.",
+                false,
+            ),
+        },
+    )
 }
 
 fn mutation_message(id: String, result: MutationResult) -> Result<NodeMessage> {
@@ -947,6 +1051,106 @@ mod tests {
                 code: ErrorCode::Rejected,
                 ..
             }
+        ));
+    }
+
+    #[test]
+    fn job_controls_return_a_correlated_canonical_view_without_leaking_ownership() {
+        let temporary = tempdir().expect("temporary directory");
+        let (mut config, paths) = config(temporary.path());
+        let mut library = Library::open(temporary.path().join("library")).expect("library");
+        let mut owner = ClientSession::authenticated_with_bytes_for_test(
+            &bs58::encode([1_u8; 32]).into_string(),
+            [1_u8; 32],
+        );
+        let principal = owner.authenticated().unwrap().principal_id;
+        let variant = crate::store::InstalledVariant {
+            model: "acestep".into(),
+            tag: "1.5-fast".into(),
+            licence: String::new(),
+            components: vec![crate::catalog::Component {
+                role: "model".into(),
+                blob: format!("sha256:{}", "a".repeat(64)),
+                url: "u".into(),
+                bytes: 1,
+                quant: None,
+            }],
+            installed_at: String::new(),
+            engine: "acestep".into(),
+            vram_bytes: 0,
+        };
+        let accepted = match library
+            .submit(
+                &principal,
+                &[1_u8; 32],
+                &crate::library::Submission {
+                    client_request_id: uuid::Uuid::new_v4().to_string(),
+                    model: variant.selector(),
+                    generation: cantor_proto::GenerationRequest {
+                        caption: "control".into(),
+                        lyrics: None,
+                        duration: Some(15),
+                        steps: Some(1),
+                        cfg: None,
+                        seed: Some(7),
+                    },
+                },
+                &variant,
+                20,
+                0,
+            )
+            .unwrap()
+        {
+            crate::library::SubmitResult::Accepted(job) => job,
+            other => panic!("unexpected submit: {other:?}"),
+        };
+        let mut offer = None;
+        let node_key = bs58::encode([8_u8; 32]).into_string();
+        let response = owner
+            .handle(
+                json!({
+                    "t":"job.pause",
+                    "v":2,
+                    "id":"pause-1",
+                    "job_id":accepted.id,
+                    "expected_revision":accepted.revision
+                }),
+                &mut config,
+                &paths.config,
+                &mut offer,
+                &node_key,
+                &info(),
+                &mut library,
+            )
+            .unwrap();
+        assert!(matches!(
+            response,
+            NodeMessage::JobControlled { id, job, .. }
+                if id == "pause-1" && job.state == cantor_proto::JobState::Paused
+        ));
+
+        let mut stranger = ClientSession::authenticated_with_bytes_for_test(
+            &bs58::encode([3_u8; 32]).into_string(),
+            [3_u8; 32],
+        );
+        let response = stranger
+            .handle(
+                json!({"t":"job.cancel","v":2,"id":"cancel-1","job_id":accepted.id}),
+                &mut config,
+                &paths.config,
+                &mut offer,
+                &node_key,
+                &info(),
+                &mut library,
+            )
+            .unwrap();
+        assert!(matches!(
+            response,
+            NodeMessage::Error {
+                id: Some(id),
+                code: ErrorCode::NotFound,
+                ..
+            } if id == "cancel-1"
         ));
     }
 }

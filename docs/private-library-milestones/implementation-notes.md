@@ -463,3 +463,125 @@ completed on 2026-08-08.
   (`[Instrumental]`, engine, attempt, four component digests) lazily from the
   already-paired node. No generation or audio transfer occurred in this final
   UI check.
+
+---
+
+# Milestone 4 — Recovery & Controls
+
+## Status
+
+Implementation and the physical-phone pause/restart/resume gate completed on
+2026-08-08.
+
+## Decisions
+
+- Checkpoint bytes remain engine-owned and opaque. The node validates their
+  length, SHA-256, job/request identity, model component digests, stage/outcome,
+  engine family/ABI/build string, and backend before any byte reaches FFI.
+- A paused-stage blob resumes the same stage. A completed-stage blob enters the
+  following stage. Selection walks backward to the newest valid compatible
+  source and ultimately falls back to the immutable request.
+- Blob, metadata, and `active.json` are written with mode 0600, fsynced, and
+  atomically renamed before SQLite publishes the checkpoint revision.
+- Stop reasons have explicit priority: shutdown < pause < revocation < cancel.
+  A more final intent cannot be overwritten by a later weaker signal.
+- Pause/resume/cancel/retry are owner-scoped, revision-aware, idempotent state
+  transitions. Only a failed job with `retryable=true` exposes explicit retry;
+  automatic failures are bounded to three consecutive attempts.
+- Paused work remains paused at startup. Interrupted active work records its
+  recovery source before requeue; cancel-requested work becomes cancelled.
+- Rolling retention keeps the active checkpoint and one earlier completed
+  boundary. Terminal checkpoint directories expire after 24 hours; immutable
+  requests and canonical audio are never part of this GC.
+- The app treats button taps as requests, not truth. It renders canonical
+  `pause_requested`/`cancel_requested` responses, disables remote controls while
+  offline, and keeps retry hidden for permanent errors.
+- End-to-end carrier encryption remains M6. M4 adds no claim that relay-visible
+  job/control payloads are confidential.
+
+## Implementation Log
+
+- Added protocol controls, `job.controlled`, conflict/current-job details,
+  stable transition/checkpoint errors, and generated TypeScript fixtures.
+- Added migration 004 for active checkpoint, outcome, control timing/reason,
+  retryability, and consecutive failure accounting.
+- Added `checkpoints.rs` with bounded regular-file validation, atomic commits,
+  exact provenance selection, corruption fallback, rolling retention, temp/
+  orphan cleanup, and terminal GC.
+- Split generation into `initial_state`, `run_stage`, and `audio`, then moved
+  production orchestration into a stage-driven worker that durably commits every
+  safe boundary.
+- Added startup reconciliation, graceful shutdown, revocation holds, control
+  signaling, retry policy, and private owner-only job updates.
+- Added app controls and their canonical pending/paused/cancelled/retry UX, plus
+  runtime parsing and reducer coverage for stale/conflicting revisions.
+- Extended the protocol client with control and stage-triggered pause modes for
+  repeatable recovery drills.
+- Kept verified GGUFs on persistent storage under
+  `/home/ckadirt/Projects/Cantor/ckpts`; the external source partition was not
+  modified.
+
+## Deviations
+
+- The plan's step-by-step wording could be read as loading/freeing one native
+  session per stage. The published ACE-Step ABI-1 engine segfaulted when its
+  diffusion context was freed before decode. The conservative implementation
+  keeps one session across uninterrupted stages while still fsyncing and
+  publishing each boundary. A restart/resume creates a fresh exact-compatible
+  session from the durable blob.
+- The same backend also segfaulted when a completed session was destroyed and a
+  second session was created in the same daemon. The final worker therefore
+  owns one exact-compatible session on one dedicated native thread and reuses it
+  across sequential jobs; verified backend libraries stay loaded for the daemon
+  lifetime. This deviates from releasing the session after every pause, but
+  preserves the one-worker invariant and avoids unsafe native teardown/reload.
+  A different model/session key still receives an isolated load; the node does
+  not pretend checkpoints are portable between keys.
+- ABI-1 exposes an engine version string but no source commit symbol. Checkpoint
+  `engine.build` records that exact exported version string rather than inventing
+  a git revision.
+- The physical gate restarted the daemon process, not the entire workstation.
+  This exercises the same persisted SQLite/filesystem startup path without
+  disrupting unrelated user work; an actual native SIGSEGV also exercised
+  crash reconciliation before the final fix.
+- Automatic 30-day deletion of trashed canonical songs is not enabled. M5 has
+  not yet frozen transfer references and tombstone retention, so deleting master
+  audio now would violate the more important no-data-loss rule. M4 GC is limited
+  to checkpoint state and never touches requests or audio.
+- Admission retains the existing per-principal queued-job bound and configured
+  global free-space reserve, while checkpoint writes use actual filesystem size
+  limits and safe fallback. Persistent per-principal byte reservations are
+  deferred rather than adding counters that cannot yet include M5 transfer/
+  cache bytes honestly; a failed pause write never reports a false paused state.
+- Phone validation used the local relay through ADB reverse. The phone identity
+  was already authorized; “Paste pairing URI” replaced only its stale backend
+  record with the current node key. Hosted relay routing was already exercised
+  in M1, and M4 does not change relay storage or carrier semantics.
+
+## Verification
+
+- `cargo fmt --check`, `cargo test --workspace`, and clippy with warnings denied:
+  passed; 117 Rust tests (90 node, 27 protocol).
+- App TypeScript passed; 155 Jest tests passed. ESLint reports only the existing
+  inline-style warning in `src/onboarding/panels/kit.tsx`.
+- Relay Vitest and `npm run check` passed: 6 tests plus worker/app TypeScript,
+  assets, catalogs, and backend manifests.
+- Corruption, engine/backend mismatch, fallback order, rolling retention,
+  terminal GC, orphan cleanup, owner isolation, conflict, revocation, retry, and
+  startup intent are covered by focused tests.
+- Isolated real-engine job `019fe21b-cdd3-7100-8bba-39900b62b37f` paused during
+  codes and diffusion across daemon restarts, then resumed at decode and
+  completed a verified 2,764,844-byte WAV (SHA-256 prefix `f2aa6c461ab7`).
+- Physical Android `6b1f6ba8629c` retained app identity `AaEm…bgoZpE`, paired
+  the current node `2aH5…T4abSq`, and created job
+  `019fe22a-e7d0-74f3-83d2-6800e0c992c7`. The app showed “Pausing at a safe
+  point”; the engine saved diffusion step 2/8; after daemon restart the app still
+  showed “Paused during diffuse”; resume continued at step 2 and completed at
+  revision 47 without duplicate song publication.
+- The phone job's independent canonical artifact is 2,764,844 bytes, PCM 16-bit,
+  48 kHz stereo, 14.4 seconds, SHA-256 prefix `8a97a62fb81b`. Generation stayed
+  below the service's 6 GiB hard memory and 512 MiB swap limits.
+- A relinked-binary regression probe then reused the retained native session for
+  a second job, saved a plan checkpoint in 1.5 seconds, and left the daemon
+  active. Logs showed a nonzero reused resident context and no second backend/
+  model load; the temporary probe was cancelled.

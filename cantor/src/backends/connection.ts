@@ -50,6 +50,7 @@ type PendingRequest = {
   expected:
     | 'jobs.page'
     | 'job.accepted'
+    | 'job.controlled'
     | 'library.page'
     | 'library.changes'
     | 'song.updated'
@@ -385,6 +386,16 @@ export class BackendConnection {
       });
       return;
     }
+    if (payload.t === 'job.controlled' && typeof payload.id === 'string') {
+      const pending = this.pendingRequests.get(payload.id);
+      if (pending?.expected !== 'job.controlled') return;
+      const job = parseJob(payload.job);
+      if (job === null) return;
+      this.finishPending(payload.id);
+      pending.resolveJob?.(job);
+      this.mergeCanonicalJob(job);
+      return;
+    }
     if (payload.t === 'job.updated') {
       const updated = parseJob(payload.job);
       if (updated === null) {
@@ -570,6 +581,16 @@ export class BackendConnection {
             return;
           }
         }
+        if (
+          pending?.expected === 'job.controlled' &&
+          isRecord(payload.details) &&
+          ['job_revision_conflict', 'job_state'].includes(
+            String(payload.details.kind),
+          )
+        ) {
+          const current = parseJob(payload.details.current);
+          if (current !== null) this.mergeCanonicalJob(current);
+        }
         this.finishPending(payload.id);
         pending?.reject?.(
           new NodeRequestError(
@@ -631,6 +652,38 @@ export class BackendConnection {
         client_request_id: clientRequestId,
         model,
         generation,
+      });
+    });
+  }
+
+  controlJob(
+    control: 'pause' | 'resume' | 'cancel' | 'retry',
+    jobId: string,
+    expectedRevision: number,
+  ): Promise<JobView> {
+    if (this.snapshot.phase !== 'ready') {
+      return Promise.reject(new Error('Backend is not ready.'));
+    }
+    const id = this.nextRequestId(`job-${control}`);
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(
+          new Error('Job control timed out. Refresh before trying again.'),
+        );
+      }, REQUEST_TIMEOUT_MS);
+      this.pendingRequests.set(id, {
+        expected: 'job.controlled',
+        resolveJob: resolve,
+        reject,
+        timer,
+      });
+      this.sendApplication({
+        t: `job.${control}`,
+        v: APPLICATION_PROTOCOL_VERSION,
+        id,
+        job_id: jobId,
+        expected_revision: expectedRevision,
       });
     });
   }
@@ -720,6 +773,13 @@ export class BackendConnection {
     this.libraryRequestInFlight = true;
     this.setSnapshot({ ...this.snapshot, librarySyncing: true });
     this.requestLibraryPage(null);
+  }
+
+  private mergeCanonicalJob(job: JobView): void {
+    this.setSnapshot({
+      ...this.snapshot,
+      jobs: mergeJobViews(this.snapshot.jobs, [job]),
+    });
   }
 
   private requestLibraryPage(cursor: string | null): void {

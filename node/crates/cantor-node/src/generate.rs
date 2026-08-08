@@ -97,13 +97,19 @@ pub fn components_for(
     Ok(components)
 }
 
-pub struct Generation<'engine> {
-    session: Session<'engine>,
+pub struct Generation {
+    session: Session,
 }
 
-impl<'engine> Generation<'engine> {
+#[derive(Debug)]
+pub enum StageExecution {
+    Done { output: Vec<u8> },
+    Paused { resume: Vec<u8> },
+}
+
+impl Generation {
     pub fn start(
-        engine: &'engine Engine,
+        engine: Arc<Engine>,
         components: &[(String, PathBuf)],
         options: LoadOptions,
     ) -> Result<Self> {
@@ -115,50 +121,77 @@ impl<'engine> Generation<'engine> {
         self.session.resident_bytes()
     }
 
+    pub fn initial_state(request: &Request) -> Result<Vec<u8>> {
+        request.to_json()
+    }
+
+    pub fn run_stage(
+        &mut self,
+        stage: Stage,
+        input: &[u8],
+        request: &Request,
+        should_stop: &dyn Fn() -> bool,
+        mut on_progress: impl FnMut(Progress),
+    ) -> Result<StageExecution> {
+        if !self.session_supports(stage) {
+            bail!("this engine cannot run the {} stage", stage.as_str());
+        }
+        let mut report = |stage: Stage, done: i32, total: i32| {
+            on_progress(Progress { stage, done, total });
+        };
+        let (outcome, mut output) =
+            self.session
+                .run_stage(stage, input, &mut report, should_stop)?;
+        match outcome {
+            StageOutcome::Paused => Ok(StageExecution::Paused { resume: output }),
+            StageOutcome::Done => {
+                if stage == Stage::Plan {
+                    reassert_explicit_inputs(&mut output, request)?;
+                }
+                if matches!(stage, Stage::Plan | Stage::Codes) {
+                    enforce_duration_ceiling(&output, request.duration)?;
+                }
+                Ok(StageExecution::Done { output })
+            }
+        }
+    }
+
+    pub fn audio(&self) -> Result<Audio> {
+        let (planar, sample_rate) = self.session.audio()?;
+        Ok(Audio {
+            planar,
+            sample_rate,
+        })
+    }
+
     /// Runs plan → codes → diffuse → decode, threading each blob into the next.
     ///
     /// Cancellation is cooperative: `cancel` is polled between DiT steps, VAE
     /// tiles and LM tokens. A stage that stops that way returns `Paused` with a
     /// blob that resumes *that same stage*, which is why the loop retries the
     /// current stage rather than moving on.
+    #[allow(dead_code)]
     pub fn run(
         &mut self,
         request: &Request,
         cancel: Arc<AtomicBool>,
         mut on_progress: impl FnMut(Progress),
     ) -> Result<Audio> {
-        let mut blob = request.to_json()?;
+        let mut blob = Self::initial_state(request)?;
         let should_cancel = {
             let cancel = Arc::clone(&cancel);
             move || cancel.load(Ordering::Relaxed)
         };
 
         for stage in Stage::ALL {
-            // A build that cannot run a stage says so up front rather than
-            // failing in the middle of a long generation.
-            if !self.session_supports(stage) {
-                bail!("this engine cannot run the {} stage", stage.as_str());
-            }
-
             loop {
-                let mut report = |stage: Stage, done: i32, total: i32| {
-                    on_progress(Progress { stage, done, total });
-                };
-                let (outcome, next) =
-                    self.session
-                        .run_stage(stage, &blob, &mut report, &should_cancel)?;
-                blob = next;
-                match outcome {
-                    StageOutcome::Done => {
-                        if stage == Stage::Plan {
-                            reassert_explicit_inputs(&mut blob, request)?;
-                        }
-                        if matches!(stage, Stage::Plan | Stage::Codes) {
-                            enforce_duration_ceiling(&blob, request.duration)?;
-                        }
+                match self.run_stage(stage, &blob, request, &should_cancel, &mut on_progress)? {
+                    StageExecution::Done { output } => {
+                        blob = output;
                         break;
                     }
-                    StageOutcome::Paused => {
+                    StageExecution::Paused { resume } => {
+                        blob = resume;
                         if cancel.load(Ordering::Relaxed) {
                             bail!("cancelled");
                         }
@@ -169,11 +202,7 @@ impl<'engine> Generation<'engine> {
             }
         }
 
-        let (planar, sample_rate) = self.session.audio()?;
-        Ok(Audio {
-            planar,
-            sample_rate,
-        })
+        self.audio()
     }
 
     fn session_supports(&self, stage: Stage) -> bool {

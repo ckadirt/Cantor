@@ -7,6 +7,7 @@
 
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result, bail};
 use libloading::{Library, Symbol};
@@ -119,7 +120,7 @@ struct RawComponent {
 /// `cantor_load_opts`. Field order and types must match the header exactly;
 /// this is the one struct the node and the engine both have to agree on.
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LoadOptions {
     /// 0 keeps at most one module resident. Non-zero evicts least-recently-used
     /// to stay under this many bytes — fed from the catalog's `vram_bytes`.
@@ -310,8 +311,8 @@ unsafe fn static_string(library: &Library, symbol: &[u8]) -> Result<String> {
 /// A loaded set of model weights on a loaded engine — the engine's opaque
 /// `cantor_ctx`. Not `Send`: it owns device state and the engine makes no
 /// thread-safety promise, so it stays on the task that created it.
-pub struct Session<'engine> {
-    engine: &'engine Engine,
+pub struct Session {
+    engine: Arc<Engine>,
     raw: *mut c_void,
 }
 
@@ -355,11 +356,11 @@ unsafe extern "C" fn cancel_trampoline(userdata: *mut c_void) -> i32 {
     .unwrap_or(0)
 }
 
-impl<'engine> Session<'engine> {
+impl Session {
     /// Loads the model components. `components` are (role, path) pairs whose
     /// roles match the catalog's exactly.
     pub fn load(
-        engine: &'engine Engine,
+        engine: Arc<Engine>,
         components: &[(String, PathBuf)],
         options: LoadOptions,
     ) -> Result<Self> {
@@ -522,7 +523,7 @@ impl<'engine> Session<'engine> {
     }
 }
 
-impl Drop for Session<'_> {
+impl Drop for Session {
     fn drop(&mut self) {
         if self.raw.is_null() {
             return;
@@ -546,15 +547,42 @@ impl Drop for Session<'_> {
 /// CUDA runtime — fails here and the next one is tried, rather than the node
 /// asserting it should have worked.
 pub struct Selection {
-    pub engine: Engine,
+    pub engine: Arc<Engine>,
     pub rejected: Vec<(String, String)>,
+}
+
+/// Native backends own process-global registries in addition to the explicit
+/// session pointer exposed by ABI-1. Some builds cannot safely survive a
+/// `dlclose` followed by a second `dlopen`: their next model load dereferences
+/// registry state that the first unload destroyed. Keep each verified backend
+/// loaded for the daemon's lifetime. The library handle itself does not own
+/// model weights; session lifetime remains the inference worker's decision.
+fn loaded_engines() -> &'static Mutex<Vec<Arc<Engine>>> {
+    static ENGINES: OnceLock<Mutex<Vec<Arc<Engine>>>> = OnceLock::new();
+    ENGINES.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 pub fn select(attempts: &[(String, PathBuf)]) -> Result<Selection> {
     let mut rejected = Vec::new();
     for (backend, directory) in attempts {
+        if let Some(engine) = loaded_engines()
+            .lock()
+            .map_err(|_| anyhow::anyhow!("loaded engine cache is poisoned"))?
+            .iter()
+            .find(|engine| engine.backend == *backend && engine.directory == *directory)
+            .cloned()
+        {
+            return Ok(Selection { engine, rejected });
+        }
         match Engine::load(directory, backend) {
-            Ok(engine) => return Ok(Selection { engine, rejected }),
+            Ok(engine) => {
+                let engine = Arc::new(engine);
+                loaded_engines()
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("loaded engine cache is poisoned"))?
+                    .push(Arc::clone(&engine));
+                return Ok(Selection { engine, rejected });
+            }
             Err(error) => rejected.push((backend.clone(), format!("{error:#}"))),
         }
     }

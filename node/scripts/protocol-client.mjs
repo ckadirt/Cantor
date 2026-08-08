@@ -1,7 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
 import {createHmac, randomUUID, webcrypto} from 'node:crypto';
 
-const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--lyrics TEXT] [--duration SECONDS] [--steps COUNT] [--client-request-id UUID] [--retry] [--follow] [--library] [--song ID] [--expect-not-found] [--watch]';
+const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--lyrics TEXT] [--duration SECONDS] [--steps COUNT] [--client-request-id UUID] [--control pause|resume|cancel|retry --job ID] [--pause-at plan|codes|diffuse|decode] [--retry] [--follow] [--library] [--song ID] [--expect-not-found] [--watch]';
 const pairValue = process.argv[2];
 const identityIndex = process.argv.indexOf('--identity');
 if (pairValue === undefined || identityIndex < 0 || process.argv[identityIndex + 1] === undefined) {
@@ -23,6 +23,12 @@ const follow = process.argv.includes('--follow');
 const libraryMode = process.argv.includes('--library');
 const songIndex = process.argv.indexOf('--song');
 const songId = songIndex < 0 ? null : process.argv[songIndex + 1];
+const jobIndex = process.argv.indexOf('--job');
+const jobId = jobIndex < 0 ? null : process.argv[jobIndex + 1];
+const controlIndex = process.argv.indexOf('--control');
+const control = controlIndex < 0 ? null : process.argv[controlIndex + 1];
+const pauseAtIndex = process.argv.indexOf('--pause-at');
+const pauseAt = pauseAtIndex < 0 ? null : process.argv[pauseAtIndex + 1];
 const expectNotFound = process.argv.includes('--expect-not-found');
 const petnameIndex = process.argv.indexOf('--petname');
 const petname = petnameIndex < 0 ? 'protocol-client demo' : process.argv[petnameIndex + 1];
@@ -40,6 +46,12 @@ const steps = optionalInteger('--steps', stepsIndex);
 const clientRequestId = requestIdIndex < 0 ? randomUUID() : process.argv[requestIdIndex + 1];
 if ((createModel === null) !== (caption === null) || createModel === undefined || caption === undefined) {
   throw new Error('--create MODEL and --caption TEXT must be provided together.');
+}
+if ((control === null) !== (jobId === null) || (control !== null && !['pause', 'resume', 'cancel', 'retry'].includes(control))) {
+  throw new Error('--control pause|resume|cancel|retry and --job ID must be provided together.');
+}
+if (pauseAt !== null && !['plan', 'codes', 'diffuse', 'decode'].includes(pauseAt)) {
+  throw new Error('--pause-at requires plan, codes, diffuse, or decode.');
 }
 const createRequest = createModel === null ? null : {
   t: 'job.create', v: 2, id: 'create-1', client_request_id: clientRequestId,
@@ -74,6 +86,7 @@ let completed = false;
 let acceptedJobId = null;
 let retried = false;
 let librarySongs = [];
+let autoPauseSent = false;
 socket.addEventListener('message', async event => {
   const frame = JSON.parse(event.data);
   if (frame.t === 'relay.presence') {
@@ -94,7 +107,10 @@ socket.addEventListener('message', async event => {
     send({t: 'auth', v: 2, id: message.id, sig: base64urlEncode(new Uint8Array(signature))});
   } else if (message.t === 'welcome') {
     console.log(`welcome: ${JSON.stringify(message.node)}`);
-    send(createRequest ?? (songId
+    if (control !== null) acceptedJobId = jobId;
+    send(createRequest ?? (control !== null
+      ? {t: `job.${control}`, v: 2, id: `control-${control}`, job_id: jobId}
+      : songId
       ? {t: 'song.get', v: 2, id: 'song-1', song_id: songId}
       : libraryMode
       ? {t: 'library.list', v: 2, id: 'library-1', limit: 100, include_trashed: true}
@@ -123,13 +139,32 @@ socket.addEventListener('message', async event => {
     else console.log('watching for pushes; Ctrl-C to stop');
   } else if (message.t === 'job.updated') {
     console.log(`job.updated: ${JSON.stringify(message.job)}`);
-    if (follow && message.job.id === acceptedJobId && ['completed', 'failed', 'cancelled'].includes(message.job.state)) {
+    if (!autoPauseSent && pauseAt !== null && message.job.id === acceptedJobId &&
+        message.job.state === 'running' && message.job.stage === pauseAt) {
+      autoPauseSent = true;
+      console.log(`requesting pause during ${pauseAt} at revision ${message.job.revision}`);
+      send({t: 'job.pause', v: 2, id: `pause-${pauseAt}`, job_id: message.job.id,
+        expected_revision: message.job.revision});
+    }
+    if (follow && message.job.id === acceptedJobId &&
+        (['completed', 'failed', 'cancelled'].includes(message.job.state) ||
+         (autoPauseSent && message.job.state === 'paused'))) {
       if (message.job.state === 'completed' && libraryMode) {
         send({t: 'library.list', v: 2, id: 'library-1', limit: 100, include_trashed: true});
       } else {
         completed = true;
         if (!watch) socket.close(1000, 'job-terminal');
       }
+    }
+  } else if (message.t === 'job.controlled') {
+    console.log(`job.controlled: ${JSON.stringify(message.job)}`);
+    acceptedJobId = message.job.id;
+    const waiting = follow || pauseAt !== null ||
+      ['pause_requested', 'cancel_requested'].includes(message.job.state);
+    const terminal = ['completed', 'failed', 'cancelled', 'paused'].includes(message.job.state);
+    if (!waiting || terminal) {
+      completed = true;
+      if (!watch) socket.close(1000, 'control-complete');
     }
   } else if (message.t === 'library.page') {
     librarySongs.push(...message.songs);
