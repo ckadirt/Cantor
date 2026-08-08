@@ -296,6 +296,10 @@ async fn execute(
         &completed.1.sha256[..12]
     );
     emit(events, work.principal_id, completed.0);
+    let _ = events.try_send(ControlEvent::LibraryChanged {
+        principal_id: work.principal_id,
+        revision: completed.3,
+    });
     Ok(())
 }
 

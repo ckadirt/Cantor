@@ -22,8 +22,13 @@ pub const MIN_STEPS: u32 = 1;
 pub const MAX_STEPS: u32 = 200;
 pub const MIN_CFG: f32 = 0.0;
 pub const MAX_CFG: f32 = 30.0;
+/// Largest integer every JSON/TypeScript client can round-trip exactly.
+pub const MAX_SAFE_SEED: u64 = 9_007_199_254_740_991;
 pub const DEFAULT_PAGE_LIMIT: u32 = 50;
 pub const MAX_PAGE_LIMIT: u32 = 100;
+pub const MAX_TITLE_BYTES: usize = 160;
+pub const MAX_TAG_BYTES: usize = 64;
+pub const MAX_TAGS: usize = 16;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]
@@ -170,8 +175,87 @@ pub struct GenerationRequest {
     #[ts(optional)]
     pub cfg: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
+    #[ts(optional, type = "number | undefined")]
     pub seed: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct ArtifactView {
+    pub kind: String,
+    pub media_type: String,
+    #[ts(type = "number")]
+    pub byte_length: u64,
+    pub sha256: String,
+    pub sample_rate: u32,
+    pub channels: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct SongHeader {
+    pub id: String,
+    pub revision: u32,
+    pub title: String,
+    pub caption_summary: String,
+    pub created_at: String,
+    #[ts(type = "number")]
+    pub duration_ms: u64,
+    pub model: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number | undefined")]
+    pub seed: Option<u64>,
+    pub favorite: bool,
+    pub tags: Vec<String>,
+    pub trashed: bool,
+    pub artifacts: Vec<ArtifactView>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct SongDetail {
+    pub song: SongHeader,
+    pub generation: GenerationRequest,
+    pub engine: String,
+    pub component_digests: Vec<String>,
+    pub attempts: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct SongPatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub favorite: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum LibraryChangeKind {
+    Upsert,
+    Trash,
+    Restore,
+    Tombstone,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct LibraryChange {
+    #[ts(type = "number")]
+    pub revision: u64,
+    pub song_id: String,
+    pub kind: LibraryChangeKind,
+    pub changed_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub song: Option<SongHeader>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -190,6 +274,8 @@ pub enum ErrorCode {
     InsufficientDisk,
     TemporarilyUnavailable,
     FeatureUnavailable,
+    RevisionConflict,
+    FullSyncRequired,
     Internal,
 }
 
@@ -197,10 +283,26 @@ pub enum ErrorCode {
 #[serde(tag = "kind", rename_all = "snake_case")]
 #[ts(export, tag = "kind", rename_all = "snake_case")]
 pub enum ErrorDetails {
-    SupportedVersion { minimum: u8, maximum: u8 },
-    InvalidField { field: String },
-    Model { selector: String },
-    Correlation { correlation_id: String },
+    SupportedVersion {
+        minimum: u8,
+        maximum: u8,
+    },
+    InvalidField {
+        field: String,
+    },
+    Model {
+        selector: String,
+    },
+    Correlation {
+        correlation_id: String,
+    },
+    RevisionConflict {
+        current: SongHeader,
+    },
+    FullSync {
+        #[ts(type = "number")]
+        minimum_revision: u64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -253,6 +355,59 @@ pub enum ClientMessage {
     #[serde(rename = "job.get")]
     #[ts(rename = "job.get")]
     JobGet { v: u8, id: String, job_id: String },
+    #[serde(rename = "library.list")]
+    #[ts(rename = "library.list")]
+    LibraryList {
+        v: u8,
+        id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        limit: Option<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        cursor: Option<String>,
+        #[serde(default)]
+        include_trashed: bool,
+    },
+    #[serde(rename = "library.sync")]
+    #[ts(rename = "library.sync")]
+    LibrarySync {
+        v: u8,
+        id: String,
+        #[ts(type = "number")]
+        since_revision: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        limit: Option<u32>,
+    },
+    #[serde(rename = "song.get")]
+    #[ts(rename = "song.get")]
+    SongGet { v: u8, id: String, song_id: String },
+    #[serde(rename = "song.patch")]
+    #[ts(rename = "song.patch")]
+    SongPatch {
+        v: u8,
+        id: String,
+        song_id: String,
+        expected_revision: u32,
+        patch: SongPatch,
+    },
+    #[serde(rename = "song.trash")]
+    #[ts(rename = "song.trash")]
+    SongTrash {
+        v: u8,
+        id: String,
+        song_id: String,
+        expected_revision: u32,
+    },
+    #[serde(rename = "song.restore")]
+    #[ts(rename = "song.restore")]
+    SongRestore {
+        v: u8,
+        id: String,
+        song_id: String,
+        expected_revision: u32,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -289,6 +444,46 @@ pub enum NodeMessage {
     #[serde(rename = "job.updated")]
     #[ts(rename = "job.updated")]
     JobUpdated { v: u8, job: JobView },
+    #[serde(rename = "library.page")]
+    #[ts(rename = "library.page")]
+    LibraryPage {
+        v: u8,
+        id: String,
+        #[ts(type = "number")]
+        snapshot_revision: u64,
+        songs: Vec<SongHeader>,
+        tombstones: Vec<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        next_cursor: Option<String>,
+    },
+    #[serde(rename = "library.changes")]
+    #[ts(rename = "library.changes")]
+    LibraryChanges {
+        v: u8,
+        id: String,
+        #[ts(type = "number")]
+        through_revision: u64,
+        changes: Vec<LibraryChange>,
+        has_more: bool,
+    },
+    #[serde(rename = "song.detail")]
+    #[ts(rename = "song.detail")]
+    SongDetail {
+        v: u8,
+        id: String,
+        detail: SongDetail,
+    },
+    #[serde(rename = "song.updated")]
+    #[ts(rename = "song.updated")]
+    SongUpdated { v: u8, id: String, song: SongHeader },
+    #[serde(rename = "library.changed")]
+    #[ts(rename = "library.changed")]
+    LibraryChanged {
+        v: u8,
+        #[ts(type = "number")]
+        revision: u64,
+    },
     #[serde(rename = "error")]
     #[ts(rename = "error")]
     Error {
@@ -386,6 +581,7 @@ mod tests {
         let client = [
             include_str!("../../../../protocol/fixtures/v2/hello.json"),
             include_str!("../../../../protocol/fixtures/v2/job-create.json"),
+            include_str!("../../../../protocol/fixtures/v2/library-list.json"),
         ];
         for fixture in client {
             serde_json::from_str::<ClientMessage>(fixture).expect("valid client fixture");
@@ -393,6 +589,7 @@ mod tests {
         let node = [
             include_str!("../../../../protocol/fixtures/v2/node-info.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page.json"),
+            include_str!("../../../../protocol/fixtures/v2/library-page.json"),
             include_str!("../../../../protocol/fixtures/v2/error.json"),
             include_str!("../../../../protocol/fixtures/v2/forward/extra-optional-field.json"),
         ];

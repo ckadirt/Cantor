@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Pressable,
+  RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
@@ -10,6 +11,9 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
 import type { JobView } from '../../../protocol/JobView';
+import type { SongHeader } from '../../../protocol/SongHeader';
+import type { SongDetail } from '../../../protocol/SongDetail';
+import type { SongPatch } from '../../../protocol/SongPatch';
 import type { AppIdentity } from '../identity/derive';
 import { PairBackendModal } from '../backends/PairBackendModal';
 import { BackendConnection, NodeRequestError } from '../backends/connection';
@@ -30,6 +34,12 @@ import {
   type OutboxEntry,
 } from '../jobs/outbox';
 import { loadJobs, mergeJobs, mergeJobViews } from '../jobs/repository';
+import {
+  commitLibrary,
+  loadLibrary,
+  mergeSongHeaders,
+} from '../library/repository';
+import { filterLibraryRows, type LibraryFilter } from '../library/query';
 
 const READY_BACKGROUND_LIGHT = '#EFF8F0';
 const READY_BACKGROUND_DARK = '#0B2110';
@@ -41,6 +51,9 @@ const DEFAULT_SNAPSHOT: ConnectionSnapshot = {
   phase: 'disconnected',
   error: null,
   jobs: [],
+  songs: [],
+  libraryRevision: null,
+  librarySyncing: false,
 };
 
 type Props = {
@@ -163,6 +176,23 @@ export function MainScreen({ identity }: Props) {
           })),
         )
         .catch(error => setStorageError(readError(error)));
+      loadLibrary(backend.nodePubkey)
+        .then(library =>
+          setSnapshots(previous => ({
+            ...previous,
+            [backend.nodePubkey]: {
+              ...(previous[backend.nodePubkey] ?? DEFAULT_SNAPSHOT),
+              songs: mergeSongHeaders(
+                previous[backend.nodePubkey]?.songs ?? [],
+                library.songs,
+              ),
+              libraryRevision:
+                previous[backend.nodePubkey]?.libraryRevision ??
+                library.revision,
+            },
+          })),
+        )
+        .catch(error => setStorageError(readError(error)));
       const current = connections.current.get(backend.nodePubkey);
       if (current?.relayUrl === backend.relayUrl) {
         continue;
@@ -182,6 +212,17 @@ export function MainScreen({ identity }: Props) {
                   previous[backend.nodePubkey]?.jobs ?? [],
                   snapshot.jobs,
                 ),
+                songs:
+                  snapshot.libraryRevision === null
+                    ? mergeSongHeaders(
+                        previous[backend.nodePubkey]?.songs ?? [],
+                        snapshot.songs,
+                      )
+                    : snapshot.songs,
+                libraryRevision:
+                  snapshot.libraryRevision ??
+                  previous[backend.nodePubkey]?.libraryRevision ??
+                  null,
               },
             }));
             if (snapshot.jobs.length > 0) {
@@ -199,6 +240,13 @@ export function MainScreen({ identity }: Props) {
                   })),
                 )
                 .catch(error => setStorageError(readError(error)));
+            }
+            if (snapshot.libraryRevision !== null && !snapshot.librarySyncing) {
+              commitLibrary(
+                backend.nodePubkey,
+                snapshot.libraryRevision,
+                snapshot.songs,
+              ).catch(error => setStorageError(readError(error)));
             }
             if (snapshot.phase === 'ready') {
               loadOutbox()
@@ -275,15 +323,80 @@ export function MainScreen({ identity }: Props) {
     [sendOutbox],
   );
 
+  const handleSongPatch = useCallback(
+    async (nodePublicKey: string, song: SongHeader, patch: SongPatch) => {
+      const live = connections.current.get(nodePublicKey);
+      if (live === undefined) throw new Error('Song node is not connected.');
+      await live.connection.patchSong(song.id, song.revision, patch);
+    },
+    [],
+  );
+
+  const handleSongPresence = useCallback(
+    async (nodePublicKey: string, song: SongHeader) => {
+      const live = connections.current.get(nodePublicKey);
+      if (live === undefined) throw new Error('Song node is not connected.');
+      if (song.trashed) {
+        await live.connection.restoreSong(song.id, song.revision);
+      } else {
+        await live.connection.trashSong(song.id, song.revision);
+      }
+    },
+    [],
+  );
+
+  const handleSongDetail = useCallback(
+    async (nodePublicKey: string, songId: string) => {
+      const live = connections.current.get(nodePublicKey);
+      if (live === undefined) throw new Error('Song node is not connected.');
+      return live.connection.getSong(songId);
+    },
+    [],
+  );
+
+  const refreshLibraries = useCallback(() => {
+    for (const live of connections.current.values()) {
+      live.connection.refreshLibrary();
+    }
+  }, []);
+
+  const libraryRows = (backends ?? [])
+    .flatMap(backend =>
+      (snapshots[backend.nodePubkey]?.songs ?? []).map(song => ({
+        backend,
+        song,
+        ready: snapshots[backend.nodePubkey]?.phase === 'ready',
+        nodeLabels: [
+          backend.petname,
+          backend.lastNodeInfo?.name ?? '',
+          backend.nodePubkey,
+        ],
+      })),
+    )
+    .sort(
+      (left, right) =>
+        right.song.created_at.localeCompare(left.song.created_at) ||
+        right.song.id.localeCompare(left.song.id),
+    );
+
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: pal.bg }]}>
       <ScrollView
         contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={Object.values(snapshots).some(
+              snapshot => snapshot.librarySyncing,
+            )}
+            onRefresh={refreshLibraries}
+            tintColor={pal.muted}
+          />
+        }
         showsVerticalScrollIndicator={false}
       >
         <Text style={[type.eyebrow, { color: pal.muted }]}>CANTOR</Text>
         <Text style={[type.title, styles.title, { color: pal.ink }]}>
-          Backends
+          Library
         </Text>
         <Text style={[type.small, styles.identity, { color: pal.faint }]}>
           APP KEY · {shortKey(identity.publicKey)}
@@ -297,6 +410,18 @@ export function MainScreen({ identity }: Props) {
             {storageError}
           </Text>
         ) : null}
+
+        <LibraryTimeline
+          rows={libraryRows}
+          onDetail={handleSongDetail}
+          onPatch={handleSongPatch}
+          onPresence={handleSongPresence}
+          onError={error => setStorageError(readError(error))}
+        />
+
+        <Text style={[type.eyebrow, styles.sectionLabel, { color: pal.faint }]}>
+          BACKENDS
+        </Text>
 
         {backends === null ? (
           <Text style={[type.body, { color: pal.muted }]}>
@@ -345,6 +470,281 @@ export function MainScreen({ identity }: Props) {
     </SafeAreaView>
   );
 }
+
+type LibraryRow = {
+  backend: BackendRecord;
+  song: SongHeader;
+  ready: boolean;
+  nodeLabels: string[];
+};
+
+function LibraryTimeline({
+  rows,
+  onDetail,
+  onPatch,
+  onPresence,
+  onError,
+}: {
+  rows: LibraryRow[];
+  onDetail: (nodePublicKey: string, songId: string) => Promise<SongDetail>;
+  onPatch: (
+    nodePublicKey: string,
+    song: SongHeader,
+    patch: SongPatch,
+  ) => Promise<void>;
+  onPresence: (nodePublicKey: string, song: SongHeader) => Promise<void>;
+  onError: (error: unknown) => void;
+}) {
+  const pal = usePalette();
+  const [query, setQuery] = useState('');
+  const [filter, setFilter] = useState<LibraryFilter>('active');
+  if (rows.length === 0) {
+    return (
+      <View style={[styles.libraryEmpty, { borderColor: pal.line }]}>
+        <Text style={[type.body, { color: pal.muted }]}>
+          Completed songs will appear here without downloading their audio.
+        </Text>
+      </View>
+    );
+  }
+  const visibleRows = filterLibraryRows(rows, query, filter);
+  return (
+    <View style={styles.library}>
+      <TextInput
+        accessibilityLabel="Search private library"
+        onChangeText={setQuery}
+        placeholder="Search title, caption, tag, or node"
+        placeholderTextColor={pal.faint}
+        value={query}
+        style={[
+          styles.librarySearch,
+          type.small,
+          { borderColor: pal.line, color: pal.ink },
+        ]}
+      />
+      <View style={styles.libraryFilters}>
+        {(
+          [
+            ['active', 'ALL'],
+            ['favorite', 'FAVORITES'],
+            ['offline', 'OFFLINE'],
+            ['trash', 'TRASH'],
+          ] as const
+        ).map(([value, label]) => (
+          <Pressable
+            key={value}
+            accessibilityRole="button"
+            onPress={() => setFilter(value)}
+            style={[
+              styles.libraryFilter,
+              {
+                borderColor: filter === value ? pal.ink : pal.line,
+              },
+            ]}
+          >
+            <Text style={[type.eyebrow, { color: pal.ink }]}>{label}</Text>
+          </Pressable>
+        ))}
+      </View>
+      {visibleRows.length === 0 ? (
+        <Text style={[type.small, styles.noMatches, { color: pal.muted }]}>
+          No cached songs match this local view.
+        </Text>
+      ) : null}
+      {visibleRows.map(row => (
+        <LibrarySongRow
+          key={`${row.backend.nodePubkey}:${row.song.id}`}
+          row={row}
+          onDetail={onDetail}
+          onPatch={onPatch}
+          onPresence={onPresence}
+          onError={onError}
+        />
+      ))}
+    </View>
+  );
+}
+
+function LibrarySongRow({
+  row,
+  onDetail,
+  onPatch,
+  onPresence,
+  onError,
+}: {
+  row: LibraryRow;
+  onDetail: LibraryTimelineProps['onDetail'];
+  onPatch: LibraryTimelineProps['onPatch'];
+  onPresence: LibraryTimelineProps['onPresence'];
+  onError: (error: unknown) => void;
+}) {
+  const pal = usePalette();
+  const [title, setTitle] = useState(row.song.title);
+  const [tags, setTags] = useState(row.song.tags.join(', '));
+  const [saving, setSaving] = useState(false);
+  const [detail, setDetail] = useState<SongDetail | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  useEffect(() => {
+    setTitle(row.song.title);
+    setTags(row.song.tags.join(', '));
+  }, [row.song.revision, row.song.tags, row.song.title]);
+  useEffect(() => setDetail(null), [row.song.id, row.song.revision]);
+  const run = async (operation: () => Promise<void>) => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      await operation();
+    } catch (error) {
+      onError(error);
+    } finally {
+      setSaving(false);
+    }
+  };
+  const parsedTags = tags
+    .split(',')
+    .map(tag => tag.trim())
+    .filter(Boolean);
+  const loadDetail = async () => {
+    if (detail !== null) {
+      setDetail(null);
+      return;
+    }
+    if (detailLoading) return;
+    setDetailLoading(true);
+    try {
+      setDetail(await onDetail(row.backend.nodePubkey, row.song.id));
+    } catch (error) {
+      onError(error);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+  return (
+    <View style={[styles.songCard, { borderColor: pal.line }]}>
+      <View style={styles.songHeading}>
+        <Text style={[type.small, { color: pal.faint }]}>
+          {row.song.trashed ? 'TRASH' : 'REMOTE MASTER'} ·{' '}
+          {row.backend.lastNodeInfo?.name ?? row.backend.petname}
+        </Text>
+        <Text style={[type.small, { color: pal.muted }]}>
+          {(row.song.duration_ms / 1000).toFixed(1)}s ·{' '}
+          {formatBytes(row.song.artifacts[0]?.byte_length ?? 0)}
+        </Text>
+      </View>
+      <TextInput
+        accessibilityLabel="Song title"
+        editable={row.ready && !saving}
+        onChangeText={setTitle}
+        value={title}
+        style={[
+          styles.songInput,
+          type.heading,
+          { borderColor: pal.line, color: pal.ink },
+        ]}
+      />
+      <TextInput
+        accessibilityLabel="Song tags"
+        editable={row.ready && !saving}
+        onChangeText={setTags}
+        placeholder="tags, separated, by commas"
+        placeholderTextColor={pal.faint}
+        value={tags}
+        style={[
+          styles.songInput,
+          type.small,
+          { borderColor: pal.line, color: pal.ink },
+        ]}
+      />
+      <Text style={[type.small, { color: pal.muted }]}>
+        {row.song.caption_summary} · {row.song.model}
+      </Text>
+      <View style={styles.songActions}>
+        <Pressable
+          disabled={!row.ready || detailLoading}
+          onPress={loadDetail}
+          style={[styles.songAction, { borderColor: pal.line }]}
+        >
+          <Text style={[type.eyebrow, { color: pal.ink }]}>
+            {detailLoading ? 'LOADING' : detail === null ? 'DETAILS' : 'CLOSE'}
+          </Text>
+        </Pressable>
+        <Pressable
+          disabled={!row.ready || saving}
+          onPress={() =>
+            run(() =>
+              onPatch(row.backend.nodePubkey, row.song, {
+                title: title.trim(),
+                tags: parsedTags,
+              }),
+            )
+          }
+          style={[styles.songAction, { borderColor: pal.line }]}
+        >
+          <Text style={[type.eyebrow, { color: pal.ink }]}>SAVE</Text>
+        </Pressable>
+        <Pressable
+          disabled={!row.ready || saving}
+          onPress={() =>
+            run(() =>
+              onPatch(row.backend.nodePubkey, row.song, {
+                favorite: !row.song.favorite,
+              }),
+            )
+          }
+          style={[styles.songAction, { borderColor: pal.line }]}
+        >
+          <Text style={[type.eyebrow, { color: pal.ink }]}>
+            {row.song.favorite ? 'UNFAVORITE' : 'FAVORITE'}
+          </Text>
+        </Pressable>
+        <Pressable
+          disabled={!row.ready || saving}
+          onPress={() =>
+            run(() => onPresence(row.backend.nodePubkey, row.song))
+          }
+          style={[styles.songAction, { borderColor: pal.line }]}
+        >
+          <Text style={[type.eyebrow, { color: pal.ink }]}>
+            {row.song.trashed ? 'RESTORE' : 'TRASH'}
+          </Text>
+        </Pressable>
+      </View>
+      {detail !== null ? (
+        <View style={[styles.songDetail, { borderColor: pal.line }]}>
+          <Text style={[type.eyebrow, { color: pal.faint }]}>FULL REQUEST</Text>
+          <Text style={[type.small, { color: pal.ink }]}>
+            {detail.generation.caption}
+          </Text>
+          {detail.generation.lyrics ? (
+            <Text style={[type.small, { color: pal.muted }]}>
+              {detail.generation.lyrics}
+            </Text>
+          ) : null}
+          <Text style={[type.small, { color: pal.muted }]}>
+            {detail.engine} · attempt {detail.attempts}
+            {detail.generation.seed === undefined
+              ? ''
+              : ` · seed ${detail.generation.seed}`}
+            {detail.generation.steps === undefined
+              ? ''
+              : ` · ${detail.generation.steps} steps`}
+          </Text>
+          <Text style={[type.small, { color: pal.faint }]}>
+            {detail.component_digests.length} verified component digest(s) ·
+            audio remains on this node until M5
+          </Text>
+        </View>
+      ) : null}
+      {!row.ready ? (
+        <Text style={[type.small, { color: pal.faint }]}>
+          Node offline · cached header
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+type LibraryTimelineProps = React.ComponentProps<typeof LibraryTimeline>;
 
 function BackendCard({
   backend,
@@ -660,6 +1060,12 @@ function readError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+}
+
 function utf8ByteLength(value: string): number {
   let bytes = 0;
   for (const character of value) {
@@ -675,6 +1081,31 @@ const styles = StyleSheet.create({
   title: { marginTop: space.sm },
   identity: { marginTop: space.sm, marginBottom: space.xl },
   error: { marginBottom: space.md },
+  sectionLabel: { marginTop: space.xl, marginBottom: space.sm },
+  library: { gap: space.sm },
+  librarySearch: {
+    borderWidth: 1,
+    paddingHorizontal: space.md,
+    minHeight: touch.min,
+  },
+  libraryFilters: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
+  libraryFilter: { borderWidth: 1, padding: space.sm, minHeight: touch.min },
+  noMatches: { paddingVertical: space.sm },
+  libraryEmpty: { borderWidth: 1, padding: space.md },
+  songCard: { borderWidth: 1, padding: space.md, gap: space.sm },
+  songHeading: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: space.sm,
+  },
+  songInput: {
+    borderWidth: 1,
+    paddingHorizontal: space.sm,
+    minHeight: touch.min,
+  },
+  songActions: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
+  songAction: { borderWidth: 1, minHeight: touch.min, padding: space.sm },
+  songDetail: { borderTopWidth: 1, paddingTop: space.sm, gap: space.xs },
   empty: { borderWidth: 1, padding: space.lg },
   emptyBody: { marginTop: space.sm },
   card: { borderWidth: 1, padding: space.lg, marginBottom: space.md },

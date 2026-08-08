@@ -73,6 +73,11 @@ pub enum ControlEvent {
         principal_id: [u8; 32],
         job: cantor_proto::JobView,
     },
+    /// A private library revision is a sync hint, never a broadcast payload.
+    LibraryChanged {
+        principal_id: [u8; 32],
+        revision: u64,
+    },
 }
 
 pub fn shared(state: NodeState) -> SharedState {

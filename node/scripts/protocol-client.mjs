@@ -1,7 +1,7 @@
 import {readFile, writeFile} from 'node:fs/promises';
 import {createHmac, randomUUID, webcrypto} from 'node:crypto';
 
-const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--duration SECONDS] [--steps COUNT] [--client-request-id UUID] [--retry] [--follow] [--watch]';
+const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--lyrics TEXT] [--duration SECONDS] [--steps COUNT] [--client-request-id UUID] [--retry] [--follow] [--library] [--song ID] [--expect-not-found] [--watch]';
 const pairValue = process.argv[2];
 const identityIndex = process.argv.indexOf('--identity');
 if (pairValue === undefined || identityIndex < 0 || process.argv[identityIndex + 1] === undefined) {
@@ -20,15 +20,21 @@ if (pairUri.protocol !== 'cantor:' || nodeKey === null || relayValue === null) {
 const identityPath = process.argv[identityIndex + 1];
 const watch = process.argv.includes('--watch');
 const follow = process.argv.includes('--follow');
+const libraryMode = process.argv.includes('--library');
+const songIndex = process.argv.indexOf('--song');
+const songId = songIndex < 0 ? null : process.argv[songIndex + 1];
+const expectNotFound = process.argv.includes('--expect-not-found');
 const petnameIndex = process.argv.indexOf('--petname');
 const petname = petnameIndex < 0 ? 'protocol-client demo' : process.argv[petnameIndex + 1];
 const createIndex = process.argv.indexOf('--create');
 const captionIndex = process.argv.indexOf('--caption');
+const lyricsIndex = process.argv.indexOf('--lyrics');
 const durationIndex = process.argv.indexOf('--duration');
 const stepsIndex = process.argv.indexOf('--steps');
 const requestIdIndex = process.argv.indexOf('--client-request-id');
 const createModel = createIndex < 0 ? null : process.argv[createIndex + 1];
 const caption = captionIndex < 0 ? null : process.argv[captionIndex + 1];
+const lyrics = lyricsIndex < 0 ? null : process.argv[lyricsIndex + 1];
 const duration = optionalInteger('--duration', durationIndex);
 const steps = optionalInteger('--steps', stepsIndex);
 const clientRequestId = requestIdIndex < 0 ? randomUUID() : process.argv[requestIdIndex + 1];
@@ -37,7 +43,7 @@ if ((createModel === null) !== (caption === null) || createModel === undefined |
 }
 const createRequest = createModel === null ? null : {
   t: 'job.create', v: 2, id: 'create-1', client_request_id: clientRequestId,
-  model: createModel, generation: {caption, ...(duration === null ? {} : {duration}), ...(steps === null ? {} : {steps})},
+  model: createModel, generation: {caption, ...(lyrics === null ? {} : {lyrics}), ...(duration === null ? {} : {duration}), ...(steps === null ? {} : {steps})},
 };
 const retry = process.argv.includes('--retry');
 let keyPair;
@@ -67,6 +73,7 @@ const socket = new WebSocket(roomUrl);
 let completed = false;
 let acceptedJobId = null;
 let retried = false;
+let librarySongs = [];
 socket.addEventListener('message', async event => {
   const frame = JSON.parse(event.data);
   if (frame.t === 'relay.presence') {
@@ -87,7 +94,11 @@ socket.addEventListener('message', async event => {
     send({t: 'auth', v: 2, id: message.id, sig: base64urlEncode(new Uint8Array(signature))});
   } else if (message.t === 'welcome') {
     console.log(`welcome: ${JSON.stringify(message.node)}`);
-    send(createRequest ?? {t: 'status', v: 2, id: 'status-1'});
+    send(createRequest ?? (songId
+      ? {t: 'song.get', v: 2, id: 'song-1', song_id: songId}
+      : libraryMode
+      ? {t: 'library.list', v: 2, id: 'library-1', limit: 100, include_trashed: true}
+      : {t: 'status', v: 2, id: 'status-1'}));
   } else if (message.t === 'job.accepted') {
     console.log(`accepted: ${JSON.stringify(message.job)}`);
     if (acceptedJobId !== null && message.job.id !== acceptedJobId) {
@@ -113,13 +124,38 @@ socket.addEventListener('message', async event => {
   } else if (message.t === 'job.updated') {
     console.log(`job.updated: ${JSON.stringify(message.job)}`);
     if (follow && message.job.id === acceptedJobId && ['completed', 'failed', 'cancelled'].includes(message.job.state)) {
-      completed = true;
-      if (!watch) socket.close(1000, 'job-terminal');
+      if (message.job.state === 'completed' && libraryMode) {
+        send({t: 'library.list', v: 2, id: 'library-1', limit: 100, include_trashed: true});
+      } else {
+        completed = true;
+        if (!watch) socket.close(1000, 'job-terminal');
+      }
     }
+  } else if (message.t === 'library.page') {
+    librarySongs.push(...message.songs);
+    if (message.next_cursor) {
+      send({t: 'library.list', v: 2, id: `library-${librarySongs.length + 1}`,
+        limit: 100, cursor: message.next_cursor, include_trashed: true});
+    } else {
+      console.log(`library@${message.snapshot_revision}: ${JSON.stringify(librarySongs)}`);
+      completed = true;
+      if (!watch) socket.close(1000, 'library-complete');
+    }
+  } else if (message.t === 'library.changed') {
+    console.log(`library.changed: ${message.revision}`);
+  } else if (message.t === 'song.detail') {
+    console.log(`song: ${JSON.stringify(message.detail)}`);
+    completed = true;
+    if (!watch) socket.close(1000, 'song-complete');
   } else if (message.t === 'node.info') {
     console.log(`node.info push: ${JSON.stringify(message.node)}`);
   } else if (message.t === 'error') {
     console.error(`application error [${message.code}]: ${message.message}`);
+    if (expectNotFound && message.code === 'not_found') {
+      completed = true;
+      socket.close(1000, 'expected-not-found');
+      return;
+    }
     process.exitCode = message.code === 'rejected' ? 2 : 1;
     socket.close(1000, 'application-error');
   }

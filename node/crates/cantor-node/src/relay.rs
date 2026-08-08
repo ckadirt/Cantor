@@ -85,11 +85,18 @@ pub async fn run_forever(
     state: SharedState,
     identity: &NodeIdentity,
     events: &mut mpsc::Receiver<ControlEvent>,
+    event_sender: &mpsc::Sender<ControlEvent>,
 ) -> Result<()> {
     let mut reconnect_attempt = 0_u32;
 
     loop {
-        let connection = serve_once(&state, identity, events, &mut reconnect_attempt);
+        let connection = serve_once(
+            &state,
+            identity,
+            events,
+            event_sender,
+            &mut reconnect_attempt,
+        );
         tokio::select! {
             signal_result = tokio::signal::ctrl_c() => {
                 signal_result.context("failed to listen for Ctrl-C")?;
@@ -121,6 +128,7 @@ async fn serve_once(
     state: &SharedState,
     identity: &NodeIdentity,
     events: &mut mpsc::Receiver<ControlEvent>,
+    event_sender: &mpsc::Sender<ControlEvent>,
     reconnect_attempt: &mut u32,
 ) -> Result<()> {
     let public_key = identity.public_key_base58();
@@ -252,6 +260,7 @@ async fn serve_once(
                             &config_path,
                             &public_key,
                             &node_info,
+                            event_sender,
                         )? else {
                             continue;
                         };
@@ -373,6 +382,24 @@ fn apply_control_event(
             }
             Ok(frames)
         }
+        ControlEvent::LibraryChanged {
+            principal_id,
+            revision,
+        } => {
+            let changed = NodeMessage::LibraryChanged {
+                v: cantor_proto::PROTOCOL_VERSION,
+                revision,
+            };
+            sessions
+                .iter()
+                .filter(|(_, session)| {
+                    session
+                        .authenticated()
+                        .is_some_and(|context| context.principal_id == principal_id)
+                })
+                .map(|(sid, _)| tunnel_frame(sid, &changed))
+                .collect()
+        }
     }
 }
 
@@ -397,6 +424,7 @@ fn handle_relay_text(
     config_path: &Path,
     public_key: &str,
     node_info: &NodeInfo,
+    event_sender: &mpsc::Sender<ControlEvent>,
 ) -> Result<Option<(Message, bool)>> {
     let frame: IncomingFrame = match serde_json::from_str(text) {
         Ok(frame) => frame,
@@ -424,6 +452,15 @@ fn handle_relay_text(
                 )?;
                 if matches!(response, NodeMessage::JobAccepted { .. }) {
                     locked.job_notify.notify_one();
+                }
+                if matches!(response, NodeMessage::SongUpdated { .. })
+                    && let Some(context) = session.authenticated()
+                {
+                    let revision = locked.library.library_revision(&context.principal_id)?;
+                    let _ = event_sender.try_send(ControlEvent::LibraryChanged {
+                        principal_id: context.principal_id,
+                        revision,
+                    });
                 }
                 response
             } else {
@@ -507,7 +544,7 @@ fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> N
         },
         features: NodeFeatures {
             jobs_create: true,
-            library_list: false,
+            library_list: true,
             artifacts_transfer: false,
             secure_tunnel: false,
             job_controls: false,
@@ -589,6 +626,7 @@ mod tests {
     use std::collections::HashMap;
 
     use tempfile::tempdir;
+    use tokio::sync::mpsc;
 
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::control::{NodeState, SharedState, shared};
@@ -688,6 +726,44 @@ mod tests {
         );
     }
 
+    #[test]
+    fn private_library_hints_are_sent_only_to_the_owner_principal() {
+        let (state, _config_path, _guard) = fixture();
+        let mut node_info = {
+            let locked = state.lock().expect("state");
+            static_node_info(&locked.config, &locked.library)
+        };
+        let mut sessions = HashMap::from([
+            (
+                "owner".to_owned(),
+                ClientSession::authenticated_with_bytes_for_test("owner-key", [1; 32]),
+            ),
+            (
+                "other".to_owned(),
+                ClientSession::authenticated_with_bytes_for_test("other-key", [2; 32]),
+            ),
+        ]);
+        let principal_id: [u8; 32] = Sha256::digest([1_u8; 32]).into();
+        let frames = apply_control_event(
+            ControlEvent::LibraryChanged {
+                principal_id,
+                revision: 7,
+            },
+            &mut sessions,
+            &state,
+            &mut node_info,
+        )
+        .expect("event");
+        let text = frames
+            .iter()
+            .map(|frame| frame.to_text().expect("text"))
+            .collect::<Vec<_>>();
+        assert_eq!(text.len(), 1);
+        assert!(text[0].contains("library.changed"));
+        assert!(text[0].contains("owner"));
+        assert!(!text[0].contains("other"));
+    }
+
     /// Every frame this build does not understand must be skipped rather than
     /// ending the connection, so a newer relay can add frames without knocking
     /// already-installed nodes offline in a reconnect loop.
@@ -698,6 +774,7 @@ mod tests {
         let node_info = static_node_info(&locked.config, &locked.library);
         drop(locked);
         let mut sessions = HashMap::new();
+        let (events, _received) = mpsc::channel(8);
 
         for frame in [
             r#"{"v":1,"t":"relay.somethingNew","detail":"from a newer relay"}"#,
@@ -713,6 +790,7 @@ mod tests {
                 &config_path,
                 "node-key",
                 &node_info,
+                &events,
             )
             .expect("unrecognised frames must not be errors");
             assert!(response.is_none(), "unexpected reply to {frame}");
@@ -727,6 +805,7 @@ mod tests {
         let locked = state.lock().expect("state");
         let node_info = static_node_info(&locked.config, &locked.library);
         drop(locked);
+        let (events, _received) = mpsc::channel(8);
 
         let result = handle_relay_text(
             r#"{"v":1,"t":"relay.error","code":"bad-claim","msg":"nope"}"#,
@@ -735,6 +814,7 @@ mod tests {
             &config_path,
             "node-key",
             &node_info,
+            &events,
         );
 
         assert!(result.is_err());

@@ -13,6 +13,7 @@ mod relay;
 mod service;
 mod session;
 mod signing;
+mod songs;
 mod store;
 mod update;
 
@@ -284,9 +285,9 @@ async fn run(cli: Cli) -> Result<()> {
     });
     let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<ControlEvent>(128);
     tokio::spawn(control::serve(listener, state.clone(), events_tx.clone()));
-    tokio::spawn(jobs::run(state.clone(), events_tx));
+    tokio::spawn(jobs::run(state.clone(), events_tx.clone()));
 
-    let result = relay::run_forever(state, &identity, &mut events_rx).await;
+    let result = relay::run_forever(state, &identity, &mut events_rx, &events_tx).await;
     // The socket is not reusable once this process is gone, and a stale one
     // makes the next start look like a permissions problem.
     let _ = std::fs::remove_file(&socket_path);
