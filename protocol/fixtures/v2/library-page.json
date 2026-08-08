@@ -1,0 +1,28 @@
+{
+  "t": "library.page",
+  "v": 2,
+  "id": "library-1",
+  "snapshot_revision": 1,
+  "songs": [{
+    "id": "019fe1cb-a56a-7591-a7c1-2d577c1d01fc",
+    "revision": 1,
+    "title": "Night bolero",
+    "caption_summary": "Night bolero",
+    "created_at": "2026-08-08T14:34:07Z",
+    "duration_ms": 14240,
+    "model": "acestep:1.5-fast",
+    "seed": 7,
+    "favorite": false,
+    "tags": [],
+    "trashed": false,
+    "artifacts": [{
+      "kind": "master",
+      "media_type": "audio/wav",
+      "byte_length": 2734124,
+      "sha256": "4c85f3284c88520949315d21e0be171a164ebfa08213889e2124832caf1b3aea",
+      "sample_rate": 48000,
+      "channels": 2
+    }]
+  }],
+  "tombstones": []
+}

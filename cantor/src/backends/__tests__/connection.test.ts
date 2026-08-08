@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import {
   BackendConnection,
   NodeRequestError,
+  SongRevisionConflict,
   devicePetname,
 } from '../connection';
 import { deriveIdentity } from '../../identity/derive';
@@ -58,7 +59,10 @@ const backend: BackendRecord = {
   lastNodeInfo: null,
 };
 
-function nodeInfoFixture(name: string): Record<string, unknown> {
+function nodeInfoFixture(
+  name: string,
+  library = false,
+): Record<string, unknown> {
   return {
     name,
     device_type: 'linux-x86_64',
@@ -82,11 +86,36 @@ function nodeInfoFixture(name: string): Record<string, unknown> {
     load: { active_jobs: 0, queued_jobs: 0, accepting_jobs: false },
     features: {
       jobs_create: false,
-      library_list: false,
+      library_list: library,
       artifacts_transfer: false,
       secure_tunnel: false,
       job_controls: false,
     },
+  };
+}
+
+function songFixture(id: string, revision = 1): Record<string, unknown> {
+  return {
+    id,
+    revision,
+    title: `Song ${id}`,
+    caption_summary: `Caption ${id}`,
+    created_at: `2026-08-0${id === 'a' ? 8 : 7}T00:00:00Z`,
+    duration_ms: 14_240,
+    model: 'acestep:1.5-fast',
+    favorite: revision > 1,
+    tags: [],
+    trashed: false,
+    artifacts: [
+      {
+        kind: 'master',
+        media_type: 'audio/wav',
+        byte_length: 100,
+        sha256: 'a'.repeat(64),
+        sample_rate: 48_000,
+        channels: 2,
+      },
+    ],
   };
 }
 
@@ -408,6 +437,169 @@ describe('BackendConnection', () => {
       phase: 'attached',
       jobs: [{ revision: 3, state: 'running' }],
     });
+  });
+
+  it('stages full pages, catches incremental changes, and retains the cache offline', () => {
+    const { socket, snapshots, connection } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('library-node', true),
+      },
+    });
+    const firstRequest = JSON.parse(socket.sent.at(-1) ?? '{}');
+    expect(firstRequest.payload.t).toBe('library.list');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'library.page',
+        id: firstRequest.payload.id,
+        snapshot_revision: 2,
+        songs: [songFixture('a')],
+        tombstones: [],
+        next_cursor: 'signed-next',
+      },
+    });
+    expect(snapshots.at(-1)?.songs).toEqual([]);
+    const secondRequest = JSON.parse(socket.sent.at(-1) ?? '{}');
+    expect(secondRequest.payload).toMatchObject({
+      t: 'library.list',
+      cursor: 'signed-next',
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'library.page',
+        id: secondRequest.payload.id,
+        snapshot_revision: 2,
+        songs: [songFixture('b')],
+        tombstones: [],
+      },
+    });
+    expect(snapshots.at(-1)).toMatchObject({
+      libraryRevision: 2,
+      librarySyncing: true,
+      songs: [{ id: 'a' }, { id: 'b' }],
+    });
+    const syncRequest = JSON.parse(socket.sent.at(-1) ?? '{}');
+    expect(syncRequest.payload).toMatchObject({
+      t: 'library.sync',
+      since_revision: 2,
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'library.changes',
+        id: syncRequest.payload.id,
+        through_revision: 3,
+        changes: [
+          {
+            revision: 3,
+            song_id: 'b',
+            kind: 'upsert',
+            changed_at: '2026-08-08T00:00:01Z',
+            song: songFixture('b', 2),
+          },
+        ],
+        has_more: false,
+      },
+    });
+    expect(snapshots.at(-1)).toMatchObject({
+      libraryRevision: 3,
+      librarySyncing: false,
+      songs: [{ id: 'a' }, { id: 'b', revision: 2, favorite: true }],
+    });
+    connection.refreshLibrary();
+    const refreshRequest = JSON.parse(socket.sent.at(-1) ?? '{}');
+    expect(refreshRequest.payload).toMatchObject({
+      t: 'library.sync',
+      since_revision: 3,
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'library.changes',
+        id: refreshRequest.payload.id,
+        through_revision: 3,
+        changes: [],
+        has_more: false,
+      },
+    });
+    socket.receive({ v: 1, t: 'relay.presence', online: false });
+    expect(snapshots.at(-1)).toMatchObject({
+      phase: 'attached',
+      libraryRevision: 3,
+      songs: [{ id: 'a' }, { id: 'b' }],
+    });
+  });
+
+  it('returns the current song on an optimistic revision conflict', async () => {
+    const { socket, connection, snapshots } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+    const update = connection.patchSong('a', 1, { title: 'Mine' });
+    const request = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'error',
+        id: request.payload.id,
+        code: 'revision_conflict',
+        message: 'Changed elsewhere.',
+        retryable: false,
+        details: { kind: 'revision_conflict', current: songFixture('a', 2) },
+      },
+    });
+    await expect(update).rejects.toBeInstanceOf(SongRevisionConflict);
+    expect(snapshots.at(-1)?.songs[0]).toMatchObject({ id: 'a', revision: 2 });
   });
 
   it('surfaces an application protocol mismatch', () => {

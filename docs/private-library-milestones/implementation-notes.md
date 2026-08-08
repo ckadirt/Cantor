@@ -345,3 +345,121 @@ on 2026-08-08.
   READY with `0 active · 0 queued`; the phone restored all three job snapshots,
   including `Generation complete r33`. Startup repaired the real job's stale
   root manifest without regenerating or changing the WAV.
+
+---
+
+# Milestone 3 — Private Library
+
+## Status
+
+Implementation and the physical-phone A/B privacy and metadata-recovery gates
+completed on 2026-08-08.
+
+## Decisions
+
+- A valid M2 completion publishes the artifact row, terminal job state, song
+  header, and library change in one SQLite transaction. Song ID equals job ID;
+  startup backfill is deterministic and idempotent.
+- Library revisions belong to one authenticated principal. Song metadata has a
+  separate optimistic revision; job progress never advances the library log.
+- Full sync uses newest-first keyset pages under one captured revision. Cursors
+  are HMAC-SHA256 authenticated, stable across restarts, and bound to principal,
+  snapshot, and `include_trashed` mode.
+- Headers are small and cached automatically. Full request, lyrics, engine,
+  attempts, and component digests are owner-only and fetched on demand. Audio is
+  not transferred in M3.
+- Trash is logical and reversible. Patch, trash, and restore require the
+  expected metadata revision and return the current safe header on conflict.
+- `library.changed` is only a private hint. Full/incremental sync remains the
+  repair path after missed pushes, disconnects, and restarts.
+- The phone's local identity is `(node_public_key, song_id)`. It merges known
+  nodes newest-first and searches titles, summaries, tags, models, and node
+  labels locally while offline.
+
+## Implementation Log
+
+- Added migration 003 with `songs`, `library_changes`, owner-order indexes,
+  principal revisions, a mode-0600 cursor key, completed-job backfill, and
+  corrupt-completion tombstoning.
+- Added owner-scoped list/page/sync/detail/patch/trash/restore repositories,
+  stable signed cursors, full-sync-gap signaling, Unicode/control bounds, and
+  safe not-found behavior for foreign song IDs.
+- Added the v2 library/song wire messages, fixtures, generated TypeScript, safe
+  revision-conflict details, and exact JavaScript integer bounds for seeds.
+- Added authenticated session dispatch and principal-targeted library hints;
+  the relay remains a metadata-free carrier.
+- Added staged full sync and incremental replay in the app connection. Partial
+  pages are invisible, errors retain the old cache, and a pruned-history error
+  restarts a safe full replacement.
+- Added a serialized private-library cache, higher-revision reducers,
+  multi-node timeline, local search/views, pull-to-refresh, lazy private detail,
+  title/tag/favorite edits, and trash/restore with explicit remote/offline text.
+- Extended the manual protocol client with library, detail, safe-not-found, and
+  explicit-lyrics modes for physical privacy drills.
+
+## Deviations
+
+- The plan assumed an existing React Native SQLite abstraction, but the app has
+  none. M3 keeps one serialized AsyncStorage record per complete library set.
+  Pages stage in memory and only a final snapshot/incremental result replaces
+  the native record atomically; reconnect restarts an interrupted full sync and
+  never clears old rows. Adding an unproven native database binding during the
+  protocol/storage milestone was the less conservative choice. The tradeoff is
+  that large-library indexed queries and crash-resumable page staging remain a
+  future storage migration.
+- SQLite integers are signed 64-bit while the engine seed is unsigned 64-bit,
+  and JavaScript numbers are exact only through `2^53-1`. Seeds are stored as
+  decimal text on the node and remote requests reject values above
+  `9,007,199,254,740,991`; the wire never silently rounds one.
+- `job.create` has no display-title field, so the initial title is the same
+  bounded, control-free caption summary. Rename is available immediately.
+- Change-log gap detection and `full_sync_required` are implemented, but M3
+  retains all changes instead of pruning at an unmeasured count/age threshold.
+  This preserves correctness until real library growth justifies a policy.
+- The physical recovery drill removed only the private-library AsyncStorage key
+  by round-tripping the app's exact SQLite storage file while the app was
+  stopped; backend, job, outbox, keychain, and pairing records stayed intact. It
+  proved fresh local header reconstruction under the same cryptographic identity
+  without extracting or re-entering the user's secret phrase. Deterministic
+  phrase-to-key restoration remains covered by identity tests; handling the
+  user's phrase in an automated device script would have been less conservative.
+- The phone used its existing pairing through the local real relay over ADB
+  reverse because it still lacks DNS. The URI pairing sheet was not needed;
+  force-stop/relaunch and lazy private detail both authenticated with the
+  already-stored key. Hosted carrier behavior was exercised in M1.
+- End-to-end payload encryption is deliberately not moved forward from M6. M3
+  prevents one paired principal from reading another's library, but the relay
+  can still observe application payloads.
+
+## Verification
+
+- `cargo fmt --check` and clippy with warnings denied: passed.
+- `cargo test --workspace --no-fail-fast`: 106 tests passed (79 node, 27
+  protocol).
+- App TypeScript and ESLint: passed; ESLint reports only the pre-existing
+  inline-style warning in `src/onboarding/panels/kit.tsx`.
+- `npx jest --runInBand`: 153 tests passed across 13 suites.
+- Relay `npm run check` and Vitest: worker types, TypeScript, assets, catalogs,
+  backend manifests, and 6 tests passed.
+- `node --check node/scripts/protocol-client.mjs`, `git diff --check`, and
+  SQLite `PRAGMA quick_check`: passed.
+- Migration backfilled principal A's existing M2 song exactly once. On the
+  phone, favorite, trash, and restore advanced its song/library revisions
+  `1 -> 2 -> 3 -> 4`; clearing only the local library cache reconstructed the
+  same revision-4 header without downloading the 2,734,124-byte WAV.
+- Principal B used a separate temporary key and initially saw an empty library.
+  Getting A's exact UUID returned the same safe `not_found` as an unknown ID.
+  B then completed its own one-step, 15-second CPU job
+  `019fe1f0-2a67-70b1-ac59-235b253f4128`, publishing a 15.040-second,
+  2,887,724-byte WAV at B library revision 1. A's live phone still displayed
+  only A's song and received no B header/hint.
+- The node database contains exactly one song for each principal and ordered
+  change logs `A: upsert/upsert/trash/restore`, `B: upsert`. The service stayed
+  under its 6 GiB hard cap during B's real generation: 5,369,991,168-byte peak,
+  with swap capped at 536,870,912 bytes.
+- After a final node rebuild/restart, Android `6b1f6ba8629c` force-stop/relaunch
+  retained the same app key, restored A's remote-only header, rendered local
+  search/favorite/offline/trash views, and fetched the full request
+  (`[Instrumental]`, engine, attempt, four component digests) lazily from the
+  already-paired node. No generation or audio transfer occurred in this final
+  UI check.

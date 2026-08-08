@@ -6,8 +6,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cantor_proto::{
     ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails, MAX_CAPTION_BYTES, MAX_CFG,
     MAX_CLIENT_REQUEST_ID_BYTES, MAX_LYRICS_BYTES, MAX_MODEL_SELECTOR_BYTES, MAX_PAGE_LIMIT,
-    MAX_SONG_SECONDS, MAX_STEPS, MIN_CFG, MIN_SONG_SECONDS, MIN_STEPS, NodeInfo, NodeMessage,
-    PROTOCOL_VERSION,
+    MAX_SAFE_SEED, MAX_SONG_SECONDS, MAX_STEPS, MIN_CFG, MIN_SONG_SECONDS, MIN_STEPS, NodeInfo,
+    NodeMessage, PROTOCOL_VERSION,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
@@ -16,6 +16,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{NodeConfig, sanitize_petname};
 use crate::library::{Library, Submission, SubmitResult};
 use crate::pairing::PairOffer;
+use crate::songs::{ChangePageResult, MutationResult, PresenceMutation, SongPageResult};
 use crate::store::Store;
 
 const CHALLENGE_BYTES: usize = 32;
@@ -422,8 +423,191 @@ impl ClientSession {
                     )),
                 }
             }
+            ClientMessage::LibraryList {
+                v,
+                id,
+                limit,
+                cursor,
+                include_trashed,
+            } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "library"));
+                };
+                let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
+                if limit == 0 || limit > MAX_PAGE_LIMIT {
+                    return Ok(invalid_field(id, "limit"));
+                }
+                match library.list_songs(
+                    &context.principal_id,
+                    limit,
+                    cursor.as_deref(),
+                    include_trashed,
+                )? {
+                    SongPageResult::Page(page) => Ok(NodeMessage::LibraryPage {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        snapshot_revision: page.snapshot_revision,
+                        songs: page.songs,
+                        tombstones: Vec::new(),
+                        next_cursor: page.next_cursor,
+                    }),
+                    SongPageResult::InvalidCursor => Ok(invalid_field(id, "cursor")),
+                }
+            }
+            ClientMessage::LibrarySync {
+                v,
+                id,
+                since_revision,
+                limit,
+            } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "library"));
+                };
+                let limit = limit.unwrap_or(MAX_PAGE_LIMIT);
+                if limit == 0 || limit > MAX_PAGE_LIMIT {
+                    return Ok(invalid_field(id, "limit"));
+                }
+                match library.sync_songs(&context.principal_id, since_revision, limit)? {
+                    ChangePageResult::Page(page) => Ok(NodeMessage::LibraryChanges {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        through_revision: page.through_revision,
+                        changes: page.changes,
+                        has_more: page.has_more,
+                    }),
+                    ChangePageResult::FullSyncRequired { minimum_revision } => {
+                        Ok(NodeMessage::Error {
+                            v: PROTOCOL_VERSION,
+                            id: Some(id),
+                            code: ErrorCode::FullSyncRequired,
+                            message: "A fresh private-library snapshot is required.".into(),
+                            retryable: true,
+                            details: Some(ErrorDetails::FullSync { minimum_revision }),
+                        })
+                    }
+                    ChangePageResult::InvalidRevision => Ok(invalid_field(id, "since_revision")),
+                }
+            }
+            ClientMessage::SongGet { v, id, song_id } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "songs"));
+                };
+                match library.song_detail(&context.principal_id, &song_id)? {
+                    Some(detail) => Ok(NodeMessage::SongDetail {
+                        v: PROTOCOL_VERSION,
+                        id,
+                        detail,
+                    }),
+                    None => Ok(song_not_found(id)),
+                }
+            }
+            ClientMessage::SongPatch {
+                v,
+                id,
+                song_id,
+                expected_revision,
+                patch,
+            } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "songs"));
+                };
+                mutation_message(
+                    id,
+                    library.patch_song(
+                        &context.principal_id,
+                        &song_id,
+                        expected_revision,
+                        &patch,
+                    )?,
+                )
+            }
+            ClientMessage::SongTrash {
+                v,
+                id,
+                song_id,
+                expected_revision,
+            } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "songs"));
+                };
+                mutation_message(
+                    id,
+                    library.change_song_presence(
+                        &context.principal_id,
+                        &song_id,
+                        expected_revision,
+                        PresenceMutation::Trash,
+                    )?,
+                )
+            }
+            ClientMessage::SongRestore {
+                v,
+                id,
+                song_id,
+                expected_revision,
+            } => {
+                if v != PROTOCOL_VERSION {
+                    return Ok(NodeMessage::unsupported_version(Some(id)));
+                }
+                let Some(context) = self.authenticated() else {
+                    return Ok(unauthenticated(id, "songs"));
+                };
+                mutation_message(
+                    id,
+                    library.change_song_presence(
+                        &context.principal_id,
+                        &song_id,
+                        expected_revision,
+                        PresenceMutation::Restore,
+                    )?,
+                )
+            }
         }
     }
+}
+
+fn mutation_message(id: String, result: MutationResult) -> Result<NodeMessage> {
+    Ok(match result {
+        MutationResult::Updated(song) => NodeMessage::SongUpdated {
+            v: PROTOCOL_VERSION,
+            id,
+            song,
+        },
+        MutationResult::Conflict(current) => NodeMessage::Error {
+            v: PROTOCOL_VERSION,
+            id: Some(id),
+            code: ErrorCode::RevisionConflict,
+            message: "The song changed on another device.".into(),
+            retryable: false,
+            details: Some(ErrorDetails::RevisionConflict { current }),
+        },
+        MutationResult::NotFound => song_not_found(id),
+        MutationResult::InvalidPatch => invalid_field(id, "patch"),
+    })
+}
+
+fn song_not_found(id: String) -> NodeMessage {
+    NodeMessage::error(
+        Some(id),
+        ErrorCode::NotFound,
+        "That song was not found.",
+        false,
+    )
 }
 
 fn unauthenticated(id: String, resource: &str) -> NodeMessage {
@@ -493,6 +677,9 @@ fn invalid_submission(
     {
         return Some("cfg");
     }
+    if generation.seed.is_some_and(|seed| seed > MAX_SAFE_SEED) {
+        return Some("seed");
+    }
     None
 }
 
@@ -513,7 +700,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{ClientSession, StoredAuthentication};
+    use super::{ClientSession, StoredAuthentication, invalid_submission};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::library::Library;
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
@@ -575,6 +762,23 @@ mod tests {
                 0x0b, 0x7d, 0xed, 0x7e, 0xc2, 0xf7, 0xf5, 0xe1, 0xd3, 0x0b, 0xd9, 0xd5, 0x21, 0xf0,
                 0x15, 0x36, 0x37, 0x93,
             ]
+        );
+    }
+
+    #[test]
+    fn seed_is_bounded_to_jsons_exact_integer_range() {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let request = cantor_proto::GenerationRequest {
+            caption: "seed".into(),
+            lyrics: None,
+            duration: None,
+            steps: None,
+            cfg: None,
+            seed: Some(cantor_proto::MAX_SAFE_SEED + 1),
+        };
+        assert_eq!(
+            invalid_submission(&request_id, "acestep:test", &request),
+            Some("seed")
         );
     }
 

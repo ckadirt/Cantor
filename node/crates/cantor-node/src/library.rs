@@ -161,8 +161,9 @@ struct AcceptedModelOwned {
 }
 
 pub struct Library {
-    root: PathBuf,
-    connection: Connection,
+    pub(crate) root: PathBuf,
+    pub(crate) connection: Connection,
+    pub(crate) cursor_key: [u8; 32],
 }
 
 impl Library {
@@ -198,14 +199,21 @@ impl Library {
             "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(2,?1,?2)",
             params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
         )?;
+        crate::songs::migrate(&connection)?;
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
         if check != "ok" {
             bail!("library database quick_check failed");
         }
         fs::set_permissions(&database, fs::Permissions::from_mode(FILE_MODE))?;
-        let mut library = Self { root, connection };
+        let cursor_key = crate::songs::load_or_create_cursor_key(&root)?;
+        let mut library = Self {
+            root,
+            connection,
+            cursor_key,
+        };
         library.reconcile_startup()?;
         library.recover_interrupted_jobs()?;
+        library.backfill_completed_songs()?;
         Ok(library)
     }
 
@@ -494,7 +502,7 @@ impl Library {
         &mut self,
         work: &WorkItem,
         audio: &crate::generate::Audio,
-    ) -> Result<Option<(JobView, ArtifactRecord)>> {
+    ) -> Result<Option<(JobView, ArtifactRecord, cantor_proto::SongHeader, u64)>> {
         prepare_real_directory(&work.artifact_directory)?;
         let temporary = work
             .artifact_directory
@@ -548,9 +556,10 @@ impl Library {
             params![work.id],
             |row| job_from_row(row, 0),
         )?;
+        let (song, library_revision) = crate::songs::publish_song(&transaction, &work.id)?;
         transaction.commit()?;
         write_status(&work.artifact_directory, &job, work.attempt)?;
-        Ok(Some((job, record)))
+        Ok(Some((job, record, song, library_revision)))
     }
 
     pub fn finish_failure(
@@ -774,6 +783,7 @@ impl Library {
                      WHERE id=?1 AND state='finalizing'",
                     params![id, now_rfc3339()],
                 )?;
+                crate::songs::publish_song(&transaction, &id)?;
                 transaction.commit()?;
                 continue;
             }
@@ -811,12 +821,7 @@ impl Library {
                 if path.exists() {
                     self.quarantine(&path)?;
                 }
-                self.connection.execute(
-                    "UPDATE jobs SET state='failed',error_code='internal',
-                     error_message='The completed audio artifact is missing or corrupt.',
-                     revision=revision+1,updated_at=?2 WHERE id=?1 AND state='completed'",
-                    params![id, now_rfc3339()],
-                )?;
+                self.fail_corrupt_completed_song(&id)?;
             } else {
                 let record = self.connection.query_row(
                     "SELECT kind,relative_path,media_type,byte_length,sha256,
@@ -1378,8 +1383,11 @@ mod tests {
             planar: vec![0.0, 0.5, -0.5, 0.0],
             sample_rate: 1_000,
         };
-        let (completed, artifact) = library.complete(&work, &audio).unwrap().unwrap();
+        let (completed, artifact, song, library_revision) =
+            library.complete(&work, &audio).unwrap().unwrap();
         assert_eq!(completed.state, JobState::Completed);
+        assert_eq!(song.id, work.id);
+        assert_eq!(library_revision, 1);
         assert!(artifact.byte_length > 44);
         assert_eq!(artifact.channels, 2);
         let manifest: serde_json::Value = serde_json::from_slice(
@@ -1457,6 +1465,192 @@ mod tests {
         let (second, _) = reopened.claim_next().unwrap().unwrap();
         assert_eq!(second.id, first.id);
         assert_eq!(second.attempt, 2);
+    }
+
+    fn complete_next(library: &mut Library) -> (WorkItem, cantor_proto::SongHeader) {
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .record_progress(
+                &work,
+                GenerationStage::Decode,
+                1,
+                Some(1),
+                ProgressUnit::Tiles,
+            )
+            .unwrap();
+        library.begin_finalizing(&work).unwrap();
+        let (_, _, song, _) = library
+            .complete(
+                &work,
+                &crate::generate::Audio {
+                    planar: vec![0.0, 0.5, -0.5, 0.0],
+                    sample_rate: 1_000,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        (work, song)
+    }
+
+    #[test]
+    fn completed_jobs_publish_once_and_backfill_is_idempotent() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                &[1; 32],
+                &[2; 32],
+                &submission("Música nocturna"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (work, song) = complete_next(&mut library);
+        assert_eq!(song.id, work.id);
+        assert_eq!(song.title, "Música nocturna");
+        assert_eq!(song.revision, 1);
+        assert_eq!(library.library_revision(&[1; 32]).unwrap(), 1);
+        assert_eq!(
+            library
+                .song_detail(&[1; 32], &work.id)
+                .unwrap()
+                .unwrap()
+                .generation
+                .seed,
+            Some(7)
+        );
+        assert!(library.song_detail(&[3; 32], &work.id).unwrap().is_none());
+
+        library
+            .connection
+            .execute("DELETE FROM library_changes", [])
+            .unwrap();
+        library.connection.execute("DELETE FROM songs", []).unwrap();
+        library
+            .connection
+            .execute("UPDATE principals SET library_revision=0", [])
+            .unwrap();
+        drop(library);
+
+        let reopened = Library::open(temporary.path()).unwrap();
+        assert_eq!(reopened.library_revision(&[1; 32]).unwrap(), 1);
+        drop(reopened);
+        let reopened = Library::open(temporary.path()).unwrap();
+        assert_eq!(reopened.library_revision(&[1; 32]).unwrap(), 1);
+        assert!(reopened.song_detail(&[1; 32], &work.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn signed_pages_sync_mutations_and_privacy_converge() {
+        use crate::songs::{ChangePageResult, MutationResult, PresenceMutation, SongPageResult};
+        use cantor_proto::SongPatch;
+
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        for caption in ["first song", "second song"] {
+            library
+                .submit(&[1; 32], &[2; 32], &submission(caption), &variant(), 20, 0)
+                .unwrap();
+        }
+        let (first, _) = complete_next(&mut library);
+        complete_next(&mut library);
+
+        let first_page = match library.list_songs(&[1; 32], 1, None, false).unwrap() {
+            SongPageResult::Page(page) => page,
+            SongPageResult::InvalidCursor => panic!("fresh page cursor"),
+        };
+        assert_eq!(first_page.snapshot_revision, 2);
+        assert_eq!(first_page.songs.len(), 1);
+        let cursor = first_page.next_cursor.unwrap();
+        assert!(matches!(
+            library
+                .list_songs(&[3; 32], 1, Some(&cursor), false)
+                .unwrap(),
+            SongPageResult::InvalidCursor
+        ));
+        drop(library);
+        let mut library = Library::open(temporary.path()).unwrap();
+        assert!(matches!(
+            library
+                .list_songs(&[1; 32], 1, Some(&cursor), false)
+                .unwrap(),
+            SongPageResult::Page(_)
+        ));
+
+        let updated = match library
+            .patch_song(
+                &[1; 32],
+                &first.id,
+                1,
+                &SongPatch {
+                    title: Some("After Midnight".into()),
+                    favorite: Some(true),
+                    tags: Some(vec!["bolero".into(), "guitar".into()]),
+                },
+            )
+            .unwrap()
+        {
+            MutationResult::Updated(song) => song,
+            _ => panic!("owner patch failed"),
+        };
+        assert_eq!(updated.revision, 2);
+        assert_eq!(updated.title, "After Midnight");
+        assert!(matches!(
+            library
+                .patch_song(
+                    &[3; 32],
+                    &first.id,
+                    2,
+                    &SongPatch {
+                        title: Some("stolen".into()),
+                        favorite: None,
+                        tags: None,
+                    }
+                )
+                .unwrap(),
+            MutationResult::NotFound
+        ));
+        assert!(matches!(
+            library
+                .patch_song(
+                    &[1; 32],
+                    &first.id,
+                    1,
+                    &SongPatch {
+                        title: Some("stale".into()),
+                        favorite: None,
+                        tags: None,
+                    }
+                )
+                .unwrap(),
+            MutationResult::Conflict(_)
+        ));
+        let trashed = match library
+            .change_song_presence(&[1; 32], &first.id, 2, PresenceMutation::Trash)
+            .unwrap()
+        {
+            MutationResult::Updated(song) => song,
+            _ => panic!("trash failed"),
+        };
+        assert!(trashed.trashed);
+        let ordinary = match library.list_songs(&[1; 32], 10, None, false).unwrap() {
+            SongPageResult::Page(page) => page,
+            SongPageResult::InvalidCursor => panic!("fresh list"),
+        };
+        assert!(!ordinary.songs.iter().any(|song| song.id == first.id));
+        let changes = match library.sync_songs(&[1; 32], 0, 10).unwrap() {
+            ChangePageResult::Page(page) => page,
+            _ => panic!("sync failed"),
+        };
+        assert_eq!(changes.through_revision, 4);
+        assert_eq!(changes.changes.len(), 4);
+        assert!(
+            changes
+                .changes
+                .windows(2)
+                .all(|pair| pair[0].revision < pair[1].revision)
+        );
     }
 
     #[test]
