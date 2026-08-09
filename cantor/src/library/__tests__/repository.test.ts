@@ -29,6 +29,7 @@ function song(id: string, revision: number, trashed = false): SongHeader {
     artifacts: [
       {
         kind: 'master',
+        profile: 'pcm16-wav-v1',
         media_type: 'audio/wav',
         byte_length: 100,
         sha256: 'a'.repeat(64),
@@ -81,5 +82,32 @@ describe('private library cache', () => {
     const stored = JSON.parse(storage.setItem.mock.calls[1][1]);
     expect(stored['node-a'].songs[0].revision).toBe(1);
     expect(stored['node-b'].songs[0].revision).toBe(7);
+  });
+
+  it('drops only an invalid recreatable node cache during an upgrade', async () => {
+    storage.getItem.mockResolvedValue(
+      JSON.stringify({
+        'node-old': {
+          revision: 3,
+          lastSyncedAt: '2026-08-08T00:00:00Z',
+          songs: [{ id: 'pre-library-schema' }],
+        },
+        'node-good': {
+          revision: 4,
+          lastSyncedAt: '2026-08-09T00:00:00Z',
+          songs: [song('a', 1)],
+        },
+      }),
+    );
+
+    await expect(loadLibrary('node-old')).resolves.toEqual({
+      revision: null,
+      songs: [],
+      lastSyncedAt: null,
+    });
+    await expect(loadLibrary('node-good')).resolves.toMatchObject({
+      revision: 4,
+      songs: [song('a', 1)],
+    });
   });
 });

@@ -6,6 +6,7 @@ export type SearchableLibraryRow = {
   song: SongHeader;
   nodeLabels: string[];
   ready: boolean;
+  availableOffline: boolean;
 };
 
 export function filterLibraryRows<T extends SearchableLibraryRow>(
@@ -21,7 +22,7 @@ export function filterLibraryRows<T extends SearchableLibraryRow>(
       return false;
     }
     if (filter === 'favorite' && !row.song.favorite) return false;
-    if (filter === 'offline' && row.ready) return false;
+    if (filter === 'offline' && !row.availableOffline) return false;
     if (needle.length === 0) return true;
     return [
       row.song.title,

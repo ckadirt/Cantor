@@ -120,6 +120,7 @@ impl WorkItem {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ArtifactRecord {
     pub kind: String,
+    pub profile: String,
     pub relative_path: String,
     pub media_type: String,
     pub byte_length: u64,
@@ -252,6 +253,16 @@ impl Library {
         )?;
         connection.execute(
             "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(4,?1,?2)",
+            params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
+        )?;
+        add_column_if_missing(
+            &connection,
+            "artifacts",
+            "profile",
+            "TEXT NOT NULL DEFAULT 'pcm16-wav-v1'",
+        )?;
+        connection.execute(
+            "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(5,?1,?2)",
             params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
         )?;
         let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
@@ -873,6 +884,7 @@ impl Library {
         let now = now_rfc3339();
         let record = ArtifactRecord {
             kind: "master".into(),
+            profile: "pcm16-wav-v1".into(),
             relative_path: "artifacts/master.wav".into(),
             media_type: "audio/wav".into(),
             byte_length: inspected.byte_length,
@@ -1157,6 +1169,7 @@ impl Library {
                 };
                 let record = ArtifactRecord {
                     kind: "master".into(),
+                    profile: "pcm16-wav-v1".into(),
                     relative_path: "artifacts/master.wav".into(),
                     media_type: "audio/wav".into(),
                     byte_length: inspected.byte_length,
@@ -1258,32 +1271,7 @@ impl Library {
                 }
                 self.fail_corrupt_completed_song(&id)?;
             } else {
-                let record = self.connection.query_row(
-                    "SELECT kind,relative_path,media_type,byte_length,sha256,
-                     sample_rate,channels,duration_ms,created_at
-                     FROM artifacts WHERE job_id=?1 AND kind='master'",
-                    params![id],
-                    |row| {
-                        Ok(ArtifactRecord {
-                            kind: row.get(0)?,
-                            relative_path: row.get(1)?,
-                            media_type: row.get(2)?,
-                            byte_length: row.get(3)?,
-                            sha256: row.get(4)?,
-                            sample_rate: row.get(5)?,
-                            channels: row.get(6)?,
-                            duration_ms: row.get(7)?,
-                            created_at: row.get(8)?,
-                        })
-                    },
-                )?;
-                let artifacts = self
-                    .root
-                    .join("jobs")
-                    .join(&principal)
-                    .join(&id)
-                    .join("artifacts");
-                write_artifact_manifest(&artifacts, &id, &record)?;
+                self.write_indexed_artifact_manifest(&id)?;
             }
         }
         Ok(())
@@ -1520,18 +1508,19 @@ fn write_status(artifact_directory: &Path, job: &JobView, attempt: u32) -> Resul
     )
 }
 
-fn insert_artifact(
+pub(crate) fn insert_artifact(
     transaction: &rusqlite::Transaction<'_>,
     job_id: &str,
     record: &ArtifactRecord,
 ) -> Result<()> {
     transaction.execute(
-        "INSERT OR REPLACE INTO artifacts(job_id,kind,relative_path,media_type,
+        "INSERT OR REPLACE INTO artifacts(job_id,kind,profile,relative_path,media_type,
          byte_length,sha256,sample_rate,channels,duration_ms,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
         params![
             job_id,
             record.kind,
+            record.profile,
             record.relative_path,
             record.media_type,
             record.byte_length,
@@ -1669,11 +1658,11 @@ fn write_artifact_manifest(
         .context("artifact directory has no job directory")?;
     write_json_atomic(
         &job_directory.join("manifest.json"),
-        &serde_json::json!({"schema":2,"job_id":job_id,"artifacts":[record]}),
+        &serde_json::json!({"schema":3,"job_id":job_id,"artifacts":[record]}),
     )
 }
 
-fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
+pub(crate) fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path.parent().context("sidecar path has no parent")?;
     let mut temporary = tempfile::Builder::new()
         .prefix(".sidecar.")
@@ -1906,7 +1895,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(manifest["schema"], 2);
+        assert_eq!(manifest["schema"], 3);
         assert_eq!(manifest["job_id"], work.id);
         assert_eq!(manifest["artifacts"][0]["sha256"], artifact.sha256);
         assert_eq!(
@@ -2433,7 +2422,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(manifest["schema"], 2);
+        assert_eq!(manifest["schema"], 3);
         assert_eq!(manifest["job_id"], work.id);
         assert_eq!(
             manifest["artifacts"][0]["relative_path"],

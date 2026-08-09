@@ -29,6 +29,7 @@ pub const MAX_PAGE_LIMIT: u32 = 100;
 pub const MAX_TITLE_BYTES: usize = 160;
 pub const MAX_TAG_BYTES: usize = 64;
 pub const MAX_TAGS: usize = 16;
+pub const ARTIFACT_CHUNK_BYTES: u32 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]
@@ -184,12 +185,18 @@ pub struct GenerationRequest {
 #[ts(export)]
 pub struct ArtifactView {
     pub kind: String,
+    #[serde(default = "default_artifact_profile")]
+    pub profile: String,
     pub media_type: String,
     #[ts(type = "number")]
     pub byte_length: u64,
     pub sha256: String,
     pub sample_rate: u32,
     pub channels: u16,
+}
+
+fn default_artifact_profile() -> String {
+    "pcm16-wav-v1".to_owned()
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -279,6 +286,10 @@ pub enum ErrorCode {
     FullSyncRequired,
     InvalidTransition,
     CheckpointUnavailable,
+    ArtifactUnavailable,
+    ArtifactChanged,
+    InvalidOffset,
+    TransferExpired,
     Internal,
 }
 
@@ -457,6 +468,28 @@ pub enum ClientMessage {
         song_id: String,
         expected_revision: u32,
     },
+    #[serde(rename = "artifact.open")]
+    #[ts(rename = "artifact.open")]
+    ArtifactOpen {
+        v: u8,
+        id: String,
+        song_id: String,
+        profile: String,
+        #[ts(type = "number")]
+        offset: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        expected_sha256: Option<String>,
+    },
+    #[serde(rename = "artifact.ack")]
+    #[ts(rename = "artifact.ack")]
+    ArtifactAck {
+        v: u8,
+        id: String,
+        transfer_id: String,
+        #[ts(type = "number")]
+        next_offset: u64,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -529,6 +562,39 @@ pub enum NodeMessage {
     #[serde(rename = "song.updated")]
     #[ts(rename = "song.updated")]
     SongUpdated { v: u8, id: String, song: SongHeader },
+    #[serde(rename = "artifact.info")]
+    #[ts(rename = "artifact.info")]
+    ArtifactInfo {
+        v: u8,
+        id: String,
+        transfer_id: String,
+        song_id: String,
+        artifact: ArtifactView,
+        #[ts(type = "number")]
+        accepted_offset: u64,
+        chunk_bytes: u32,
+        window_chunks: u8,
+    },
+    #[serde(rename = "artifact.chunk")]
+    #[ts(rename = "artifact.chunk")]
+    ArtifactChunk {
+        v: u8,
+        id: String,
+        transfer_id: String,
+        #[ts(type = "number")]
+        offset: u64,
+        data: String,
+    },
+    #[serde(rename = "artifact.complete")]
+    #[ts(rename = "artifact.complete")]
+    ArtifactComplete {
+        v: u8,
+        id: String,
+        transfer_id: String,
+        #[ts(type = "number")]
+        byte_length: u64,
+        sha256: String,
+    },
     #[serde(rename = "library.changed")]
     #[ts(rename = "library.changed")]
     LibraryChanged {

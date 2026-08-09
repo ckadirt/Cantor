@@ -1,2 +1,6 @@
 [env]
 TS_RS_EXPORT_DIR = { value = "../protocol", relative = true }
+# audiopus_sys vendors libopus whose CMake floor predates CMake 4's policy
+# cleanup. Pinning this compatibility floor keeps the bundled static build
+# reproducible without depending on a host libopus development package.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"

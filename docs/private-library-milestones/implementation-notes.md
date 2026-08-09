@@ -585,3 +585,108 @@ Implementation and the physical-phone pause/restart/resume gate completed on
   a second job, saved a plan checkpoint in 1.5 seconds, and left the daemon
   active. Logs showed a nonzero reused resident context and no second backend/
   model load; the temporary probe was cancelled.
+
+# Milestone 5 — Audio & Offline
+
+## Status
+
+Implementation and the physical Android download/resume/offline/pin gate
+completed on 2026-08-09.
+
+## Decisions
+
+- PCM16 WAV remains the canonical `pcm16-wav-v1` master. A separate
+  `opus-stereo-160k-v1` delivery artifact is Ogg Opus, 48 kHz stereo, music VBR
+  at 160 kbit/s. Changing settings requires a new profile.
+- The node statically embeds libopus and never invokes ambient `ffmpeg` in the
+  production encoder path. One low-priority derivative worker publishes only
+  after temp-file fsync, validation, SHA-256, atomic rename, and database commit.
+- Transfer uses authenticated `artifact.open`/`artifact.ack` requests and
+  `artifact.info`/`artifact.chunk`/`artifact.complete` responses. Chunks are at
+  most 64 KiB and one session owns at most one ten-minute transfer.
+- Resume authority is the native partial file's actual length. The app only
+  acknowledges an offset after the native module appended and fsynced it.
+- A complete phone file is promoted only after exact length and streamed SHA-256
+  verification. A partial file is never handed to the player.
+- Cached audio lives under Android cache storage. Pinned audio lives under the
+  no-backup application directory, outside LRU eviction. Native code derives
+  every path from validated node/song/digest identity; JavaScript supplies no
+  path.
+- The default phone cache budget is 256 MiB. Oldest-accessed verified files are
+  evicted first; pinned and currently playing files cannot be selected.
+- `MediaPlayer` provides foreground local-file playback. M5 makes no background
+  playback or true streaming claim.
+- The node remains canonical for songs/artifacts. Cached, partial and pinned are
+  phone-local states and never become node metadata.
+
+## Implementation Log
+
+- Added migration 005 and profile-aware artifact records/manifests. Existing v2
+  master rows deserialize conservatively as `pcm16-wav-v1`; new manifests are
+  schema 3 and carry master plus delivery metadata.
+- Added a bounded derivative worker with existing-song backfill, restart retry,
+  a static libopus encoder and an Ogg packet writer. Encoding failure leaves the
+  canonical master/song valid.
+- Added owner/session/digest/length/path-bound transfer state, stop-and-wait
+  backpressure, durable acknowledged offsets, exact last-chunk replay, expiry,
+  detach cleanup, and stable safe errors.
+- Added an Android native audio repository for sequential append/fsync, streamed
+  final hashing, atomic promotion, pin/unpin, LRU eviction and local playback.
+- Added a serialized advisory AsyncStorage index; the native filesystem remains
+  authority after crashes, cache eviction or stale JavaScript state.
+- Added app download/resume/play/pin/remove actions and explicit audio preparing,
+  remote, partial, downloading, cached and pinned states. The Offline filter now
+  means verified local availability, not merely a disconnected backend.
+
+## Deviations
+
+- The plan proposed an initial four-chunk window. The existing relay request/
+  response state machine naturally supports one response per request, so M5
+  uses window 1. This is slower but makes “acknowledged” exactly mean fsynced;
+  the protocol fields permit a future measured window increase.
+- Only Android is a current repository/device target. Ogg Opus and lifecycle
+  behavior were not tested on Apple hardware, so iOS support is explicitly not
+  advertised.
+- Foreground Android `MediaPlayer` is the smallest native complete-file player
+  spike. Media3, audio focus services, lock-screen controls and background
+  playback are deferred rather than implied.
+- The app has no SQLite dependency. AsyncStorage is therefore an advisory index;
+  native file inspection is the recovery authority. This avoids introducing a
+  second database solely to mirror filesystem truth.
+- The configured Android NDK directory `27.1.12297006` was incomplete and had no
+  `source.properties`. The build uses the already-installed, React Native
+  documented r27b package `27.0.12077973` instead.
+- Existing canonical masters were used for codec/backfill/device iteration. No
+  generation was started, avoiding unnecessary model memory while testing the
+  independent delivery path.
+- M5 traffic is still visible to the relay as JSON/base64. No confidentiality
+  claim is made before the independently gated M6 secure channel.
+- A physical upgrade exposed one pre-current-schema AsyncStorage song header
+  that made the strict cache parser reject every node cache. Song headers are
+  recreatable from the authenticated node, so recovery now drops only malformed
+  per-node cache entries, preserves valid sibling entries, and immediately
+  repopulates the affected node. Native verified audio files are untouched.
+
+## Verification
+
+- `cargo test --workspace`: 120 Rust tests passed (93 node, 27 protocol),
+  including real Ogg packet parsing and owner-scoped offset resume/expiry/error
+  cases. Release compilation with statically embedded libopus passed.
+- App TypeScript passed; 156 Jest tests in 13 suites passed. The transfer test
+  proves acknowledgement advances only after the sink append resolves. ESLint
+  reports only the existing inline-style warning in onboarding `kit.tsx`.
+- Startup backfilled five delivery artifacts without changing their masters.
+  `ffprobe` independently identified 48 kHz stereo Opus; a 2,764,844-byte,
+  14.4-second master became a 290,850-byte delivery file. SQLite `quick_check`
+  passed, schema-3 manifests contain both artifacts, and files are mode 0600.
+- Physical Android `6b1f6ba8629c` recovered one stale header cache from its
+  paired node, downloaded song `019fe22a-e7d0-74f3-83d2-6800e0c992c7`, and
+  rendered the native local states. A forced 65,536-byte partial reopened as
+  `PARTIAL · 64.0 KiB`; resume promoted a 290,474-byte Opus file and removed the
+  partial. Device `sha256sum` matched
+  `000e7a10b45d30bd3d728b342dc4b421eec1f85354e63f98183585ba2f79444e`.
+- With the phone's relay reverse route removed, the cached header and `PLAY`
+  remained available. Android AudioFlinger showed an active track owned by the
+  Cantor PID at 48 kHz, two channels, with zero underruns. Pin moved the file to
+  `no_backup/cantor-audio/pinned`; it retained the same digest after app restart
+  and `pm trim-caches`, while the node stayed idle and no generation ran.

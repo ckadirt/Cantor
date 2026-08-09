@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Cantor M5 — Audio &amp; Offline</title>
+  <style>
+    :root { --bg:#090d10; --card:#111920; --ink:#edf5f3; --muted:#aab9b6; --line:#293b3d; --mint:#72ead2; --ok:#91e99c; --bad:#ff9aac; font-family:Inter,system-ui,sans-serif }
+    * { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--ink); line-height:1.48 }
+    main { width:min(780px,100%); margin:auto; padding:42px 20px 70px }
+    h1 { margin:4px 0 14px; font-size:clamp(2.4rem,8vw,4.2rem); line-height:.98; letter-spacing:-.045em }
+    h2 { margin:0 0 12px; font-size:1.45rem } p { margin:0 0 11px }
+    section { padding:25px 0; border-bottom:1px solid var(--line) } code { color:#cafff5 }
+    .kicker { color:var(--mint); font:700 .75rem ui-monospace,monospace; letter-spacing:.13em }
+    .lead { color:#cad7d4; font-size:1.08rem }
+    .flow { display:grid; grid-template-columns:repeat(4,1fr); gap:8px }
+    .flow div,.box,fieldset { padding:13px; background:var(--card); border:1px solid var(--line); border-radius:8px }
+    .flow b { display:block; color:var(--mint) } .flow span,.muted { color:var(--muted) }
+    .rule { display:grid; grid-template-columns:10rem 1fr; gap:12px; padding:10px 0; border-top:1px solid var(--line) }
+    .rule b { color:var(--mint) }
+    .code { display:block; margin:7px 0; padding:10px 12px; color:var(--mint); background:var(--card); border:1px solid var(--line); text-decoration:none; font:650 .82rem ui-monospace,monospace }
+    .proof { display:grid; grid-template-columns:repeat(2,1fr); gap:8px }
+    .proof strong { display:block; color:var(--ok); font-size:1.25rem }
+    .warn { border-left:4px solid #e4bd64 } fieldset { margin:10px 0 }
+    legend { color:var(--mint); font-weight:750 } label { display:block; padding:4px }
+    button { margin-top:8px; padding:11px 17px; border:0; border-radius:7px; background:var(--mint); color:#07110f; font-weight:850 }
+    #result { margin-top:12px; font-weight:750 } .pass { color:var(--ok) } .fail { color:var(--bad) }
+    @media (max-width:620px) { .flow { grid-template-columns:1fr 1fr } .rule { grid-template-columns:1fr } }
+  </style>
+</head>
+<body><main>
+  <p class="kicker">CANTOR · PRIVATE LIBRARY · MILESTONE 5</p>
+  <h1>Keep the master.<br>Carry the song.</h1>
+  <p class="lead">M5 turns finished node audio into a small, verified phone copy. A download can survive interruption; only the exact complete bytes can play offline.</p>
+
+  <section>
+    <h2>The mental model</h2>
+    <div class="flow">
+      <div><b>Derive</b><span>WAV stays canonical; Opus is replaceable.</span></div>
+      <div><b>Resume</b><span>Phone opens at its real partial length.</span></div>
+      <div><b>Verify</b><span>Length + SHA-256 gate promotion.</span></div>
+      <div><b>Own locally</b><span>Cache may evict; pin may not.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What changed</h2>
+    <div class="rule"><b>Two artifacts</b><span><code>master.wav</code> is PCM truth. <code>delivery.opus</code> is 48 kHz stereo Ogg Opus at 160 kbit/s.</span></div>
+    <div class="rule"><b>Safe publishing</b><span>Static libopus writes a temp file, fsyncs, verifies, renames, then publishes metadata.</span></div>
+    <div class="rule"><b>Durable transfer</b><span>One 64 KiB chunk is outstanding. The phone acks only after native append + fsync.</span></div>
+    <div class="rule"><b>Hard integrity</b><span>Wrong offset, owner, digest, length, expiry or SHA-256 fails closed. Partials never play.</span></div>
+    <div class="rule"><b>Offline policy</b><span>Cache is 256 MiB LRU. Pinned audio moves outside cache and cannot be evicted.</span></div>
+  </section>
+
+  <section>
+    <h2>Read the implementation</h2>
+    <a class="code" href="../../node/crates/cantor-node/src/delivery.rs#L240">delivery.rs:240 — bounded derivative worker</a>
+    <a class="code" href="../../node/crates/cantor-node/src/delivery.rs#L302">delivery.rs:302 — static Opus/Ogg encoder</a>
+    <a class="code" href="../../node/crates/cantor-node/src/session.rs#L656">session.rs:656 — owner-bound transfer open/ack</a>
+    <a class="code" href="../../cantor/src/backends/connection.ts#L827">connection.ts:827 — resume and ack-after-fsync loop</a>
+    <a class="code" href="../../cantor/android/app/src/main/java/com/cantor/app/audio/CantorAudioModule.kt#L52">CantorAudioModule.kt:52 — native append/finalize/pin/play</a>
+    <a class="code" href="../../cantor/src/screens/MainScreen.tsx#L380">MainScreen.tsx:380 — phone-local audio state/actions</a>
+  </section>
+
+  <section>
+    <h2>Why stop-and-wait?</h2>
+    <div class="box warn"><p>The plan suggested four chunks in flight. M5 starts with one because every acknowledged byte is then unambiguously durable on disk. It costs round trips, but survives an app kill without pretending buffered bytes are saved.</p></div>
+  </section>
+
+  <section>
+    <h2>Measured result</h2>
+    <div class="proof">
+      <div class="box"><strong>2,764,844 B</strong><span class="muted">canonical 14.4 s WAV</span></div>
+      <div class="box"><strong>290,850 B</strong><span class="muted">verified Opus delivery</span></div>
+      <div class="box"><strong>120</strong><span class="muted">Rust tests passed</span></div>
+      <div class="box"><strong>157</strong><span class="muted">app tests passed</span></div>
+    </div>
+    <p class="muted" style="margin-top:10px">Physical phone: 64 KiB partial resumed to 290,474 verified bytes; offline playback opened a 48 kHz stereo track; pinned bytes survived restart and cache trimming.</p>
+  </section>
+
+  <section>
+    <h2>Deliberately not claimed</h2>
+    <p>This is download-then-play, not streaming. Playback is foreground Android only. M5 traffic is still JSON/base64 visible to the relay; M6 owns end-to-end confidentiality.</p>
+  </section>
+
+  <section id="quiz">
+    <p class="kicker">CHECK YOUR UNDERSTANDING · PASS = 4/5</p>
+    <h2>M5 quiz</h2>
+    <form id="q">
+      <fieldset><legend>1. Which artifact is canonical?</legend>
+        <label><input type="radio" name="q1" value="a"> Phone Opus</label><label><input type="radio" name="q1" value="b"> Node WAV master</label><label><input type="radio" name="q1" value="c"> Partial download</label>
+      </fieldset>
+      <fieldset><legend>2. When does the phone acknowledge a chunk?</legend>
+        <label><input type="radio" name="q2" value="a"> After JS receives it</label><label><input type="radio" name="q2" value="b"> After native append and fsync</label><label><input type="radio" name="q2" value="c"> Before transfer starts</label>
+      </fieldset>
+      <fieldset><legend>3. What makes a partial playable?</legend>
+        <label><input type="radio" name="q3" value="a"> A matching filename</label><label><input type="radio" name="q3" value="b"> Being pinned</label><label><input type="radio" name="q3" value="c"> Nothing; only verified complete files play</label>
+      </fieldset>
+      <fieldset><legend>4. What may LRU eviction remove?</legend>
+        <label><input type="radio" name="q4" value="a"> Old unpinned cache files</label><label><input type="radio" name="q4" value="b"> Pinned files</label><label><input type="radio" name="q4" value="c"> The node master</label>
+      </fieldset>
+      <fieldset><legend>5. Can the relay read M5 audio chunks?</legend>
+        <label><input type="radio" name="q5" value="a"> No, M5 encrypts them</label><label><input type="radio" name="q5" value="b"> Yes; M6 must add E2E encryption</label><label><input type="radio" name="q5" value="c"> Only when pinned</label>
+      </fieldset>
+      <button type="submit">Grade quiz</button><p id="result" aria-live="polite"></p>
+    </form>
+  </section>
+</main>
+<script>
+document.getElementById('q').addEventListener('submit', event => {
+  event.preventDefault(); const answers={q1:'b',q2:'b',q3:'c',q4:'a',q5:'b'}; let score=0;
+  const data=new FormData(event.currentTarget); for(const [name,answer] of Object.entries(answers)) if(data.get(name)===answer) score++;
+  const result=document.getElementById('result'); result.className=score>=4?'pass':'fail';
+  result.textContent=score>=4?`${score}/5 — Passed.`:`${score}/5 — Review the rules above and retry.`;
+});
+</script></body></html>

@@ -22,6 +22,7 @@ const row = (
   song: song(),
   nodeLabels: ['studio-node'],
   ready: true,
+  availableOffline: false,
   ...overrides,
 });
 
@@ -36,7 +37,11 @@ test('searches title, caption, tags, model, and node locally', () => {
 test('separates active, favorite, offline, and trash views', () => {
   const active = row();
   const favorite = row({ song: song({ id: 'favorite', favorite: true }) });
-  const offline = row({ song: song({ id: 'offline' }), ready: false });
+  const offline = row({
+    song: song({ id: 'offline' }),
+    ready: false,
+    availableOffline: true,
+  });
   const trashed = row({ song: song({ id: 'trash', trashed: true }) });
   const rows = [active, favorite, offline, trashed];
 

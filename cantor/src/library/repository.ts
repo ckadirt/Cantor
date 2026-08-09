@@ -113,11 +113,10 @@ async function loadAll(): Promise<StoredLibraries> {
       (candidate.revision as number) < 0 ||
       typeof candidate.lastSyncedAt !== 'string'
     ) {
-      throw new Error('Saved private libraries are invalid.');
+      continue;
     }
     const songs = parseSongs(candidate.songs);
-    if (songs === null)
-      throw new Error('Saved private library songs are invalid.');
+    if (songs === null) continue;
     result[node] = {
       revision: candidate.revision as number,
       songs: mergeSongHeaders([], songs),
