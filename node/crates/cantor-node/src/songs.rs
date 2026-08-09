@@ -187,6 +187,33 @@ pub fn publish_song(transaction: &Transaction<'_>, id: &str) -> Result<(SongHead
     Ok((song, revision))
 }
 
+/// Makes a newly indexed delivery artifact visible through the owner's normal
+/// revision stream. Artifact bytes stay out of change notifications; clients
+/// learn only that the song header should be refreshed.
+pub fn publish_delivery(transaction: &Transaction<'_>, id: &str) -> Result<(String, u64)> {
+    let principal: String = transaction.query_row(
+        "SELECT principal_id FROM songs WHERE id=?1 AND trashed_at IS NULL",
+        params![id],
+        |row| row.get(0),
+    )?;
+    let revision = allocate_revision(transaction, &principal)?;
+    let changed = transaction.execute(
+        "UPDATE songs SET metadata_revision=metadata_revision+1,changed_revision=?2 WHERE id=?1",
+        params![id, revision],
+    )?;
+    if changed != 1 {
+        bail!("delivery song disappeared before publication");
+    }
+    append_change(
+        transaction,
+        &principal,
+        revision,
+        id,
+        LibraryChangeKind::Upsert,
+    )?;
+    Ok((principal, revision))
+}
+
 impl Library {
     pub fn backfill_completed_songs(&mut self) -> Result<()> {
         let mut statement = self.connection.prepare(
@@ -642,12 +669,11 @@ fn header_by_id(
     principal: Option<&str>,
     id: &str,
 ) -> Result<Option<(SongHeader, String)>> {
-    connection
+    let header = connection
         .query_row(
             "SELECT s.id,s.metadata_revision,s.title,s.caption_summary,s.created_at,
              s.duration_ms,s.model_selector,s.seed,s.favorite,s.tags_json,
-             s.trashed_at,s.principal_id,
-             a.kind,a.media_type,a.byte_length,a.sha256,a.sample_rate,a.channels
+             s.trashed_at,s.principal_id
              FROM songs s JOIN artifacts a ON a.job_id=s.id AND a.kind='master'
              WHERE s.id=?1 AND (?2 IS NULL OR s.principal_id=?2)",
             params![id, principal],
@@ -686,40 +712,60 @@ fn header_by_id(
                         favorite: row.get(8)?,
                         tags,
                         trashed: row.get::<_, Option<String>>(10)?.is_some(),
-                        artifacts: vec![ArtifactView {
-                            kind: row.get(12)?,
-                            media_type: row.get(13)?,
-                            byte_length: row.get(14)?,
-                            sha256: row.get(15)?,
-                            sample_rate: row.get(16)?,
-                            channels: row.get(17)?,
-                        }],
+                        artifacts: Vec::new(),
                     },
                     row.get(11)?,
                 ))
             },
         )
-        .optional()
+        .optional()?;
+    let Some((mut song, owner)) = header else {
+        return Ok(None);
+    };
+    song.artifacts = artifact_views(connection, id)?;
+    Ok(Some((song, owner)))
+}
+
+fn artifact_views(connection: &Connection, id: &str) -> Result<Vec<ArtifactView>> {
+    let mut statement = connection.prepare(
+        "SELECT kind,profile,media_type,byte_length,sha256,sample_rate,channels
+         FROM artifacts WHERE job_id=?1
+         ORDER BY CASE kind WHEN 'delivery' THEN 0 ELSE 1 END,kind ASC",
+    )?;
+    statement
+        .query_map(params![id], |row| {
+            Ok(ArtifactView {
+                kind: row.get(0)?,
+                profile: row.get(1)?,
+                media_type: row.get(2)?,
+                byte_length: row.get(3)?,
+                sha256: row.get(4)?,
+                sample_rate: row.get(5)?,
+                channels: row.get(6)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(Into::into)
 }
 
 fn artifact_record(connection: &Connection, id: &str) -> Result<ArtifactRecord> {
     connection
         .query_row(
-            "SELECT kind,relative_path,media_type,byte_length,sha256,sample_rate,
+            "SELECT kind,profile,relative_path,media_type,byte_length,sha256,sample_rate,
              channels,duration_ms,created_at FROM artifacts WHERE job_id=?1 AND kind='master'",
             params![id],
             |row| {
                 Ok(ArtifactRecord {
                     kind: row.get(0)?,
-                    relative_path: row.get(1)?,
-                    media_type: row.get(2)?,
-                    byte_length: row.get(3)?,
-                    sha256: row.get(4)?,
-                    sample_rate: row.get(5)?,
-                    channels: row.get(6)?,
-                    duration_ms: row.get(7)?,
-                    created_at: row.get(8)?,
+                    profile: row.get(1)?,
+                    relative_path: row.get(2)?,
+                    media_type: row.get(3)?,
+                    byte_length: row.get(4)?,
+                    sha256: row.get(5)?,
+                    sample_rate: row.get(6)?,
+                    channels: row.get(7)?,
+                    duration_ms: row.get(8)?,
+                    created_at: row.get(9)?,
                 })
             },
         )

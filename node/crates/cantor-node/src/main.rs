@@ -4,6 +4,7 @@ mod catalog;
 mod checkpoints;
 mod config;
 mod control;
+mod delivery;
 mod engine;
 mod generate;
 mod identity;
@@ -283,12 +284,14 @@ async fn run(cli: Cli) -> Result<()> {
         connected: false,
         library,
         job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+        delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
         active_job: None,
         shutting_down: false,
     });
     let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<ControlEvent>(128);
     tokio::spawn(control::serve(listener, state.clone(), events_tx.clone()));
     tokio::spawn(jobs::run(state.clone(), events_tx.clone()));
+    tokio::spawn(delivery::run(state.clone(), events_tx.clone()));
 
     let result = relay::run_forever(state, &identity, &mut events_rx, &events_tx).await;
     // The socket is not reusable once this process is gone, and a stale one

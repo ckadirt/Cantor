@@ -707,6 +707,109 @@ describe('BackendConnection', () => {
     );
   });
 
+  it('advances an artifact only after the durable sink acknowledges each chunk', async () => {
+    const { socket, connection } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+    const digest = 'd'.repeat(64);
+    const append = jest.fn(async () => 3);
+    const finalize = jest.fn(async () => undefined);
+    const download = connection.downloadArtifact(
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      {
+        kind: 'delivery',
+        profile: 'opus-stereo-160k-v1',
+        media_type: 'audio/ogg; codecs=opus',
+        byte_length: 3,
+        sha256: digest,
+        sample_rate: 48_000,
+        channels: 2,
+      },
+      { offset: async () => 0, append, finalize },
+    );
+    await Promise.resolve();
+    const open = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(open).toMatchObject({ t: 'artifact.open', offset: 0 });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.info',
+        id: open.id,
+        transfer_id: 'transfer-1',
+        song_id: open.song_id,
+        artifact: {
+          kind: 'delivery',
+          profile: 'opus-stereo-160k-v1',
+          media_type: 'audio/ogg; codecs=opus',
+          byte_length: 3,
+          sha256: digest,
+          sample_rate: 48_000,
+          channels: 2,
+        },
+        accepted_offset: 0,
+        chunk_bytes: 65_536,
+        window_chunks: 1,
+      },
+    });
+    await Promise.resolve();
+    const firstAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(firstAck).toMatchObject({ t: 'artifact.ack', next_offset: 0 });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.chunk',
+        id: firstAck.id,
+        transfer_id: 'transfer-1',
+        offset: 0,
+        data: 'YWJj',
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(append).toHaveBeenCalledWith(0, 'YWJj');
+    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.complete',
+        id: finalAck.id,
+        transfer_id: 'transfer-1',
+        byte_length: 3,
+        sha256: digest,
+      },
+    });
+    await expect(download).resolves.toBeUndefined();
+    expect(finalize).toHaveBeenCalledWith(3);
+  });
+
   // The one case that should still give up: an explicit authorization refusal.
   it('stops retrying once the node rejects the key', () => {
     const { socket, snapshots } = connect();

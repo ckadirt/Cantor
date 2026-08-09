@@ -14,6 +14,7 @@ import type { JobView } from '../../../protocol/JobView';
 import type { SongHeader } from '../../../protocol/SongHeader';
 import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongPatch } from '../../../protocol/SongPatch';
+import type { ArtifactView } from '../../../protocol/ArtifactView';
 import type { AppIdentity } from '../identity/derive';
 import { PairBackendModal } from '../backends/PairBackendModal';
 import { BackendConnection, NodeRequestError } from '../backends/connection';
@@ -40,6 +41,17 @@ import {
   mergeSongHeaders,
 } from '../library/repository';
 import { filterLibraryRows, type LibraryFilter } from '../library/query';
+import {
+  appendAudioChunk,
+  audioKey,
+  finalizeAudio,
+  inspectAudio,
+  pinAudio,
+  playAudio,
+  removeAudio,
+  unpinAudio,
+} from '../audio/repository';
+import type { LocalAudio } from '../audio/native';
 
 const READY_BACKGROUND_LIGHT = '#EFF8F0';
 const READY_BACKGROUND_DARK = '#0B2110';
@@ -66,6 +78,7 @@ type LiveConnection = {
 };
 
 type JobControl = 'pause' | 'resume' | 'cancel' | 'retry';
+type AudioAction = 'download-play' | 'play' | 'pin' | 'unpin' | 'remove';
 
 export function MainScreen({ identity }: Props) {
   const pal = usePalette();
@@ -76,6 +89,7 @@ export function MainScreen({ identity }: Props) {
   >({});
   const [pairing, setPairing] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
+  const [localAudio, setLocalAudio] = useState<Record<string, LocalAudio>>({});
   const backendsRef = useRef<BackendRecord[]>([]);
   const connections = useRef(new Map<string, LiveConnection>());
   const pairTokens = useRef(new Map<string, string>());
@@ -365,6 +379,104 @@ export function MainScreen({ identity }: Props) {
     [],
   );
 
+  const updateLocalAudio = useCallback(
+    (nodeKey: string, songId: string, digest: string, state: LocalAudio) => {
+      setLocalAudio(current => ({
+        ...current,
+        [audioKey(nodeKey, songId, digest)]: state,
+      }));
+    },
+    [],
+  );
+
+  const handleAudio = useCallback(
+    async (
+      nodeKey: string,
+      song: SongHeader,
+      artifact: ArtifactView,
+      action: AudioAction,
+    ) => {
+      const identify = () => inspectAudio(nodeKey, song.id, artifact.sha256);
+      if (action === 'download-play') {
+        const live = connections.current.get(nodeKey);
+        if (live === undefined) throw new Error('Song node is not connected.');
+        const before = await identify();
+        if (before.state !== 'cached' && before.state !== 'pinned') {
+          await live.connection.downloadArtifact(
+            song.id,
+            artifact,
+            {
+              offset: async () => {
+                const local = await identify();
+                return local.state === 'partial' ? local.bytes : 0;
+              },
+              append: (offset, data) =>
+                appendAudioChunk(
+                  nodeKey,
+                  song.id,
+                  artifact.sha256,
+                  offset,
+                  data,
+                ),
+              finalize: bytes =>
+                finalizeAudio(nodeKey, song.id, artifact.sha256, bytes),
+            },
+            (bytes, total) =>
+              updateLocalAudio(nodeKey, song.id, artifact.sha256, {
+                state: bytes === total ? 'cached' : 'partial',
+                bytes,
+              }),
+          );
+        }
+        await playAudio(nodeKey, song.id, artifact.sha256);
+      } else if (action === 'play') {
+        await playAudio(nodeKey, song.id, artifact.sha256);
+      } else if (action === 'pin') {
+        await pinAudio(nodeKey, song.id, artifact.sha256);
+      } else if (action === 'unpin') {
+        await unpinAudio(nodeKey, song.id, artifact.sha256);
+      } else {
+        await removeAudio(nodeKey, song.id, artifact.sha256);
+      }
+      updateLocalAudio(
+        nodeKey,
+        song.id,
+        artifact.sha256,
+        await identify(),
+      );
+    },
+    [updateLocalAudio],
+  );
+
+  useEffect(() => {
+    let active = true;
+    const entries = (backends ?? []).flatMap(backend =>
+      (snapshots[backend.nodePubkey]?.songs ?? []).flatMap(song => {
+        const artifact = deliveryArtifact(song);
+        return artifact === undefined ? [] : [[backend.nodePubkey, song, artifact] as const];
+      }),
+    );
+    Promise.all(
+      entries.map(async ([nodeKey, song, artifact]) => ({
+        key: audioKey(nodeKey, song.id, artifact.sha256),
+        state: await inspectAudio(nodeKey, song.id, artifact.sha256),
+      })),
+    )
+      .then(inspected => {
+        if (!active) return;
+        setLocalAudio(current => ({
+          ...current,
+          ...Object.fromEntries(inspected.map(entry => [entry.key, entry.state])),
+        }));
+      })
+      .catch(error => {
+        if (active) setStorageError(readError(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [backends, snapshots]);
+
   const refreshLibraries = useCallback(() => {
     for (const live of connections.current.values()) {
       live.connection.refreshLibrary();
@@ -376,6 +488,24 @@ export function MainScreen({ identity }: Props) {
       (snapshots[backend.nodePubkey]?.songs ?? []).map(song => ({
         backend,
         song,
+        delivery: deliveryArtifact(song),
+        local:
+          localAudio[
+            audioKey(
+              backend.nodePubkey,
+              song.id,
+              deliveryArtifact(song)?.sha256 ?? 'none',
+            )
+          ] ?? { state: 'remote', bytes: 0 },
+        availableOffline: ['cached', 'pinned'].includes(
+          localAudio[
+            audioKey(
+              backend.nodePubkey,
+              song.id,
+              deliveryArtifact(song)?.sha256 ?? 'none',
+            )
+          ]?.state ?? 'remote',
+        ),
         ready: snapshots[backend.nodePubkey]?.phase === 'ready',
         nodeLabels: [
           backend.petname,
@@ -427,6 +557,7 @@ export function MainScreen({ identity }: Props) {
           onDetail={handleSongDetail}
           onPatch={handleSongPatch}
           onPresence={handleSongPresence}
+          onAudio={handleAudio}
           onError={error => setStorageError(readError(error))}
         />
 
@@ -486,6 +617,9 @@ export function MainScreen({ identity }: Props) {
 type LibraryRow = {
   backend: BackendRecord;
   song: SongHeader;
+  delivery: ArtifactView | undefined;
+  local: LocalAudio;
+  availableOffline: boolean;
   ready: boolean;
   nodeLabels: string[];
 };
@@ -495,6 +629,7 @@ function LibraryTimeline({
   onDetail,
   onPatch,
   onPresence,
+  onAudio,
   onError,
 }: {
   rows: LibraryRow[];
@@ -505,6 +640,12 @@ function LibraryTimeline({
     patch: SongPatch,
   ) => Promise<void>;
   onPresence: (nodePublicKey: string, song: SongHeader) => Promise<void>;
+  onAudio: (
+    nodePublicKey: string,
+    song: SongHeader,
+    artifact: ArtifactView,
+    action: AudioAction,
+  ) => Promise<void>;
   onError: (error: unknown) => void;
 }) {
   const pal = usePalette();
@@ -570,6 +711,7 @@ function LibraryTimeline({
           onDetail={onDetail}
           onPatch={onPatch}
           onPresence={onPresence}
+          onAudio={onAudio}
           onError={onError}
         />
       ))}
@@ -582,12 +724,14 @@ function LibrarySongRow({
   onDetail,
   onPatch,
   onPresence,
+  onAudio,
   onError,
 }: {
   row: LibraryRow;
   onDetail: LibraryTimelineProps['onDetail'];
   onPatch: LibraryTimelineProps['onPatch'];
   onPresence: LibraryTimelineProps['onPresence'];
+  onAudio: LibraryTimelineProps['onAudio'];
   onError: (error: unknown) => void;
 }) {
   const pal = usePalette();
@@ -596,6 +740,7 @@ function LibrarySongRow({
   const [saving, setSaving] = useState(false);
   const [detail, setDetail] = useState<SongDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [audioBusy, setAudioBusy] = useState(false);
   useEffect(() => {
     setTitle(row.song.title);
     setTags(row.song.tags.join(', '));
@@ -631,16 +776,40 @@ function LibrarySongRow({
       setDetailLoading(false);
     }
   };
+  const runAudio = async (action: AudioAction) => {
+    if (audioBusy || row.delivery === undefined) return;
+    setAudioBusy(true);
+    try {
+      await onAudio(row.backend.nodePubkey, row.song, row.delivery, action);
+    } catch (error) {
+      onError(error);
+    } finally {
+      setAudioBusy(false);
+    }
+  };
+  const audioLabel =
+    row.delivery === undefined
+      ? 'AUDIO PREPARING'
+      : audioBusy && ['remote', 'partial'].includes(row.local.state)
+        ? 'DOWNLOADING'
+        : row.local.state.toUpperCase();
+  const audioBytes =
+    row.local.bytes > 0
+      ? row.local.bytes
+      : (row.delivery?.byte_length ??
+        row.song.artifacts.find(artifact => artifact.kind === 'master')
+          ?.byte_length ??
+        0);
   return (
     <View style={[styles.songCard, { borderColor: pal.line }]}>
       <View style={styles.songHeading}>
         <Text style={[type.small, { color: pal.faint }]}>
-          {row.song.trashed ? 'TRASH' : 'REMOTE MASTER'} ·{' '}
+          {row.song.trashed ? 'TRASH' : audioLabel} ·{' '}
           {row.backend.lastNodeInfo?.name ?? row.backend.petname}
         </Text>
         <Text style={[type.small, { color: pal.muted }]}>
           {(row.song.duration_ms / 1000).toFixed(1)}s ·{' '}
-          {formatBytes(row.song.artifacts[0]?.byte_length ?? 0)}
+          {formatBytes(audioBytes)}
         </Text>
       </View>
       <TextInput
@@ -670,6 +839,65 @@ function LibrarySongRow({
       <Text style={[type.small, { color: pal.muted }]}>
         {row.song.caption_summary} · {row.song.model}
       </Text>
+      <View style={styles.songActions}>
+        {row.delivery === undefined ? (
+          <Text style={[type.small, { color: pal.faint }]}>
+            The node is preparing the compact audio copy.
+          </Text>
+        ) : row.local.state === 'remote' || row.local.state === 'partial' ? (
+          <Pressable
+            accessibilityLabel={
+              row.local.state === 'partial'
+                ? 'Resume audio download'
+                : 'Download and play audio'
+            }
+            disabled={!row.ready || audioBusy}
+            onPress={() => runAudio('download-play')}
+            style={[styles.songAction, { borderColor: pal.line }]}
+          >
+            <Text style={[type.eyebrow, { color: pal.ink }]}>
+              {audioBusy
+                ? `${Math.round(
+                    (row.local.bytes / row.delivery.byte_length) * 100,
+                  )}%`
+                : row.local.state === 'partial'
+                  ? 'RESUME DOWNLOAD'
+                  : 'DOWNLOAD & PLAY'}
+            </Text>
+          </Pressable>
+        ) : (
+          <>
+            <Pressable
+              accessibilityLabel="Play downloaded audio"
+              disabled={audioBusy}
+              onPress={() => runAudio('play')}
+              style={[styles.songAction, { borderColor: pal.line }]}
+            >
+              <Text style={[type.eyebrow, { color: pal.ink }]}>PLAY</Text>
+            </Pressable>
+            <Pressable
+              disabled={audioBusy}
+              onPress={() =>
+                runAudio(row.local.state === 'pinned' ? 'unpin' : 'pin')
+              }
+              style={[styles.songAction, { borderColor: pal.line }]}
+            >
+              <Text style={[type.eyebrow, { color: pal.ink }]}>
+                {row.local.state === 'pinned' ? 'UNPIN' : 'PIN'}
+              </Text>
+            </Pressable>
+            {row.local.state === 'cached' ? (
+              <Pressable
+                disabled={audioBusy}
+                onPress={() => runAudio('remove')}
+                style={[styles.songAction, { borderColor: pal.line }]}
+              >
+                <Text style={[type.eyebrow, { color: pal.ink }]}>REMOVE</Text>
+              </Pressable>
+            ) : null}
+          </>
+        )}
+      </View>
       <View style={styles.songActions}>
         <Pressable
           disabled={!row.ready || detailLoading}
@@ -743,7 +971,7 @@ function LibrarySongRow({
           </Text>
           <Text style={[type.small, { color: pal.faint }]}>
             {detail.component_digests.length} verified component digest(s) ·
-            audio remains on this node until M5
+            local playback uses a digest-verified Opus derivative
           </Text>
         </View>
       ) : null}
@@ -1186,6 +1414,14 @@ function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
   return `${(bytes / 1024 ** 2).toFixed(1)} MiB`;
+}
+
+function deliveryArtifact(song: SongHeader): ArtifactView | undefined {
+  return song.artifacts.find(
+    artifact =>
+      artifact.kind === 'delivery' &&
+      artifact.profile === 'opus-stereo-160k-v1',
+  );
 }
 
 function utf8ByteLength(value: string): number {

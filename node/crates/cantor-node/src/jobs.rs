@@ -573,6 +573,9 @@ fn run_generation(
                     principal_id: work.principal_id,
                     revision: completed.3,
                 });
+                if let Ok(locked) = state.lock() {
+                    locked.delivery_notify.notify_one();
+                }
                 return Ok(());
             }
             StageExecution::Done { output } => {

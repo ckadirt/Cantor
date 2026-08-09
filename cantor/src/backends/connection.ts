@@ -5,6 +5,7 @@ import type { JobView } from '../../../protocol/JobView';
 import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongHeader } from '../../../protocol/SongHeader';
 import type { SongPatch } from '../../../protocol/SongPatch';
+import type { ArtifactView } from '../../../protocol/ArtifactView';
 import { mergeJobViews } from '../jobs/repository';
 import { applyLibraryChanges, mergeSongHeaders } from '../library/repository';
 import { signChallenge } from '../identity/derive';
@@ -13,6 +14,7 @@ import {
   isRecord,
   parseJob,
   parseJobs,
+  parseArtifact,
   parseLibraryChanges,
   parseNodeInfo,
   parseSong,
@@ -54,12 +56,40 @@ type PendingRequest = {
     | 'library.page'
     | 'library.changes'
     | 'song.updated'
-    | 'song.detail';
+    | 'song.detail'
+    | 'artifact.info'
+    | 'artifact.part';
   resolveJob?: (value: JobView) => void;
   resolveSong?: (value: SongHeader) => void;
   resolveDetail?: (value: SongDetail) => void;
+  resolveArtifactInfo?: (value: ArtifactInfo) => void;
+  resolveArtifactPart?: (value: ArtifactPart) => void;
   reject?: (error: Error) => void;
   timer?: ReturnType<typeof setTimeout>;
+};
+
+type ArtifactInfo = {
+  transferId: string;
+  songId: string;
+  artifact: ArtifactView;
+  acceptedOffset: number;
+  chunkBytes: number;
+  windowChunks: number;
+};
+
+type ArtifactPart =
+  | { kind: 'chunk'; transferId: string; offset: number; data: string }
+  | {
+      kind: 'complete';
+      transferId: string;
+      byteLength: number;
+      sha256: string;
+    };
+
+export type ArtifactSink = {
+  offset: () => Promise<number>;
+  append: (offset: number, encoded: string) => Promise<number>;
+  finalize: (byteLength: number) => Promise<void>;
 };
 
 export class NodeRequestError extends Error {
@@ -524,6 +554,79 @@ export class BackendConnection {
       pending.resolveDetail?.(detail);
       return;
     }
+    if (payload.t === 'artifact.info' && typeof payload.id === 'string') {
+      const pending = this.pendingRequests.get(payload.id);
+      if (pending?.expected !== 'artifact.info') return;
+      const artifact = parseArtifact(payload.artifact);
+      if (
+        artifact === null ||
+        typeof payload.transfer_id !== 'string' ||
+        typeof payload.song_id !== 'string' ||
+        !isSafeRevision(payload.accepted_offset) ||
+        !isPositiveSafeInteger(payload.chunk_bytes) ||
+        !isPositiveSafeInteger(payload.window_chunks) ||
+        payload.chunk_bytes > 64 * 1024 ||
+        payload.window_chunks !== 1
+      ) {
+        this.finishPending(payload.id);
+        pending.reject?.(new Error('Node artifact transfer limits are invalid.'));
+        return;
+      }
+      this.finishPending(payload.id);
+      pending.resolveArtifactInfo?.({
+        transferId: payload.transfer_id,
+        songId: payload.song_id,
+        artifact,
+        acceptedOffset: payload.accepted_offset,
+        chunkBytes: payload.chunk_bytes,
+        windowChunks: payload.window_chunks,
+      });
+      return;
+    }
+    if (payload.t === 'artifact.chunk' && typeof payload.id === 'string') {
+      const pending = this.pendingRequests.get(payload.id);
+      if (pending?.expected !== 'artifact.part') return;
+      if (
+        typeof payload.transfer_id !== 'string' ||
+        !isSafeRevision(payload.offset) ||
+        typeof payload.data !== 'string' ||
+        payload.data.length === 0 ||
+        payload.data.length > 88_000
+      ) {
+        this.finishPending(payload.id);
+        pending.reject?.(new Error('Node artifact chunk is invalid.'));
+        return;
+      }
+      this.finishPending(payload.id);
+      pending.resolveArtifactPart?.({
+        kind: 'chunk',
+        transferId: payload.transfer_id,
+        offset: payload.offset,
+        data: payload.data,
+      });
+      return;
+    }
+    if (payload.t === 'artifact.complete' && typeof payload.id === 'string') {
+      const pending = this.pendingRequests.get(payload.id);
+      if (pending?.expected !== 'artifact.part') return;
+      if (
+        typeof payload.transfer_id !== 'string' ||
+        !isSafeRevision(payload.byte_length) ||
+        typeof payload.sha256 !== 'string'
+      ) {
+        this.finishPending(payload.id);
+        pending.reject?.(new Error('Node artifact completion is invalid.'));
+        return;
+      }
+      this.finishPending(payload.id);
+      pending.resolveArtifactPart?.({
+        kind: 'complete',
+        transferId: payload.transfer_id,
+        byteLength: payload.byte_length,
+        sha256: payload.sha256,
+      });
+      return;
+    }
     if (payload.t === 'library.changed' && isSafeRevision(payload.revision)) {
       if (
         !this.libraryRequestInFlight &&
@@ -721,6 +824,61 @@ export class BackendConnection {
     });
   }
 
+  async downloadArtifact(
+    songId: string,
+    artifact: ArtifactView,
+    sink: ArtifactSink,
+    onProgress?: (written: number, total: number) => void,
+  ): Promise<void> {
+    if (this.snapshot.phase !== 'ready') {
+      throw new Error('Backend is not ready.');
+    }
+    let offset = await sink.offset();
+    const info = await this.openArtifact(
+      songId,
+      artifact.profile,
+      offset,
+      artifact.sha256,
+    );
+    if (
+      info.songId !== songId ||
+      info.acceptedOffset !== offset ||
+      info.artifact.profile !== artifact.profile ||
+      info.artifact.sha256 !== artifact.sha256 ||
+      info.artifact.byte_length !== artifact.byte_length
+    ) {
+      throw new Error('Node opened a different artifact than requested.');
+    }
+    onProgress?.(offset, artifact.byte_length);
+    while (true) {
+      const part = await this.ackArtifact(info.transferId, offset);
+      if (part.transferId !== info.transferId) {
+        throw new Error('Node switched artifact transfer sessions.');
+      }
+      if (part.kind === 'complete') {
+        if (
+          part.byteLength !== artifact.byte_length ||
+          part.sha256 !== artifact.sha256 ||
+          offset !== artifact.byte_length
+        ) {
+          throw new Error('Node artifact completion does not match the download.');
+        }
+        await sink.finalize(part.byteLength);
+        onProgress?.(part.byteLength, part.byteLength);
+        return;
+      }
+      if (part.offset !== offset) {
+        throw new Error('Node artifact chunk is out of order.');
+      }
+      const next = await sink.append(offset, part.data);
+      if (next <= offset || next > artifact.byte_length) {
+        throw new Error('Native artifact writer returned an invalid offset.');
+      }
+      offset = next;
+      onProgress?.(offset, artifact.byte_length);
+    }
+  }
+
   trashSong(songId: string, expectedRevision: number): Promise<SongHeader> {
     return this.mutateSong('song.trash', songId, expectedRevision, {});
   }
@@ -733,6 +891,62 @@ export class BackendConnection {
     if (this.snapshot.phase !== 'ready' || this.libraryRequestInFlight) return;
     if (this.snapshot.libraryRevision === null) this.startFullLibrarySync();
     else this.requestLibraryChanges(this.snapshot.libraryRevision);
+  }
+
+  private openArtifact(
+    songId: string,
+    profile: string,
+    offset: number,
+    expectedSha256: string,
+  ): Promise<ArtifactInfo> {
+    const id = this.nextRequestId('artifact-open');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error('Opening the audio transfer timed out. It is safe to retry.'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pendingRequests.set(id, {
+        expected: 'artifact.info',
+        resolveArtifactInfo: resolve,
+        reject,
+        timer,
+      });
+      this.sendApplication({
+        t: 'artifact.open',
+        v: APPLICATION_PROTOCOL_VERSION,
+        id,
+        song_id: songId,
+        profile,
+        offset,
+        expected_sha256: expectedSha256,
+      });
+    });
+  }
+
+  private ackArtifact(
+    transferId: string,
+    nextOffset: number,
+  ): Promise<ArtifactPart> {
+    const id = this.nextRequestId('artifact-ack');
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pendingRequests.delete(id);
+        reject(new Error('Audio transfer timed out. It is safe to retry.'));
+      }, REQUEST_TIMEOUT_MS);
+      this.pendingRequests.set(id, {
+        expected: 'artifact.part',
+        resolveArtifactPart: resolve,
+        reject,
+        timer,
+      });
+      this.sendApplication({
+        t: 'artifact.ack',
+        v: APPLICATION_PROTOCOL_VERSION,
+        id,
+        transfer_id: transferId,
+        next_offset: nextOffset,
+      });
+    });
   }
 
   private mutateSong(
@@ -893,6 +1107,10 @@ function readError(error: unknown): string {
 
 function isSafeRevision(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return isSafeRevision(value) && value > 0;
 }
 
 /**

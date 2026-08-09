@@ -57,6 +57,8 @@ pub struct NodeState {
     pub library: crate::library::Library,
     /// Acceptance and model-readiness changes wake the single durable worker.
     pub job_notify: Arc<tokio::sync::Notify>,
+    /// Completion and startup wake the single low-priority derivative worker.
+    pub delivery_notify: Arc<tokio::sync::Notify>,
     pub active_job: Option<crate::jobs::ActiveJobControl>,
     pub shutting_down: bool,
 }
@@ -1386,6 +1388,7 @@ mod tests {
             connected: true,
             library,
             job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             active_job: None,
             shutting_down: false,
         });

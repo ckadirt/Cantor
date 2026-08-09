@@ -6,6 +6,7 @@ import type { NodeInfo } from '../../../protocol/NodeInfo';
 import type { LibraryChange } from '../../../protocol/LibraryChange';
 import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongHeader } from '../../../protocol/SongHeader';
+import type { ArtifactView } from '../../../protocol/ArtifactView';
 
 export type {
   ErrorCode,
@@ -57,6 +58,10 @@ const ERROR_CODES = new Set<ErrorCode>([
   'full_sync_required',
   'invalid_transition',
   'checkpoint_unavailable',
+  'artifact_unavailable',
+  'artifact_changed',
+  'invalid_offset',
+  'transfer_expired',
 ]);
 
 export type BackendRecord = {
@@ -288,26 +293,7 @@ export function parseSong(value: unknown): SongHeader | null {
     !Array.isArray(value.artifacts)
   )
     return null;
-  const artifacts = value.artifacts.map(artifact => {
-    if (
-      !isRecord(artifact) ||
-      typeof artifact.kind !== 'string' ||
-      typeof artifact.media_type !== 'string' ||
-      !isPositiveInteger(artifact.byte_length) ||
-      typeof artifact.sha256 !== 'string' ||
-      !isPositiveInteger(artifact.sample_rate) ||
-      !isPositiveInteger(artifact.channels)
-    )
-      return null;
-    return {
-      kind: artifact.kind,
-      media_type: artifact.media_type,
-      byte_length: artifact.byte_length,
-      sha256: artifact.sha256,
-      sample_rate: artifact.sample_rate,
-      channels: artifact.channels,
-    };
-  });
+  const artifacts = value.artifacts.map(parseArtifact);
   if (artifacts.some(artifact => artifact === null)) return null;
   return {
     id: value.id,
@@ -323,6 +309,35 @@ export function parseSong(value: unknown): SongHeader | null {
     trashed: value.trashed,
     artifacts: artifacts as SongHeader['artifacts'],
   };
+}
+
+export function parseArtifact(artifact: unknown): ArtifactView | null {
+    if (
+      !isRecord(artifact) ||
+      typeof artifact.kind !== 'string' ||
+      typeof artifact.media_type !== 'string' ||
+      !isPositiveInteger(artifact.byte_length) ||
+      typeof artifact.sha256 !== 'string' ||
+      !isPositiveInteger(artifact.sample_rate) ||
+      !isPositiveInteger(artifact.channels)
+    )
+      return null;
+    const profile =
+      typeof artifact.profile === 'string'
+        ? artifact.profile
+        : artifact.kind === 'master'
+          ? 'pcm16-wav-v1'
+          : null;
+    if (profile === null || profile.length === 0) return null;
+    return {
+      kind: artifact.kind,
+      profile,
+      media_type: artifact.media_type,
+      byte_length: artifact.byte_length,
+      sha256: artifact.sha256,
+      sample_rate: artifact.sample_rate,
+      channels: artifact.channels,
+    };
 }
 
 export function parseSongs(value: unknown): SongHeader[] | null {

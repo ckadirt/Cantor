@@ -590,7 +590,7 @@ fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> N
         features: NodeFeatures {
             jobs_create: true,
             library_list: true,
-            artifacts_transfer: false,
+            artifacts_transfer: true,
             secure_tunnel: false,
             job_controls: true,
         },
@@ -701,6 +701,7 @@ mod tests {
             connected: true,
             library,
             job_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             active_job: None,
             shutting_down: false,
         });
