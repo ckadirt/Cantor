@@ -77,14 +77,10 @@ type ConnectionCallbacks = {
 
 type PendingRequest = {
   expected:
-    | 'jobs.page'
-    | 'job.accepted'
-    | 'job.controlled'
     | 'library.page'
     | 'library.changes'
     | 'artifact.info'
     | 'artifact.part';
-  resolveJob?: (value: JobView) => void;
   resolveArtifactInfo?: (value: ArtifactInfo) => void;
   resolveArtifactPart?: (value: ArtifactPart) => void;
   reject?: (error: Error) => void;
@@ -537,8 +533,33 @@ export class BackendConnection {
         phase: 'ready',
         error: null,
       });
-      const statusId = this.nextRequestId('status');
-      this.pendingRequests.set(statusId, { expected: 'jobs.page' });
+      const statusId = this.requests.register(
+        'status',
+        {
+          expected: 'jobs.page',
+          decode: message => {
+            const jobs = isRecord(message) ? parseJobs(message.jobs) : null;
+            return resolveResponse(
+              jobs === null
+                ? ({ kind: 'invalid' } as const)
+                : ({ kind: 'valid', jobs } as const),
+            );
+          },
+        },
+        {
+          resolve: result => {
+            if (result.kind === 'invalid') {
+              this.fail('Node job status is invalid.', false);
+              return;
+            }
+            this.setSnapshot({
+              ...this.snapshot,
+              jobs: mergeJobViews(this.snapshot.jobs, result.jobs),
+            });
+          },
+          reject: () => {},
+        },
+      );
       this.sendApplication({
         t: 'status',
         v: APPLICATION_PROTOCOL_VERSION,
@@ -559,42 +580,15 @@ export class BackendConnection {
       return;
     }
     if (payload.t === 'jobs.page' && typeof payload.id === 'string') {
-      if (this.pendingRequests.get(payload.id)?.expected !== 'jobs.page') {
-        return;
-      }
-      this.pendingRequests.delete(payload.id);
-      const jobs = parseJobs(payload.jobs);
-      if (jobs === null) {
-        this.fail('Node job status is invalid.', false);
-        return;
-      }
-      this.setSnapshot({
-        ...this.snapshot,
-        jobs: mergeJobViews(this.snapshot.jobs, jobs),
-      });
+      this.requests.deliver(payload.id, 'jobs.page', payload);
       return;
     }
     if (payload.t === 'job.accepted' && typeof payload.id === 'string') {
-      const pending = this.pendingRequests.get(payload.id);
-      if (pending?.expected !== 'job.accepted') return;
-      const job = parseJob(payload.job);
-      if (job === null) return;
-      this.finishPending(payload.id);
-      pending.resolveJob?.(job);
-      this.setSnapshot({
-        ...this.snapshot,
-        jobs: [job, ...this.snapshot.jobs.filter(item => item.id !== job.id)],
-      });
+      this.requests.deliver(payload.id, 'job.accepted', payload);
       return;
     }
     if (payload.t === 'job.controlled' && typeof payload.id === 'string') {
-      const pending = this.pendingRequests.get(payload.id);
-      if (pending?.expected !== 'job.controlled') return;
-      const job = parseJob(payload.job);
-      if (job === null) return;
-      this.finishPending(payload.id);
-      pending.resolveJob?.(job);
-      this.mergeCanonicalJob(job);
+      this.requests.deliver(payload.id, 'job.controlled', payload);
       return;
     }
     if (payload.t === 'job.updated') {
@@ -845,7 +839,7 @@ export class BackendConnection {
           }
         }
         if (
-          pending?.expected === 'job.controlled' &&
+          registeredExpected === 'job.controlled' &&
           isRecord(payload.details) &&
           ['job_revision_conflict', 'job_state'].includes(
             String(payload.details.kind),
@@ -944,18 +938,37 @@ export class BackendConnection {
     if (this.snapshot.phase !== 'ready') {
       return Promise.reject(new Error('Backend is not ready.'));
     }
-    const id = this.nextRequestId('create');
+    let id = '';
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error('Job submission timed out. It is safe to retry.'));
-      }, REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(id, {
-        expected: 'job.accepted',
-        resolveJob: resolve,
-        reject,
-        timer,
-      });
+      id = this.requests.register(
+        'create',
+        {
+          expected: 'job.accepted',
+          decode: message => {
+            if (!isRecord(message)) return ignoreResponse();
+            const job = parseJob(message.job);
+            return job === null ? ignoreResponse() : resolveResponse(job);
+          },
+          timeout: {
+            afterMs: REQUEST_TIMEOUT_MS,
+            error: () =>
+              new Error('Job submission timed out. It is safe to retry.'),
+          },
+        },
+        {
+          resolve: job => {
+            resolve(job);
+            this.setSnapshot({
+              ...this.snapshot,
+              jobs: [
+                job,
+                ...this.snapshot.jobs.filter(item => item.id !== job.id),
+              ],
+            });
+          },
+          reject,
+        },
+      );
       this.sendApplication({
         t: 'job.create',
         v: APPLICATION_PROTOCOL_VERSION,
@@ -975,20 +988,31 @@ export class BackendConnection {
     if (this.snapshot.phase !== 'ready') {
       return Promise.reject(new Error('Backend is not ready.'));
     }
-    const id = this.nextRequestId(`job-${control}`);
+    let id = '';
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(
-          new Error('Job control timed out. Refresh before trying again.'),
-        );
-      }, REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(id, {
-        expected: 'job.controlled',
-        resolveJob: resolve,
-        reject,
-        timer,
-      });
+      id = this.requests.register(
+        `job-${control}`,
+        {
+          expected: 'job.controlled',
+          decode: message => {
+            if (!isRecord(message)) return ignoreResponse();
+            const job = parseJob(message.job);
+            return job === null ? ignoreResponse() : resolveResponse(job);
+          },
+          timeout: {
+            afterMs: REQUEST_TIMEOUT_MS,
+            error: () =>
+              new Error('Job control timed out. Refresh before trying again.'),
+          },
+        },
+        {
+          resolve: job => {
+            resolve(job);
+            this.mergeCanonicalJob(job);
+          },
+          reject,
+        },
+      );
       this.sendApplication({
         t: `job.${control}`,
         v: APPLICATION_PROTOCOL_VERSION,
