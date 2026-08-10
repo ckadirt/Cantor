@@ -16,6 +16,8 @@ import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongPatch } from '../../../protocol/SongPatch';
 import type { ArtifactView } from '../../../protocol/ArtifactView';
 import type { AppIdentity } from '../identity/derive';
+import { readError } from '../core/errors';
+import { utf8ByteLength } from '../core/text';
 import { PairBackendModal } from '../backends/PairBackendModal';
 import { BackendConnection, NodeRequestError } from '../backends/connection';
 import { loadBackends, saveBackends } from '../backends/storage';
@@ -1428,10 +1430,6 @@ function shortKey(value: string): string {
   return `${value.slice(0, 8)}…${value.slice(-6)}`;
 }
 
-function readError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KiB`;
@@ -1444,15 +1442,6 @@ function deliveryArtifact(song: SongHeader): ArtifactView | undefined {
       artifact.kind === 'delivery' &&
       artifact.profile === 'opus-stereo-160k-v1',
   );
-}
-
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    bytes += code <= 0x7f ? 1 : code <= 0x7ff ? 2 : code <= 0xffff ? 3 : 4;
-  }
-  return bytes;
 }
 
 const styles = StyleSheet.create({

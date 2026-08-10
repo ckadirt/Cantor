@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { isRecord } from '../core/validation';
 import {
   inspectNativeAudio,
   nativeAudio,
@@ -131,7 +132,7 @@ async function loadAll(): Promise<StoredAudio> {
   const raw = await AsyncStorage.getItem(AUDIO_INDEX_KEY);
   if (raw === null) return {};
   const value: unknown = JSON.parse(raw);
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+  if (!isRecord(value)) {
     throw new Error('Saved local audio index is invalid.');
   }
   return value as StoredAudio;
