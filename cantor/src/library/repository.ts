@@ -1,10 +1,9 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SongHeader } from '../../../protocol/SongHeader';
 import { parseSongs } from '../core/protocol';
+import { createSerializedJsonStore } from '../core/storage/serializedJsonStore';
 import { isRecord } from '../core/validation';
 
 const LIBRARY_KEY = 'cantor.private-library.v1';
-let writeQueue = Promise.resolve();
 
 export type CachedLibrary = {
   revision: number | null;
@@ -19,6 +18,15 @@ type StoredLibrary = {
 };
 
 type StoredLibraries = Record<string, StoredLibrary>;
+
+const libraryStore = createSerializedJsonStore<StoredLibraries>({
+  key: LIBRARY_KEY,
+  empty: () => ({}),
+  decode: decodeStoredLibraries,
+  invalidJson: (_raw, error) => {
+    throw error;
+  },
+});
 
 export function mergeSongHeaders(
   current: SongHeader[],
@@ -59,7 +67,7 @@ export function applyLibraryChanges(
 export async function loadLibrary(
   nodePublicKey: string,
 ): Promise<CachedLibrary> {
-  const stored = await loadAll();
+  const stored = await libraryStore.load();
   const library = stored[nodePublicKey];
   return library === undefined
     ? { revision: null, songs: [], lastSyncedAt: null }
@@ -76,11 +84,10 @@ export async function commitLibrary(
   revision: number,
   songs: SongHeader[],
 ): Promise<CachedLibrary> {
-  return withWriteLock(async () => {
-    const stored = await loadAll();
+  return libraryStore.update(stored => {
     const existing = stored[nodePublicKey];
     if (existing !== undefined && existing.revision > revision) {
-      return existing;
+      return { unchanged: true, result: existing };
     }
     const next: StoredLibrary = {
       revision,
@@ -88,23 +95,18 @@ export async function commitLibrary(
       lastSyncedAt: new Date().toISOString(),
     };
     stored[nodePublicKey] = next;
-    await AsyncStorage.setItem(LIBRARY_KEY, JSON.stringify(stored));
-    return next;
+    return { value: stored, result: next };
   });
 }
 
 export async function clearCachedLibrary(nodePublicKey: string): Promise<void> {
-  await withWriteLock(async () => {
-    const stored = await loadAll();
+  await libraryStore.update(stored => {
     delete stored[nodePublicKey];
-    await AsyncStorage.setItem(LIBRARY_KEY, JSON.stringify(stored));
+    return { value: stored, result: undefined };
   });
 }
 
-async function loadAll(): Promise<StoredLibraries> {
-  const raw = await AsyncStorage.getItem(LIBRARY_KEY);
-  if (raw === null) return {};
-  const value: unknown = JSON.parse(raw);
+function decodeStoredLibraries(value: unknown): StoredLibraries {
   if (!isRecord(value)) throw new Error('Saved private libraries are invalid.');
   const result: StoredLibraries = {};
   for (const [node, candidate] of Object.entries(value)) {
@@ -124,14 +126,5 @@ async function loadAll(): Promise<StoredLibraries> {
       lastSyncedAt: candidate.lastSyncedAt,
     };
   }
-  return result;
-}
-
-function withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
-  const result = writeQueue.then(operation, operation);
-  writeQueue = result.then(
-    () => undefined,
-    () => undefined,
-  );
   return result;
 }

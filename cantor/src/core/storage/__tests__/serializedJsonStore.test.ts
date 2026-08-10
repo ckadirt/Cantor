@@ -118,6 +118,27 @@ describe('serialized JSON store', () => {
     await expect(first).resolves.toBe('blocked');
   });
 
+  it('can complete a serialized update without persisting an unchanged value', async () => {
+    storage.getItem.mockResolvedValue('{"count":4}');
+    const store = counterStore('counter');
+
+    await expect(
+      store.update(current => ({
+        unchanged: true,
+        result: current.count,
+      })),
+    ).resolves.toBe(4);
+    expect(storage.setItem).not.toHaveBeenCalled();
+
+    await expect(
+      store.update(current => ({
+        value: { count: current.count + 1 },
+        result: current.count + 1,
+      })),
+    ).resolves.toBe(5);
+    expect(storage.setItem).toHaveBeenCalledWith('counter', '{"count":5}');
+  });
+
   it('continues the update queue after a failed write', async () => {
     let persisted = '{"count":0}';
     storage.getItem.mockImplementation(async () => persisted);

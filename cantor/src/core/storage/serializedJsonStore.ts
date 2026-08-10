@@ -7,10 +7,15 @@ export type SerializedJsonStoreOptions<Value> = {
   invalidJson: (raw: string, error: unknown) => Value;
 };
 
-export type SerializedJsonUpdate<Value, Result> = {
-  value: Value;
-  result: Result;
-};
+export type SerializedJsonUpdate<Value, Result> =
+  | {
+      value: Value;
+      result: Result;
+    }
+  | {
+      unchanged: true;
+      result: Result;
+    };
 
 export type SerializedJsonStore<Value> = {
   load: () => Promise<Value>;
@@ -55,6 +60,7 @@ export function createSerializedJsonStore<Value>(
     const operation = async () => {
       const current = await load();
       const next = await transform(current);
+      if ('unchanged' in next) return next.result;
       await AsyncStorage.setItem(options.key, JSON.stringify(next.value));
       return next.result;
     };
