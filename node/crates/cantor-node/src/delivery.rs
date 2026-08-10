@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::config::now_rfc3339;
 use crate::control::{ControlEvent, SharedState};
 use crate::library::{ArtifactRecord, Library, insert_artifact, write_json_atomic};
+use crate::principal::PrincipalId;
 
 pub const DELIVERY_PROFILE: &str = "opus-stereo-160k-v1";
 pub const DELIVERY_MEDIA_TYPE: &str = "audio/ogg; codecs=opus";
@@ -36,7 +37,7 @@ const FILE_MODE: u32 = 0o600;
 #[derive(Clone, Debug)]
 pub struct DeliveryCandidate {
     pub job_id: String,
-    pub principal_id: [u8; 32],
+    pub principal_id: PrincipalId,
     pub master_path: PathBuf,
     pub final_path: PathBuf,
     pub duration_ms: u64,
@@ -71,8 +72,8 @@ impl Library {
         else {
             return Ok(None);
         };
-        let principal_id = decode_hex_32(&principal)?;
-        let master_path = self.verified_master_path(&principal_id, &job_id)?;
+        let principal_id = parse_principal(&principal)?;
+        let master_path = self.verified_master_path(principal_id, &job_id)?;
         let final_path = self
             .root
             .join("jobs")
@@ -113,12 +114,12 @@ impl Library {
         )?;
         if exists {
             transaction.rollback()?;
-            return self.library_revision(&candidate.principal_id);
+            return self.library_revision(candidate.principal_id);
         }
         insert_artifact(&transaction, &candidate.job_id, &record)?;
         let (principal, revision) =
             crate::songs::publish_delivery(&transaction, &candidate.job_id)?;
-        if principal != encode_hex(&candidate.principal_id) {
+        if principal != candidate.principal_id {
             bail!("delivery owner changed during publication");
         }
         transaction.commit()?;
@@ -128,14 +129,14 @@ impl Library {
 
     pub fn verified_delivery_artifact(
         &self,
-        principal: &[u8; 32],
+        principal: PrincipalId,
         song_id: &str,
         profile: &str,
     ) -> Result<Option<(ArtifactRecord, PathBuf)>> {
         if profile != DELIVERY_PROFILE {
             return Ok(None);
         }
-        let owner = encode_hex(principal);
+        let owner = principal.to_string();
         let record = self
             .connection
             .query_row(
@@ -433,19 +434,11 @@ fn inspect_delivery(path: &Path) -> Result<InspectedDelivery> {
     })
 }
 
-fn encode_hex(bytes: &[u8; 32]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn decode_hex_32(value: &str) -> Result<[u8; 32]> {
+fn parse_principal(value: &str) -> Result<PrincipalId> {
     if value.len() != 64 {
         bail!("principal id is not 32-byte hex");
     }
-    let mut bytes = [0_u8; 32];
-    for (index, byte) in bytes.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)?;
-    }
-    Ok(bytes)
+    value.parse().map_err(Into::into)
 }
 
 #[cfg(test)]
@@ -454,13 +447,15 @@ mod tests {
 
     use cantor_proto::{GenerationRequest, GenerationStage, JobState, ProgressUnit};
 
+    use crate::principal::PrincipalId;
+
     use super::{
         DELIVERY_PROFILE, encode_opus, ensure_delivery, inspect_delivery, opus_head, opus_tags,
     };
 
-    fn completed_library(root: &std::path::Path) -> (crate::library::Library, [u8; 32], String) {
+    fn completed_library(root: &std::path::Path) -> (crate::library::Library, PrincipalId, String) {
         let mut library = crate::library::Library::open(root).unwrap();
-        let principal = [1_u8; 32];
+        let principal = PrincipalId::from_bytes_for_test([1_u8; 32]);
         let variant = crate::store::InstalledVariant {
             model: "acestep".into(),
             tag: "test".into(),
@@ -478,7 +473,7 @@ mod tests {
         };
         library
             .submit(
-                &principal,
+                principal,
                 &[2_u8; 32],
                 &crate::library::Submission {
                     client_request_id: uuid::Uuid::new_v4().to_string(),
@@ -575,7 +570,7 @@ mod tests {
     fn delivery_publication_is_idempotent_owner_scoped_and_digest_checked() {
         let temporary = tempfile::tempdir().unwrap();
         let (mut library, principal, song_id) = completed_library(temporary.path());
-        assert_eq!(library.library_revision(&principal).unwrap(), 1);
+        assert_eq!(library.library_revision(principal).unwrap(), 1);
 
         let candidate = library
             .next_delivery_candidate(&HashSet::new())
@@ -585,7 +580,7 @@ mod tests {
         let inspected = ensure_delivery(&candidate).unwrap();
         let revision = library.publish_delivery(&candidate, inspected).unwrap();
         assert_eq!(revision, 2);
-        assert_eq!(library.library_revision(&principal).unwrap(), 2);
+        assert_eq!(library.library_revision(principal).unwrap(), 2);
         assert!(
             library
                 .next_delivery_candidate(&HashSet::new())
@@ -594,12 +589,16 @@ mod tests {
         );
 
         let verified = library
-            .verified_delivery_artifact(&principal, &song_id, DELIVERY_PROFILE)
+            .verified_delivery_artifact(principal, &song_id, DELIVERY_PROFILE)
             .unwrap()
             .expect("owner delivery");
         assert!(
             library
-                .verified_delivery_artifact(&[9_u8; 32], &song_id, DELIVERY_PROFILE)
+                .verified_delivery_artifact(
+                    PrincipalId::from_bytes_for_test([9_u8; 32]),
+                    &song_id,
+                    DELIVERY_PROFILE,
+                )
                 .unwrap()
                 .is_none()
         );
@@ -607,7 +606,7 @@ mod tests {
             .publish_delivery(&candidate, inspect_delivery(&verified.1).unwrap())
             .unwrap();
         assert_eq!(unchanged, revision);
-        assert_eq!(library.library_revision(&principal).unwrap(), revision);
+        assert_eq!(library.library_revision(principal).unwrap(), revision);
 
         use std::io::Write;
         std::fs::OpenOptions::new()
@@ -618,7 +617,7 @@ mod tests {
             .unwrap();
         assert!(
             library
-                .verified_delivery_artifact(&principal, &song_id, DELIVERY_PROFILE)
+                .verified_delivery_artifact(principal, &song_id, DELIVERY_PROFILE)
                 .is_err()
         );
     }

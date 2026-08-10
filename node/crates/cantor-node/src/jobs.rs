@@ -21,6 +21,7 @@ use crate::control::{ControlEvent, SharedState};
 use crate::engine::{self, LoadOptions, Stage};
 use crate::generate::{Generation, Progress, Request, StageExecution, components_for};
 use crate::library::{FinishResult, WorkItem};
+use crate::principal::PrincipalId;
 use crate::store::Store;
 
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -52,7 +53,7 @@ impl StopReason {
 #[derive(Clone)]
 pub struct ActiveJobControl {
     pub job_id: String,
-    pub principal_id: [u8; 32],
+    pub principal_id: PrincipalId,
     pub signal: Arc<AtomicU8>,
 }
 
@@ -224,7 +225,7 @@ async fn execute(
             .map_err(|_| WorkerFailure::internal("Node state is unavailable."))?;
         if let Some(job) = locked
             .library
-            .get(&work.principal_id, &work.id)
+            .get(work.principal_id, &work.id)
             .map_err(WorkerFailure::from_internal)?
         {
             match job.state {
@@ -746,7 +747,7 @@ fn current_stage(
         .lock()
         .map_err(|_| WorkerFailure::internal("Node state is unavailable."))?
         .library
-        .get(&work.principal_id, &work.id)
+        .get(work.principal_id, &work.id)
         .map_err(WorkerFailure::from_internal)?
         .and_then(|job| job.stage)
         .unwrap_or(GenerationStage::Plan);
@@ -783,7 +784,7 @@ fn persist_progress(
     Ok(())
 }
 
-fn emit(events: &mpsc::Sender<ControlEvent>, principal_id: [u8; 32], job: JobView) {
+fn emit(events: &mpsc::Sender<ControlEvent>, principal_id: PrincipalId, job: JobView) {
     let _ = events.try_send(ControlEvent::JobUpdated { principal_id, job });
 }
 
