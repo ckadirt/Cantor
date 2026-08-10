@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "channel_version": 1,
+  "control_kind": 1,
+  "artifact_kind": 2,
+  "valid": {
+    "control": {
+      "json": "{\"v\":2,\"t\":\"status\",\"id\":\"fixture-status\"}",
+      "frame_hex": "01010000002a7b2276223a322c2274223a22737461747573222c226964223a22666978747572652d737461747573227d"
+    },
+    "artifact": {
+      "request_id": "artifact-ack-1",
+      "transfer_id": "11111111-1111-4111-8111-111111111111",
+      "offset": 65536,
+      "data_hex": "00ff1020",
+      "frame_hex": "0102000e61727469666163742d61636b2d31002431313131313131312d313131312d343131312d383131312d31313131313131313131313100000000000100000000000400ff1020"
+    }
+  },
+  "malformed": [
+    {
+      "id": "wrong_version",
+      "frame_hex": "0201000000027b7d",
+      "reason": "unsupported secure inner version"
+    },
+    {
+      "id": "wrong_kind",
+      "frame_hex": "0103000000027b7d",
+      "reason": "unsupported secure inner kind"
+    },
+    {
+      "id": "control_length_mismatch",
+      "frame_hex": "0101000000037b7d",
+      "reason": "declared control length is not exact"
+    },
+    {
+      "id": "control_invalid_utf8",
+      "frame_hex": "010100000002c080",
+      "reason": "control JSON is not valid UTF-8"
+    },
+    {
+      "id": "artifact_truncated",
+      "frame_hex": "0102000e61727469666163742d61636b2d31",
+      "reason": "artifact fields are truncated"
+    }
+  ]
+}

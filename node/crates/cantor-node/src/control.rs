@@ -1561,6 +1561,31 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_config_write_rolls_back_state_and_emits_no_effect() {
+        let (state, _guard) = state();
+        let (events, mut received) = mpsc::channel(8);
+        let (config_path, original_name) = {
+            let locked = state.lock().expect("state");
+            (locked.config_path.clone(), locked.config.name.clone())
+        };
+        std::fs::remove_file(&config_path).expect("remove writable config");
+        std::fs::create_dir(&config_path).expect("replace config with an unwritable target");
+
+        let response = dispatch(
+            &json!({"v":1,"id":"persist","t":"rename-node","name":"must-not-stick"}).to_string(),
+            &state,
+            &events,
+        );
+
+        let value = encode(&response);
+        assert_eq!(value["t"], "error");
+        assert_eq!(value["id"], "persist");
+        assert_eq!(value["code"], "failed");
+        assert_eq!(state.lock().expect("state").config.name, original_name);
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
     fn an_unknown_selector_is_an_error_rather_than_a_guess() {
         let (state, _guard) = state();
         let (events, _rx) = mpsc::channel(8);

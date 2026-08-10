@@ -1176,6 +1176,75 @@ mod tests {
     }
 
     #[test]
+    fn application_errors_keep_correlation_and_check_version_before_authentication() {
+        let temporary = tempdir().unwrap();
+        let (mut config, paths) = config(temporary.path());
+        let mut library = Library::open(temporary.path().join("library")).expect("library");
+        let mut offer = None;
+        let node_key = bs58::encode([8_u8; 32]).into_string();
+        let mut session = ClientSession::default();
+
+        let malformed = session
+            .handle(
+                json!({"t":"future.message","v":2,"id":"bad-shape"}),
+                &mut config,
+                &paths.config,
+                &mut offer,
+                &node_key,
+                &info(),
+                &mut library,
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(malformed).unwrap(),
+            json!({
+                "t":"error", "v":2, "id":"bad-shape", "code":"invalid_request",
+                "message":"The application message is not valid.", "retryable":false
+            })
+        );
+
+        let old_version = session
+            .handle(
+                json!({"t":"status","v":1,"id":"old-version"}),
+                &mut config,
+                &paths.config,
+                &mut offer,
+                &node_key,
+                &info(),
+                &mut library,
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(old_version).unwrap(),
+            json!({
+                "t":"error", "v":2, "id":"old-version", "code":"unsupported_version",
+                "message":"This app and node use incompatible protocol versions.",
+                "retryable":false,
+                "details":{"kind":"supported_version","minimum":2,"maximum":2}
+            })
+        );
+
+        let unauthenticated = session
+            .handle(
+                json!({"t":"status","v":2,"id":"needs-auth"}),
+                &mut config,
+                &paths.config,
+                &mut offer,
+                &node_key,
+                &info(),
+                &mut library,
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(unauthenticated).unwrap(),
+            json!({
+                "t":"error", "v":2, "id":"needs-auth", "code":"unauthenticated",
+                "message":"Authenticate before requesting status.", "retryable":false
+            })
+        );
+    }
+
+    #[test]
     fn artifact_transfer_is_owner_scoped_resumable_and_acknowledged() {
         let temporary = tempdir().unwrap();
         let (mut config, paths) = config(temporary.path());
