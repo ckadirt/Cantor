@@ -1,6 +1,7 @@
 import { Platform } from 'react-native';
 import type { AppIdentity } from '../identity/derive';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
+import type { ClientMessage } from '../../../protocol/ClientMessage';
 import type { SongPatch } from '../../../protocol/SongPatch';
 import type { ArtifactView } from '../../../protocol/ArtifactView';
 import { readError } from '../core/errors';
@@ -166,8 +167,7 @@ export class BackendConnection {
     private readonly identity: AppIdentity,
     pairToken: string | undefined,
     private readonly callbacks: ConnectionCallbacks,
-    private readonly secureFactory: SecureChannelFactory =
-      createNativeSecureChannel,
+    private readonly secureFactory: SecureChannelFactory = createNativeSecureChannel,
   ) {
     this.pairToken = pairToken;
     this.confirmedTransport = backend.transport;
@@ -429,7 +429,10 @@ export class BackendConnection {
 
   private handleSecureBinary(frame: ArrayBuffer): void {
     if (!this.secureReady || this.secureChannel === null) {
-      this.fail('Node sent encrypted data before the secure channel opened.', false);
+      this.fail(
+        'Node sent encrypted data before the secure channel opened.',
+        false,
+      );
       return;
     }
     try {
@@ -734,7 +737,9 @@ export class BackendConnection {
         payload.window_chunks !== 1
       ) {
         this.finishPending(payload.id);
-        pending.reject?.(new Error('Node artifact transfer limits are invalid.'));
+        pending.reject?.(
+          new Error('Node artifact transfer limits are invalid.'),
+        );
         return;
       }
       this.finishPending(payload.id);
@@ -883,7 +888,7 @@ export class BackendConnection {
     }
   }
 
-  private sendApplication(payload: Record<string, unknown>): void {
+  private sendApplication(payload: ClientMessage): void {
     if (this.socket?.readyState !== WebSocket.OPEN) {
       this.fail('Relay connection is not open.', false);
       return;
@@ -1059,7 +1064,9 @@ export class BackendConnection {
           part.sha256 !== artifact.sha256 ||
           offset !== artifact.byte_length
         ) {
-          throw new Error('Node artifact completion does not match the download.');
+          throw new Error(
+            'Node artifact completion does not match the download.',
+          );
         }
         await sink.finalize(part.byteLength);
         onProgress?.(part.byteLength, part.byteLength);
@@ -1101,7 +1108,11 @@ export class BackendConnection {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error('Opening the audio transfer timed out. It is safe to retry.'));
+        reject(
+          new Error(
+            'Opening the audio transfer timed out. It is safe to retry.',
+          ),
+        );
       }, REQUEST_TIMEOUT_MS);
       this.pendingRequests.set(id, {
         expected: 'artifact.info',
@@ -1151,7 +1162,7 @@ export class BackendConnection {
     type: 'song.patch' | 'song.trash' | 'song.restore',
     songId: string,
     expectedRevision: number,
-    extra: Record<string, unknown>,
+    extra: { patch: SongPatch } | Record<string, never>,
   ): Promise<SongHeader> {
     if (this.snapshot.phase !== 'ready') {
       return Promise.reject(new Error('Backend is not ready.'));
@@ -1168,14 +1179,24 @@ export class BackendConnection {
         reject,
         timer,
       });
-      this.sendApplication({
-        t: type,
-        v: APPLICATION_PROTOCOL_VERSION,
-        id,
-        song_id: songId,
-        expected_revision: expectedRevision,
-        ...extra,
-      });
+      this.sendApplication(
+        type === 'song.patch'
+          ? {
+              t: type,
+              v: APPLICATION_PROTOCOL_VERSION,
+              id,
+              song_id: songId,
+              expected_revision: expectedRevision,
+              patch: extra.patch,
+            }
+          : {
+              t: type,
+              v: APPLICATION_PROTOCOL_VERSION,
+              id,
+              song_id: songId,
+              expected_revision: expectedRevision,
+            },
+      );
     });
   }
 
