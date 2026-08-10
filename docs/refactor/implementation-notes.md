@@ -164,6 +164,21 @@ RF0 will rerun and expand this baseline before moving production owners.
   cold app restart on the physical phone. The paired Library, pinned/cached songs,
   metadata, and controls matched RF0.
 
+### 2026-08-09 — RF2 started
+
+- RF2 freezes the current screen as presentation behavior. Library, backend, and
+  queue components will first be copied into feature-owned modules and verified;
+  `MainScreen` will switch imports only after those modules are independently
+  complete. No styles, labels, accessibility text, draft-reset policy, action
+  timing, filtering, or ordering may change.
+- Backend lifecycle, cache hydration/persistence, outbox flushing, and feature
+  commands will move together into `useBackendRuntime` because they share one
+  ownership graph. The hook may expose named commands and state, but it may not
+  reinterpret failures or introduce a service container.
+- Assigned library presentation, backend/job presentation, and runtime-hook
+  construction to non-overlapping new paths. The primary agent owns the final
+  `MainScreen` integration, deletion of duplicates, phone screenshots, and commits.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
