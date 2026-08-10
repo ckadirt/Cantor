@@ -24,7 +24,13 @@ import {
 import { utf8ByteLength } from '../core/text';
 import { isRecord } from '../core/validation';
 import { mergeJobViews } from '../jobs/repository';
-import { applyLibraryChanges, mergeSongHeaders } from '../library/repository';
+import { mergeSongHeaders } from '../library/repository';
+import {
+  createLibrarySyncState,
+  reduceLibrarySync,
+  type LibrarySyncEvent,
+  type LibrarySyncState,
+} from '../library/sync';
 import { signChallenge } from '../identity/derive';
 import { backendRoomUrl, createPairProof } from './pairing';
 import {
@@ -74,12 +80,6 @@ type ConnectionCallbacks = {
   onNodeInfo: (nodeInfo: NodeInfo) => void;
   onPairTokenConsumed: () => void;
   onTransportConfirmed: (descriptor: TransportDescriptor) => void;
-};
-
-type PendingRequest = {
-  expected: 'library.page' | 'library.changes';
-  reject?: (error: Error) => void;
-  timer?: ReturnType<typeof setTimeout>;
 };
 
 type ArtifactInfo = {
@@ -140,7 +140,6 @@ export class BackendConnection {
   private handshakeId: string | null = null;
   private requestSequence = 0;
   private readonly requests: RequestRegistry;
-  private pendingRequests = new Map<string, PendingRequest>();
   private snapshot: ConnectionSnapshot = {
     phase: 'disconnected',
     error: null,
@@ -149,11 +148,7 @@ export class BackendConnection {
     libraryRevision: null,
     librarySyncing: false,
   };
-  private libraryStage: {
-    snapshotRevision: number;
-    songs: Map<string, SongHeader>;
-  } | null = null;
-  private libraryRequestInFlight = false;
+  private librarySync: LibrarySyncState = createLibrarySyncState();
 
   constructor(
     private readonly backend: BackendRecord,
@@ -196,8 +191,7 @@ export class BackendConnection {
     }
     this.clearPending('Backend reconnected before the request completed.');
     this.resetSecure();
-    this.libraryStage = null;
-    this.libraryRequestInFlight = false;
+    this.resetLibrarySync();
     this.setSnapshot({
       ...this.snapshot,
       phase: 'connecting',
@@ -605,91 +599,11 @@ export class BackendConnection {
       return;
     }
     if (payload.t === 'library.page' && typeof payload.id === 'string') {
-      if (this.pendingRequests.get(payload.id)?.expected !== 'library.page') {
-        return;
-      }
-      this.finishPending(payload.id);
-      const songs = parseSongs(payload.songs);
-      const snapshotRevision = payload.snapshot_revision;
-      const tombstones = payload.tombstones;
-      if (
-        songs === null ||
-        !isSafeRevision(snapshotRevision) ||
-        !Array.isArray(tombstones) ||
-        !tombstones.every(id => typeof id === 'string') ||
-        !(
-          payload.next_cursor === undefined ||
-          typeof payload.next_cursor === 'string'
-        )
-      ) {
-        this.libraryRequestInFlight = false;
-        this.fail('Node library page is invalid.', false);
-        return;
-      }
-      if (this.libraryStage === null) {
-        this.libraryStage = {
-          snapshotRevision,
-          songs: new Map(),
-        };
-      } else if (this.libraryStage.snapshotRevision !== snapshotRevision) {
-        this.libraryRequestInFlight = false;
-        this.fail(
-          'Node library snapshot changed inside one page sequence.',
-          false,
-        );
-        return;
-      }
-      for (const song of songs) this.libraryStage.songs.set(song.id, song);
-      for (const songId of tombstones) this.libraryStage.songs.delete(songId);
-      if (typeof payload.next_cursor === 'string') {
-        this.requestLibraryPage(payload.next_cursor);
-        return;
-      }
-      const completed = mergeSongHeaders(
-        [],
-        [...this.libraryStage.songs.values()],
-      );
-      this.libraryStage = null;
-      this.setSnapshot({
-        ...this.snapshot,
-        songs: completed,
-        libraryRevision: snapshotRevision,
-        librarySyncing: true,
-      });
-      this.requestLibraryChanges(snapshotRevision);
+      this.requests.deliver(payload.id, 'library.page', payload);
       return;
     }
     if (payload.t === 'library.changes' && typeof payload.id === 'string') {
-      if (
-        this.pendingRequests.get(payload.id)?.expected !== 'library.changes'
-      ) {
-        return;
-      }
-      this.finishPending(payload.id);
-      const changes = parseLibraryChanges(payload.changes);
-      const throughRevision = payload.through_revision;
-      if (
-        changes === null ||
-        !isSafeRevision(throughRevision) ||
-        typeof payload.has_more !== 'boolean' ||
-        (this.snapshot.libraryRevision !== null &&
-          throughRevision < this.snapshot.libraryRevision)
-      ) {
-        this.libraryRequestInFlight = false;
-        this.fail('Node library changes are invalid.', false);
-        return;
-      }
-      this.setSnapshot({
-        ...this.snapshot,
-        songs: applyLibraryChanges(this.snapshot.songs, changes),
-        libraryRevision: throughRevision,
-        librarySyncing: payload.has_more,
-      });
-      if (payload.has_more) {
-        this.requestLibraryChanges(throughRevision);
-      } else {
-        this.libraryRequestInFlight = false;
-      }
+      this.requests.deliver(payload.id, 'library.changes', payload);
       return;
     }
     if (payload.t === 'song.updated' && typeof payload.id === 'string') {
@@ -713,14 +627,7 @@ export class BackendConnection {
       return;
     }
     if (payload.t === 'library.changed' && isSafeRevision(payload.revision)) {
-      if (
-        !this.libraryRequestInFlight &&
-        (this.snapshot.libraryRevision === null ||
-          payload.revision > this.snapshot.libraryRevision)
-      ) {
-        if (this.snapshot.libraryRevision === null) this.startFullLibrarySync();
-        else this.requestLibraryChanges(this.snapshot.libraryRevision);
-      }
+      this.transitionLibrary({ type: 'changed', revision: payload.revision });
       return;
     }
     if (
@@ -730,25 +637,21 @@ export class BackendConnection {
       typeof payload.retryable === 'boolean'
     ) {
       if (typeof payload.id === 'string') {
-        const pending = this.pendingRequests.get(payload.id);
         const registeredExpected = this.requests.expected(payload.id);
         if (
-          pending?.expected === 'library.changes' &&
+          registeredExpected === 'library.changes' &&
           payload.code === 'full_sync_required'
         ) {
-          this.finishPending(payload.id);
-          this.libraryRequestInFlight = false;
-          this.startFullLibrarySync();
+          this.requests.finish(payload.id);
+          this.transitionLibrary({ type: 'full-sync-required' });
           return;
         }
         if (
-          pending?.expected === 'library.page' ||
-          pending?.expected === 'library.changes'
+          registeredExpected === 'library.page' ||
+          registeredExpected === 'library.changes'
         ) {
-          this.finishPending(payload.id);
-          this.libraryRequestInFlight = false;
-          this.libraryStage = null;
-          this.setSnapshot({ ...this.snapshot, librarySyncing: false });
+          this.requests.finish(payload.id);
+          this.transitionLibrary({ type: 'request-failed' });
           return;
         }
         if (
@@ -788,25 +691,10 @@ export class BackendConnection {
             payload.retryable,
           ),
         );
-        this.finishPending(payload.id);
-        pending?.reject?.(
-          new NodeRequestError(
-            payload.message,
-            payload.code,
-            payload.retryable,
-          ),
-        );
-        if (
-          (pending !== undefined || registered) &&
-          payload.code !== 'unsupported_version'
-        ) {
+        if (registered && payload.code !== 'unsupported_version') {
           return;
         }
-        if (
-          pending === undefined &&
-          !registered &&
-          payload.id !== this.handshakeId
-        ) {
+        if (!registered && payload.id !== this.handshakeId) {
           return;
         }
       }
@@ -1054,9 +942,8 @@ export class BackendConnection {
   }
 
   refreshLibrary(): void {
-    if (this.snapshot.phase !== 'ready' || this.libraryRequestInFlight) return;
-    if (this.snapshot.libraryRevision === null) this.startFullLibrarySync();
-    else this.requestLibraryChanges(this.snapshot.libraryRevision);
+    if (this.snapshot.phase !== 'ready') return;
+    this.transitionLibrary({ type: 'refresh' });
   }
 
   private openArtifact(
@@ -1236,11 +1123,7 @@ export class BackendConnection {
   }
 
   private startFullLibrarySync(): void {
-    if (this.libraryRequestInFlight) return;
-    this.libraryStage = null;
-    this.libraryRequestInFlight = true;
-    this.setSnapshot({ ...this.snapshot, librarySyncing: true });
-    this.requestLibraryPage(null);
+    this.transitionLibrary({ type: 'start-full' });
   }
 
   private mergeCanonicalJob(job: JobView): void {
@@ -1251,9 +1134,53 @@ export class BackendConnection {
   }
 
   private requestLibraryPage(cursor: string | null): void {
-    this.libraryRequestInFlight = true;
-    const id = this.nextRequestId('library-page');
-    this.setAutomaticRequest(id, 'library.page');
+    const id = this.requests.register<LibrarySyncEvent | null>(
+      'library-page',
+      {
+        expected: 'library.page',
+        decode: message => {
+          if (!isRecord(message)) return resolveResponse(null);
+          const songs = parseSongs(message.songs);
+          const snapshotRevision = message.snapshot_revision;
+          const tombstones = message.tombstones;
+          if (
+            songs === null ||
+            !isSafeRevision(snapshotRevision) ||
+            !Array.isArray(tombstones) ||
+            !tombstones.every(songId => typeof songId === 'string') ||
+            !(
+              message.next_cursor === undefined ||
+              typeof message.next_cursor === 'string'
+            )
+          ) {
+            return resolveResponse(null);
+          }
+          return resolveResponse<LibrarySyncEvent>({
+            type: 'page',
+            snapshotRevision,
+            songs,
+            tombstones,
+            ...(message.next_cursor === undefined
+              ? {}
+              : { nextCursor: message.next_cursor }),
+          });
+        },
+        timeout: {
+          afterMs: REQUEST_TIMEOUT_MS,
+          onTimeout: () => this.transitionLibrary({ type: 'request-failed' }),
+        },
+      },
+      {
+        resolve: event => {
+          if (event === null) {
+            this.fail('Node library page is invalid.', false);
+          } else {
+            this.transitionLibrary(event);
+          }
+        },
+        reject: () => {},
+      },
+    );
     this.sendApplication({
       t: 'library.list',
       v: APPLICATION_PROTOCOL_VERSION,
@@ -1265,9 +1192,43 @@ export class BackendConnection {
   }
 
   private requestLibraryChanges(sinceRevision: number): void {
-    this.libraryRequestInFlight = true;
-    const id = this.nextRequestId('library-sync');
-    this.setAutomaticRequest(id, 'library.changes');
+    const id = this.requests.register<LibrarySyncEvent | null>(
+      'library-sync',
+      {
+        expected: 'library.changes',
+        decode: message => {
+          if (!isRecord(message)) return resolveResponse(null);
+          const changes = parseLibraryChanges(message.changes);
+          if (
+            changes === null ||
+            !isSafeRevision(message.through_revision) ||
+            typeof message.has_more !== 'boolean'
+          ) {
+            return resolveResponse(null);
+          }
+          return resolveResponse<LibrarySyncEvent>({
+            type: 'changes',
+            changes,
+            throughRevision: message.through_revision,
+            hasMore: message.has_more,
+          });
+        },
+        timeout: {
+          afterMs: REQUEST_TIMEOUT_MS,
+          onTimeout: () => this.transitionLibrary({ type: 'request-failed' }),
+        },
+      },
+      {
+        resolve: event => {
+          if (event === null) {
+            this.fail('Node library changes are invalid.', false);
+          } else {
+            this.transitionLibrary(event);
+          }
+        },
+        reject: () => {},
+      },
+    );
     this.sendApplication({
       t: 'library.sync',
       v: APPLICATION_PROTOCOL_VERSION,
@@ -1277,38 +1238,53 @@ export class BackendConnection {
     });
   }
 
-  private setAutomaticRequest(
-    id: string,
-    expected: 'library.page' | 'library.changes',
-  ): void {
-    const timer = setTimeout(() => {
-      this.pendingRequests.delete(id);
-      this.libraryRequestInFlight = false;
-      this.libraryStage = null;
-      this.setSnapshot({ ...this.snapshot, librarySyncing: false });
-    }, REQUEST_TIMEOUT_MS);
-    this.pendingRequests.set(id, { expected, timer });
-  }
-
-  private finishPending(id: string): void {
-    const pending = this.pendingRequests.get(id);
-    if (pending?.timer !== undefined) clearTimeout(pending.timer);
-    this.pendingRequests.delete(id);
-  }
-
   private clearPending(message: string): void {
     this.requests.clear(message);
-    for (const [id, pending] of this.pendingRequests) {
-      if (pending.timer !== undefined) clearTimeout(pending.timer);
-      pending.reject?.(new Error(message));
-      this.pendingRequests.delete(id);
+  }
+
+  private transitionLibrary(event: LibrarySyncEvent): void {
+    const transition = reduceLibrarySync(
+      {
+        ...this.librarySync,
+        songs: this.snapshot.songs,
+        libraryRevision: this.snapshot.libraryRevision,
+        librarySyncing: this.snapshot.librarySyncing,
+      },
+      event,
+    );
+    this.librarySync = transition.state;
+    if (transition.publishSnapshot) {
+      this.setSnapshot({
+        ...this.snapshot,
+        songs: transition.state.songs,
+        libraryRevision: transition.state.libraryRevision,
+        librarySyncing: transition.state.librarySyncing,
+      });
     }
+    for (const effect of transition.effects) {
+      if (effect.type === 'request-page') {
+        this.requestLibraryPage(effect.cursor);
+      } else if (effect.type === 'request-changes') {
+        this.requestLibraryChanges(effect.sinceRevision);
+      } else {
+        this.fail(effect.message, false);
+      }
+    }
+  }
+
+  private resetLibrarySync(
+    librarySyncing = this.snapshot.librarySyncing,
+  ): void {
+    this.librarySync = createLibrarySyncState({
+      songs: this.snapshot.songs,
+      libraryRevision: this.snapshot.libraryRevision,
+      librarySyncing,
+    });
   }
 
   private fail(message: string, fatal: boolean): void {
     this.fatal = this.fatal || fatal;
-    this.libraryRequestInFlight = false;
-    this.libraryStage = null;
+    this.resetLibrarySync(false);
     this.resetSecure();
     this.setSnapshot({
       ...this.snapshot,
