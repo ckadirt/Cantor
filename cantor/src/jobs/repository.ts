@@ -1,6 +1,7 @@
 import type { JobView } from '../../../protocol/JobView';
-import { parseJob } from '../backends/types';
+import { parseJob } from '../core/protocol';
 import { createSerializedJsonStore } from '../core/storage/serializedJsonStore';
+import { isRecord } from '../core/validation';
 
 const JOBS_KEY = 'cantor.job-snapshots.v1';
 
@@ -67,8 +68,4 @@ function decodeStoredJobs(value: unknown): StoredJobs {
     }
   }
   return result;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

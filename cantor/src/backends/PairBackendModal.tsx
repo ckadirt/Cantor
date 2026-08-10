@@ -7,6 +7,7 @@ import {
   useCameraPermission,
   useCodeScanner,
 } from 'react-native-vision-camera';
+import { readError } from '../core/errors';
 import { space, touch, type, usePalette } from '../theme/tokens';
 import { parsePairingUri } from './pairing';
 import type { PairingRequest } from './types';
@@ -180,10 +181,6 @@ function Action({ label, onPress }: { label: string; onPress: () => void }) {
       <Text style={[type.mono, { color: pal.ink }]}>{label}</Text>
     </Pressable>
   );
-}
-
-function readError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 const styles = StyleSheet.create({

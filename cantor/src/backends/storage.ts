@@ -1,6 +1,8 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { isRecord, parseNodeInfo, type BackendRecord } from './types';
+import { parseNodeInfo } from '../core/protocol';
+import { isRecord } from '../core/validation';
 import { verifyTransportDescriptor } from '../security/descriptor';
+import type { BackendRecord } from './types';
 
 const BACKENDS_KEY = 'cantor.backends.v1';
 

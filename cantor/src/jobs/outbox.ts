@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
+import { isRecord } from '../core/validation';
 
 const OUTBOX_KEY = 'cantor.submission-outbox.v1';
 let writeQueue = Promise.resolve();
@@ -93,10 +94,6 @@ function isGenerationRequest(value: unknown): value is GenerationRequest {
       (typeof value.cfg === 'number' && Number.isFinite(value.cfg))) &&
     (value.seed === undefined || Number.isSafeInteger(value.seed))
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 export async function markAccepted(

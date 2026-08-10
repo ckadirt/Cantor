@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { SongHeader } from '../../../protocol/SongHeader';
-import { parseSongs } from '../backends/types';
+import { parseSongs } from '../core/protocol';
+import { isRecord } from '../core/validation';
 
 const LIBRARY_KEY = 'cantor.private-library.v1';
 let writeQueue = Promise.resolve();
@@ -124,10 +125,6 @@ async function loadAll(): Promise<StoredLibraries> {
     };
   }
   return result;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
