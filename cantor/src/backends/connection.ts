@@ -47,6 +47,11 @@ import {
 } from '../security/wire';
 import type { TransportDescriptor } from '../security/types';
 import type { BackendRecord, ConnectionSnapshot } from './types';
+import {
+  RequestRegistry,
+  ignoreResponse,
+  resolveResponse,
+} from './requestRegistry';
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -77,13 +82,9 @@ type PendingRequest = {
     | 'job.controlled'
     | 'library.page'
     | 'library.changes'
-    | 'song.updated'
-    | 'song.detail'
     | 'artifact.info'
     | 'artifact.part';
   resolveJob?: (value: JobView) => void;
-  resolveSong?: (value: SongHeader) => void;
-  resolveDetail?: (value: SongDetail) => void;
   resolveArtifactInfo?: (value: ArtifactInfo) => void;
   resolveArtifactPart?: (value: ArtifactPart) => void;
   reject?: (error: Error) => void;
@@ -147,6 +148,7 @@ export class BackendConnection {
   private secureReady = false;
   private handshakeId: string | null = null;
   private requestSequence = 0;
+  private readonly requests: RequestRegistry;
   private pendingRequests = new Map<string, PendingRequest>();
   private snapshot: ConnectionSnapshot = {
     phase: 'disconnected',
@@ -171,6 +173,7 @@ export class BackendConnection {
   ) {
     this.pairToken = pairToken;
     this.confirmedTransport = backend.transport;
+    this.requests = new RequestRegistry(kind => this.nextRequestId(kind));
   }
 
   start(): void {
@@ -701,25 +704,11 @@ export class BackendConnection {
       return;
     }
     if (payload.t === 'song.updated' && typeof payload.id === 'string') {
-      const pending = this.pendingRequests.get(payload.id);
-      if (pending?.expected !== 'song.updated') return;
-      const song = parseSong(payload.song);
-      if (song === null) return;
-      this.finishPending(payload.id);
-      pending.resolveSong?.(song);
-      this.setSnapshot({
-        ...this.snapshot,
-        songs: mergeSongHeaders(this.snapshot.songs, [song]),
-      });
+      this.requests.deliver(payload.id, 'song.updated', payload);
       return;
     }
     if (payload.t === 'song.detail' && typeof payload.id === 'string') {
-      const pending = this.pendingRequests.get(payload.id);
-      if (pending?.expected !== 'song.detail') return;
-      const detail = parseSongDetail(payload.detail);
-      if (detail === null) return;
-      this.finishPending(payload.id);
-      pending.resolveDetail?.(detail);
+      this.requests.deliver(payload.id, 'song.detail', payload);
       return;
     }
     if (payload.t === 'artifact.info' && typeof payload.id === 'string') {
@@ -816,6 +805,7 @@ export class BackendConnection {
     ) {
       if (typeof payload.id === 'string') {
         const pending = this.pendingRequests.get(payload.id);
+        const registeredExpected = this.requests.expected(payload.id);
         if (
           pending?.expected === 'library.changes' &&
           payload.code === 'full_sync_required'
@@ -836,19 +826,19 @@ export class BackendConnection {
           return;
         }
         if (
-          pending?.expected === 'song.updated' &&
+          registeredExpected === 'song.updated' &&
           payload.code === 'revision_conflict' &&
           isRecord(payload.details) &&
           payload.details.kind === 'revision_conflict'
         ) {
           const current = parseSong(payload.details.current);
           if (current !== null) {
-            this.finishPending(payload.id);
             this.setSnapshot({
               ...this.snapshot,
               songs: mergeSongHeaders(this.snapshot.songs, [current]),
             });
-            pending.reject?.(
+            this.requests.reject(
+              payload.id,
               new SongRevisionConflict(payload.message, current),
             );
             return;
@@ -864,6 +854,14 @@ export class BackendConnection {
           const current = parseJob(payload.details.current);
           if (current !== null) this.mergeCanonicalJob(current);
         }
+        const registered = this.requests.reject(
+          payload.id,
+          new NodeRequestError(
+            payload.message,
+            payload.code,
+            payload.retryable,
+          ),
+        );
         this.finishPending(payload.id);
         pending?.reject?.(
           new NodeRequestError(
@@ -872,10 +870,17 @@ export class BackendConnection {
             payload.retryable,
           ),
         );
-        if (pending !== undefined && payload.code !== 'unsupported_version') {
+        if (
+          (pending !== undefined || registered) &&
+          payload.code !== 'unsupported_version'
+        ) {
           return;
         }
-        if (pending === undefined && payload.id !== this.handshakeId) {
+        if (
+          pending === undefined &&
+          !registered &&
+          payload.id !== this.handshakeId
+        ) {
           return;
         }
       }
@@ -1006,25 +1011,25 @@ export class BackendConnection {
     if (this.snapshot.phase !== 'ready') {
       return Promise.reject(new Error('Backend is not ready.'));
     }
-    const id = this.nextRequestId('song-detail');
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error('Song detail timed out.'));
-      }, REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(id, {
-        expected: 'song.detail',
-        resolveDetail: resolve,
-        reject,
-        timer,
-      });
-      this.sendApplication({
-        t: 'song.get',
-        v: APPLICATION_PROTOCOL_VERSION,
-        id,
-        song_id: songId,
-      });
+    const request = this.requests.request('song-detail', {
+      expected: 'song.detail',
+      decode: message => {
+        if (!isRecord(message)) return ignoreResponse();
+        const detail = parseSongDetail(message.detail);
+        return detail === null ? ignoreResponse() : resolveResponse(detail);
+      },
+      timeout: {
+        afterMs: REQUEST_TIMEOUT_MS,
+        error: () => new Error('Song detail timed out.'),
+      },
     });
+    this.sendApplication({
+      t: 'song.get',
+      v: APPLICATION_PROTOCOL_VERSION,
+      id: request.id,
+      song_id: songId,
+    });
+    return request.promise;
   }
 
   async downloadArtifact(
@@ -1167,18 +1172,34 @@ export class BackendConnection {
     if (this.snapshot.phase !== 'ready') {
       return Promise.reject(new Error('Backend is not ready.'));
     }
-    const id = this.nextRequestId('song');
+    let id = '';
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error('Song update timed out. It is safe to refresh.'));
-      }, REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(id, {
-        expected: 'song.updated',
-        resolveSong: resolve,
-        reject,
-        timer,
-      });
+      id = this.requests.register(
+        'song',
+        {
+          expected: 'song.updated',
+          decode: message => {
+            if (!isRecord(message)) return ignoreResponse();
+            const song = parseSong(message.song);
+            return song === null ? ignoreResponse() : resolveResponse(song);
+          },
+          timeout: {
+            afterMs: REQUEST_TIMEOUT_MS,
+            error: () =>
+              new Error('Song update timed out. It is safe to refresh.'),
+          },
+        },
+        {
+          resolve: song => {
+            resolve(song);
+            this.setSnapshot({
+              ...this.snapshot,
+              songs: mergeSongHeaders(this.snapshot.songs, [song]),
+            });
+          },
+          reject,
+        },
+      );
       this.sendApplication(
         type === 'song.patch'
           ? {
@@ -1262,6 +1283,7 @@ export class BackendConnection {
   }
 
   private clearPending(message: string): void {
+    this.requests.clear(message);
     for (const [id, pending] of this.pendingRequests) {
       if (pending.timer !== undefined) clearTimeout(pending.timer);
       pending.reject?.(new Error(message));
