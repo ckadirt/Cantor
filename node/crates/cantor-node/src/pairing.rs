@@ -10,6 +10,7 @@ use sha2::Sha256;
 use url::Url;
 
 use crate::config::NodeConfig;
+use crate::secure::TransportDescriptor;
 
 const PAIR_TOKEN_BYTES: usize = 32;
 const PAIR_PROOF_DOMAIN: &[u8] = b"cantor-pair-proof-v1";
@@ -78,13 +79,22 @@ pub fn verify_pair_proof(
     mac.verify_slice(&proof).is_ok()
 }
 
-pub fn pairing_uri(config: &NodeConfig, node_public_key: &str, pair_token: &str) -> Result<Url> {
+pub fn pairing_uri(
+    config: &NodeConfig,
+    node_public_key: &str,
+    pair_token: &str,
+    descriptor: &TransportDescriptor,
+) -> Result<Url> {
     let mut url = Url::parse("cantor://pair").expect("static pairing URI is valid");
     url.query_pairs_mut()
         .append_pair("pk", node_public_key)
         .append_pair("relay", &config.relay_url)
         .append_pair("name", &config.name)
-        .append_pair("token", pair_token);
+        .append_pair("token", pair_token)
+        .append_pair("ts", &descriptor.transport_suite)
+        .append_pair("tkid", &descriptor.transport_key_id)
+        .append_pair("tx", &descriptor.transport_x25519)
+        .append_pair("tsig", &descriptor.signature_ed25519);
     Ok(url)
 }
 
@@ -104,6 +114,7 @@ mod tests {
     use sha2::Sha256;
 
     use crate::config::NodeConfig;
+    use crate::secure::{TRANSPORT_SUITE, TransportDescriptor};
 
     use super::{PAIR_PROOF_DOMAIN, pairing_uri, verify_pair_proof};
 
@@ -121,7 +132,15 @@ mod tests {
             jobs: crate::config::JobsConfig::default(),
             pairings: Vec::new(),
         };
-        let uri = pairing_uri(&config, "node-key", "secret").expect("pairing URI");
+        let descriptor = TransportDescriptor {
+            schema: 1,
+            node_ed25519: "node-key".to_owned(),
+            transport_suite: TRANSPORT_SUITE.to_owned(),
+            transport_key_id: "key-id".to_owned(),
+            transport_x25519: "transport-key".to_owned(),
+            signature_ed25519: "signature".to_owned(),
+        };
+        let uri = pairing_uri(&config, "node-key", "secret", &descriptor).expect("pairing URI");
         let fields: std::collections::HashMap<_, _> = uri.query_pairs().into_owned().collect();
         assert_eq!(uri.scheme(), "cantor");
         assert_eq!(uri.host_str(), Some("pair"));
@@ -132,6 +151,10 @@ mod tests {
         );
         assert_eq!(fields.get("name").map(String::as_str), Some("studio node"));
         assert_eq!(fields.get("token").map(String::as_str), Some("secret"));
+        assert_eq!(fields.get("ts").map(String::as_str), Some(TRANSPORT_SUITE));
+        assert_eq!(fields.get("tkid").map(String::as_str), Some("key-id"));
+        assert_eq!(fields.get("tx").map(String::as_str), Some("transport-key"));
+        assert_eq!(fields.get("tsig").map(String::as_str), Some("signature"));
     }
 
     #[test]

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Cantor M6 — End-to-end privacy</title>
+  <style>
+    :root { --bg:#090d10; --card:#111920; --ink:#edf5f3; --muted:#aab9b6; --line:#293b3d; --mint:#72ead2; --ok:#91e99c; --warn:#e4bd64; --bad:#ff9aac; font-family:Inter,system-ui,sans-serif }
+    * { box-sizing:border-box } body { margin:0; background:var(--bg); color:var(--ink); line-height:1.48 }
+    main { width:min(780px,100%); margin:auto; padding:42px 20px 70px }
+    h1 { margin:4px 0 14px; font-size:clamp(2.4rem,8vw,4.2rem); line-height:.98; letter-spacing:-.045em }
+    h2 { margin:0 0 12px; font-size:1.45rem } p { margin:0 0 11px }
+    section { padding:25px 0; border-bottom:1px solid var(--line) } code { color:#cafff5 }
+    .kicker { color:var(--mint); font:700 .75rem ui-monospace,monospace; letter-spacing:.13em }
+    .lead { color:#cad7d4; font-size:1.08rem }
+    .flow { display:grid; grid-template-columns:repeat(4,1fr); gap:8px }
+    .flow div,.box,fieldset { padding:13px; background:var(--card); border:1px solid var(--line); border-radius:8px }
+    .flow b { display:block; color:var(--mint) } .flow span,.muted { color:var(--muted) }
+    .rule { display:grid; grid-template-columns:10rem 1fr; gap:12px; padding:10px 0; border-top:1px solid var(--line) }
+    .rule b { color:var(--mint) }
+    .code { display:block; margin:7px 0; padding:10px 12px; color:var(--mint); background:var(--card); border:1px solid var(--line); text-decoration:none; font:650 .82rem ui-monospace,monospace }
+    .proof { display:grid; grid-template-columns:repeat(2,1fr); gap:8px }
+    .proof strong { display:block; color:var(--ok); font-size:1.25rem }
+    .warn { border-left:4px solid var(--warn) } .danger { border-left:4px solid var(--bad) }
+    fieldset { margin:10px 0 } legend { color:var(--mint); font-weight:750 } label { display:block; padding:4px }
+    button { margin-top:8px; padding:11px 17px; border:0; border-radius:7px; background:var(--mint); color:#07110f; font-weight:850 }
+    #result { margin-top:12px; font-weight:750 } .pass { color:var(--ok) } .fail { color:var(--bad) }
+    @media (max-width:620px) { .flow { grid-template-columns:1fr 1fr } .rule { grid-template-columns:1fr } }
+  </style>
+</head>
+<body><main>
+  <p class="kicker">CANTOR · PRIVATE LIBRARY · MILESTONE 6</p>
+  <h1>The relay routes.<br>It does not read.</h1>
+  <p class="lead">M6 puts one authenticated Noise channel around the existing app protocol. Identity enters only after the node proves its pinned transport key; control and audio then travel as ciphertext.</p>
+
+  <section>
+    <h2>The whole idea</h2>
+    <div class="flow">
+      <div><b>Pin</b><span>Ed25519 signs the node's separate X25519 key.</span></div>
+      <div><b>Prove</b><span>Noise NK authenticates the node first.</span></div>
+      <div><b>Authenticate</b><span>Existing app identity runs inside Noise.</span></div>
+      <div><b>Exchange</b><span>JSON and raw audio become opaque binary frames.</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>What changed</h2>
+    <div class="rule"><b>Node key</b><span>A random <code>noise.key</code> is stored mode 0600. The familiar Ed25519 node key signs its public half, so the relay cannot substitute one.</span></div>
+    <div class="rule"><b>Handshake order</b><span><code>secure.init → offer → Noise step 1 → step 2</code>. Only then may app identity, pair proof, prompts, or library data leave the phone.</span></div>
+    <div class="rule"><b>Relay</b><span>It reads only carrier version, ciphertext length, and the session ID needed for routing. Application kinds and bytes stay encrypted.</span></div>
+    <div class="rule"><b>Audio</b><span>The node encrypts raw 64 KiB artifact chunks. Base64 is recreated only on the phone after decryption for the existing native file API.</span></div>
+    <div class="rule"><b>Fail closed</b><span>Bad signature, key change, plaintext fallback, tamper, replay, reordering, wrong session, malformed length, or exhausted limits kills the channel.</span></div>
+  </section>
+
+  <section>
+    <h2>Read the implementation</h2>
+    <a class="code" href="../../node/crates/cantor-node/src/secure.rs#L20">secure.rs:20 — exact suite, key binding, prologue and limits</a>
+    <a class="code" href="../../node/crates/cantor-node/src/secure.rs#L426">secure.rs:426 — encrypt, fragment, order and reassemble</a>
+    <a class="code" href="../../relay/src/frames.ts#L167">frames.ts:167 — opaque 96 KiB binary carrier</a>
+    <a class="code" href="../../cantor/src/security/descriptor.ts#L21">descriptor.ts:21 — verify the Ed25519 → X25519 binding</a>
+    <a class="code" href="../../cantor/src/backends/connection.ts#L317">connection.ts:317 — Noise before application authentication</a>
+    <a class="code" href="../../cantor/android/app/src/main/java/com/cantor/app/security/CantorSecureModule.kt#L42">CantorSecureModule.kt:42 — native key/counter ownership</a>
+    <a class="code" href="milestone-6-security-adr.md">Security ADR — exact bytes, threat model and release gate</a>
+  </section>
+
+  <section>
+    <h2>What the relay still learns</h2>
+    <p>Room identity, IP/network metadata, connection time, direction, frame size, and traffic rhythm remain visible. The relay can also delay, drop, or close traffic. M6 protects payload confidentiality and integrity; it is not anonymity, traffic padding, or endpoint-at-rest encryption.</p>
+  </section>
+
+  <section>
+    <h2>Measured result</h2>
+    <div class="proof">
+      <div class="box"><strong>122</strong><span class="muted">Rust tests passed</span></div>
+      <div class="box"><strong>166</strong><span class="muted">app tests passed</span></div>
+      <div class="box"><strong>8</strong><span class="muted">relay tests passed</span></div>
+      <div class="box"><strong>287,339 B</strong><span class="muted">encrypted phone download, digest verified</span></div>
+    </div>
+    <p class="muted" style="margin-top:10px">Physical Android: Java Noise ↔ Rust Noise handshake, encrypted controls, raw encrypted artifact download, 48 kHz stereo playback, offline cache/pin regression, and reconnect after stable-key node restart. No generation ran.</p>
+  </section>
+
+  <section>
+    <h2>Release status</h2>
+    <div class="box danger"><p><strong>Implementation complete; production approval blocked.</strong> This integration has not had an independent security review. The review, hosted capture, and blocking-finding resolution remain release gates—not paperwork to infer from passing tests.</p></div>
+  </section>
+
+  <section id="quiz">
+    <p class="kicker">CHECK YOUR UNDERSTANDING · PASS = 4/5</p>
+    <h2>M6 quiz</h2>
+    <form id="q">
+      <fieldset><legend>1. When may the app send its identity?</legend>
+        <label><input type="radio" name="q1" value="a"> In the first relay frame</label><label><input type="radio" name="q1" value="b"> Only after Noise authenticates the node</label><label><input type="radio" name="q1" value="c"> After audio download</label>
+      </fieldset>
+      <fieldset><legend>2. Why does Ed25519 sign a separate X25519 key?</legend>
+        <label><input type="radio" name="q2" value="a"> To bind transport identity without unsafe key conversion</label><label><input type="radio" name="q2" value="b"> To hide frame sizes</label><label><input type="radio" name="q2" value="c"> To compress audio</label>
+      </fieldset>
+      <fieldset><legend>3. What may the relay still observe?</legend>
+        <label><input type="radio" name="q3" value="a"> Lyrics and song titles</label><label><input type="radio" name="q3" value="b"> Pairing proof</label><label><input type="radio" name="q3" value="c"> Timing, direction and frame sizes</label>
+      </fieldset>
+      <fieldset><legend>4. What happens if the pinned transport descriptor changes?</legend>
+        <label><input type="radio" name="q4" value="a"> Silently accept it</label><label><input type="radio" name="q4" value="b"> Fall back to plaintext</label><label><input type="radio" name="q4" value="c"> Fail closed and require re-pairing</label>
+      </fieldset>
+      <fieldset><legend>5. Is M6 approved for production today?</legend>
+        <label><input type="radio" name="q5" value="a"> Yes, tests replace review</label><label><input type="radio" name="q5" value="b"> No; independent review is still a release gate</label><label><input type="radio" name="q5" value="c"> Only when the phone is online</label>
+      </fieldset>
+      <button type="submit">Grade quiz</button><p id="result" aria-live="polite"></p>
+    </form>
+  </section>
+</main>
+<script>
+document.getElementById('q').addEventListener('submit', event => {
+  event.preventDefault(); const answers={q1:'b',q2:'a',q3:'c',q4:'c',q5:'b'}; let score=0;
+  const data=new FormData(event.currentTarget); for(const [name,answer] of Object.entries(answers)) if(data.get(name)===answer) score++;
+  const result=document.getElementById('result'); result.className=score>=4?'pass':'fail';
+  result.textContent=score>=4?`${score}/5 — Passed.`:`${score}/5 — Review the rules above and retry.`;
+});
+</script></body></html>

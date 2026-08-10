@@ -20,6 +20,15 @@ export type {
 export const APPLICATION_PROTOCOL_VERSION = 2;
 export const RELAY_PROTOCOL_VERSION = 1;
 
+export type TransportDescriptor = {
+  schema: 1;
+  node_ed25519: string;
+  transport_suite: 'noise-nk-25519-chachapoly-sha256-v1';
+  transport_key_id: string;
+  transport_x25519: string;
+  signature_ed25519: string;
+};
+
 const JOB_STATES = new Set<JobState>([
   'queued',
   'preparing',
@@ -69,6 +78,8 @@ export type BackendRecord = {
   relayUrl: string;
   petname: string;
   lastNodeInfo: NodeInfo | null;
+  /** Set only after the descriptor signature and a Noise handshake succeed. */
+  transport?: TransportDescriptor;
 };
 
 export type ConnectionPhase =

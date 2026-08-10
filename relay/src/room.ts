@@ -8,6 +8,10 @@ import {
   type RelayClaim,
   type RelayOutboundFrame,
   type RelayTunnel,
+  encodeClientSecureCarrier,
+  encodeNodeSecureCarrier,
+  parseClientSecureCarrier,
+  parseNodeSecureCarrier,
   parseRelayClaim,
   parseRelayTunnel,
   parseSocketAttachment,
@@ -127,7 +131,15 @@ export class NodeRoom extends DurableObject<Env> {
     }
 
     if (typeof message !== 'string') {
-      reject(socket, 'invalid-frame', 'Relay frames must be JSON text.');
+      if (attachment.role === 'node') {
+        if (!attachment.authed) {
+          reject(socket, 'bad-claim', 'Authenticate the node before binary frames.');
+          return;
+        }
+        this.handleNodeSecure(socket, message);
+      } else {
+        this.handleClientSecure(socket, attachment, message);
+      }
       return;
     }
 
@@ -395,6 +407,66 @@ export class NodeRoom extends DurableObject<Env> {
       t: 'tunnel',
       payload: tunnel.payload,
     });
+  }
+
+  private handleClientSecure(
+    socket: WebSocket,
+    attachment: ClientSocketAttachment,
+    frame: ArrayBuffer,
+  ): void {
+    const ciphertext = parseClientSecureCarrier(frame);
+    if (ciphertext === null) {
+      reject(socket, 'invalid-frame', 'Secure carrier frame is invalid.');
+      return;
+    }
+    const node = this.currentNode();
+    if (node === null) {
+      sendJson(socket, {
+        v: RELAY_VERSION,
+        t: 'relay.error',
+        code: 'node-offline',
+        msg: 'The node is not connected.',
+      });
+      return;
+    }
+    try {
+      node.send(encodeNodeSecureCarrier(attachment.sid, ciphertext));
+    } catch {
+      sendJson(socket, {
+        v: RELAY_VERSION,
+        t: 'relay.error',
+        code: 'node-offline',
+        msg: 'The node disconnected before the frame could be delivered.',
+      });
+    }
+  }
+
+  private handleNodeSecure(socket: WebSocket, frame: ArrayBuffer): void {
+    const carrier = parseNodeSecureCarrier(frame);
+    if (carrier === null || !isRelaySessionId(carrier.sid)) {
+      reject(socket, 'invalid-frame', 'Secure carrier frame is invalid.');
+      return;
+    }
+    const client = this.clientForSession(carrier.sid);
+    if (client === null) {
+      sendJson(socket, {
+        v: RELAY_VERSION,
+        t: 'relay.error',
+        code: 'client-offline',
+        msg: 'The target client session is not connected.',
+      });
+      return;
+    }
+    try {
+      client.send(encodeClientSecureCarrier(carrier.ciphertext));
+    } catch {
+      sendJson(socket, {
+        v: RELAY_VERSION,
+        t: 'relay.error',
+        code: 'client-offline',
+        msg: 'The target client session disconnected.',
+      });
+    }
   }
 
   private authenticatedNodes(): WebSocket[] {

@@ -11,6 +11,24 @@ import { applyLibraryChanges, mergeSongHeaders } from '../library/repository';
 import { signChallenge } from '../identity/derive';
 import { backendRoomUrl, createPairProof } from './pairing';
 import {
+  buildHandshakePrologue,
+  decodeChannelNonce,
+  descriptorsEqual,
+  TRANSPORT_SUITE,
+  verifyTransportDescriptor,
+} from '../security/descriptor';
+import {
+  createNativeSecureChannel,
+  type SecureChannel,
+  type SecureChannelFactory,
+} from '../security/native';
+import {
+  decodeNodeInner,
+  encodeClientCarrier,
+  encodeControlInner,
+  parseClientCarrier,
+} from '../security/wire';
+import {
   isRecord,
   parseJob,
   parseJobs,
@@ -25,6 +43,7 @@ import {
   type BackendRecord,
   type ConnectionSnapshot,
   type NodeInfo,
+  type TransportDescriptor,
 } from './types';
 
 const RECONNECT_BASE_MS = 1_000;
@@ -46,6 +65,7 @@ type ConnectionCallbacks = {
   onSnapshot: (snapshot: ConnectionSnapshot) => void;
   onNodeInfo: (nodeInfo: NodeInfo) => void;
   onPairTokenConsumed: () => void;
+  onTransportConfirmed: (descriptor: TransportDescriptor) => void;
 };
 
 type PendingRequest = {
@@ -118,6 +138,11 @@ export class BackendConnection {
   private fatal = false;
   private reconnectAttempt = 0;
   private pairToken: string | undefined;
+  private secureChannel: SecureChannel | null = null;
+  private secureHandshakeId: string | null = null;
+  private pendingTransport: TransportDescriptor | null = null;
+  private confirmedTransport: TransportDescriptor | undefined;
+  private secureReady = false;
   private handshakeId: string | null = null;
   private requestSequence = 0;
   private pendingRequests = new Map<string, PendingRequest>();
@@ -140,8 +165,11 @@ export class BackendConnection {
     private readonly identity: AppIdentity,
     pairToken: string | undefined,
     private readonly callbacks: ConnectionCallbacks,
+    private readonly secureFactory: SecureChannelFactory =
+      createNativeSecureChannel,
   ) {
     this.pairToken = pairToken;
+    this.confirmedTransport = backend.transport;
   }
 
   start(): void {
@@ -153,6 +181,7 @@ export class BackendConnection {
 
   stop(): void {
     this.stopped = true;
+    this.resetSecure();
     this.clearPending('Backend connection stopped.');
     if (this.reconnectTimer !== null) {
       clearTimeout(this.reconnectTimer);
@@ -171,6 +200,7 @@ export class BackendConnection {
       return;
     }
     this.clearPending('Backend reconnected before the request completed.');
+    this.resetSecure();
     this.libraryStage = null;
     this.libraryRequestInFlight = false;
     this.setSnapshot({
@@ -185,6 +215,7 @@ export class BackendConnection {
       this.scheduleReconnect(readError(error));
       return;
     }
+    (socket as WebSocket & { binaryType: string }).binaryType = 'arraybuffer';
     this.socket = socket;
     socket.onopen = () => {
       if (this.socket === socket) {
@@ -199,6 +230,7 @@ export class BackendConnection {
       if (this.socket === socket) {
         this.socket = null;
         this.stopKeepalive();
+        this.resetSecure();
       }
       if (!this.stopped && !this.fatal) {
         this.scheduleReconnect(
@@ -228,6 +260,10 @@ export class BackendConnection {
   // an error. A frame type added by a newer relay must not be able to take a
   // deployed app offline permanently.
   private handleRelayMessage(data: unknown): void {
+    if (data instanceof ArrayBuffer) {
+      this.handleSecureBinary(data);
+      return;
+    }
     if (typeof data !== 'string' || data === KEEPALIVE_PONG) {
       return;
     }
@@ -242,8 +278,9 @@ export class BackendConnection {
     }
     if (frame.t === 'relay.presence' && typeof frame.online === 'boolean') {
       if (frame.online) {
-        this.beginHandshake();
+        this.beginSecureHandshake();
       } else {
+        this.resetSecure();
         this.handshakeId = null;
         this.setSnapshot({
           ...this.snapshot,
@@ -255,6 +292,7 @@ export class BackendConnection {
     }
     if (frame.t === 'relay.error') {
       if (frame.code === 'node-offline') {
+        this.resetSecure();
         this.setSnapshot({
           ...this.snapshot,
           phase: 'attached',
@@ -272,11 +310,137 @@ export class BackendConnection {
       return;
     }
     if (frame.t === 'tunnel' && 'payload' in frame) {
-      this.handleNodeMessage(frame.payload);
+      this.handleSecureText(frame.payload);
     }
   }
 
-  private beginHandshake(): void {
+  private beginSecureHandshake(): void {
+    this.resetSecure();
+    const secureHandshakeId = this.nextRequestId('secure');
+    this.secureHandshakeId = secureHandshakeId;
+    this.setSnapshot({
+      ...this.snapshot,
+      phase: 'handshaking',
+      error: null,
+    });
+    this.sendSecureText({
+      v: 1,
+      t: 'secure.init',
+      id: secureHandshakeId,
+      suite: TRANSPORT_SUITE,
+    });
+  }
+
+  private handleSecureText(payload: unknown): void {
+    if (!isRecord(payload)) {
+      this.fail('Node secure handshake response is invalid.', false);
+      return;
+    }
+    if (payload.t === 'secure.error') {
+      this.fail(
+        typeof payload.message === 'string'
+          ? payload.message
+          : 'Node refused the secure channel.',
+        false,
+      );
+      return;
+    }
+    if (
+      payload.t === 'secure.offer' &&
+      payload.v === 1 &&
+      payload.id === this.secureHandshakeId
+    ) {
+      if (this.secureChannel !== null || this.secureReady) {
+        this.fail('Node repeated the secure channel offer.', true);
+        return;
+      }
+      try {
+        const descriptor = verifyTransportDescriptor(
+          payload.descriptor,
+          this.backend.nodePubkey,
+        );
+        if (
+          this.confirmedTransport !== undefined &&
+          !descriptorsEqual(this.confirmedTransport, descriptor)
+        ) {
+          throw new Error(
+            'The node transport key changed. Remove and pair this node again.',
+          );
+        }
+        const channelNonce = decodeChannelNonce(payload.channel_nonce);
+        const secureHandshakeId = this.secureHandshakeId;
+        if (secureHandshakeId === null) {
+          throw new Error('Secure handshake id is missing.');
+        }
+        const channel = this.secureFactory(secureHandshakeId);
+        const firstMessage = channel.begin(
+          descriptor.transport_x25519,
+          buildHandshakePrologue(descriptor, channelNonce),
+        );
+        this.secureChannel = channel;
+        this.pendingTransport = descriptor;
+        this.sendSecureText({
+          v: 1,
+          t: 'secure.handshake',
+          id: this.secureHandshakeId,
+          step: 1,
+          data: firstMessage,
+        });
+      } catch (error) {
+        this.fail(readError(error), true);
+      }
+      return;
+    }
+    if (
+      payload.t === 'secure.handshake' &&
+      payload.v === 1 &&
+      payload.id === this.secureHandshakeId &&
+      payload.step === 2 &&
+      typeof payload.data === 'string' &&
+      this.secureChannel !== null &&
+      this.pendingTransport !== null
+    ) {
+      try {
+        this.secureChannel.finish(payload.data);
+        this.secureReady = true;
+        const descriptor = this.pendingTransport;
+        this.pendingTransport = null;
+        if (
+          this.confirmedTransport === undefined ||
+          !descriptorsEqual(this.confirmedTransport, descriptor)
+        ) {
+          this.confirmedTransport = descriptor;
+          this.callbacks.onTransportConfirmed(descriptor);
+        }
+        this.beginApplicationHandshake();
+      } catch (error) {
+        this.fail(`Secure handshake failed: ${readError(error)}`, true);
+      }
+      return;
+    }
+    this.fail(
+      this.secureReady
+        ? 'Node attempted to send plaintext after the secure channel opened.'
+        : 'Node did not complete the required secure handshake.',
+      true,
+    );
+  }
+
+  private handleSecureBinary(frame: ArrayBuffer): void {
+    if (!this.secureReady || this.secureChannel === null) {
+      this.fail('Node sent encrypted data before the secure channel opened.', false);
+      return;
+    }
+    try {
+      const ciphertext = parseClientCarrier(frame);
+      const inner = this.secureChannel.decrypt(ciphertext);
+      if (inner !== null) this.handleNodeMessage(decodeNodeInner(inner));
+    } catch (error) {
+      this.fail(`Secure channel failed: ${readError(error)}`, false);
+    }
+  }
+
+  private beginApplicationHandshake(): void {
     this.handshakeId = this.nextRequestId('hello');
     this.setSnapshot({
       ...this.snapshot,
@@ -723,9 +887,42 @@ export class BackendConnection {
       this.fail('Relay connection is not open.', false);
       return;
     }
+    if (!this.secureReady || this.secureChannel === null) {
+      this.fail('Secure transport is not ready.', false);
+      return;
+    }
+    try {
+      for (const ciphertext of this.secureChannel.encrypt(
+        encodeControlInner(payload),
+      )) {
+        this.socket.send(encodeClientCarrier(ciphertext));
+      }
+    } catch (error) {
+      this.fail(`Secure channel failed: ${readError(error)}`, false);
+    }
+  }
+
+  private sendSecureText(payload: Record<string, unknown>): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) {
+      this.fail('Relay connection is not open.', false);
+      return;
+    }
     this.socket.send(
       JSON.stringify({ v: RELAY_PROTOCOL_VERSION, t: 'tunnel', payload }),
     );
+  }
+
+  private resetSecure(): void {
+    const channel = this.secureChannel;
+    this.secureChannel = null;
+    this.secureReady = false;
+    this.secureHandshakeId = null;
+    this.pendingTransport = null;
+    try {
+      channel?.destroy();
+    } catch {
+      // The native channel is already unusable; local references are cleared.
+    }
   }
 
   createJob(
@@ -1054,6 +1251,7 @@ export class BackendConnection {
     this.fatal = this.fatal || fatal;
     this.libraryRequestInFlight = false;
     this.libraryStage = null;
+    this.resetSecure();
     this.setSnapshot({
       ...this.snapshot,
       phase: 'disconnected',

@@ -12,6 +12,7 @@ mod jobs;
 mod library;
 mod pairing;
 mod relay;
+mod secure;
 mod service;
 mod session;
 mod signing;
@@ -31,6 +32,7 @@ use crate::config::{ConfigSeed, NodeConfig, NodePaths};
 use crate::control::{ControlEvent, NodeState};
 use crate::identity::NodeIdentity;
 use crate::library::Library;
+use crate::secure::TransportIdentity;
 
 const USAGE: &str = "\
 Usage:
@@ -263,12 +265,20 @@ async fn run(cli: Cli) -> Result<()> {
     };
     let (config, config_created) = NodeConfig::load_or_create(&paths.config, seed)?;
     let (identity, identity_created) = NodeIdentity::load_or_create(&paths.key)?;
+    let (transport_identity, transport_created) =
+        TransportIdentity::load_or_create(&paths.transport_key, &identity)?;
 
     if config_created {
         println!("created node config at {}", paths.config.display());
     }
     if identity_created {
         println!("created node identity at {}", paths.key.display());
+    }
+    if transport_created {
+        println!(
+            "created node transport identity at {}",
+            paths.transport_key.display()
+        );
     }
 
     let listener = control::bind(&socket_path)?;
@@ -280,6 +290,7 @@ async fn run(cli: Cli) -> Result<()> {
         config,
         config_path: paths.config.clone(),
         node_public_key: identity.public_key_base58(),
+        transport_identity: std::sync::Arc::new(transport_identity),
         pair_offer: None,
         connected: false,
         library,

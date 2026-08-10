@@ -690,3 +690,112 @@ completed on 2026-08-09.
   Cantor PID at 48 kHz, two channels, with zero underruns. Pin moved the file to
   `no_backup/cantor-audio/pinned`; it retained the same digest after app restart
   and `pm trim-caches`, while the node stayed idle and no generation ran.
+
+# Milestone 6 — Production Privacy
+
+## Status
+
+The secure transport implementation and physical Android interoperability gate
+completed on 2026-08-09. Production release remains blocked pending independent
+security review; M6 is therefore implemented but not independently approved.
+
+## Decisions
+
+- The exact channel is `Noise_NK_25519_ChaChaPoly_SHA256`: Android initiates,
+  the node responds, and a fresh handshake runs for every relay attachment.
+- The node owns an independent random X25519 static transport secret in
+  `noise.key`, mode 0600. Its public key is bound to the existing QR-pinned
+  Ed25519 node identity by a domain-separated Ed25519 signature.
+- The signed transport descriptor is verified before Noise starts and persisted
+  only after the handshake succeeds. Any later descriptor difference fails
+  closed and requires remove/re-pair in version 1.
+- App Ed25519 identity, pair proof, challenge authentication, all control JSON,
+  errors, library/job data, and artifact bytes are sent only after Noise enters
+  transport mode. There is no plaintext application fallback.
+- The relay's binary format contains only version/kind, bounded ciphertext
+  length, and—on the node-facing side—the relay session ID required for routing.
+- Noise owns directional ChaChaPoly counters. Cantor reconnects at 1,000,000
+  records or 1 GiB per direction, and adds strictly ordered fragmentation for
+  logical messages up to 1 MiB.
+- M5's artifact semantics stay unchanged, but node-to-phone chunks use raw bytes
+  inside encryption. Base64 now exists only as a bounded endpoint bridge/storage
+  adaptation after decryption.
+
+## Implementation Log
+
+- Added the Rust secure-session state machine, durable transport key/descriptor,
+  exact prologue/signature domains, fragmentation/reassembly, control and raw
+  artifact inner frames, replay/order checks, and byte/message ceilings.
+- Moved the node relay loop and every owner-scoped push to encrypted binary
+  application frames. Plain tunnel payloads are now limited to Noise negotiation.
+- Added a strict opaque binary carrier to the Cloudflare relay. It validates
+  routing and lengths but has no application message or artifact parser.
+- Added signed descriptor fields to pairing URIs and backend storage. Old stored
+  backend rows can acquire a verified descriptor; new pairing material must
+  include and verify it.
+- Vendored the unmodified `noise-java` crypto/protocol source at commit
+  `49377b6dfc6a1e75740bce2318118291a57c0d6e` with its MIT license, and added an
+  Android native bridge that owns handshake/cipher state and zeroes temporary
+  byte arrays where the API permits.
+- Added the TypeScript connection orchestration and strict wire parsers. The app
+  sends no identity before Noise, rejects plaintext/downgrade, destroys native
+  channel state on failure/disconnect, and preserves M5 download behavior.
+- Added the exact construction, threat model, limits, consequences, dependencies,
+  and production gate in `milestone-6-security-adr.md`; added the repository
+  disclosure boundary in `SECURITY.md`.
+
+## Deviations
+
+- The plan requires independent review before production coding/sign-off. The
+  interoperable implementation was built to make that review concrete, but it
+  is not self-certified. Production release remains blocked until an independent
+  review resolves or explicitly accepts its findings.
+- Android is the repository's only current client. No iOS secure-channel or
+  device claim is made.
+- The pinned Java implementation has no compatible transport rekey surface, so
+  version 1 uses conservative reconnect-before-limit instead of custom rekeying.
+- Version 1 does not implement overlapping transport-key rotation. A different
+  signed descriptor is rejected and the person must explicitly remove/re-pair.
+- Pre-handshake negotiation remains text JSON so deployed relay plumbing can
+  establish Noise. It contains suite/version, request ID, signed public
+  descriptor, fresh channel nonce, and Noise handshake bytes—but never app
+  identity, pairing proof, prompt, library metadata, or audio.
+- React Native rejected a synchronous `WritableNativeArray` return on the
+  physical phone. The conservative boundary is a bounded JSON string containing
+  base64 ciphertext records. This causes endpoint-local copies but does not
+  change the relay's opaque binary carrier or expose keys/counters to JavaScript.
+- Noise messages cannot exceed 65,535 bytes, so logical messages are split into
+  independently encrypted, ordered records rather than depending on WebSocket
+  fragmentation behavior.
+- Device validation used the real relay implementation locally through ADB port
+  reversal, not the hosted Cloudflare deployment. Hosted capture, admission
+  throttling, release/rollback operations, official known-answer review, and an
+  independent audit remain production gates.
+- Existing completed artifacts were used to test transfer and playback. The
+  generation engine was deliberately not started.
+
+## Verification
+
+- `cargo test --workspace`: 122 Rust tests passed (95 node, 27 protocol).
+  `cargo clippy --workspace --all-targets -- -D warnings` and formatting passed.
+- Relay: 8 tests passed; TypeScript checking passed. Tests route arbitrary
+  ciphertext after Durable Object hibernation and reject malformed carriers.
+- App: 166 Jest tests passed; TypeScript passed. ESLint has no errors and reports
+  only the pre-existing inline-style warning in onboarding `kit.tsx`.
+- Android `assembleDebug` succeeded. The vendored Java sources match their
+  pinned upstream commit; Javac only emits the dependency's deprecated-API note.
+- Physical Android `6b1f6ba8629c` completed the Java initiator ↔ Rust `snow`
+  responder handshake. Existing pairing migrated to a persisted verified
+  descriptor and live controls enabled only after the encrypted app handshake.
+- The phone downloaded existing song
+  `019fe1cb-a56a-7591-a7c1-2d577c1d01fc` through the encrypted raw-artifact path.
+  The 287,339-byte file's device SHA-256 was
+  `0f2208d83f5be5845f54fd41f096919e2da53ad4f9aede1f112a2114a34761c4`;
+  it played at 48 kHz stereo with zero reported underruns.
+- Removing the phone relay route left both the new cached song and the earlier
+  pinned M5 song playable offline. Restoring the route re-established live
+  encrypted controls.
+- After a graceful node restart, `noise.key` remained 32 bytes, mode 0600, with
+  SHA-256 `6762c2ddc641dc4257bd1a46c6efab87ed13e4465bea3502a4225aec7e08a15b`.
+  The phone reconnected without a key-change warning. This digest is evidence
+  about the test key file only; the secret bytes are not committed or logged.

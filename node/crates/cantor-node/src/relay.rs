@@ -20,6 +20,7 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::config::NodeConfig;
 use crate::control::{ControlEvent, SharedState};
 use crate::identity::NodeIdentity;
+use crate::secure::{MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_VERSION};
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
 
@@ -74,11 +75,11 @@ struct RelayClaim<'a> {
 }
 
 #[derive(Serialize)]
-struct RelayTunnel<'a> {
+struct RelayTunnel<'a, T> {
     v: u8,
     t: &'static str,
     sid: &'a str,
-    payload: &'a NodeMessage,
+    payload: &'a T,
 }
 
 pub async fn run_forever(
@@ -146,6 +147,7 @@ async fn serve_once(
     reconnect_attempt: &mut u32,
 ) -> Result<()> {
     let public_key = identity.public_key_base58();
+    let public_key_bytes = identity.public_key_bytes();
     let (room_url, config_path) = {
         let locked = lock(state)?;
         (
@@ -271,10 +273,7 @@ async fn serve_once(
                             text.as_ref(),
                             &mut sessions,
                             state,
-                            &config_path,
-                            &public_key,
-                            &node_info,
-                            event_sender,
+                            &public_key_bytes,
                         )? else {
                             continue;
                         };
@@ -290,14 +289,51 @@ async fn serve_once(
                                 v: cantor_proto::PROTOCOL_VERSION,
                                 node: node_info.clone(),
                             };
-                            for (session_id, session) in &sessions {
+                            for (session_id, session) in &mut sessions {
                                 if session.authenticated_key().is_some()
-                                    && outbound
-                                        .send(tunnel_frame(session_id, &push)?)
-                                        .await
-                                        .is_err()
                                 {
-                                    break;
+                                    for frame in encrypted_frames(session_id, session, &push)? {
+                                        if outbound.send(frame).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Message::Binary(bytes) => {
+                        let Some((frames, load_changed)) = handle_relay_binary(
+                            bytes.as_ref(),
+                            &mut sessions,
+                            state,
+                            &config_path,
+                            &public_key,
+                            &node_info,
+                            event_sender,
+                        )? else {
+                            continue;
+                        };
+                        for frame in frames {
+                            if outbound.send(frame).await.is_err() {
+                                break;
+                            }
+                        }
+                        if load_changed {
+                            node_info = {
+                                let locked = lock(state)?;
+                                static_node_info(&locked.config, &locked.library)
+                            };
+                            let push = NodeMessage::NodeInfoChanged {
+                                v: cantor_proto::PROTOCOL_VERSION,
+                                node: node_info.clone(),
+                            };
+                            for (session_id, session) in &mut sessions {
+                                if session.authenticated_key().is_some() {
+                                    for frame in encrypted_frames(session_id, session, &push)? {
+                                        if outbound.send(frame).await.is_err() {
+                                            break;
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -332,16 +368,17 @@ fn apply_control_event(
     match event {
         ControlEvent::Revoked(key) => {
             let mut frames = Vec::new();
+            let mut dropped = 0_usize;
             for (sid, session) in sessions.iter_mut() {
                 if session.authenticated_key() != Some(key.as_str()) {
                     continue;
                 }
-                session.deauthenticate();
                 // `rejected` is the one code the app treats as final, so the
                 // device stops retrying instead of spinning against a node that
                 // has already said no.
-                frames.push(tunnel_frame(
+                frames.extend(encrypted_frames(
                     sid,
+                    session,
                     &NodeMessage::error(
                         None,
                         ErrorCode::Rejected,
@@ -349,8 +386,11 @@ fn apply_control_event(
                         false,
                     ),
                 )?);
+                session.deauthenticate();
+                session.close_secure();
+                dropped += 1;
             }
-            println!("revoked {key}; dropped {} live session(s)", frames.len());
+            println!("revoked {key}; dropped {dropped} live session(s)");
             Ok(frames)
         }
         ControlEvent::NodeInfoChanged => {
@@ -360,11 +400,13 @@ fn apply_control_event(
                 v: cantor_proto::PROTOCOL_VERSION,
                 node: node_info.clone(),
             };
-            sessions
-                .iter()
-                .filter(|(_, session)| session.authenticated_key().is_some())
-                .map(|(sid, _)| tunnel_frame(sid, &push))
-                .collect()
+            let mut frames = Vec::new();
+            for (sid, session) in sessions.iter_mut() {
+                if session.authenticated_key().is_some() {
+                    frames.extend(encrypted_frames(sid, session, &push)?);
+                }
+            }
+            Ok(frames)
         }
         ControlEvent::JobUpdated { principal_id, job } => {
             let locked = lock(state)?;
@@ -377,16 +419,20 @@ fn apply_control_event(
                 job,
             };
             let mut frames = Vec::new();
-            for (sid, session) in sessions.iter() {
-                let Some(authenticated) = session.authenticated() else {
+            for (sid, session) in sessions.iter_mut() {
+                let Some(principal) = session
+                    .authenticated()
+                    .map(|authenticated| authenticated.principal_id)
+                else {
                     continue;
                 };
-                if authenticated.principal_id == principal_id {
-                    frames.push(tunnel_frame(sid, &private)?);
+                if principal == principal_id {
+                    frames.extend(encrypted_frames(sid, session, &private)?);
                 }
                 if load_changed {
-                    frames.push(tunnel_frame(
+                    frames.extend(encrypted_frames(
                         sid,
+                        session,
                         &NodeMessage::NodeInfoChanged {
                             v: cantor_proto::PROTOCOL_VERSION,
                             node: node_info.clone(),
@@ -404,20 +450,21 @@ fn apply_control_event(
                 v: cantor_proto::PROTOCOL_VERSION,
                 revision,
             };
-            sessions
-                .iter()
-                .filter(|(_, session)| {
-                    session
-                        .authenticated()
-                        .is_some_and(|context| context.principal_id == principal_id)
-                })
-                .map(|(sid, _)| tunnel_frame(sid, &changed))
-                .collect()
+            let mut frames = Vec::new();
+            for (sid, session) in sessions.iter_mut() {
+                if session
+                    .authenticated()
+                    .is_some_and(|context| context.principal_id == principal_id)
+                {
+                    frames.extend(encrypted_frames(sid, session, &changed)?);
+                }
+            }
+            Ok(frames)
         }
     }
 }
 
-fn tunnel_frame(sid: &str, payload: &NodeMessage) -> Result<Message> {
+fn tunnel_text_frame<T: Serialize>(sid: &str, payload: &T) -> Result<Message> {
     let tunnel = RelayTunnel {
         v: RELAY_VERSION,
         t: "tunnel",
@@ -428,6 +475,72 @@ fn tunnel_frame(sid: &str, payload: &NodeMessage) -> Result<Message> {
     Ok(Message::text(json))
 }
 
+fn encrypted_frames(
+    sid: &str,
+    session: &mut ClientSession,
+    payload: &NodeMessage,
+) -> Result<Vec<Message>> {
+    session
+        .encrypt_secure(payload)?
+        .into_iter()
+        .map(|ciphertext| encode_node_secure_carrier(sid, &ciphertext))
+        .collect()
+}
+
+fn encode_node_secure_carrier(sid: &str, ciphertext: &[u8]) -> Result<Message> {
+    ensure_secure_sid(sid)?;
+    let sid = sid.as_bytes();
+    if ciphertext.is_empty() || ciphertext.len() > MAX_SECURE_CIPHERTEXT_BYTES {
+        bail!("secure ciphertext is outside the relay carrier bound");
+    }
+    let sid_length = u16::try_from(sid.len()).context("relay session id is too long")?;
+    let ciphertext_length =
+        u32::try_from(ciphertext.len()).context("secure ciphertext is too long")?;
+    let mut frame = Vec::with_capacity(8 + sid.len() + ciphertext.len());
+    frame.push(SECURE_CARRIER_VERSION);
+    frame.push(1);
+    frame.extend_from_slice(&sid_length.to_be_bytes());
+    frame.extend_from_slice(sid);
+    frame.extend_from_slice(&ciphertext_length.to_be_bytes());
+    frame.extend_from_slice(ciphertext);
+    Ok(Message::binary(frame))
+}
+
+fn parse_node_secure_carrier(frame: &[u8]) -> Result<(&str, &[u8])> {
+    if frame.len() < 8 || frame[0] != SECURE_CARRIER_VERSION || frame[1] != 1 {
+        bail!("secure relay carrier header is invalid");
+    }
+    let sid_length = usize::from(u16::from_be_bytes([frame[2], frame[3]]));
+    if sid_length == 0 || sid_length > 64 || frame.len() < 8 + sid_length {
+        bail!("secure relay session id is outside its bound");
+    }
+    let sid = std::str::from_utf8(&frame[4..4 + sid_length])
+        .context("secure relay session id is not UTF-8")?;
+    ensure_secure_sid(sid)?;
+    let length_offset = 4 + sid_length;
+    let ciphertext_length = usize::try_from(u32::from_be_bytes(
+        frame[length_offset..length_offset + 4]
+            .try_into()
+            .expect("carrier length checked"),
+    ))?;
+    let ciphertext_offset = length_offset + 4;
+    if ciphertext_length == 0
+        || ciphertext_length > MAX_SECURE_CIPHERTEXT_BYTES
+        || frame.len() != ciphertext_offset + ciphertext_length
+    {
+        bail!("secure relay ciphertext length is invalid");
+    }
+    Ok((sid, &frame[ciphertext_offset..]))
+}
+
+fn ensure_secure_sid(sid: &str) -> Result<()> {
+    let parsed = uuid::Uuid::parse_str(sid).context("relay session id is not a UUID")?;
+    if parsed.get_version() != Some(uuid::Version::Random) {
+        bail!("relay session id is not a UUIDv4");
+    }
+    Ok(())
+}
+
 /// Returns the frame to send back, if any. `Ok(None)` means the frame needed no
 /// reply — including frames this node does not recognise, which are logged and
 /// skipped so a newer relay cannot take the node down.
@@ -435,10 +548,7 @@ fn handle_relay_text(
     text: &str,
     sessions: &mut HashMap<String, ClientSession>,
     state: &SharedState,
-    config_path: &Path,
-    public_key: &str,
-    node_info: &NodeInfo,
-    event_sender: &mpsc::Sender<ControlEvent>,
+    node_ed25519: &[u8; 32],
 ) -> Result<Option<(Message, bool)>> {
     let frame: IncomingFrame = match serde_json::from_str(text) {
         Ok(frame) => frame,
@@ -450,82 +560,24 @@ fn handle_relay_text(
 
     match frame {
         IncomingFrame::Tunnel { v, sid, payload } if v == RELAY_VERSION => {
-            let response = if can_open_client_session(sessions, &sid, MAX_CLIENT_SESSIONS) {
-                let mut locked = lock(state)?;
-                let locked = &mut *locked;
+            let response = if can_open_client_session(sessions, &sid, MAX_CLIENT_SESSIONS)
+                && ensure_secure_sid(&sid).is_ok()
+            {
+                let transport = lock(state)?.transport_identity.clone();
                 let session = sessions.entry(sid.clone()).or_default();
                 session.set_relay_session_id(&sid);
-                let response = session.handle(
-                    payload,
-                    &mut locked.config,
-                    config_path,
-                    &mut locked.pair_offer,
-                    public_key,
-                    node_info,
-                    &mut locked.library,
-                )?;
-                if matches!(response, NodeMessage::JobAccepted { .. }) {
-                    locked.job_notify.notify_one();
-                }
-                if let NodeMessage::JobControlled { job, .. } = &response
-                    && let Some(context) = session.authenticated()
-                {
-                    if let Some(active) = locked
-                        .active_job
-                        .as_ref()
-                        .filter(|active| active.job_id == job.id)
-                    {
-                        match job.state {
-                            cantor_proto::JobState::PauseRequested => crate::jobs::request_stop(
-                                &active.signal,
-                                crate::jobs::StopReason::Pause,
-                            ),
-                            cantor_proto::JobState::CancelRequested => crate::jobs::request_stop(
-                                &active.signal,
-                                crate::jobs::StopReason::Cancel,
-                            ),
-                            _ => {}
-                        }
+                match session.handle_secure_text(&payload, &transport, node_ed25519) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        eprintln!("secure handshake failed for one client: {error:#}");
+                        session.close_secure();
+                        secure_error_value("handshake-failed")
                     }
-                    if job.state == cantor_proto::JobState::Queued {
-                        locked.job_notify.notify_one();
-                    }
-                    let _ = event_sender.try_send(ControlEvent::JobUpdated {
-                        principal_id: context.principal_id,
-                        job: job.clone(),
-                    });
                 }
-                if matches!(response, NodeMessage::SongUpdated { .. })
-                    && let Some(context) = session.authenticated()
-                {
-                    let revision = locked.library.library_revision(&context.principal_id)?;
-                    let _ = event_sender.try_send(ControlEvent::LibraryChanged {
-                        principal_id: context.principal_id,
-                        revision,
-                    });
-                }
-                response
             } else {
-                NodeMessage::error(
-                    request_id(&payload),
-                    ErrorCode::TemporarilyUnavailable,
-                    "This node has reached its client session limit.",
-                    true,
-                )
+                secure_error_value("temporarily-unavailable")
             };
-            let load_changed = matches!(
-                response,
-                NodeMessage::JobAccepted { .. } | NodeMessage::JobControlled { .. }
-            );
-            let tunnel = RelayTunnel {
-                v: RELAY_VERSION,
-                t: "tunnel",
-                sid: &sid,
-                payload: &response,
-            };
-            let json =
-                serde_json::to_string(&tunnel).context("failed to encode tunnel response")?;
-            Ok(Some((Message::text(json), load_changed)))
+            Ok(Some((tunnel_text_frame(&sid, &response)?, false)))
         }
         IncomingFrame::Detached { v, sid } if v == RELAY_VERSION => {
             sessions.remove(&sid);
@@ -540,16 +592,133 @@ fn handle_relay_text(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn handle_relay_binary(
+    frame: &[u8],
+    sessions: &mut HashMap<String, ClientSession>,
+    state: &SharedState,
+    config_path: &Path,
+    public_key: &str,
+    node_info: &NodeInfo,
+    event_sender: &mpsc::Sender<ControlEvent>,
+) -> Result<Option<(Vec<Message>, bool)>> {
+    let (sid, ciphertext) = match parse_node_secure_carrier(frame) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("ignoring invalid secure relay carrier: {error:#}");
+            return Ok(None);
+        }
+    };
+    let Some(session) = sessions.get_mut(sid) else {
+        return Ok(None);
+    };
+    if !session.secure_ready() {
+        return Ok(None);
+    }
+    let payload = match session.decrypt_secure(ciphertext) {
+        Ok(Some(payload)) => payload,
+        Ok(None) => return Ok(None),
+        Err(error) => {
+            eprintln!("secure client frame failed authentication: {error:#}");
+            return Ok(None);
+        }
+    };
+    let response = dispatch_application(
+        session,
+        payload,
+        state,
+        config_path,
+        public_key,
+        node_info,
+        event_sender,
+    )?;
+    let load_changed = matches!(
+        response,
+        NodeMessage::JobAccepted { .. } | NodeMessage::JobControlled { .. }
+    );
+    Ok(Some((
+        encrypted_frames(sid, session, &response)?,
+        load_changed,
+    )))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn dispatch_application(
+    session: &mut ClientSession,
+    payload: Value,
+    state: &SharedState,
+    config_path: &Path,
+    public_key: &str,
+    node_info: &NodeInfo,
+    event_sender: &mpsc::Sender<ControlEvent>,
+) -> Result<NodeMessage> {
+    let mut locked = lock(state)?;
+    let locked = &mut *locked;
+    let response = session.handle(
+        payload,
+        &mut locked.config,
+        config_path,
+        &mut locked.pair_offer,
+        public_key,
+        node_info,
+        &mut locked.library,
+    )?;
+    if matches!(response, NodeMessage::JobAccepted { .. }) {
+        locked.job_notify.notify_one();
+    }
+    if let NodeMessage::JobControlled { job, .. } = &response
+        && let Some(context) = session.authenticated()
+    {
+        if let Some(active) = locked
+            .active_job
+            .as_ref()
+            .filter(|active| active.job_id == job.id)
+        {
+            match job.state {
+                cantor_proto::JobState::PauseRequested => {
+                    crate::jobs::request_stop(&active.signal, crate::jobs::StopReason::Pause)
+                }
+                cantor_proto::JobState::CancelRequested => {
+                    crate::jobs::request_stop(&active.signal, crate::jobs::StopReason::Cancel)
+                }
+                _ => {}
+            }
+        }
+        if job.state == cantor_proto::JobState::Queued {
+            locked.job_notify.notify_one();
+        }
+        let _ = event_sender.try_send(ControlEvent::JobUpdated {
+            principal_id: context.principal_id,
+            job: job.clone(),
+        });
+    }
+    if matches!(response, NodeMessage::SongUpdated { .. })
+        && let Some(context) = session.authenticated()
+    {
+        let revision = locked.library.library_revision(&context.principal_id)?;
+        let _ = event_sender.try_send(ControlEvent::LibraryChanged {
+            principal_id: context.principal_id,
+            revision,
+        });
+    }
+    Ok(response)
+}
+
+fn secure_error_value(code: &str) -> Value {
+    serde_json::json!({
+        "v": 1,
+        "t": "secure.error",
+        "code": code,
+        "message": "A secure channel is required.",
+    })
+}
+
 fn can_open_client_session(
     sessions: &HashMap<String, ClientSession>,
     sid: &str,
     limit: usize,
 ) -> bool {
     sessions.contains_key(sid) || sessions.len() < limit
-}
-
-fn request_id(payload: &Value) -> Option<String> {
-    payload.get("id").and_then(Value::as_str).map(str::to_owned)
 }
 
 fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> NodeInfo {
@@ -591,7 +760,7 @@ fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> N
             jobs_create: true,
             library_list: true,
             artifacts_transfer: true,
-            secure_tunnel: false,
+            secure_tunnel: true,
             job_controls: true,
         },
     }
@@ -670,19 +839,22 @@ fn bail_relay_error<T>(v: u8, code: &str, msg: &str) -> Result<T> {
 mod tests {
     use std::collections::HashMap;
 
-    use tempfile::tempdir;
-    use tokio::sync::mpsc;
-
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::control::{NodeState, SharedState, shared};
+    use crate::identity::NodeIdentity;
+    use crate::secure::TransportIdentity;
     use crate::session::ClientSession;
     use cantor_proto::{JobState, JobView};
     use sha2::{Digest, Sha256};
+    use tempfile::tempdir;
 
     use super::{
-        ControlEvent, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
-        handle_relay_text, reconnect_delay, static_node_info,
+        ControlEvent, Message, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
+        handle_relay_text, parse_node_secure_carrier, reconnect_delay, static_node_info,
     };
+
+    const OWNER_SID: &str = "11111111-1111-4111-8111-111111111111";
+    const OTHER_SID: &str = "22222222-2222-4222-8222-222222222222";
 
     fn fixture() -> (SharedState, std::path::PathBuf, tempfile::TempDir) {
         let temporary = tempdir().expect("temporary directory");
@@ -693,10 +865,15 @@ mod tests {
         let config_path = paths.config.clone();
         let library =
             crate::library::Library::open(temporary.path().join("library")).expect("library");
+        let (identity, _) = NodeIdentity::load_or_create(&paths.key).expect("identity");
+        let node_public_key = identity.public_key_base58();
+        let (transport_identity, _) =
+            TransportIdentity::load_or_create(&paths.transport_key, &identity)
+                .expect("transport identity");
         let state = shared(NodeState {
             config,
             config_path: paths.config,
-            node_public_key: "node-key".to_owned(),
+            node_public_key,
             pair_offer: None,
             connected: true,
             library,
@@ -704,8 +881,43 @@ mod tests {
             delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             active_job: None,
             shutting_down: false,
+            transport_identity: std::sync::Arc::new(transport_identity),
         });
         (state, config_path, temporary)
+    }
+
+    fn secure_authenticated(
+        state: &SharedState,
+        sid: &str,
+        key: &str,
+        bytes: [u8; 32],
+    ) -> ClientSession {
+        let (transport, node_ed25519) = {
+            let locked = state.lock().expect("state");
+            let node_ed25519: [u8; 32] = bs58::decode(&locked.node_public_key)
+                .into_vec()
+                .expect("node key")
+                .try_into()
+                .expect("node key length");
+            (locked.transport_identity.clone(), node_ed25519)
+        };
+        let mut session = ClientSession::authenticated_with_bytes_for_test(key, bytes);
+        session.set_relay_session_id(sid);
+        session.establish_secure_for_test(&transport, &node_ed25519);
+        session
+    }
+
+    fn encrypted_bytes(frame: &Message) -> &[u8] {
+        let Message::Binary(bytes) = frame else {
+            panic!("secure application data must use a binary carrier");
+        };
+        bytes.as_ref()
+    }
+
+    fn encrypted_sid(frame: &Message) -> &str {
+        parse_node_secure_carrier(encrypted_bytes(frame))
+            .expect("secure carrier")
+            .0
     }
 
     #[test]
@@ -717,12 +929,12 @@ mod tests {
         };
         let mut sessions = HashMap::from([
             (
-                "owner".to_owned(),
-                ClientSession::authenticated_with_bytes_for_test("owner-key", [1; 32]),
+                OWNER_SID.to_owned(),
+                secure_authenticated(&state, OWNER_SID, "owner-key", [1; 32]),
             ),
             (
-                "other".to_owned(),
-                ClientSession::authenticated_with_bytes_for_test("other-key", [2; 32]),
+                OTHER_SID.to_owned(),
+                secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
             ),
         ]);
         let principal_id: [u8; 32] = Sha256::digest([1_u8; 32]).into();
@@ -746,31 +958,13 @@ mod tests {
             &mut node_info,
         )
         .expect("event");
-        let text = frames
-            .iter()
-            .map(|frame| frame.to_text().expect("text"))
-            .collect::<Vec<_>>();
-        assert_eq!(
-            text.iter()
-                .filter(|frame| frame.contains("job.updated"))
-                .count(),
-            1
-        );
+        assert_eq!(frames.len(), 1);
+        assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
+        let bytes = encrypted_bytes(&frames[0]);
         assert!(
-            text.iter()
-                .any(|frame| frame.contains("job.updated") && frame.contains("owner"))
-        );
-        assert!(
-            !text
-                .iter()
-                .any(|frame| frame.contains("job.updated") && frame.contains("other"))
-        );
-        assert_eq!(
-            text.iter()
-                .filter(|frame| frame.contains("node.info"))
-                .count(),
-            0,
-            "progress-only updates must not rebroadcast unchanged aggregate load"
+            !bytes
+                .windows(b"job.updated".len())
+                .any(|v| v == b"job.updated")
         );
     }
 
@@ -783,12 +977,12 @@ mod tests {
         };
         let mut sessions = HashMap::from([
             (
-                "owner".to_owned(),
-                ClientSession::authenticated_with_bytes_for_test("owner-key", [1; 32]),
+                OWNER_SID.to_owned(),
+                secure_authenticated(&state, OWNER_SID, "owner-key", [1; 32]),
             ),
             (
-                "other".to_owned(),
-                ClientSession::authenticated_with_bytes_for_test("other-key", [2; 32]),
+                OTHER_SID.to_owned(),
+                secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
             ),
         ]);
         let principal_id: [u8; 32] = Sha256::digest([1_u8; 32]).into();
@@ -802,14 +996,14 @@ mod tests {
             &mut node_info,
         )
         .expect("event");
-        let text = frames
-            .iter()
-            .map(|frame| frame.to_text().expect("text"))
-            .collect::<Vec<_>>();
-        assert_eq!(text.len(), 1);
-        assert!(text[0].contains("library.changed"));
-        assert!(text[0].contains("owner"));
-        assert!(!text[0].contains("other"));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
+        let bytes = encrypted_bytes(&frames[0]);
+        assert!(
+            !bytes
+                .windows(b"library.changed".len())
+                .any(|v| v == b"library.changed")
+        );
     }
 
     /// Every frame this build does not understand must be skipped rather than
@@ -817,12 +1011,9 @@ mod tests {
     /// already-installed nodes offline in a reconnect loop.
     #[test]
     fn unrecognised_frames_are_skipped_without_ending_the_connection() {
-        let (state, config_path, _guard) = fixture();
-        let locked = state.lock().expect("state");
-        let node_info = static_node_info(&locked.config, &locked.library);
-        drop(locked);
+        let (state, _config_path, _guard) = fixture();
         let mut sessions = HashMap::new();
-        let (events, _received) = mpsc::channel(8);
+        let node_ed25519 = [9_u8; 32];
 
         for frame in [
             r#"{"v":1,"t":"relay.somethingNew","detail":"from a newer relay"}"#,
@@ -831,16 +1022,8 @@ mod tests {
             "not json at all",
             "",
         ] {
-            let response = handle_relay_text(
-                frame,
-                &mut sessions,
-                &state,
-                &config_path,
-                "node-key",
-                &node_info,
-                &events,
-            )
-            .expect("unrecognised frames must not be errors");
+            let response = handle_relay_text(frame, &mut sessions, &state, &node_ed25519)
+                .expect("unrecognised frames must not be errors");
             assert!(response.is_none(), "unexpected reply to {frame}");
         }
     }
@@ -849,20 +1032,13 @@ mod tests {
     /// unknown frame it still ends it.
     #[test]
     fn a_relay_error_still_ends_the_connection() {
-        let (state, config_path, _guard) = fixture();
-        let locked = state.lock().expect("state");
-        let node_info = static_node_info(&locked.config, &locked.library);
-        drop(locked);
-        let (events, _received) = mpsc::channel(8);
+        let (state, _config_path, _guard) = fixture();
 
         let result = handle_relay_text(
             r#"{"v":1,"t":"relay.error","code":"bad-claim","msg":"nope"}"#,
             &mut HashMap::new(),
             &state,
-            &config_path,
-            "node-key",
-            &node_info,
-            &events,
+            &[9_u8; 32],
         );
 
         assert!(result.is_err());
@@ -878,12 +1054,12 @@ mod tests {
         drop(locked);
         let mut sessions = HashMap::new();
         sessions.insert(
-            "session-a".to_owned(),
-            ClientSession::authenticated_for_test("revoked-key"),
+            OWNER_SID.to_owned(),
+            secure_authenticated(&state, OWNER_SID, "revoked-key", [1; 32]),
         );
         sessions.insert(
-            "session-b".to_owned(),
-            ClientSession::authenticated_for_test("other-key"),
+            OTHER_SID.to_owned(),
+            secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
         );
 
         let frames = apply_control_event(
@@ -895,12 +1071,10 @@ mod tests {
         .expect("revoke");
 
         assert_eq!(frames.len(), 1);
-        let sent = frames[0].to_text().expect("text frame");
-        assert!(sent.contains("\"sid\":\"session-a\""));
-        assert!(sent.contains("\"code\":\"rejected\""));
-        assert_eq!(sessions["session-a"].authenticated_key(), None);
+        assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
+        assert_eq!(sessions[OWNER_SID].authenticated_key(), None);
         // The device that was not revoked keeps its session.
-        assert_eq!(sessions["session-b"].authenticated_key(), Some("other-key"));
+        assert_eq!(sessions[OTHER_SID].authenticated_key(), Some("other-key"));
     }
 
     /// A connected app is told about a rename rather than showing the old name
@@ -913,10 +1087,10 @@ mod tests {
         drop(locked);
         let mut sessions = HashMap::new();
         sessions.insert(
-            "authed".to_owned(),
-            ClientSession::authenticated_for_test("key"),
+            OWNER_SID.to_owned(),
+            secure_authenticated(&state, OWNER_SID, "key", [1; 32]),
         );
-        sessions.insert("anonymous".to_owned(), ClientSession::default());
+        sessions.insert(OTHER_SID.to_owned(), ClientSession::default());
         state
             .lock()
             .expect("state")
@@ -933,10 +1107,13 @@ mod tests {
         .expect("push");
 
         assert_eq!(frames.len(), 1);
-        let sent = frames[0].to_text().expect("text frame");
-        assert!(sent.contains("\"sid\":\"authed\""));
-        assert!(sent.contains("node.info"));
-        assert!(sent.contains("studio-node"));
+        assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
+        let bytes = encrypted_bytes(&frames[0]);
+        assert!(
+            !bytes
+                .windows(b"studio-node".len())
+                .any(|v| v == b"studio-node")
+        );
         assert_eq!(node_info.name, "studio-node");
     }
 

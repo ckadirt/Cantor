@@ -3,6 +3,10 @@ import { hmac } from '@noble/hashes/hmac.js';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { PairingRequest } from './types';
+import {
+  SECURE_CHANNEL_VERSION,
+  verifyTransportDescriptor,
+} from '../security/descriptor';
 
 const ED25519_PUBLIC_KEY_BYTES = 32;
 const PAIR_TOKEN_BYTES = 32;
@@ -30,6 +34,10 @@ export function parsePairingUri(value: string): PairingRequest {
   const relayValue = uri.searchParams.get('relay') ?? '';
   const token = uri.searchParams.get('token') ?? '';
   const petname = (uri.searchParams.get('name') ?? 'Cantor node').trim();
+  const transportSuite = uri.searchParams.get('ts') ?? '';
+  const transportKeyId = uri.searchParams.get('tkid') ?? '';
+  const transportPublicKey = uri.searchParams.get('tx') ?? '';
+  const transportSignature = uri.searchParams.get('tsig') ?? '';
 
   try {
     if (base58.decode(nodePubkey).length !== ED25519_PUBLIC_KEY_BYTES) {
@@ -72,6 +80,18 @@ export function parsePairingUri(value: string): PairingRequest {
     throw new Error('The node name is invalid.');
   }
 
+  const transport = verifyTransportDescriptor(
+    {
+      schema: SECURE_CHANNEL_VERSION,
+      node_ed25519: nodePubkey,
+      transport_suite: transportSuite,
+      transport_key_id: transportKeyId,
+      transport_x25519: transportPublicKey,
+      signature_ed25519: transportSignature,
+    },
+    nodePubkey,
+  );
+
   return {
     backend: {
       nodePubkey,
@@ -81,6 +101,7 @@ export function parsePairingUri(value: string): PairingRequest {
         .replace(/\/$/, ''),
       petname,
       lastNodeInfo: null,
+      transport,
     },
     pairToken: token,
   };
