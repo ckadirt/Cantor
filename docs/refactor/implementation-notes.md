@@ -125,6 +125,20 @@ RF0 will rerun and expand this baseline before moving production owners.
   the existing release node remained live. No generation was required for this
   test-only milestone.
 
+### 2026-08-09 — RF1 started
+
+- RF1 is split into independently reviewable seams: app protocol/security/core
+  dependency direction, one serialized-store extraction and repository migration,
+  then node `PrincipalId` and runtime ownership. Compatibility façades remain in
+  place until callers migrate; storage keys, decoder policy, wire bytes, SQL text,
+  lock ownership, and event timing are invariants.
+- Assigned app core extraction, app serialized storage, and node `PrincipalId`
+  to non-overlapping subagent paths. The primary agent owns integration, commits,
+  the later node runtime move, and all full-matrix/device checks.
+- New abstractions must own existing repeated behavior. RF1 will not add empty
+  utility modules, a dependency-injection container, generalized crypto, or new
+  persistence policy merely to create a directory structure.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
