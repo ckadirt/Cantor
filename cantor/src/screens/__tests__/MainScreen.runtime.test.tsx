@@ -7,11 +7,8 @@ import type { NodeInfo } from '../../../../protocol/NodeInfo';
 import type { SongHeader } from '../../../../protocol/SongHeader';
 import { BackendConnection } from '../../backends/connection';
 import { loadBackends, saveBackends } from '../../backends/storage';
-import type {
-  BackendRecord,
-  ConnectionSnapshot,
-  TransportDescriptor,
-} from '../../backends/types';
+import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
+import type { TransportDescriptor } from '../../security/types';
 import { loadOutbox, markAccepted, markRejected } from '../../jobs/outbox';
 import { loadJobs, mergeJobs } from '../../jobs/repository';
 import { commitLibrary, loadLibrary } from '../../library/repository';

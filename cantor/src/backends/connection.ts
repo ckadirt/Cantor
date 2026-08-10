@@ -1,11 +1,27 @@
 import { Platform } from 'react-native';
 import type { AppIdentity } from '../identity/derive';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
-import type { JobView } from '../../../protocol/JobView';
-import type { SongDetail } from '../../../protocol/SongDetail';
-import type { SongHeader } from '../../../protocol/SongHeader';
 import type { SongPatch } from '../../../protocol/SongPatch';
 import type { ArtifactView } from '../../../protocol/ArtifactView';
+import { readError } from '../core/errors';
+import {
+  APPLICATION_PROTOCOL_VERSION,
+  RELAY_PROTOCOL_VERSION,
+  parseArtifact,
+  parseJob,
+  parseJobs,
+  parseLibraryChanges,
+  parseNodeInfo,
+  parseSong,
+  parseSongDetail,
+  parseSongs,
+  type JobView,
+  type NodeInfo,
+  type SongDetail,
+  type SongHeader,
+} from '../core/protocol';
+import { utf8ByteLength } from '../core/text';
+import { isRecord } from '../core/validation';
 import { mergeJobViews } from '../jobs/repository';
 import { applyLibraryChanges, mergeSongHeaders } from '../library/repository';
 import { signChallenge } from '../identity/derive';
@@ -28,23 +44,8 @@ import {
   encodeControlInner,
   parseClientCarrier,
 } from '../security/wire';
-import {
-  isRecord,
-  parseJob,
-  parseJobs,
-  parseArtifact,
-  parseLibraryChanges,
-  parseNodeInfo,
-  parseSong,
-  parseSongDetail,
-  parseSongs,
-  APPLICATION_PROTOCOL_VERSION,
-  RELAY_PROTOCOL_VERSION,
-  type BackendRecord,
-  type ConnectionSnapshot,
-  type NodeInfo,
-  type TransportDescriptor,
-} from './types';
+import type { TransportDescriptor } from '../security/types';
+import type { BackendRecord, ConnectionSnapshot } from './types';
 
 const RECONNECT_BASE_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
@@ -1299,10 +1300,6 @@ export class BackendConnection {
   }
 }
 
-function readError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function isSafeRevision(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -1354,22 +1351,4 @@ function truncateToBytes(value: string, maxBytes: number): string {
     }
   }
   return '';
-}
-
-/** The node counts bytes, so the app has to as well. */
-function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (const character of value) {
-    const code = character.codePointAt(0) ?? 0;
-    if (code <= 0x7f) {
-      bytes += 1;
-    } else if (code <= 0x7ff) {
-      bytes += 2;
-    } else if (code <= 0xffff) {
-      bytes += 3;
-    } else {
-      bytes += 4;
-    }
-  }
-  return bytes;
 }
