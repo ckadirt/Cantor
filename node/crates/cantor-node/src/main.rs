@@ -13,6 +13,7 @@ mod library;
 mod pairing;
 mod principal;
 mod relay;
+mod runtime;
 mod secure;
 mod service;
 mod session;
@@ -30,9 +31,9 @@ use rustls::crypto::CryptoProvider;
 use serde_json::{Value, json};
 
 use crate::config::{ConfigSeed, NodeConfig, NodePaths};
-use crate::control::{ControlEvent, NodeState};
 use crate::identity::NodeIdentity;
 use crate::library::Library;
+use crate::runtime::{NodeEvent, NodeState, shared};
 use crate::secure::TransportIdentity;
 
 const USAGE: &str = "\
@@ -287,7 +288,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     let library = Library::open(config.library_root())?;
     println!("library at {}", library.root().display());
-    let state = control::shared(NodeState {
+    let state = shared(NodeState {
         config,
         config_path: paths.config.clone(),
         node_public_key: identity.public_key_base58(),
@@ -300,7 +301,7 @@ async fn run(cli: Cli) -> Result<()> {
         active_job: None,
         shutting_down: false,
     });
-    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<ControlEvent>(128);
+    let (events_tx, mut events_rx) = tokio::sync::mpsc::channel::<NodeEvent>(128);
     tokio::spawn(control::serve(listener, state.clone(), events_tx.clone()));
     tokio::spawn(jobs::run(state.clone(), events_tx.clone()));
     tokio::spawn(delivery::run(state.clone(), events_tx.clone()));

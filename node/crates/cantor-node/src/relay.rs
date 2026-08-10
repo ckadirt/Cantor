@@ -18,8 +18,8 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::NodeConfig;
-use crate::control::{ControlEvent, SharedState};
 use crate::identity::NodeIdentity;
+use crate::runtime::{NodeEvent, SharedState};
 use crate::secure::{MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_VERSION};
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
@@ -85,8 +85,8 @@ struct RelayTunnel<'a, T> {
 pub async fn run_forever(
     state: SharedState,
     identity: &NodeIdentity,
-    events: &mut mpsc::Receiver<ControlEvent>,
-    event_sender: &mpsc::Sender<ControlEvent>,
+    events: &mut mpsc::Receiver<NodeEvent>,
+    event_sender: &mpsc::Sender<NodeEvent>,
 ) -> Result<()> {
     let mut reconnect_attempt = 0_u32;
     let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
@@ -142,8 +142,8 @@ pub async fn run_forever(
 async fn serve_once(
     state: &SharedState,
     identity: &NodeIdentity,
-    events: &mut mpsc::Receiver<ControlEvent>,
-    event_sender: &mpsc::Sender<ControlEvent>,
+    events: &mut mpsc::Receiver<NodeEvent>,
+    event_sender: &mpsc::Sender<NodeEvent>,
     reconnect_attempt: &mut u32,
 ) -> Result<()> {
     let public_key = identity.public_key_base58();
@@ -352,7 +352,7 @@ async fn serve_once(
     outcome
 }
 
-fn lock(state: &SharedState) -> Result<std::sync::MutexGuard<'_, crate::control::NodeState>> {
+fn lock(state: &SharedState) -> Result<std::sync::MutexGuard<'_, crate::runtime::NodeState>> {
     state
         .lock()
         .map_err(|_| anyhow::anyhow!("node state is poisoned"))
@@ -360,13 +360,13 @@ fn lock(state: &SharedState) -> Result<std::sync::MutexGuard<'_, crate::control:
 
 /// Turns a control command into the frames that have to go out over the relay.
 fn apply_control_event(
-    event: ControlEvent,
+    event: NodeEvent,
     sessions: &mut HashMap<String, ClientSession>,
     state: &SharedState,
     node_info: &mut NodeInfo,
 ) -> Result<Vec<Message>> {
     match event {
-        ControlEvent::Revoked(key) => {
+        NodeEvent::Revoked(key) => {
             let mut frames = Vec::new();
             let mut dropped = 0_usize;
             for (sid, session) in sessions.iter_mut() {
@@ -393,7 +393,7 @@ fn apply_control_event(
             println!("revoked {key}; dropped {dropped} live session(s)");
             Ok(frames)
         }
-        ControlEvent::NodeInfoChanged => {
+        NodeEvent::NodeInfoChanged => {
             let locked = lock(state)?;
             *node_info = static_node_info(&locked.config, &locked.library);
             let push = NodeMessage::NodeInfoChanged {
@@ -408,7 +408,7 @@ fn apply_control_event(
             }
             Ok(frames)
         }
-        ControlEvent::JobUpdated { principal_id, job } => {
+        NodeEvent::JobUpdated { principal_id, job } => {
             let locked = lock(state)?;
             let refreshed = static_node_info(&locked.config, &locked.library);
             drop(locked);
@@ -442,7 +442,7 @@ fn apply_control_event(
             }
             Ok(frames)
         }
-        ControlEvent::LibraryChanged {
+        NodeEvent::LibraryChanged {
             principal_id,
             revision,
         } => {
@@ -600,7 +600,7 @@ fn handle_relay_binary(
     config_path: &Path,
     public_key: &str,
     node_info: &NodeInfo,
-    event_sender: &mpsc::Sender<ControlEvent>,
+    event_sender: &mpsc::Sender<NodeEvent>,
 ) -> Result<Option<(Vec<Message>, bool)>> {
     let (sid, ciphertext) = match parse_node_secure_carrier(frame) {
         Ok(parsed) => parsed,
@@ -650,7 +650,7 @@ fn dispatch_application(
     config_path: &Path,
     public_key: &str,
     node_info: &NodeInfo,
-    event_sender: &mpsc::Sender<ControlEvent>,
+    event_sender: &mpsc::Sender<NodeEvent>,
 ) -> Result<NodeMessage> {
     let mut locked = lock(state)?;
     let locked = &mut *locked;
@@ -687,7 +687,7 @@ fn dispatch_application(
         if job.state == cantor_proto::JobState::Queued {
             locked.job_notify.notify_one();
         }
-        let _ = event_sender.try_send(ControlEvent::JobUpdated {
+        let _ = event_sender.try_send(NodeEvent::JobUpdated {
             principal_id: context.principal_id,
             job: job.clone(),
         });
@@ -696,7 +696,7 @@ fn dispatch_application(
         && let Some(context) = session.authenticated()
     {
         let revision = locked.library.library_revision(context.principal_id)?;
-        let _ = event_sender.try_send(ControlEvent::LibraryChanged {
+        let _ = event_sender.try_send(NodeEvent::LibraryChanged {
             principal_id: context.principal_id,
             revision,
         });
@@ -840,16 +840,16 @@ mod tests {
     use std::collections::HashMap;
 
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
-    use crate::control::{NodeState, SharedState, shared};
     use crate::identity::NodeIdentity;
     use crate::principal::PrincipalId;
+    use crate::runtime::{NodeState, SharedState, shared};
     use crate::secure::TransportIdentity;
     use crate::session::ClientSession;
     use cantor_proto::{JobState, JobView};
     use tempfile::tempdir;
 
     use super::{
-        ControlEvent, Message, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
+        Message, NodeEvent, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
         handle_relay_text, parse_node_secure_carrier, reconnect_delay, static_node_info,
     };
 
@@ -939,7 +939,7 @@ mod tests {
         ]);
         let principal_id = PrincipalId::from_client_public_key(&[1_u8; 32]);
         let frames = apply_control_event(
-            ControlEvent::JobUpdated {
+            NodeEvent::JobUpdated {
                 principal_id,
                 job: JobView {
                     id: "job".into(),
@@ -987,7 +987,7 @@ mod tests {
         ]);
         let principal_id = PrincipalId::from_client_public_key(&[1_u8; 32]);
         let frames = apply_control_event(
-            ControlEvent::LibraryChanged {
+            NodeEvent::LibraryChanged {
                 principal_id,
                 revision: 7,
             },
@@ -1063,7 +1063,7 @@ mod tests {
         );
 
         let frames = apply_control_event(
-            ControlEvent::Revoked("revoked-key".to_owned()),
+            NodeEvent::Revoked("revoked-key".to_owned()),
             &mut sessions,
             &state,
             &mut node_info,
@@ -1099,7 +1099,7 @@ mod tests {
             .expect("rename");
 
         let frames = apply_control_event(
-            ControlEvent::NodeInfoChanged,
+            NodeEvent::NodeInfoChanged,
             &mut sessions,
             &state,
             &mut node_info,
