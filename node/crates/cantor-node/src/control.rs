@@ -12,7 +12,7 @@ use std::fs;
 use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -25,11 +25,22 @@ use tokio::sync::mpsc;
 use crate::accel;
 use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::catalog::Catalog;
-use crate::config::{NodeConfig, Pairing};
+use crate::config::Pairing;
 use crate::engine;
 use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer, new_pair_token, pairing_uri};
 use crate::principal::PrincipalId;
+use crate::runtime::NodeEvent;
 use crate::store::{InstalledVariant, Store, human_bytes};
+
+// Keep the original control-module entry points available while downstream
+// callers migrate to runtime ownership.
+#[allow(unused_imports)]
+pub use crate::runtime::{NodeState, SharedState, shared};
+
+/// Compatibility name for callers that still treat relay effects as control
+/// events. New runtime-facing code should use [`NodeEvent`].
+#[allow(dead_code)] // Deliberate migration shim; production code uses NodeEvent.
+pub type ControlEvent = NodeEvent;
 
 pub const CONTROL_VERSION: u8 = 1;
 const SOCKET_DIRECTORY_MODE: u32 = 0o750;
@@ -46,49 +57,6 @@ pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 /// `sockaddr_un.sun_path` is 108 bytes on Linux, including the terminator.
 const MAX_SOCKET_PATH_BYTES: usize = 107;
-
-/// Everything the control surface and the relay loop both touch.
-pub struct NodeState {
-    pub config: NodeConfig,
-    pub config_path: PathBuf,
-    pub node_public_key: String,
-    pub transport_identity: Arc<crate::secure::TransportIdentity>,
-    pub pair_offer: Option<PairOffer>,
-    pub connected: bool,
-    pub library: crate::library::Library,
-    /// Acceptance and model-readiness changes wake the single durable worker.
-    pub job_notify: Arc<tokio::sync::Notify>,
-    /// Completion and startup wake the single low-priority derivative worker.
-    pub delivery_notify: Arc<tokio::sync::Notify>,
-    pub active_job: Option<crate::jobs::ActiveJobControl>,
-    pub shutting_down: bool,
-}
-
-pub type SharedState = Arc<Mutex<NodeState>>;
-
-/// Work that only the relay loop can carry out, because only it holds the live
-/// client sessions.
-#[derive(Clone, Debug)]
-pub enum ControlEvent {
-    /// Cut off any session authenticated with this key, right now.
-    Revoked(String),
-    /// Capabilities changed; push `node.info` to everyone authenticated.
-    NodeInfoChanged,
-    /// Private durable state belongs only on sessions for this principal.
-    JobUpdated {
-        principal_id: PrincipalId,
-        job: cantor_proto::JobView,
-    },
-    /// A private library revision is a sync hint, never a broadcast payload.
-    LibraryChanged {
-        principal_id: PrincipalId,
-        revision: u64,
-    },
-}
-
-pub fn shared(state: NodeState) -> SharedState {
-    Arc::new(Mutex::new(state))
-}
 
 const SYSTEM_SOCKET_PATH: &str = "/run/cantor/control.sock";
 
@@ -255,7 +223,7 @@ pub fn bind(socket_path: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-pub async fn serve(listener: UnixListener, state: SharedState, events: mpsc::Sender<ControlEvent>) {
+pub async fn serve(listener: UnixListener, state: SharedState, events: mpsc::Sender<NodeEvent>) {
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(accepted) => accepted,
@@ -277,7 +245,7 @@ pub async fn serve(listener: UnixListener, state: SharedState, events: mpsc::Sen
 async fn serve_connection(
     stream: UnixStream,
     state: SharedState,
-    events: mpsc::Sender<ControlEvent>,
+    events: mpsc::Sender<NodeEvent>,
 ) -> Result<()> {
     let (reader, mut writer) = stream.into_split();
     let mut lines = BufReader::new(reader.take(MAX_REQUEST_BYTES)).lines();
@@ -341,7 +309,7 @@ async fn write_line<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: &Va
 async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
     line: &str,
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     writer: &mut W,
     kind: &str,
 ) -> Result<()> {
@@ -869,7 +837,7 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
 async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     selector: &str,
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     writer: &mut W,
     id: &str,
 ) -> Result<()> {
@@ -948,7 +916,7 @@ async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
 
     // Only now does the variant count as installed.
     store.mark_installed(model, variant)?;
-    let _ = events.try_send(ControlEvent::NodeInfoChanged);
+    let _ = events.try_send(NodeEvent::NodeInfoChanged);
 
     // A model with no engine cannot run, so pulling one fetches the backend it
     // needs. Best-effort: the weights are installed either way, and a failure
@@ -1116,7 +1084,7 @@ impl Response {
     }
 }
 
-fn dispatch(line: &str, state: &SharedState, events: &mpsc::Sender<ControlEvent>) -> Response {
+fn dispatch(line: &str, state: &SharedState, events: &mpsc::Sender<NodeEvent>) -> Response {
     let fallback_id = serde_json::from_str::<Value>(line)
         .ok()
         .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_owned))
@@ -1138,7 +1106,7 @@ fn dispatch(line: &str, state: &SharedState, events: &mpsc::Sender<ControlEvent>
 fn handle(
     request: Request,
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
 ) -> Result<Response> {
     let mut state = state
         .lock()
@@ -1214,7 +1182,7 @@ fn handle(
             }
             // Only after the file is written, so a failed write never disconnects
             // a device that is in fact still authorized.
-            let _ = events.try_send(ControlEvent::Revoked(key));
+            let _ = events.try_send(NodeEvent::Revoked(key));
             Ok(Response::Ok {
                 v: CONTROL_VERSION,
                 id,
@@ -1252,7 +1220,7 @@ fn handle(
                 .context("expected a model and tag like `acestep:1.5-fast`")?;
             let store = Store::new(state.config.model_root());
             let reclaimed = store.remove(model, tag)?;
-            let _ = events.try_send(ControlEvent::NodeInfoChanged);
+            let _ = events.try_send(NodeEvent::NodeInfoChanged);
             Ok(Response::Removed {
                 v: CONTROL_VERSION,
                 id,
@@ -1265,7 +1233,7 @@ fn handle(
             state.config.rename_node(&config_path, &name)?;
             // The node's name is part of NodeInfo, so connected apps have to hear
             // about it rather than showing the old one until they reconnect.
-            let _ = events.try_send(ControlEvent::NodeInfoChanged);
+            let _ = events.try_send(NodeEvent::NodeInfoChanged);
             Ok(Response::Ok {
                 v: CONTROL_VERSION,
                 id,
@@ -1369,13 +1337,14 @@ mod tests {
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
-    use super::{ControlEvent, NodeState, Response, dispatch, shared};
+    use super::{ControlEvent, Response, dispatch};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::identity::NodeIdentity;
     use crate::principal::PrincipalId;
+    use crate::runtime::{NodeState, SharedState, shared};
     use crate::secure::TransportIdentity;
 
-    fn state() -> (super::SharedState, tempfile::TempDir) {
+    fn state() -> (SharedState, tempfile::TempDir) {
         let temporary = tempdir().expect("temporary directory");
         let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
         paths.prepare_directory().expect("directory");

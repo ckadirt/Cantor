@@ -17,11 +17,11 @@ use tokio::sync::{mpsc, oneshot};
 use crate::accel;
 use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::checkpoints::{self, CheckpointOutcome, CheckpointReference, EngineProvenance};
-use crate::control::{ControlEvent, SharedState};
 use crate::engine::{self, LoadOptions, Stage};
 use crate::generate::{Generation, Progress, Request, StageExecution, components_for};
 use crate::library::{FinishResult, WorkItem};
 use crate::principal::PrincipalId;
+use crate::runtime::{NodeEvent, SharedState};
 use crate::store::Store;
 
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(1);
@@ -59,7 +59,7 @@ pub struct ActiveJobControl {
 
 struct InferenceCommand {
     state: SharedState,
-    events: mpsc::Sender<ControlEvent>,
+    events: mpsc::Sender<NodeEvent>,
     work: WorkItem,
     signal: Arc<AtomicU8>,
     attempts: Vec<(String, PathBuf)>,
@@ -140,7 +140,7 @@ pub async fn graceful_shutdown(state: &SharedState) {
     }
 }
 
-pub async fn run(state: SharedState, events: mpsc::Sender<ControlEvent>) {
+pub async fn run(state: SharedState, events: mpsc::Sender<NodeEvent>) {
     let notify = match state.lock() {
         Ok(locked) => Arc::clone(&locked.job_notify),
         Err(_) => return,
@@ -214,7 +214,7 @@ pub async fn run(state: SharedState, events: mpsc::Sender<ControlEvent>) {
 
 async fn execute(
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     worker: &InferenceWorker,
     work: &WorkItem,
 ) -> std::result::Result<(), WorkerFailure> {
@@ -256,7 +256,7 @@ async fn execute(
 
 async fn execute_controlled(
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     worker: &InferenceWorker,
     work: &WorkItem,
     signal: &Arc<AtomicU8>,
@@ -420,7 +420,7 @@ struct CachedGeneration {
 #[allow(clippy::too_many_arguments)]
 fn run_generation(
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     work: &WorkItem,
     signal: &AtomicU8,
     attempts: &[(String, PathBuf)],
@@ -570,7 +570,7 @@ fn run_generation(
                     &completed.1.sha256[..12]
                 );
                 emit(events, work.principal_id, completed.0);
-                let _ = events.try_send(ControlEvent::LibraryChanged {
+                let _ = events.try_send(NodeEvent::LibraryChanged {
                     principal_id: work.principal_id,
                     revision: completed.3,
                 });
@@ -640,7 +640,7 @@ fn run_generation(
 
 fn persist_checkpoint(
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     work: &WorkItem,
     stage: Stage,
     outcome: CheckpointOutcome,
@@ -696,7 +696,7 @@ fn persist_checkpoint(
 
 fn settle_standing_stop(
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     work: &WorkItem,
     signal: &AtomicU8,
     reference: Option<&CheckpointReference>,
@@ -760,7 +760,7 @@ fn next_engine_stage(stage: Stage) -> Option<Stage> {
 
 fn persist_progress(
     state: &SharedState,
-    events: &mpsc::Sender<ControlEvent>,
+    events: &mpsc::Sender<NodeEvent>,
     work: &WorkItem,
     progress: Progress,
 ) -> Result<()> {
@@ -784,8 +784,8 @@ fn persist_progress(
     Ok(())
 }
 
-fn emit(events: &mpsc::Sender<ControlEvent>, principal_id: PrincipalId, job: JobView) {
-    let _ = events.try_send(ControlEvent::JobUpdated { principal_id, job });
+fn emit(events: &mpsc::Sender<NodeEvent>, principal_id: PrincipalId, job: JobView) {
+    let _ = events.try_send(NodeEvent::JobUpdated { principal_id, job });
 }
 
 struct WorkerFailure {

@@ -19,9 +19,9 @@ use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::config::now_rfc3339;
-use crate::control::{ControlEvent, SharedState};
 use crate::library::{ArtifactRecord, Library, insert_artifact, write_json_atomic};
 use crate::principal::PrincipalId;
+use crate::runtime::{NodeEvent, SharedState};
 
 pub const DELIVERY_PROFILE: &str = "opus-stereo-160k-v1";
 pub const DELIVERY_MEDIA_TYPE: &str = "audio/ogg; codecs=opus";
@@ -222,7 +222,7 @@ impl Library {
     }
 }
 
-pub async fn run(state: SharedState, events: mpsc::Sender<ControlEvent>) {
+pub async fn run(state: SharedState, events: mpsc::Sender<NodeEvent>) {
     let notify = match state.lock() {
         Ok(locked) => Arc::clone(&locked.delivery_notify),
         Err(_) => return,
@@ -276,7 +276,7 @@ pub async fn run(state: SharedState, events: mpsc::Sender<ControlEvent>) {
                     "delivery.finalized job={} profile={DELIVERY_PROFILE}",
                     candidate.job_id
                 );
-                let _ = events.try_send(ControlEvent::LibraryChanged {
+                let _ = events.try_send(NodeEvent::LibraryChanged {
                     principal_id: candidate.principal_id,
                     revision,
                 });
