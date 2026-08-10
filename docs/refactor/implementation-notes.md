@@ -7,8 +7,8 @@ the reasoning only at the end.
 ## Program status
 
 - Started: 2026-08-09
-- Current milestone: RF0 executable baseline (documentation prerequisite ready)
-- Production refactor code: not started
+- Current milestone: RF3 app services and connection state machines
+- Production refactor code: RF1 and RF2 complete
 - Last completed product milestone: M6, commit `d3f890d`
 
 ## Decisions
@@ -179,6 +179,34 @@ RF0 will rerun and expand this baseline before moving production owners.
   construction to non-overlapping new paths. The primary agent owns the final
   `MainScreen` integration, deletion of duplicates, phone screenshots, and commits.
 
+### 2026-08-09 — RF2 completed
+
+- Library presentation now lives under `features/library`; backend composition and
+  generation drafts live under `features/backends`; job rows and control policy
+  live under `features/jobs`. Each feature exposes a small named barrel API and
+  owns focused rendering/state tests.
+- `useBackendRuntime` now owns the former screen infrastructure as one explicit
+  state/command contract: stored backends, live connections, cache hydration and
+  persistence, outbox delivery, song/job commands, audio transfer/local state,
+  pairing visibility, and refresh/error reporting. Production defaults remain the
+  existing concrete connection and repositories; flat dependency overrides are
+  available only as focused test seams.
+- `MainScreen.tsx` fell from roughly 1,450 lines to 178 lines. It now projects
+  library rows, selects theme colors, composes feature components, and wires their
+  callbacks to the runtime; it no longer implements transport, persistence,
+  request, audio, draft, or row presentation logic.
+- An additive paired-backend removal command was discarded during review because
+  the original screen had no such behavior. Existing local-audio removal remains
+  unchanged. This was a scope correction before integration, not a product
+  deviation.
+- RF2 commits: `d54ef73`, `d72d730`, and `c72e660` (plus the prerequisite note
+  commit `e1e5ec1`).
+- Integrated verification passed: TypeScript, focused ESLint/Prettier, and 224
+  Jest tests; Android JVM tests and debug assembly; whitespace checks; and a cold
+  physical-phone restart. The paired Library retained the pinned/cached songs,
+  search and filter controls, backend capability facts, queue entries, new-job
+  form, and one authenticated `READY` node. No generation was triggered.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
@@ -216,4 +244,6 @@ RF0 passed the complete Rust/app/relay/Android matrix described above. Before an
 after device captures matched on Android device `6b1f6ba8629c`; only the clock
 changed. The MIUI `uiautomator` command printed its known missing theme-compatibility
 file stack trace but still wrote and pulled a valid hierarchy, so it did not alter
-the result.
+the result. RF1 and RF2 repeated the cold-start device check with the same paired
+Library state; RF2 additionally inspected the extracted backend/job composition
+and confirmed an authenticated `READY` node without submitting a generation.

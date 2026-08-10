@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved direction. RF0 and RF1 are complete; RF2 app composition extraction is
-next.
+Approved direction. RF0, RF1, and RF2 are complete; RF3 app service/state-machine
+extraction is next.
 
 ## Objective
 
