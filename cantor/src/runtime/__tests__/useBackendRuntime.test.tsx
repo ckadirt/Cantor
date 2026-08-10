@@ -5,6 +5,7 @@ import type { JobView } from '../../../../protocol/JobView';
 import type { SongDetail } from '../../../../protocol/SongDetail';
 import type { SongHeader } from '../../../../protocol/SongHeader';
 import type { AppIdentity } from '../../identity/derive';
+import type { LocalAudioStore } from '../../audio/localAudioStore';
 import type { OutboxEntry } from '../../jobs/outbox';
 import type {
   BackendRecord,
@@ -202,6 +203,33 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
   const removeAudioMock = jest
     .fn()
     .mockResolvedValue({ state: 'remote', bytes: 0 });
+  const audioStore: LocalAudioStore = {
+    inspect: ref => inspectAudioMock(ref.nodeKey, ref.songId, ref.digest),
+    createSink: ref => ({
+      offset: async () => {
+        const local = await inspectAudioMock(
+          ref.nodeKey,
+          ref.songId,
+          ref.digest,
+        );
+        return local.state === 'partial' ? local.bytes : 0;
+      },
+      append: (offset, encoded) =>
+        appendAudioChunkMock(
+          ref.nodeKey,
+          ref.songId,
+          ref.digest,
+          offset,
+          encoded,
+        ),
+      finalize: byteLength =>
+        finalizeAudioMock(ref.nodeKey, ref.songId, ref.digest, byteLength),
+    }),
+    play: ref => playAudioMock(ref.nodeKey, ref.songId, ref.digest),
+    pin: ref => pinAudioMock(ref.nodeKey, ref.songId, ref.digest),
+    unpin: ref => unpinAudioMock(ref.nodeKey, ref.songId, ref.digest),
+    remove: ref => removeAudioMock(ref.nodeKey, ref.songId, ref.digest),
+  };
   return {
     dependencies: {
       createConnection: (_backend, _identity, _pairToken, received) => {
@@ -220,13 +248,7 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
       putPending: putPendingMock,
       markAccepted: markAcceptedMock,
       markRejected: markRejectedMock,
-      inspectAudio: inspectAudioMock,
-      appendAudioChunk: appendAudioChunkMock,
-      finalizeAudio: finalizeAudioMock,
-      playAudio: playAudioMock,
-      pinAudio: pinAudioMock,
-      unpinAudio: unpinAudioMock,
-      removeAudio: removeAudioMock,
+      audioStore,
     },
     callbacks,
     connections,

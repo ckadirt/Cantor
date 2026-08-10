@@ -5,17 +5,10 @@ import type { JobView } from '../../../protocol/JobView';
 import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongHeader } from '../../../protocol/SongHeader';
 import type { SongPatch } from '../../../protocol/SongPatch';
-import {
-  appendAudioChunk,
-  audioKey,
-  finalizeAudio,
-  inspectAudio,
-  pinAudio,
-  playAudio,
-  removeAudio,
-  unpinAudio,
-} from '../audio/repository';
+import { audioKey } from '../audio/repository';
 import type { LocalAudio } from '../audio/native';
+import type { AudioRef, LocalAudioStore } from '../audio/localAudioStore';
+import { repositoryLocalAudioStore } from '../audio/repositoryLocalAudioStore';
 import {
   BackendConnection,
   NodeRequestError,
@@ -95,13 +88,7 @@ type RuntimeDependencies = {
   putPending: typeof putPending;
   markAccepted: typeof markAccepted;
   markRejected: typeof markRejected;
-  inspectAudio: typeof inspectAudio;
-  appendAudioChunk: typeof appendAudioChunk;
-  finalizeAudio: typeof finalizeAudio;
-  playAudio: typeof playAudio;
-  pinAudio: typeof pinAudio;
-  unpinAudio: typeof unpinAudio;
-  removeAudio: typeof removeAudio;
+  audioStore: LocalAudioStore;
 };
 
 /** Explicit seams for focused hook tests; production uses the concrete stack. */
@@ -167,13 +154,7 @@ const defaultDependencies: RuntimeDependencies = {
   putPending,
   markAccepted,
   markRejected,
-  inspectAudio,
-  appendAudioChunk,
-  finalizeAudio,
-  playAudio,
-  pinAudio,
-  unpinAudio,
-  removeAudio,
+  audioStore: repositoryLocalAudioStore,
 };
 
 type LiveConnection = {
@@ -206,19 +187,7 @@ export function useBackendRuntime(
     dependencies.markAccepted ?? defaultDependencies.markAccepted;
   const rejectOutboxEntry =
     dependencies.markRejected ?? defaultDependencies.markRejected;
-  const inspectLocalAudio =
-    dependencies.inspectAudio ?? defaultDependencies.inspectAudio;
-  const appendLocalAudioChunk =
-    dependencies.appendAudioChunk ?? defaultDependencies.appendAudioChunk;
-  const finalizeLocalAudio =
-    dependencies.finalizeAudio ?? defaultDependencies.finalizeAudio;
-  const playLocalAudio =
-    dependencies.playAudio ?? defaultDependencies.playAudio;
-  const pinLocalAudio = dependencies.pinAudio ?? defaultDependencies.pinAudio;
-  const unpinLocalAudio =
-    dependencies.unpinAudio ?? defaultDependencies.unpinAudio;
-  const removeLocalAudio =
-    dependencies.removeAudio ?? defaultDependencies.removeAudio;
+  const audioStore = dependencies.audioStore ?? defaultDependencies.audioStore;
   const [backends, setBackends] = useState<BackendRecord[] | null>(null);
   const [snapshots, setSnapshots] = useState<
     Record<string, ConnectionSnapshot>
@@ -568,29 +537,18 @@ export function useBackendRuntime(
       artifact: ArtifactView,
       action: AudioAction,
     ) => {
-      const identify = () =>
-        inspectLocalAudio(nodeKey, song.id, artifact.sha256);
+      const ref: AudioRef = {
+        nodeKey,
+        songId: song.id,
+        digest: artifact.sha256,
+      };
+      const identify = () => audioStore.inspect(ref);
       if (action === 'download-play') {
         const live = connections.current.get(nodeKey);
         if (live === undefined) throw new Error('Song node is not connected.');
         const before = await identify();
         if (before.state !== 'cached' && before.state !== 'pinned') {
-          const sink: ArtifactSink = {
-            offset: async () => {
-              const local = await identify();
-              return local.state === 'partial' ? local.bytes : 0;
-            },
-            append: (offset, data) =>
-              appendLocalAudioChunk(
-                nodeKey,
-                song.id,
-                artifact.sha256,
-                offset,
-                data,
-              ),
-            finalize: bytes =>
-              finalizeLocalAudio(nodeKey, song.id, artifact.sha256, bytes),
-          };
+          const sink: ArtifactSink = audioStore.createSink(ref);
           await live.connection.downloadArtifact(
             song.id,
             artifact,
@@ -602,28 +560,19 @@ export function useBackendRuntime(
               }),
           );
         }
-        await playLocalAudio(nodeKey, song.id, artifact.sha256);
+        await audioStore.play(ref);
       } else if (action === 'play') {
-        await playLocalAudio(nodeKey, song.id, artifact.sha256);
+        await audioStore.play(ref);
       } else if (action === 'pin') {
-        await pinLocalAudio(nodeKey, song.id, artifact.sha256);
+        await audioStore.pin(ref);
       } else if (action === 'unpin') {
-        await unpinLocalAudio(nodeKey, song.id, artifact.sha256);
+        await audioStore.unpin(ref);
       } else {
-        await removeLocalAudio(nodeKey, song.id, artifact.sha256);
+        await audioStore.remove(ref);
       }
       updateLocalAudio(nodeKey, song.id, artifact.sha256, await identify());
     },
-    [
-      appendLocalAudioChunk,
-      finalizeLocalAudio,
-      inspectLocalAudio,
-      pinLocalAudio,
-      playLocalAudio,
-      removeLocalAudio,
-      unpinLocalAudio,
-      updateLocalAudio,
-    ],
+    [audioStore, updateLocalAudio],
   );
 
   useEffect(() => {
@@ -639,7 +588,11 @@ export function useBackendRuntime(
     Promise.all(
       entries.map(async ([nodeKey, song, artifact]) => ({
         key: audioKey(nodeKey, song.id, artifact.sha256),
-        state: await inspectLocalAudio(nodeKey, song.id, artifact.sha256),
+        state: await audioStore.inspect({
+          nodeKey,
+          songId: song.id,
+          digest: artifact.sha256,
+        }),
       })),
     )
       .then(inspected => {
@@ -657,7 +610,7 @@ export function useBackendRuntime(
     return () => {
       active = false;
     };
-  }, [backends, inspectLocalAudio, snapshots]);
+  }, [audioStore, backends, snapshots]);
 
   const refreshLibraries = useCallback(() => {
     for (const live of connections.current.values()) {
