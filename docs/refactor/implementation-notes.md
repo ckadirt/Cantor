@@ -139,6 +139,31 @@ RF0 will rerun and expand this baseline before moving production owners.
   utility modules, a dependency-injection container, generalized crypto, or new
   persistence policy merely to create a directory structure.
 
+### 2026-08-09 — RF1 completed
+
+- App protocol constants, generated domain types, and pure decoders now live
+  under `core/protocol`; shared validation, error text, and UTF-8 byte counting
+  no longer depend on a backend adapter. Security owns its transport descriptor.
+  `backends/types.ts` remains a compatibility façade while feature callers move.
+- `createSerializedJsonStore` now owns one failure-tolerant update queue per key,
+  explicit decoding/malformed-JSON policy, and an explicit queued no-write result.
+  Jobs, the submission outbox, and private-library snapshots migrated in separate
+  commits without changing keys or JSON. The no-write branch preserves the
+  library's newer-revision early return rather than issuing a redundant write.
+- Node principals are now a private checked `PrincipalId`: client keys derive by
+  the same SHA-256 operation, durable text is canonical lowercase hex, and the
+  CLI's exceptional local owner has a named domain-separated constructor.
+- `NodeState`, shared mutex ownership, and relay-consumed `NodeEvent` effects now
+  live under `runtime::{state,events}`. The control socket is a consumer again;
+  compatibility exports preserve its former state/event entry points.
+- RF1 commits: `312f170`, `d0e40c5`, `ae56f82`, `5378566`, `8c31d09`,
+  `c733dec`, and `44d54f4` (plus the prerequisite note commit `ba3e4d7`).
+- Integrated verification passed: Rust formatting, strict Clippy, and 137 tests;
+  app TypeScript, ESLint, and 210 Jest tests; relay checks and 13 Vitest tests;
+  Android JVM tests plus an `arm64-v8a` debug build; whitespace checks; and a
+  cold app restart on the physical phone. The paired Library, pinned/cached songs,
+  metadata, and controls matched RF0.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
@@ -149,6 +174,15 @@ RF0 will rerun and expand this baseline before moving production owners.
   fragment, so changing either decoder during a baseline milestone would be the
   riskier choice. The fixture records `accept_partial` versus `reject`; a future
   versioned hardening decision may make the policies identical.
+
+### RF1 — canonical principal parsing fails earlier
+
+- The old library parser required lowercase principal hex, but a delivery-local
+  decoder accepted uppercase digits before later lowercase path/owner checks made
+  that corrupt record unusable. `PrincipalId` now rejects uppercase consistently
+  at every durable boundary. Valid persisted principals were already lowercase;
+  the conservative choice is to fail a manually corrupted/noncanonical row early
+  rather than carry an ambiguous owner farther into artifact publication.
 
 When a deviation occurs, record:
 

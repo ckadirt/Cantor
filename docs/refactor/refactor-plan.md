@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved direction. RF0's executable compatibility baseline is complete;
-production-code extraction begins with RF1.
+Approved direction. RF0 and RF1 are complete; RF2 app composition extraction is
+next.
 
 ## Objective
 
