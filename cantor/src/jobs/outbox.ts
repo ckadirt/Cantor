@@ -1,11 +1,10 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
+import { createSerializedJsonStore } from '../core/storage/serializedJsonStore';
 import { isRecord } from '../core/validation';
 
 const OUTBOX_KEY = 'cantor.submission-outbox.v1';
-let writeQueue = Promise.resolve();
 
 export type OutboxEntry = {
   clientRequestId: string;
@@ -20,12 +19,17 @@ export type OutboxEntry = {
   updatedAt: string;
 };
 
+const outboxStore = createSerializedJsonStore<OutboxEntry[]>({
+  key: OUTBOX_KEY,
+  empty: () => [],
+  decode: decodeOutbox,
+  invalidJson: (_raw, error) => {
+    throw error;
+  },
+});
+
 export async function loadOutbox(): Promise<OutboxEntry[]> {
-  const raw = await AsyncStorage.getItem(OUTBOX_KEY);
-  if (raw === null) return [];
-  const parsed: unknown = JSON.parse(raw);
-  if (!Array.isArray(parsed)) throw new Error('Submission outbox is invalid.');
-  return parsed.map(parseEntry);
+  return outboxStore.load();
 }
 
 export async function putPending(
@@ -33,8 +37,7 @@ export async function putPending(
   model: string,
   generation: GenerationRequest,
 ): Promise<OutboxEntry> {
-  return withWriteLock(async () => {
-    const entries = await loadOutbox();
+  return outboxStore.update(entries => {
     const now = new Date().toISOString();
     const frozen = JSON.parse(JSON.stringify(generation)) as GenerationRequest;
     const entry: OutboxEntry = {
@@ -47,9 +50,13 @@ export async function putPending(
       createdAt: now,
       updatedAt: now,
     };
-    await AsyncStorage.setItem(OUTBOX_KEY, JSON.stringify([...entries, entry]));
-    return entry;
+    return { value: [...entries, entry], result: entry };
   });
+}
+
+function decodeOutbox(value: unknown): OutboxEntry[] {
+  if (!Array.isArray(value)) throw new Error('Submission outbox is invalid.');
+  return value.map(parseEntry);
 }
 
 function parseEntry(value: unknown): OutboxEntry {
@@ -125,26 +132,12 @@ async function update(
   id: string,
   change: (entry: OutboxEntry) => OutboxEntry,
 ): Promise<void> {
-  await withWriteLock(async () => {
-    const entries = await loadOutbox();
-    await AsyncStorage.setItem(
-      OUTBOX_KEY,
-      JSON.stringify(
-        entries.map(entry =>
-          entry.clientRequestId === id ? change(entry) : entry,
-        ),
-      ),
+  await outboxStore.update(entries => {
+    const value = entries.map(entry =>
+      entry.clientRequestId === id ? change(entry) : entry,
     );
+    return { value, result: undefined };
   });
-}
-
-function withWriteLock<T>(operation: () => Promise<T>): Promise<T> {
-  const result = writeQueue.then(operation, operation);
-  writeQueue = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
 }
 
 function uuid(): string {
