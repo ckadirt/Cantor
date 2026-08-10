@@ -1,6 +1,7 @@
 import { base64 } from '@scure/base';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
-import { APPLICATION_PROTOCOL_VERSION, isRecord } from '../backends/types';
+import { APPLICATION_PROTOCOL_VERSION } from '../core/protocol';
+import { isRecord } from '../core/validation';
 
 const CHANNEL_VERSION = 1;
 const CARRIER_KIND = 1;

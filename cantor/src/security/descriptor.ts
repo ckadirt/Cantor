@@ -2,11 +2,11 @@ import { base58, base64, base64urlnopad } from '@scure/base';
 import * as ed from '@noble/ed25519';
 import { sha256, sha512 } from '@noble/hashes/sha2.js';
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
-import { APPLICATION_PROTOCOL_VERSION } from '../backends/types';
-import type { TransportDescriptor } from '../backends/types';
+import { APPLICATION_PROTOCOL_VERSION } from '../core/protocol';
+import { isRecord } from '../core/validation';
+import { TRANSPORT_SUITE, type TransportDescriptor } from './types';
 
-export const TRANSPORT_SUITE =
-  'noise-nk-25519-chachapoly-sha256-v1' as const;
+export { TRANSPORT_SUITE } from './types';
 export const SECURE_CHANNEL_VERSION = 1;
 export const SECURE_CARRIER_VERSION = 1;
 
@@ -143,8 +143,4 @@ function decodeCanonicalBase64Url(value: string, label: string): Uint8Array {
 
 function hex(value: Uint8Array): string {
   return [...value].map(byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

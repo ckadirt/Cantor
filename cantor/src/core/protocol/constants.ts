@@ -1,0 +1,2 @@
+export const APPLICATION_PROTOCOL_VERSION = 2;
+export const RELAY_PROTOCOL_VERSION = 1;

@@ -1,4 +1,4 @@
-import { parseJob, parseJobs, parseNodeInfo } from '../types';
+import { parseJob, parseJobs, parseNodeInfo } from '../../core/protocol';
 
 const nodeInfo = require('../../../../protocol/fixtures/v2/node-info.json');
 const jobsPage = require('../../../../protocol/fixtures/v2/jobs-page.json');

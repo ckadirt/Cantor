@@ -25,8 +25,8 @@ import type {
   ConnectionSnapshot,
   NodeInfo,
   PairingRequest,
-  TransportDescriptor,
 } from '../backends/types';
+import type { TransportDescriptor } from '../security/types';
 import { space, touch, type, usePalette } from '../theme/tokens';
 import {
   loadOutbox,
