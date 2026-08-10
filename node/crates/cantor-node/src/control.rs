@@ -52,6 +52,7 @@ pub struct NodeState {
     pub config: NodeConfig,
     pub config_path: PathBuf,
     pub node_public_key: String,
+    pub transport_identity: Arc<crate::secure::TransportIdentity>,
     pub pair_offer: Option<PairOffer>,
     pub connected: bool,
     pub library: crate::library::Library,
@@ -1172,7 +1173,12 @@ fn handle(
             reject_version(v, &id)?;
             let ttl = expires_in.map_or(DEFAULT_PAIR_TTL, Duration::from_secs);
             let token = new_pair_token()?;
-            let uri = pairing_uri(&state.config, &state.node_public_key, &token)?;
+            let uri = pairing_uri(
+                &state.config,
+                &state.node_public_key,
+                &token,
+                state.transport_identity.descriptor(),
+            )?;
             state.pair_offer = Some(PairOffer::new(token, ttl));
             Ok(Response::Pair {
                 v: CONTROL_VERSION,
@@ -1371,6 +1377,8 @@ mod tests {
 
     use super::{ControlEvent, NodeState, Response, dispatch, shared};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
+    use crate::identity::NodeIdentity;
+    use crate::secure::TransportIdentity;
 
     fn state() -> (super::SharedState, tempfile::TempDir) {
         let temporary = tempdir().expect("temporary directory");
@@ -1380,6 +1388,10 @@ mod tests {
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
         let library =
             crate::library::Library::open(temporary.path().join("library")).expect("library");
+        let (identity, _) = NodeIdentity::load_or_create(&paths.key).expect("identity");
+        let (transport_identity, _) =
+            TransportIdentity::load_or_create(&paths.transport_key, &identity)
+                .expect("transport identity");
         let state = shared(NodeState {
             config,
             config_path: paths.config,
@@ -1391,6 +1403,7 @@ mod tests {
             delivery_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
             active_job: None,
             shutting_down: false,
+            transport_identity: std::sync::Arc::new(transport_identity),
         });
         (state, temporary)
     }

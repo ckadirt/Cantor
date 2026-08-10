@@ -1,0 +1,3 @@
+# Preserve the pinned upstream source byte-for-byte; its historical formatting
+# includes tabs and trailing spaces that are not Cantor-authored changes.
+cantor/android/app/src/main/java/com/southernstorm/** -whitespace

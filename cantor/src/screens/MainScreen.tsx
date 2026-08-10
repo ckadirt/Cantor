@@ -25,6 +25,7 @@ import type {
   ConnectionSnapshot,
   NodeInfo,
   PairingRequest,
+  TransportDescriptor,
 } from '../backends/types';
 import { space, touch, type, usePalette } from '../theme/tokens';
 import {
@@ -166,6 +167,25 @@ export function MainScreen({ identity }: Props) {
     [replaceBackends],
   );
 
+  const rememberTransport = useCallback(
+    (nodePubkey: string, transport: TransportDescriptor) => {
+      const current = backendsRef.current;
+      const existing = current.find(item => item.nodePubkey === nodePubkey);
+      if (
+        existing === undefined ||
+        JSON.stringify(existing.transport) === JSON.stringify(transport)
+      ) {
+        return;
+      }
+      replaceBackends(
+        current.map(item =>
+          item.nodePubkey === nodePubkey ? { ...item, transport } : item,
+        ),
+      );
+    },
+    [replaceBackends],
+  );
+
   useEffect(() => {
     if (backends === null) {
       return;
@@ -283,6 +303,8 @@ export function MainScreen({ identity }: Props) {
           onNodeInfo: info => rememberNodeInfo(backend.nodePubkey, info),
           onPairTokenConsumed: () =>
             pairTokens.current.delete(backend.nodePubkey),
+          onTransportConfirmed: transport =>
+            rememberTransport(backend.nodePubkey, transport),
         },
       );
       connections.current.set(backend.nodePubkey, {
@@ -291,7 +313,7 @@ export function MainScreen({ identity }: Props) {
       });
       connection.start();
     }
-  }, [backends, identity, rememberNodeInfo, sendOutbox]);
+  }, [backends, identity, rememberNodeInfo, rememberTransport, sendOutbox]);
 
   useEffect(
     () => () => {

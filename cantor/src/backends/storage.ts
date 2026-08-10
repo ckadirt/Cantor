@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { isRecord, parseNodeInfo, type BackendRecord } from './types';
+import { verifyTransportDescriptor } from '../security/descriptor';
 
 const BACKENDS_KEY = 'cantor.backends.v1';
 
@@ -34,5 +35,16 @@ function parseBackendRecord(value: unknown): BackendRecord {
   ) {
     throw new Error('Stored backend record has an invalid shape.');
   }
-  return value as BackendRecord;
+  const transport =
+    value.transport === undefined
+      ? undefined
+      : verifyTransportDescriptor(value.transport, value.nodePubkey);
+  return {
+    nodePubkey: value.nodePubkey,
+    relayUrl: value.relayUrl,
+    petname: value.petname,
+    lastNodeInfo:
+      value.lastNodeInfo === null ? null : parseNodeInfo(value.lastNodeInfo),
+    ...(transport === undefined ? {} : { transport }),
+  };
 }

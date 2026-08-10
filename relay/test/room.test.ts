@@ -3,6 +3,13 @@ import {env, exports as workerExports} from 'cloudflare:workers';
 import {evictDurableObject} from 'cloudflare:test';
 import {afterEach, describe, expect, it} from 'vitest';
 
+import {
+  encodeClientSecureCarrier,
+  encodeNodeSecureCarrier,
+  parseClientSecureCarrier,
+  parseNodeSecureCarrier,
+} from '../src/frames';
+
 interface NodeIdentity {
   keyPair: CryptoKeyPair;
   pubkey: string;
@@ -143,6 +150,43 @@ describe('NodeRoom', () => {
       code: 'client-offline',
       msg: 'The target client session is not connected.',
     });
+  });
+
+  it('routes bounded binary ciphertext without parsing the inner bytes', async () => {
+    const identity = await createNodeIdentity();
+    const client = await connect(identity.pubkey, 'client');
+    expect((await client.firstFrame).online).toBe(false);
+    const online = nextJsonFrame(client.socket);
+    const node = await claimNode(identity);
+    expect((await online).online).toBe(true);
+
+    await evictDurableObject(env.ROOMS.getByName(identity.pubkey));
+    const privateMarker = new TextEncoder().encode(
+      'relay-must-not-parse-this-inner-audio-or-json',
+    );
+    const nodeFrame = nextBinaryFrame(node);
+    client.socket.send(encodeClientSecureCarrier(privateMarker));
+    const routed = parseNodeSecureCarrier(await nodeFrame);
+    expect(routed?.sid).toEqual(expect.any(String));
+    expect([...routed!.ciphertext]).toEqual([...privateMarker]);
+
+    const clientFrame = nextBinaryFrame(client.socket);
+    const reply = new Uint8Array([0, 255, 17, 34, 0, 99]);
+    node.send(encodeNodeSecureCarrier(routed!.sid, reply));
+    expect([...(parseClientSecureCarrier(await clientFrame) ?? [])]).toEqual([
+      ...reply,
+    ]);
+  });
+
+  it('rejects malformed binary before forwarding it', async () => {
+    const identity = await createNodeIdentity();
+    const client = await connect(identity.pubkey, 'client');
+    await client.firstFrame;
+    const error = nextJsonFrame(client.socket);
+    const closed = nextClose(client.socket);
+    client.socket.send(new Uint8Array([1, 1, 0, 0, 0, 0]).buffer);
+    expect(await error).toMatchObject({t: 'relay.error', code: 'invalid-frame'});
+    expect(await closed).toMatchObject({code: 1008, reason: 'invalid-frame'});
   });
 
   it('notifies the node when a client session detaches', async () => {
@@ -395,6 +439,7 @@ async function connect(
 
   sockets.push(socket);
   const firstFrame = nextJsonFrame(socket);
+  socket.binaryType = 'arraybuffer';
   socket.accept();
   return {socket, firstFrame};
 }
@@ -432,6 +477,29 @@ function nextTextFrame(socket: WebSocket): Promise<string> {
       socket.removeEventListener('error', onError);
     };
 
+    socket.addEventListener('message', onMessage);
+    socket.addEventListener('error', onError);
+  });
+}
+
+function nextBinaryFrame(socket: WebSocket): Promise<ArrayBuffer> {
+  return new Promise((resolve, reject) => {
+    const onMessage = (event: MessageEvent): void => {
+      cleanup();
+      if (!(event.data instanceof ArrayBuffer)) {
+        reject(new Error('Expected a binary WebSocket frame.'));
+        return;
+      }
+      resolve(event.data);
+    };
+    const onError = (): void => {
+      cleanup();
+      reject(new Error('WebSocket errored before the next message.'));
+    };
+    const cleanup = (): void => {
+      socket.removeEventListener('message', onMessage);
+      socket.removeEventListener('error', onError);
+    };
     socket.addEventListener('message', onMessage);
     socket.addEventListener('error', onError);
   });

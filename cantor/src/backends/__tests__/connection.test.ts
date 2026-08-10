@@ -1,4 +1,7 @@
-import { base58 } from '@scure/base';
+import { base58, base64urlnopad } from '@scure/base';
+import * as ed from '@noble/ed25519';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { Platform } from 'react-native';
 import {
   BackendConnection,
@@ -8,10 +11,66 @@ import {
 } from '../connection';
 import { deriveIdentity } from '../../identity/derive';
 import type { BackendRecord, ConnectionSnapshot, NodeInfo } from '../types';
+import type { SecureChannel } from '../../security/native';
+import {
+  decodeNodeInner,
+  encodeClientCarrier,
+  encodeControlInner,
+  parseClientCarrier,
+} from '../../security/wire';
 
 const PHRASE =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
-const NODE_PUBKEY = base58.encode(new Uint8Array(32).fill(3));
+const NODE_SECRET = new Uint8Array(32).fill(3);
+const NODE_KEY_BYTES = ed.getPublicKey(NODE_SECRET);
+const NODE_PUBKEY = base58.encode(NODE_KEY_BYTES);
+const TRANSPORT_KEY = new Uint8Array(32).fill(4);
+const TRANSPORT_KEY_ID = [...sha256(TRANSPORT_KEY)]
+  .map(byte => byte.toString(16).padStart(2, '0'))
+  .join('');
+const TRANSPORT_DESCRIPTOR = {
+  schema: 1 as const,
+  node_ed25519: NODE_PUBKEY,
+  transport_suite: 'noise-nk-25519-chachapoly-sha256-v1' as const,
+  transport_key_id: TRANSPORT_KEY_ID,
+  transport_x25519: base64urlnopad.encode(TRANSPORT_KEY),
+  signature_ed25519: base64urlnopad.encode(
+    ed.sign(
+      concatBytes(
+        utf8ToBytes('cantor-transport-binding-v1'),
+        NODE_KEY_BYTES,
+        TRANSPORT_KEY,
+      ),
+      NODE_SECRET,
+    ),
+  ),
+};
+
+function fakeSecureChannel(): SecureChannel {
+  let live = true;
+  return {
+    begin: () => {
+      if (!live) throw new Error('destroyed');
+      return 'first-message';
+    },
+    finish: message => {
+      if (!live || message !== 'second-message') {
+        throw new Error('bad fake handshake');
+      }
+    },
+    encrypt: inner => {
+      if (!live) throw new Error('destroyed');
+      return [Uint8Array.from(inner)];
+    },
+    decrypt: ciphertext => {
+      if (!live) throw new Error('destroyed');
+      return Uint8Array.from(ciphertext);
+    },
+    destroy: () => {
+      live = false;
+    },
+  };
+}
 
 class FakeSocket {
   static readonly CONNECTING = 0;
@@ -22,6 +81,8 @@ class FakeSocket {
 
   readyState = FakeSocket.CONNECTING;
   sent: string[] = [];
+  rawSent: (string | ArrayBuffer)[] = [];
+  secureEstablished = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
   onerror: (() => void) | null = null;
@@ -37,13 +98,80 @@ class FakeSocket {
   }
 
   receive(frame: unknown): void {
+    if (
+      this.secureEstablished &&
+      typeof frame === 'object' &&
+      frame !== null &&
+      (frame as { t?: unknown }).t === 'tunnel' &&
+      'payload' in frame
+    ) {
+      this.receiveInner(
+        encodeControlInner(
+          (frame as { payload: Record<string, unknown> }).payload,
+        ),
+      );
+      return;
+    }
     this.onmessage?.({
       data: typeof frame === 'string' ? frame : JSON.stringify(frame),
     });
   }
 
-  send(data: string): void {
+  receiveInner(inner: Uint8Array): void {
+    this.onmessage?.({ data: encodeClientCarrier(inner) });
+  }
+
+  receivePlainTunnel(payload: Record<string, unknown>): void {
+    this.onmessage?.({
+      data: JSON.stringify({ v: 1, t: 'tunnel', payload }),
+    });
+  }
+
+  send(data: string | ArrayBuffer): void {
+    this.rawSent.push(data);
+    if (data instanceof ArrayBuffer) {
+      const inner = parseClientCarrier(data);
+      this.sent.push(JSON.stringify({ payload: decodeNodeInner(inner) }));
+      return;
+    }
     this.sent.push(data);
+    let frame: unknown;
+    try {
+      frame = JSON.parse(data);
+    } catch {
+      return;
+    }
+    if (
+      typeof frame === 'object' &&
+      frame !== null &&
+      'payload' in frame &&
+      (frame as { payload?: { t?: unknown } }).payload?.t === 'secure.init'
+    ) {
+      const id = (frame as { payload: { id: string } }).payload.id;
+      this.receivePlainTunnel({
+        v: 1,
+        t: 'secure.offer',
+        id,
+        descriptor: TRANSPORT_DESCRIPTOR,
+        channel_nonce: base64urlnopad.encode(new Uint8Array(32).fill(7)),
+      });
+    } else if (
+      typeof frame === 'object' &&
+      frame !== null &&
+      'payload' in frame &&
+      (frame as { payload?: { t?: unknown } }).payload?.t ===
+        'secure.handshake'
+    ) {
+      const id = (frame as { payload: { id: string } }).payload.id;
+      this.secureEstablished = true;
+      this.receivePlainTunnel({
+        v: 1,
+        t: 'secure.handshake',
+        id,
+        step: 2,
+        data: 'second-message',
+      });
+    }
   }
 
   close(code = 1000, reason = ''): void {
@@ -57,6 +185,7 @@ const backend: BackendRecord = {
   relayUrl: 'wss://relay.test',
   petname: 'Test node',
   lastNodeInfo: null,
+  transport: TRANSPORT_DESCRIPTOR,
 };
 
 function nodeInfoFixture(
@@ -88,7 +217,7 @@ function nodeInfoFixture(
       jobs_create: false,
       library_list: library,
       artifacts_transfer: false,
-      secure_tunnel: false,
+      secure_tunnel: true,
       job_controls: false,
     },
   };
@@ -151,7 +280,9 @@ function connect(): {
       onSnapshot: snapshot => snapshots.push(snapshot),
       onNodeInfo: nodeInfo => nodeInfos.push(nodeInfo),
       onPairTokenConsumed: () => {},
+      onTransportConfirmed: () => {},
     },
+    () => fakeSecureChannel(),
   );
   connection.start();
   const socket = FakeSocket.instances.at(-1);
@@ -244,6 +375,35 @@ describe('BackendConnection', () => {
     const auth = JSON.parse(socket.sent.at(-1) ?? '{}');
     expect(auth.payload.t).toBe('auth');
     expect(auth.payload.sig).toEqual(expect.any(String));
+  });
+
+  it('sends no application identity before Noise and uses binary afterwards', () => {
+    const { socket } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+
+    expect(socket.rawSent).toHaveLength(3);
+    expect(socket.rawSent[0]).toEqual(
+      expect.stringContaining('"t":"secure.init"'),
+    );
+    expect(socket.rawSent[1]).toEqual(
+      expect.stringContaining('"t":"secure.handshake"'),
+    );
+    expect(socket.rawSent[0]).not.toEqual(
+      expect.stringContaining(deriveIdentity(PHRASE).publicKey),
+    );
+    expect(socket.rawSent[2]).toBeInstanceOf(ArrayBuffer);
+  });
+
+  it('rejects plaintext application data after the secure channel opens', () => {
+    const { socket, snapshots } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    socket.receivePlainTunnel({
+      v: 2,
+      t: 'node.info',
+      node: nodeInfoFixture('plaintext'),
+    });
+    expect(snapshots.at(-1)?.error).toContain('plaintext');
+    expect(socket.readyState).toBe(FakeSocket.CLOSED);
   });
 
   it('applies an unsolicited node.info push after welcome', () => {
@@ -699,8 +859,17 @@ describe('BackendConnection', () => {
     });
   });
 
-  it('surfaces an application protocol mismatch', () => {
+  it('rejects a plaintext application frame before the secure handshake', () => {
     const { socket, snapshots } = connect();
+    socket.receive({ v: 1, t: 'tunnel', payload: { v: 1, t: 'challenge' } });
+    expect(snapshots.at(-1)?.error).toBe(
+      'Node did not complete the required secure handshake.',
+    );
+  });
+
+  it('surfaces an application protocol mismatch inside ciphertext', () => {
+    const { socket, snapshots } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
     socket.receive({ v: 1, t: 'tunnel', payload: { v: 1, t: 'challenge' } });
     expect(snapshots.at(-1)?.error).toBe(
       'This app and node use incompatible protocol versions.',

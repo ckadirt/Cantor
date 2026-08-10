@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::config::{NodeConfig, sanitize_petname};
 use crate::library::{ControlResult, JobControl, Library, Submission, SubmitResult};
 use crate::pairing::PairOffer;
+use crate::secure::{SecureSession, TransportIdentity};
 use crate::songs::{ChangePageResult, MutationResult, PresenceMutation, SongPageResult};
 use crate::store::Store;
 
@@ -26,8 +27,9 @@ const CHALLENGE_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
 const TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct ClientSession {
+    secure: SecureSession,
     pending: Option<PendingAuth>,
     relay_session_id: String,
     authenticated: Option<StoredAuthentication>,
@@ -45,6 +47,31 @@ pub struct AuthenticatedSession {
 }
 
 impl ClientSession {
+    pub fn secure_ready(&self) -> bool {
+        self.secure.is_ready()
+    }
+
+    pub fn handle_secure_text(
+        &mut self,
+        payload: &Value,
+        transport: &TransportIdentity,
+        node_ed25519: &[u8; 32],
+    ) -> Result<Value> {
+        self.secure.handle_text(payload, transport, node_ed25519)
+    }
+
+    pub fn decrypt_secure(&mut self, ciphertext: &[u8]) -> Result<Option<Value>> {
+        self.secure.decrypt_application(ciphertext)
+    }
+
+    pub fn encrypt_secure(&mut self, message: &NodeMessage) -> Result<Vec<Vec<u8>>> {
+        self.secure.encrypt_application(message)
+    }
+
+    pub fn close_secure(&mut self) {
+        self.secure.fail();
+    }
+
     pub fn authenticated_key(&self) -> Option<&str> {
         self.authenticated
             .as_ref()
@@ -68,13 +95,9 @@ impl ClientSession {
     }
 
     #[cfg(test)]
-    pub fn authenticated_for_test(key: &str) -> Self {
-        Self::authenticated_with_bytes_for_test(key, [1_u8; 32])
-    }
-
-    #[cfg(test)]
     pub fn authenticated_with_bytes_for_test(key: &str, bytes: [u8; 32]) -> Self {
         Self {
+            secure: SecureSession::default(),
             pending: None,
             relay_session_id: String::new(),
             authenticated: Some(StoredAuthentication::new(
@@ -84,6 +107,16 @@ impl ClientSession {
             )),
             transfer: None,
         }
+    }
+
+    #[cfg(test)]
+    pub fn establish_secure_for_test(
+        &mut self,
+        transport: &TransportIdentity,
+        node_ed25519: &[u8; 32],
+    ) {
+        self.secure =
+            SecureSession::ready_for_test(transport, node_ed25519).expect("test secure session");
     }
 }
 

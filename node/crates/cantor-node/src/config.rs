@@ -22,6 +22,7 @@ pub struct NodePaths {
     pub directory: PathBuf,
     pub config: PathBuf,
     pub key: PathBuf,
+    pub transport_key: PathBuf,
 }
 
 impl NodePaths {
@@ -36,6 +37,7 @@ impl NodePaths {
         Ok(Self {
             config: directory.join("node.toml"),
             key: directory.join("node.key"),
+            transport_key: directory.join("noise.key"),
             directory,
         })
     }
