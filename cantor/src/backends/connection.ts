@@ -50,6 +50,7 @@ import type { BackendRecord, ConnectionSnapshot } from './types';
 import {
   RequestRegistry,
   ignoreResponse,
+  rejectResponse,
   resolveResponse,
 } from './requestRegistry';
 
@@ -76,13 +77,7 @@ type ConnectionCallbacks = {
 };
 
 type PendingRequest = {
-  expected:
-    | 'library.page'
-    | 'library.changes'
-    | 'artifact.info'
-    | 'artifact.part';
-  resolveArtifactInfo?: (value: ArtifactInfo) => void;
-  resolveArtifactPart?: (value: ArtifactPart) => void;
+  expected: 'library.page' | 'library.changes';
   reject?: (error: Error) => void;
   timer?: ReturnType<typeof setTimeout>;
 };
@@ -706,78 +701,15 @@ export class BackendConnection {
       return;
     }
     if (payload.t === 'artifact.info' && typeof payload.id === 'string') {
-      const pending = this.pendingRequests.get(payload.id);
-      if (pending?.expected !== 'artifact.info') return;
-      const artifact = parseArtifact(payload.artifact);
-      if (
-        artifact === null ||
-        typeof payload.transfer_id !== 'string' ||
-        typeof payload.song_id !== 'string' ||
-        !isSafeRevision(payload.accepted_offset) ||
-        !isPositiveSafeInteger(payload.chunk_bytes) ||
-        !isPositiveSafeInteger(payload.window_chunks) ||
-        payload.chunk_bytes > 64 * 1024 ||
-        payload.window_chunks !== 1
-      ) {
-        this.finishPending(payload.id);
-        pending.reject?.(
-          new Error('Node artifact transfer limits are invalid.'),
-        );
-        return;
-      }
-      this.finishPending(payload.id);
-      pending.resolveArtifactInfo?.({
-        transferId: payload.transfer_id,
-        songId: payload.song_id,
-        artifact,
-        acceptedOffset: payload.accepted_offset,
-        chunkBytes: payload.chunk_bytes,
-        windowChunks: payload.window_chunks,
-      });
+      this.requests.deliver(payload.id, 'artifact.info', payload);
       return;
     }
     if (payload.t === 'artifact.chunk' && typeof payload.id === 'string') {
-      const pending = this.pendingRequests.get(payload.id);
-      if (pending?.expected !== 'artifact.part') return;
-      if (
-        typeof payload.transfer_id !== 'string' ||
-        !isSafeRevision(payload.offset) ||
-        typeof payload.data !== 'string' ||
-        payload.data.length === 0 ||
-        payload.data.length > 88_000
-      ) {
-        this.finishPending(payload.id);
-        pending.reject?.(new Error('Node artifact chunk is invalid.'));
-        return;
-      }
-      this.finishPending(payload.id);
-      pending.resolveArtifactPart?.({
-        kind: 'chunk',
-        transferId: payload.transfer_id,
-        offset: payload.offset,
-        data: payload.data,
-      });
+      this.requests.deliver(payload.id, 'artifact.part', payload);
       return;
     }
     if (payload.t === 'artifact.complete' && typeof payload.id === 'string') {
-      const pending = this.pendingRequests.get(payload.id);
-      if (pending?.expected !== 'artifact.part') return;
-      if (
-        typeof payload.transfer_id !== 'string' ||
-        !isSafeRevision(payload.byte_length) ||
-        typeof payload.sha256 !== 'string'
-      ) {
-        this.finishPending(payload.id);
-        pending.reject?.(new Error('Node artifact completion is invalid.'));
-        return;
-      }
-      this.finishPending(payload.id);
-      pending.resolveArtifactPart?.({
-        kind: 'complete',
-        transferId: payload.transfer_id,
-        byteLength: payload.byte_length,
-        sha256: payload.sha256,
-      });
+      this.requests.deliver(payload.id, 'artifact.part', payload);
       return;
     }
     if (payload.t === 'library.changed' && isSafeRevision(payload.revision)) {
@@ -1133,58 +1065,116 @@ export class BackendConnection {
     offset: number,
     expectedSha256: string,
   ): Promise<ArtifactInfo> {
-    const id = this.nextRequestId('artifact-open');
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(
+    const request = this.requests.request('artifact-open', {
+      expected: 'artifact.info',
+      decode: message => {
+        if (!isRecord(message)) {
+          return rejectResponse(
+            new Error('Node artifact transfer limits are invalid.'),
+          );
+        }
+        const artifact = parseArtifact(message.artifact);
+        if (
+          artifact === null ||
+          typeof message.transfer_id !== 'string' ||
+          typeof message.song_id !== 'string' ||
+          !isSafeRevision(message.accepted_offset) ||
+          !isPositiveSafeInteger(message.chunk_bytes) ||
+          !isPositiveSafeInteger(message.window_chunks) ||
+          message.chunk_bytes > 64 * 1024 ||
+          message.window_chunks !== 1
+        ) {
+          return rejectResponse(
+            new Error('Node artifact transfer limits are invalid.'),
+          );
+        }
+        return resolveResponse({
+          transferId: message.transfer_id,
+          songId: message.song_id,
+          artifact,
+          acceptedOffset: message.accepted_offset,
+          chunkBytes: message.chunk_bytes,
+          windowChunks: message.window_chunks,
+        });
+      },
+      timeout: {
+        afterMs: REQUEST_TIMEOUT_MS,
+        error: () =>
           new Error(
             'Opening the audio transfer timed out. It is safe to retry.',
           ),
-        );
-      }, REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(id, {
-        expected: 'artifact.info',
-        resolveArtifactInfo: resolve,
-        reject,
-        timer,
-      });
-      this.sendApplication({
-        t: 'artifact.open',
-        v: APPLICATION_PROTOCOL_VERSION,
-        id,
-        song_id: songId,
-        profile,
-        offset,
-        expected_sha256: expectedSha256,
-      });
+      },
     });
+    this.sendApplication({
+      t: 'artifact.open',
+      v: APPLICATION_PROTOCOL_VERSION,
+      id: request.id,
+      song_id: songId,
+      profile,
+      offset,
+      expected_sha256: expectedSha256,
+    });
+    return request.promise;
   }
 
   private ackArtifact(
     transferId: string,
     nextOffset: number,
   ): Promise<ArtifactPart> {
-    const id = this.nextRequestId('artifact-ack');
-    return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        this.pendingRequests.delete(id);
-        reject(new Error('Audio transfer timed out. It is safe to retry.'));
-      }, REQUEST_TIMEOUT_MS);
-      this.pendingRequests.set(id, {
-        expected: 'artifact.part',
-        resolveArtifactPart: resolve,
-        reject,
-        timer,
-      });
-      this.sendApplication({
-        t: 'artifact.ack',
-        v: APPLICATION_PROTOCOL_VERSION,
-        id,
-        transfer_id: transferId,
-        next_offset: nextOffset,
-      });
+    const request = this.requests.request<ArtifactPart>('artifact-ack', {
+      expected: 'artifact.part',
+      decode: message => {
+        if (!isRecord(message)) {
+          return rejectResponse(new Error('Node artifact chunk is invalid.'));
+        }
+        if (message.t === 'artifact.chunk') {
+          if (
+            typeof message.transfer_id !== 'string' ||
+            !isSafeRevision(message.offset) ||
+            typeof message.data !== 'string' ||
+            message.data.length === 0 ||
+            message.data.length > 88_000
+          ) {
+            return rejectResponse(new Error('Node artifact chunk is invalid.'));
+          }
+          return resolveResponse({
+            kind: 'chunk' as const,
+            transferId: message.transfer_id,
+            offset: message.offset,
+            data: message.data,
+          });
+        }
+        if (
+          message.t !== 'artifact.complete' ||
+          typeof message.transfer_id !== 'string' ||
+          !isSafeRevision(message.byte_length) ||
+          typeof message.sha256 !== 'string'
+        ) {
+          return rejectResponse(
+            new Error('Node artifact completion is invalid.'),
+          );
+        }
+        return resolveResponse({
+          kind: 'complete' as const,
+          transferId: message.transfer_id,
+          byteLength: message.byte_length,
+          sha256: message.sha256,
+        });
+      },
+      timeout: {
+        afterMs: REQUEST_TIMEOUT_MS,
+        error: () =>
+          new Error('Audio transfer timed out. It is safe to retry.'),
+      },
     });
+    this.sendApplication({
+      t: 'artifact.ack',
+      v: APPLICATION_PROTOCOL_VERSION,
+      id: request.id,
+      transfer_id: transferId,
+      next_offset: nextOffset,
+    });
+    return request.promise;
   }
 
   private mutateSong(
