@@ -450,7 +450,77 @@ fn decode_hex_32(value: &str) -> Result<[u8; 32]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{DELIVERY_PROFILE, encode_opus, inspect_delivery, opus_head, opus_tags};
+    use std::collections::HashSet;
+
+    use cantor_proto::{GenerationRequest, GenerationStage, JobState, ProgressUnit};
+
+    use super::{
+        DELIVERY_PROFILE, encode_opus, ensure_delivery, inspect_delivery, opus_head, opus_tags,
+    };
+
+    fn completed_library(root: &std::path::Path) -> (crate::library::Library, [u8; 32], String) {
+        let mut library = crate::library::Library::open(root).unwrap();
+        let principal = [1_u8; 32];
+        let variant = crate::store::InstalledVariant {
+            model: "acestep".into(),
+            tag: "test".into(),
+            licence: String::new(),
+            components: vec![crate::catalog::Component {
+                role: "model".into(),
+                blob: format!("sha256:{}", "a".repeat(64)),
+                url: "unused".into(),
+                bytes: 1,
+                quant: None,
+            }],
+            installed_at: String::new(),
+            engine: "acestep".into(),
+            vram_bytes: 0,
+        };
+        library
+            .submit(
+                &principal,
+                &[2_u8; 32],
+                &crate::library::Submission {
+                    client_request_id: uuid::Uuid::new_v4().to_string(),
+                    model: variant.selector(),
+                    generation: GenerationRequest {
+                        caption: "delivery boundary".into(),
+                        lyrics: None,
+                        duration: Some(15),
+                        steps: Some(1),
+                        cfg: None,
+                        seed: Some(7),
+                    },
+                },
+                &variant,
+                20,
+                0,
+            )
+            .unwrap();
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .record_progress(
+                &work,
+                GenerationStage::Decode,
+                1,
+                Some(1),
+                ProgressUnit::Tiles,
+            )
+            .unwrap();
+        library.begin_finalizing(&work).unwrap().unwrap();
+        let completed = library
+            .complete(
+                &work,
+                &crate::generate::Audio {
+                    planar: vec![0.0; 960 * 2],
+                    sample_rate: 48_000,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.0.state, JobState::Completed);
+        (library, principal, work.id)
+    }
 
     #[test]
     fn ogg_opus_headers_are_self_identifying_and_versioned() {
@@ -499,5 +569,57 @@ mod tests {
                 .starts_with(b"OpusTags")
         );
         assert!(!packets.read_packet().unwrap().unwrap().data.is_empty());
+    }
+
+    #[test]
+    fn delivery_publication_is_idempotent_owner_scoped_and_digest_checked() {
+        let temporary = tempfile::tempdir().unwrap();
+        let (mut library, principal, song_id) = completed_library(temporary.path());
+        assert_eq!(library.library_revision(&principal).unwrap(), 1);
+
+        let candidate = library
+            .next_delivery_candidate(&HashSet::new())
+            .unwrap()
+            .expect("completed master needs a delivery");
+        assert_eq!(candidate.job_id, song_id);
+        let inspected = ensure_delivery(&candidate).unwrap();
+        let revision = library.publish_delivery(&candidate, inspected).unwrap();
+        assert_eq!(revision, 2);
+        assert_eq!(library.library_revision(&principal).unwrap(), 2);
+        assert!(
+            library
+                .next_delivery_candidate(&HashSet::new())
+                .unwrap()
+                .is_none()
+        );
+
+        let verified = library
+            .verified_delivery_artifact(&principal, &song_id, DELIVERY_PROFILE)
+            .unwrap()
+            .expect("owner delivery");
+        assert!(
+            library
+                .verified_delivery_artifact(&[9_u8; 32], &song_id, DELIVERY_PROFILE)
+                .unwrap()
+                .is_none()
+        );
+        let unchanged = library
+            .publish_delivery(&candidate, inspect_delivery(&verified.1).unwrap())
+            .unwrap();
+        assert_eq!(unchanged, revision);
+        assert_eq!(library.library_revision(&principal).unwrap(), revision);
+
+        use std::io::Write;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&verified.1)
+            .unwrap()
+            .write_all(b"tamper")
+            .unwrap();
+        assert!(
+            library
+                .verified_delivery_artifact(&principal, &song_id, DELIVERY_PROFILE)
+                .is_err()
+        );
     }
 }

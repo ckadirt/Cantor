@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "transport_version": 1,
+  "description": "Byte-exact characterization vectors for Cantor M6 transport v1. These fixtures describe deployed behavior; changing an expected byte requires an explicit protocol-version decision.",
+  "byte_order": "big-endian",
+  "files": [
+    "carrier.json",
+    "identity.json",
+    "inner.json",
+    "fragment.json",
+    "negotiation.json"
+  ],
+  "consumer_expectation": "Each valid binary vector should be asserted by at least two independent implementations where the layer exists in two languages. Malformed vectors may record intentionally different rejection layers or timing."
+}

@@ -1742,6 +1742,46 @@ mod tests {
     }
 
     #[test]
+    fn migration_history_is_complete_ordered_and_idempotent_on_reopen() {
+        let temporary = tempdir().unwrap();
+        let library = Library::open(temporary.path()).unwrap();
+        let versions = {
+            let mut statement = library
+                .connection
+                .prepare("SELECT version FROM schema_migrations ORDER BY version")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, u32>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+        drop(library);
+
+        let reopened = Library::open(temporary.path()).unwrap();
+        let versions_after_reopen = {
+            let mut statement = reopened
+                .connection
+                .prepare("SELECT version FROM schema_migrations ORDER BY version")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, u32>(0))
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap()
+        };
+        assert_eq!(versions_after_reopen, versions);
+        assert_eq!(
+            reopened
+                .connection
+                .query_row("PRAGMA quick_check", [], |row| row.get::<_, String>(0))
+                .unwrap(),
+            "ok"
+        );
+    }
+
+    #[test]
     fn conflict_and_owner_isolation_are_enforced() {
         let temporary = tempdir().unwrap();
         let mut library = Library::open(temporary.path()).unwrap();
@@ -1960,6 +2000,50 @@ mod tests {
         let (second, _) = reopened.claim_next().unwrap().unwrap();
         assert_eq!(second.id, first.id);
         assert_eq!(second.attempt, 2);
+    }
+
+    #[test]
+    fn callbacks_from_a_superseded_attempt_cannot_mutate_the_new_claim() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                &[1; 32],
+                &[2; 32],
+                &submission("stale worker"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (stale, _) = library.claim_next().unwrap().unwrap();
+        assert!(matches!(
+            library
+                .finish_failure(&stale, ErrorCode::TemporarilyUnavailable, "retry", true,)
+                .unwrap(),
+            Some(FinishResult::Requeued(_))
+        ));
+        let (current, preparing) = library.claim_next().unwrap().unwrap();
+        assert_eq!(current.attempt, stale.attempt + 1);
+
+        assert!(
+            library
+                .record_progress(
+                    &stale,
+                    GenerationStage::Diffuse,
+                    9,
+                    Some(10),
+                    ProgressUnit::Steps,
+                )
+                .unwrap()
+                .is_none()
+        );
+        assert!(library.finish_cancelled(&stale).unwrap().is_none());
+
+        let unchanged = library.get(&[1; 32], &current.id).unwrap().unwrap();
+        assert_eq!(unchanged.state, JobState::Preparing);
+        assert_eq!(unchanged.revision, preparing.revision);
+        assert!(unchanged.progress.is_none());
     }
 
     #[test]
@@ -2268,6 +2352,81 @@ mod tests {
         let reopened = Library::open(temporary.path()).unwrap();
         assert_eq!(reopened.library_revision(&[1; 32]).unwrap(), 1);
         assert!(reopened.song_detail(&[1; 32], &work.id).unwrap().is_some());
+    }
+
+    #[test]
+    fn failed_song_publication_rolls_back_sql_and_restart_adopts_the_master() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                &[1; 32],
+                &[2; 32],
+                &submission("transaction boundary"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .record_progress(
+                &work,
+                GenerationStage::Decode,
+                1,
+                Some(1),
+                ProgressUnit::Tiles,
+            )
+            .unwrap();
+        library.begin_finalizing(&work).unwrap().unwrap();
+        library
+            .connection
+            .execute_batch(
+                "CREATE TEMP TRIGGER fail_song_publication
+                 BEFORE INSERT ON songs BEGIN
+                   SELECT RAISE(ABORT, 'forced song publication failure');
+                 END;",
+            )
+            .unwrap();
+
+        let completion = library.complete(
+            &work,
+            &crate::generate::Audio {
+                planar: vec![0.0, 0.5, -0.5, 0.0],
+                sample_rate: 1_000,
+            },
+        );
+        assert!(completion.is_err());
+        assert!(work.artifact_directory.join("master.wav").is_file());
+        assert_eq!(
+            library.get(&[1; 32], &work.id).unwrap().unwrap().state,
+            JobState::Finalizing
+        );
+        for table in ["artifacts", "songs", "library_changes"] {
+            let count: u32 = library
+                .connection
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(count, 0, "{table} escaped the failed transaction");
+        }
+        assert_eq!(library.library_revision(&[1; 32]).unwrap(), 0);
+        drop(library); // Also drops the deliberately connection-local trigger.
+
+        let reopened = Library::open(temporary.path()).unwrap();
+        assert_eq!(
+            reopened.get(&[1; 32], &work.id).unwrap().unwrap().state,
+            JobState::Completed
+        );
+        assert_eq!(reopened.library_revision(&[1; 32]).unwrap(), 1);
+        assert!(reopened.song_detail(&[1; 32], &work.id).unwrap().is_some());
+        assert!(
+            reopened
+                .verified_master_path(&[1; 32], &work.id)
+                .unwrap()
+                .is_file()
+        );
     }
 
     #[test]

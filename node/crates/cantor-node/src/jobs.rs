@@ -831,3 +831,33 @@ impl WorkerFailure {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::AtomicU8;
+
+    use super::{StopReason, request_stop};
+
+    #[test]
+    fn stop_requests_escalate_but_never_downgrade() {
+        let signal = AtomicU8::new(StopReason::None as u8);
+
+        request_stop(&signal, StopReason::Pause);
+        assert_eq!(StopReason::load(&signal), StopReason::Pause);
+
+        request_stop(&signal, StopReason::Shutdown);
+        assert_eq!(StopReason::load(&signal), StopReason::Pause);
+
+        request_stop(&signal, StopReason::Revoked);
+        assert_eq!(StopReason::load(&signal), StopReason::Revoked);
+
+        request_stop(&signal, StopReason::Pause);
+        assert_eq!(StopReason::load(&signal), StopReason::Revoked);
+
+        request_stop(&signal, StopReason::Cancel);
+        assert_eq!(StopReason::load(&signal), StopReason::Cancel);
+
+        request_stop(&signal, StopReason::Revoked);
+        assert_eq!(StopReason::load(&signal), StopReason::Cancel);
+    }
+}

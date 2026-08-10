@@ -1,0 +1,51 @@
+{
+  "schema": 1,
+  "secure_version": 1,
+  "valid_shapes": [
+    {
+      "id": "init",
+      "json": "{\"v\":1,\"t\":\"secure.init\",\"id\":\"secure-fixture\",\"suite\":\"noise-nk-25519-chachapoly-sha256-v1\"}"
+    },
+    {
+      "id": "offer",
+      "json": "{\"v\":1,\"t\":\"secure.offer\",\"id\":\"secure-fixture\",\"descriptor\":{\"schema\":1,\"node_ed25519\":\"GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse\",\"transport_suite\":\"noise-nk-25519-chachapoly-sha256-v1\",\"transport_key_id\":\"99428f8b20c25e950740451df43b4ace5c9d7c382e88e007edfd153cceedf1c5\",\"transport_x25519\":\"rAGyIJ6GNU-4UyN7XeD0-rE8f8v0M6YcAZNpYX_s8Qs\",\"signature_ed25519\":\"bOpZnX7kVcy2m6CpSyNtOS1W6JsocV2K3PtFr3Qq8mtc00xLou5Cd9Jdb-K4tUtwtRtebtAY_yHSzYv7pDWKCw\"},\"channel_nonce\":\"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc\"}"
+    },
+    {
+      "id": "handshake_step_1_shape",
+      "json": "{\"v\":1,\"t\":\"secure.handshake\",\"id\":\"secure-fixture\",\"step\":1,\"data\":\"AQID\"}",
+      "note": "Schema-valid opaque data; it is not a complete Noise NK message."
+    },
+    {
+      "id": "handshake_step_2_shape",
+      "json": "{\"v\":1,\"t\":\"secure.handshake\",\"id\":\"secure-fixture\",\"step\":2,\"data\":\"BAUG\"}",
+      "note": "Schema-valid opaque data; it is not a complete Noise NK message."
+    },
+    {
+      "id": "error",
+      "json": "{\"v\":1,\"t\":\"secure.error\",\"code\":\"secure-required\",\"message\":\"A secure channel is required.\"}"
+    }
+  ],
+  "malformed_shapes": [
+    {
+      "id": "init_wrong_version",
+      "json": "{\"v\":2,\"t\":\"secure.init\",\"id\":\"secure-fixture\",\"suite\":\"noise-nk-25519-chachapoly-sha256-v1\"}"
+    },
+    {
+      "id": "init_missing_suite",
+      "json": "{\"v\":1,\"t\":\"secure.init\",\"id\":\"secure-fixture\"}"
+    },
+    {
+      "id": "handshake_step_zero",
+      "json": "{\"v\":1,\"t\":\"secure.handshake\",\"id\":\"secure-fixture\",\"step\":0,\"data\":\"AQID\"}"
+    },
+    {
+      "id": "handshake_changed_id",
+      "json": "{\"v\":1,\"t\":\"secure.handshake\",\"id\":\"different\",\"step\":1,\"data\":\"AQID\"}"
+    },
+    {
+      "id": "handshake_padded_base64url",
+      "json": "{\"v\":1,\"t\":\"secure.handshake\",\"id\":\"secure-fixture\",\"step\":1,\"data\":\"AQID==\"}",
+      "note": "Rust URL_SAFE_NO_PAD currently rejects padded handshake input."
+    }
+  ]
+}

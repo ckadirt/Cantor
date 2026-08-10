@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved direction. The integrated audit and documentation baseline are complete;
-production-code extraction has not begun.
+Approved direction. RF0's executable compatibility baseline is complete;
+production-code extraction begins with RF1.
 
 ## Objective
 

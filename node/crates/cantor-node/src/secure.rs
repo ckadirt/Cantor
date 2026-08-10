@@ -651,6 +651,188 @@ mod tests {
 
     use super::*;
 
+    const IDENTITY_FIXTURE: &str =
+        include_str!("../../../../protocol/transport/v1/fixtures/identity.json");
+    const INNER_FIXTURE: &str =
+        include_str!("../../../../protocol/transport/v1/fixtures/inner.json");
+    const FRAGMENT_FIXTURE: &str =
+        include_str!("../../../../protocol/transport/v1/fixtures/fragment.json");
+    const NEGOTIATION_FIXTURE: &str =
+        include_str!("../../../../protocol/transport/v1/fixtures/negotiation.json");
+
+    #[test]
+    fn shared_identity_fixture_locks_descriptor_preimage_and_prologue_bytes() {
+        let fixture: Value = serde_json::from_str(IDENTITY_FIXTURE).expect("identity fixture");
+        let node = fixed_32(&fixture["node_ed25519_hex"]);
+        let transport = fixed_32(&fixture["transport_x25519_hex"]);
+        let transport_secret = fixed_32(&fixture["transport_x25519_secret_hex"]);
+        let nonce = fixed_32(&fixture["channel_nonce_hex"]);
+        assert_eq!(
+            PublicKey::from(&StaticSecret::from(transport_secret)).to_bytes(),
+            transport
+        );
+        assert_eq!(
+            descriptor_signature_preimage(&node, &transport),
+            fixture_hex(&fixture["descriptor_signature_preimage_hex"])
+        );
+        assert_eq!(
+            handshake_prologue(&node, &transport, &nonce),
+            fixture_hex(&fixture["handshake_prologue_hex"])
+        );
+
+        let descriptor: TransportDescriptor =
+            serde_json::from_value(fixture["descriptor"].clone()).expect("descriptor fixture");
+        assert_eq!(descriptor.transport_key_id, hex_sha256(&transport));
+        let signature = Signature::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(&descriptor.signature_ed25519)
+                .expect("fixture signature"),
+        )
+        .expect("fixture signature bytes");
+        VerifyingKey::from_bytes(&node)
+            .expect("fixture Ed25519 key")
+            .verify(
+                &descriptor_signature_preimage(&node, &transport),
+                &signature,
+            )
+            .expect("fixture descriptor signature");
+    }
+
+    #[test]
+    fn shared_inner_fixture_decodes_control_and_encodes_raw_artifact_exactly() {
+        let fixture: Value = serde_json::from_str(INNER_FIXTURE).expect("inner fixture");
+        let control = fixture_hex(&fixture["valid"]["control"]["frame_hex"]);
+        let expected: Value = serde_json::from_str(
+            fixture["valid"]["control"]["json"]
+                .as_str()
+                .expect("control JSON"),
+        )
+        .expect("control value");
+        assert_eq!(
+            decode_client_inner(&control).expect("control fixture"),
+            expected
+        );
+
+        let artifact = &fixture["valid"]["artifact"];
+        let message = NodeMessage::ArtifactChunk {
+            v: PROTOCOL_VERSION,
+            id: fixture_string(&artifact["request_id"]),
+            transfer_id: fixture_string(&artifact["transfer_id"]),
+            offset: artifact["offset"].as_u64().expect("artifact offset"),
+            data: STANDARD.encode(fixture_hex(&artifact["data_hex"])),
+        };
+        assert_eq!(
+            encode_node_inner(&message).expect("artifact fixture"),
+            fixture_hex(&artifact["frame_hex"])
+        );
+
+        for malformed in fixture["malformed"]
+            .as_array()
+            .expect("malformed inner fixtures")
+        {
+            assert!(
+                decode_client_inner(&fixture_hex(&malformed["frame_hex"])).is_err(),
+                "fixture {} must fail",
+                malformed["id"]
+            );
+        }
+    }
+
+    #[test]
+    fn shared_fragment_fixture_records_current_rust_acceptance_exactly() {
+        let fixture: Value = serde_json::from_str(FRAGMENT_FIXTURE).expect("fragment fixture");
+        let (_, mut receiver) = fixture_transport_pair();
+        let valid = &fixture["valid"]["single_control"];
+        assert_eq!(
+            receiver
+                .accept_fragment(&fixture_hex(&valid["record_hex"]))
+                .expect("valid fragment"),
+            Some(fixture_hex(&valid["inner_hex"]))
+        );
+
+        for malformed in fixture["malformed"]
+            .as_array()
+            .expect("malformed fragment fixtures")
+        {
+            let (_, mut receiver) = fixture_transport_pair();
+            let result = receiver.accept_fragment(&fixture_hex(&malformed["record_hex"]));
+            match malformed["rust"].as_str().expect("Rust expectation") {
+                "reject" => assert!(result.is_err(), "fixture {} must fail", malformed["id"]),
+                "accept_partial" => assert_eq!(
+                    result.expect("accepted partial fragment"),
+                    None,
+                    "fixture {}",
+                    malformed["id"]
+                ),
+                expectation => panic!("unknown Rust fixture expectation {expectation}"),
+            }
+        }
+    }
+
+    #[test]
+    fn shared_negotiation_fixture_records_node_schema_and_error_behavior() {
+        let identity_fixture: Value =
+            serde_json::from_str(IDENTITY_FIXTURE).expect("identity fixture");
+        let negotiation: Value =
+            serde_json::from_str(NEGOTIATION_FIXTURE).expect("negotiation fixture");
+        let node = fixed_32(&identity_fixture["node_ed25519_hex"]);
+        let transport = fixture_transport_identity(&identity_fixture);
+        let init = negotiation_vector(&negotiation, "valid_shapes", "init");
+
+        let mut session = SecureSession::default();
+        let offer = session
+            .handle_text(&init, &transport, &node)
+            .expect("valid secure init");
+        assert_eq!(offer["v"], SECURE_CHANNEL_VERSION);
+        assert_eq!(offer["t"], "secure.offer");
+        assert_eq!(offer["id"], "secure-fixture");
+        assert_eq!(
+            offer["descriptor"], identity_fixture["descriptor"],
+            "the dynamic offer must carry the shared descriptor"
+        );
+        assert_eq!(
+            URL_SAFE_NO_PAD
+                .decode(offer["channel_nonce"].as_str().expect("offer nonce"))
+                .expect("offer nonce base64")
+                .len(),
+            CHANNEL_NONCE_BYTES
+        );
+
+        for id in ["init_wrong_version", "init_missing_suite"] {
+            let malformed = negotiation_vector(&negotiation, "malformed_shapes", id);
+            assert!(
+                SecureSession::default()
+                    .handle_text(&malformed, &transport, &node)
+                    .is_err(),
+                "{id} must fail"
+            );
+        }
+        for id in [
+            "handshake_step_zero",
+            "handshake_changed_id",
+            "handshake_padded_base64url",
+        ] {
+            let mut session = SecureSession::default();
+            session
+                .handle_text(&init, &transport, &node)
+                .expect("begin handshake");
+            let malformed = negotiation_vector(&negotiation, "malformed_shapes", id);
+            assert!(
+                session.handle_text(&malformed, &transport, &node).is_err(),
+                "{id} must fail"
+            );
+        }
+
+        let error_vector = negotiation_vector(&negotiation, "valid_shapes", "error");
+        let mut session = SecureSession::default();
+        assert_eq!(
+            session
+                .handle_text(&json!({"v": 1, "t": "status"}), &transport, &node)
+                .expect("secure required error"),
+            error_vector
+        );
+    }
+
     #[test]
     fn transport_key_is_owner_only_stable_and_signed_by_node_identity() {
         let temporary = tempdir().expect("temporary directory");
@@ -804,5 +986,100 @@ mod tests {
             other_node.decrypt_inner(&cross[0]).is_err(),
             "session mix-up must fail"
         );
+    }
+
+    fn fixture_transport_identity(fixture: &Value) -> TransportIdentity {
+        let secret = Zeroizing::new(fixed_32(&fixture["transport_x25519_secret_hex"]));
+        let public = fixed_32(&fixture["transport_x25519_hex"]);
+        let descriptor = serde_json::from_value(fixture["descriptor"].clone())
+            .expect("transport descriptor fixture");
+        TransportIdentity {
+            secret,
+            public,
+            descriptor,
+        }
+    }
+
+    fn fixture_transport_pair() -> (SecureTransport, SecureTransport) {
+        let fixture: Value = serde_json::from_str(IDENTITY_FIXTURE).expect("identity fixture");
+        let secret = fixed_32(&fixture["transport_x25519_secret_hex"]);
+        let public = fixed_32(&fixture["transport_x25519_hex"]);
+        let prologue = fixture_hex(&fixture["handshake_prologue_hex"]);
+        let parameters: NoiseParams = NOISE_PROTOCOL.parse().expect("Noise parameters");
+        let mut initiator = Builder::new(parameters.clone())
+            .remote_public_key(&public)
+            .expect("fixture remote key")
+            .prologue(&prologue)
+            .expect("fixture prologue")
+            .build_initiator()
+            .expect("fixture initiator");
+        let mut responder = Builder::new(parameters)
+            .local_private_key(&secret)
+            .expect("fixture responder key")
+            .prologue(&prologue)
+            .expect("fixture prologue")
+            .build_responder()
+            .expect("fixture responder");
+        let mut first = [0_u8; MAX_HANDSHAKE_BYTES];
+        let first_len = initiator
+            .write_message(&[], &mut first)
+            .expect("fixture handshake one");
+        let mut empty = [];
+        responder
+            .read_message(&first[..first_len], &mut empty)
+            .expect("fixture read one");
+        let mut second = [0_u8; MAX_HANDSHAKE_BYTES];
+        let second_len = responder
+            .write_message(&[], &mut second)
+            .expect("fixture handshake two");
+        initiator
+            .read_message(&second[..second_len], &mut empty)
+            .expect("fixture read two");
+        (
+            SecureTransport::new(
+                initiator
+                    .into_transport_mode()
+                    .expect("fixture initiator mode"),
+            ),
+            SecureTransport::new(
+                responder
+                    .into_transport_mode()
+                    .expect("fixture responder mode"),
+            ),
+        )
+    }
+
+    fn negotiation_vector(fixture: &Value, group: &str, id: &str) -> Value {
+        let vector = fixture[group]
+            .as_array()
+            .expect("negotiation fixture group")
+            .iter()
+            .find(|vector| vector["id"] == id)
+            .unwrap_or_else(|| panic!("missing negotiation fixture {id}"));
+        serde_json::from_str(vector["json"].as_str().expect("negotiation JSON"))
+            .expect("negotiation value")
+    }
+
+    fn fixed_32(value: &Value) -> [u8; 32] {
+        fixture_hex(value)
+            .try_into()
+            .expect("fixture must contain 32 bytes")
+    }
+
+    fn fixture_string(value: &Value) -> String {
+        value.as_str().expect("fixture string").to_owned()
+    }
+
+    fn fixture_hex(value: &Value) -> Vec<u8> {
+        let value = value.as_str().expect("fixture hex string");
+        assert!(value.len().is_multiple_of(2), "fixture hex length");
+        value
+            .as_bytes()
+            .chunks_exact(2)
+            .map(|pair| {
+                let pair = std::str::from_utf8(pair).expect("fixture hex UTF-8");
+                u8::from_str_radix(pair, 16).expect("fixture canonical hex")
+            })
+            .collect()
     }
 }

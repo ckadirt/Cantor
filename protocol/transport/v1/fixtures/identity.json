@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "description": "Deterministic test-only identity binding and prologue vector. Secret keys are fixtures and must never be used outside tests.",
+  "application_protocol_version": 2,
+  "secure_carrier_version": 1,
+  "descriptor_domain": "cantor-transport-binding-v1",
+  "prologue_domain": "cantor-secure-channel-v1",
+  "node_ed25519_secret_hex": "0303030303030303030303030303030303030303030303030303030303030303",
+  "node_ed25519_hex": "ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1",
+  "transport_x25519_secret_hex": "0404040404040404040404040404040404040404040404040404040404040404",
+  "transport_x25519_hex": "ac01b2209e86354fb853237b5de0f4fab13c7fcbf433a61c019369617fecf10b",
+  "channel_nonce_hex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "descriptor_signature_preimage_hex": "63616e746f722d7472616e73706f72742d62696e64696e672d7631ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1ac01b2209e86354fb853237b5de0f4fab13c7fcbf433a61c019369617fecf10b",
+  "handshake_prologue_hex": "63616e746f722d7365637572652d6368616e6e656c2d7631000201ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1ac01b2209e86354fb853237b5de0f4fab13c7fcbf433a61c019369617fecf10b0707070707070707070707070707070707070707070707070707070707070707",
+  "descriptor": {
+    "schema": 1,
+    "node_ed25519": "GyGKxMyg1p9SsHfm15MkNUu1u9TN2JtTspcdmrtGUdse",
+    "transport_suite": "noise-nk-25519-chachapoly-sha256-v1",
+    "transport_key_id": "99428f8b20c25e950740451df43b4ace5c9d7c382e88e007edfd153cceedf1c5",
+    "transport_x25519": "rAGyIJ6GNU-4UyN7XeD0-rE8f8v0M6YcAZNpYX_s8Qs",
+    "signature_ed25519": "bOpZnX7kVcy2m6CpSyNtOS1W6JsocV2K3PtFr3Qq8mtc00xLou5Cd9Jdb-K4tUtwtRtebtAY_yHSzYv7pDWKCw"
+  },
+  "channel_nonce_base64url": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+}

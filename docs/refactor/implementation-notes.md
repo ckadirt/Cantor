@@ -88,9 +88,53 @@ RF0 will rerun and expand this baseline before moving production owners.
 - Integrated and reviewed all three module audits. The documentation baseline is
   ready to commit independently before RF0 changes tests or production code.
 
+### 2026-08-09 — RF0 started
+
+- Committed the documentation prerequisite as `48bd2c5`.
+- RF0 is limited to executable characterization: shared transport fixtures,
+  app/audio/runtime tests, node persistence/application tests, and deterministic
+  Android compilation. Production owners and observable behavior must not move.
+- Assigned non-overlapping RF0 test work to app, node, and protocol subagents.
+- The primary agent owns CI integration, fixture review, the full baseline matrix,
+  physical-device baseline, staged-patch review, and the RF0 commit.
+- Captured the physical baseline on Android device `6b1f6ba8629c`: the app opened
+  directly to the paired Library, showed the expected All/Favorites/Offline/Trash
+  filters, retained the pinned `M4 recovery drill` and cached
+  `final_phone_instrumental_smoke` entries, and exposed the expected playback,
+  pin, details, save, favorite, and trash controls. The app key remained present;
+  its value is deliberately not recorded here.
+- Added an Android CI gate that runs JVM tests and assembles the real debug app
+  for `arm64-v8a`. One ABI is sufficient for deterministic Kotlin/native bridge
+  compilation here; multi-ABI release packaging remains the release workflow's
+  responsibility.
+- Added byte-exact transport v1 fixtures for relay carrier framing, descriptor
+  signature input, Noise prologue, control/artifact inner records, fragments,
+  and negotiation JSON. Independent Rust, TypeScript, relay, and Kotlin tests
+  consume the corpus; the Kotlin test drives the production secure module through
+  a real Noise NK handshake.
+- Added app characterization for the native audio boundary and repository, plus
+  MainScreen offline hydration, connection startup, canonical persistence, and
+  outbox delivery. Added node characterization for migrations, SQL rollback and
+  restart recovery, attempts, checkpoints, delivery, effects, and exact errors.
+- RF0 integrated verification passed: Rust formatting, strict Clippy, and 134
+  workspace tests; app TypeScript, ESLint, and 190 Jest tests; relay checks and
+  13 Vitest tests; two Android secure-module tests and an `arm64-v8a` debug APK
+  build; fixture JSON validation; and whitespace checks.
+- Reopened the unchanged installed app after the integrated checks. The phone
+  remained paired and reproduced the recorded Library state and controls while
+  the existing release node remained live. No generation was required for this
+  test-only milestone.
+
 ## Deviations
 
-None yet.
+### RF0 — malformed empty fragment timing
+
+- The shared corpus exposed an existing difference for a zero-length first
+  fragment in a multi-fragment record: Rust retains it as an incomplete assembly,
+  while Kotlin rejects it immediately. Neither production encoder emits an empty
+  fragment, so changing either decoder during a baseline milestone would be the
+  riskier choice. The fixture records `accept_partial` versus `reject`; a future
+  versioned hardening decision may make the policies identical.
 
 When a deviation occurs, record:
 
@@ -105,5 +149,8 @@ Follow-up, if any:
 
 ## Verification log
 
-No new verification run is claimed for the documentation-only audit commit. RF0
-will establish a fresh executable baseline before the first code extraction.
+RF0 passed the complete Rust/app/relay/Android matrix described above. Before and
+after device captures matched on Android device `6b1f6ba8629c`; only the clock
+changed. The MIUI `uiautomator` command printed its known missing theme-compatibility
+file stack trace but still wrote and pulled a valid hierarchy, so it did not alter
+the result.

@@ -560,6 +560,44 @@ mod tests {
     }
 
     #[test]
+    fn accepted_request_provenance_mismatch_rejects_a_checkpoint() {
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join("checkpoints");
+        let digests = vec!["a".repeat(64)];
+        let accepted = expectation(&digests);
+        let reference = write(
+            &directory,
+            &accepted,
+            1,
+            Stage::Codes,
+            CheckpointOutcome::Done,
+            engine(),
+            b"opaque-codes",
+        )
+        .unwrap();
+        let path = directory.join(Path::new(&reference.metadata_path).file_name().unwrap());
+
+        let wrong_request = CheckpointExpectation {
+            request_hash: "different-request",
+            ..accepted
+        };
+        assert!(verify(&path, &wrong_request, Some(&engine())).is_err());
+
+        let wrong_model = CheckpointExpectation {
+            model_selector: "different-model",
+            ..accepted
+        };
+        assert!(verify(&path, &wrong_model, Some(&engine())).is_err());
+
+        let wrong_digests = vec!["b".repeat(64)];
+        let wrong_components = CheckpointExpectation {
+            component_digests: &wrong_digests,
+            ..accepted
+        };
+        assert!(verify(&path, &wrong_components, Some(&engine())).is_err());
+    }
+
+    #[test]
     fn rolling_retention_keeps_active_and_one_prior_boundary() {
         let temporary = tempfile::tempdir().unwrap();
         let directory = temporary.path().join("checkpoints");
