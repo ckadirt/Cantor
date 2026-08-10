@@ -207,6 +207,23 @@ RF0 will rerun and expand this baseline before moving production owners.
   search and filter controls, backend capability facts, queue entries, new-job
   form, and one authenticated `READY` node. No generation was triggered.
 
+### 2026-08-09 — RF3 started
+
+- RF3 keeps `BackendConnection` and the React Native audio API stable while
+  extracting one independently tested service/state machine at a time. Request
+  correlation, library-sync reduction, the local-audio port, transport lifecycle,
+  application dispatch, and Android storage/player ownership are separate review
+  and commit units.
+- The first parallel pass is limited to new modules and focused tests so the
+  existing connection/runtime owners remain untouched. The primary agent will
+  review and integrate each seam sequentially, preserving exact timer, reconnect,
+  message, revision, and native-filesystem behavior.
+- No transport suite/version/byte change, reconnect tuning, storage migration,
+  public façade rename, native bridge signature change, or UI policy change is in
+  scope. Physical testing will use reconnect and existing cached audio; model
+  generation remains unnecessary unless a later gate exposes a generation-only
+  regression.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
