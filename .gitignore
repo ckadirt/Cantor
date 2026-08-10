@@ -37,6 +37,8 @@ icons/
 implementation-notes.md
 reports/
 docs/*
+!docs/refactor/
+!docs/refactor/**
 !docs/private-library-milestones/
 docs/private-library-milestones/*
 !docs/private-library-milestones/implementation-notes.md
