@@ -695,7 +695,7 @@ fn dispatch_application(
     if matches!(response, NodeMessage::SongUpdated { .. })
         && let Some(context) = session.authenticated()
     {
-        let revision = locked.library.library_revision(&context.principal_id)?;
+        let revision = locked.library.library_revision(context.principal_id)?;
         let _ = event_sender.try_send(ControlEvent::LibraryChanged {
             principal_id: context.principal_id,
             revision,
@@ -842,10 +842,10 @@ mod tests {
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::control::{NodeState, SharedState, shared};
     use crate::identity::NodeIdentity;
+    use crate::principal::PrincipalId;
     use crate::secure::TransportIdentity;
     use crate::session::ClientSession;
     use cantor_proto::{JobState, JobView};
-    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
 
     use super::{
@@ -937,7 +937,7 @@ mod tests {
                 secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
             ),
         ]);
-        let principal_id: [u8; 32] = Sha256::digest([1_u8; 32]).into();
+        let principal_id = PrincipalId::from_client_public_key(&[1_u8; 32]);
         let frames = apply_control_event(
             ControlEvent::JobUpdated {
                 principal_id,
@@ -985,7 +985,7 @@ mod tests {
                 secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
             ),
         ]);
-        let principal_id: [u8; 32] = Sha256::digest([1_u8; 32]).into();
+        let principal_id = PrincipalId::from_client_public_key(&[1_u8; 32]);
         let frames = apply_control_event(
             ControlEvent::LibraryChanged {
                 principal_id,

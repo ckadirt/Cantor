@@ -23,6 +23,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::config::now_rfc3339;
+use crate::principal::PrincipalId;
 use crate::store::InstalledVariant;
 
 const DIRECTORY_MODE: u32 = 0o700;
@@ -90,7 +91,7 @@ pub struct Submission {
 #[derive(Clone, Debug)]
 pub struct WorkItem {
     pub id: String,
-    pub principal_id: [u8; 32],
+    pub principal_id: PrincipalId,
     pub model: String,
     pub generation: GenerationRequest,
     pub engine: String,
@@ -284,14 +285,14 @@ impl Library {
 
     pub fn submit(
         &mut self,
-        principal: &[u8; 32],
+        principal: PrincipalId,
         public_key: &[u8; 32],
         submission: &Submission,
         variant: &InstalledVariant,
         max_queued_per_principal: u32,
         minimum_free_bytes: u64,
     ) -> Result<SubmitResult> {
-        let principal = hex(principal);
+        let principal = principal.to_string();
         let public_key = bs58::encode(public_key).into_string();
         let normalized = serde_json::to_string(&submission.generation)?;
         let request_hash =
@@ -382,22 +383,24 @@ impl Library {
         }))
     }
 
-    pub fn list(&self, principal: &[u8; 32], limit: u32) -> Result<Vec<JobView>> {
+    pub fn list(&self, principal: PrincipalId, limit: u32) -> Result<Vec<JobView>> {
         let mut statement = self.connection.prepare(&format!(
             "SELECT {JOB_VIEW_COLUMNS} FROM jobs
              WHERE principal_id=?1 ORDER BY created_at DESC,id DESC LIMIT ?2"
         ))?;
         statement
-            .query_map(params![hex(principal), limit], |row| job_from_row(row, 0))?
+            .query_map(params![principal.to_string(), limit], |row| {
+                job_from_row(row, 0)
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
     }
 
-    pub fn get(&self, principal: &[u8; 32], id: &str) -> Result<Option<JobView>> {
+    pub fn get(&self, principal: PrincipalId, id: &str) -> Result<Option<JobView>> {
         self.connection
             .query_row(
                 &format!("SELECT {JOB_VIEW_COLUMNS} FROM jobs WHERE principal_id=?1 AND id=?2"),
-                params![hex(principal), id],
+                params![principal.to_string(), id],
                 |row| job_from_row(row, 0),
             )
             .optional()
@@ -406,12 +409,12 @@ impl Library {
 
     pub fn control_job(
         &mut self,
-        principal: &[u8; 32],
+        principal: PrincipalId,
         id: &str,
         expected_revision: Option<u32>,
         control: JobControl,
     ) -> Result<ControlResult> {
-        let principal_hex = hex(principal);
+        let principal_hex = principal.to_string();
         let Some(current) = self.get(principal, id)? else {
             return Ok(ControlResult::NotFound);
         };
@@ -559,24 +562,23 @@ impl Library {
         Ok(ControlResult::Updated(updated))
     }
 
-    pub fn hold_principal_jobs(&mut self, principal: &[u8; 32]) -> Result<Vec<JobView>> {
-        let principal = hex(principal);
+    pub fn hold_principal_jobs(&mut self, principal: PrincipalId) -> Result<Vec<JobView>> {
+        let principal_hex = principal.to_string();
         let now = now_rfc3339();
         self.connection.execute(
             "UPDATE jobs SET state='paused',stage=COALESCE(stage,'plan'),
              stop_reason='revoked',control_requested_at=?2,
              revision=revision+1,updated_at=?2
              WHERE principal_id=?1 AND state='queued'",
-            params![principal, now],
+            params![principal_hex, now],
         )?;
         self.connection.execute(
             "UPDATE jobs SET state='pause_requested',stop_reason='revoked',
              control_requested_at=?2,revision=revision+1,updated_at=?2
              WHERE principal_id=?1 AND state IN ('preparing','running')",
-            params![principal, now],
+            params![principal_hex, now],
         )?;
-        let principal = decode_hex_32(&principal)?;
-        self.list(&principal, cantor_proto::MAX_PAGE_LIMIT)
+        self.list(principal, cantor_proto::MAX_PAGE_LIMIT)
     }
 
     pub fn queued_count(&self) -> Result<u32> {
@@ -653,7 +655,7 @@ impl Library {
             params![id],
             |row| job_from_row(row, 0),
         )?;
-        let principal_id = decode_hex_32(&principal_hex)?;
+        let principal_id = principal_hex.parse::<PrincipalId>()?;
         let generation = serde_json::from_str(&request_json)
             .context("accepted generation request is not valid JSON")?;
         let artifact_directory = self
@@ -978,14 +980,14 @@ impl Library {
         }))
     }
 
-    pub fn verified_master_path(&self, principal: &[u8; 32], id: &str) -> Result<PathBuf> {
+    pub fn verified_master_path(&self, principal: PrincipalId, id: &str) -> Result<PathBuf> {
         let artifact = self
             .connection
             .query_row(
                 "SELECT a.relative_path,a.sha256 FROM artifacts a
                  JOIN jobs j ON j.id=a.job_id
                  WHERE j.principal_id=?1 AND j.id=?2 AND j.state='completed' AND a.kind='master'",
-                params![hex(principal), id],
+                params![principal.to_string(), id],
                 |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()?
@@ -996,7 +998,7 @@ impl Library {
         let path = self
             .root
             .join("jobs")
-            .join(hex(principal))
+            .join(principal.to_string())
             .join(id)
             .join(&artifact.0);
         let inspected = inspect_wav(&path)?;
@@ -1006,7 +1008,12 @@ impl Library {
         Ok(path)
     }
 
-    pub fn export_master(&self, principal: &[u8; 32], id: &str, destination: &Path) -> Result<()> {
+    pub fn export_master(
+        &self,
+        principal: PrincipalId,
+        id: &str,
+        destination: &Path,
+    ) -> Result<()> {
         let source = self.verified_master_path(principal, id)?;
         let parent = destination
             .parent()
@@ -1072,7 +1079,7 @@ impl Library {
             let principal_path = principal_entry.path();
             let principal = principal_entry.file_name().to_string_lossy().into_owned();
             let metadata = fs::symlink_metadata(&principal_path)?;
-            if !metadata.is_dir() || !is_lower_hex(&principal, 64) {
+            if !metadata.is_dir() || principal.parse::<PrincipalId>().is_err() {
                 self.quarantine(&principal_path)?;
                 continue;
             }
@@ -1257,8 +1264,8 @@ impl Library {
             .collect::<rusqlite::Result<Vec<_>>>()?;
         drop(statement);
         for (id, principal) in completed {
-            let principal_id = decode_hex_32(&principal)?;
-            if let Err(error) = self.verified_master_path(&principal_id, &id) {
+            let principal_id = principal.parse::<PrincipalId>()?;
+            if let Err(error) = self.verified_master_path(principal_id, &id) {
                 eprintln!("completed artifact check failed for {id}: {error:#}");
                 let path = self
                     .root
@@ -1478,17 +1485,6 @@ fn enum_from_sql<T: serde::de::DeserializeOwned>(
     })
 }
 
-fn decode_hex_32(value: &str) -> Result<[u8; 32]> {
-    if !is_lower_hex(value, 64) {
-        bail!("principal ID is not canonical hex");
-    }
-    let mut decoded = [0_u8; 32];
-    for (index, byte) in decoded.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&value[index * 2..index * 2 + 2], 16)?;
-    }
-    Ok(decoded)
-}
-
 fn write_status(artifact_directory: &Path, job: &JobView, attempt: u32) -> Result<()> {
     let job_directory = artifact_directory
         .parent()
@@ -1622,13 +1618,6 @@ fn clear_ephemeral_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-}
-
 fn is_known_incomplete_job(path: &Path) -> Result<bool> {
     for entry in fs::read_dir(path)? {
         let entry = entry?;
@@ -1687,6 +1676,10 @@ mod tests {
     use crate::catalog::Component;
     use tempfile::tempdir;
 
+    fn principal(fill: u8) -> PrincipalId {
+        PrincipalId::from_bytes_for_test([fill; 32])
+    }
+
     fn variant() -> InstalledVariant {
         InstalledVariant {
             model: "acestep".into(),
@@ -1725,10 +1718,10 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         let request = submission("one");
         let first = library
-            .submit(&[1; 32], &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
             .unwrap();
         let second = library
-            .submit(&[1; 32], &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
             .unwrap();
         assert_eq!(first, second);
         drop(library);
@@ -1787,20 +1780,20 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         let request = submission("one");
         library
-            .submit(&[1; 32], &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
             .unwrap();
         let mut changed = request.clone();
         changed.generation.caption = "different".into();
         assert_eq!(
             library
-                .submit(&[1; 32], &[2; 32], &changed, &variant(), 20, 0)
+                .submit(principal(1), &[2; 32], &changed, &variant(), 20, 0)
                 .unwrap(),
             SubmitResult::Conflict
         );
-        assert_eq!(library.list(&[1; 32], 20).unwrap().len(), 1);
-        assert!(library.list(&[3; 32], 20).unwrap().is_empty());
-        let id = library.list(&[1; 32], 20).unwrap()[0].id.clone();
-        assert!(library.get(&[3; 32], &id).unwrap().is_none());
+        assert_eq!(library.list(principal(1), 20).unwrap().len(), 1);
+        assert!(library.list(principal(3), 20).unwrap().is_empty());
+        let id = library.list(principal(1), 20).unwrap()[0].id.clone();
+        assert!(library.get(principal(3), &id).unwrap().is_none());
     }
 
     #[test]
@@ -1809,17 +1802,17 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         let request = submission("one");
         let accepted = library
-            .submit(&[1; 32], &[2; 32], &request, &variant(), 1, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), 1, 0)
             .unwrap();
         assert_eq!(
             library
-                .submit(&[1; 32], &[2; 32], &request, &variant(), 1, u64::MAX)
+                .submit(principal(1), &[2; 32], &request, &variant(), 1, u64::MAX)
                 .unwrap(),
             accepted
         );
         assert_eq!(
             library
-                .submit(&[1; 32], &[2; 32], &submission("two"), &variant(), 1, 0)
+                .submit(principal(1), &[2; 32], &submission("two"), &variant(), 1, 0)
                 .unwrap(),
             SubmitResult::QueueFull
         );
@@ -1832,21 +1825,21 @@ mod tests {
         let request = submission("one");
         assert_eq!(
             library
-                .submit(&[1; 32], &[2; 32], &request, &variant(), 20, u64::MAX,)
+                .submit(principal(1), &[2; 32], &request, &variant(), 20, u64::MAX,)
                 .unwrap(),
             SubmitResult::InsufficientDisk
         );
-        assert!(library.list(&[1; 32], 20).unwrap().is_empty());
+        assert!(library.list(principal(1), 20).unwrap().is_empty());
         assert_eq!(
             fs::read_dir(library.root().join("jobs")).unwrap().count(),
             0
         );
 
         let first = library
-            .submit(&[1; 32], &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
             .unwrap();
         let second = library
-            .submit(&[3; 32], &[4; 32], &request, &variant(), 20, 0)
+            .submit(principal(3), &[4; 32], &request, &variant(), 20, 0)
             .unwrap();
         assert_ne!(first, second);
         assert_eq!(library.queued_count().unwrap(), 2);
@@ -1890,7 +1883,14 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         for caption in ["first", "second"] {
             library
-                .submit(&[1; 32], &[2; 32], &submission(caption), &variant(), 20, 0)
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &submission(caption),
+                    &variant(),
+                    20,
+                    0,
+                )
                 .unwrap();
         }
         let (work, preparing) = library.claim_next().unwrap().unwrap();
@@ -1948,7 +1948,7 @@ mod tests {
         );
         assert!(
             library
-                .verified_master_path(&[1; 32], &work.id)
+                .verified_master_path(principal(1), &work.id)
                 .unwrap()
                 .is_file()
         );
@@ -1968,7 +1968,7 @@ mod tests {
         assert_eq!(
             Library::open(temporary.path())
                 .unwrap()
-                .get(&[1; 32], &work.id)
+                .get(principal(1), &work.id)
                 .unwrap()
                 .unwrap()
                 .state,
@@ -1982,7 +1982,7 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         library
             .submit(
-                &[1; 32],
+                principal(1),
                 &[2; 32],
                 &submission("restart"),
                 &variant(),
@@ -1995,7 +1995,7 @@ mod tests {
         drop(library);
 
         let mut reopened = Library::open(temporary.path()).unwrap();
-        let recovered = reopened.get(&[1; 32], &first.id).unwrap().unwrap();
+        let recovered = reopened.get(principal(1), &first.id).unwrap().unwrap();
         assert_eq!(recovered.state, JobState::Queued);
         let (second, _) = reopened.claim_next().unwrap().unwrap();
         assert_eq!(second.id, first.id);
@@ -2008,7 +2008,7 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         library
             .submit(
-                &[1; 32],
+                principal(1),
                 &[2; 32],
                 &submission("stale worker"),
                 &variant(),
@@ -2040,7 +2040,7 @@ mod tests {
         );
         assert!(library.finish_cancelled(&stale).unwrap().is_none());
 
-        let unchanged = library.get(&[1; 32], &current.id).unwrap().unwrap();
+        let unchanged = library.get(principal(1), &current.id).unwrap().unwrap();
         assert_eq!(unchanged.state, JobState::Preparing);
         assert_eq!(unchanged.revision, preparing.revision);
         assert!(unchanged.progress.is_none());
@@ -2052,7 +2052,7 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         let accepted = match library
             .submit(
-                &[1; 32],
+                principal(1),
                 &[2; 32],
                 &submission("controlled"),
                 &variant(),
@@ -2066,13 +2066,13 @@ mod tests {
         };
         assert!(matches!(
             library
-                .control_job(&[3; 32], &accepted.id, None, JobControl::Pause)
+                .control_job(principal(3), &accepted.id, None, JobControl::Pause)
                 .unwrap(),
             ControlResult::NotFound
         ));
         let paused = match library
             .control_job(
-                &[1; 32],
+                principal(1),
                 &accepted.id,
                 Some(accepted.revision),
                 JobControl::Pause,
@@ -2084,7 +2084,7 @@ mod tests {
         };
         assert_eq!(paused.state, JobState::Paused);
         let repeated = match library
-            .control_job(&[1; 32], &accepted.id, None, JobControl::Pause)
+            .control_job(principal(1), &accepted.id, None, JobControl::Pause)
             .unwrap()
         {
             ControlResult::Updated(job) => job,
@@ -2094,7 +2094,7 @@ mod tests {
         assert!(matches!(
             library
                 .control_job(
-                    &[1; 32],
+                    principal(1),
                     &accepted.id,
                     Some(accepted.revision),
                     JobControl::Resume,
@@ -2104,7 +2104,7 @@ mod tests {
         ));
         let resumed = match library
             .control_job(
-                &[1; 32],
+                principal(1),
                 &accepted.id,
                 Some(paused.revision),
                 JobControl::Resume,
@@ -2119,7 +2119,7 @@ mod tests {
         let (first_work, preparing) = library.claim_next().unwrap().unwrap();
         let requested = match library
             .control_job(
-                &[1; 32],
+                principal(1),
                 &accepted.id,
                 Some(preparing.revision),
                 JobControl::Pause,
@@ -2133,12 +2133,12 @@ mod tests {
         drop(library);
 
         let mut reopened = Library::open(temporary.path()).unwrap();
-        let held = reopened.get(&[1; 32], &accepted.id).unwrap().unwrap();
+        let held = reopened.get(principal(1), &accepted.id).unwrap().unwrap();
         assert_eq!(held.state, JobState::Paused);
         assert_eq!(held.stage, Some(GenerationStage::Plan));
         let resumed = match reopened
             .control_job(
-                &[1; 32],
+                principal(1),
                 &accepted.id,
                 Some(held.revision),
                 JobControl::Resume,
@@ -2153,7 +2153,7 @@ mod tests {
         assert_eq!(first_work.id, accepted.id);
         let cancelling = match reopened
             .control_job(
-                &[1; 32],
+                principal(1),
                 &accepted.id,
                 Some(preparing.revision),
                 JobControl::Cancel,
@@ -2168,7 +2168,11 @@ mod tests {
 
         let reopened = Library::open(temporary.path()).unwrap();
         assert_eq!(
-            reopened.get(&[1; 32], &accepted.id).unwrap().unwrap().state,
+            reopened
+                .get(principal(1), &accepted.id)
+                .unwrap()
+                .unwrap()
+                .state,
             JobState::Cancelled
         );
     }
@@ -2179,7 +2183,7 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         library
             .submit(
-                &[1; 32],
+                principal(1),
                 &[2; 32],
                 &submission("fallback"),
                 &variant(),
@@ -2218,7 +2222,7 @@ mod tests {
 
         let resumed = match library
             .control_job(
-                &[1; 32],
+                principal(1),
                 &work.id,
                 Some(paused.revision),
                 JobControl::Resume,
@@ -2245,7 +2249,14 @@ mod tests {
         let temporary = tempdir().unwrap();
         let mut library = Library::open(temporary.path()).unwrap();
         library
-            .submit(&[1; 32], &[2; 32], &submission("retry"), &variant(), 20, 0)
+            .submit(
+                principal(1),
+                &[2; 32],
+                &submission("retry"),
+                &variant(),
+                20,
+                0,
+            )
             .unwrap();
         let mut final_job = None;
         for expected_attempt in 1..=MAX_ATTEMPTS {
@@ -2266,7 +2277,7 @@ mod tests {
         assert!(failed.error.as_ref().unwrap().retryable);
         let retried = match library
             .control_job(
-                &[1; 32],
+                principal(1),
                 &failed.id,
                 Some(failed.revision),
                 JobControl::Retry,
@@ -2311,7 +2322,7 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         library
             .submit(
-                &[1; 32],
+                principal(1),
                 &[2; 32],
                 &submission("Música nocturna"),
                 &variant(),
@@ -2323,17 +2334,22 @@ mod tests {
         assert_eq!(song.id, work.id);
         assert_eq!(song.title, "Música nocturna");
         assert_eq!(song.revision, 1);
-        assert_eq!(library.library_revision(&[1; 32]).unwrap(), 1);
+        assert_eq!(library.library_revision(principal(1)).unwrap(), 1);
         assert_eq!(
             library
-                .song_detail(&[1; 32], &work.id)
+                .song_detail(principal(1), &work.id)
                 .unwrap()
                 .unwrap()
                 .generation
                 .seed,
             Some(7)
         );
-        assert!(library.song_detail(&[3; 32], &work.id).unwrap().is_none());
+        assert!(
+            library
+                .song_detail(principal(3), &work.id)
+                .unwrap()
+                .is_none()
+        );
 
         library
             .connection
@@ -2347,11 +2363,16 @@ mod tests {
         drop(library);
 
         let reopened = Library::open(temporary.path()).unwrap();
-        assert_eq!(reopened.library_revision(&[1; 32]).unwrap(), 1);
+        assert_eq!(reopened.library_revision(principal(1)).unwrap(), 1);
         drop(reopened);
         let reopened = Library::open(temporary.path()).unwrap();
-        assert_eq!(reopened.library_revision(&[1; 32]).unwrap(), 1);
-        assert!(reopened.song_detail(&[1; 32], &work.id).unwrap().is_some());
+        assert_eq!(reopened.library_revision(principal(1)).unwrap(), 1);
+        assert!(
+            reopened
+                .song_detail(principal(1), &work.id)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -2360,7 +2381,7 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         library
             .submit(
-                &[1; 32],
+                principal(1),
                 &[2; 32],
                 &submission("transaction boundary"),
                 &variant(),
@@ -2399,7 +2420,7 @@ mod tests {
         assert!(completion.is_err());
         assert!(work.artifact_directory.join("master.wav").is_file());
         assert_eq!(
-            library.get(&[1; 32], &work.id).unwrap().unwrap().state,
+            library.get(principal(1), &work.id).unwrap().unwrap().state,
             JobState::Finalizing
         );
         for table in ["artifacts", "songs", "library_changes"] {
@@ -2411,19 +2432,24 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table} escaped the failed transaction");
         }
-        assert_eq!(library.library_revision(&[1; 32]).unwrap(), 0);
+        assert_eq!(library.library_revision(principal(1)).unwrap(), 0);
         drop(library); // Also drops the deliberately connection-local trigger.
 
         let reopened = Library::open(temporary.path()).unwrap();
         assert_eq!(
-            reopened.get(&[1; 32], &work.id).unwrap().unwrap().state,
+            reopened.get(principal(1), &work.id).unwrap().unwrap().state,
             JobState::Completed
         );
-        assert_eq!(reopened.library_revision(&[1; 32]).unwrap(), 1);
-        assert!(reopened.song_detail(&[1; 32], &work.id).unwrap().is_some());
+        assert_eq!(reopened.library_revision(principal(1)).unwrap(), 1);
         assert!(
             reopened
-                .verified_master_path(&[1; 32], &work.id)
+                .song_detail(principal(1), &work.id)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            reopened
+                .verified_master_path(principal(1), &work.id)
                 .unwrap()
                 .is_file()
         );
@@ -2438,13 +2464,20 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         for caption in ["first song", "second song"] {
             library
-                .submit(&[1; 32], &[2; 32], &submission(caption), &variant(), 20, 0)
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &submission(caption),
+                    &variant(),
+                    20,
+                    0,
+                )
                 .unwrap();
         }
         let (first, _) = complete_next(&mut library);
         complete_next(&mut library);
 
-        let first_page = match library.list_songs(&[1; 32], 1, None, false).unwrap() {
+        let first_page = match library.list_songs(principal(1), 1, None, false).unwrap() {
             SongPageResult::Page(page) => page,
             SongPageResult::InvalidCursor => panic!("fresh page cursor"),
         };
@@ -2453,7 +2486,7 @@ mod tests {
         let cursor = first_page.next_cursor.unwrap();
         assert!(matches!(
             library
-                .list_songs(&[3; 32], 1, Some(&cursor), false)
+                .list_songs(principal(3), 1, Some(&cursor), false)
                 .unwrap(),
             SongPageResult::InvalidCursor
         ));
@@ -2461,14 +2494,14 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         assert!(matches!(
             library
-                .list_songs(&[1; 32], 1, Some(&cursor), false)
+                .list_songs(principal(1), 1, Some(&cursor), false)
                 .unwrap(),
             SongPageResult::Page(_)
         ));
 
         let updated = match library
             .patch_song(
-                &[1; 32],
+                principal(1),
                 &first.id,
                 1,
                 &SongPatch {
@@ -2487,7 +2520,7 @@ mod tests {
         assert!(matches!(
             library
                 .patch_song(
-                    &[3; 32],
+                    principal(3),
                     &first.id,
                     2,
                     &SongPatch {
@@ -2502,7 +2535,7 @@ mod tests {
         assert!(matches!(
             library
                 .patch_song(
-                    &[1; 32],
+                    principal(1),
                     &first.id,
                     1,
                     &SongPatch {
@@ -2515,19 +2548,19 @@ mod tests {
             MutationResult::Conflict(_)
         ));
         let trashed = match library
-            .change_song_presence(&[1; 32], &first.id, 2, PresenceMutation::Trash)
+            .change_song_presence(principal(1), &first.id, 2, PresenceMutation::Trash)
             .unwrap()
         {
             MutationResult::Updated(song) => song,
             _ => panic!("trash failed"),
         };
         assert!(trashed.trashed);
-        let ordinary = match library.list_songs(&[1; 32], 10, None, false).unwrap() {
+        let ordinary = match library.list_songs(principal(1), 10, None, false).unwrap() {
             SongPageResult::Page(page) => page,
             SongPageResult::InvalidCursor => panic!("fresh list"),
         };
         assert!(!ordinary.songs.iter().any(|song| song.id == first.id));
-        let changes = match library.sync_songs(&[1; 32], 0, 10).unwrap() {
+        let changes = match library.sync_songs(principal(1), 0, 10).unwrap() {
             ChangePageResult::Page(page) => page,
             _ => panic!("sync failed"),
         };
@@ -2546,7 +2579,14 @@ mod tests {
         let temporary = tempdir().unwrap();
         let mut library = Library::open(temporary.path()).unwrap();
         library
-            .submit(&[1; 32], &[2; 32], &submission("adopt"), &variant(), 20, 0)
+            .submit(
+                principal(1),
+                &[2; 32],
+                &submission("adopt"),
+                &variant(),
+                20,
+                0,
+            )
             .unwrap();
         let (work, _) = library.claim_next().unwrap().unwrap();
         library
@@ -2569,7 +2609,7 @@ mod tests {
         drop(library);
 
         let reopened = Library::open(temporary.path()).unwrap();
-        let recovered = reopened.get(&[1; 32], &work.id).unwrap().unwrap();
+        let recovered = reopened.get(principal(1), &work.id).unwrap().unwrap();
         assert_eq!(recovered.state, JobState::Completed);
         let manifest: serde_json::Value = serde_json::from_slice(
             &fs::read(
@@ -2595,7 +2635,7 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         library
             .submit(
-                &[1; 32],
+                principal(1),
                 &[2; 32],
                 &submission("corrupt"),
                 &variant(),
@@ -2623,12 +2663,14 @@ mod tests {
                 },
             )
             .unwrap();
-        let master = library.verified_master_path(&[1; 32], &work.id).unwrap();
+        let master = library
+            .verified_master_path(principal(1), &work.id)
+            .unwrap();
         fs::write(&master, b"truncated").unwrap();
         drop(library);
 
         let reopened = Library::open(temporary.path()).unwrap();
-        let job = reopened.get(&[1; 32], &work.id).unwrap().unwrap();
+        let job = reopened.get(principal(1), &work.id).unwrap().unwrap();
         assert_eq!(job.state, JobState::Failed);
         assert!(job.error.is_some());
         assert!(!master.exists());

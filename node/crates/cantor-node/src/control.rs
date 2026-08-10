@@ -18,7 +18,6 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use sha2::Digest;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
@@ -29,6 +28,7 @@ use crate::catalog::Catalog;
 use crate::config::{NodeConfig, Pairing};
 use crate::engine;
 use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer, new_pair_token, pairing_uri};
+use crate::principal::PrincipalId;
 use crate::store::{InstalledVariant, Store, human_bytes};
 
 pub const CONTROL_VERSION: u8 = 1;
@@ -76,12 +76,12 @@ pub enum ControlEvent {
     NodeInfoChanged,
     /// Private durable state belongs only on sessions for this principal.
     JobUpdated {
-        principal_id: [u8; 32],
+        principal_id: PrincipalId,
         job: cantor_proto::JobView,
     },
     /// A private library revision is a sync hint, never a broadcast payload.
     LibraryChanged {
-        principal_id: [u8; 32],
+        principal_id: PrincipalId,
         revision: u64,
     },
 }
@@ -732,7 +732,7 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
         .get("detach")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let principal = local_operator_principal();
+    let principal = PrincipalId::local_operator();
     let local_key = [0_u8; 32];
 
     let (job, notify) = {
@@ -766,7 +766,7 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
         let max_queued = locked.config.jobs.max_queued_per_principal;
         let minimum_free = locked.config.jobs.minimum_free_bytes;
         let job = match locked.library.submit(
-            &principal,
+            principal,
             &local_key,
             &submission,
             variant,
@@ -808,7 +808,7 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
             .lock()
             .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
             .library
-            .get(&principal, &job.id)?
+            .get(principal, &job.id)?
             .context("the local job disappeared")?;
         if current.revision > revision {
             revision = current.revision;
@@ -834,13 +834,13 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
                     .lock()
                     .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
                     .library
-                    .verified_master_path(&principal, &job.id)?;
+                    .verified_master_path(principal, &job.id)?;
                 if let Some(destination) = output.as_ref() {
                     state
                         .lock()
                         .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
                         .library
-                        .export_master(&principal, &job.id, destination)?;
+                        .export_master(principal, &job.id, destination)?;
                 }
                 return write_line(
                     writer,
@@ -864,11 +864,6 @@ async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
             _ => {}
         }
     }
-}
-
-fn local_operator_principal() -> [u8; 32] {
-    use sha2::{Digest, Sha256};
-    Sha256::digest(b"cantor-local-operator-v1").into()
 }
 
 async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
@@ -1202,13 +1197,13 @@ fn handle(
                 .into_vec()
                 .ok()
                 .and_then(|decoded| <[u8; 32]>::try_from(decoded).ok())
-                .map(|key_bytes| sha2::Sha256::digest(key_bytes).into());
+                .map(|key_bytes| PrincipalId::from_client_public_key(&key_bytes));
             let config_path = state.config_path.clone();
             if !state.config.revoke_key(&config_path, &key)? {
                 bail!("no pairing matches {selector}");
             }
             if let Some(principal_id) = principal_id {
-                state.library.hold_principal_jobs(&principal_id)?;
+                state.library.hold_principal_jobs(principal_id)?;
                 if let Some(active) = state
                     .active_job
                     .as_ref()
@@ -1371,13 +1366,13 @@ pub async fn request_streaming(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
-    use sha2::Digest;
     use tempfile::tempdir;
     use tokio::sync::mpsc;
 
     use super::{ControlEvent, NodeState, Response, dispatch, shared};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::identity::NodeIdentity;
+    use crate::principal::PrincipalId;
     use crate::secure::TransportIdentity;
 
     fn state() -> (super::SharedState, tempfile::TempDir) {
@@ -1475,7 +1470,7 @@ mod tests {
         let (events, mut received) = mpsc::channel(8);
         let public_key_bytes = [7_u8; 32];
         let public_key = bs58::encode(public_key_bytes).into_string();
-        let principal: [u8; 32] = sha2::Sha256::digest(public_key_bytes).into();
+        let principal = PrincipalId::from_client_public_key(&public_key_bytes);
         {
             let mut locked = state.lock().expect("state");
             let path = locked.config_path.clone();
@@ -1501,7 +1496,7 @@ mod tests {
             locked
                 .library
                 .submit(
-                    &principal,
+                    principal,
                     &public_key_bytes,
                     &crate::library::Submission {
                         client_request_id: uuid::Uuid::new_v4().to_string(),
@@ -1531,7 +1526,7 @@ mod tests {
         assert_eq!(encode(&response)["t"], "ok");
         let locked = state.lock().expect("state");
         assert_eq!(
-            locked.library.list(&principal, 10).unwrap()[0].state,
+            locked.library.list(principal, 10).unwrap()[0].state,
             cantor_proto::JobState::Paused
         );
         drop(locked);

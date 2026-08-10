@@ -11,6 +11,7 @@ mod identity;
 mod jobs;
 mod library;
 mod pairing;
+mod principal;
 mod relay;
 mod secure;
 mod service;

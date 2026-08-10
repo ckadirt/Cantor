@@ -14,11 +14,11 @@ use cantor_proto::{
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 
 use crate::config::{NodeConfig, sanitize_petname};
 use crate::library::{ControlResult, JobControl, Library, Submission, SubmitResult};
 use crate::pairing::PairOffer;
+use crate::principal::PrincipalId;
 use crate::secure::{SecureSession, TransportIdentity};
 use crate::songs::{ChangePageResult, MutationResult, PresenceMutation, SongPageResult};
 use crate::store::Store;
@@ -42,7 +42,7 @@ pub struct ClientSession {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedSession {
     pub relay_session_id: String,
-    pub principal_id: [u8; 32],
+    pub principal_id: PrincipalId,
     pub client_public_key: [u8; 32],
 }
 
@@ -128,7 +128,7 @@ struct StoredAuthentication {
 
 impl StoredAuthentication {
     fn new(relay_session_id: String, encoded_key: String, key: [u8; 32]) -> Self {
-        let principal_id: [u8; 32] = Sha256::digest(key).into();
+        let principal_id = PrincipalId::from_client_public_key(&key);
         Self {
             context: AuthenticatedSession {
                 relay_session_id,
@@ -153,7 +153,7 @@ struct PendingAuth {
 #[derive(Debug)]
 struct ArtifactTransfer {
     id: String,
-    principal_id: [u8; 32],
+    principal_id: PrincipalId,
     path: PathBuf,
     byte_length: u64,
     sha256: String,
@@ -354,7 +354,7 @@ impl ClientSession {
                 Ok(NodeMessage::JobsPage {
                     v: PROTOCOL_VERSION,
                     id,
-                    jobs: library.list(&context.principal_id, DEFAULT_PAGE_LIMIT)?,
+                    jobs: library.list(context.principal_id, DEFAULT_PAGE_LIMIT)?,
                     next_cursor: None,
                 })
             }
@@ -378,7 +378,7 @@ impl ClientSession {
                 if limit == 0 || limit > MAX_PAGE_LIMIT {
                     return Ok(invalid_field(id, "limit"));
                 }
-                let mut jobs = library.list(&context.principal_id, limit)?;
+                let mut jobs = library.list(context.principal_id, limit)?;
                 if let Some(states) = states {
                     jobs.retain(|job| states.contains(&job.state));
                 }
@@ -423,7 +423,7 @@ impl ClientSession {
                     generation,
                 };
                 match library.submit(
-                    &context.principal_id,
+                    context.principal_id,
                     &context.client_public_key,
                     &submission,
                     variant,
@@ -462,7 +462,7 @@ impl ClientSession {
                 let Some(context) = self.authenticated() else {
                     return Ok(unauthenticated(id, "jobs"));
                 };
-                match library.get(&context.principal_id, &job_id)? {
+                match library.get(context.principal_id, &job_id)? {
                     Some(job) => Ok(NodeMessage::JobDetail {
                         v: PROTOCOL_VERSION,
                         id,
@@ -550,7 +550,7 @@ impl ClientSession {
                     return Ok(invalid_field(id, "limit"));
                 }
                 match library.list_songs(
-                    &context.principal_id,
+                    context.principal_id,
                     limit,
                     cursor.as_deref(),
                     include_trashed,
@@ -582,7 +582,7 @@ impl ClientSession {
                 if limit == 0 || limit > MAX_PAGE_LIMIT {
                     return Ok(invalid_field(id, "limit"));
                 }
-                match library.sync_songs(&context.principal_id, since_revision, limit)? {
+                match library.sync_songs(context.principal_id, since_revision, limit)? {
                     ChangePageResult::Page(page) => Ok(NodeMessage::LibraryChanges {
                         v: PROTOCOL_VERSION,
                         id,
@@ -610,7 +610,7 @@ impl ClientSession {
                 let Some(context) = self.authenticated() else {
                     return Ok(unauthenticated(id, "songs"));
                 };
-                match library.song_detail(&context.principal_id, &song_id)? {
+                match library.song_detail(context.principal_id, &song_id)? {
                     Some(detail) => Ok(NodeMessage::SongDetail {
                         v: PROTOCOL_VERSION,
                         id,
@@ -635,7 +635,7 @@ impl ClientSession {
                 mutation_message(
                     id,
                     library.patch_song(
-                        &context.principal_id,
+                        context.principal_id,
                         &song_id,
                         expected_revision,
                         &patch,
@@ -657,7 +657,7 @@ impl ClientSession {
                 mutation_message(
                     id,
                     library.change_song_presence(
-                        &context.principal_id,
+                        context.principal_id,
                         &song_id,
                         expected_revision,
                         PresenceMutation::Trash,
@@ -679,7 +679,7 @@ impl ClientSession {
                 mutation_message(
                     id,
                     library.change_song_presence(
-                        &context.principal_id,
+                        context.principal_id,
                         &song_id,
                         expected_revision,
                         PresenceMutation::Restore,
@@ -708,7 +708,7 @@ impl ClientSession {
                     return Ok(invalid_field(id, "artifact"));
                 }
                 let artifact =
-                    match library.verified_delivery_artifact(&principal_id, &song_id, &profile) {
+                    match library.verified_delivery_artifact(principal_id, &song_id, &profile) {
                         Ok(Some(artifact)) => artifact,
                         Ok(None) => {
                             return Ok(NodeMessage::error(
@@ -879,7 +879,7 @@ fn control_job(
         return Ok(unauthenticated(id, "jobs"));
     };
     Ok(
-        match library.control_job(&context.principal_id, &job_id, expected_revision, control)? {
+        match library.control_job(context.principal_id, &job_id, expected_revision, control)? {
             ControlResult::Updated(job) => NodeMessage::JobControlled {
                 v: PROTOCOL_VERSION,
                 id,
@@ -1034,6 +1034,7 @@ mod tests {
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::library::Library;
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
+    use crate::principal::PrincipalId;
 
     fn info() -> NodeInfo {
         NodeInfo {
@@ -1083,11 +1084,7 @@ mod tests {
 
         let library_root = root.join("library");
         let library = Library::open(&library_root).unwrap();
-        let principal_bytes: [u8; 32] = sha2::Sha256::digest(key).into();
-        let principal = principal_bytes
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect::<String>();
+        let principal = PrincipalId::from_client_public_key(&key).to_string();
         let song_id = uuid::Uuid::new_v4().to_string();
         let mut bytes = vec![0_u8; 100];
         bytes[..4].copy_from_slice(b"OggS");
@@ -1149,8 +1146,8 @@ mod tests {
             [1_u8; 32],
         );
         assert_eq!(
-            stored.context.principal_id,
-            [
+            stored.context.principal_id.as_bytes(),
+            &[
                 0x72, 0xcd, 0x6e, 0x84, 0x22, 0xc4, 0x07, 0xfb, 0x6d, 0x09, 0x86, 0x90, 0xf1, 0x13,
                 0x0b, 0x7d, 0xed, 0x7e, 0xc2, 0xf7, 0xf5, 0xe1, 0xd3, 0x0b, 0xd9, 0xd5, 0x21, 0xf0,
                 0x15, 0x36, 0x37, 0x93,
@@ -1538,7 +1535,7 @@ mod tests {
         };
         let accepted = match library
             .submit(
-                &principal,
+                principal,
                 &[1_u8; 32],
                 &crate::library::Submission {
                     client_request_id: uuid::Uuid::new_v4().to_string(),

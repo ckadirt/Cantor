@@ -19,6 +19,7 @@ use uuid::Uuid;
 
 use crate::config::now_rfc3339;
 use crate::library::{ArtifactRecord, Library};
+use crate::principal::PrincipalId;
 
 const FILE_MODE: u32 = 0o600;
 const CAPTION_SUMMARY_BYTES: usize = 240;
@@ -190,7 +191,7 @@ pub fn publish_song(transaction: &Transaction<'_>, id: &str) -> Result<(SongHead
 /// Makes a newly indexed delivery artifact visible through the owner's normal
 /// revision stream. Artifact bytes stay out of change notifications; clients
 /// learn only that the song header should be refreshed.
-pub fn publish_delivery(transaction: &Transaction<'_>, id: &str) -> Result<(String, u64)> {
+pub fn publish_delivery(transaction: &Transaction<'_>, id: &str) -> Result<(PrincipalId, u64)> {
     let principal: String = transaction.query_row(
         "SELECT principal_id FROM songs WHERE id=?1 AND trashed_at IS NULL",
         params![id],
@@ -211,7 +212,7 @@ pub fn publish_delivery(transaction: &Transaction<'_>, id: &str) -> Result<(Stri
         id,
         LibraryChangeKind::Upsert,
     )?;
-    Ok((principal, revision))
+    Ok((principal.parse()?, revision))
 }
 
 impl Library {
@@ -238,18 +239,18 @@ impl Library {
         Ok(())
     }
 
-    pub fn library_revision(&self, principal: &[u8; 32]) -> Result<u64> {
-        library_revision_for_hex(&self.connection, &hex(principal))
+    pub fn library_revision(&self, principal: PrincipalId) -> Result<u64> {
+        library_revision_for_hex(&self.connection, &principal.to_string())
     }
 
     pub fn list_songs(
         &self,
-        principal: &[u8; 32],
+        principal: PrincipalId,
         limit: u32,
         cursor: Option<&str>,
         include_trashed: bool,
     ) -> Result<SongPageResult> {
-        let principal = hex(principal);
+        let principal = principal.to_string();
         let current_revision = library_revision_for_hex(&self.connection, &principal)?;
         let decoded = match cursor {
             Some(cursor) => match decode_cursor(cursor, &self.cursor_key) {
@@ -328,11 +329,11 @@ impl Library {
 
     pub fn sync_songs(
         &self,
-        principal: &[u8; 32],
+        principal: PrincipalId,
         since_revision: u64,
         limit: u32,
     ) -> Result<ChangePageResult> {
-        let principal = hex(principal);
+        let principal = principal.to_string();
         let current = library_revision_for_hex(&self.connection, &principal)?;
         if since_revision > current {
             return Ok(ChangePageResult::InvalidRevision);
@@ -388,8 +389,8 @@ impl Library {
         }))
     }
 
-    pub fn song_detail(&self, principal: &[u8; 32], id: &str) -> Result<Option<SongDetail>> {
-        let principal = hex(principal);
+    pub fn song_detail(&self, principal: PrincipalId, id: &str) -> Result<Option<SongDetail>> {
+        let principal = principal.to_string();
         let Some((song, _)) = header_by_id(&self.connection, Some(&principal), id)? else {
             return Ok(None);
         };
@@ -434,7 +435,7 @@ impl Library {
 
     pub fn patch_song(
         &mut self,
-        principal: &[u8; 32],
+        principal: PrincipalId,
         id: &str,
         expected_revision: u32,
         patch: &SongPatch,
@@ -442,7 +443,7 @@ impl Library {
         if !valid_patch(patch) {
             return Ok(MutationResult::InvalidPatch);
         }
-        let principal = hex(principal);
+        let principal = principal.to_string();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -496,12 +497,12 @@ impl Library {
 
     pub fn change_song_presence(
         &mut self,
-        principal: &[u8; 32],
+        principal: PrincipalId,
         id: &str,
         expected_revision: u32,
         mutation: PresenceMutation,
     ) -> Result<MutationResult> {
-        let principal = hex(principal);
+        let principal = principal.to_string();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -812,10 +813,6 @@ fn change_kind(value: &str) -> Result<LibraryChangeKind> {
         "tombstone" => Ok(LibraryChangeKind::Tombstone),
         _ => bail!("library change kind is invalid"),
     }
-}
-
-fn hex<const N: usize>(bytes: &[u8; N]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 #[cfg(test)]
