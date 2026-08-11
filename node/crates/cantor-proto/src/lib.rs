@@ -7,9 +7,15 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const PROTOCOL_VERSION: u8 = 2;
-pub const MIN_SUPPORTED_VERSION: u8 = 2;
-pub const MAX_SUPPORTED_VERSION: u8 = 2;
+mod generated;
+
+/// Application layer versions and the artifact chunk size come from the shared
+/// transport manifest; every other bound below is application-local policy.
+pub use generated::transport::{
+    APPLICATION_PROTOCOL_MAX_SUPPORTED_VERSION as MAX_SUPPORTED_VERSION,
+    APPLICATION_PROTOCOL_MIN_SUPPORTED_VERSION as MIN_SUPPORTED_VERSION,
+    APPLICATION_PROTOCOL_VERSION as PROTOCOL_VERSION, ARTIFACT_CHUNK_BYTES,
+};
 
 pub const MAX_REQUEST_ID_BYTES: usize = 128;
 pub const MAX_CLIENT_REQUEST_ID_BYTES: usize = 128;
@@ -29,7 +35,6 @@ pub const MAX_PAGE_LIMIT: u32 = 100;
 pub const MAX_TITLE_BYTES: usize = 160;
 pub const MAX_TAG_BYTES: usize = 64;
 pub const MAX_TAGS: usize = 16;
-pub const ARTIFACT_CHUNK_BYTES: u32 = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]

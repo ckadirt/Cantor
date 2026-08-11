@@ -21,6 +21,7 @@ mod service;
 mod session;
 mod signing;
 mod store;
+mod transport;
 mod update;
 
 use std::env;

@@ -205,12 +205,13 @@ mod tests {
     };
     use crate::relay::node_info::static_node_info;
     use crate::runtime::{NodeState, SharedState, shared};
-    use crate::secure::{
-        NOISE_PROTOCOL, SECURE_CHANNEL_VERSION, TRANSPORT_SUITE, TransportIdentity,
-        handshake_prologue,
-    };
+    use crate::secure::{TransportIdentity, handshake_prologue};
     use crate::signing::node_auth_message;
     use crate::store::InstalledVariant;
+    use crate::transport::{
+        NOISE_PROTOCOL_NAME, SECURE_INNER_VERSION, SECURE_NEGOTIATION_VERSION,
+        SECURE_RECORD_VERSION, TRANSPORT_SUITE_ID,
+    };
 
     const SID: &str = "11111111-1111-4111-8111-111111111111";
     const RECORD_FRAGMENT: u8 = 1;
@@ -290,10 +291,10 @@ mod tests {
                 tunnel_text_frame(
                     SID,
                     &json!({
-                        "v": SECURE_CHANNEL_VERSION,
+                        "v": SECURE_NEGOTIATION_VERSION,
                         "t": "secure.init",
                         "id": "secure-test",
-                        "suite": TRANSPORT_SUITE,
+                        "suite": TRANSPORT_SUITE_ID,
                     }),
                 )
                 .expect("secure init tunnel"),
@@ -317,7 +318,7 @@ mod tests {
             .try_into()
             .expect("channel nonce length");
         let prologue = handshake_prologue(node_ed25519, &transport_key, &channel_nonce);
-        let parameters: NoiseParams = NOISE_PROTOCOL.parse().expect("Noise parameters");
+        let parameters: NoiseParams = NOISE_PROTOCOL_NAME.parse().expect("Noise parameters");
         let mut initiator = Builder::new(parameters)
             .remote_public_key(&transport_key)
             .expect("remote transport key")
@@ -334,7 +335,7 @@ mod tests {
                 tunnel_text_frame(
                     SID,
                     &json!({
-                        "v": SECURE_CHANNEL_VERSION,
+                        "v": SECURE_NEGOTIATION_VERSION,
                         "t": "secure.handshake",
                         "id": "secure-test",
                         "step": 1,
@@ -384,13 +385,13 @@ mod tests {
         fn encrypt(&mut self, payload: &Value) -> Message {
             let json = serde_json::to_vec(payload).expect("application JSON");
             let mut inner = Vec::with_capacity(6 + json.len());
-            inner.push(SECURE_CHANNEL_VERSION);
+            inner.push(SECURE_INNER_VERSION);
             inner.push(INNER_CONTROL);
             inner.extend_from_slice(&(json.len() as u32).to_be_bytes());
             inner.extend_from_slice(&json);
 
             let mut record = Vec::with_capacity(FRAGMENT_HEADER_BYTES + inner.len());
-            record.push(SECURE_CHANNEL_VERSION);
+            record.push(SECURE_RECORD_VERSION);
             record.push(RECORD_FRAGMENT);
             record.extend_from_slice(&self.send_message_id.to_be_bytes());
             record.extend_from_slice(&0_u16.to_be_bytes());
@@ -422,7 +423,7 @@ mod tests {
                 .expect("decrypt application response");
             record.truncate(length);
             assert!(record.len() >= FRAGMENT_HEADER_BYTES + 6);
-            assert_eq!(record[0], SECURE_CHANNEL_VERSION);
+            assert_eq!(record[0], SECURE_RECORD_VERSION);
             assert_eq!(record[1], RECORD_FRAGMENT);
             assert_eq!(
                 u32::from_be_bytes(record[2..6].try_into().expect("message id")),
@@ -430,7 +431,7 @@ mod tests {
             );
             assert_eq!(&record[6..10], &[0, 0, 0, 1]);
             let inner = &record[FRAGMENT_HEADER_BYTES..];
-            assert_eq!(inner[0], SECURE_CHANNEL_VERSION);
+            assert_eq!(inner[0], SECURE_INNER_VERSION);
             assert_eq!(inner[1], INNER_CONTROL);
             let json_length = usize::try_from(u32::from_be_bytes(
                 inner[2..6].try_into().expect("JSON length"),

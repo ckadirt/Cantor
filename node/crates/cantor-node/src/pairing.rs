@@ -114,7 +114,8 @@ mod tests {
     use sha2::Sha256;
 
     use crate::config::NodeConfig;
-    use crate::secure::{TRANSPORT_SUITE, TransportDescriptor};
+    use crate::secure::TransportDescriptor;
+    use crate::transport::TRANSPORT_SUITE_ID;
 
     use super::{PAIR_PROOF_DOMAIN, pairing_uri, verify_pair_proof};
 
@@ -135,7 +136,7 @@ mod tests {
         let descriptor = TransportDescriptor {
             schema: 1,
             node_ed25519: "node-key".to_owned(),
-            transport_suite: TRANSPORT_SUITE.to_owned(),
+            transport_suite: TRANSPORT_SUITE_ID.to_owned(),
             transport_key_id: "key-id".to_owned(),
             transport_x25519: "transport-key".to_owned(),
             signature_ed25519: "signature".to_owned(),
@@ -151,7 +152,10 @@ mod tests {
         );
         assert_eq!(fields.get("name").map(String::as_str), Some("studio node"));
         assert_eq!(fields.get("token").map(String::as_str), Some("secret"));
-        assert_eq!(fields.get("ts").map(String::as_str), Some(TRANSPORT_SUITE));
+        assert_eq!(
+            fields.get("ts").map(String::as_str),
+            Some(TRANSPORT_SUITE_ID)
+        );
         assert_eq!(fields.get("tkid").map(String::as_str), Some("key-id"));
         assert_eq!(fields.get("tx").map(String::as_str), Some("transport-key"));
         assert_eq!(fields.get("tsig").map(String::as_str), Some("signature"));

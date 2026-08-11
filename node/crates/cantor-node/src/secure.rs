@@ -5,7 +5,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cantor_proto::{NodeMessage, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -16,28 +16,22 @@ use zeroize::Zeroizing;
 
 use crate::config::reject_symlink;
 use crate::identity::NodeIdentity;
+use crate::transport::{
+    CHANNEL_NONCE_BYTES, ED25519_PUBLIC_KEY_BYTES, FRAGMENT_RECORD_HEADER_BYTES,
+    FRAGMENT_RECORD_KIND, MAX_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_MESSAGE_BYTES,
+    MAX_LOGICAL_INNER_BYTES, MAX_SECURE_CIPHERTEXT_BYTES,
+    MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION, MAX_SESSION_RECORDS_PER_DIRECTION,
+    NOISE_AUTHENTICATION_TAG_BYTES, NOISE_PROTOCOL_NAME, SECURE_CARRIER_VERSION,
+    SECURE_HANDSHAKE_PROLOGUE_DOMAIN, SECURE_NEGOTIATION_VERSION, SECURE_RECORD_VERSION,
+    TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN, TRANSPORT_DESCRIPTOR_VERSION, TRANSPORT_SUITE_ID,
+    X25519_KEY_BYTES,
+};
 
-pub const NOISE_PROTOCOL: &str = "Noise_NK_25519_ChaChaPoly_SHA256";
-pub const TRANSPORT_SUITE: &str = "noise-nk-25519-chachapoly-sha256-v1";
-pub const SECURE_CHANNEL_VERSION: u8 = 1;
-pub const SECURE_CARRIER_VERSION: u8 = 1;
-pub const MAX_SECURE_CIPHERTEXT_BYTES: usize = 96 * 1024;
+mod inner;
 
-const TRANSPORT_SECRET_BYTES: usize = 32;
+use inner::{decode_client_inner, encode_node_inner};
+
 const KEY_FILE_MODE: u32 = 0o600;
-const CHANNEL_NONCE_BYTES: usize = 32;
-const DESCRIPTOR_SIGNATURE_DOMAIN: &[u8] = b"cantor-transport-binding-v1";
-const PROLOGUE_DOMAIN: &[u8] = b"cantor-secure-channel-v1";
-const MAX_HANDSHAKE_BYTES: usize = 4 * 1024;
-const MAX_LOGICAL_INNER_BYTES: usize = 1024 * 1024;
-const MAX_NOISE_PLAINTEXT_BYTES: usize = 60 * 1024;
-const FRAGMENT_HEADER_BYTES: usize = 18;
-const MAX_FRAGMENT_DATA_BYTES: usize = MAX_NOISE_PLAINTEXT_BYTES - FRAGMENT_HEADER_BYTES;
-const MAX_SESSION_MESSAGES: u64 = 1_000_000;
-const MAX_SESSION_BYTES: u64 = 1024 * 1024 * 1024;
-const INNER_CONTROL: u8 = 1;
-const INNER_ARTIFACT_CHUNK: u8 = 2;
-const RECORD_FRAGMENT: u8 = 1;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct TransportDescriptor {
@@ -50,8 +44,8 @@ pub struct TransportDescriptor {
 }
 
 pub struct TransportIdentity {
-    secret: Zeroizing<[u8; TRANSPORT_SECRET_BYTES]>,
-    public: [u8; TRANSPORT_SECRET_BYTES],
+    secret: Zeroizing<[u8; X25519_KEY_BYTES]>,
+    public: [u8; X25519_KEY_BYTES],
     descriptor: TransportDescriptor,
 }
 
@@ -60,7 +54,7 @@ impl TransportIdentity {
         let (secret, created) = if path.exists() {
             (load_secret(path)?, false)
         } else {
-            let mut secret = Zeroizing::new([0_u8; TRANSPORT_SECRET_BYTES]);
+            let mut secret = Zeroizing::new([0_u8; X25519_KEY_BYTES]);
             getrandom::fill(&mut secret[..])
                 .context("failed to obtain randomness for the transport key")?;
             match create_key_file(path) {
@@ -89,9 +83,9 @@ impl TransportIdentity {
         let key_id = hex_sha256(&public);
         let signature = identity.sign(&descriptor_signature_preimage(&ed25519, &public));
         let descriptor = TransportDescriptor {
-            schema: SECURE_CHANNEL_VERSION,
+            schema: TRANSPORT_DESCRIPTOR_VERSION,
             node_ed25519: identity.public_key_base58(),
-            transport_suite: TRANSPORT_SUITE.to_owned(),
+            transport_suite: TRANSPORT_SUITE_ID.to_owned(),
             transport_key_id: key_id,
             transport_x25519: URL_SAFE_NO_PAD.encode(public),
             signature_ed25519: URL_SAFE_NO_PAD.encode(signature.to_bytes()),
@@ -110,12 +104,12 @@ impl TransportIdentity {
         &self.descriptor
     }
 
-    pub fn public_key(&self) -> &[u8; TRANSPORT_SECRET_BYTES] {
+    pub fn public_key(&self) -> &[u8; X25519_KEY_BYTES] {
         &self.public
     }
 
     fn responder(&self, prologue: &[u8]) -> Result<HandshakeState> {
-        let parameters: NoiseParams = NOISE_PROTOCOL
+        let parameters: NoiseParams = NOISE_PROTOCOL_NAME
             .parse()
             .expect("the fixed Noise suite is valid");
         Builder::new(parameters)
@@ -126,7 +120,7 @@ impl TransportIdentity {
     }
 }
 
-fn load_secret(path: &Path) -> Result<Zeroizing<[u8; TRANSPORT_SECRET_BYTES]>> {
+fn load_secret(path: &Path) -> Result<Zeroizing<[u8; X25519_KEY_BYTES]>> {
     reject_symlink(path)?;
     let metadata = fs::metadata(path)
         .with_context(|| format!("failed to inspect transport key {}", path.display()))?;
@@ -142,11 +136,11 @@ fn load_secret(path: &Path) -> Result<Zeroizing<[u8; TRANSPORT_SECRET_BYTES]>> {
             .with_context(|| format!("failed to read transport key {}", path.display()))?,
     );
     ensure!(
-        bytes.len() == TRANSPORT_SECRET_BYTES,
-        "transport key {} must contain exactly {TRANSPORT_SECRET_BYTES} bytes",
+        bytes.len() == X25519_KEY_BYTES,
+        "transport key {} must contain exactly {X25519_KEY_BYTES} bytes",
         path.display()
     );
-    let mut secret = Zeroizing::new([0_u8; TRANSPORT_SECRET_BYTES]);
+    let mut secret = Zeroizing::new([0_u8; X25519_KEY_BYTES]);
     secret.copy_from_slice(&bytes);
     Ok(secret)
 }
@@ -160,23 +154,32 @@ fn create_key_file(path: &Path) -> io::Result<File> {
 }
 
 pub fn descriptor_signature_preimage(
-    node_ed25519: &[u8; 32],
-    transport_x25519: &[u8; 32],
+    node_ed25519: &[u8; ED25519_PUBLIC_KEY_BYTES],
+    transport_x25519: &[u8; X25519_KEY_BYTES],
 ) -> Vec<u8> {
-    let mut value = Vec::with_capacity(DESCRIPTOR_SIGNATURE_DOMAIN.len() + 64);
-    value.extend_from_slice(DESCRIPTOR_SIGNATURE_DOMAIN);
+    let mut value = Vec::with_capacity(
+        TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN.len() + ED25519_PUBLIC_KEY_BYTES + X25519_KEY_BYTES,
+    );
+    value.extend_from_slice(TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN);
     value.extend_from_slice(node_ed25519);
     value.extend_from_slice(transport_x25519);
     value
 }
 
 pub fn handshake_prologue(
-    node_ed25519: &[u8; 32],
-    transport_x25519: &[u8; 32],
+    node_ed25519: &[u8; ED25519_PUBLIC_KEY_BYTES],
+    transport_x25519: &[u8; X25519_KEY_BYTES],
     channel_nonce: &[u8; CHANNEL_NONCE_BYTES],
 ) -> Vec<u8> {
-    let mut value = Vec::with_capacity(PROLOGUE_DOMAIN.len() + 2 + 1 + 32 + 32 + 32);
-    value.extend_from_slice(PROLOGUE_DOMAIN);
+    let mut value = Vec::with_capacity(
+        SECURE_HANDSHAKE_PROLOGUE_DOMAIN.len()
+            + size_of::<u16>()
+            + size_of::<u8>()
+            + ED25519_PUBLIC_KEY_BYTES
+            + X25519_KEY_BYTES
+            + CHANNEL_NONCE_BYTES,
+    );
+    value.extend_from_slice(SECURE_HANDSHAKE_PROLOGUE_DOMAIN);
     value.extend_from_slice(&u16::from(PROTOCOL_VERSION).to_be_bytes());
     value.push(SECURE_CARRIER_VERSION);
     value.extend_from_slice(node_ed25519);
@@ -222,7 +225,7 @@ impl SecureSession {
     pub fn ready_for_test(transport: &TransportIdentity, node_ed25519: &[u8; 32]) -> Result<Self> {
         let nonce = [7_u8; CHANNEL_NONCE_BYTES];
         let prologue = handshake_prologue(node_ed25519, transport.public_key(), &nonce);
-        let parameters: NoiseParams = NOISE_PROTOCOL
+        let parameters: NoiseParams = NOISE_PROTOCOL_NAME
             .parse()
             .expect("the fixed Noise suite is valid");
         let mut initiator = Builder::new(parameters)
@@ -231,11 +234,11 @@ impl SecureSession {
             .build_initiator()
             .context("failed to create test Noise initiator")?;
         let mut responder = transport.responder(&prologue)?;
-        let mut first = [0_u8; MAX_HANDSHAKE_BYTES];
+        let mut first = [0_u8; MAX_HANDSHAKE_MESSAGE_BYTES];
         let first_length = initiator.write_message(&[], &mut first)?;
         let mut empty = [];
         responder.read_message(&first[..first_length], &mut empty)?;
-        let mut second = [0_u8; MAX_HANDSHAKE_BYTES];
+        let mut second = [0_u8; MAX_HANDSHAKE_MESSAGE_BYTES];
         let second_length = responder.write_message(&[], &mut second)?;
         initiator.read_message(&second[..second_length], &mut empty)?;
         Ok(Self {
@@ -276,7 +279,7 @@ impl SecureSession {
             "invalid secure version"
         );
         ensure!(
-            payload.get("suite").and_then(Value::as_str) == Some(TRANSPORT_SUITE),
+            payload.get("suite").and_then(Value::as_str) == Some(TRANSPORT_SUITE_ID),
             "unsupported secure suite"
         );
         let mut nonce = [0_u8; CHANNEL_NONCE_BYTES];
@@ -288,7 +291,7 @@ impl SecureSession {
             state: Box::new(responder),
         };
         Ok(json!({
-            "v": SECURE_CHANNEL_VERSION,
+            "v": SECURE_NEGOTIATION_VERSION,
             "t": "secure.offer",
             "id": id,
             "descriptor": transport.descriptor(),
@@ -318,7 +321,7 @@ impl SecureSession {
             .decode(encoded)
             .context("secure handshake message is not base64url")?;
         ensure!(
-            !message.is_empty() && message.len() <= MAX_HANDSHAKE_BYTES,
+            !message.is_empty() && message.len() <= MAX_HANDSHAKE_MESSAGE_BYTES,
             "secure handshake message is outside its bound"
         );
         let mut empty = [0_u8; 0];
@@ -326,7 +329,7 @@ impl SecureSession {
             .read_message(&message, &mut empty)
             .context("Noise initiator message failed authentication")?;
         ensure!(payload_length == 0, "Noise handshake payload must be empty");
-        let mut response = vec![0_u8; MAX_HANDSHAKE_BYTES];
+        let mut response = vec![0_u8; MAX_HANDSHAKE_MESSAGE_BYTES];
         let response_length = state
             .write_message(&[], &mut response)
             .context("failed to create Noise responder message")?;
@@ -336,7 +339,7 @@ impl SecureSession {
             .context("failed to enter Noise transport mode")?;
         self.state = SecureState::Transport(SecureTransport::new(transport));
         Ok(json!({
-            "v": SECURE_CHANNEL_VERSION,
+            "v": SECURE_NEGOTIATION_VERSION,
             "t": "secure.handshake",
             "id": id,
             "step": 2,
@@ -374,7 +377,7 @@ impl SecureSession {
 
 fn secure_error(code: &str) -> Value {
     json!({
-        "v": SECURE_CHANNEL_VERSION,
+        "v": SECURE_NEGOTIATION_VERSION,
         "t": "secure.error",
         "code": code,
         "message": "A secure channel is required.",
@@ -433,17 +436,19 @@ impl SecureTransport {
         let message_id = self.send_message_id;
         let mut encrypted = Vec::with_capacity(usize::from(count));
         for (index, chunk) in inner.chunks(MAX_FRAGMENT_DATA_BYTES).enumerate() {
-            self.check_send_limit(chunk.len() + FRAGMENT_HEADER_BYTES + 16)?;
-            let mut record = Vec::with_capacity(FRAGMENT_HEADER_BYTES + chunk.len());
-            record.push(SECURE_CHANNEL_VERSION);
-            record.push(RECORD_FRAGMENT);
+            self.check_send_limit(
+                chunk.len() + FRAGMENT_RECORD_HEADER_BYTES + NOISE_AUTHENTICATION_TAG_BYTES,
+            )?;
+            let mut record = Vec::with_capacity(FRAGMENT_RECORD_HEADER_BYTES + chunk.len());
+            record.push(SECURE_RECORD_VERSION);
+            record.push(FRAGMENT_RECORD_KIND);
             record.extend_from_slice(&message_id.to_be_bytes());
             record.extend_from_slice(&(index as u16).to_be_bytes());
             record.extend_from_slice(&count.to_be_bytes());
             record.extend_from_slice(&(inner.len() as u32).to_be_bytes());
             record.extend_from_slice(&(chunk.len() as u32).to_be_bytes());
             record.extend_from_slice(chunk);
-            let mut ciphertext = vec![0_u8; record.len() + 16];
+            let mut ciphertext = vec![0_u8; record.len() + NOISE_AUTHENTICATION_TAG_BYTES];
             let length = self
                 .state
                 .write_message(&record, &mut ciphertext)
@@ -483,11 +488,11 @@ impl SecureTransport {
 
     fn accept_fragment(&mut self, record: &[u8]) -> Result<Option<Vec<u8>>> {
         ensure!(
-            record.len() >= FRAGMENT_HEADER_BYTES,
+            record.len() >= FRAGMENT_RECORD_HEADER_BYTES,
             "secure fragment is truncated"
         );
         ensure!(
-            record[0] == SECURE_CHANNEL_VERSION && record[1] == RECORD_FRAGMENT,
+            record[0] == SECURE_RECORD_VERSION && record[1] == FRAGMENT_RECORD_KIND,
             "secure fragment header is invalid"
         );
         let message_id = read_u32(record, 2)?;
@@ -502,7 +507,7 @@ impl SecureTransport {
                 && total_length > 0
                 && total_length <= MAX_LOGICAL_INNER_BYTES
                 && fragment_length <= MAX_FRAGMENT_DATA_BYTES
-                && record.len() == FRAGMENT_HEADER_BYTES + fragment_length,
+                && record.len() == FRAGMENT_RECORD_HEADER_BYTES + fragment_length,
             "secure fragment bounds or ordering are invalid"
         );
         if fragment_index == 0 {
@@ -528,7 +533,7 @@ impl SecureTransport {
         );
         assembly
             .bytes
-            .extend_from_slice(&record[FRAGMENT_HEADER_BYTES..]);
+            .extend_from_slice(&record[FRAGMENT_RECORD_HEADER_BYTES..]);
         ensure!(
             assembly.bytes.len() <= assembly.total_length,
             "secure fragment exceeds declared length"
@@ -551,8 +556,9 @@ impl SecureTransport {
 
     fn check_send_limit(&self, next_bytes: usize) -> Result<()> {
         ensure!(
-            self.sent_records < MAX_SESSION_MESSAGES
-                && self.sent_bytes.saturating_add(next_bytes as u64) <= MAX_SESSION_BYTES,
+            self.sent_records < MAX_SESSION_RECORDS_PER_DIRECTION
+                && self.sent_bytes.saturating_add(next_bytes as u64)
+                    <= MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION,
             "secure send key limit reached; reconnect"
         );
         Ok(())
@@ -560,68 +566,13 @@ impl SecureTransport {
 
     fn check_receive_limit(&self, next_bytes: usize) -> Result<()> {
         ensure!(
-            self.received_records < MAX_SESSION_MESSAGES
-                && self.received_bytes.saturating_add(next_bytes as u64) <= MAX_SESSION_BYTES,
+            self.received_records < MAX_SESSION_RECORDS_PER_DIRECTION
+                && self.received_bytes.saturating_add(next_bytes as u64)
+                    <= MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION,
             "secure receive key limit reached; reconnect"
         );
         Ok(())
     }
-}
-
-fn encode_node_inner(message: &NodeMessage) -> Result<Vec<u8>> {
-    if let NodeMessage::ArtifactChunk {
-        id,
-        transfer_id,
-        offset,
-        data,
-        ..
-    } = message
-    {
-        let bytes = STANDARD
-            .decode(data)
-            .context("artifact chunk is not valid base64")?;
-        ensure!(
-            !bytes.is_empty() && bytes.len() <= 64 * 1024,
-            "artifact chunk is outside its bound"
-        );
-        let id = id.as_bytes();
-        let transfer_id = transfer_id.as_bytes();
-        let id_length = u16::try_from(id.len()).context("artifact request id is too long")?;
-        let transfer_length =
-            u16::try_from(transfer_id.len()).context("artifact transfer id is too long")?;
-        let mut inner = Vec::with_capacity(18 + id.len() + transfer_id.len() + bytes.len());
-        inner.push(SECURE_CHANNEL_VERSION);
-        inner.push(INNER_ARTIFACT_CHUNK);
-        inner.extend_from_slice(&id_length.to_be_bytes());
-        inner.extend_from_slice(id);
-        inner.extend_from_slice(&transfer_length.to_be_bytes());
-        inner.extend_from_slice(transfer_id);
-        inner.extend_from_slice(&offset.to_be_bytes());
-        inner.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
-        inner.extend_from_slice(&bytes);
-        return Ok(inner);
-    }
-    let json = serde_json::to_vec(message).context("failed to encode secure control message")?;
-    let mut inner = Vec::with_capacity(6 + json.len());
-    inner.push(SECURE_CHANNEL_VERSION);
-    inner.push(INNER_CONTROL);
-    inner.extend_from_slice(&(json.len() as u32).to_be_bytes());
-    inner.extend_from_slice(&json);
-    Ok(inner)
-}
-
-fn decode_client_inner(inner: &[u8]) -> Result<Value> {
-    ensure!(inner.len() >= 6, "secure inner control frame is truncated");
-    ensure!(
-        inner[0] == SECURE_CHANNEL_VERSION && inner[1] == INNER_CONTROL,
-        "client sent an unsupported secure inner frame"
-    );
-    let length = usize::try_from(read_u32(inner, 2)?)?;
-    ensure!(
-        inner.len() == 6 + length,
-        "secure inner control length changed"
-    );
-    serde_json::from_slice(&inner[6..]).context("secure inner control is not valid JSON")
 }
 
 fn read_u16(bytes: &[u8], offset: usize) -> Result<u16> {
@@ -653,8 +604,6 @@ mod tests {
 
     const IDENTITY_FIXTURE: &str =
         include_str!("../../../../protocol/transport/v1/fixtures/identity.json");
-    const INNER_FIXTURE: &str =
-        include_str!("../../../../protocol/transport/v1/fixtures/inner.json");
     const FRAGMENT_FIXTURE: &str =
         include_str!("../../../../protocol/transport/v1/fixtures/fragment.json");
     const NEGOTIATION_FIXTURE: &str =
@@ -696,46 +645,6 @@ mod tests {
                 &signature,
             )
             .expect("fixture descriptor signature");
-    }
-
-    #[test]
-    fn shared_inner_fixture_decodes_control_and_encodes_raw_artifact_exactly() {
-        let fixture: Value = serde_json::from_str(INNER_FIXTURE).expect("inner fixture");
-        let control = fixture_hex(&fixture["valid"]["control"]["frame_hex"]);
-        let expected: Value = serde_json::from_str(
-            fixture["valid"]["control"]["json"]
-                .as_str()
-                .expect("control JSON"),
-        )
-        .expect("control value");
-        assert_eq!(
-            decode_client_inner(&control).expect("control fixture"),
-            expected
-        );
-
-        let artifact = &fixture["valid"]["artifact"];
-        let message = NodeMessage::ArtifactChunk {
-            v: PROTOCOL_VERSION,
-            id: fixture_string(&artifact["request_id"]),
-            transfer_id: fixture_string(&artifact["transfer_id"]),
-            offset: artifact["offset"].as_u64().expect("artifact offset"),
-            data: STANDARD.encode(fixture_hex(&artifact["data_hex"])),
-        };
-        assert_eq!(
-            encode_node_inner(&message).expect("artifact fixture"),
-            fixture_hex(&artifact["frame_hex"])
-        );
-
-        for malformed in fixture["malformed"]
-            .as_array()
-            .expect("malformed inner fixtures")
-        {
-            assert!(
-                decode_client_inner(&fixture_hex(&malformed["frame_hex"])).is_err(),
-                "fixture {} must fail",
-                malformed["id"]
-            );
-        }
     }
 
     #[test]
@@ -783,7 +692,7 @@ mod tests {
         let offer = session
             .handle_text(&init, &transport, &node)
             .expect("valid secure init");
-        assert_eq!(offer["v"], SECURE_CHANNEL_VERSION);
+        assert_eq!(offer["v"], SECURE_NEGOTIATION_VERSION);
         assert_eq!(offer["t"], "secure.offer");
         assert_eq!(offer["id"], "secure-fixture");
         assert_eq!(
@@ -979,7 +888,7 @@ mod tests {
                 &node,
             )
             .expect("additive handshake field");
-        assert_eq!(response["v"], SECURE_CHANNEL_VERSION);
+        assert_eq!(response["v"], SECURE_NEGOTIATION_VERSION);
         assert_eq!(response["t"], "secure.handshake");
         assert_eq!(response["id"], "request");
         assert_eq!(response["step"], 2);
@@ -1012,7 +921,14 @@ mod tests {
             state: SecureState::Transport(node),
         };
         let ciphertext = client
-            .encrypt_inner(&[SECURE_CHANNEL_VERSION, INNER_ARTIFACT_CHUNK, 0, 0, 0, 0])
+            .encrypt_inner(&[
+                crate::transport::SECURE_INNER_VERSION,
+                crate::transport::ARTIFACT_CHUNK_INNER_KIND,
+                0,
+                0,
+                0,
+                0,
+            ])
             .expect("encrypted malformed inner")
             .pop()
             .expect("one record");
@@ -1028,7 +944,13 @@ mod tests {
         };
         assert!(
             bad_outbound_inner
-                .encrypt_application(&artifact_chunk("not-base64".into(), "request", "transfer"))
+                .encrypt_application(&NodeMessage::ArtifactChunk {
+                    v: PROTOCOL_VERSION,
+                    id: "request".into(),
+                    transfer_id: "transfer".into(),
+                    offset: 0,
+                    data: "not-base64".into(),
+                })
                 .is_err()
         );
         assert!(
@@ -1040,19 +962,22 @@ mod tests {
     #[test]
     fn secure_transport_record_and_byte_guards_allow_the_exact_boundary_only() {
         let (mut sender, _) = fixture_transport_pair();
-        sender.sent_records = MAX_SESSION_MESSAGES - 1;
+        sender.sent_records = MAX_SESSION_RECORDS_PER_DIRECTION - 1;
         sender
             .encrypt_inner(&[1])
             .expect("last allowed send record");
-        assert_eq!(sender.sent_records, MAX_SESSION_MESSAGES);
+        assert_eq!(sender.sent_records, MAX_SESSION_RECORDS_PER_DIRECTION);
         assert!(sender.encrypt_inner(&[1]).is_err());
 
         let (mut sender, _) = fixture_transport_pair();
-        let one_record_bytes = 1 + FRAGMENT_HEADER_BYTES + 16;
-        sender.sent_bytes = MAX_SESSION_BYTES - one_record_bytes as u64;
+        let one_record_bytes = 1 + FRAGMENT_RECORD_HEADER_BYTES + 16;
+        sender.sent_bytes = MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION - one_record_bytes as u64;
         let ciphertext = sender.encrypt_inner(&[1]).expect("last allowed send bytes");
         assert_eq!(ciphertext[0].len(), one_record_bytes);
-        assert_eq!(sender.sent_bytes, MAX_SESSION_BYTES);
+        assert_eq!(
+            sender.sent_bytes,
+            MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION
+        );
         assert!(sender.encrypt_inner(&[1]).is_err());
 
         let (mut sender, mut receiver) = fixture_transport_pair();
@@ -1061,14 +986,14 @@ mod tests {
             .encrypt_inner(&[2])
             .expect("second message")
             .remove(0);
-        receiver.received_records = MAX_SESSION_MESSAGES - 1;
+        receiver.received_records = MAX_SESSION_RECORDS_PER_DIRECTION - 1;
         assert_eq!(
             receiver
                 .decrypt_inner(&first)
                 .expect("last allowed receive record"),
             Some(vec![1])
         );
-        assert_eq!(receiver.received_records, MAX_SESSION_MESSAGES);
+        assert_eq!(receiver.received_records, MAX_SESSION_RECORDS_PER_DIRECTION);
         assert!(receiver.decrypt_inner(&second).is_err());
 
         let (mut sender, mut receiver) = fixture_transport_pair();
@@ -1077,62 +1002,18 @@ mod tests {
             .encrypt_inner(&[2])
             .expect("second message")
             .remove(0);
-        receiver.received_bytes = MAX_SESSION_BYTES - first.len() as u64;
+        receiver.received_bytes = MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION - first.len() as u64;
         assert_eq!(
             receiver
                 .decrypt_inner(&first)
                 .expect("last allowed receive bytes"),
             Some(vec![1])
         );
-        assert_eq!(receiver.received_bytes, MAX_SESSION_BYTES);
-        assert!(receiver.decrypt_inner(&second).is_err());
-    }
-
-    #[test]
-    fn inner_control_and_artifact_bounds_cover_the_unfixtureized_edges() {
-        let control = NodeMessage::error(
-            Some("control".into()),
-            cantor_proto::ErrorCode::InvalidRequest,
-            "bad",
-            false,
-        );
-        let encoded = encode_node_inner(&control).expect("control inner");
-        let expected_json = br#"{"t":"error","v":2,"id":"control","code":"invalid_request","message":"bad","retryable":false}"#;
         assert_eq!(
-            encoded,
-            [
-                &[SECURE_CHANNEL_VERSION, INNER_CONTROL][..],
-                &(expected_json.len() as u32).to_be_bytes(),
-                expected_json,
-            ]
-            .concat()
+            receiver.received_bytes,
+            MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION
         );
-        assert!(
-            decode_client_inner(&[SECURE_CHANNEL_VERSION, INNER_CONTROL, 0, 0, 0, 0]).is_err(),
-            "an empty control body is not valid JSON"
-        );
-
-        let exact = STANDARD.encode(vec![7_u8; 64 * 1024]);
-        assert!(
-            encode_node_inner(&artifact_chunk(exact, "request", "transfer")).is_ok(),
-            "the exact artifact bound remains accepted"
-        );
-        for data in [
-            "not-base64".into(),
-            STANDARD.encode([]),
-            STANDARD.encode(vec![7_u8; 64 * 1024 + 1]),
-        ] {
-            assert!(encode_node_inner(&artifact_chunk(data, "request", "transfer")).is_err());
-        }
-        assert!(
-            encode_node_inner(&artifact_chunk(
-                STANDARD.encode([7]),
-                &"r".repeat(usize::from(u16::MAX) + 1),
-                "transfer",
-            ))
-            .is_err(),
-            "artifact request IDs remain bounded by their u16 length field"
-        );
+        assert!(receiver.decrypt_inner(&second).is_err());
     }
 
     #[test]
@@ -1153,7 +1034,7 @@ mod tests {
             0o600
         );
         let descriptor = transport.descriptor();
-        assert_eq!(descriptor.transport_suite, TRANSPORT_SUITE);
+        assert_eq!(descriptor.transport_suite, TRANSPORT_SUITE_ID);
         assert_eq!(
             descriptor.transport_key_id,
             hex_sha256(transport.public_key())
@@ -1192,7 +1073,7 @@ mod tests {
         let nonce = [7_u8; 32];
         let prologue =
             handshake_prologue(&identity.public_key_bytes(), transport.public_key(), &nonce);
-        let parameters: NoiseParams = NOISE_PROTOCOL.parse().expect("params");
+        let parameters: NoiseParams = NOISE_PROTOCOL_NAME.parse().expect("params");
         let mut initiator = Builder::new(parameters)
             .remote_public_key(transport.public_key())
             .expect("remote key")
@@ -1232,7 +1113,7 @@ mod tests {
             transport.public_key(),
             &[8_u8; 32],
         );
-        let other_params: NoiseParams = NOISE_PROTOCOL.parse().expect("params");
+        let other_params: NoiseParams = NOISE_PROTOCOL_NAME.parse().expect("params");
         let mut other_initiator = Builder::new(other_params)
             .remote_public_key(transport.public_key())
             .expect("remote key")
@@ -1260,7 +1141,7 @@ mod tests {
                 .into_transport_mode()
                 .expect("other transport"),
         );
-        let params: NoiseParams = NOISE_PROTOCOL.parse().expect("params");
+        let params: NoiseParams = NOISE_PROTOCOL_NAME.parse().expect("params");
         let mut fresh_client = Builder::new(params)
             .remote_public_key(transport.public_key())
             .expect("remote key")
@@ -1304,10 +1185,10 @@ mod tests {
 
     fn secure_init(id: &str) -> Value {
         json!({
-            "v": SECURE_CHANNEL_VERSION,
+            "v": SECURE_NEGOTIATION_VERSION,
             "t": "secure.init",
             "id": id,
-            "suite": TRANSPORT_SUITE,
+            "suite": TRANSPORT_SUITE_ID,
         })
     }
 
@@ -1337,7 +1218,7 @@ mod tests {
         let nonce = <[u8; CHANNEL_NONCE_BYTES]>::try_from(nonce.as_slice())
             .expect("offer channel nonce length");
         let prologue = handshake_prologue(node_ed25519, transport.public_key(), &nonce);
-        let parameters: NoiseParams = NOISE_PROTOCOL.parse().expect("Noise parameters");
+        let parameters: NoiseParams = NOISE_PROTOCOL_NAME.parse().expect("Noise parameters");
         let mut initiator = Builder::new(parameters)
             .remote_public_key(transport.public_key())
             .expect("fixture remote key")
@@ -1345,7 +1226,7 @@ mod tests {
             .expect("fixture prologue")
             .build_initiator()
             .expect("fixture initiator");
-        let mut message = vec![0_u8; MAX_HANDSHAKE_BYTES];
+        let mut message = vec![0_u8; MAX_HANDSHAKE_MESSAGE_BYTES];
         let length = initiator
             .write_message(&[], &mut message)
             .expect("fixture initiator message");
@@ -1353,22 +1234,12 @@ mod tests {
         message
     }
 
-    fn artifact_chunk(data: String, id: &str, transfer_id: &str) -> NodeMessage {
-        NodeMessage::ArtifactChunk {
-            v: PROTOCOL_VERSION,
-            id: id.into(),
-            transfer_id: transfer_id.into(),
-            offset: 0,
-            data,
-        }
-    }
-
     fn fixture_transport_pair() -> (SecureTransport, SecureTransport) {
         let fixture: Value = serde_json::from_str(IDENTITY_FIXTURE).expect("identity fixture");
         let secret = fixed_32(&fixture["transport_x25519_secret_hex"]);
         let public = fixed_32(&fixture["transport_x25519_hex"]);
         let prologue = fixture_hex(&fixture["handshake_prologue_hex"]);
-        let parameters: NoiseParams = NOISE_PROTOCOL.parse().expect("Noise parameters");
+        let parameters: NoiseParams = NOISE_PROTOCOL_NAME.parse().expect("Noise parameters");
         let mut initiator = Builder::new(parameters.clone())
             .remote_public_key(&public)
             .expect("fixture remote key")
@@ -1383,7 +1254,7 @@ mod tests {
             .expect("fixture prologue")
             .build_responder()
             .expect("fixture responder");
-        let mut first = [0_u8; MAX_HANDSHAKE_BYTES];
+        let mut first = [0_u8; MAX_HANDSHAKE_MESSAGE_BYTES];
         let first_len = initiator
             .write_message(&[], &mut first)
             .expect("fixture handshake one");
@@ -1391,7 +1262,7 @@ mod tests {
         responder
             .read_message(&first[..first_len], &mut empty)
             .expect("fixture read one");
-        let mut second = [0_u8; MAX_HANDSHAKE_BYTES];
+        let mut second = [0_u8; MAX_HANDSHAKE_MESSAGE_BYTES];
         let second_len = responder
             .write_message(&[], &mut second)
             .expect("fixture handshake two");
@@ -1427,10 +1298,6 @@ mod tests {
         fixture_hex(value)
             .try_into()
             .expect("fixture must contain 32 bytes")
-    }
-
-    fn fixture_string(value: &Value) -> String {
-        value.as_str().expect("fixture string").to_owned()
     }
 
     fn fixture_hex(value: &Value) -> Vec<u8> {

@@ -37,6 +37,7 @@ pub(crate) const MAX_HANDSHAKE_MESSAGE_BYTES: usize = 4_096;
 pub(crate) const MAX_NOISE_PLAINTEXT_BYTES: usize = 61_440;
 pub(crate) const MAX_SECURE_CIPHERTEXT_BYTES: usize = 98_304;
 pub(crate) const MAX_LOGICAL_INNER_BYTES: usize = 1_048_576;
+pub(crate) const ARTIFACT_CHUNK_BYTES: usize = 65_536;
 pub(crate) const MAX_ARTIFACT_IDENTIFIER_UTF8_BYTES: usize = 256;
 pub(crate) const MAX_ARTIFACT_OFFSET_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 pub(crate) const MAX_SESSION_RECORDS_PER_DIRECTION: u64 = 1_000_000;
