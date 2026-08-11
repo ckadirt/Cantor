@@ -7,6 +7,7 @@ mod control;
 mod delivery;
 mod engine;
 mod generate;
+mod generation;
 mod identity;
 mod jobs;
 mod library;
