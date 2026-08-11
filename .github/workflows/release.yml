@@ -28,6 +28,9 @@ jobs:
         with:
           workspaces: node
           key: ${{ matrix.target }}
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
 
       # A tag that disagrees with the manifest would ship a binary whose
       # `cantor --version` contradicts the release it came from, and `cantor
@@ -43,6 +46,11 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match crate version $crate" >&2
             exit 1
           fi
+
+      # A released binary whose transport constants disagree with the manifest
+      # cannot talk to the app or relay built from the same commit.
+      - name: generated transport constants are current
+        run: node protocol/transport/generate.mjs --check
 
       - name: build
         working-directory: node
