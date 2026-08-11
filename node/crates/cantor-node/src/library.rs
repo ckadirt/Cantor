@@ -15,6 +15,8 @@ mod songs;
 
 #[cfg(test)]
 mod contract_tests;
+#[cfg(test)]
+mod test_support;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;
@@ -45,9 +47,9 @@ use rusqlite::params;
 use uuid::Uuid;
 
 pub struct Library {
-    pub(crate) root: PathBuf,
-    pub(crate) connection: Connection,
-    pub(crate) cursor_key: [u8; 32],
+    root: PathBuf,
+    connection: Connection,
+    cursor_key: [u8; 32],
 }
 
 impl Library {
