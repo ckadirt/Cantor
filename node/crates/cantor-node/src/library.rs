@@ -8,6 +8,9 @@ mod jobs;
 mod rows;
 mod schema;
 
+#[cfg(test)]
+mod contract_tests;
+
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::PermissionsExt;
