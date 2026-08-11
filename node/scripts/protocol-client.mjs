@@ -1,7 +1,28 @@
-import {readFile, writeFile} from 'node:fs/promises';
-import {createHmac, randomUUID, webcrypto} from 'node:crypto';
+#!/usr/bin/env node
 
-const usage = 'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--lyrics TEXT] [--duration SECONDS] [--steps COUNT] [--client-request-id UUID] [--control pause|resume|cancel|retry --job ID] [--pause-at plan|codes|diffuse|decode] [--retry] [--follow] [--library] [--song ID] [--expect-not-found] [--watch]';
+/**
+ * The maintained Cantor integration client.
+ *
+ * It speaks the deployed secure transport end to end: relay text negotiation,
+ * the signed transport descriptor, a Noise NK handshake bound to the channel
+ * prologue, and encrypted carrier frames carrying fragmented application
+ * messages. There is no plaintext application path, so this client works only
+ * with M6-or-newer nodes.
+ */
+
+import { randomUUID } from 'node:crypto';
+
+import {
+  createPairProof,
+  loadOrCreateIdentity,
+  nodeAuthMessage,
+  signBytes,
+} from './lib/identity.mjs';
+import { VERSIONS } from './lib/manifest.mjs';
+import { SecureClient } from './lib/secureClient.mjs';
+
+const usage =
+  'Usage: node scripts/protocol-client.mjs <cantor://pair?...> --identity PATH [--omit-token] [--petname NAME] [--create MODEL --caption TEXT] [--lyrics TEXT] [--duration SECONDS] [--steps COUNT] [--client-request-id UUID] [--control pause|resume|cancel|retry --job ID] [--pause-at plan|codes|diffuse|decode] [--retry] [--follow] [--library] [--song ID] [--expect-not-found] [--watch]';
 const pairValue = process.argv[2];
 const identityIndex = process.argv.indexOf('--identity');
 if (pairValue === undefined || identityIndex < 0 || process.argv[identityIndex + 1] === undefined) {
@@ -53,28 +74,15 @@ if ((control === null) !== (jobId === null) || (control !== null && !['pause', '
 if (pauseAt !== null && !['plan', 'codes', 'diffuse', 'decode'].includes(pauseAt)) {
   throw new Error('--pause-at requires plan, codes, diffuse, or decode.');
 }
+const version = VERSIONS.application_current;
 const createRequest = createModel === null ? null : {
-  t: 'job.create', v: 2, id: 'create-1', client_request_id: clientRequestId,
+  t: 'job.create', v: version, id: 'create-1', client_request_id: clientRequestId,
   model: createModel, generation: {caption, ...(lyrics === null ? {} : {lyrics}), ...(duration === null ? {} : {duration}), ...(steps === null ? {} : {steps})},
 };
 const retry = process.argv.includes('--retry');
-let keyPair;
-try {
-  const jwk = JSON.parse(await readFile(identityPath, 'utf8'));
-  const privateKey = await webcrypto.subtle.importKey('jwk', jwk, {name: 'Ed25519'}, true, ['sign']);
-  const publicKey = await webcrypto.subtle.importKey(
-    'jwk', {...jwk, d: undefined, key_ops: ['verify']}, {name: 'Ed25519'}, true, ['verify'],
-  );
-  keyPair = {privateKey, publicKey};
-} catch (error) {
-  if (error?.code !== 'ENOENT') throw error;
-  keyPair = await webcrypto.subtle.generateKey({name: 'Ed25519'}, true, ['sign', 'verify']);
-  const jwk = await webcrypto.subtle.exportKey('jwk', keyPair.privateKey);
-  await writeFile(identityPath, `${JSON.stringify(jwk)}\n`, {mode: 0o600, flag: 'wx'});
-}
 
-const rawPublicKey = new Uint8Array(await webcrypto.subtle.exportKey('raw', keyPair.publicKey));
-const clientKey = base58Encode(rawPublicKey);
+const identity = await loadOrCreateIdentity(identityPath);
+const clientKey = identity.publicKey;
 const pairProof = token === null ? null : createPairProof(token, nodeKey, clientKey);
 const roomUrl = new URL(relayValue);
 roomUrl.pathname = `${roomUrl.pathname.replace(/\/$/, '')}/v1/room/${nodeKey}`;
@@ -82,39 +90,81 @@ roomUrl.search = '';
 roomUrl.searchParams.set('role', 'client');
 
 const socket = new WebSocket(roomUrl);
+socket.binaryType = 'arraybuffer';
 let completed = false;
 let acceptedJobId = null;
 let retried = false;
 let librarySongs = [];
 let autoPauseSent = false;
-socket.addEventListener('message', async event => {
-  const frame = JSON.parse(event.data);
-  if (frame.t === 'relay.presence') {
-    console.log(`presence: ${frame.online ? 'online' : 'offline'}`);
-    if (frame.online) send({t: 'hello', v: 2, id: 'handshake-1', pubkey: clientKey, ...(pairProof ? {pair_proof: pairProof} : {}), petname});
+let handshakeId = null;
+
+const secure = new SecureClient(nodeKey, {
+  sendText: payload => socket.send(
+    JSON.stringify({v: VERSIONS.relay, t: 'tunnel', payload}),
+  ),
+  sendBinary: frame => socket.send(frame),
+  onApplicationMessage: message => {
+    handleNodeMessage(message).catch(fail);
+  },
+  onReady: () => {
+    console.log('secure channel ready');
+    handshakeId = 'handshake-1';
+    send({
+      t: 'hello', v: version, id: handshakeId, pubkey: clientKey,
+      ...(pairProof ? {pair_proof: pairProof} : {}), petname,
+    });
+  },
+  onFailure: message => fail(new Error(message)),
+});
+
+socket.addEventListener('message', event => {
+  if (event.data instanceof ArrayBuffer) {
+    secure.handleBinary(Buffer.from(event.data));
     return;
   }
-  if (frame.t === 'relay.error') throw new Error(`relay error [${frame.code}]: ${frame.msg}`);
-  if (frame.t !== 'tunnel') return;
-  const message = frame.payload;
+  let frame;
+  try {
+    frame = JSON.parse(event.data);
+  } catch {
+    return;
+  }
+  if (frame === null || typeof frame !== 'object' || frame.v !== VERSIONS.relay) return;
+  if (frame.t === 'relay.presence') {
+    console.log(`presence: ${frame.online ? 'online' : 'offline'}`);
+    if (frame.online) secure.begin(`secure-${randomUUID()}`);
+    return;
+  }
+  if (frame.t === 'relay.error') {
+    fail(new Error(`relay error [${frame.code}]: ${frame.msg}`));
+    return;
+  }
+  if (frame.t === 'tunnel') secure.handleText(frame.payload);
+});
+
+async function handleNodeMessage(message) {
+  if (message.v !== version) {
+    throw new Error('This client and node use incompatible protocol versions.');
+  }
   if (message.t === 'challenge') {
-    if (message.node_pubkey !== nodeKey) throw new Error('Node handshake key does not match pairing URI.');
-    const signature = await webcrypto.subtle.sign(
-      'Ed25519',
-      keyPair.privateKey,
-      nodeAuthMessage(message.node_pubkey, clientKey, base64urlDecode(message.nonce)),
+    if (message.id !== handshakeId) return;
+    if (message.node_pubkey !== nodeKey) {
+      throw new Error('Node handshake key does not match pairing URI.');
+    }
+    const signature = await signBytes(
+      identity,
+      nodeAuthMessage(message.node_pubkey, clientKey, Buffer.from(message.nonce, 'base64url')),
     );
-    send({t: 'auth', v: 2, id: message.id, sig: base64urlEncode(new Uint8Array(signature))});
+    send({t: 'auth', v: version, id: message.id, sig: signature.toString('base64url')});
   } else if (message.t === 'welcome') {
     console.log(`welcome: ${JSON.stringify(message.node)}`);
     if (control !== null) acceptedJobId = jobId;
     send(createRequest ?? (control !== null
-      ? {t: `job.${control}`, v: 2, id: `control-${control}`, job_id: jobId}
+      ? {t: `job.${control}`, v: version, id: `control-${control}`, job_id: jobId}
       : songId
-      ? {t: 'song.get', v: 2, id: 'song-1', song_id: songId}
+      ? {t: 'song.get', v: version, id: 'song-1', song_id: songId}
       : libraryMode
-      ? {t: 'library.list', v: 2, id: 'library-1', limit: 100, include_trashed: true}
-      : {t: 'status', v: 2, id: 'status-1'}));
+      ? {t: 'library.list', v: version, id: 'library-1', limit: 100, include_trashed: true}
+      : {t: 'status', v: version, id: 'status-1'}));
   } else if (message.t === 'job.accepted') {
     console.log(`accepted: ${JSON.stringify(message.job)}`);
     if (acceptedJobId !== null && message.job.id !== acceptedJobId) {
@@ -125,7 +175,7 @@ socket.addEventListener('message', async event => {
       retried = true;
       send({...createRequest, id: 'create-retry'});
     } else {
-      send({t: 'jobs.list', v: 2, id: 'list-1', limit: 20});
+      send({t: 'jobs.list', v: version, id: 'list-1', limit: 20});
     }
   } else if (message.t === 'jobs.page') {
     console.log(`jobs: ${JSON.stringify(message.jobs)}`);
@@ -143,14 +193,14 @@ socket.addEventListener('message', async event => {
         message.job.state === 'running' && message.job.stage === pauseAt) {
       autoPauseSent = true;
       console.log(`requesting pause during ${pauseAt} at revision ${message.job.revision}`);
-      send({t: 'job.pause', v: 2, id: `pause-${pauseAt}`, job_id: message.job.id,
+      send({t: 'job.pause', v: version, id: `pause-${pauseAt}`, job_id: message.job.id,
         expected_revision: message.job.revision});
     }
     if (follow && message.job.id === acceptedJobId &&
         (['completed', 'failed', 'cancelled'].includes(message.job.state) ||
          (autoPauseSent && message.job.state === 'paused'))) {
       if (message.job.state === 'completed' && libraryMode) {
-        send({t: 'library.list', v: 2, id: 'library-1', limit: 100, include_trashed: true});
+        send({t: 'library.list', v: version, id: 'library-1', limit: 100, include_trashed: true});
       } else {
         completed = true;
         if (!watch) socket.close(1000, 'job-terminal');
@@ -169,7 +219,7 @@ socket.addEventListener('message', async event => {
   } else if (message.t === 'library.page') {
     librarySongs.push(...message.songs);
     if (message.next_cursor) {
-      send({t: 'library.list', v: 2, id: `library-${librarySongs.length + 1}`,
+      send({t: 'library.list', v: version, id: `library-${librarySongs.length + 1}`,
         limit: 100, cursor: message.next_cursor, include_trashed: true});
     } else {
       console.log(`library@${message.snapshot_revision}: ${JSON.stringify(librarySongs)}`);
@@ -182,6 +232,8 @@ socket.addEventListener('message', async event => {
     console.log(`song: ${JSON.stringify(message.detail)}`);
     completed = true;
     if (!watch) socket.close(1000, 'song-complete');
+  } else if (message.t === 'artifact.chunk') {
+    console.log(`artifact.chunk: ${message.transfer_id}@${message.offset} (${message.data.length} base64 chars)`);
   } else if (message.t === 'node.info') {
     console.log(`node.info push: ${JSON.stringify(message.node)}`);
   } else if (message.t === 'error') {
@@ -194,10 +246,26 @@ socket.addEventListener('message', async event => {
     process.exitCode = message.code === 'rejected' ? 2 : 1;
     socket.close(1000, 'application-error');
   }
-});
+}
+
 socket.addEventListener('close', () => {
   if (!completed && process.exitCode === undefined) process.exitCode = 1;
 });
+
+socket.addEventListener('error', () => {
+  console.error('WebSocket error.');
+  process.exitCode = 1;
+});
+
+function fail(error) {
+  console.error(error.message);
+  process.exitCode = process.exitCode ?? 1;
+  if (socket.readyState === WebSocket.OPEN) socket.close(1000, 'client-failed');
+}
+
+function send(payload) {
+  secure.sendApplication(payload);
+}
 
 function optionalInteger(flag, index) {
   if (index < 0) return null;
@@ -206,85 +274,4 @@ function optionalInteger(flag, index) {
     throw new Error(`${flag} requires a positive integer.`);
   }
   return value;
-}
-socket.addEventListener('error', () => {
-  console.error('WebSocket error.');
-  process.exitCode = 1;
-});
-
-function send(payload) {
-  socket.send(JSON.stringify({v: 1, t: 'tunnel', payload}));
-}
-
-function base64urlEncode(bytes) {
-  return Buffer.from(bytes).toString('base64url');
-}
-
-function base64urlDecode(value) {
-  return Buffer.from(value, 'base64url');
-}
-
-function base58Encode(bytes) {
-  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  let value = 0n;
-  for (const byte of bytes) value = (value << 8n) | BigInt(byte);
-  let encoded = '';
-  while (value > 0n) {
-    encoded = alphabet[Number(value % 58n)] + encoded;
-    value /= 58n;
-  }
-  for (const byte of bytes) {
-    if (byte !== 0) break;
-    encoded = `1${encoded}`;
-  }
-  return encoded || '1';
-}
-
-function base58Decode(value) {
-  const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-  let decoded = 0n;
-  for (const character of value) {
-    const index = alphabet.indexOf(character);
-    if (index < 0) throw new Error('Invalid base58 public key.');
-    decoded = decoded * 58n + BigInt(index);
-  }
-  const bytes = [];
-  while (decoded > 0n) {
-    bytes.unshift(Number(decoded & 0xffn));
-    decoded >>= 8n;
-  }
-  for (const character of value) {
-    if (character !== '1') break;
-    bytes.unshift(0);
-  }
-  return Uint8Array.from(bytes);
-}
-
-/** Must match `node_auth_message` in crates/cantor-node/src/signing.rs. */
-function nodeAuthMessage(nodePublicKey, clientPublicKey, nonce) {
-  const nodeKeyBytes = base58Decode(nodePublicKey);
-  const clientKeyBytes = base58Decode(clientPublicKey);
-  if (nodeKeyBytes.length !== 32 || clientKeyBytes.length !== 32 || nonce.length !== 32) {
-    throw new Error('Invalid node authentication material.');
-  }
-  return Buffer.concat([
-    Buffer.from('cantor-node-auth-v1'),
-    Buffer.from(nodeKeyBytes),
-    Buffer.from(clientKeyBytes),
-    Buffer.from(nonce),
-  ]);
-}
-
-function createPairProof(pairToken, nodePublicKey, clientPublicKey) {
-  const tokenBytes = Buffer.from(pairToken, 'base64url');
-  const nodeKeyBytes = base58Decode(nodePublicKey);
-  const clientKeyBytes = base58Decode(clientPublicKey);
-  if (tokenBytes.length !== 32 || nodeKeyBytes.length !== 32 || clientKeyBytes.length !== 32) {
-    throw new Error('Invalid pairing proof material.');
-  }
-  return createHmac('sha256', tokenBytes)
-    .update('cantor-pair-proof-v1')
-    .update(nodeKeyBytes)
-    .update(clientKeyBytes)
-    .digest('base64url');
 }
