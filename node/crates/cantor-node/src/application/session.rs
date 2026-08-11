@@ -1,16 +1,11 @@
-use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::path::Path;
 
 use anyhow::Result;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
 use cantor_proto::{
-    ARTIFACT_CHUNK_BYTES, ArtifactView, ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails,
-    MAX_CAPTION_BYTES, MAX_CFG, MAX_CLIENT_REQUEST_ID_BYTES, MAX_LYRICS_BYTES,
-    MAX_MODEL_SELECTOR_BYTES, MAX_PAGE_LIMIT, MAX_SAFE_SEED, MAX_SONG_SECONDS, MAX_STEPS, MIN_CFG,
-    MIN_SONG_SECONDS, MIN_STEPS, NodeInfo, NodeMessage, PROTOCOL_VERSION,
+    ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails, MAX_CAPTION_BYTES, MAX_CFG,
+    MAX_CLIENT_REQUEST_ID_BYTES, MAX_LYRICS_BYTES, MAX_MODEL_SELECTOR_BYTES, MAX_PAGE_LIMIT,
+    MAX_SAFE_SEED, MAX_SONG_SECONDS, MAX_STEPS, MIN_CFG, MIN_SONG_SECONDS, MIN_STEPS, NodeInfo,
+    NodeMessage, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 
@@ -20,20 +15,18 @@ use crate::library::{
     SongPageResult, Submission, SubmitResult,
 };
 use crate::pairing::PairOffer;
-use crate::principal::PrincipalId;
 use crate::secure::{SecureSession, TransportIdentity};
 use crate::store::Store;
 
 use super::auth::{AuthSession, AuthenticatedSession};
 use super::errors::{invalid_field, song_not_found, unauthenticated, unsupported_version};
-
-const TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
+use super::transfers::ArtifactTransferSession;
 
 #[derive(Default)]
 pub struct ClientSession {
     secure: SecureSession,
     auth: AuthSession,
-    transfer: Option<ArtifactTransfer>,
+    transfers: ArtifactTransferSession,
 }
 
 impl ClientSession {
@@ -78,7 +71,7 @@ impl ClientSession {
     /// client why; this only makes sure nothing further is served on the session.
     pub fn deauthenticate(&mut self) {
         self.auth.deauthenticate();
-        self.transfer = None;
+        self.transfers.reset();
     }
 
     #[cfg(test)]
@@ -86,7 +79,7 @@ impl ClientSession {
         Self {
             secure: SecureSession::default(),
             auth: AuthSession::authenticated_with_bytes(key, bytes),
-            transfer: None,
+            transfers: ArtifactTransferSession::default(),
         }
     }
 
@@ -99,18 +92,6 @@ impl ClientSession {
         self.secure =
             SecureSession::ready_for_test(transport, node_ed25519).expect("test secure session");
     }
-}
-
-#[derive(Debug)]
-struct ArtifactTransfer {
-    id: String,
-    principal_id: PrincipalId,
-    path: PathBuf,
-    byte_length: u64,
-    sha256: String,
-    acknowledged: u64,
-    sent_end: u64,
-    expires_at: Instant,
 }
 
 impl ClientSession {
@@ -160,7 +141,7 @@ impl ClientSession {
                     node_info,
                 )?;
                 if outcome.reset_transfer {
-                    self.transfer = None;
+                    self.transfers.reset();
                 }
                 Ok(outcome.response)
             }
@@ -514,89 +495,17 @@ impl ClientSession {
                 offset,
                 expected_sha256,
             } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(principal_id) = self.authenticated().map(|value| value.principal_id)
-                else {
-                    return Ok(unauthenticated(id, "artifacts"));
-                };
-                if uuid::Uuid::parse_str(&song_id).is_err()
-                    || profile.len() > 64
-                    || offset > MAX_SAFE_SEED
-                {
-                    return Ok(invalid_field(id, "artifact"));
-                }
-                let artifact =
-                    match library.verified_delivery_artifact(principal_id, &song_id, &profile) {
-                        Ok(Some(artifact)) => artifact,
-                        Ok(None) => {
-                            return Ok(NodeMessage::error(
-                                Some(id),
-                                ErrorCode::ArtifactUnavailable,
-                                "That private delivery artifact is not available.",
-                                true,
-                            ));
-                        }
-                        Err(error) => {
-                            eprintln!("delivery verification failed for {song_id}: {error:#}");
-                            return Ok(NodeMessage::error(
-                                Some(id),
-                                ErrorCode::ArtifactUnavailable,
-                                "That private delivery artifact failed verification.",
-                                true,
-                            ));
-                        }
-                    };
-                let (record, path) = artifact;
-                if expected_sha256
-                    .as_ref()
-                    .is_some_and(|expected| expected != &record.sha256)
-                {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::ArtifactChanged,
-                        "The delivery artifact changed; discard the partial copy.",
-                        false,
-                    ));
-                }
-                if offset > record.byte_length {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::InvalidOffset,
-                        "The requested resume offset is beyond the artifact.",
-                        false,
-                    ));
-                }
-                let transfer_id = uuid::Uuid::new_v4().to_string();
-                self.transfer = Some(ArtifactTransfer {
-                    id: transfer_id.clone(),
-                    principal_id,
-                    path,
-                    byte_length: record.byte_length,
-                    sha256: record.sha256.clone(),
-                    acknowledged: offset,
-                    sent_end: offset,
-                    expires_at: Instant::now() + TRANSFER_TTL,
-                });
-                Ok(NodeMessage::ArtifactInfo {
-                    v: PROTOCOL_VERSION,
+                let principal_id = self.authenticated().map(|value| value.principal_id);
+                Ok(self.transfers.handle_open(
+                    v,
                     id,
-                    transfer_id,
                     song_id,
-                    artifact: ArtifactView {
-                        kind: record.kind,
-                        profile: record.profile,
-                        media_type: record.media_type,
-                        byte_length: record.byte_length,
-                        sha256: record.sha256,
-                        sample_rate: record.sample_rate,
-                        channels: record.channels,
-                    },
-                    accepted_offset: offset,
-                    chunk_bytes: ARTIFACT_CHUNK_BYTES,
-                    window_chunks: 1,
-                })
+                    profile,
+                    offset,
+                    expected_sha256,
+                    principal_id,
+                    library,
+                ))
             }
             ClientMessage::ArtifactAck {
                 v,
@@ -604,80 +513,10 @@ impl ClientSession {
                 transfer_id,
                 next_offset,
             } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(principal_id) = self.authenticated().map(|value| value.principal_id)
-                else {
-                    return Ok(unauthenticated(id, "artifacts"));
-                };
-                let Some(mut transfer) = self.transfer.take() else {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::TransferExpired,
-                        "Open the delivery artifact again to resume.",
-                        true,
-                    ));
-                };
-                if transfer.id != transfer_id
-                    || transfer.principal_id != principal_id
-                    || Instant::now() >= transfer.expires_at
-                {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::TransferExpired,
-                        "Open the delivery artifact again to resume.",
-                        true,
-                    ));
-                }
-                if next_offset == transfer.sent_end {
-                    transfer.acknowledged = next_offset;
-                } else if !(next_offset == transfer.acknowledged
-                    && transfer.sent_end > transfer.acknowledged)
-                {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::InvalidOffset,
-                        "The durable artifact acknowledgement is out of order.",
-                        false,
-                    ));
-                }
-                if transfer.acknowledged == transfer.byte_length {
-                    return Ok(NodeMessage::ArtifactComplete {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        transfer_id,
-                        byte_length: transfer.byte_length,
-                        sha256: transfer.sha256,
-                    });
-                }
-                let offset = transfer.acknowledged;
-                let length =
-                    (transfer.byte_length - offset).min(u64::from(ARTIFACT_CHUNK_BYTES)) as usize;
-                let mut bytes = vec![0_u8; length];
-                let read = File::open(&transfer.path)
-                    .and_then(|mut file| {
-                        file.seek(SeekFrom::Start(offset))?;
-                        file.read_exact(&mut bytes)
-                    })
-                    .is_ok();
-                if !read {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::ArtifactUnavailable,
-                        "The delivery artifact became unavailable.",
-                        true,
-                    ));
-                }
-                transfer.sent_end = offset + length as u64;
-                self.transfer = Some(transfer);
-                Ok(NodeMessage::ArtifactChunk {
-                    v: PROTOCOL_VERSION,
-                    id,
-                    transfer_id,
-                    offset,
-                    data: STANDARD.encode(bytes),
-                })
+                let principal_id = self.authenticated().map(|value| value.principal_id);
+                Ok(self
+                    .transfers
+                    .handle_ack(v, id, transfer_id, next_offset, principal_id))
             }
         }
     }
@@ -805,7 +644,6 @@ fn invalid_submission(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::time::{Duration, Instant};
 
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -816,7 +654,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{ArtifactTransfer, ClientSession, invalid_submission};
+    use super::{ClientSession, invalid_submission};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::library::Library;
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
@@ -870,17 +708,8 @@ mod tests {
         (library, song_id, digest)
     }
 
-    fn dummy_transfer(root: &Path, key: [u8; 32]) -> ArtifactTransfer {
-        ArtifactTransfer {
-            id: "transfer".into(),
-            principal_id: crate::principal::PrincipalId::from_client_public_key(&key),
-            path: root.join("delivery.opus"),
-            byte_length: 100,
-            sha256: "digest".into(),
-            acknowledged: 0,
-            sent_end: 0,
-            expires_at: Instant::now() + Duration::from_secs(60),
-        }
+    fn seed_dummy_transfer(session: &mut ClientSession, root: &Path, key: [u8; 32]) {
+        session.transfers.seed_for_test(root, key);
     }
 
     #[test]
@@ -896,7 +725,7 @@ mod tests {
             &bs58::encode([1_u8; 32]).into_string(),
             [1_u8; 32],
         );
-        session.transfer = Some(dummy_transfer(temporary.path(), [1_u8; 32]));
+        seed_dummy_transfer(&mut session, temporary.path(), [1_u8; 32]);
 
         let unsupported = session
             .handle(
@@ -917,7 +746,7 @@ mod tests {
             }
         ));
         assert!(session.authenticated().is_none());
-        assert!(session.transfer.is_some());
+        assert!(session.transfers.is_active());
 
         assert!(matches!(
             session
@@ -967,7 +796,7 @@ mod tests {
                 ..
             }
         ));
-        assert!(session.transfer.is_some());
+        assert!(session.transfers.is_active());
     }
 
     #[test]
@@ -1332,10 +1161,8 @@ mod tests {
             mac.update(signing_key.verifying_key().as_bytes());
             URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
         });
-        let mut session = ClientSession {
-            transfer: Some(dummy_transfer(temporary.path(), [7_u8; 32])),
-            ..ClientSession::default()
-        };
+        let mut session = ClientSession::default();
+        seed_dummy_transfer(&mut session, temporary.path(), [7_u8; 32]);
         let mut active_token =
             token.map(|token| PairOffer::new(token.to_owned(), DEFAULT_PAIR_TTL));
         let challenge = session
@@ -1371,7 +1198,12 @@ mod tests {
                 &mut library,
             )
             .expect("auth");
-        (response, config, active_token, session.transfer.is_some())
+        (
+            response,
+            config,
+            active_token,
+            session.transfers.is_active(),
+        )
     }
 
     #[test]
