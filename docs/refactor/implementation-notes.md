@@ -329,6 +329,21 @@ RF0 will rerun and expand this baseline before moving production owners.
 - The first honest ports are the delivery encoder/worker boundary and the native
   generation-driver boundary. Dedicated native-thread ownership, cached engine
   sessions, retry policy, and best-effort event publication remain fixed.
+- Delivery now has a small façade over a worker and an Opus adapter. A fake
+  encoder proves skip/continuation, publication, revision events, and failure
+  behavior without invoking the codec; the real codec contract test remains.
+- Job stop priority moved to `jobs/stop.rs`, while the data-only active-job
+  control belongs to runtime state. Generation failure mapping and model/backend
+  planning now live under `generation/`.
+- `GenerationDriver` is the worker test seam. A factory creates its one cached
+  native driver inside the named inference thread; fake tests prove sequential
+  reuse, thread identity/name, and exact failure delivery without weights.
+- Application requests now return explicit wake/stop/publish/refresh effects.
+  Relay executes those effects under the existing lock and no longer infers
+  domain behavior by matching response variants; response-before-refresh order
+  remains unchanged.
+- RF5 commits so far: `a502512`, `f11439e`, `8127764`, `309a219`, `4e7dcf1`,
+  and `8ac3e1e`. The combined strict Clippy and 156-test Rust matrix is green.
 
 ## Deviations
 
@@ -363,6 +378,20 @@ RF0 will rerun and expand this baseline before moving production owners.
   runtime path, which starts each `BackendConnection` once.
 - Behavior/invariant protected: an obsolete transport cannot inject data into or
   reset the newer secure session.
+
+### RF5 — native generation driver is intentionally not `Send`
+
+- Plan expectation: make `GenerationDriver` a `Send` trait object passed to the
+  dedicated inference thread.
+- Observed edge case: the real cached ACE-Step `Session` contains a native
+  pointer and is intentionally `!Send`. Constructing an empty driver on the
+  scheduler thread and moving it would weaken the engine's thread-affinity
+  guarantee even before a session is loaded.
+- Conservative decision: only a `Send` factory crosses the thread boundary. The
+  named `cantor-inference` thread constructs, owns, uses, and drops exactly one
+  non-`Send` driver/cache instance for its mailbox lifetime.
+- Behavior/invariant protected: no native session or native cache owner ever
+  crosses threads; commands remain serialized and cache reuse is unchanged.
 - Follow-up, if any: if restart becomes a public product command, specify it as a
   first-class lifecycle transition rather than relying on repeated `start()`.
 
