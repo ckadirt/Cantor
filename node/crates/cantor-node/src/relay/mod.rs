@@ -1,4 +1,5 @@
 mod carrier;
+mod effects;
 mod node_info;
 mod sessions;
 
@@ -17,13 +18,14 @@ use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::application::{ApplicationEffect, RequestContext};
+use crate::application::RequestContext;
 use crate::identity::NodeIdentity;
-use crate::runtime::{NodeEvent, NodeState, SharedState};
+use crate::runtime::{NodeEvent, SharedState};
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
 
 use self::carrier::{IncomingFrame, RELAY_VERSION};
+use self::effects::execute_application_effects;
 use self::node_info::static_node_info;
 use self::sessions::SessionRegistry;
 
@@ -342,33 +344,6 @@ fn dispatch_application(
     )?;
     let refresh_node_info = execute_application_effects(locked, outcome.effects, event_sender);
     Ok((outcome.response, refresh_node_info))
-}
-
-fn execute_application_effects(
-    state: &mut NodeState,
-    effects: Vec<ApplicationEffect>,
-    event_sender: &mpsc::Sender<NodeEvent>,
-) -> bool {
-    let mut refresh_node_info = false;
-    for effect in effects {
-        match effect {
-            ApplicationEffect::WakeJobWorker => state.job_notify.notify_one(),
-            ApplicationEffect::StopActiveJob { job_id, reason } => {
-                if let Some(active) = state
-                    .active_job
-                    .as_ref()
-                    .filter(|active| active.job_id == job_id)
-                {
-                    crate::jobs::request_stop(&active.signal, reason);
-                }
-            }
-            ApplicationEffect::Publish(event) => {
-                let _ = event_sender.try_send(event);
-            }
-            ApplicationEffect::RefreshNodeInfo => refresh_node_info = true,
-        }
-    }
-    refresh_node_info
 }
 
 fn reconnect_delay(attempt: u32) -> Duration {
