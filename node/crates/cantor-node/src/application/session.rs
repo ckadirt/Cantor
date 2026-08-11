@@ -1,22 +1,17 @@
 use std::path::Path;
 
 use anyhow::Result;
-use cantor_proto::{
-    ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails, MAX_PAGE_LIMIT, NodeInfo,
-    NodeMessage, PROTOCOL_VERSION,
-};
+use cantor_proto::{ClientMessage, ErrorCode, NodeInfo, NodeMessage};
 use serde_json::Value;
 
 use crate::config::NodeConfig;
-use crate::library::{
-    ChangePageResult, JobControl, Library, MutationResult, PresenceMutation, SongPageResult,
-};
+use crate::library::{JobControl, Library};
 use crate::pairing::PairOffer;
 use crate::secure::{SecureSession, TransportIdentity};
 
 use super::auth::{AuthSession, AuthenticatedSession};
-use super::errors::{invalid_field, song_not_found, unauthenticated};
 use super::jobs;
+use super::songs;
 use super::transfers::ArtifactTransferSession;
 
 #[derive(Default)]
@@ -231,86 +226,23 @@ impl ClientSession {
                 limit,
                 cursor,
                 include_trashed,
-            } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "library"));
-                };
-                let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
-                if limit == 0 || limit > MAX_PAGE_LIMIT {
-                    return Ok(invalid_field(id, "limit"));
-                }
-                match library.list_songs(
-                    context.principal_id,
-                    limit,
-                    cursor.as_deref(),
-                    include_trashed,
-                )? {
-                    SongPageResult::Page(page) => Ok(NodeMessage::LibraryPage {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        snapshot_revision: page.snapshot_revision,
-                        songs: page.songs,
-                        tombstones: Vec::new(),
-                        next_cursor: page.next_cursor,
-                    }),
-                    SongPageResult::InvalidCursor => Ok(invalid_field(id, "cursor")),
-                }
-            }
+            } => songs::list(
+                v,
+                id,
+                limit,
+                cursor,
+                include_trashed,
+                self.authenticated(),
+                library,
+            ),
             ClientMessage::LibrarySync {
                 v,
                 id,
                 since_revision,
                 limit,
-            } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "library"));
-                };
-                let limit = limit.unwrap_or(MAX_PAGE_LIMIT);
-                if limit == 0 || limit > MAX_PAGE_LIMIT {
-                    return Ok(invalid_field(id, "limit"));
-                }
-                match library.sync_songs(context.principal_id, since_revision, limit)? {
-                    ChangePageResult::Page(page) => Ok(NodeMessage::LibraryChanges {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        through_revision: page.through_revision,
-                        changes: page.changes,
-                        has_more: page.has_more,
-                    }),
-                    ChangePageResult::FullSyncRequired { minimum_revision } => {
-                        Ok(NodeMessage::Error {
-                            v: PROTOCOL_VERSION,
-                            id: Some(id),
-                            code: ErrorCode::FullSyncRequired,
-                            message: "A fresh private-library snapshot is required.".into(),
-                            retryable: true,
-                            details: Some(ErrorDetails::FullSync { minimum_revision }),
-                        })
-                    }
-                    ChangePageResult::InvalidRevision => Ok(invalid_field(id, "since_revision")),
-                }
-            }
+            } => songs::sync(v, id, since_revision, limit, self.authenticated(), library),
             ClientMessage::SongGet { v, id, song_id } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "songs"));
-                };
-                match library.song_detail(context.principal_id, &song_id)? {
-                    Some(detail) => Ok(NodeMessage::SongDetail {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        detail,
-                    }),
-                    None => Ok(song_not_found(id)),
-                }
+                songs::get(v, id, song_id, self.authenticated(), library)
             }
             ClientMessage::SongPatch {
                 v,
@@ -318,67 +250,41 @@ impl ClientSession {
                 song_id,
                 expected_revision,
                 patch,
-            } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "songs"));
-                };
-                mutation_message(
-                    id,
-                    library.patch_song(
-                        context.principal_id,
-                        &song_id,
-                        expected_revision,
-                        &patch,
-                    )?,
-                )
-            }
+            } => songs::patch(
+                v,
+                id,
+                song_id,
+                expected_revision,
+                patch,
+                self.authenticated(),
+                library,
+            ),
             ClientMessage::SongTrash {
                 v,
                 id,
                 song_id,
                 expected_revision,
-            } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "songs"));
-                };
-                mutation_message(
-                    id,
-                    library.change_song_presence(
-                        context.principal_id,
-                        &song_id,
-                        expected_revision,
-                        PresenceMutation::Trash,
-                    )?,
-                )
-            }
+            } => songs::trash(
+                v,
+                id,
+                song_id,
+                expected_revision,
+                self.authenticated(),
+                library,
+            ),
             ClientMessage::SongRestore {
                 v,
                 id,
                 song_id,
                 expected_revision,
-            } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "songs"));
-                };
-                mutation_message(
-                    id,
-                    library.change_song_presence(
-                        context.principal_id,
-                        &song_id,
-                        expected_revision,
-                        PresenceMutation::Restore,
-                    )?,
-                )
-            }
+            } => songs::restore(
+                v,
+                id,
+                song_id,
+                expected_revision,
+                self.authenticated(),
+                library,
+            ),
             ClientMessage::ArtifactOpen {
                 v,
                 id,
@@ -412,26 +318,6 @@ impl ClientSession {
             }
         }
     }
-}
-
-fn mutation_message(id: String, result: MutationResult) -> Result<NodeMessage> {
-    Ok(match result {
-        MutationResult::Updated(song) => NodeMessage::SongUpdated {
-            v: PROTOCOL_VERSION,
-            id,
-            song,
-        },
-        MutationResult::Conflict(current) => NodeMessage::Error {
-            v: PROTOCOL_VERSION,
-            id: Some(id),
-            code: ErrorCode::RevisionConflict,
-            message: "The song changed on another device.".into(),
-            retryable: false,
-            details: Some(ErrorDetails::RevisionConflict { current }),
-        },
-        MutationResult::NotFound => song_not_found(id),
-        MutationResult::InvalidPatch => invalid_field(id, "patch"),
-    })
 }
 
 #[cfg(test)]

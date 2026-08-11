@@ -6,6 +6,7 @@ mod errors;
 mod jobs;
 mod outcome;
 mod session;
+mod songs;
 mod transfers;
 
 use anyhow::Result;
