@@ -27,7 +27,7 @@ mod socket;
 mod wire;
 
 pub use client::{CLIENT_TIMEOUT, request, request_streaming};
-use commands::pairing;
+use commands::{models, pairing};
 use commands::{run_backends, run_catalog, run_pull};
 pub use server::serve;
 #[cfg(test)]
@@ -41,7 +41,7 @@ pub use socket::{bind, client_socket_path, default_socket_path, running_as_root}
 #[cfg(test)]
 use wire::MAX_REQUEST_BYTES;
 pub use wire::{CONTROL_VERSION, Response};
-use wire::{Request, reject_version, write_value_line as write_line};
+use wire::{Request, write_value_line as write_line};
 
 // Keep the original control-module entry points available while downstream
 // callers migrate to runtime ownership.
@@ -310,30 +310,8 @@ fn handle(
             selector,
             petname,
         } => pairing::rename(&mut state, v, id, selector, petname),
-        Request::List { v, id } => {
-            reject_version(v, &id)?;
-            let store = Store::new(state.config.model_root());
-            Ok(Response::List {
-                v: CONTROL_VERSION,
-                id,
-                installed: store.installed(),
-                available_bytes: store.available_bytes().unwrap_or(0),
-            })
-        }
-        Request::Remove { v, id, selector } => {
-            reject_version(v, &id)?;
-            let (model, tag) = selector
-                .split_once(':')
-                .context("expected a model and tag like `acestep:1.5-fast`")?;
-            let store = Store::new(state.config.model_root());
-            let reclaimed = store.remove(model, tag)?;
-            let _ = events.try_send(NodeEvent::NodeInfoChanged);
-            Ok(Response::Removed {
-                v: CONTROL_VERSION,
-                id,
-                reclaimed_bytes: reclaimed,
-            })
-        }
+        Request::List { v, id } => models::list(&mut state, v, id),
+        Request::Remove { v, id, selector } => models::remove(&mut state, events, v, id, selector),
         Request::RenameNode { v, id, name } => {
             pairing::rename_node(&mut state, events, v, id, name)
         }

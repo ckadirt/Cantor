@@ -6,11 +6,13 @@ use anyhow::{Context, Result};
 use serde_json::json;
 use tokio::sync::mpsc;
 
-use super::super::wire::{CONTROL_VERSION, write_value_line as write_line};
+use super::super::wire::{
+    CONTROL_VERSION, Response, reject_version, write_value_line as write_line,
+};
 use crate::accel;
 use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::catalog::Catalog;
-use crate::runtime::{NodeEvent, SharedState};
+use crate::runtime::{NodeEvent, NodeState, SharedState};
 use crate::store::{Store, human_bytes};
 
 /// Everything a pull needs, copied out under the lock so the download itself
@@ -31,6 +33,38 @@ fn pull_plan(state: &SharedState) -> Result<PullPlan> {
         catalog_url: locked.config.catalog_url(),
         backends_url: locked.config.backends_url(),
         backend: locked.config.backend.clone(),
+    })
+}
+
+pub(in crate::control) fn list(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
+    reject_version(v, &id)?;
+    let store = Store::new(state.config.model_root());
+    Ok(Response::List {
+        v: CONTROL_VERSION,
+        id,
+        installed: store.installed(),
+        available_bytes: store.available_bytes().unwrap_or(0),
+    })
+}
+
+pub(in crate::control) fn remove(
+    state: &mut NodeState,
+    events: &mpsc::Sender<NodeEvent>,
+    v: u8,
+    id: String,
+    selector: String,
+) -> Result<Response> {
+    reject_version(v, &id)?;
+    let (model, tag) = selector
+        .split_once(':')
+        .context("expected a model and tag like `acestep:1.5-fast`")?;
+    let store = Store::new(state.config.model_root());
+    let reclaimed = store.remove(model, tag)?;
+    let _ = events.try_send(NodeEvent::NodeInfoChanged);
+    Ok(Response::Removed {
+        v: CONTROL_VERSION,
+        id,
+        reclaimed_bytes: reclaimed,
     })
 }
 
