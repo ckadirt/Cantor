@@ -14,8 +14,6 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
-use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
 use crate::accel;
@@ -28,21 +26,24 @@ use crate::runtime::NodeEvent;
 use crate::store::{Store, human_bytes};
 
 mod client;
+mod server;
 mod socket;
 mod wire;
 
 pub use client::{CLIENT_TIMEOUT, request, request_streaming};
+pub use server::serve;
+#[cfg(test)]
+use server::serve_connection;
 #[cfg(test)]
 use socket::{
     CONTROL_GROUP, MAX_SOCKET_PATH_BYTES, SOCKET_MODE_PRIVATE, SOCKET_MODE_SHARED, group_id,
     is_root,
 };
 pub use socket::{bind, client_socket_path, default_socket_path, running_as_root};
+#[cfg(test)]
+use wire::MAX_REQUEST_BYTES;
 pub use wire::{CONTROL_VERSION, Response};
-use wire::{
-    MAX_REQUEST_BYTES, Request, frame_kind, reject_version, write_response_line,
-    write_value_line as write_line,
-};
+use wire::{Request, reject_version, write_value_line as write_line};
 
 // Keep the original control-module entry points available while downstream
 // callers migrate to runtime ownership.
@@ -53,51 +54,6 @@ pub use crate::runtime::{NodeState, SharedState, shared};
 /// events. New runtime-facing code should use [`NodeEvent`].
 #[allow(dead_code)] // Deliberate migration shim; production code uses NodeEvent.
 pub type ControlEvent = NodeEvent;
-
-pub async fn serve(listener: UnixListener, state: SharedState, events: mpsc::Sender<NodeEvent>) {
-    loop {
-        let (stream, _) = match listener.accept().await {
-            Ok(accepted) => accepted,
-            Err(error) => {
-                eprintln!("control socket accept failed: {error}");
-                continue;
-            }
-        };
-        let state = Arc::clone(&state);
-        let events = events.clone();
-        tokio::spawn(async move {
-            if let Err(error) = serve_connection(stream, state, events).await {
-                eprintln!("control connection ended: {error:#}");
-            }
-        });
-    }
-}
-
-async fn serve_connection(
-    stream: UnixStream,
-    state: SharedState,
-    events: mpsc::Sender<NodeEvent>,
-) -> Result<()> {
-    let (reader, mut writer) = stream.into_split();
-    let mut lines = BufReader::new(reader.take(MAX_REQUEST_BYTES)).lines();
-
-    while let Some(line) = lines.next_line().await? {
-        if line.trim().is_empty() {
-            continue;
-        }
-        // A pull runs for minutes and reports as it goes, so it writes many
-        // lines rather than one. Everything else is request/response.
-        if let Some(kind) = frame_kind(&line)
-            && matches!(kind.as_str(), "pull" | "catalog" | "backends" | "generate")
-        {
-            stream_long_request(&line, &state, &events, &mut writer, &kind).await?;
-            continue;
-        }
-        let response = dispatch(&line, &state, &events);
-        write_response_line(&mut writer, &response).await?;
-    }
-    Ok(())
-}
 
 /// Everything a pull needs, copied out under the lock so the download itself
 /// never holds it — a multi-gigabyte transfer must not block `cantor status`.
