@@ -19,7 +19,7 @@ pub enum StopReason {
 }
 
 impl StopReason {
-    pub(super) fn load(signal: &AtomicU8) -> Self {
+    pub(crate) fn load(signal: &AtomicU8) -> Self {
         match signal.load(Ordering::Acquire) {
             1 => Self::Shutdown,
             2 => Self::Pause,
