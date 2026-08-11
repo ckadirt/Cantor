@@ -12,13 +12,12 @@ use uuid::Uuid;
 use crate::config::now_rfc3339;
 use crate::principal::PrincipalId;
 
+use super::Library;
 use super::artifacts::{ArtifactRecord, insert_artifact, inspect_wav, write_artifact_manifest};
 use super::jobs::MAX_ATTEMPTS;
 use super::rows::{JOB_VIEW_COLUMNS, enum_text, job_from_row};
+use super::sidecars::{accepted_sidecar_for, write_status};
 use super::songs;
-use super::{
-    Library, accepted_sidecar_for, clear_ephemeral_directory, is_known_incomplete_job, write_status,
-};
 
 impl Library {
     pub(super) fn reconcile_startup(&self) -> Result<()> {
@@ -338,4 +337,37 @@ fn select_recovery_source(
         metadata_path: Some(source.reference.metadata_path),
         outcome: Some(enum_text(source.reference.outcome)?),
     })
+}
+
+fn clear_ephemeral_directory(path: &Path) -> Result<()> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let metadata = fs::symlink_metadata(&entry_path)?;
+        if metadata.is_dir() {
+            fs::remove_dir_all(entry_path)?;
+        } else {
+            fs::remove_file(entry_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_known_incomplete_job(path: &Path) -> Result<bool> {
+    for entry in fs::read_dir(path)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let metadata = fs::symlink_metadata(entry.path())?;
+        let known_regular = matches!(
+            name.as_str(),
+            "request.json" | "status.json" | "manifest.json"
+        ) || name.starts_with(".sidecar.");
+        let known_empty_directory = matches!(name.as_str(), "checkpoints" | "artifacts")
+            && metadata.is_dir()
+            && fs::read_dir(entry.path())?.next().is_none();
+        if !(metadata.is_file() && known_regular || known_empty_directory) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }

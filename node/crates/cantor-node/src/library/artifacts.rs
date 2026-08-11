@@ -15,8 +15,10 @@ use uuid::Uuid;
 use crate::config::now_rfc3339;
 use crate::principal::PrincipalId;
 
+use super::durable_fs::{prepare_real_directory, write_json_atomic};
 use super::rows::{JOB_VIEW_COLUMNS, job_from_row};
-use super::{Library, WorkItem, prepare_real_directory, write_json_atomic, write_status};
+use super::sidecars::write_status;
+use super::{Library, WorkItem};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ArtifactRecord {
