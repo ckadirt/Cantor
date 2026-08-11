@@ -259,6 +259,22 @@ RF0 will rerun and expand this baseline before moving production owners.
   pinned recovery artifact started in the real `MediaPlayer`, routed to device 3,
   stopped at its natural end, and was released. No generation engine ran.
 
+### 2026-08-11 — RF4 started
+
+- RF4 will expose the existing persistence boundaries without redesigning them:
+  the `Library` façade, its single SQLite connection, transaction scopes, SQL,
+  schema versions, on-disk paths, and durable-write ordering remain authoritative.
+- Work starts with a symbol/dependency map and mechanical private-module moves.
+  Public callers will keep using `Library`; private visibility will be widened
+  only as far as sibling persistence modules require.
+- Existing `impl Library` persistence blocks in `songs.rs` and `delivery.rs` will
+  move only after their protocol/worker responsibilities are separated. Traits
+  will be added only where a real service or test consumer needs a narrow port.
+- Recovery and filesystem primitives move last because symlink checks,
+  permissions, digest verification, rename/fsync order, and quarantine decisions
+  are behavior. Each move must retain focused recovery/reopen tests plus full
+  workspace formatting, strict Clippy, and tests before commit.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
