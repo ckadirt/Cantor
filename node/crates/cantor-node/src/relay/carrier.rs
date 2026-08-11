@@ -5,9 +5,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::secure::{MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_VERSION};
+use crate::transport::{
+    MAX_RELAY_SESSION_ID_UTF8_BYTES, MAX_SECURE_CIPHERTEXT_BYTES, NODE_CARRIER_FIXED_HEADER_BYTES,
+    SECURE_CARRIER_KIND, SECURE_CARRIER_VERSION,
+};
 
-pub(super) const RELAY_VERSION: u8 = 1;
+pub(super) use crate::transport::RELAY_PROTOCOL_VERSION as RELAY_VERSION;
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "t")]
@@ -56,9 +59,10 @@ pub(super) fn encode_node_secure_carrier(sid: &str, ciphertext: &[u8]) -> Result
     let sid_length = u16::try_from(sid.len()).context("relay session id is too long")?;
     let ciphertext_length =
         u32::try_from(ciphertext.len()).context("secure ciphertext is too long")?;
-    let mut frame = Vec::with_capacity(8 + sid.len() + ciphertext.len());
+    let mut frame =
+        Vec::with_capacity(NODE_CARRIER_FIXED_HEADER_BYTES + sid.len() + ciphertext.len());
     frame.push(SECURE_CARRIER_VERSION);
-    frame.push(1);
+    frame.push(SECURE_CARRIER_KIND);
     frame.extend_from_slice(&sid_length.to_be_bytes());
     frame.extend_from_slice(sid);
     frame.extend_from_slice(&ciphertext_length.to_be_bytes());
@@ -67,11 +71,17 @@ pub(super) fn encode_node_secure_carrier(sid: &str, ciphertext: &[u8]) -> Result
 }
 
 pub(super) fn parse_node_secure_carrier(frame: &[u8]) -> Result<(&str, &[u8])> {
-    if frame.len() < 8 || frame[0] != SECURE_CARRIER_VERSION || frame[1] != 1 {
+    if frame.len() < NODE_CARRIER_FIXED_HEADER_BYTES
+        || frame[0] != SECURE_CARRIER_VERSION
+        || frame[1] != SECURE_CARRIER_KIND
+    {
         bail!("secure relay carrier header is invalid");
     }
     let sid_length = usize::from(u16::from_be_bytes([frame[2], frame[3]]));
-    if sid_length == 0 || sid_length > 64 || frame.len() < 8 + sid_length {
+    if sid_length == 0
+        || sid_length > MAX_RELAY_SESSION_ID_UTF8_BYTES
+        || frame.len() < NODE_CARRIER_FIXED_HEADER_BYTES + sid_length
+    {
         bail!("secure relay session id is outside its bound");
     }
     let sid = std::str::from_utf8(&frame[4..4 + sid_length])
@@ -110,7 +120,7 @@ mod tests {
         IncomingFrame, RELAY_VERSION, encode_node_secure_carrier, ensure_secure_sid,
         parse_node_secure_carrier, tunnel_text_frame,
     };
-    use crate::secure::{MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_VERSION};
+    use crate::transport::{MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_VERSION};
 
     const CARRIER_FIXTURE: &str =
         include_str!("../../../../../protocol/transport/v1/fixtures/carrier.json");

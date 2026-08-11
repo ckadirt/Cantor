@@ -1,10 +1,23 @@
-export const RELAY_VERSION = 1 as const;
-export const SECURE_CARRIER_VERSION = 1 as const;
-export const SECURE_CARRIER_KIND = 1 as const;
-export const MAX_SECURE_CIPHERTEXT_BYTES = 96 * 1024;
-const CLIENT_SECURE_HEADER_BYTES = 6;
-const NODE_SECURE_FIXED_HEADER_BYTES = 8;
-const MAX_SESSION_ID_BYTES = 64;
+import {
+  CLIENT_CARRIER_HEADER_BYTES,
+  MAX_RELAY_SESSION_ID_UTF8_BYTES,
+  MAX_SECURE_CIPHERTEXT_BYTES,
+  NODE_CARRIER_FIXED_HEADER_BYTES,
+  RELAY_PROTOCOL_VERSION,
+  SECURE_CARRIER_KIND,
+  SECURE_CARRIER_VERSION,
+} from './generated/transport';
+
+/**
+ * The relay speaks its own text version and forwards an opaque secure carrier.
+ * Both come from `protocol/transport/v1/spec.json`; the relay never restates a
+ * transport number in a second place.
+ */
+export const RELAY_VERSION = RELAY_PROTOCOL_VERSION;
+export { MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_KIND, SECURE_CARRIER_VERSION };
+const CLIENT_SECURE_HEADER_BYTES = CLIENT_CARRIER_HEADER_BYTES;
+const NODE_SECURE_FIXED_HEADER_BYTES = NODE_CARRIER_FIXED_HEADER_BYTES;
+const MAX_SESSION_ID_BYTES = MAX_RELAY_SESSION_ID_UTF8_BYTES;
 
 export interface RelayChallenge {
   v: typeof RELAY_VERSION;

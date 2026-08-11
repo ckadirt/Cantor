@@ -325,6 +325,7 @@ pub(crate) const MAX_HANDSHAKE_MESSAGE_BYTES: usize = ${rustNumber(b.handshake_m
 pub(crate) const MAX_NOISE_PLAINTEXT_BYTES: usize = ${rustNumber(b.noise_plaintext_bytes)};
 pub(crate) const MAX_SECURE_CIPHERTEXT_BYTES: usize = ${rustNumber(b.secure_ciphertext_bytes)};
 pub(crate) const MAX_LOGICAL_INNER_BYTES: usize = ${rustNumber(b.logical_inner_bytes)};
+pub(crate) const ARTIFACT_CHUNK_BYTES: usize = ${rustNumber(b.artifact_chunk_bytes)};
 pub(crate) const MAX_ARTIFACT_IDENTIFIER_UTF8_BYTES: usize = ${rustNumber(b.artifact_identifier_utf8_bytes)};
 pub(crate) const MAX_ARTIFACT_OFFSET_SAFE_INTEGER: u64 = ${rustNumber(b.artifact_offset_max_safe_integer)};
 pub(crate) const MAX_SESSION_RECORDS_PER_DIRECTION: u64 = ${rustNumber(b.session_records_per_direction)};
