@@ -7,8 +7,8 @@ the reasoning only at the end.
 ## Program status
 
 - Started: 2026-08-09
-- Current milestone: RF5 node application and adapter framework
-- Production refactor code: RF1 through RF4 complete
+- Current milestone: RF6 cross-language transport and integration framework
+- Production refactor code: RF1 through RF5 complete
 - Last completed product milestone: M6, commit `d3f890d`
 
 ## Decisions
@@ -392,6 +392,52 @@ RF0 will rerun and expand this baseline before moving production owners.
   current combined gate passes formatting, strict all-target/all-feature Clippy,
   150 node tests, 27 protocol tests, doctests, and whitespace checks.
 
+### 2026-08-11 — RF5 completed
+
+- The application layer is now explicit rather than relay-shaped:
+  `application/router.rs` parses and routes, focused job/song/auth/transfer
+  services decide, and `ApplicationOutcome` declares wake, stop, publish, and
+  node-info refresh effects. Relay executes those declared effects without
+  interpreting response variants.
+- Relay is a façade over carrier framing, session registry/fanout, node-info
+  projection, effect execution, claimed connection, and reconnect/claim policy.
+  Its claimed-socket runner accepts an in-memory WebSocket; tests drive a real
+  Noise handshake, app authentication, and job control through that seam and
+  prove response-before-refresh ordering.
+- Control is a façade over Unix-socket, JSON-line wire, client/server, and
+  focused pairing/model/backend/generation command modules. The short router
+  retains one state guard and long workflows retain their established streaming
+  and version behavior.
+- Delivery and generation each expose one honest volatile boundary. Fake
+  encoders and drivers prove worker order/failure behavior without invoking
+  codecs or weights; the real native generation driver is created, cached, and
+  dropped on its dedicated inference thread.
+- Phone and local CLI generation now converge at `application::admit_job`, which
+  accepts an explicit identity, validated submission, resolved installed model,
+  and node policy before delegating to the single durable `Library::submit`
+  authority. Adapter-specific validation and response text remain outside it.
+- Final RF5 commits after the prior progress entry: `1584e23`, `6c8feb8`,
+  `a7fdbb4`, `20854d4`, `d59ee04`, `c2f40bb`, `93b5c12`, `020fb07`,
+  `ee82dc8`, `b779ee9`, `596a92f`, and `3b64136`.
+- Integrated automated verification passed: Rust formatting; strict workspace,
+  all-target, all-feature Clippy; 157 node plus 27 protocol tests; app TypeScript
+  and lint with no errors plus 30 Jest suites/261 tests; relay check plus 13
+  Vitest tests; Android JVM tests and an `arm64-v8a` debug APK build; and
+  whitespace checks.
+- Physical device `6b1f6ba8629c` submitted one 15-second light CPU job through
+  the real encrypted phone-relay-node path. Job
+  `019ff18e-93f4-70e2-af6b-b20411954a8b` completed on attempt 1 at job revision
+  36. The 2,887,724-byte WAV hash
+  `0cd875b74e7a3354fe031c659558581896cf3796e837f8e7da6cfd031958bae0`
+  and 303,777-byte Opus hash
+  `980a1764590a3bd0fe565234fe90b91f708debde799c0da99996191f5736fd13`
+  matched their indexed records; SQLite `quick_check` returned `ok`.
+- The generation ran in a user scope capped at 6 GiB RAM and 512 MiB swap. It
+  reached the 6,442,450,944-byte ceiling and used at most 12,247,040 bytes of
+  swap without freezing the host. A graceful node restart retained the identity
+  and library, reclaimed the same relay room, and a cold app restart displayed
+  the new song as `REMOTE · ckadirt-mf-m2`.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
@@ -442,6 +488,24 @@ RF0 will rerun and expand this baseline before moving production owners.
 - Follow-up, if any: if restart becomes a public product command, specify it as a
   first-class lifecycle transition rather than relying on repeated `start()`.
 
+### RF5 — qualification initially used the parent config directory
+
+- Plan expectation: start the persistent M2 fixture with its existing
+  `cantor-m2-node/config` directory and stable node identity.
+- Observed edge case: the first qualification command passed the parent
+  `cantor-m2-node` directory. The CLI initialized a fresh `node.toml`, `node.key`,
+  and `noise.key` there and claimed the unrelated default room. No generation or
+  durable product mutation ran through that identity.
+- Conservative decision: stop it immediately, move only those three newly
+  created files intact to the recoverable directory
+  `/tmp/cantor-fresh-identity.RNoJ63`, verify they are absent from the fixture
+  parent, and restart with the explicit existing `cantor-m2-node/config` path.
+- Behavior/invariant protected: the stable paired identity, existing model
+  manifest, and physical library were neither overwritten nor migrated through
+  an unintended node.
+- Follow-up, if any: the temporary recovery copy can be discarded manually after
+  this program; it is not part of the repository or fixture.
+
 When a deviation occurs, record:
 
 ```text
@@ -463,4 +527,7 @@ the result. RF1 and RF2 repeated the cold-start device check with the same paire
 Library state; RF2 additionally inspected the extracted backend/job composition
 and confirmed an authenticated `READY` node without submitting a generation. RF3
 repeated encrypted reconnect and verified existing pinned audio through the real
-Android player without invoking generation.
+Android player without invoking generation. RF5 ran the real capped light
+generation and restart/reconnect qualification recorded above; the app observed
+the completed queue item and, after its own cold restart, synchronized the new
+remote song.

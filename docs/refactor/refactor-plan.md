@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved direction. RF0 through RF4 are complete; RF5 node application and adapter
-framework extraction is current.
+Approved direction. RF0 through RF5 are complete; RF6 cross-language transport
+and integration framework extraction is current.
 
 ## Objective
 
