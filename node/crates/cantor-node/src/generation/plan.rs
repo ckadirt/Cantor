@@ -15,10 +15,10 @@ use crate::runtime::SharedState;
 use crate::store::Store;
 
 pub(crate) struct GenerationPlan {
-    pub(crate) attempts: Vec<(String, PathBuf)>,
-    pub(crate) components: Vec<(String, PathBuf)>,
-    pub(crate) options: LoadOptions,
-    pub(crate) request: Request,
+    pub(super) attempts: Vec<(String, PathBuf)>,
+    pub(super) components: Vec<(String, PathBuf)>,
+    pub(super) options: LoadOptions,
+    pub(super) request: Request,
 }
 
 pub(crate) async fn resolve(
