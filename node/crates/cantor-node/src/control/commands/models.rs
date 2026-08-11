@@ -36,7 +36,7 @@ fn pull_plan(state: &SharedState) -> Result<PullPlan> {
     })
 }
 
-pub(in crate::control) fn list(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
+pub(super) fn list(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
     reject_version(v, &id)?;
     let store = Store::new(state.config.model_root());
     Ok(Response::List {
@@ -47,7 +47,7 @@ pub(in crate::control) fn list(state: &mut NodeState, v: u8, id: String) -> Resu
     })
 }
 
-pub(in crate::control) fn remove(
+pub(super) fn remove(
     state: &mut NodeState,
     events: &mpsc::Sender<NodeEvent>,
     v: u8,
@@ -68,7 +68,7 @@ pub(in crate::control) fn remove(
     })
 }
 
-pub(in crate::control) async fn run_catalog<W: tokio::io::AsyncWrite + Unpin>(
+pub(super) async fn run_catalog<W: tokio::io::AsyncWrite + Unpin>(
     state: &SharedState,
     writer: &mut W,
     id: &str,
@@ -90,7 +90,7 @@ pub(in crate::control) async fn run_catalog<W: tokio::io::AsyncWrite + Unpin>(
     .await
 }
 
-pub(in crate::control) async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
+pub(super) async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     selector: &str,
     state: &SharedState,
     events: &mpsc::Sender<NodeEvent>,

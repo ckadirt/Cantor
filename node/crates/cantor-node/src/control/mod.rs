@@ -8,10 +8,6 @@
 //! The wire format is line-delimited JSON using the same `{v, id, t, …}`
 //! envelope as the app protocol, so the two stay legible side by side.
 
-use anyhow::Result;
-use serde_json::{Value, json};
-use tokio::sync::mpsc;
-
 use crate::runtime::NodeEvent;
 
 mod client;
@@ -21,8 +17,8 @@ mod socket;
 mod wire;
 
 pub use client::{CLIENT_TIMEOUT, request, request_streaming};
-use commands::{models, pairing};
-use commands::{run_backends, run_catalog, run_generate, run_pull};
+#[cfg(test)]
+use commands::dispatch;
 pub use server::serve;
 #[cfg(test)]
 use server::serve_connection;
@@ -34,8 +30,9 @@ use socket::{
 pub use socket::{bind, client_socket_path, default_socket_path, running_as_root};
 #[cfg(test)]
 use wire::MAX_REQUEST_BYTES;
+#[allow(unused_imports)]
+// Deliberate wire facade; callers should not reach into the child module.
 pub use wire::{CONTROL_VERSION, Response};
-use wire::{Request, write_value_line as write_line};
 
 // Keep the original control-module entry points available while downstream
 // callers migrate to runtime ownership.
@@ -46,112 +43,6 @@ pub use crate::runtime::{NodeState, SharedState, shared};
 /// events. New runtime-facing code should use [`NodeEvent`].
 #[allow(dead_code)] // Deliberate migration shim; production code uses NodeEvent.
 pub type ControlEvent = NodeEvent;
-
-async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
-    line: &str,
-    state: &SharedState,
-    events: &mpsc::Sender<NodeEvent>,
-    writer: &mut W,
-    kind: &str,
-) -> Result<()> {
-    let request: Value = match serde_json::from_str(line) {
-        Ok(value) => value,
-        Err(error) => {
-            return write_line(
-                writer,
-                &json!({"v": CONTROL_VERSION, "id": "", "t": "error",
-                        "code": "invalid-request", "msg": error.to_string()}),
-            )
-            .await;
-        }
-    };
-    let id = request
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or_default()
-        .to_owned();
-
-    let outcome = match kind {
-        "pull" => {
-            let selector = request
-                .get("selector")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned();
-            run_pull(&selector, state, events, writer, &id).await
-        }
-        "generate" => run_generate(&request, state, writer, &id).await,
-        "backends" => {
-            let install = request
-                .get("install")
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
-            let use_backend = request
-                .get("use")
-                .and_then(Value::as_str)
-                .map(str::to_owned);
-            run_backends(state, writer, &id, install, use_backend).await
-        }
-        _ => run_catalog(state, writer, &id).await,
-    };
-
-    if let Err(error) = outcome {
-        write_line(
-            writer,
-            &json!({"v": CONTROL_VERSION, "id": id, "t": "error",
-                    "code": "failed", "msg": format!("{error:#}")}),
-        )
-        .await?;
-    }
-    Ok(())
-}
-
-fn dispatch(line: &str, state: &SharedState, events: &mpsc::Sender<NodeEvent>) -> Response {
-    let fallback_id = serde_json::from_str::<Value>(line)
-        .ok()
-        .and_then(|value| value.get("id").and_then(Value::as_str).map(str::to_owned))
-        .unwrap_or_default();
-
-    let request: Request = match serde_json::from_str(line) {
-        Ok(request) => request,
-        Err(error) => {
-            return Response::error(fallback_id, "invalid-request", error.to_string());
-        }
-    };
-
-    match handle(request, state, events) {
-        Ok(response) => response,
-        Err(error) => Response::error(fallback_id, "failed", format!("{error:#}")),
-    }
-}
-
-fn handle(
-    request: Request,
-    state: &SharedState,
-    events: &mpsc::Sender<NodeEvent>,
-) -> Result<Response> {
-    let mut state = state
-        .lock()
-        .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
-
-    match request {
-        Request::Status { v, id } => pairing::status(&mut state, v, id),
-        Request::Pair { v, id, expires_in } => pairing::pair(&mut state, v, id, expires_in),
-        Request::Pairings { v, id } => pairing::pairings(&mut state, v, id),
-        Request::Revoke { v, id, selector } => pairing::revoke(&mut state, events, v, id, selector),
-        Request::Rename {
-            v,
-            id,
-            selector,
-            petname,
-        } => pairing::rename(&mut state, v, id, selector, petname),
-        Request::List { v, id } => models::list(&mut state, v, id),
-        Request::Remove { v, id, selector } => models::remove(&mut state, events, v, id, selector),
-        Request::RenameNode { v, id, name } => {
-            pairing::rename_node(&mut state, events, v, id, name)
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

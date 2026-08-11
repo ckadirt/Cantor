@@ -69,7 +69,7 @@ async fn install_backend_for_engines(
 /// backend for real. Selection is measured: each candidate is actually loaded,
 /// and the first that works wins — a GPU that is present but broken falls
 /// through to the next rather than being trusted.
-pub(in crate::control) async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
+pub(super) async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
     state: &SharedState,
     writer: &mut W,
     id: &str,

@@ -10,7 +10,7 @@ use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer, new_pair_token, pairing_uri};
 use crate::principal::PrincipalId;
 use crate::runtime::{NodeEvent, NodeState};
 
-pub(in crate::control) fn status(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
+pub(super) fn status(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
     reject_version(v, &id)?;
     if state.pair_offer.as_ref().is_some_and(PairOffer::is_expired) {
         state.pair_offer = None;
@@ -30,7 +30,7 @@ pub(in crate::control) fn status(state: &mut NodeState, v: u8, id: String) -> Re
     })
 }
 
-pub(in crate::control) fn pair(
+pub(super) fn pair(
     state: &mut NodeState,
     v: u8,
     id: String,
@@ -54,7 +54,7 @@ pub(in crate::control) fn pair(
     })
 }
 
-pub(in crate::control) fn pairings(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
+pub(super) fn pairings(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
     reject_version(v, &id)?;
     Ok(Response::Pairings {
         v: CONTROL_VERSION,
@@ -63,7 +63,7 @@ pub(in crate::control) fn pairings(state: &mut NodeState, v: u8, id: String) -> 
     })
 }
 
-pub(in crate::control) fn revoke(
+pub(super) fn revoke(
     state: &mut NodeState,
     events: &mpsc::Sender<NodeEvent>,
     v: u8,
@@ -100,7 +100,7 @@ pub(in crate::control) fn revoke(
     })
 }
 
-pub(in crate::control) fn rename(
+pub(super) fn rename(
     state: &mut NodeState,
     v: u8,
     id: String,
@@ -117,7 +117,7 @@ pub(in crate::control) fn rename(
     })
 }
 
-pub(in crate::control) fn rename_node(
+pub(super) fn rename_node(
     state: &mut NodeState,
     events: &mpsc::Sender<NodeEvent>,
     v: u8,

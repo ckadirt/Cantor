@@ -7,8 +7,8 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc;
 
+use super::commands::{dispatch, stream_long_request};
 use super::wire::{MAX_REQUEST_BYTES, frame_kind, write_response_line};
-use super::{dispatch, stream_long_request};
 use crate::runtime::{NodeEvent, SharedState};
 
 pub async fn serve(listener: UnixListener, state: SharedState, events: mpsc::Sender<NodeEvent>) {
