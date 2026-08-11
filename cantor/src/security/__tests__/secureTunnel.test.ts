@@ -6,12 +6,8 @@ import type { ClientMessage } from '../../../../protocol/ClientMessage';
 import type { SecureChannel } from '../native';
 import { SecureTunnel, type SecureTunnelCallbacks } from '../secureTunnel';
 import type { TransportDescriptor } from '../types';
-import {
-  decodeNodeInner,
-  encodeClientCarrier,
-  encodeControlInner,
-  parseClientCarrier,
-} from '../wire';
+import { encodeClientCarrier, parseClientCarrier } from '../carrier';
+import { decodeNodeInner, encodeControlInner } from '../inner';
 
 const NODE_SECRET = new Uint8Array(32).fill(3);
 const NODE_KEY_BYTES = ed.getPublicKey(NODE_SECRET);
