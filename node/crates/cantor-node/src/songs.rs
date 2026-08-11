@@ -24,35 +24,6 @@ use crate::principal::PrincipalId;
 const FILE_MODE: u32 = 0o600;
 const CAPTION_SUMMARY_BYTES: usize = 240;
 
-const MIGRATION_003: &str = r#"
-CREATE TABLE IF NOT EXISTS songs (
-  id TEXT PRIMARY KEY REFERENCES jobs(id),
-  principal_id TEXT NOT NULL REFERENCES principals(id),
-  title TEXT NOT NULL,
-  caption_summary TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  duration_ms INTEGER NOT NULL CHECK(duration_ms > 0),
-  model_selector TEXT NOT NULL,
-  seed TEXT,
-  favorite INTEGER NOT NULL DEFAULT 0 CHECK(favorite IN (0,1)),
-  tags_json TEXT NOT NULL DEFAULT '[]',
-  metadata_revision INTEGER NOT NULL DEFAULT 1 CHECK(metadata_revision >= 1),
-  published_revision INTEGER NOT NULL CHECK(published_revision >= 1),
-  changed_revision INTEGER NOT NULL CHECK(changed_revision >= 1),
-  trashed_at TEXT
-);
-CREATE INDEX IF NOT EXISTS songs_owner_order
-  ON songs(principal_id,created_at DESC,id DESC);
-CREATE TABLE IF NOT EXISTS library_changes (
-  principal_id TEXT NOT NULL REFERENCES principals(id),
-  revision INTEGER NOT NULL CHECK(revision >= 1),
-  entity_id TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK(kind IN ('upsert','trash','restore','tombstone')),
-  changed_at TEXT NOT NULL,
-  PRIMARY KEY(principal_id,revision)
-);
-"#;
-
 pub struct SongPage {
     pub snapshot_revision: u64,
     pub songs: Vec<SongHeader>,
@@ -97,16 +68,6 @@ struct CursorPayload {
     last_created_at: String,
     last_id: String,
     include_trashed: bool,
-}
-
-pub fn migrate(connection: &Connection) -> Result<()> {
-    connection.execute_batch(MIGRATION_003)?;
-    connection.execute(
-        "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version)
-         VALUES(3,?1,?2)",
-        params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
-    )?;
-    Ok(())
 }
 
 pub fn load_or_create_cursor_key(root: &Path) -> Result<[u8; 32]> {
