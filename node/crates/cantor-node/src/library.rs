@@ -5,26 +5,27 @@
 //! commits the row, and only then may the protocol acknowledge the job.
 
 mod artifacts;
+mod durable_fs;
 mod jobs;
 mod recovery;
 mod rows;
 mod schema;
+mod sidecars;
 mod songs;
 
 #[cfg(test)]
 mod contract_tests;
 
-use anyhow::{Context, Result, bail};
-use cantor_proto::{GenerationRequest, JobView};
+use anyhow::{Context, Result};
 use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
-use std::fs::{self, File};
+use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub use self::artifacts::{ArtifactRecord, DELIVERY_PROFILE, DeliveryCandidate, InspectedDelivery};
 pub(crate) use self::artifacts::{DELIVERY_CHANNELS, DELIVERY_SAMPLE_RATE, inspect_delivery};
+use self::durable_fs::{FILE_MODE, prepare_real_directory};
 #[cfg(test)]
 use self::jobs::MAX_ATTEMPTS;
 pub use self::jobs::{ControlResult, FinishResult, JobControl, Submission, SubmitResult, WorkItem};
@@ -37,48 +38,11 @@ use crate::principal::PrincipalId;
 #[cfg(test)]
 use crate::store::InstalledVariant;
 #[cfg(test)]
-use cantor_proto::{ErrorCode, GenerationStage, JobState, ProgressUnit};
+use cantor_proto::{ErrorCode, GenerationRequest, GenerationStage, JobState, ProgressUnit};
 #[cfg(test)]
 use rusqlite::params;
 #[cfg(test)]
 use uuid::Uuid;
-
-const DIRECTORY_MODE: u32 = 0o700;
-const FILE_MODE: u32 = 0o600;
-
-#[derive(Serialize)]
-struct RequestSidecar<'a> {
-    schema: u8,
-    job_id: &'a str,
-    principal_id: &'a str,
-    client_request_id: &'a str,
-    accepted_at: &'a str,
-    model: AcceptedModel<'a>,
-    generation: &'a GenerationRequest,
-}
-
-#[derive(Serialize)]
-struct AcceptedModel<'a> {
-    selector: String,
-    engine: &'a str,
-    component_digests: Vec<&'a str>,
-}
-
-#[derive(Deserialize)]
-struct AcceptedRequestSidecar {
-    schema: u8,
-    job_id: String,
-    principal_id: String,
-    model: AcceptedModelOwned,
-    generation: GenerationRequest,
-}
-
-#[derive(Deserialize)]
-struct AcceptedModelOwned {
-    selector: String,
-    engine: String,
-    component_digests: Vec<String>,
-}
 
 pub struct Library {
     pub(crate) root: PathBuf,
@@ -114,93 +78,6 @@ impl Library {
     pub fn root(&self) -> &Path {
         &self.root
     }
-}
-
-fn accepted_sidecar_for(root: &Path, principal: &str, id: &str) -> Result<AcceptedRequestSidecar> {
-    let path = root
-        .join("jobs")
-        .join(principal)
-        .join(id)
-        .join("request.json");
-    serde_json::from_reader(File::open(&path)?)
-        .with_context(|| format!("failed to read {}", path.display()))
-}
-
-fn write_status(artifact_directory: &Path, job: &JobView, attempt: u32) -> Result<()> {
-    let job_directory = artifact_directory
-        .parent()
-        .context("artifact directory has no job parent")?;
-    write_json_atomic(
-        &job_directory.join("status.json"),
-        &serde_json::json!({
-            "schema": 2,
-            "state": job.state,
-            "stage": job.stage,
-            "progress": job.progress,
-            "revision": job.revision,
-            "attempt": attempt,
-            "updated_at": job.updated_at,
-            "error": job.error,
-        }),
-    )
-}
-
-fn prepare_real_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| format!("failed to create {}", path.display()))?;
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        bail!("library path must be a real directory: {}", path.display());
-    }
-    fs::set_permissions(path, fs::Permissions::from_mode(DIRECTORY_MODE))?;
-    Ok(())
-}
-
-fn clear_ephemeral_directory(path: &Path) -> Result<()> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let entry_path = entry.path();
-        let metadata = fs::symlink_metadata(&entry_path)?;
-        if metadata.is_dir() {
-            fs::remove_dir_all(entry_path)?;
-        } else {
-            fs::remove_file(entry_path)?;
-        }
-    }
-    Ok(())
-}
-
-fn is_known_incomplete_job(path: &Path) -> Result<bool> {
-    for entry in fs::read_dir(path)? {
-        let entry = entry?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let metadata = fs::symlink_metadata(entry.path())?;
-        let known_regular = matches!(
-            name.as_str(),
-            "request.json" | "status.json" | "manifest.json"
-        ) || name.starts_with(".sidecar.");
-        let known_empty_directory = matches!(name.as_str(), "checkpoints" | "artifacts")
-            && metadata.is_dir()
-            && fs::read_dir(entry.path())?.next().is_none();
-        if !(metadata.is_file() && known_regular || known_empty_directory) {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-pub(crate) fn write_json_atomic(path: &Path, value: &impl Serialize) -> Result<()> {
-    let parent = path.parent().context("sidecar path has no parent")?;
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".sidecar.")
-        .tempfile_in(parent)?;
-    temporary
-        .as_file()
-        .set_permissions(fs::Permissions::from_mode(FILE_MODE))?;
-    serde_json::to_writer_pretty(temporary.as_file_mut(), value)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path).map_err(|error| error.error)?;
-    File::open(parent)?.sync_all()?;
-    Ok(())
 }
 
 #[cfg(test)]

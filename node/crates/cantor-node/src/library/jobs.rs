@@ -17,11 +17,12 @@ use crate::config::now_rfc3339;
 use crate::principal::PrincipalId;
 use crate::store::InstalledVariant;
 
+use super::Library;
 use super::artifacts::hex;
+use super::durable_fs::{prepare_real_directory, write_json_atomic};
 use super::rows::{JOB_VIEW_COLUMNS, enum_text, job_from_row};
-use super::{
-    AcceptedModel, AcceptedRequestSidecar, Library, RequestSidecar, accepted_sidecar_for,
-    prepare_real_directory, write_json_atomic, write_status,
+use super::sidecars::{
+    AcceptedModel, AcceptedRequestSidecar, RequestSidecar, accepted_sidecar_for, write_status,
 };
 
 pub(super) const MAX_ATTEMPTS: u32 = 3;
