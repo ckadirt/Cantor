@@ -1,3 +1,5 @@
+mod carrier;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
@@ -10,7 +12,7 @@ use cantor_proto::{
     MIN_SONG_SECONDS, ModelView, NodeFeatures, NodeInfo, NodeLimits, NodeLoad, NodeMessage,
 };
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
@@ -21,11 +23,14 @@ use crate::application::{ApplicationEffect, RequestContext};
 use crate::config::NodeConfig;
 use crate::identity::NodeIdentity;
 use crate::runtime::{NodeEvent, NodeState, SharedState};
-use crate::secure::{MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_VERSION};
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
 
-const RELAY_VERSION: u8 = 1;
+use self::carrier::{
+    IncomingFrame, RELAY_VERSION, encode_node_secure_carrier, ensure_secure_sid,
+    parse_node_secure_carrier, tunnel_text_frame,
+};
+
 const CHALLENGE_BYTES: usize = 32;
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
@@ -48,39 +53,12 @@ const OUTBOUND_QUEUE_DEPTH: usize = 256;
 /// control frame, so an unrecognised relay cannot stall the handshake forever.
 const MAX_SKIPPED_HANDSHAKE_FRAMES: usize = 8;
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "t")]
-enum IncomingFrame {
-    #[serde(rename = "relay.challenge")]
-    Challenge { v: u8, nonce: String },
-    #[serde(rename = "relay.ok")]
-    Ok { v: u8 },
-    #[serde(rename = "relay.error")]
-    Error { v: u8, code: String, msg: String },
-    #[serde(rename = "relay.detached")]
-    Detached { v: u8, sid: String },
-    #[serde(rename = "tunnel")]
-    Tunnel { v: u8, sid: String, payload: Value },
-    /// Frame types added by a newer relay. Ignored rather than fatal so a relay
-    /// deployment can introduce frames without bricking existing nodes.
-    #[serde(other)]
-    Unknown,
-}
-
 #[derive(Serialize)]
 struct RelayClaim<'a> {
     v: u8,
     t: &'static str,
     pubkey: &'a str,
     sig: String,
-}
-
-#[derive(Serialize)]
-struct RelayTunnel<'a, T> {
-    v: u8,
-    t: &'static str,
-    sid: &'a str,
-    payload: &'a T,
 }
 
 pub async fn run_forever(
@@ -465,17 +443,6 @@ fn apply_control_event(
     }
 }
 
-fn tunnel_text_frame<T: Serialize>(sid: &str, payload: &T) -> Result<Message> {
-    let tunnel = RelayTunnel {
-        v: RELAY_VERSION,
-        t: "tunnel",
-        sid,
-        payload,
-    };
-    let json = serde_json::to_string(&tunnel).context("failed to encode tunnel frame")?;
-    Ok(Message::text(json))
-}
-
 fn encrypted_frames(
     sid: &str,
     session: &mut ClientSession,
@@ -486,60 +453,6 @@ fn encrypted_frames(
         .into_iter()
         .map(|ciphertext| encode_node_secure_carrier(sid, &ciphertext))
         .collect()
-}
-
-fn encode_node_secure_carrier(sid: &str, ciphertext: &[u8]) -> Result<Message> {
-    ensure_secure_sid(sid)?;
-    let sid = sid.as_bytes();
-    if ciphertext.is_empty() || ciphertext.len() > MAX_SECURE_CIPHERTEXT_BYTES {
-        bail!("secure ciphertext is outside the relay carrier bound");
-    }
-    let sid_length = u16::try_from(sid.len()).context("relay session id is too long")?;
-    let ciphertext_length =
-        u32::try_from(ciphertext.len()).context("secure ciphertext is too long")?;
-    let mut frame = Vec::with_capacity(8 + sid.len() + ciphertext.len());
-    frame.push(SECURE_CARRIER_VERSION);
-    frame.push(1);
-    frame.extend_from_slice(&sid_length.to_be_bytes());
-    frame.extend_from_slice(sid);
-    frame.extend_from_slice(&ciphertext_length.to_be_bytes());
-    frame.extend_from_slice(ciphertext);
-    Ok(Message::binary(frame))
-}
-
-fn parse_node_secure_carrier(frame: &[u8]) -> Result<(&str, &[u8])> {
-    if frame.len() < 8 || frame[0] != SECURE_CARRIER_VERSION || frame[1] != 1 {
-        bail!("secure relay carrier header is invalid");
-    }
-    let sid_length = usize::from(u16::from_be_bytes([frame[2], frame[3]]));
-    if sid_length == 0 || sid_length > 64 || frame.len() < 8 + sid_length {
-        bail!("secure relay session id is outside its bound");
-    }
-    let sid = std::str::from_utf8(&frame[4..4 + sid_length])
-        .context("secure relay session id is not UTF-8")?;
-    ensure_secure_sid(sid)?;
-    let length_offset = 4 + sid_length;
-    let ciphertext_length = usize::try_from(u32::from_be_bytes(
-        frame[length_offset..length_offset + 4]
-            .try_into()
-            .expect("carrier length checked"),
-    ))?;
-    let ciphertext_offset = length_offset + 4;
-    if ciphertext_length == 0
-        || ciphertext_length > MAX_SECURE_CIPHERTEXT_BYTES
-        || frame.len() != ciphertext_offset + ciphertext_length
-    {
-        bail!("secure relay ciphertext length is invalid");
-    }
-    Ok((sid, &frame[ciphertext_offset..]))
-}
-
-fn ensure_secure_sid(sid: &str) -> Result<()> {
-    let parsed = uuid::Uuid::parse_str(sid).context("relay session id is not a UUID")?;
-    if parsed.get_version() != Some(uuid::Version::Random) {
-        bail!("relay session id is not a UUIDv4");
-    }
-    Ok(())
 }
 
 /// Returns the frame to send back, if any. `Ok(None)` means the frame needed no
