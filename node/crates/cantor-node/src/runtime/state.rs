@@ -1,13 +1,22 @@
 //! Shared process state for the control adapter, relay, and workers.
 
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU8;
 use std::sync::{Arc, Mutex};
 
 use crate::config::NodeConfig;
-use crate::jobs::ActiveJobControl;
 use crate::library::Library;
 use crate::pairing::PairOffer;
+use crate::principal::PrincipalId;
 use crate::secure::TransportIdentity;
+
+/// Stop control for the job currently owned by the generation worker.
+#[derive(Clone)]
+pub struct ActiveJobControl {
+    pub job_id: String,
+    pub principal_id: PrincipalId,
+    pub signal: Arc<AtomicU8>,
+}
 
 /// Everything the control surface and the relay loop both touch.
 pub struct NodeState {

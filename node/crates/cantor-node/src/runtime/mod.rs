@@ -4,4 +4,4 @@ pub mod events;
 pub mod state;
 
 pub use events::NodeEvent;
-pub use state::{NodeState, SharedState, shared};
+pub use state::{ActiveJobControl, NodeState, SharedState, shared};
