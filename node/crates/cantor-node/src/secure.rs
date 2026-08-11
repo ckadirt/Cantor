@@ -834,6 +834,308 @@ mod tests {
     }
 
     #[test]
+    fn negotiation_init_preserves_validation_order_bounds_and_unknown_frame_failure() {
+        let fixture: Value = serde_json::from_str(IDENTITY_FIXTURE).expect("identity fixture");
+        let node = fixed_32(&fixture["node_ed25519_hex"]);
+        let transport = fixture_transport_identity(&fixture);
+        let cases = [
+            (
+                json!({"v": 2, "t": "secure.init", "id": "", "suite": "wrong"}),
+                "secure field id is invalid",
+            ),
+            (
+                json!({"v": 2, "t": "secure.init", "id": "request", "suite": "wrong"}),
+                "invalid secure version",
+            ),
+            (
+                json!({"v": 1, "t": "secure.init", "id": "request", "suite": "wrong"}),
+                "unsupported secure suite",
+            ),
+        ];
+        for (payload, expected) in cases {
+            let mut session = SecureSession::default();
+            assert_eq!(
+                session
+                    .handle_text(&payload, &transport, &node)
+                    .expect_err("invalid init")
+                    .to_string(),
+                expected
+            );
+            assert!(matches!(&session.state, SecureState::AwaitingInit));
+        }
+
+        for id in [String::new(), "i".repeat(257)] {
+            let mut session = SecureSession::default();
+            let error = session
+                .handle_text(&secure_init(&id), &transport, &node)
+                .expect_err("bounded id");
+            assert_eq!(error.to_string(), "secure field id is invalid");
+            assert!(matches!(&session.state, SecureState::AwaitingInit));
+        }
+
+        let bounded_id = "i".repeat(256);
+        let mut bounded = secure_init(&bounded_id);
+        bounded["future"] = json!({"additive": true});
+        let mut session = SecureSession::default();
+        let offer = session
+            .handle_text(&bounded, &transport, &node)
+            .expect("256-byte id and extra fields remain accepted");
+        assert_eq!(offer["id"], bounded_id);
+        assert!(matches!(&session.state, SecureState::Handshake { .. }));
+        assert_eq!(
+            session
+                .handle_text(
+                    &json!({"v": 2, "t": "secure.init", "id": "", "suite": "wrong"}),
+                    &transport,
+                    &node,
+                )
+                .expect_err("duplicate init")
+                .to_string(),
+            "secure session was initialized more than once"
+        );
+        assert!(matches!(&session.state, SecureState::Handshake { .. }));
+
+        let mut unsupported = SecureSession::default();
+        assert_eq!(
+            unsupported
+                .handle_text(&json!({"v": 1, "id": "plain"}), &transport, &node)
+                .expect("secure-required response"),
+            secure_error("secure-required")
+        );
+        assert!(matches!(&unsupported.state, SecureState::Failed));
+    }
+
+    #[test]
+    fn negotiation_finish_preserves_validation_order_bounds_and_consumption() {
+        let cases = [
+            (
+                json!({"v": 2, "t": "secure.handshake", "id": "changed", "step": 0, "data": ""}),
+                "invalid secure version",
+            ),
+            (
+                json!({"v": 1, "t": "secure.handshake", "id": "changed", "step": 0, "data": ""}),
+                "secure handshake id changed",
+            ),
+            (
+                json!({"v": 1, "t": "secure.handshake", "id": "request", "step": 0, "data": ""}),
+                "invalid secure handshake step",
+            ),
+            (
+                json!({"v": 1, "t": "secure.handshake", "id": "request", "step": 1, "data": ""}),
+                "secure field data is invalid",
+            ),
+            (
+                json!({"v": 1, "t": "secure.handshake", "id": "request", "step": 1, "data": "A".repeat(257)}),
+                "secure field data is invalid",
+            ),
+            (
+                json!({"v": 1, "t": "secure.handshake", "id": "request", "step": 1, "data": "A".repeat(256)}),
+                "Noise initiator message failed authentication",
+            ),
+        ];
+
+        for (payload, expected) in cases {
+            let (mut session, transport, node, _) = begun_fixture("request");
+            let error = session
+                .handle_text(&payload, &transport, &node)
+                .expect_err("invalid handshake");
+            assert_eq!(error.to_string(), expected);
+            assert!(matches!(&session.state, SecureState::Failed));
+            assert_eq!(
+                session
+                    .handle_text(
+                        &json!({
+                            "v": 1,
+                            "t": "secure.handshake",
+                            "id": "request",
+                            "step": 1,
+                            "data": "AQID"
+                        }),
+                        &transport,
+                        &node,
+                    )
+                    .expect_err("consumed handshake cannot be retried")
+                    .to_string(),
+                "secure handshake arrived in the wrong state"
+            );
+        }
+    }
+
+    #[test]
+    fn negotiation_accepts_additive_handshake_fields_without_changing_the_transition() {
+        let (mut session, transport, node, offer) = begun_fixture("request");
+        let message = initiator_message(&offer, &transport, &node);
+        let response = session
+            .handle_text(
+                &json!({
+                    "v": 1,
+                    "t": "secure.handshake",
+                    "id": "request",
+                    "step": 1,
+                    "data": URL_SAFE_NO_PAD.encode(message),
+                    "future": {"additive": true}
+                }),
+                &transport,
+                &node,
+            )
+            .expect("additive handshake field");
+        assert_eq!(response["v"], SECURE_CHANNEL_VERSION);
+        assert_eq!(response["t"], "secure.handshake");
+        assert_eq!(response["id"], "request");
+        assert_eq!(response["step"], 2);
+        assert!(session.is_ready());
+
+        assert_eq!(
+            session
+                .handle_text(
+                    &json!({"v": 2, "t": "status", "id": "plaintext"}),
+                    &transport,
+                    &node,
+                )
+                .expect("secure-required downgrade response"),
+            secure_error("secure-required")
+        );
+        assert!(matches!(&session.state, SecureState::Failed));
+    }
+
+    #[test]
+    fn secure_session_failure_timing_distinguishes_transport_and_inner_codec_errors() {
+        let (_, node) = fixture_transport_pair();
+        let mut bad_ciphertext = SecureSession {
+            state: SecureState::Transport(node),
+        };
+        assert!(bad_ciphertext.decrypt_application(&[7_u8; 32]).is_err());
+        assert!(matches!(&bad_ciphertext.state, SecureState::Failed));
+
+        let (mut client, node) = fixture_transport_pair();
+        let mut malformed_inner = SecureSession {
+            state: SecureState::Transport(node),
+        };
+        let ciphertext = client
+            .encrypt_inner(&[SECURE_CHANNEL_VERSION, INNER_ARTIFACT_CHUNK, 0, 0, 0, 0])
+            .expect("encrypted malformed inner")
+            .pop()
+            .expect("one record");
+        assert!(malformed_inner.decrypt_application(&ciphertext).is_err());
+        assert!(
+            malformed_inner.is_ready(),
+            "a complete malformed inner currently does not fail the session"
+        );
+
+        let (_, node) = fixture_transport_pair();
+        let mut bad_outbound_inner = SecureSession {
+            state: SecureState::Transport(node),
+        };
+        assert!(
+            bad_outbound_inner
+                .encrypt_application(&artifact_chunk("not-base64".into(), "request", "transfer"))
+                .is_err()
+        );
+        assert!(
+            bad_outbound_inner.is_ready(),
+            "an outbound inner encoding error currently does not fail the session"
+        );
+    }
+
+    #[test]
+    fn secure_transport_record_and_byte_guards_allow_the_exact_boundary_only() {
+        let (mut sender, _) = fixture_transport_pair();
+        sender.sent_records = MAX_SESSION_MESSAGES - 1;
+        sender
+            .encrypt_inner(&[1])
+            .expect("last allowed send record");
+        assert_eq!(sender.sent_records, MAX_SESSION_MESSAGES);
+        assert!(sender.encrypt_inner(&[1]).is_err());
+
+        let (mut sender, _) = fixture_transport_pair();
+        let one_record_bytes = 1 + FRAGMENT_HEADER_BYTES + 16;
+        sender.sent_bytes = MAX_SESSION_BYTES - one_record_bytes as u64;
+        let ciphertext = sender.encrypt_inner(&[1]).expect("last allowed send bytes");
+        assert_eq!(ciphertext[0].len(), one_record_bytes);
+        assert_eq!(sender.sent_bytes, MAX_SESSION_BYTES);
+        assert!(sender.encrypt_inner(&[1]).is_err());
+
+        let (mut sender, mut receiver) = fixture_transport_pair();
+        let first = sender.encrypt_inner(&[1]).expect("first message").remove(0);
+        let second = sender
+            .encrypt_inner(&[2])
+            .expect("second message")
+            .remove(0);
+        receiver.received_records = MAX_SESSION_MESSAGES - 1;
+        assert_eq!(
+            receiver
+                .decrypt_inner(&first)
+                .expect("last allowed receive record"),
+            Some(vec![1])
+        );
+        assert_eq!(receiver.received_records, MAX_SESSION_MESSAGES);
+        assert!(receiver.decrypt_inner(&second).is_err());
+
+        let (mut sender, mut receiver) = fixture_transport_pair();
+        let first = sender.encrypt_inner(&[1]).expect("first message").remove(0);
+        let second = sender
+            .encrypt_inner(&[2])
+            .expect("second message")
+            .remove(0);
+        receiver.received_bytes = MAX_SESSION_BYTES - first.len() as u64;
+        assert_eq!(
+            receiver
+                .decrypt_inner(&first)
+                .expect("last allowed receive bytes"),
+            Some(vec![1])
+        );
+        assert_eq!(receiver.received_bytes, MAX_SESSION_BYTES);
+        assert!(receiver.decrypt_inner(&second).is_err());
+    }
+
+    #[test]
+    fn inner_control_and_artifact_bounds_cover_the_unfixtureized_edges() {
+        let control = NodeMessage::error(
+            Some("control".into()),
+            cantor_proto::ErrorCode::InvalidRequest,
+            "bad",
+            false,
+        );
+        let encoded = encode_node_inner(&control).expect("control inner");
+        let expected_json = br#"{"t":"error","v":2,"id":"control","code":"invalid_request","message":"bad","retryable":false}"#;
+        assert_eq!(
+            encoded,
+            [
+                &[SECURE_CHANNEL_VERSION, INNER_CONTROL][..],
+                &(expected_json.len() as u32).to_be_bytes(),
+                expected_json,
+            ]
+            .concat()
+        );
+        assert!(
+            decode_client_inner(&[SECURE_CHANNEL_VERSION, INNER_CONTROL, 0, 0, 0, 0]).is_err(),
+            "an empty control body is not valid JSON"
+        );
+
+        let exact = STANDARD.encode(vec![7_u8; 64 * 1024]);
+        assert!(
+            encode_node_inner(&artifact_chunk(exact, "request", "transfer")).is_ok(),
+            "the exact artifact bound remains accepted"
+        );
+        for data in [
+            "not-base64".into(),
+            STANDARD.encode([]),
+            STANDARD.encode(vec![7_u8; 64 * 1024 + 1]),
+        ] {
+            assert!(encode_node_inner(&artifact_chunk(data, "request", "transfer")).is_err());
+        }
+        assert!(
+            encode_node_inner(&artifact_chunk(
+                STANDARD.encode([7]),
+                &"r".repeat(usize::from(u16::MAX) + 1),
+                "transfer",
+            ))
+            .is_err(),
+            "artifact request IDs remain bounded by their u16 length field"
+        );
+    }
+
+    #[test]
     fn transport_key_is_owner_only_stable_and_signed_by_node_identity() {
         let temporary = tempdir().expect("temporary directory");
         let identity_path = temporary.path().join("node.key");
@@ -997,6 +1299,67 @@ mod tests {
             secret,
             public,
             descriptor,
+        }
+    }
+
+    fn secure_init(id: &str) -> Value {
+        json!({
+            "v": SECURE_CHANNEL_VERSION,
+            "t": "secure.init",
+            "id": id,
+            "suite": TRANSPORT_SUITE,
+        })
+    }
+
+    fn begun_fixture(id: &str) -> (SecureSession, TransportIdentity, [u8; 32], Value) {
+        let fixture: Value = serde_json::from_str(IDENTITY_FIXTURE).expect("identity fixture");
+        let node = fixed_32(&fixture["node_ed25519_hex"]);
+        let transport = fixture_transport_identity(&fixture);
+        let mut session = SecureSession::default();
+        let offer = session
+            .handle_text(&secure_init(id), &transport, &node)
+            .expect("begin fixture handshake");
+        (session, transport, node, offer)
+    }
+
+    fn initiator_message(
+        offer: &Value,
+        transport: &TransportIdentity,
+        node_ed25519: &[u8; 32],
+    ) -> Vec<u8> {
+        let nonce = URL_SAFE_NO_PAD
+            .decode(
+                offer["channel_nonce"]
+                    .as_str()
+                    .expect("offer channel nonce"),
+            )
+            .expect("offer channel nonce base64");
+        let nonce = <[u8; CHANNEL_NONCE_BYTES]>::try_from(nonce.as_slice())
+            .expect("offer channel nonce length");
+        let prologue = handshake_prologue(node_ed25519, transport.public_key(), &nonce);
+        let parameters: NoiseParams = NOISE_PROTOCOL.parse().expect("Noise parameters");
+        let mut initiator = Builder::new(parameters)
+            .remote_public_key(transport.public_key())
+            .expect("fixture remote key")
+            .prologue(&prologue)
+            .expect("fixture prologue")
+            .build_initiator()
+            .expect("fixture initiator");
+        let mut message = vec![0_u8; MAX_HANDSHAKE_BYTES];
+        let length = initiator
+            .write_message(&[], &mut message)
+            .expect("fixture initiator message");
+        message.truncate(length);
+        message
+    }
+
+    fn artifact_chunk(data: String, id: &str, transfer_id: &str) -> NodeMessage {
+        NodeMessage::ArtifactChunk {
+            v: PROTOCOL_VERSION,
+            id: id.into(),
+            transfer_id: transfer_id.into(),
+            offset: 0,
+            data,
         }
     }
 
