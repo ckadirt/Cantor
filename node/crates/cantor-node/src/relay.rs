@@ -17,7 +17,7 @@ use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::application::ApplicationEffect;
+use crate::application::{ApplicationEffect, RequestContext};
 use crate::config::NodeConfig;
 use crate::identity::NodeIdentity;
 use crate::runtime::{NodeEvent, NodeState, SharedState};
@@ -651,14 +651,17 @@ fn dispatch_application(
 ) -> Result<(NodeMessage, bool)> {
     let mut locked = lock(state)?;
     let locked = &mut *locked;
-    let outcome = session.handle_application(
+    let outcome = crate::application::handle_application(
+        session,
         payload,
-        &mut locked.config,
-        config_path,
-        &mut locked.pair_offer,
-        public_key,
-        node_info,
-        &mut locked.library,
+        RequestContext {
+            config: &mut locked.config,
+            config_path,
+            pair_offer: &mut locked.pair_offer,
+            node_public_key: public_key,
+            node_info,
+            library: &mut locked.library,
+        },
     )?;
     let refresh_node_info = execute_application_effects(locked, outcome.effects, event_sender);
     Ok((outcome.response, refresh_node_info))

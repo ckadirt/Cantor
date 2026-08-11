@@ -25,6 +25,8 @@ use crate::principal::PrincipalId;
 use crate::secure::{SecureSession, TransportIdentity};
 use crate::store::Store;
 
+use super::errors::{invalid_field, song_not_found, unauthenticated, unsupported_version};
+
 const CHALLENGE_BYTES: usize = 32;
 const PUBLIC_KEY_BYTES: usize = 32;
 const TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
@@ -165,29 +167,6 @@ struct ArtifactTransfer {
 }
 
 impl ClientSession {
-    #[allow(clippy::too_many_arguments)]
-    pub fn handle_application(
-        &mut self,
-        payload: Value,
-        config: &mut NodeConfig,
-        config_path: &Path,
-        active_pair_offer: &mut Option<PairOffer>,
-        node_public_key: &str,
-        node_info: &NodeInfo,
-        library: &mut Library,
-    ) -> Result<crate::application::ApplicationOutcome> {
-        crate::application::handle_application(
-            self,
-            payload,
-            config,
-            config_path,
-            active_pair_offer,
-            node_public_key,
-            node_info,
-            library,
-        )
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn handle(
         &mut self,
@@ -956,37 +935,6 @@ fn mutation_message(id: String, result: MutationResult) -> Result<NodeMessage> {
     })
 }
 
-fn song_not_found(id: String) -> NodeMessage {
-    NodeMessage::error(
-        Some(id),
-        ErrorCode::NotFound,
-        "That song was not found.",
-        false,
-    )
-}
-
-fn unauthenticated(id: String, resource: &str) -> NodeMessage {
-    NodeMessage::error(
-        Some(id),
-        ErrorCode::Unauthenticated,
-        format!("Authenticate before requesting {resource}."),
-        false,
-    )
-}
-
-fn invalid_field(id: String, field: &str) -> NodeMessage {
-    NodeMessage::Error {
-        v: PROTOCOL_VERSION,
-        id: Some(id),
-        code: ErrorCode::InvalidRequest,
-        message: format!("The {field} field is invalid."),
-        retryable: false,
-        details: Some(ErrorDetails::InvalidField {
-            field: field.to_owned(),
-        }),
-    }
-}
-
 fn invalid_submission(
     client_request_id: &str,
     model: &str,
@@ -1036,10 +984,6 @@ fn invalid_submission(
         return Some("seed");
     }
     None
-}
-
-fn unsupported_version(id: String) -> NodeMessage {
-    NodeMessage::unsupported_version(Some(id))
 }
 
 #[cfg(test)]
@@ -1207,6 +1151,25 @@ mod tests {
             serde_json::to_value(unauthenticated).unwrap(),
             json!({
                 "t":"error", "v":2, "id":"needs-auth", "code":"unauthenticated",
+                "message":"Authenticate before requesting status.", "retryable":false
+            })
+        );
+
+        let extra_field = session
+            .handle(
+                json!({"t":"status","v":2,"id":"forward-compatible","future_hint":true}),
+                &mut config,
+                &paths.config,
+                &mut offer,
+                &node_key,
+                &info(),
+                &mut library,
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(extra_field).unwrap(),
+            json!({
+                "t":"error", "v":2, "id":"forward-compatible", "code":"unauthenticated",
                 "message":"Authenticate before requesting status.", "retryable":false
             })
         );
