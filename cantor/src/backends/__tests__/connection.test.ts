@@ -13,11 +13,10 @@ import { deriveIdentity } from '../../identity/derive';
 import type { BackendRecord, ConnectionSnapshot, NodeInfo } from '../types';
 import type { SecureChannel } from '../../security/native';
 import {
-  decodeNodeInner,
   encodeClientCarrier,
-  encodeControlInner,
   parseClientCarrier,
-} from '../../security/wire';
+} from '../../security/carrier';
+import { decodeNodeInner, encodeControlInner } from '../../security/inner';
 
 const PHRASE =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';

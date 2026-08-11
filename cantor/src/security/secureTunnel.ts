@@ -11,12 +11,8 @@ import {
 } from './descriptor';
 import type { SecureChannel, SecureChannelFactory } from './native';
 import type { TransportDescriptor } from './types';
-import {
-  decodeNodeInner,
-  encodeClientCarrier,
-  encodeControlInner,
-  parseClientCarrier,
-} from './wire';
+import { encodeClientCarrier, parseClientCarrier } from './carrier';
+import { decodeNodeInner, encodeControlInner } from './inner';
 
 export type SecureTunnelCallbacks = {
   sendText: (payload: Record<string, unknown>) => void;
