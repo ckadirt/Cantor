@@ -1333,11 +1333,21 @@ pub async fn request_streaming(
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt, symlink};
+    use std::path::PathBuf;
+
     use serde_json::json;
     use tempfile::tempdir;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::{UnixListener, UnixStream};
     use tokio::sync::mpsc;
 
-    use super::{ControlEvent, Response, dispatch};
+    use super::{
+        CONTROL_GROUP, ControlEvent, MAX_REQUEST_BYTES, MAX_SOCKET_PATH_BYTES, Response,
+        SOCKET_MODE_PRIVATE, SOCKET_MODE_SHARED, bind, dispatch, group_id, is_root, request,
+        request_streaming, serve_connection,
+    };
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::identity::NodeIdentity;
     use crate::principal::PrincipalId;
@@ -1374,6 +1384,290 @@ mod tests {
 
     fn encode(response: &Response) -> serde_json::Value {
         serde_json::to_value(response).expect("serialize")
+    }
+
+    fn scripted_server(
+        reply: &'static str,
+    ) -> (tempfile::TempDir, PathBuf, tokio::task::JoinHandle<()>) {
+        let temporary = tempdir().expect("temporary directory");
+        let socket_path = temporary.path().join("control.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind scripted server");
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept request");
+            let mut stream = BufReader::new(stream);
+            let mut request_line = String::new();
+            stream
+                .read_line(&mut request_line)
+                .await
+                .expect("read request");
+            assert!(request_line.ends_with('\n'));
+            let mut stream = stream.into_inner();
+            if !reply.is_empty() {
+                stream
+                    .write_all(reply.as_bytes())
+                    .await
+                    .expect("write scripted response");
+                stream.flush().await.expect("flush scripted response");
+            }
+        });
+        (temporary, socket_path, task)
+    }
+
+    async fn next_frame(
+        lines: &mut tokio::io::Lines<BufReader<tokio::net::unix::OwnedReadHalf>>,
+    ) -> serde_json::Value {
+        let line = lines
+            .next_line()
+            .await
+            .expect("read response")
+            .expect("response line");
+        serde_json::from_str(&line).expect("valid response JSON")
+    }
+
+    #[test]
+    fn bind_refuses_to_replace_a_symlink() {
+        let temporary = tempdir().expect("temporary directory");
+        let socket_path = temporary.path().join("control.sock");
+        symlink(temporary.path().join("elsewhere"), &socket_path).expect("create symlink");
+
+        let error = bind(&socket_path).expect_err("symlink must be refused");
+
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to replace symlinked control socket")
+        );
+        assert!(
+            std::fs::symlink_metadata(&socket_path)
+                .expect("symlink remains")
+                .file_type()
+                .is_symlink()
+        );
+    }
+
+    #[tokio::test]
+    async fn bind_replaces_a_stale_socket_and_sets_the_selected_mode() {
+        let temporary = tempdir().expect("temporary directory");
+        let socket_path = temporary.path().join("control.sock");
+        let first = bind(&socket_path).expect("first bind");
+        drop(first);
+        assert!(
+            std::fs::symlink_metadata(&socket_path)
+                .expect("stale socket")
+                .file_type()
+                .is_socket()
+        );
+
+        let second = bind(&socket_path).expect("replace stale socket");
+        let actual_mode = std::fs::metadata(&socket_path)
+            .expect("socket metadata")
+            .permissions()
+            .mode()
+            & 0o777;
+        let expected_mode = if is_root() && group_id(CONTROL_GROUP).is_some() {
+            SOCKET_MODE_SHARED
+        } else {
+            SOCKET_MODE_PRIVATE
+        };
+
+        assert_eq!(actual_mode, expected_mode);
+        drop(second);
+    }
+
+    #[test]
+    fn bind_rejects_a_path_at_the_kernel_bound() {
+        let temporary = tempdir().expect("temporary directory");
+        let prefix_bytes = temporary.path().as_os_str().as_bytes().len() + 1;
+        let socket_path = temporary
+            .path()
+            .join("x".repeat(MAX_SOCKET_PATH_BYTES - prefix_bytes));
+        assert_eq!(
+            socket_path.as_os_str().as_bytes().len(),
+            MAX_SOCKET_PATH_BYTES
+        );
+
+        let error = bind(&socket_path).expect_err("path at bound must be rejected");
+
+        assert!(error.to_string().contains("the kernel limit is 107"));
+        assert!(!socket_path.exists());
+    }
+
+    #[tokio::test]
+    async fn one_connection_survives_malformed_and_long_request_errors() {
+        let (state, _guard) = state();
+        let (events, _rx) = mpsc::channel(8);
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        let server_task = tokio::spawn(serve_connection(server, state, events));
+        let (reader, mut writer) = client.into_split();
+        let mut lines = BufReader::new(reader).lines();
+        let requests = [
+            "{not json",
+            r#"{"v":9,"id":"short-version","t":"status"}"#,
+            r#"{"id":"missing-long-version","t":"generate"}"#,
+            r#"{"v":9,"id":"wrong-long-version","t":"generate"}"#,
+            r#"{"v":1,"id":"last","t":"status"}"#,
+        ];
+        for request in requests {
+            writer
+                .write_all(format!("{request}\n").as_bytes())
+                .await
+                .expect("write request");
+        }
+        writer.flush().await.expect("flush requests");
+
+        let malformed = next_frame(&mut lines).await;
+        assert_eq!(malformed["t"], "error");
+        assert_eq!(malformed["code"], "invalid-request");
+
+        let short_version = next_frame(&mut lines).await;
+        assert_eq!(short_version["t"], "error");
+        assert_eq!(short_version["code"], "failed");
+        assert_eq!(short_version["id"], "short-version");
+        assert!(
+            short_version["msg"]
+                .as_str()
+                .expect("message")
+                .contains("control protocol version 9 is not supported")
+        );
+
+        for id in ["missing-long-version", "wrong-long-version"] {
+            let long_version = next_frame(&mut lines).await;
+            assert_eq!(long_version["t"], "error");
+            assert_eq!(long_version["code"], "failed");
+            assert_eq!(long_version["id"], id);
+            assert_eq!(long_version["msg"], "generate needs a caption");
+        }
+
+        let last = next_frame(&mut lines).await;
+        assert_eq!(last["t"], "status");
+        assert_eq!(last["id"], "last");
+
+        writer.shutdown().await.expect("close request half");
+        server_task
+            .await
+            .expect("server task")
+            .expect("connection completes");
+    }
+
+    #[tokio::test]
+    async fn request_budget_is_shared_by_the_whole_connection() {
+        let (state, _guard) = state();
+        let (events, _rx) = mpsc::channel(8);
+        let (server, client) = UnixStream::pair().expect("socket pair");
+        let server_task = tokio::spawn(serve_connection(server, state, events));
+        let (reader, mut writer) = client.into_split();
+        let mut lines = BufReader::new(reader).lines();
+
+        let sample = json!({
+            "v": 1,
+            "id": "first",
+            "t": "status",
+            "padding": "x",
+        })
+        .to_string();
+        let target_line_bytes = MAX_REQUEST_BYTES as usize - 8 - 1;
+        let padding_bytes = target_line_bytes - (sample.len() - 1);
+        let first = json!({
+            "v": 1,
+            "id": "first",
+            "t": "status",
+            "padding": "x".repeat(padding_bytes),
+        })
+        .to_string();
+        assert_eq!(first.len() + 1, MAX_REQUEST_BYTES as usize - 8);
+        let second = json!({"v": 1, "id": "second", "t": "status"}).to_string();
+
+        writer
+            .write_all(format!("{first}\n{second}\n").as_bytes())
+            .await
+            .expect("write requests");
+        writer.shutdown().await.expect("close request half");
+
+        let first_response = next_frame(&mut lines).await;
+        assert_eq!(first_response["t"], "status");
+        assert_eq!(first_response["id"], "first");
+        let truncated_response = next_frame(&mut lines).await;
+        assert_eq!(truncated_response["t"], "error");
+        assert_eq!(truncated_response["code"], "invalid-request");
+        assert_ne!(truncated_response["id"], "second");
+
+        server_task
+            .await
+            .expect("server task")
+            .expect("connection completes at byte budget");
+    }
+
+    #[tokio::test]
+    async fn one_shot_client_characterizes_blank_error_and_eof_responses() {
+        let (_guard, path, server) = scripted_server("\n");
+        let error = request(&path, &json!({"request": "blank"}))
+            .await
+            .expect_err("blank response must fail");
+        assert!(error.to_string().contains("invalid response"));
+        server.await.expect("blank server");
+
+        let (_guard, path, server) = scripted_server(
+            "{\"v\":1,\"id\":\"one\",\"t\":\"error\",\"code\":\"bad\",\"msg\":\"boom\"}\n",
+        );
+        let error = request(&path, &json!({"request": "error"}))
+            .await
+            .expect_err("error response must fail");
+        assert_eq!(error.to_string(), "boom [bad]");
+        server.await.expect("error server");
+
+        let (_guard, path, server) = scripted_server("");
+        let error = request(&path, &json!({"request": "eof"}))
+            .await
+            .expect_err("EOF must fail");
+        assert_eq!(
+            error.to_string(),
+            "the node closed the control connection without answering"
+        );
+        server.await.expect("EOF server");
+    }
+
+    #[tokio::test]
+    async fn streaming_client_preserves_callback_and_terminal_order() {
+        let (_guard, path, server) = scripted_server(
+            "{\"v\":1,\"id\":\"s\",\"t\":\"note\"}\n\
+             {\"v\":1,\"id\":\"s\",\"t\":\"progress\"}\n\
+             {\"v\":1,\"id\":\"s\",\"t\":\"ok\"}\n",
+        );
+        let mut callbacks = Vec::new();
+        let terminal = request_streaming(&path, &json!({"request": "stream"}), |frame| {
+            callbacks.push(frame["t"].as_str().expect("frame kind").to_owned());
+        })
+        .await
+        .expect("stream completes");
+        assert_eq!(callbacks, ["note", "progress"]);
+        assert_eq!(terminal["t"], "ok");
+        server.await.expect("stream server");
+
+        let (_guard, path, server) =
+            scripted_server("{\"v\":1,\"id\":\"c\",\"t\":\"catalog\",\"models\":[]}\n");
+        let mut callbacks = Vec::new();
+        let terminal = request_streaming(&path, &json!({"request": "catalog"}), |frame| {
+            callbacks.push(frame.clone());
+        })
+        .await
+        .expect("catalog completes");
+        assert!(callbacks.is_empty());
+        assert_eq!(terminal["t"], "catalog");
+        server.await.expect("catalog server");
+
+        let (_guard, path, server) = scripted_server("{\"v\":1,\"id\":\"e\",\"t\":\"note\"}\n");
+        let mut callbacks = Vec::new();
+        let error = request_streaming(&path, &json!({"request": "eof"}), |frame| {
+            callbacks.push(frame["t"].as_str().expect("frame kind").to_owned());
+        })
+        .await
+        .expect_err("EOF before terminal must fail");
+        assert_eq!(callbacks, ["note"]);
+        assert_eq!(
+            error.to_string(),
+            "the node closed the control connection without finishing"
+        );
+        server.await.expect("EOF server");
     }
 
     #[test]
