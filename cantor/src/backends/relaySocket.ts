@@ -40,12 +40,9 @@ export type RelaySocketDependencies = {
   random?: () => number;
 };
 
-const defaultTimers: RelaySocketTimers = {
-  setTimeout,
-  clearTimeout,
-  setInterval,
-  clearInterval,
-};
+function createDefaultTimers(): RelaySocketTimers {
+  return { setTimeout, clearTimeout, setInterval, clearInterval };
+}
 
 function createDefaultSocket(url: string): RelayWebSocket {
   return new WebSocket(url) as unknown as RelayWebSocket;
@@ -70,7 +67,7 @@ export class RelaySocket {
     dependencies: RelaySocketDependencies = {},
   ) {
     this.createSocket = dependencies.createSocket ?? createDefaultSocket;
-    this.timers = dependencies.timers ?? defaultTimers;
+    this.timers = dependencies.timers ?? createDefaultTimers();
     this.random = dependencies.random ?? Math.random;
   }
 
