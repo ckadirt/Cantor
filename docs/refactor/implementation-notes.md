@@ -438,6 +438,25 @@ RF0 will rerun and expand this baseline before moving production owners.
   and library, reclaimed the same relay room, and a cold app restart displayed
   the new song as `REMOTE · ckadirt-mf-m2`.
 
+### 2026-08-11 — RF6 started
+
+- RF6 begins from clean commit `60efbec`. Three read-only audits cover the
+  canonical manifest/generator, Rust secure codec and typed negotiation seams,
+  and the app/Kotlin/secure-client/CI integration path before production edits.
+- The transport manifest will name each deployed byte/string constant once and
+  generate checked-in, language-idiomatic constants for Rust, app TypeScript,
+  relay TypeScript, and Kotlin. A check mode must fail on stale generated files;
+  security parsers remain handwritten and independently tested.
+- Version numbers remain independent even where their current value is `1`.
+  Existing exports stay as compatibility aliases while callers migrate. No RF6
+  commit may change descriptor JSON, Noise prologue, carrier, inner, fragment,
+  error, retry, or session-limit behavior.
+- Extraction order is authority first, pure codecs second, typed negotiation
+  third, maintained secure integration client fourth, and CI/release/deploy
+  gates last. Native registry/session cleanup follows JVM vectors, not before.
+- The RF5 node/Metro/relay qualification processes were stopped gracefully.
+  RF6 codec loops do not require weights or another generation.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
