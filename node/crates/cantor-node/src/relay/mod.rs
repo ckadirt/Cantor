@@ -1,4 +1,5 @@
 mod carrier;
+mod connection;
 mod effects;
 mod node_info;
 mod sessions;
@@ -14,7 +15,6 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::sync::mpsc;
-use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
@@ -25,26 +25,14 @@ use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
 
 use self::carrier::{IncomingFrame, RELAY_VERSION};
+use self::connection::{KEEPALIVE_PONG, run as run_connection};
 use self::effects::execute_application_effects;
 use self::node_info::static_node_info;
-use self::sessions::SessionRegistry;
 
 const CHALLENGE_BYTES: usize = 32;
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
 const RECONNECT_JITTER_MS: u64 = 250;
-/// Carrier NAT and intermediate proxies drop idle WebSocket connections after
-/// roughly a minute. The relay answers this text frame from
-/// `setWebSocketAutoResponse` without waking the Durable Object, so keeping the
-/// path warm costs nothing on the relay side.
-const KEEPALIVE_INTERVAL: Duration = Duration::from_secs(25);
-const KEEPALIVE_PING: &str = "ping";
-const KEEPALIVE_PONG: &str = "pong";
-
-/// Outbound frames are queued rather than written inline so one slow socket
-/// write cannot stall the read loop (and, with it, every other client session).
-const OUTBOUND_QUEUE_DEPTH: usize = 256;
-
 /// Bounds how many frames the node will skip while waiting for an expected
 /// control frame, so an unrecognised relay cannot stall the handshake forever.
 const MAX_SKIPPED_HANDSHAKE_FRAMES: usize = 8;
@@ -169,147 +157,24 @@ async fn serve_once(
         _ => bail!("relay sent an unexpected frame after the room claim"),
     }
 
-    let mut node_info = {
+    let node_info = {
         let mut locked = lock(state)?;
         locked.connected = true;
         static_node_info(&locked.config, &locked.library)
     };
     println!("relay.ok — room claimed as {}", node_info.name);
     *reconnect_attempt = 0;
-    let mut sessions = SessionRegistry::default();
-
-    // The write half moves into its own task and is fed by a queue. Anything
-    // holding an `outbound` clone can push a frame at any time, which is what
-    // unsolicited job-progress updates will need.
-    let (mut writer, mut reader) = socket.split();
-    let (outbound, mut queued) = mpsc::channel::<Message>(OUTBOUND_QUEUE_DEPTH);
-    let mut writes = tokio::spawn(async move {
-        while let Some(message) = queued.recv().await {
-            writer.send(message).await?;
-        }
-        writer.close().await
-    });
-
-    let mut keepalive = tokio::time::interval(KEEPALIVE_INTERVAL);
-    keepalive.set_missed_tick_behavior(MissedTickBehavior::Delay);
-    keepalive.tick().await; // The first tick completes immediately.
-
-    let outcome = loop {
-        tokio::select! {
-            _ = keepalive.tick() => {
-                if outbound.send(Message::text(KEEPALIVE_PING)).await.is_err() {
-                    break Err(anyhow::anyhow!("relay writer stopped"));
-                }
-            }
-            joined = &mut writes => {
-                break match joined {
-                    Ok(Ok(())) => Err(anyhow::anyhow!("relay writer closed the room socket")),
-                    Ok(Err(error)) => Err(error).context("relay WebSocket write failed"),
-                    Err(error) => Err(error).context("relay writer task panicked"),
-                };
-            }
-            event = events.recv() => {
-                let Some(event) = event else {
-                    break Err(anyhow::anyhow!("control surface stopped"));
-                };
-                match sessions.apply_control_event(event, state, &mut node_info) {
-                    Ok(frames) => {
-                        for frame in frames {
-                            if outbound.send(frame).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                    Err(error) => break Err(error),
-                }
-            }
-            message = reader.next() => {
-                let Some(message) = message else {
-                    break Err(anyhow::anyhow!("relay disconnected"));
-                };
-                let message = match message.context("relay WebSocket failed") {
-                    Ok(message) => message,
-                    Err(error) => break Err(error),
-                };
-                match message {
-                    Message::Ping(payload) => {
-                        if outbound.send(Message::Pong(payload)).await.is_err() {
-                            break Err(anyhow::anyhow!("relay writer stopped"));
-                        }
-                    }
-                    Message::Close(frame) => {
-                        break Err(anyhow::anyhow!("relay closed the room socket: {frame:?}"));
-                    }
-                    Message::Text(text) => {
-                        if text.as_str() == KEEPALIVE_PONG {
-                            continue;
-                        }
-                        let Some((response, refresh_node_info)) = sessions.handle_text(
-                            text.as_ref(),
-                            state,
-                            &public_key_bytes,
-                        )? else {
-                            continue;
-                        };
-                        if outbound.send(response).await.is_err() {
-                            break Err(anyhow::anyhow!("relay writer stopped"));
-                        }
-                        if refresh_node_info {
-                            node_info = {
-                                let locked = lock(state)?;
-                                static_node_info(&locked.config, &locked.library)
-                            };
-                            let push = NodeMessage::NodeInfoChanged {
-                                v: cantor_proto::PROTOCOL_VERSION,
-                                node: node_info.clone(),
-                            };
-                            sessions
-                                .stream_authenticated_refresh(&push, &outbound)
-                                .await?;
-                        }
-                    }
-                    Message::Binary(bytes) => {
-                        let Some((frames, refresh_node_info)) = sessions.handle_binary(
-                            bytes.as_ref(),
-                            state,
-                            &config_path,
-                            &public_key,
-                            &node_info,
-                            event_sender,
-                        )? else {
-                            continue;
-                        };
-                        for frame in frames {
-                            if outbound.send(frame).await.is_err() {
-                                break;
-                            }
-                        }
-                        if refresh_node_info {
-                            node_info = {
-                                let locked = lock(state)?;
-                                static_node_info(&locked.config, &locked.library)
-                            };
-                            let push = NodeMessage::NodeInfoChanged {
-                                v: cantor_proto::PROTOCOL_VERSION,
-                                node: node_info.clone(),
-                            };
-                            sessions
-                                .stream_authenticated_refresh(&push, &outbound)
-                                .await?;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-    };
-
-    drop(outbound);
-    writes.abort();
-    if let Ok(mut locked) = state.lock() {
-        locked.connected = false;
-    }
-    outcome
+    run_connection(
+        socket,
+        state,
+        events,
+        event_sender,
+        &config_path,
+        &public_key,
+        &public_key_bytes,
+        node_info,
+    )
+    .await
 }
 
 fn lock(state: &SharedState) -> Result<std::sync::MutexGuard<'_, crate::runtime::NodeState>> {
