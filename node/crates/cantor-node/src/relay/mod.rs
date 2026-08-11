@@ -1,4 +1,5 @@
 mod carrier;
+mod node_info;
 mod sessions;
 
 use std::path::Path;
@@ -7,10 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use cantor_proto::{
-    MAX_CAPTION_BYTES, MAX_LYRICS_BYTES, MAX_PAGE_LIMIT, MAX_SONG_SECONDS, MIN_SONG_SECONDS,
-    ModelView, NodeFeatures, NodeInfo, NodeLimits, NodeLoad, NodeMessage,
-};
+use cantor_proto::{NodeInfo, NodeMessage};
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
 use serde_json::Value;
@@ -20,13 +18,13 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::application::{ApplicationEffect, RequestContext};
-use crate::config::NodeConfig;
 use crate::identity::NodeIdentity;
 use crate::runtime::{NodeEvent, NodeState, SharedState};
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
 
 use self::carrier::{IncomingFrame, RELAY_VERSION};
+use self::node_info::static_node_info;
 use self::sessions::SessionRegistry;
 
 const CHALLENGE_BYTES: usize = 32;
@@ -371,51 +369,6 @@ fn execute_application_effects(
         }
     }
     refresh_node_info
-}
-
-fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> NodeInfo {
-    // What is actually on disk, so the app never offers a model this node
-    // cannot load. Phase C's push is what keeps it current after a pull.
-    let models = crate::store::Store::new(config.model_root())
-        .installed()
-        .into_iter()
-        .map(|variant| ModelView {
-            selector: variant.selector(),
-            family: variant.model.clone(),
-            engine: variant.engine().to_owned(),
-        })
-        .collect();
-    let has_disk = library
-        .available_bytes()
-        .is_ok_and(|bytes| bytes >= config.jobs.minimum_free_bytes);
-    NodeInfo {
-        name: config.name.clone(),
-        device_type: format!("{}-{}", std::env::consts::OS, std::env::consts::ARCH),
-        engine_version: "engine-abi-1".to_owned(),
-        models,
-        limits: NodeLimits {
-            max_concurrent_jobs: 1,
-            max_queued_jobs_per_principal: config.jobs.max_queued_per_principal,
-            min_song_seconds: MIN_SONG_SECONDS,
-            max_song_seconds: MAX_SONG_SECONDS,
-            max_caption_bytes: MAX_CAPTION_BYTES,
-            max_lyrics_bytes: MAX_LYRICS_BYTES,
-            max_page_limit: MAX_PAGE_LIMIT,
-        },
-        load: NodeLoad {
-            active_jobs: library.active_count().unwrap_or(0),
-            queued_jobs: library.queued_count().unwrap_or(0),
-            accepting_jobs: has_disk,
-            unavailable_reason: (!has_disk).then(|| "insufficient_disk".to_owned()),
-        },
-        features: NodeFeatures {
-            jobs_create: true,
-            library_list: true,
-            artifacts_transfer: true,
-            secure_tunnel: true,
-            job_controls: true,
-        },
-    }
 }
 
 fn reconnect_delay(attempt: u32) -> Duration {
