@@ -1,6 +1,6 @@
 mod carrier;
+mod sessions;
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cantor_proto::{
-    ErrorCode, MAX_CAPTION_BYTES, MAX_LYRICS_BYTES, MAX_PAGE_LIMIT, MAX_SONG_SECONDS,
-    MIN_SONG_SECONDS, ModelView, NodeFeatures, NodeInfo, NodeLimits, NodeLoad, NodeMessage,
+    MAX_CAPTION_BYTES, MAX_LYRICS_BYTES, MAX_PAGE_LIMIT, MAX_SONG_SECONDS, MIN_SONG_SECONDS,
+    ModelView, NodeFeatures, NodeInfo, NodeLimits, NodeLoad, NodeMessage,
 };
 use futures_util::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -26,17 +26,13 @@ use crate::runtime::{NodeEvent, NodeState, SharedState};
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
 
-use self::carrier::{
-    IncomingFrame, RELAY_VERSION, encode_node_secure_carrier, ensure_secure_sid,
-    parse_node_secure_carrier, tunnel_text_frame,
-};
+use self::carrier::{IncomingFrame, RELAY_VERSION};
+use self::sessions::SessionRegistry;
 
 const CHALLENGE_BYTES: usize = 32;
 const RECONNECT_BASE_MS: u64 = 1_000;
 const RECONNECT_MAX_MS: u64 = 30_000;
 const RECONNECT_JITTER_MS: u64 = 250;
-const MAX_CLIENT_SESSIONS: usize = 1_024;
-
 /// Carrier NAT and intermediate proxies drop idle WebSocket connections after
 /// roughly a minute. The relay answers this text frame from
 /// `setWebSocketAutoResponse` without waking the Durable Object, so keeping the
@@ -180,7 +176,7 @@ async fn serve_once(
     };
     println!("relay.ok — room claimed as {}", node_info.name);
     *reconnect_attempt = 0;
-    let mut sessions = HashMap::<String, ClientSession>::new();
+    let mut sessions = SessionRegistry::default();
 
     // The write half moves into its own task and is fed by a queue. Anything
     // holding an `outbound` clone can push a frame at any time, which is what
@@ -216,7 +212,7 @@ async fn serve_once(
                 let Some(event) = event else {
                     break Err(anyhow::anyhow!("control surface stopped"));
                 };
-                match apply_control_event(event, &mut sessions, state, &mut node_info) {
+                match sessions.apply_control_event(event, state, &mut node_info) {
                     Ok(frames) => {
                         for frame in frames {
                             if outbound.send(frame).await.is_err() {
@@ -248,9 +244,8 @@ async fn serve_once(
                         if text.as_str() == KEEPALIVE_PONG {
                             continue;
                         }
-                        let Some((response, refresh_node_info)) = handle_relay_text(
+                        let Some((response, refresh_node_info)) = sessions.handle_text(
                             text.as_ref(),
-                            &mut sessions,
                             state,
                             &public_key_bytes,
                         )? else {
@@ -268,22 +263,14 @@ async fn serve_once(
                                 v: cantor_proto::PROTOCOL_VERSION,
                                 node: node_info.clone(),
                             };
-                            for (session_id, session) in &mut sessions {
-                                if session.authenticated_key().is_some()
-                                {
-                                    for frame in encrypted_frames(session_id, session, &push)? {
-                                        if outbound.send(frame).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                            sessions
+                                .stream_authenticated_refresh(&push, &outbound)
+                                .await?;
                         }
                     }
                     Message::Binary(bytes) => {
-                        let Some((frames, refresh_node_info)) = handle_relay_binary(
+                        let Some((frames, refresh_node_info)) = sessions.handle_binary(
                             bytes.as_ref(),
-                            &mut sessions,
                             state,
                             &config_path,
                             &public_key,
@@ -306,15 +293,9 @@ async fn serve_once(
                                 v: cantor_proto::PROTOCOL_VERSION,
                                 node: node_info.clone(),
                             };
-                            for (session_id, session) in &mut sessions {
-                                if session.authenticated_key().is_some() {
-                                    for frame in encrypted_frames(session_id, session, &push)? {
-                                        if outbound.send(frame).await.is_err() {
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
+                            sessions
+                                .stream_authenticated_refresh(&push, &outbound)
+                                .await?;
                         }
                     }
                     _ => {}
@@ -335,221 +316,6 @@ fn lock(state: &SharedState) -> Result<std::sync::MutexGuard<'_, crate::runtime:
     state
         .lock()
         .map_err(|_| anyhow::anyhow!("node state is poisoned"))
-}
-
-/// Turns a control command into the frames that have to go out over the relay.
-fn apply_control_event(
-    event: NodeEvent,
-    sessions: &mut HashMap<String, ClientSession>,
-    state: &SharedState,
-    node_info: &mut NodeInfo,
-) -> Result<Vec<Message>> {
-    match event {
-        NodeEvent::Revoked(key) => {
-            let mut frames = Vec::new();
-            let mut dropped = 0_usize;
-            for (sid, session) in sessions.iter_mut() {
-                if session.authenticated_key() != Some(key.as_str()) {
-                    continue;
-                }
-                // `rejected` is the one code the app treats as final, so the
-                // device stops retrying instead of spinning against a node that
-                // has already said no.
-                frames.extend(encrypted_frames(
-                    sid,
-                    session,
-                    &NodeMessage::error(
-                        None,
-                        ErrorCode::Rejected,
-                        "This client key is no longer authorized.",
-                        false,
-                    ),
-                )?);
-                session.deauthenticate();
-                session.close_secure();
-                dropped += 1;
-            }
-            println!("revoked {key}; dropped {dropped} live session(s)");
-            Ok(frames)
-        }
-        NodeEvent::NodeInfoChanged => {
-            let locked = lock(state)?;
-            *node_info = static_node_info(&locked.config, &locked.library);
-            let push = NodeMessage::NodeInfoChanged {
-                v: cantor_proto::PROTOCOL_VERSION,
-                node: node_info.clone(),
-            };
-            let mut frames = Vec::new();
-            for (sid, session) in sessions.iter_mut() {
-                if session.authenticated_key().is_some() {
-                    frames.extend(encrypted_frames(sid, session, &push)?);
-                }
-            }
-            Ok(frames)
-        }
-        NodeEvent::JobUpdated { principal_id, job } => {
-            let locked = lock(state)?;
-            let refreshed = static_node_info(&locked.config, &locked.library);
-            drop(locked);
-            let load_changed = node_info.load != refreshed.load;
-            *node_info = refreshed;
-            let private = NodeMessage::JobUpdated {
-                v: cantor_proto::PROTOCOL_VERSION,
-                job,
-            };
-            let mut frames = Vec::new();
-            for (sid, session) in sessions.iter_mut() {
-                let Some(principal) = session
-                    .authenticated()
-                    .map(|authenticated| authenticated.principal_id)
-                else {
-                    continue;
-                };
-                if principal == principal_id {
-                    frames.extend(encrypted_frames(sid, session, &private)?);
-                }
-                if load_changed {
-                    frames.extend(encrypted_frames(
-                        sid,
-                        session,
-                        &NodeMessage::NodeInfoChanged {
-                            v: cantor_proto::PROTOCOL_VERSION,
-                            node: node_info.clone(),
-                        },
-                    )?);
-                }
-            }
-            Ok(frames)
-        }
-        NodeEvent::LibraryChanged {
-            principal_id,
-            revision,
-        } => {
-            let changed = NodeMessage::LibraryChanged {
-                v: cantor_proto::PROTOCOL_VERSION,
-                revision,
-            };
-            let mut frames = Vec::new();
-            for (sid, session) in sessions.iter_mut() {
-                if session
-                    .authenticated()
-                    .is_some_and(|context| context.principal_id == principal_id)
-                {
-                    frames.extend(encrypted_frames(sid, session, &changed)?);
-                }
-            }
-            Ok(frames)
-        }
-    }
-}
-
-fn encrypted_frames(
-    sid: &str,
-    session: &mut ClientSession,
-    payload: &NodeMessage,
-) -> Result<Vec<Message>> {
-    session
-        .encrypt_secure(payload)?
-        .into_iter()
-        .map(|ciphertext| encode_node_secure_carrier(sid, &ciphertext))
-        .collect()
-}
-
-/// Returns the frame to send back, if any. `Ok(None)` means the frame needed no
-/// reply — including frames this node does not recognise, which are logged and
-/// skipped so a newer relay cannot take the node down.
-fn handle_relay_text(
-    text: &str,
-    sessions: &mut HashMap<String, ClientSession>,
-    state: &SharedState,
-    node_ed25519: &[u8; 32],
-) -> Result<Option<(Message, bool)>> {
-    let frame: IncomingFrame = match serde_json::from_str(text) {
-        Ok(frame) => frame,
-        Err(error) => {
-            eprintln!("ignoring unparseable relay frame: {error}");
-            return Ok(None);
-        }
-    };
-
-    match frame {
-        IncomingFrame::Tunnel { v, sid, payload } if v == RELAY_VERSION => {
-            let response = if can_open_client_session(sessions, &sid, MAX_CLIENT_SESSIONS)
-                && ensure_secure_sid(&sid).is_ok()
-            {
-                let transport = lock(state)?.transport_identity.clone();
-                let session = sessions.entry(sid.clone()).or_default();
-                session.set_relay_session_id(&sid);
-                match session.handle_secure_text(&payload, &transport, node_ed25519) {
-                    Ok(response) => response,
-                    Err(error) => {
-                        eprintln!("secure handshake failed for one client: {error:#}");
-                        session.close_secure();
-                        secure_error_value("handshake-failed")
-                    }
-                }
-            } else {
-                secure_error_value("temporarily-unavailable")
-            };
-            Ok(Some((tunnel_text_frame(&sid, &response)?, false)))
-        }
-        IncomingFrame::Detached { v, sid } if v == RELAY_VERSION => {
-            sessions.remove(&sid);
-            Ok(None)
-        }
-        // A relay-level error is about this connection, so it still ends it.
-        IncomingFrame::Error { v, code, msg } => bail_relay_error(v, &code, &msg)?,
-        other => {
-            eprintln!("ignoring unexpected relay frame: {other:?}");
-            Ok(None)
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn handle_relay_binary(
-    frame: &[u8],
-    sessions: &mut HashMap<String, ClientSession>,
-    state: &SharedState,
-    config_path: &Path,
-    public_key: &str,
-    node_info: &NodeInfo,
-    event_sender: &mpsc::Sender<NodeEvent>,
-) -> Result<Option<(Vec<Message>, bool)>> {
-    let (sid, ciphertext) = match parse_node_secure_carrier(frame) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            eprintln!("ignoring invalid secure relay carrier: {error:#}");
-            return Ok(None);
-        }
-    };
-    let Some(session) = sessions.get_mut(sid) else {
-        return Ok(None);
-    };
-    if !session.secure_ready() {
-        return Ok(None);
-    }
-    let payload = match session.decrypt_secure(ciphertext) {
-        Ok(Some(payload)) => payload,
-        Ok(None) => return Ok(None),
-        Err(error) => {
-            eprintln!("secure client frame failed authentication: {error:#}");
-            return Ok(None);
-        }
-    };
-    let (response, refresh_node_info) = dispatch_application(
-        session,
-        payload,
-        state,
-        config_path,
-        public_key,
-        node_info,
-        event_sender,
-    )?;
-    Ok(Some((
-        encrypted_frames(sid, session, &response)?,
-        refresh_node_info,
-    )))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -605,23 +371,6 @@ fn execute_application_effects(
         }
     }
     refresh_node_info
-}
-
-fn secure_error_value(code: &str) -> Value {
-    serde_json::json!({
-        "v": 1,
-        "t": "secure.error",
-        "code": code,
-        "message": "A secure channel is required.",
-    })
-}
-
-fn can_open_client_session(
-    sessions: &HashMap<String, ClientSession>,
-    sid: &str,
-    limit: usize,
-) -> bool {
-    sessions.contains_key(sid) || sessions.len() < limit
 }
 
 fn static_node_info(config: &NodeConfig, library: &crate::library::Library) -> NodeInfo {
@@ -740,7 +489,6 @@ fn bail_relay_error<T>(v: u8, code: &str, msg: &str) -> Result<T> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -761,9 +509,10 @@ mod tests {
     use cantor_proto::{ErrorCode, GenerationStage, JobState, JobView, NodeMessage, ProgressUnit};
     use tempfile::tempdir;
 
+    use super::carrier::parse_node_secure_carrier;
+    use super::sessions::SessionRegistry;
     use super::{
-        Message, NodeEvent, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
-        dispatch_application, handle_relay_text, parse_node_secure_carrier, reconnect_delay,
+        Message, NodeEvent, RECONNECT_MAX_MS, dispatch_application, reconnect_delay,
         static_node_info,
     };
 
@@ -1341,37 +1090,36 @@ mod tests {
             let locked = state.lock().expect("state");
             static_node_info(&locked.config, &locked.library)
         };
-        let mut sessions = HashMap::from([
-            (
-                OWNER_SID.to_owned(),
-                secure_authenticated(&state, OWNER_SID, "owner-key", [1; 32]),
-            ),
-            (
-                OTHER_SID.to_owned(),
-                secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
-            ),
-        ]);
+        let mut sessions = SessionRegistry::default();
+        sessions.insert_for_test(
+            OWNER_SID,
+            secure_authenticated(&state, OWNER_SID, "owner-key", [1; 32]),
+        );
+        sessions.insert_for_test(
+            OTHER_SID,
+            secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
+        );
         let principal_id = PrincipalId::from_client_public_key(&[1_u8; 32]);
-        let frames = apply_control_event(
-            NodeEvent::JobUpdated {
-                principal_id,
-                job: JobView {
-                    id: "job".into(),
-                    revision: 2,
-                    state: JobState::Running,
-                    stage: None,
-                    progress: None,
-                    model: "model:tag".into(),
-                    created_at: "now".into(),
-                    updated_at: "now".into(),
-                    error: None,
+        let frames = sessions
+            .apply_control_event(
+                NodeEvent::JobUpdated {
+                    principal_id,
+                    job: JobView {
+                        id: "job".into(),
+                        revision: 2,
+                        state: JobState::Running,
+                        stage: None,
+                        progress: None,
+                        model: "model:tag".into(),
+                        created_at: "now".into(),
+                        updated_at: "now".into(),
+                        error: None,
+                    },
                 },
-            },
-            &mut sessions,
-            &state,
-            &mut node_info,
-        )
-        .expect("event");
+                &state,
+                &mut node_info,
+            )
+            .expect("event");
         assert_eq!(frames.len(), 1);
         assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
         let bytes = encrypted_bytes(&frames[0]);
@@ -1389,27 +1137,26 @@ mod tests {
             let locked = state.lock().expect("state");
             static_node_info(&locked.config, &locked.library)
         };
-        let mut sessions = HashMap::from([
-            (
-                OWNER_SID.to_owned(),
-                secure_authenticated(&state, OWNER_SID, "owner-key", [1; 32]),
-            ),
-            (
-                OTHER_SID.to_owned(),
-                secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
-            ),
-        ]);
+        let mut sessions = SessionRegistry::default();
+        sessions.insert_for_test(
+            OWNER_SID,
+            secure_authenticated(&state, OWNER_SID, "owner-key", [1; 32]),
+        );
+        sessions.insert_for_test(
+            OTHER_SID,
+            secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
+        );
         let principal_id = PrincipalId::from_client_public_key(&[1_u8; 32]);
-        let frames = apply_control_event(
-            NodeEvent::LibraryChanged {
-                principal_id,
-                revision: 7,
-            },
-            &mut sessions,
-            &state,
-            &mut node_info,
-        )
-        .expect("event");
+        let frames = sessions
+            .apply_control_event(
+                NodeEvent::LibraryChanged {
+                    principal_id,
+                    revision: 7,
+                },
+                &state,
+                &mut node_info,
+            )
+            .expect("event");
         assert_eq!(frames.len(), 1);
         assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
         let bytes = encrypted_bytes(&frames[0]);
@@ -1426,7 +1173,7 @@ mod tests {
     #[test]
     fn unrecognised_frames_are_skipped_without_ending_the_connection() {
         let (state, _config_path, _guard) = fixture();
-        let mut sessions = HashMap::new();
+        let mut sessions = SessionRegistry::default();
         let node_ed25519 = [9_u8; 32];
 
         for frame in [
@@ -1436,7 +1183,8 @@ mod tests {
             "not json at all",
             "",
         ] {
-            let response = handle_relay_text(frame, &mut sessions, &state, &node_ed25519)
+            let response = sessions
+                .handle_text(frame, &state, &node_ed25519)
                 .expect("unrecognised frames must not be errors");
             assert!(response.is_none(), "unexpected reply to {frame}");
         }
@@ -1448,14 +1196,67 @@ mod tests {
     fn a_relay_error_still_ends_the_connection() {
         let (state, _config_path, _guard) = fixture();
 
-        let result = handle_relay_text(
+        let result = SessionRegistry::default().handle_text(
             r#"{"v":1,"t":"relay.error","code":"bad-claim","msg":"nope"}"#,
-            &mut HashMap::new(),
             &state,
             &[9_u8; 32],
         );
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn failed_handshake_entries_are_retained_and_an_invalid_sid_is_not_inserted() {
+        let (state, _config_path, _guard) = fixture();
+        let mut sessions = SessionRegistry::default();
+        let invalid_handshake = json!({
+            "v": 1,
+            "t": "tunnel",
+            "sid": OWNER_SID,
+            "payload": {"v": 1, "t": "secure.init"}
+        })
+        .to_string();
+
+        for _ in 0..2 {
+            let response = sessions
+                .handle_text(&invalid_handshake, &state, &[9_u8; 32])
+                .expect("handshake failure is isolated")
+                .expect("handshake error response")
+                .0;
+            let envelope: Value = serde_json::from_str(response.to_text().expect("text response"))
+                .expect("tunnel response");
+            assert_eq!(envelope["payload"]["code"], "handshake-failed");
+        }
+        assert_eq!(sessions.len_for_test(), 1);
+        assert!(sessions.contains_for_test(OWNER_SID));
+        assert!(sessions.can_open_for_test(OWNER_SID, 1));
+
+        let invalid_sid = json!({
+            "v": 1,
+            "t": "tunnel",
+            "sid": "not-a-uuid",
+            "payload": {"v": 1, "t": "secure.init"}
+        })
+        .to_string();
+        let response = sessions
+            .handle_text(&invalid_sid, &state, &[9_u8; 32])
+            .expect("invalid sid is isolated")
+            .expect("unavailable response")
+            .0;
+        let envelope: Value = serde_json::from_str(response.to_text().expect("text response"))
+            .expect("tunnel response");
+        assert_eq!(envelope["payload"]["code"], "temporarily-unavailable");
+        assert_eq!(sessions.len_for_test(), 1);
+        assert!(!sessions.contains_for_test("not-a-uuid"));
+
+        let detached = json!({"v": 1, "t": "relay.detached", "sid": OWNER_SID}).to_string();
+        assert!(
+            sessions
+                .handle_text(&detached, &state, &[9_u8; 32])
+                .expect("detach")
+                .is_none()
+        );
+        assert_eq!(sessions.len_for_test(), 0);
     }
 
     /// Revoking someone who is connected right now has to cut them off, not wait
@@ -1466,29 +1267,41 @@ mod tests {
         let locked = state.lock().expect("state");
         let mut node_info = static_node_info(&locked.config, &locked.library);
         drop(locked);
-        let mut sessions = HashMap::new();
-        sessions.insert(
-            OWNER_SID.to_owned(),
+        let mut sessions = SessionRegistry::default();
+        sessions.insert_for_test(
+            OWNER_SID,
             secure_authenticated(&state, OWNER_SID, "revoked-key", [1; 32]),
         );
-        sessions.insert(
-            OTHER_SID.to_owned(),
+        sessions.insert_for_test(
+            OTHER_SID,
             secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
         );
 
-        let frames = apply_control_event(
-            NodeEvent::Revoked("revoked-key".to_owned()),
-            &mut sessions,
-            &state,
-            &mut node_info,
-        )
-        .expect("revoke");
+        let frames = sessions
+            .apply_control_event(
+                NodeEvent::Revoked("revoked-key".to_owned()),
+                &state,
+                &mut node_info,
+            )
+            .expect("revoke");
 
         assert_eq!(frames.len(), 1);
         assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
-        assert_eq!(sessions[OWNER_SID].authenticated_key(), None);
+        assert_eq!(
+            sessions
+                .get_for_test(OWNER_SID)
+                .expect("owner session")
+                .authenticated_key(),
+            None
+        );
         // The device that was not revoked keeps its session.
-        assert_eq!(sessions[OTHER_SID].authenticated_key(), Some("other-key"));
+        assert_eq!(
+            sessions
+                .get_for_test(OTHER_SID)
+                .expect("other session")
+                .authenticated_key(),
+            Some("other-key")
+        );
     }
 
     /// A connected app is told about a rename rather than showing the old name
@@ -1499,12 +1312,12 @@ mod tests {
         let locked = state.lock().expect("state");
         let mut node_info = static_node_info(&locked.config, &locked.library);
         drop(locked);
-        let mut sessions = HashMap::new();
-        sessions.insert(
-            OWNER_SID.to_owned(),
+        let mut sessions = SessionRegistry::default();
+        sessions.insert_for_test(
+            OWNER_SID,
             secure_authenticated(&state, OWNER_SID, "key", [1; 32]),
         );
-        sessions.insert(OTHER_SID.to_owned(), ClientSession::default());
+        sessions.insert_for_test(OTHER_SID, ClientSession::default());
         state
             .lock()
             .expect("state")
@@ -1512,13 +1325,9 @@ mod tests {
             .rename_node(&config_path, "studio-node")
             .expect("rename");
 
-        let frames = apply_control_event(
-            NodeEvent::NodeInfoChanged,
-            &mut sessions,
-            &state,
-            &mut node_info,
-        )
-        .expect("push");
+        let frames = sessions
+            .apply_control_event(NodeEvent::NodeInfoChanged, &state, &mut node_info)
+            .expect("push");
 
         assert_eq!(frames.len(), 1);
         assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
@@ -1540,10 +1349,10 @@ mod tests {
 
     #[test]
     fn client_session_limit_allows_existing_sessions_only_when_full() {
-        let mut sessions = HashMap::<String, ClientSession>::new();
-        sessions.insert("existing".to_owned(), ClientSession::default());
+        let mut sessions = SessionRegistry::default();
+        sessions.insert_for_test("existing", ClientSession::default());
 
-        assert!(can_open_client_session(&sessions, "existing", 1));
-        assert!(!can_open_client_session(&sessions, "new", 1));
+        assert!(sessions.can_open_for_test("existing", 1));
+        assert!(!sessions.can_open_for_test("new", 1));
     }
 }
