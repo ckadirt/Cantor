@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "contract": "cantor-transport",
+  "release": 1,
+  "byte_order": "big-endian",
+  "versions": {
+    "application_current": 2,
+    "application_min_supported": 2,
+    "application_max_supported": 2,
+    "relay": 1,
+    "secure_negotiation": 1,
+    "transport_descriptor": 1,
+    "secure_carrier": 1,
+    "secure_record": 1,
+    "secure_inner": 1
+  },
+  "noise": {
+    "protocol_name": "Noise_NK_25519_ChaChaPoly_SHA256",
+    "suite_id": "noise-nk-25519-chachapoly-sha256-v1",
+    "authentication_tag_bytes": 16
+  },
+  "domains": {
+    "transport_descriptor_signature": "cantor-transport-binding-v1",
+    "secure_handshake_prologue": "cantor-secure-channel-v1"
+  },
+  "kinds": {
+    "secure_carrier": 1,
+    "fragment_record": 1,
+    "control_inner": 1,
+    "artifact_chunk_inner": 2
+  },
+  "headers": {
+    "client_carrier_bytes": 6,
+    "node_carrier_fixed_bytes": 8,
+    "fragment_record_bytes": 18,
+    "control_inner_bytes": 6,
+    "artifact_inner_fixed_bytes": 18
+  },
+  "sizes": {
+    "ed25519_public_key_bytes": 32,
+    "ed25519_signature_bytes": 64,
+    "x25519_key_bytes": 32,
+    "sha256_digest_bytes": 32,
+    "channel_nonce_bytes": 32
+  },
+  "bounds": {
+    "relay_session_id_utf8_bytes": 64,
+    "handshake_message_bytes": 4096,
+    "noise_plaintext_bytes": 61440,
+    "secure_ciphertext_bytes": 98304,
+    "logical_inner_bytes": 1048576,
+    "artifact_chunk_bytes": 65536,
+    "artifact_identifier_utf8_bytes": 256,
+    "artifact_offset_max_safe_integer": 9007199254740991,
+    "session_records_per_direction": 1000000,
+    "session_ciphertext_bytes_per_direction": 1073741824
+  }
+}
