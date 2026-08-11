@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved direction. RF0 through RF5 are complete; RF6 cross-language transport
-and integration framework extraction is current.
+Approved direction. RF0 through RF6 are complete apart from the RF6 physical
+device pass; RF7 hacking guides and final qualification are current.
 
 ## Objective
 

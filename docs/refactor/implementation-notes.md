@@ -7,8 +7,8 @@ the reasoning only at the end.
 ## Program status
 
 - Started: 2026-08-09
-- Current milestone: RF6 cross-language transport and integration framework
-- Production refactor code: RF1 through RF5 complete
+- Current milestone: RF7 hacking guides and final qualification
+- Production refactor code: RF1 through RF6 complete, RF6 device pass pending
 - Last completed product milestone: M6, commit `d3f890d`
 
 ## Decisions
@@ -456,6 +456,52 @@ RF0 will rerun and expand this baseline before moving production owners.
   gates last. Native registry/session cleanup follows JVM vectors, not before.
 - The RF5 node/Metro/relay qualification processes were stopped gracefully.
   RF6 codec loops do not require weights or another generation.
+
+### 2026-08-11 — RF6 automated work completed
+
+- `protocol/transport/v1/spec.json` is the single authority for every deployed
+  transport constant. `protocol/transport/generate.mjs` renders checked-in
+  constants for `cantor-proto`, `cantor-node`, the app, the relay, and the
+  Android native module, validates the manifest structurally, and fails in
+  `--check` mode when any output drifts.
+- Layer versions are now independent names everywhere even though each value is
+  still `1`: `TRANSPORT_DESCRIPTOR_VERSION` on the descriptor,
+  `SECURE_NEGOTIATION_VERSION` on negotiation JSON, `SECURE_CARRIER_VERSION` on
+  the carrier and prologue, `SECURE_RECORD_VERSION` on fragment records, and
+  `SECURE_INNER_VERSION` on inner frames. A future version bump can move one
+  without dragging the rest.
+- Pure codecs are separated from Noise state in all three implementations.
+  Rust has `secure/{fragment,inner,negotiation}.rs`, the app has
+  `security/{carrier,inner}.ts`, and Android has `FragmentCodec`,
+  `FragmentReassembler`, and `SecureChannel` behind an unchanged React Native
+  bridge. Rejection reasons, accepted bytes, and JSON shapes are unchanged.
+- Secure negotiation is typed: `secure.init` and `secure.handshake` parse into
+  DTOs and the offer, step-two response, and secure-required refusal are
+  serialized from structs. `SecureSession` still owns every state decision, so
+  state is checked before fields and id before version before suite. The
+  256-byte negotiation field bound is now named and tested, including the fact
+  that it bounds the handshake payload far below the 4 KiB message bound.
+- `node/scripts/protocol-client.mjs` is a real secure client again. Its
+  transport modules live in `node/scripts/lib/` and read the manifest directly,
+  so no sixth copy of the constants exists. It was verified end to end against a
+  local relay and node: pairing proof, descriptor verification, Noise NK,
+  encrypted carrier, node authentication, `status`, reconnect without the token,
+  and `library.list` all succeeded.
+- CI gained a `transport contract` job: generator check, manifest/generator
+  tests, and the client's fixture plus full-handshake tests. The release
+  workflow refuses to build a binary whose constants are stale, and the relay
+  deploy now proves the live domain still answers a room request rather than
+  only serving the installer asset.
+- Integrated automated verification passed: Rust formatting; strict workspace,
+  all-target, all-feature Clippy; 169 node plus 27 protocol tests; app
+  TypeScript and lint with no errors plus 31 Jest suites/267 tests; relay check
+  plus 13 Vitest tests; 14 Android JVM tests and an `arm64-v8a` debug APK; 9
+  manifest tests and 6 secure-client transport tests; and whitespace checks.
+- Commits: `acbb11d`, `259306c`, `5e80f51`, `438232b`, `376f1c4`, `e12be51`,
+  `2c4132a`, `843f9ae`, and `c2a9f2f`.
+- Outstanding for the RF6 exit gate: the physical M6 device pass, which the plan
+  requires after the native secure internals move. It is recorded in the
+  verification log when it runs.
 
 ## Deviations
 
