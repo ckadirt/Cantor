@@ -365,6 +365,33 @@ RF0 will rerun and expand this baseline before moving production owners.
   commit `f93a08a`). Each integrated boundary passed formatting, strict
   all-target Clippy, the full Rust workspace tests, and whitespace checks.
 
+### 2026-08-11 — RF5 adapter decomposition continued
+
+- Artifact transfer lifetime is isolated in `ArtifactTransferSession`. Failed
+  opens preserve the prior transfer; successful opens replace it; invalid ID,
+  owner, expiry, acknowledgement order, and read failures retain their existing
+  consume-on-failure policy. Duplicate acknowledgements still retransmit one
+  identical bounded chunk.
+- `SessionRegistry` now owns relay session capacity, secure tunnel routing,
+  detach, encryption, revocation, and owner-aware fanout. It intentionally keeps
+  the two existing fanout modes separate: control events collect all frames
+  before sending, while request-triggered refreshes stream session by session.
+- Relay node-info projection and application-effect execution now have separate
+  pure/runtime owners. Projection lock scopes remain selected by callers, and
+  effects still execute in vector order under the request's existing state guard
+  before the response is encrypted.
+- Control client and server adapters are separate from commands. The fresh
+  one-shot/streaming clients and the spawned per-connection server retain their
+  exact line, terminal, timeout, and total-byte-budget contracts.
+- Application job/status handling now lives in `application/jobs.rs`; its tests
+  pin idempotent admission and exact wake/publish/refresh effect policy. Control
+  catalog/pull workflows now live in `control/commands/models.rs` with unchanged
+  progress and durable-publication order.
+- Added commits: `39da7d6`, `45bf599`, `20c641f`, `bccb3f3`, `fd81e9a`,
+  `46f11ef`, `44d5928`, and `5484d02` (plus progress note `009ffa6`). The
+  current combined gate passes formatting, strict all-target/all-feature Clippy,
+  150 node tests, 27 protocol tests, doctests, and whitespace checks.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
