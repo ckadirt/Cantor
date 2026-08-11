@@ -14,7 +14,7 @@ use crate::store::Store;
 
 /// Submits under the reserved local-operator principal and follows the same
 /// durable views the app receives. Inference belongs exclusively to `jobs`.
-pub(in crate::control) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
+pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
     request: &Value,
     state: &SharedState,
     writer: &mut W,
