@@ -1,5 +1,6 @@
 //! Typed application responses and the process effects they request.
 
+mod auth;
 mod context;
 mod errors;
 mod outcome;
@@ -9,9 +10,10 @@ use anyhow::Result;
 use cantor_proto::NodeMessage;
 use serde_json::Value;
 
+pub use auth::AuthenticatedSession;
 pub use context::RequestContext;
 pub use outcome::{ApplicationEffect, ApplicationOutcome};
-pub use session::{AuthenticatedSession, ClientSession};
+pub use session::ClientSession;
 
 pub(crate) fn handle_application(
     session: &mut ClientSession,

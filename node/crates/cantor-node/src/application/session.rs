@@ -3,19 +3,18 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use base64::Engine;
-use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use base64::engine::general_purpose::STANDARD;
 use cantor_proto::{
     ARTIFACT_CHUNK_BYTES, ArtifactView, ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails,
     MAX_CAPTION_BYTES, MAX_CFG, MAX_CLIENT_REQUEST_ID_BYTES, MAX_LYRICS_BYTES,
     MAX_MODEL_SELECTOR_BYTES, MAX_PAGE_LIMIT, MAX_SAFE_SEED, MAX_SONG_SECONDS, MAX_STEPS, MIN_CFG,
     MIN_SONG_SECONDS, MIN_STEPS, NodeInfo, NodeMessage, PROTOCOL_VERSION,
 };
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 
-use crate::config::{NodeConfig, sanitize_petname};
+use crate::config::NodeConfig;
 use crate::library::{
     ChangePageResult, ControlResult, JobControl, Library, MutationResult, PresenceMutation,
     SongPageResult, Submission, SubmitResult,
@@ -25,29 +24,16 @@ use crate::principal::PrincipalId;
 use crate::secure::{SecureSession, TransportIdentity};
 use crate::store::Store;
 
+use super::auth::{AuthSession, AuthenticatedSession};
 use super::errors::{invalid_field, song_not_found, unauthenticated, unsupported_version};
 
-const CHALLENGE_BYTES: usize = 32;
-const PUBLIC_KEY_BYTES: usize = 32;
 const TRANSFER_TTL: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Default)]
 pub struct ClientSession {
     secure: SecureSession,
-    pending: Option<PendingAuth>,
-    relay_session_id: String,
-    authenticated: Option<StoredAuthentication>,
+    auth: AuthSession,
     transfer: Option<ArtifactTransfer>,
-}
-
-/// Identity context constructed only after challenge verification succeeds.
-/// Typed application handlers receive this rather than trusting owner data
-/// supplied in request payloads.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthenticatedSession {
-    pub relay_session_id: String,
-    pub principal_id: PrincipalId,
-    pub client_public_key: [u8; 32],
 }
 
 impl ClientSession {
@@ -77,24 +63,21 @@ impl ClientSession {
     }
 
     pub fn authenticated_key(&self) -> Option<&str> {
-        self.authenticated
-            .as_ref()
-            .map(|session| session.client_public_key_base58.as_str())
+        self.auth.authenticated_key()
     }
 
     pub fn authenticated(&self) -> Option<&AuthenticatedSession> {
-        self.authenticated.as_ref().map(|stored| &stored.context)
+        self.auth.authenticated()
     }
 
     pub fn set_relay_session_id(&mut self, relay_session_id: &str) {
-        self.relay_session_id = relay_session_id.to_owned();
+        self.auth.set_relay_session_id(relay_session_id);
     }
 
     /// Undoes authentication in place. The caller is responsible for telling the
     /// client why; this only makes sure nothing further is served on the session.
     pub fn deauthenticate(&mut self) {
-        self.authenticated = None;
-        self.pending = None;
+        self.auth.deauthenticate();
         self.transfer = None;
     }
 
@@ -102,13 +85,7 @@ impl ClientSession {
     pub fn authenticated_with_bytes_for_test(key: &str, bytes: [u8; 32]) -> Self {
         Self {
             secure: SecureSession::default(),
-            pending: None,
-            relay_session_id: String::new(),
-            authenticated: Some(StoredAuthentication::new(
-                String::new(),
-                key.to_owned(),
-                bytes,
-            )),
+            auth: AuthSession::authenticated_with_bytes(key, bytes),
             transfer: None,
         }
     }
@@ -122,36 +99,6 @@ impl ClientSession {
         self.secure =
             SecureSession::ready_for_test(transport, node_ed25519).expect("test secure session");
     }
-}
-
-#[derive(Clone, Debug)]
-struct StoredAuthentication {
-    context: AuthenticatedSession,
-    client_public_key_base58: String,
-}
-
-impl StoredAuthentication {
-    fn new(relay_session_id: String, encoded_key: String, key: [u8; 32]) -> Self {
-        let principal_id = PrincipalId::from_client_public_key(&key);
-        Self {
-            context: AuthenticatedSession {
-                relay_session_id,
-                principal_id,
-                client_public_key: key,
-            },
-            client_public_key_base58: encoded_key,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct PendingAuth {
-    id: String,
-    public_key: String,
-    verifying_key: VerifyingKey,
-    nonce: [u8; CHALLENGE_BYTES],
-    pair_proof: Option<String>,
-    petname: Option<String>,
 }
 
 #[derive(Debug)]
@@ -198,155 +145,24 @@ impl ClientSession {
                 pubkey,
                 pair_proof,
                 petname,
-            } => {
-                self.authenticated = None;
-                self.pending = None;
-                if v != PROTOCOL_VERSION {
-                    return Ok(unsupported_version(id));
-                }
-
-                let key_bytes = match bs58::decode(&pubkey).into_vec() {
-                    Ok(bytes) if bytes.len() == PUBLIC_KEY_BYTES => bytes,
-                    _ => {
-                        return Ok(NodeMessage::error(
-                            Some(id),
-                            ErrorCode::InvalidRequest,
-                            "The client public key is not valid Ed25519 base58.",
-                            false,
-                        ));
-                    }
-                };
-                let key_bytes: [u8; PUBLIC_KEY_BYTES] =
-                    key_bytes.try_into().expect("length checked above");
-                let verifying_key = match VerifyingKey::from_bytes(&key_bytes) {
-                    Ok(key) => key,
-                    Err(_) => {
-                        return Ok(NodeMessage::error(
-                            Some(id),
-                            ErrorCode::InvalidRequest,
-                            "The client public key is not valid Ed25519 base58.",
-                            false,
-                        ));
-                    }
-                };
-                let mut nonce = [0_u8; CHALLENGE_BYTES];
-                getrandom::fill(&mut nonce).context("failed to create client challenge")?;
-                self.pending = Some(PendingAuth {
-                    id: id.clone(),
-                    public_key: pubkey,
-                    verifying_key,
-                    nonce,
-                    pair_proof,
-                    // A petname the node will not accept is dropped here rather
-                    // than failing an otherwise valid pairing.
-                    petname: petname.as_deref().and_then(sanitize_petname),
-                });
-                Ok(NodeMessage::Challenge {
-                    v: PROTOCOL_VERSION,
-                    id,
-                    nonce: URL_SAFE_NO_PAD.encode(nonce),
-                    node_pubkey: node_public_key.to_owned(),
-                })
-            }
+            } => self
+                .auth
+                .handle_hello(v, id, pubkey, pair_proof, petname, node_public_key),
             ClientMessage::Auth { v, id, sig } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(unsupported_version(id));
-                }
-                let Some(pending) = self.pending.take() else {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::Unauthenticated,
-                        "Send hello before auth.",
-                        false,
-                    ));
-                };
-                if pending.id != id {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::InvalidRequest,
-                        "The auth request does not match its challenge.",
-                        false,
-                    ));
-                }
-
-                let node_key_bytes = match bs58::decode(node_public_key).into_vec() {
-                    Ok(bytes) => <[u8; PUBLIC_KEY_BYTES]>::try_from(bytes.as_slice()).ok(),
-                    Err(_) => None,
-                };
-                let Some(node_key_bytes) = node_key_bytes else {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::Internal,
-                        "This node's own public key is not valid Ed25519 base58.",
-                        false,
-                    ));
-                };
-                let expected = crate::signing::node_auth_message(
-                    &node_key_bytes,
-                    &pending.verifying_key.to_bytes(),
-                    &pending.nonce,
-                );
-
-                let signature = URL_SAFE_NO_PAD
-                    .decode(sig)
-                    .ok()
-                    .and_then(|bytes| Signature::from_slice(&bytes).ok());
-                if signature.as_ref().is_none_or(|signature| {
-                    pending.verifying_key.verify(&expected, signature).is_err()
-                }) {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::Rejected,
-                        "The client challenge signature is invalid.",
-                        false,
-                    ));
-                }
-
-                let already_allowed = config.is_authorized(&pending.public_key);
-                // An expired offer is dropped here rather than merely ignored, so
-                // a stale token cannot sit in memory for the life of the daemon.
-                if active_pair_offer
-                    .as_ref()
-                    .is_some_and(PairOffer::is_expired)
-                {
-                    *active_pair_offer = None;
-                }
-                let may_enroll = active_pair_offer
-                    .as_ref()
-                    .zip(pending.pair_proof.as_ref())
-                    .is_some_and(|(offer, supplied)| {
-                        crate::pairing::verify_pair_proof(
-                            &offer.token,
-                            supplied,
-                            node_public_key,
-                            &pending.public_key,
-                        )
-                    });
-                if !already_allowed && !may_enroll {
-                    return Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::Rejected,
-                        "This client key is not authorized.",
-                        false,
-                    ));
-                }
-
-                if !already_allowed {
-                    config.authorize_key(config_path, &pending.public_key, pending.petname)?;
-                    *active_pair_offer = None;
-                    println!("paired client {}", pending.public_key);
-                }
-                self.authenticated = Some(StoredAuthentication::new(
-                    self.relay_session_id.clone(),
-                    pending.public_key,
-                    pending.verifying_key.to_bytes(),
-                ));
-                self.transfer = None;
-                Ok(NodeMessage::Welcome {
-                    v: PROTOCOL_VERSION,
+                let outcome = self.auth.handle_auth(
+                    v,
                     id,
-                    node: node_info.clone(),
-                })
+                    sig,
+                    config,
+                    config_path,
+                    active_pair_offer,
+                    node_public_key,
+                    node_info,
+                )?;
+                if outcome.reset_transfer {
+                    self.transfer = None;
+                }
+                Ok(outcome.response)
             }
             ClientMessage::Status { v, id } => {
                 if v != PROTOCOL_VERSION {
@@ -989,6 +805,7 @@ fn invalid_submission(
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::time::{Duration, Instant};
 
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -999,7 +816,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{ClientSession, StoredAuthentication, invalid_submission};
+    use super::{ArtifactTransfer, ClientSession, invalid_submission};
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::library::Library;
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
@@ -1053,21 +870,235 @@ mod tests {
         (library, song_id, digest)
     }
 
+    fn dummy_transfer(root: &Path, key: [u8; 32]) -> ArtifactTransfer {
+        ArtifactTransfer {
+            id: "transfer".into(),
+            principal_id: crate::principal::PrincipalId::from_client_public_key(&key),
+            path: root.join("delivery.opus"),
+            byte_length: 100,
+            sha256: "digest".into(),
+            acknowledged: 0,
+            sent_end: 0,
+            expires_at: Instant::now() + Duration::from_secs(60),
+        }
+    }
+
     #[test]
-    fn principal_id_hashes_canonical_public_key_bytes() {
-        let stored = StoredAuthentication::new(
-            "relay-session".to_owned(),
-            bs58::encode([1_u8; 32]).into_string(),
+    fn hello_clears_auth_and_pending_before_version_but_preserves_transfer() {
+        let temporary = tempdir().unwrap();
+        let (mut config, paths) = config(temporary.path());
+        let mut library = Library::open(temporary.path().join("library")).expect("library");
+        let mut offer = None;
+        let node_key = bs58::encode([8_u8; 32]).into_string();
+        let client_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let public_key = bs58::encode(client_key.verifying_key().as_bytes()).into_string();
+        let mut session = ClientSession::authenticated_with_bytes_for_test(
+            &bs58::encode([1_u8; 32]).into_string(),
             [1_u8; 32],
         );
-        assert_eq!(
-            stored.context.principal_id.as_bytes(),
-            &[
-                0x72, 0xcd, 0x6e, 0x84, 0x22, 0xc4, 0x07, 0xfb, 0x6d, 0x09, 0x86, 0x90, 0xf1, 0x13,
-                0x0b, 0x7d, 0xed, 0x7e, 0xc2, 0xf7, 0xf5, 0xe1, 0xd3, 0x0b, 0xd9, 0xd5, 0x21, 0xf0,
-                0x15, 0x36, 0x37, 0x93,
-            ]
-        );
+        session.transfer = Some(dummy_transfer(temporary.path(), [1_u8; 32]));
+
+        let unsupported = session
+            .handle(
+                json!({"t":"hello","v":1,"id":"old","pubkey":"not-checked"}),
+                &mut config,
+                &paths.config,
+                &mut offer,
+                &node_key,
+                &info(),
+                &mut library,
+            )
+            .unwrap();
+        assert!(matches!(
+            unsupported,
+            NodeMessage::Error {
+                code: ErrorCode::UnsupportedVersion,
+                ..
+            }
+        ));
+        assert!(session.authenticated().is_none());
+        assert!(session.transfer.is_some());
+
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"hello","v":2,"id":"pending","pubkey":public_key}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Challenge { .. }
+        ));
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"hello","v":1,"id":"clear-pending","pubkey":"not-checked"}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Error {
+                code: ErrorCode::UnsupportedVersion,
+                ..
+            }
+        ));
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"auth","v":2,"id":"pending","sig":"bad"}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Error {
+                code: ErrorCode::Unauthenticated,
+                ..
+            }
+        ));
+        assert!(session.transfer.is_some());
+    }
+
+    #[test]
+    fn auth_version_preserves_but_mismatch_and_bad_signature_consume_the_challenge() {
+        let temporary = tempdir().unwrap();
+        let (mut config, paths) = config(temporary.path());
+        let mut library = Library::open(temporary.path().join("library")).expect("library");
+        let mut offer = None;
+        let node_key = bs58::encode([8_u8; 32]).into_string();
+        let public_key = bs58::encode(
+            SigningKey::from_bytes(&[7_u8; 32])
+                .verifying_key()
+                .as_bytes(),
+        )
+        .into_string();
+        let mut session = ClientSession::default();
+
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"hello","v":2,"id":"challenge","pubkey":public_key}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Challenge { .. }
+        ));
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"auth","v":1,"id":"challenge","sig":"bad"}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Error {
+                code: ErrorCode::UnsupportedVersion,
+                ..
+            }
+        ));
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"auth","v":2,"id":"mismatch","sig":"bad"}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Error {
+                code: ErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"auth","v":2,"id":"challenge","sig":"bad"}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Error {
+                code: ErrorCode::Unauthenticated,
+                ..
+            }
+        ));
+
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"hello","v":2,"id":"bad-sig","pubkey":public_key}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Challenge { .. }
+        ));
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"auth","v":2,"id":"bad-sig","sig":"bad"}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Error {
+                code: ErrorCode::Rejected,
+                ..
+            }
+        ));
+        assert!(matches!(
+            session
+                .handle(
+                    json!({"t":"auth","v":2,"id":"bad-sig","sig":"bad"}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    &mut library,
+                )
+                .unwrap(),
+            NodeMessage::Error {
+                code: ErrorCode::Unauthenticated,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1274,14 +1305,14 @@ mod tests {
         ));
     }
 
-    fn authenticate(token: Option<&str>) -> (NodeMessage, NodeConfig, Option<PairOffer>) {
+    fn authenticate(token: Option<&str>) -> (NodeMessage, NodeConfig, Option<PairOffer>, bool) {
         authenticate_with_petname(token, None)
     }
 
     fn authenticate_with_petname(
         token: Option<&str>,
         petname: Option<&str>,
-    ) -> (NodeMessage, NodeConfig, Option<PairOffer>) {
+    ) -> (NodeMessage, NodeConfig, Option<PairOffer>, bool) {
         let temporary = tempdir().expect("temporary directory");
         let (mut config, paths) = config(temporary.path());
         let mut library = Library::open(temporary.path().join("library")).expect("library");
@@ -1301,7 +1332,10 @@ mod tests {
             mac.update(signing_key.verifying_key().as_bytes());
             URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
         });
-        let mut session = ClientSession::default();
+        let mut session = ClientSession {
+            transfer: Some(dummy_transfer(temporary.path(), [7_u8; 32])),
+            ..ClientSession::default()
+        };
         let mut active_token =
             token.map(|token| PairOffer::new(token.to_owned(), DEFAULT_PAIR_TTL));
         let challenge = session
@@ -1337,22 +1371,23 @@ mod tests {
                 &mut library,
             )
             .expect("auth");
-        (response, config, active_token)
+        (response, config, active_token, session.transfer.is_some())
     }
 
     #[test]
     fn pairing_token_enrolls_a_verified_key_once() {
         let token = URL_SAFE_NO_PAD.encode([6_u8; 32]);
-        let (response, config, active_token) = authenticate(Some(&token));
+        let (response, config, active_token, transfer_present) = authenticate(Some(&token));
         assert!(matches!(response, NodeMessage::Welcome { .. }));
         assert_eq!(config.pairings.len(), 1);
         assert!(active_token.is_none());
+        assert!(!transfer_present);
     }
 
     #[test]
     fn a_petname_from_hello_is_recorded_on_the_pairing() {
         let token = URL_SAFE_NO_PAD.encode([6_u8; 32]);
-        let (response, config, _) =
+        let (response, config, _, _) =
             authenticate_with_petname(Some(&token), Some("  Redmi Note 11  "));
         assert!(matches!(response, NodeMessage::Welcome { .. }));
         assert_eq!(config.pairings[0].petname.as_deref(), Some("Redmi Note 11"));
@@ -1363,7 +1398,7 @@ mod tests {
     #[test]
     fn a_hostile_petname_is_dropped_without_failing_the_pairing() {
         let token = URL_SAFE_NO_PAD.encode([6_u8; 32]);
-        let (response, config, _) =
+        let (response, config, _, _) =
             authenticate_with_petname(Some(&token), Some("pwned\u{1b}[2K\u{1b}[1A"));
         assert!(matches!(response, NodeMessage::Welcome { .. }));
         assert_eq!(config.pairings.len(), 1);
@@ -1372,7 +1407,7 @@ mod tests {
 
     #[test]
     fn non_allowlisted_client_is_rejected() {
-        let (response, config, _) = authenticate(None);
+        let (response, config, _, transfer_present) = authenticate(None);
         assert!(matches!(
             response,
             NodeMessage::Error {
@@ -1381,6 +1416,7 @@ mod tests {
             }
         ));
         assert!(config.pairings.is_empty());
+        assert!(transfer_present);
     }
 
     /// A bare-nonce signature is what the relay's room claim produces. Accepting
