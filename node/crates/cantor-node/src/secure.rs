@@ -3,12 +3,12 @@ use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
-use anyhow::{Context, Result, anyhow, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cantor_proto::{NodeMessage, PROTOCOL_VERSION};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use snow::{Builder, HandshakeState, TransportState, params::NoiseParams};
 use x25519_dalek::{PublicKey, StaticSecret};
@@ -21,16 +21,20 @@ use crate::transport::{
     MAX_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_MESSAGE_BYTES, MAX_SECURE_CIPHERTEXT_BYTES,
     MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION, MAX_SESSION_RECORDS_PER_DIRECTION,
     NOISE_AUTHENTICATION_TAG_BYTES, NOISE_PROTOCOL_NAME, SECURE_CARRIER_VERSION,
-    SECURE_HANDSHAKE_PROLOGUE_DOMAIN, SECURE_NEGOTIATION_VERSION,
-    TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN, TRANSPORT_DESCRIPTOR_VERSION, TRANSPORT_SUITE_ID,
-    X25519_KEY_BYTES,
+    SECURE_HANDSHAKE_PROLOGUE_DOMAIN, TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN,
+    TRANSPORT_DESCRIPTOR_VERSION, TRANSPORT_SUITE_ID, X25519_KEY_BYTES,
 };
 
 mod fragment;
 mod inner;
+mod negotiation;
 
 use fragment::{Reassembler, encode_fragment_record, fragment_count};
 use inner::{decode_client_inner, encode_node_inner};
+use negotiation::{
+    ClientFrame, handshake_response, parse_handshake, parse_init, secure_offer,
+    secure_required_error,
+};
 
 const KEY_FILE_MODE: u32 = 0o600;
 
@@ -253,15 +257,14 @@ impl SecureSession {
         transport: &TransportIdentity,
         node_ed25519: &[u8; 32],
     ) -> Result<Value> {
-        let frame_type = payload.get("t").and_then(Value::as_str);
-        if frame_type == Some("secure.init") {
-            return self.begin(payload, transport, node_ed25519);
+        match negotiation::classify(payload) {
+            ClientFrame::Init => self.begin(payload, transport, node_ed25519),
+            ClientFrame::Handshake => self.finish(payload),
+            ClientFrame::Unsupported => {
+                self.fail();
+                Ok(secure_required_error())
+            }
         }
-        if frame_type == Some("secure.handshake") {
-            return self.finish(payload);
-        }
-        self.fail();
-        Ok(secure_error("secure-required"))
     }
 
     fn begin(
@@ -274,30 +277,17 @@ impl SecureSession {
             matches!(self.state, SecureState::AwaitingInit),
             "secure session was initialized more than once"
         );
-        let id = required_string(payload, "id")?;
-        ensure!(
-            payload.get("v").and_then(Value::as_u64) == Some(1),
-            "invalid secure version"
-        );
-        ensure!(
-            payload.get("suite").and_then(Value::as_str) == Some(TRANSPORT_SUITE_ID),
-            "unsupported secure suite"
-        );
+        let init = parse_init(payload)?;
         let mut nonce = [0_u8; CHANNEL_NONCE_BYTES];
         getrandom::fill(&mut nonce).context("failed to create secure channel nonce")?;
         let prologue = handshake_prologue(node_ed25519, transport.public_key(), &nonce);
         let responder = transport.responder(&prologue)?;
+        let offer = secure_offer(&init.id, transport.descriptor(), &nonce)?;
         self.state = SecureState::Handshake {
-            id: id.clone(),
+            id: init.id,
             state: Box::new(responder),
         };
-        Ok(json!({
-            "v": SECURE_NEGOTIATION_VERSION,
-            "t": "secure.offer",
-            "id": id,
-            "descriptor": transport.descriptor(),
-            "channel_nonce": URL_SAFE_NO_PAD.encode(nonce),
-        }))
+        Ok(offer)
     }
 
     fn finish(&mut self, payload: &Value) -> Result<Value> {
@@ -305,22 +295,8 @@ impl SecureSession {
         let SecureState::Handshake { id, mut state } = previous else {
             bail!("secure handshake arrived in the wrong state");
         };
-        ensure!(
-            payload.get("v").and_then(Value::as_u64) == Some(1),
-            "invalid secure version"
-        );
-        ensure!(
-            payload.get("id").and_then(Value::as_str) == Some(id.as_str()),
-            "secure handshake id changed"
-        );
-        ensure!(
-            payload.get("step").and_then(Value::as_u64) == Some(1),
-            "invalid secure handshake step"
-        );
-        let encoded = required_string(payload, "data")?;
-        let message = URL_SAFE_NO_PAD
-            .decode(encoded)
-            .context("secure handshake message is not base64url")?;
+        let request = parse_handshake(payload, &id)?;
+        let message = request.message;
         ensure!(
             !message.is_empty() && message.len() <= MAX_HANDSHAKE_MESSAGE_BYTES,
             "secure handshake message is outside its bound"
@@ -339,13 +315,7 @@ impl SecureSession {
             .into_transport_mode()
             .context("failed to enter Noise transport mode")?;
         self.state = SecureState::Transport(SecureTransport::new(transport));
-        Ok(json!({
-            "v": SECURE_NEGOTIATION_VERSION,
-            "t": "secure.handshake",
-            "id": id,
-            "step": 2,
-            "data": URL_SAFE_NO_PAD.encode(response),
-        }))
+        handshake_response(&id, &response)
     }
 
     pub fn decrypt_application(&mut self, ciphertext: &[u8]) -> Result<Option<Value>> {
@@ -374,24 +344,6 @@ impl SecureSession {
         }
         result
     }
-}
-
-fn secure_error(code: &str) -> Value {
-    json!({
-        "v": SECURE_NEGOTIATION_VERSION,
-        "t": "secure.error",
-        "code": code,
-        "message": "A secure channel is required.",
-    })
-}
-
-fn required_string(value: &Value, field: &str) -> Result<String> {
-    value
-        .get(field)
-        .and_then(Value::as_str)
-        .filter(|value| !value.is_empty() && value.len() <= 256)
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow!("secure field {field} is invalid"))
 }
 
 struct SecureTransport {
@@ -489,6 +441,10 @@ impl SecureTransport {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+
+    use serde_json::json;
+
+    use crate::transport::SECURE_NEGOTIATION_VERSION;
 
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
     use tempfile::tempdir;
@@ -669,7 +625,7 @@ mod tests {
             unsupported
                 .handle_text(&json!({"v": 1, "id": "plain"}), &transport, &node)
                 .expect("secure-required response"),
-            secure_error("secure-required")
+            secure_required_error()
         );
         assert!(matches!(&unsupported.state, SecureState::Failed));
     }
@@ -762,7 +718,7 @@ mod tests {
                     &node,
                 )
                 .expect("secure-required downgrade response"),
-            secure_error("secure-required")
+            secure_required_error()
         );
         assert!(matches!(&session.state, SecureState::Failed));
     }
