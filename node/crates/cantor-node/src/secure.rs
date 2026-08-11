@@ -18,17 +18,18 @@ use crate::config::reject_symlink;
 use crate::identity::NodeIdentity;
 use crate::transport::{
     CHANNEL_NONCE_BYTES, ED25519_PUBLIC_KEY_BYTES, FRAGMENT_RECORD_HEADER_BYTES,
-    FRAGMENT_RECORD_KIND, MAX_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_MESSAGE_BYTES,
-    MAX_LOGICAL_INNER_BYTES, MAX_SECURE_CIPHERTEXT_BYTES,
+    MAX_FRAGMENT_DATA_BYTES, MAX_HANDSHAKE_MESSAGE_BYTES, MAX_SECURE_CIPHERTEXT_BYTES,
     MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION, MAX_SESSION_RECORDS_PER_DIRECTION,
     NOISE_AUTHENTICATION_TAG_BYTES, NOISE_PROTOCOL_NAME, SECURE_CARRIER_VERSION,
-    SECURE_HANDSHAKE_PROLOGUE_DOMAIN, SECURE_NEGOTIATION_VERSION, SECURE_RECORD_VERSION,
+    SECURE_HANDSHAKE_PROLOGUE_DOMAIN, SECURE_NEGOTIATION_VERSION,
     TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN, TRANSPORT_DESCRIPTOR_VERSION, TRANSPORT_SUITE_ID,
     X25519_KEY_BYTES,
 };
 
+mod fragment;
 mod inner;
 
+use fragment::{Reassembler, encode_fragment_record, fragment_count};
 use inner::{decode_client_inner, encode_node_inner};
 
 const KEY_FILE_MODE: u32 = 0o600;
@@ -393,23 +394,14 @@ fn required_string(value: &Value, field: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("secure field {field} is invalid"))
 }
 
-struct Reassembly {
-    message_id: u32,
-    fragment_count: u16,
-    next_fragment: u16,
-    total_length: usize,
-    bytes: Vec<u8>,
-}
-
 struct SecureTransport {
     state: TransportState,
     send_message_id: u32,
-    receive_message_id: u32,
     sent_records: u64,
     received_records: u64,
     sent_bytes: u64,
     received_bytes: u64,
-    reassembly: Option<Reassembly>,
+    reassembler: Reassembler,
 }
 
 impl SecureTransport {
@@ -417,37 +409,24 @@ impl SecureTransport {
         Self {
             state,
             send_message_id: 0,
-            receive_message_id: 0,
             sent_records: 0,
             received_records: 0,
             sent_bytes: 0,
             received_bytes: 0,
-            reassembly: None,
+            reassembler: Reassembler::default(),
         }
     }
 
     fn encrypt_inner(&mut self, inner: &[u8]) -> Result<Vec<Vec<u8>>> {
-        ensure!(
-            !inner.is_empty() && inner.len() <= MAX_LOGICAL_INNER_BYTES,
-            "secure inner message is outside its bound"
-        );
-        let count = inner.len().div_ceil(MAX_FRAGMENT_DATA_BYTES);
-        let count = u16::try_from(count).context("too many secure fragments")?;
+        let count = fragment_count(inner.len())?;
         let message_id = self.send_message_id;
         let mut encrypted = Vec::with_capacity(usize::from(count));
         for (index, chunk) in inner.chunks(MAX_FRAGMENT_DATA_BYTES).enumerate() {
             self.check_send_limit(
                 chunk.len() + FRAGMENT_RECORD_HEADER_BYTES + NOISE_AUTHENTICATION_TAG_BYTES,
             )?;
-            let mut record = Vec::with_capacity(FRAGMENT_RECORD_HEADER_BYTES + chunk.len());
-            record.push(SECURE_RECORD_VERSION);
-            record.push(FRAGMENT_RECORD_KIND);
-            record.extend_from_slice(&message_id.to_be_bytes());
-            record.extend_from_slice(&(index as u16).to_be_bytes());
-            record.extend_from_slice(&count.to_be_bytes());
-            record.extend_from_slice(&(inner.len() as u32).to_be_bytes());
-            record.extend_from_slice(&(chunk.len() as u32).to_be_bytes());
-            record.extend_from_slice(chunk);
+            let record =
+                encode_fragment_record(message_id, index as u16, count, inner.len(), chunk);
             let mut ciphertext = vec![0_u8; record.len() + NOISE_AUTHENTICATION_TAG_BYTES];
             let length = self
                 .state
@@ -483,75 +462,7 @@ impl SecureTransport {
         plaintext.truncate(length);
         self.received_records += 1;
         self.received_bytes += ciphertext.len() as u64;
-        self.accept_fragment(&plaintext)
-    }
-
-    fn accept_fragment(&mut self, record: &[u8]) -> Result<Option<Vec<u8>>> {
-        ensure!(
-            record.len() >= FRAGMENT_RECORD_HEADER_BYTES,
-            "secure fragment is truncated"
-        );
-        ensure!(
-            record[0] == SECURE_RECORD_VERSION && record[1] == FRAGMENT_RECORD_KIND,
-            "secure fragment header is invalid"
-        );
-        let message_id = read_u32(record, 2)?;
-        let fragment_index = read_u16(record, 6)?;
-        let fragment_count = read_u16(record, 8)?;
-        let total_length = usize::try_from(read_u32(record, 10)?)?;
-        let fragment_length = usize::try_from(read_u32(record, 14)?)?;
-        ensure!(
-            message_id == self.receive_message_id
-                && fragment_count > 0
-                && fragment_index < fragment_count
-                && total_length > 0
-                && total_length <= MAX_LOGICAL_INNER_BYTES
-                && fragment_length <= MAX_FRAGMENT_DATA_BYTES
-                && record.len() == FRAGMENT_RECORD_HEADER_BYTES + fragment_length,
-            "secure fragment bounds or ordering are invalid"
-        );
-        if fragment_index == 0 {
-            ensure!(self.reassembly.is_none(), "secure messages overlap");
-            self.reassembly = Some(Reassembly {
-                message_id,
-                fragment_count,
-                next_fragment: 0,
-                total_length,
-                bytes: Vec::with_capacity(total_length),
-            });
-        }
-        let assembly = self
-            .reassembly
-            .as_mut()
-            .context("secure fragment did not start at index zero")?;
-        ensure!(
-            assembly.message_id == message_id
-                && assembly.fragment_count == fragment_count
-                && assembly.total_length == total_length
-                && assembly.next_fragment == fragment_index,
-            "secure fragment sequence changed"
-        );
-        assembly
-            .bytes
-            .extend_from_slice(&record[FRAGMENT_RECORD_HEADER_BYTES..]);
-        ensure!(
-            assembly.bytes.len() <= assembly.total_length,
-            "secure fragment exceeds declared length"
-        );
-        assembly.next_fragment += 1;
-        if assembly.next_fragment != assembly.fragment_count {
-            return Ok(None);
-        }
-        let completed = self.reassembly.take().expect("assembly exists");
-        ensure!(
-            completed.bytes.len() == completed.total_length,
-            "secure fragmented message length changed"
-        );
-        self.receive_message_id = self
-            .receive_message_id
-            .checked_add(1)
-            .context("secure receive message id exhausted")?;
-        Ok(Some(completed.bytes))
+        self.reassembler.accept(&plaintext)
     }
 
     fn check_send_limit(&self, next_bytes: usize) -> Result<()> {
@@ -575,24 +486,6 @@ impl SecureTransport {
     }
 }
 
-fn read_u16(bytes: &[u8], offset: usize) -> Result<u16> {
-    let value: [u8; 2] = bytes
-        .get(offset..offset + 2)
-        .context("secure integer is truncated")?
-        .try_into()
-        .expect("slice length checked");
-    Ok(u16::from_be_bytes(value))
-}
-
-fn read_u32(bytes: &[u8], offset: usize) -> Result<u32> {
-    let value: [u8; 4] = bytes
-        .get(offset..offset + 4)
-        .context("secure integer is truncated")?
-        .try_into()
-        .expect("slice length checked");
-    Ok(u32::from_be_bytes(value))
-}
-
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
@@ -604,8 +497,6 @@ mod tests {
 
     const IDENTITY_FIXTURE: &str =
         include_str!("../../../../protocol/transport/v1/fixtures/identity.json");
-    const FRAGMENT_FIXTURE: &str =
-        include_str!("../../../../protocol/transport/v1/fixtures/fragment.json");
     const NEGOTIATION_FIXTURE: &str =
         include_str!("../../../../protocol/transport/v1/fixtures/negotiation.json");
 
@@ -645,37 +536,6 @@ mod tests {
                 &signature,
             )
             .expect("fixture descriptor signature");
-    }
-
-    #[test]
-    fn shared_fragment_fixture_records_current_rust_acceptance_exactly() {
-        let fixture: Value = serde_json::from_str(FRAGMENT_FIXTURE).expect("fragment fixture");
-        let (_, mut receiver) = fixture_transport_pair();
-        let valid = &fixture["valid"]["single_control"];
-        assert_eq!(
-            receiver
-                .accept_fragment(&fixture_hex(&valid["record_hex"]))
-                .expect("valid fragment"),
-            Some(fixture_hex(&valid["inner_hex"]))
-        );
-
-        for malformed in fixture["malformed"]
-            .as_array()
-            .expect("malformed fragment fixtures")
-        {
-            let (_, mut receiver) = fixture_transport_pair();
-            let result = receiver.accept_fragment(&fixture_hex(&malformed["record_hex"]));
-            match malformed["rust"].as_str().expect("Rust expectation") {
-                "reject" => assert!(result.is_err(), "fixture {} must fail", malformed["id"]),
-                "accept_partial" => assert_eq!(
-                    result.expect("accepted partial fragment"),
-                    None,
-                    "fixture {}",
-                    malformed["id"]
-                ),
-                expectation => panic!("unknown Rust fixture expectation {expectation}"),
-            }
-        }
     }
 
     #[test]
