@@ -1,6 +1,7 @@
 //! Typed application responses and the process effects they request.
 
 mod outcome;
+mod session;
 
 use std::path::Path;
 
@@ -11,9 +12,9 @@ use serde_json::Value;
 use crate::config::NodeConfig;
 use crate::library::Library;
 use crate::pairing::PairOffer;
-use crate::session::ClientSession;
 
 pub use outcome::{ApplicationEffect, ApplicationOutcome};
+pub use session::{AuthenticatedSession, ClientSession};
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_application(
