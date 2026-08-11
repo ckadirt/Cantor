@@ -18,8 +18,18 @@ seams instead of extending accidental monoliths.
 - [`audit-node.md`](audit-node.md) — Rust node responsibility and persistence audit.
 - [`audit-protocol-relay.md`](audit-protocol-relay.md) — relay, wire-contract,
   cross-language, CLI, CI, and deployment audit.
-- `hacking-app.md`, `hacking-node.md`, `hacking-protocol.md`, and
-  `hacking-relay.md` — final contributor guides created and validated during RF7.
+
+## Contributor guides
+
+Start here if you are changing code rather than reading about the refactor.
+
+- [`architecture.md`](architecture.md) — the three programs, the encrypted path,
+  a "where does this change belong?" table, and the full verification matrix.
+- [`hacking-app.md`](hacking-app.md) — React Native app and Android native code.
+- [`hacking-node.md`](hacking-node.md) — the Rust daemon.
+- [`hacking-protocol.md`](hacking-protocol.md) — the wire, the transport
+  manifest, and the shared fixtures.
+- [`hacking-relay.md`](hacking-relay.md) — the Cloudflare Worker.
 
 ## Meaning of “framework” here
 
