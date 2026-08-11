@@ -274,6 +274,26 @@ RF0 will rerun and expand this baseline before moving production owners.
   permissions, digest verification, rename/fsync order, and quarantine decisions
   are behavior. Each move must retain focused recovery/reopen tests plus full
   workspace formatting, strict Clippy, and tests before commit.
+- The initial dependency audit found no honest repository trait to introduce in
+  RF4: every live caller shares the concrete `Library` and its one SQLite
+  connection. Test seams for workers belong in RF5, where there are actual
+  service consumers.
+- Schema migrations now live in `library/schema.rs` and retain the exact
+  `1 -> 2 -> 3 -> 4 -> 5` order. Row decoding lives in `library/rows.rs`; job
+  admission, querying, control, and worker transitions live in
+  `library/jobs.rs`.
+- Filesystem contract tests now pin symlink rejection, owner-only directories
+  and sidecars, exact initial JSON schemas, temporary-file cleanup, master-file
+  collision behavior, and atomic export replacement.
+- Canonical master artifact publication/verification/export moved to
+  `library/artifacts.rs`. Song persistence moved from the root module to
+  `library/songs.rs`; protocol callers still enter through the `Library` façade.
+  Completion and song publication remain one SQLite transaction after the
+  durable master and manifest are written.
+- RF4 commits so far: `3a0cb78`, `808eb26`, `e52607a`, `1aa9195`, `e205379`,
+  `0df8134`, and `0351d20` (plus start note `e7bc49d`). After each extraction,
+  formatting, strict workspace Clippy, all 141 Rust tests, and whitespace checks
+  passed.
 
 ## Deviations
 
