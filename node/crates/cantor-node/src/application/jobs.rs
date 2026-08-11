@@ -12,6 +12,7 @@ use crate::config::NodeConfig;
 use crate::library::{ControlResult, JobControl, Library, Submission, SubmitResult};
 use crate::store::Store;
 
+use super::admit_job;
 use super::auth::AuthenticatedSession;
 use super::errors::{invalid_field, unauthenticated, unsupported_version};
 
@@ -106,13 +107,13 @@ pub(super) fn create(
         model,
         generation,
     };
-    match library.submit(
+    match admit_job(
+        library,
+        config,
         context.principal_id,
         &context.client_public_key,
         &submission,
         variant,
-        config.jobs.max_queued_per_principal,
-        config.jobs.minimum_free_bytes,
     )? {
         SubmitResult::Accepted(job) => Ok(NodeMessage::JobAccepted {
             v: PROTOCOL_VERSION,

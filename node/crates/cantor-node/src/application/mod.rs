@@ -8,6 +8,7 @@ mod outcome;
 mod router;
 mod session;
 mod songs;
+mod submission;
 mod transfers;
 
 use anyhow::Result;
@@ -18,6 +19,7 @@ pub use auth::AuthenticatedSession;
 pub use context::RequestContext;
 pub use outcome::{ApplicationEffect, ApplicationOutcome};
 pub use session::ClientSession;
+pub(crate) use submission::admit_job;
 
 pub(crate) fn handle_application(
     session: &mut ClientSession,
