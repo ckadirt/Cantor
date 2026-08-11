@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved direction. RF0, RF1, and RF2 are complete; RF3 app service/state-machine
-extraction is next.
+Approved direction. RF0 through RF3 are complete; RF4 node runtime and persistence
+framework extraction is next.
 
 ## Objective
 

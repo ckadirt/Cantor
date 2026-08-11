@@ -7,8 +7,8 @@ the reasoning only at the end.
 ## Program status
 
 - Started: 2026-08-09
-- Current milestone: RF3 app services and connection state machines
-- Production refactor code: RF1 and RF2 complete
+- Current milestone: RF4 node runtime and persistence framework
+- Production refactor code: RF1, RF2, and RF3 complete
 - Last completed product milestone: M6, commit `d3f890d`
 
 ## Decisions
@@ -224,6 +224,41 @@ RF0 will rerun and expand this baseline before moving production owners.
   generation remains unnecessary unless a later gate exposes a generation-only
   regression.
 
+### 2026-08-11 — RF3 completed
+
+- `BackendConnection` remains the public façade, but its former infrastructure
+  now has named owners: `RequestRegistry` for correlated lifetimes,
+  `RelaySocket` for raw socket/retry/keepalive state, `SecureTunnel` for Noise and
+  encrypted carrier records, pure application response decoders, and a pure
+  library-sync reducer. The façade composes them and retains request IDs, exact
+  failure policy, callback ordering, and snapshot publication behavior.
+- Outbound application messages are typed as generated `ClientMessage` values.
+  Malformed job/song replies still wait for timeout, malformed artifact replies
+  still reject immediately, status still has no timer, and automatic library
+  requests keep their synchronous cleanup and publication ordering.
+- The runtime now depends on one `LocalAudioStore` port using immutable
+  `AudioRef` values. `RepositoryLocalAudioStore` delegates to the existing native
+  repository without caching a competing filesystem truth; resume offsets are
+  freshly inspected and the React state map remains advisory presentation state.
+- Android's unchanged `CantorAudio` bridge now delegates disk/digest/cache work
+  to `AudioStorage` and player lifecycle to `AudioPlayback`. The production
+  directory-fsync implementation is unchanged; only that operation is injectable
+  so Robolectric can test the complete state machine on its host filesystem.
+- RF3 commits: `be83135`, `04141b1`, `7e09b66`, `36c61b9`, `a73aa89`,
+  `870accb`, `cb829a6`, `8ed03db`, `39adb96`, `33b17a0`, `bc999a8`,
+  `192a1b6`, `a71f6e2`, and `48db688` (plus the prerequisite note commit
+  `718edec`).
+- Integrated verification passed: TypeScript; ESLint with the one pre-existing
+  inline-style warning; 30 Jest suites and 261 tests; nine Android JVM tests;
+  multi-ABI `assembleDebug`; and whitespace checks. The repository-wide
+  Prettier check still reports pre-existing files outside RF3; every changed
+  TypeScript file passed focused formatting, and Kotlin compilation is clean.
+- Physical Android `6b1f6ba8629c` received the rebuilt APK, cold-started through
+  Metro, reattached to the existing local real relay, completed a fresh encrypted
+  session with `ckadirt-mf-m2`, and showed `0 active · 0 queued`. The existing
+  pinned recovery artifact started in the real `MediaPlayer`, routed to device 3,
+  stopped at its natural end, and was released. No generation engine ran.
+
 ## Deviations
 
 ### RF0 — malformed empty fragment timing
@@ -244,6 +279,22 @@ RF0 will rerun and expand this baseline before moving production owners.
   the conservative choice is to fail a manually corrupted/noncanonical row early
   rather than carry an ambiguous owner farther into artifact publication.
 
+### RF3 — superseded relay sockets fail closed
+
+- Plan expectation: move the existing socket lifecycle without changing the
+  supported one-start-per-connection behavior.
+- Observed edge case: the extracted lifecycle makes it possible to unit-test a
+  second `start()` while the first WebSocket can still emit callbacks. The old
+  monolith did not consistently reject messages or close events from that
+  superseded socket.
+- Conservative decision: only the currently owned socket may start keepalive,
+  deliver messages, report closure, or schedule retry. This does not affect the
+  runtime path, which starts each `BackendConnection` once.
+- Behavior/invariant protected: an obsolete transport cannot inject data into or
+  reset the newer secure session.
+- Follow-up, if any: if restart becomes a public product command, specify it as a
+  first-class lifecycle transition rather than relying on repeated `start()`.
+
 When a deviation occurs, record:
 
 ```text
@@ -263,4 +314,6 @@ changed. The MIUI `uiautomator` command printed its known missing theme-compatib
 file stack trace but still wrote and pulled a valid hierarchy, so it did not alter
 the result. RF1 and RF2 repeated the cold-start device check with the same paired
 Library state; RF2 additionally inspected the extracted backend/job composition
-and confirmed an authenticated `READY` node without submitting a generation.
+and confirmed an authenticated `READY` node without submitting a generation. RF3
+repeated encrypted reconnect and verified existing pinned audio through the real
+Android player without invoking generation.
