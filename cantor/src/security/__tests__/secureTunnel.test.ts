@@ -43,6 +43,7 @@ function descriptor(fill: number): TransportDescriptor {
 type Harness = {
   tunnel: SecureTunnel;
   channel: SecureChannel;
+  sendText: jest.Mock<void, [Record<string, unknown>]>;
   text: Array<Record<string, unknown>>;
   binary: ArrayBuffer[];
   application: unknown[];
@@ -56,6 +57,9 @@ function harness(confirmed?: TransportDescriptor): Harness {
   const application: unknown[] = [];
   const events: string[] = [];
   const failures: Array<{ message: string; fatal: boolean }> = [];
+  const sendText = jest.fn((payload: Record<string, unknown>) => {
+    text.push(payload);
+  });
   const channel: SecureChannel = {
     begin: jest.fn(() => 'first-message'),
     finish: jest.fn(),
@@ -64,7 +68,7 @@ function harness(confirmed?: TransportDescriptor): Harness {
     destroy: jest.fn(),
   };
   const callbacks: SecureTunnelCallbacks = {
-    sendText: payload => text.push(payload),
+    sendText,
     sendBinary: frame => binary.push(frame),
     onApplicationMessage: payload => application.push(payload),
     onReady: () => events.push('ready'),
@@ -79,6 +83,7 @@ function harness(confirmed?: TransportDescriptor): Harness {
       callbacks,
     ),
     channel,
+    sendText,
     text,
     binary,
     application,
@@ -188,5 +193,195 @@ describe('SecureTunnel', () => {
     establish(subject);
     subject.tunnel.reset();
     expect(subject.channel.destroy).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps secure.error tag-driven, loosely shaped, and nonfatal in every phase', () => {
+    const subject = harness(descriptor(4));
+    establish(subject);
+
+    subject.tunnel.handleText({
+      v: 99,
+      t: 'secure.error',
+      code: 7,
+      message: 'loosely accepted error',
+    });
+    subject.tunnel.handleText({ t: 'secure.error' });
+
+    expect(subject.failures).toEqual([
+      { message: 'loosely accepted error', fatal: false },
+      { message: 'Node refused the secure channel.', fatal: false },
+    ]);
+    expect(subject.channel.destroy).not.toHaveBeenCalled();
+
+    subject.tunnel.sendApplication({ t: 'status', v: 2, id: 'still-ready' });
+    expect(subject.binary).toHaveLength(1);
+  });
+
+  it('uses phase-dependent fatal fallthrough for malformed and unknown negotiation', () => {
+    const nonRecord = harness();
+    nonRecord.tunnel.handleText('not-an-object');
+    expect(nonRecord.failures).toEqual([
+      {
+        message: 'Node secure handshake response is invalid.',
+        fatal: false,
+      },
+    ]);
+
+    for (const payload of [
+      { v: 2, t: 'secure.offer', id: 'secure-1' },
+      { v: 1, t: 'secure.future', id: 'secure-1' },
+    ]) {
+      const beforeReady = harness();
+      beforeReady.tunnel.begin('secure-1');
+      beforeReady.tunnel.handleText(payload);
+      expect(beforeReady.failures).toEqual([
+        {
+          message: 'Node did not complete the required secure handshake.',
+          fatal: true,
+        },
+      ]);
+    }
+
+    const wrongStep = harness();
+    wrongStep.tunnel.begin('secure-1');
+    wrongStep.tunnel.handleText({
+      v: 1,
+      t: 'secure.offer',
+      id: 'secure-1',
+      descriptor: descriptor(4),
+      channel_nonce: base64urlnopad.encode(new Uint8Array(32).fill(7)),
+    });
+    wrongStep.tunnel.handleText({
+      v: 1,
+      t: 'secure.handshake',
+      id: 'secure-1',
+      step: 1,
+      data: 'wrong-direction',
+    });
+    expect(wrongStep.failures).toEqual([
+      {
+        message: 'Node did not complete the required secure handshake.',
+        fatal: true,
+      },
+    ]);
+
+    const afterReady = harness(descriptor(4));
+    establish(afterReady);
+    afterReady.tunnel.handleText({ v: 1, t: 'secure.future' });
+    expect(afterReady.failures).toEqual([
+      {
+        message:
+          'Node attempted to send plaintext after the secure channel opened.',
+        fatal: true,
+      },
+    ]);
+  });
+
+  it('rejects duplicate offers and completed handshakes without replaying native work', () => {
+    const duplicateOffer = harness();
+    duplicateOffer.tunnel.begin('secure-1');
+    const offer = {
+      v: 1,
+      t: 'secure.offer',
+      id: 'secure-1',
+      descriptor: descriptor(4),
+      channel_nonce: base64urlnopad.encode(new Uint8Array(32).fill(7)),
+    };
+    duplicateOffer.tunnel.handleText(offer);
+    duplicateOffer.tunnel.handleText(offer);
+    expect(duplicateOffer.failures).toEqual([
+      {
+        message: 'Node repeated the secure channel offer.',
+        fatal: true,
+      },
+    ]);
+    expect(duplicateOffer.channel.begin).toHaveBeenCalledTimes(1);
+
+    const duplicateHandshake = harness(descriptor(4));
+    establish(duplicateHandshake);
+    duplicateHandshake.tunnel.handleText({
+      v: 1,
+      t: 'secure.handshake',
+      id: 'secure-1',
+      step: 2,
+      data: 'second-message',
+    });
+    expect(duplicateHandshake.failures).toEqual([
+      {
+        message:
+          'Node attempted to send plaintext after the secure channel opened.',
+        fatal: true,
+      },
+    ]);
+    expect(duplicateHandshake.channel.finish).toHaveBeenCalledTimes(1);
+  });
+
+  it('destroys an existing native channel before a new begin frame is sent', () => {
+    const subject = harness(descriptor(4));
+    establish(subject);
+    const destroy = subject.channel.destroy as jest.Mock;
+    destroy.mockClear();
+    subject.sendText.mockClear();
+
+    subject.tunnel.begin('secure-2');
+
+    expect(destroy).toHaveBeenCalledTimes(1);
+    expect(subject.sendText).toHaveBeenCalledWith({
+      v: 1,
+      t: 'secure.init',
+      id: 'secure-2',
+      suite: 'noise-nk-25519-chachapoly-sha256-v1',
+    });
+    expect(destroy.mock.invocationCallOrder[0]).toBeLessThan(
+      subject.sendText.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('reports native failures before the outer connection explicitly resets state', () => {
+    const failedFinish = harness();
+    failedFinish.tunnel.begin('secure-1');
+    failedFinish.tunnel.handleText({
+      v: 1,
+      t: 'secure.offer',
+      id: 'secure-1',
+      descriptor: descriptor(4),
+      channel_nonce: base64urlnopad.encode(new Uint8Array(32).fill(7)),
+    });
+    (failedFinish.channel.finish as jest.Mock).mockImplementationOnce(() => {
+      throw new Error('finish exploded');
+    });
+    failedFinish.tunnel.handleText({
+      v: 1,
+      t: 'secure.handshake',
+      id: 'secure-1',
+      step: 2,
+      data: 'second-message',
+    });
+    expect(failedFinish.failures).toEqual([
+      {
+        message: 'Secure handshake failed: finish exploded',
+        fatal: true,
+      },
+    ]);
+    expect(failedFinish.channel.destroy).not.toHaveBeenCalled();
+    failedFinish.tunnel.reset();
+    expect(failedFinish.channel.destroy).toHaveBeenCalledTimes(1);
+
+    const failedEncrypt = harness(descriptor(4));
+    establish(failedEncrypt);
+    (failedEncrypt.channel.encrypt as jest.Mock).mockImplementationOnce(() => {
+      throw new Error('encrypt exploded');
+    });
+    failedEncrypt.tunnel.sendApplication({
+      t: 'status',
+      v: 2,
+      id: 'failure',
+    });
+    expect(failedEncrypt.failures).toEqual([
+      { message: 'Secure channel failed: encrypt exploded', fatal: false },
+    ]);
+    expect(failedEncrypt.channel.destroy).not.toHaveBeenCalled();
+    failedEncrypt.tunnel.reset();
+    expect(failedEncrypt.channel.destroy).toHaveBeenCalledTimes(1);
   });
 });
