@@ -8,14 +8,9 @@ import { readError } from '../core/errors';
 import {
   APPLICATION_PROTOCOL_VERSION,
   RELAY_PROTOCOL_VERSION,
-  parseArtifact,
   parseJob,
-  parseJobs,
-  parseLibraryChanges,
   parseNodeInfo,
   parseSong,
-  parseSongDetail,
-  parseSongs,
   type JobView,
   type NodeInfo,
   type SongDetail,
@@ -54,6 +49,19 @@ import {
 import type { TransportDescriptor } from '../security/types';
 import type { BackendRecord, ConnectionSnapshot } from './types';
 import {
+  decodeArtifactInfo,
+  decodeArtifactPart,
+  decodeJobResponse,
+  decodeJobsPage,
+  decodeLibraryChanges,
+  decodeLibraryPage,
+  decodeSongDetailResponse,
+  decodeSongResponse,
+  isSafeRevision,
+  type ArtifactInfo,
+  type ArtifactPart,
+} from './applicationResponses';
+import {
   RequestRegistry,
   ignoreResponse,
   rejectResponse,
@@ -81,24 +89,6 @@ type ConnectionCallbacks = {
   onPairTokenConsumed: () => void;
   onTransportConfirmed: (descriptor: TransportDescriptor) => void;
 };
-
-type ArtifactInfo = {
-  transferId: string;
-  songId: string;
-  artifact: ArtifactView;
-  acceptedOffset: number;
-  chunkBytes: number;
-  windowChunks: number;
-};
-
-type ArtifactPart =
-  | { kind: 'chunk'; transferId: string; offset: number; data: string }
-  | {
-      kind: 'complete';
-      transferId: string;
-      byteLength: number;
-      sha256: string;
-    };
 
 export type ArtifactSink = {
   offset: () => Promise<number>;
@@ -527,7 +517,7 @@ export class BackendConnection {
         {
           expected: 'jobs.page',
           decode: message => {
-            const jobs = isRecord(message) ? parseJobs(message.jobs) : null;
+            const jobs = decodeJobsPage(message);
             return resolveResponse(
               jobs === null
                 ? ({ kind: 'invalid' } as const)
@@ -581,7 +571,7 @@ export class BackendConnection {
       return;
     }
     if (payload.t === 'job.updated') {
-      const updated = parseJob(payload.job);
+      const updated = decodeJobResponse(payload);
       if (updated === null) {
         return;
       }
@@ -765,8 +755,7 @@ export class BackendConnection {
         {
           expected: 'job.accepted',
           decode: message => {
-            if (!isRecord(message)) return ignoreResponse();
-            const job = parseJob(message.job);
+            const job = decodeJobResponse(message);
             return job === null ? ignoreResponse() : resolveResponse(job);
           },
           timeout: {
@@ -815,8 +804,7 @@ export class BackendConnection {
         {
           expected: 'job.controlled',
           decode: message => {
-            if (!isRecord(message)) return ignoreResponse();
-            const job = parseJob(message.job);
+            const job = decodeJobResponse(message);
             return job === null ? ignoreResponse() : resolveResponse(job);
           },
           timeout: {
@@ -858,8 +846,7 @@ export class BackendConnection {
     const request = this.requests.request('song-detail', {
       expected: 'song.detail',
       decode: message => {
-        if (!isRecord(message)) return ignoreResponse();
-        const detail = parseSongDetail(message.detail);
+        const detail = decodeSongDetailResponse(message);
         return detail === null ? ignoreResponse() : resolveResponse(detail);
       },
       timeout: {
@@ -955,34 +942,13 @@ export class BackendConnection {
     const request = this.requests.request('artifact-open', {
       expected: 'artifact.info',
       decode: message => {
-        if (!isRecord(message)) {
+        const info = decodeArtifactInfo(message);
+        if (info === null) {
           return rejectResponse(
             new Error('Node artifact transfer limits are invalid.'),
           );
         }
-        const artifact = parseArtifact(message.artifact);
-        if (
-          artifact === null ||
-          typeof message.transfer_id !== 'string' ||
-          typeof message.song_id !== 'string' ||
-          !isSafeRevision(message.accepted_offset) ||
-          !isPositiveSafeInteger(message.chunk_bytes) ||
-          !isPositiveSafeInteger(message.window_chunks) ||
-          message.chunk_bytes > 64 * 1024 ||
-          message.window_chunks !== 1
-        ) {
-          return rejectResponse(
-            new Error('Node artifact transfer limits are invalid.'),
-          );
-        }
-        return resolveResponse({
-          transferId: message.transfer_id,
-          songId: message.song_id,
-          artifact,
-          acceptedOffset: message.accepted_offset,
-          chunkBytes: message.chunk_bytes,
-          windowChunks: message.window_chunks,
-        });
+        return resolveResponse(info);
       },
       timeout: {
         afterMs: REQUEST_TIMEOUT_MS,
@@ -1011,42 +977,15 @@ export class BackendConnection {
     const request = this.requests.request<ArtifactPart>('artifact-ack', {
       expected: 'artifact.part',
       decode: message => {
-        if (!isRecord(message)) {
-          return rejectResponse(new Error('Node artifact chunk is invalid.'));
+        const part = decodeArtifactPart(message);
+        if (part === null) {
+          const invalidMessage =
+            isRecord(message) && message.t === 'artifact.complete'
+              ? 'Node artifact completion is invalid.'
+              : 'Node artifact chunk is invalid.';
+          return rejectResponse(new Error(invalidMessage));
         }
-        if (message.t === 'artifact.chunk') {
-          if (
-            typeof message.transfer_id !== 'string' ||
-            !isSafeRevision(message.offset) ||
-            typeof message.data !== 'string' ||
-            message.data.length === 0 ||
-            message.data.length > 88_000
-          ) {
-            return rejectResponse(new Error('Node artifact chunk is invalid.'));
-          }
-          return resolveResponse({
-            kind: 'chunk' as const,
-            transferId: message.transfer_id,
-            offset: message.offset,
-            data: message.data,
-          });
-        }
-        if (
-          message.t !== 'artifact.complete' ||
-          typeof message.transfer_id !== 'string' ||
-          !isSafeRevision(message.byte_length) ||
-          typeof message.sha256 !== 'string'
-        ) {
-          return rejectResponse(
-            new Error('Node artifact completion is invalid.'),
-          );
-        }
-        return resolveResponse({
-          kind: 'complete' as const,
-          transferId: message.transfer_id,
-          byteLength: message.byte_length,
-          sha256: message.sha256,
-        });
+        return resolveResponse(part);
       },
       timeout: {
         afterMs: REQUEST_TIMEOUT_MS,
@@ -1080,8 +1019,7 @@ export class BackendConnection {
         {
           expected: 'song.updated',
           decode: message => {
-            if (!isRecord(message)) return ignoreResponse();
-            const song = parseSong(message.song);
+            const song = decodeSongResponse(message);
             return song === null ? ignoreResponse() : resolveResponse(song);
           },
           timeout: {
@@ -1139,30 +1077,11 @@ export class BackendConnection {
       {
         expected: 'library.page',
         decode: message => {
-          if (!isRecord(message)) return resolveResponse(null);
-          const songs = parseSongs(message.songs);
-          const snapshotRevision = message.snapshot_revision;
-          const tombstones = message.tombstones;
-          if (
-            songs === null ||
-            !isSafeRevision(snapshotRevision) ||
-            !Array.isArray(tombstones) ||
-            !tombstones.every(songId => typeof songId === 'string') ||
-            !(
-              message.next_cursor === undefined ||
-              typeof message.next_cursor === 'string'
-            )
-          ) {
-            return resolveResponse(null);
-          }
+          const page = decodeLibraryPage(message);
+          if (page === null) return resolveResponse(null);
           return resolveResponse<LibrarySyncEvent>({
             type: 'page',
-            snapshotRevision,
-            songs,
-            tombstones,
-            ...(message.next_cursor === undefined
-              ? {}
-              : { nextCursor: message.next_cursor }),
+            ...page,
           });
         },
         timeout: {
@@ -1197,20 +1116,11 @@ export class BackendConnection {
       {
         expected: 'library.changes',
         decode: message => {
-          if (!isRecord(message)) return resolveResponse(null);
-          const changes = parseLibraryChanges(message.changes);
-          if (
-            changes === null ||
-            !isSafeRevision(message.through_revision) ||
-            typeof message.has_more !== 'boolean'
-          ) {
-            return resolveResponse(null);
-          }
+          const batch = decodeLibraryChanges(message);
+          if (batch === null) return resolveResponse(null);
           return resolveResponse<LibrarySyncEvent>({
             type: 'changes',
-            changes,
-            throughRevision: message.through_revision,
-            hasMore: message.has_more,
+            ...batch,
           });
         },
         timeout: {
@@ -1331,14 +1241,6 @@ export class BackendConnection {
     this.snapshot = snapshot;
     this.callbacks.onSnapshot(snapshot);
   }
-}
-
-function isSafeRevision(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return isSafeRevision(value) && value > 0;
 }
 
 /**
