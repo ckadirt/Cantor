@@ -2,8 +2,10 @@
 
 ## Status
 
-Approved direction. RF0 through RF6 are complete apart from the RF6 physical
-device pass; RF7 hacking guides and final qualification are current.
+Complete. RF0 through RF7 landed, and the program closed with the full
+automated matrix and a physical-device qualification on 2026-08-11. The
+contributor guides in this directory are the living entry point; this plan is
+the historical record of how the framework was reached.
 
 ## Objective
 

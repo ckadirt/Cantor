@@ -7,8 +7,8 @@ the reasoning only at the end.
 ## Program status
 
 - Started: 2026-08-09
-- Current milestone: RF7 hacking guides and final qualification
-- Production refactor code: RF1 through RF6 complete, RF6 device pass pending
+- Current milestone: complete — RF0 through RF7 finished
+- Production refactor code: RF1 through RF6 complete and qualified on hardware
 - Last completed product milestone: M6, commit `d3f890d`
 
 ## Decisions
@@ -499,9 +499,25 @@ RF0 will rerun and expand this baseline before moving production owners.
   manifest tests and 6 secure-client transport tests; and whitespace checks.
 - Commits: `acbb11d`, `259306c`, `5e80f51`, `438232b`, `376f1c4`, `e12be51`,
   `2c4132a`, `843f9ae`, and `c2a9f2f`.
-- Outstanding for the RF6 exit gate: the physical M6 device pass, which the plan
-  requires after the native secure internals move. It is recorded in the
-  verification log when it runs.
+- The RF6 physical device pass ran as part of the RF7 qualification below.
+
+### 2026-08-11 — RF7 completed
+
+- Published `architecture.md` plus `hacking-app.md`, `hacking-node.md`,
+  `hacking-protocol.md`, and `hacking-relay.md`: module maps, dependency rules,
+  extension recipes, tests, traps, and review checklists. The root context file
+  and each module README now point at the guide that owns their code rather
+  than restating volatile facts.
+- The full automated matrix passed from a clean tree: generator `--check`, 9
+  manifest tests, 6 secure-client transport tests, Rust formatting and strict
+  all-target/all-feature Clippy, 169 node plus 27 protocol tests, app
+  TypeScript and ESLint (0 errors, 3 pre-existing warnings), 31 Jest
+  suites/267 tests, 13 relay Vitest tests plus `npm run check`, 14 Android JVM
+  tests, an `arm64-v8a` debug APK, and `git diff --check`.
+- Physical qualification ran on Android `6b1f6ba8629c` against the existing
+  paired fixture node `ckadirt-mf-m2`, started from its own config directory
+  and capped at 6 GiB RAM and 512 MiB swap. Evidence is in the log below.
+- Commits: `607a3b9`, `69ab7ed`, and this entry.
 
 ## Deviations
 
@@ -596,3 +612,35 @@ Android player without invoking generation. RF5 ran the real capped light
 generation and restart/reconnect qualification recorded above; the app observed
 the completed queue item and, after its own cold restart, synchronized the new
 remote song.
+
+
+### RF7 physical qualification, Android `6b1f6ba8629c`
+
+The debug APK was installed in place over the existing build, so app data was
+never cleared.
+
+- The app opened directly to its Library with the same app key, the existing
+  pairing, and the cached `rf5_framework_phone_smoke` and `M4 recovery drill`
+  entries. `ckadirt-mf-m2` authenticated to `READY`; the second paired node
+  correctly showed `NODE OFFLINE`.
+- One light generation was submitted from the phone through the real
+  phone–relay–node path. Job `019ff2e6-a6a9-7531-b7db-5728968344e7` completed at
+  revision 83 as `rf7_framework_phone_qualification`, 35,200 ms.
+- The 6,758,444-byte WAV hash
+  `15d2b8b378f70a1cbaf0e13b26d8cddcffeef3adbfeb932d3e476707792426a6` and the
+  709,852-byte Opus hash
+  `57d9bc8f3d44e5216c35efa57331c31d6d1ffa23f5d5ef904baa99bafbfd958d` matched
+  their indexed artifact records exactly. SQLite `quick_check` returned `ok`.
+- The phone downloaded the delivery artifact over the encrypted channel and the
+  song moved to `CACHED`, then to `PINNED`. A graceful node restart reclaimed
+  the room and the app returned to `READY` showing the completed job at r83.
+- With the node stopped, a cold app restart still showed the song as
+  `PINNED · 35.2s · 693.2 KiB` with `Node offline · cached header`, and playback
+  started from local storage (`AudioTrack … sr 48000 ch 2` under the app's uid).
+  Restarting the node cleared the offline note without another app restart.
+- Downgrade-negative check: a client that skipped the secure handshake and sent
+  a plaintext application frame received exactly
+  `{"code":"secure-required","message":"A secure channel is required.","t":"secure.error","v":1}`.
+- The integration client was separately verified end to end against a local
+  relay and node: pairing proof, descriptor verification, Noise NK, node
+  authentication, `status`, reconnect without the token, and `library.list`.
