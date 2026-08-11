@@ -29,24 +29,11 @@ import {
 import { signChallenge } from '../identity/derive';
 import { backendRoomUrl, createPairProof } from './pairing';
 import {
-  buildHandshakePrologue,
-  decodeChannelNonce,
-  descriptorsEqual,
-  TRANSPORT_SUITE,
-  verifyTransportDescriptor,
-} from '../security/descriptor';
-import {
   createNativeSecureChannel,
-  type SecureChannel,
   type SecureChannelFactory,
 } from '../security/native';
-import {
-  decodeNodeInner,
-  encodeClientCarrier,
-  encodeControlInner,
-  parseClientCarrier,
-} from '../security/wire';
 import type { TransportDescriptor } from '../security/types';
+import { SecureTunnel } from '../security/secureTunnel';
 import type { BackendRecord, ConnectionSnapshot } from './types';
 import {
   decodeArtifactInfo,
@@ -106,12 +93,8 @@ export class SongRevisionConflict extends NodeRequestError {
 
 export class BackendConnection {
   private readonly relay: RelaySocket;
+  private readonly secure: SecureTunnel;
   private pairToken: string | undefined;
-  private secureChannel: SecureChannel | null = null;
-  private secureHandshakeId: string | null = null;
-  private pendingTransport: TransportDescriptor | null = null;
-  private confirmedTransport: TransportDescriptor | undefined;
-  private secureReady = false;
   private handshakeId: string | null = null;
   private requestSequence = 0;
   private readonly requests: RequestRegistry;
@@ -130,11 +113,26 @@ export class BackendConnection {
     private readonly identity: AppIdentity,
     pairToken: string | undefined,
     private readonly callbacks: ConnectionCallbacks,
-    private readonly secureFactory: SecureChannelFactory = createNativeSecureChannel,
+    secureFactory: SecureChannelFactory = createNativeSecureChannel,
   ) {
     this.pairToken = pairToken;
-    this.confirmedTransport = backend.transport;
     this.requests = new RequestRegistry(kind => this.nextRequestId(kind));
+    this.secure = new SecureTunnel(
+      backend.nodePubkey,
+      backend.transport,
+      secureFactory,
+      {
+        sendText: payload => this.sendSecureText(payload),
+        sendBinary: frame => {
+          this.relay.send(frame);
+        },
+        onApplicationMessage: payload => this.handleNodeMessage(payload),
+        onReady: () => this.beginApplicationHandshake(),
+        onTransportConfirmed: descriptor =>
+          this.callbacks.onTransportConfirmed(descriptor),
+        onFailure: (message, fatal) => this.fail(message, fatal),
+      },
+    );
     this.relay = new RelaySocket(backendRoomUrl(backend), {
       onBeforeConnect: () => {
         this.clearPending('Backend reconnected before the request completed.');
@@ -174,7 +172,7 @@ export class BackendConnection {
   // deployed app offline permanently.
   private handleRelayMessage(data: unknown): void {
     if (data instanceof ArrayBuffer) {
-      this.handleSecureBinary(data);
+      this.secure.handleBinary(data);
       return;
     }
     if (typeof data !== 'string') {
@@ -223,137 +221,19 @@ export class BackendConnection {
       return;
     }
     if (frame.t === 'tunnel' && 'payload' in frame) {
-      this.handleSecureText(frame.payload);
+      this.secure.handleText(frame.payload);
     }
   }
 
   private beginSecureHandshake(): void {
     this.resetSecure();
     const secureHandshakeId = this.nextRequestId('secure');
-    this.secureHandshakeId = secureHandshakeId;
     this.setSnapshot({
       ...this.snapshot,
       phase: 'handshaking',
       error: null,
     });
-    this.sendSecureText({
-      v: 1,
-      t: 'secure.init',
-      id: secureHandshakeId,
-      suite: TRANSPORT_SUITE,
-    });
-  }
-
-  private handleSecureText(payload: unknown): void {
-    if (!isRecord(payload)) {
-      this.fail('Node secure handshake response is invalid.', false);
-      return;
-    }
-    if (payload.t === 'secure.error') {
-      this.fail(
-        typeof payload.message === 'string'
-          ? payload.message
-          : 'Node refused the secure channel.',
-        false,
-      );
-      return;
-    }
-    if (
-      payload.t === 'secure.offer' &&
-      payload.v === 1 &&
-      payload.id === this.secureHandshakeId
-    ) {
-      if (this.secureChannel !== null || this.secureReady) {
-        this.fail('Node repeated the secure channel offer.', true);
-        return;
-      }
-      try {
-        const descriptor = verifyTransportDescriptor(
-          payload.descriptor,
-          this.backend.nodePubkey,
-        );
-        if (
-          this.confirmedTransport !== undefined &&
-          !descriptorsEqual(this.confirmedTransport, descriptor)
-        ) {
-          throw new Error(
-            'The node transport key changed. Remove and pair this node again.',
-          );
-        }
-        const channelNonce = decodeChannelNonce(payload.channel_nonce);
-        const secureHandshakeId = this.secureHandshakeId;
-        if (secureHandshakeId === null) {
-          throw new Error('Secure handshake id is missing.');
-        }
-        const channel = this.secureFactory(secureHandshakeId);
-        const firstMessage = channel.begin(
-          descriptor.transport_x25519,
-          buildHandshakePrologue(descriptor, channelNonce),
-        );
-        this.secureChannel = channel;
-        this.pendingTransport = descriptor;
-        this.sendSecureText({
-          v: 1,
-          t: 'secure.handshake',
-          id: this.secureHandshakeId,
-          step: 1,
-          data: firstMessage,
-        });
-      } catch (error) {
-        this.fail(readError(error), true);
-      }
-      return;
-    }
-    if (
-      payload.t === 'secure.handshake' &&
-      payload.v === 1 &&
-      payload.id === this.secureHandshakeId &&
-      payload.step === 2 &&
-      typeof payload.data === 'string' &&
-      this.secureChannel !== null &&
-      this.pendingTransport !== null
-    ) {
-      try {
-        this.secureChannel.finish(payload.data);
-        this.secureReady = true;
-        const descriptor = this.pendingTransport;
-        this.pendingTransport = null;
-        if (
-          this.confirmedTransport === undefined ||
-          !descriptorsEqual(this.confirmedTransport, descriptor)
-        ) {
-          this.confirmedTransport = descriptor;
-          this.callbacks.onTransportConfirmed(descriptor);
-        }
-        this.beginApplicationHandshake();
-      } catch (error) {
-        this.fail(`Secure handshake failed: ${readError(error)}`, true);
-      }
-      return;
-    }
-    this.fail(
-      this.secureReady
-        ? 'Node attempted to send plaintext after the secure channel opened.'
-        : 'Node did not complete the required secure handshake.',
-      true,
-    );
-  }
-
-  private handleSecureBinary(frame: ArrayBuffer): void {
-    if (!this.secureReady || this.secureChannel === null) {
-      this.fail(
-        'Node sent encrypted data before the secure channel opened.',
-        false,
-      );
-      return;
-    }
-    try {
-      const ciphertext = parseClientCarrier(frame);
-      const inner = this.secureChannel.decrypt(ciphertext);
-      if (inner !== null) this.handleNodeMessage(decodeNodeInner(inner));
-    } catch (error) {
-      this.fail(`Secure channel failed: ${readError(error)}`, false);
-    }
+    this.secure.begin(secureHandshakeId);
   }
 
   private beginApplicationHandshake(): void {
@@ -636,19 +516,7 @@ export class BackendConnection {
       this.fail('Relay connection is not open.', false);
       return;
     }
-    if (!this.secureReady || this.secureChannel === null) {
-      this.fail('Secure transport is not ready.', false);
-      return;
-    }
-    try {
-      for (const ciphertext of this.secureChannel.encrypt(
-        encodeControlInner(payload),
-      )) {
-        this.relay.send(encodeClientCarrier(ciphertext));
-      }
-    } catch (error) {
-      this.fail(`Secure channel failed: ${readError(error)}`, false);
-    }
+    this.secure.sendApplication(payload);
   }
 
   private sendSecureText(payload: Record<string, unknown>): void {
@@ -662,16 +530,7 @@ export class BackendConnection {
   }
 
   private resetSecure(): void {
-    const channel = this.secureChannel;
-    this.secureChannel = null;
-    this.secureReady = false;
-    this.secureHandshakeId = null;
-    this.pendingTransport = null;
-    try {
-      channel?.destroy();
-    } catch {
-      // The native channel is already unusable; local references are cleared.
-    }
+    this.secure.reset();
   }
 
   createJob(
