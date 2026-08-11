@@ -838,19 +838,30 @@ fn bail_relay_error<T>(v: u8, code: &str, msg: &str) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU8, Ordering};
 
+    use futures_util::FutureExt;
+    use serde_json::{Value, json};
+    use tokio::sync::mpsc;
+
+    use crate::catalog::Component;
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::identity::NodeIdentity;
+    use crate::jobs::StopReason;
+    use crate::library::{ControlResult, Submission, SubmitResult};
     use crate::principal::PrincipalId;
-    use crate::runtime::{NodeState, SharedState, shared};
+    use crate::runtime::{ActiveJobControl, NodeState, SharedState, shared};
     use crate::secure::TransportIdentity;
     use crate::session::ClientSession;
-    use cantor_proto::{JobState, JobView};
+    use crate::store::InstalledVariant;
+    use cantor_proto::{ErrorCode, GenerationStage, JobState, JobView, NodeMessage, ProgressUnit};
     use tempfile::tempdir;
 
     use super::{
         Message, NodeEvent, RECONNECT_MAX_MS, apply_control_event, can_open_client_session,
-        handle_relay_text, parse_node_secure_carrier, reconnect_delay, static_node_info,
+        dispatch_application, handle_relay_text, parse_node_secure_carrier, reconnect_delay,
+        static_node_info,
     };
 
     const OWNER_SID: &str = "11111111-1111-4111-8111-111111111111";
@@ -884,6 +895,492 @@ mod tests {
             transport_identity: std::sync::Arc::new(transport_identity),
         });
         (state, config_path, temporary)
+    }
+
+    fn installed_variant() -> InstalledVariant {
+        InstalledVariant {
+            model: "effect-test".into(),
+            tag: "fast".into(),
+            licence: String::new(),
+            components: vec![Component {
+                role: "model".into(),
+                blob: format!("sha256:{}", "a".repeat(64)),
+                url: "https://example.invalid/model".into(),
+                bytes: 1,
+                quant: None,
+            }],
+            installed_at: String::new(),
+            engine: "effect-test".into(),
+            vram_bytes: 0,
+        }
+    }
+
+    fn install_variant_for_application(state: &SharedState) -> String {
+        let variant = installed_variant();
+        let root = {
+            let locked = state.lock().expect("state");
+            locked.config.model_root()
+        };
+        let store = crate::store::Store::new(&root);
+        store.prepare().expect("model store");
+        let model = crate::catalog::Model {
+            name: variant.model.clone(),
+            licence: variant.licence.clone(),
+            engine: Some(variant.engine.clone()),
+            variants: Vec::new(),
+        };
+        let catalog_variant = crate::catalog::Variant {
+            tag: variant.tag.clone(),
+            components: variant.components.clone(),
+            needs: crate::catalog::Needs {
+                vram_bytes: variant.vram_bytes,
+                backends: Vec::new(),
+            },
+        };
+        store
+            .mark_installed(&model, &catalog_variant)
+            .expect("installed marker");
+        variant.selector()
+    }
+
+    fn authenticated_session(key: [u8; 32]) -> ClientSession {
+        ClientSession::authenticated_with_bytes_for_test(&bs58::encode(key).into_string(), key)
+    }
+
+    fn submit_job(state: &SharedState, key: [u8; 32]) -> JobView {
+        let variant = installed_variant();
+        let principal_id = PrincipalId::from_client_public_key(&key);
+        let mut locked = state.lock().expect("state");
+        locked.config.jobs.minimum_free_bytes = 0;
+        let result = locked
+            .library
+            .submit(
+                principal_id,
+                &key,
+                &Submission {
+                    client_request_id: uuid::Uuid::new_v4().to_string(),
+                    model: variant.selector(),
+                    generation: cantor_proto::GenerationRequest {
+                        caption: "effect characterization".into(),
+                        lyrics: None,
+                        duration: Some(15),
+                        steps: Some(1),
+                        cfg: None,
+                        seed: Some(7),
+                    },
+                },
+                &variant,
+                20,
+                0,
+            )
+            .expect("submit");
+        match result {
+            SubmitResult::Accepted(job) => job,
+            other => panic!("unexpected submit result: {other:?}"),
+        }
+    }
+
+    fn complete_song(state: &SharedState, key: [u8; 32]) -> String {
+        let _accepted = submit_job(state, key);
+        let mut locked = state.lock().expect("state");
+        let (work, _) = locked
+            .library
+            .claim_next()
+            .expect("claim")
+            .expect("queued job");
+        locked
+            .library
+            .record_progress(
+                &work,
+                GenerationStage::Decode,
+                1,
+                Some(1),
+                ProgressUnit::Steps,
+            )
+            .expect("progress")
+            .expect("running job");
+        locked
+            .library
+            .begin_finalizing(&work)
+            .expect("begin finalizing")
+            .expect("finalizing job");
+        locked
+            .library
+            .complete(
+                &work,
+                &crate::generate::Audio {
+                    planar: vec![0.0; 960],
+                    sample_rate: 48_000,
+                },
+            )
+            .expect("complete")
+            .expect("completed job")
+            .2
+            .id
+    }
+
+    fn dispatch(
+        state: &SharedState,
+        config_path: &std::path::Path,
+        session: &mut ClientSession,
+        payload: Value,
+        events: &mpsc::Sender<NodeEvent>,
+    ) -> NodeMessage {
+        let (node_public_key, node_info) = {
+            let locked = state.lock().expect("state");
+            (
+                locked.node_public_key.clone(),
+                static_node_info(&locked.config, &locked.library),
+            )
+        };
+        dispatch_application(
+            session,
+            payload,
+            state,
+            config_path,
+            &node_public_key,
+            &node_info,
+            events,
+        )
+        .expect("application dispatch")
+    }
+
+    fn take_job_notification(state: &SharedState) -> bool {
+        let notify = Arc::clone(&state.lock().expect("state").job_notify);
+        notify.notified().now_or_never().is_some()
+    }
+
+    #[test]
+    fn accepted_job_wakes_the_worker_without_publishing_a_job_event() {
+        let (state, config_path, _guard) = fixture();
+        let model = install_variant_for_application(&state);
+        state.lock().expect("state").config.jobs.minimum_free_bytes = 0;
+        let key = [1_u8; 32];
+        let mut session = authenticated_session(key);
+        let (events, mut received) = mpsc::channel(4);
+
+        let response = dispatch(
+            &state,
+            &config_path,
+            &mut session,
+            json!({
+                "t": "job.create",
+                "v": 2,
+                "id": "create",
+                "client_request_id": uuid::Uuid::new_v4().to_string(),
+                "model": model,
+                "generation": {
+                    "caption": "effect characterization",
+                    "duration": 15,
+                    "steps": 1,
+                    "seed": 7
+                }
+            }),
+            &events,
+        );
+
+        assert!(matches!(response, NodeMessage::JobAccepted { .. }));
+        assert!(take_job_notification(&state));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn pause_and_cancel_stop_only_the_matching_active_job_and_publish_owner_updates() {
+        for (message_type, expected_state, expected_reason) in [
+            ("job.pause", JobState::PauseRequested, StopReason::Pause),
+            ("job.cancel", JobState::CancelRequested, StopReason::Cancel),
+        ] {
+            let (state, config_path, _guard) = fixture();
+            let key = [1_u8; 32];
+            let principal_id = PrincipalId::from_client_public_key(&key);
+            submit_job(&state, key);
+            let (work, claimed) = state
+                .lock()
+                .expect("state")
+                .library
+                .claim_next()
+                .expect("claim")
+                .expect("claimed job");
+            let signal = Arc::new(AtomicU8::new(StopReason::None as u8));
+            state.lock().expect("state").active_job = Some(ActiveJobControl {
+                job_id: work.id.clone(),
+                principal_id,
+                signal: Arc::clone(&signal),
+            });
+            let mut session = authenticated_session(key);
+            let (events, mut received) = mpsc::channel(4);
+
+            let response = dispatch(
+                &state,
+                &config_path,
+                &mut session,
+                json!({
+                    "t": message_type,
+                    "v": 2,
+                    "id": "control",
+                    "job_id": work.id,
+                    "expected_revision": claimed.revision
+                }),
+                &events,
+            );
+
+            let controlled = match response {
+                NodeMessage::JobControlled { job, .. } => job,
+                other => panic!("unexpected control response: {other:?}"),
+            };
+            assert_eq!(controlled.state, expected_state);
+            assert_eq!(signal.load(Ordering::Acquire), expected_reason as u8);
+            assert!(!take_job_notification(&state));
+            match received.try_recv().expect("owner job event") {
+                NodeEvent::JobUpdated {
+                    principal_id: event_principal,
+                    job,
+                } => {
+                    assert_eq!(event_principal, principal_id);
+                    assert_eq!(job, controlled);
+                }
+                other => panic!("unexpected event: {other:?}"),
+            }
+        }
+
+        let (state, config_path, _guard) = fixture();
+        let key = [1_u8; 32];
+        let principal_id = PrincipalId::from_client_public_key(&key);
+        submit_job(&state, key);
+        let (work, claimed) = state
+            .lock()
+            .expect("state")
+            .library
+            .claim_next()
+            .expect("claim")
+            .expect("claimed job");
+        let unrelated_signal = Arc::new(AtomicU8::new(StopReason::None as u8));
+        state.lock().expect("state").active_job = Some(ActiveJobControl {
+            job_id: "a-different-job".into(),
+            principal_id,
+            signal: Arc::clone(&unrelated_signal),
+        });
+        let mut session = authenticated_session(key);
+        let (events, _received) = mpsc::channel(4);
+
+        let response = dispatch(
+            &state,
+            &config_path,
+            &mut session,
+            json!({
+                "t": "job.pause",
+                "v": 2,
+                "id": "control",
+                "job_id": work.id,
+                "expected_revision": claimed.revision
+            }),
+            &events,
+        );
+
+        assert!(matches!(response, NodeMessage::JobControlled { .. }));
+        assert_eq!(
+            unrelated_signal.load(Ordering::Acquire),
+            StopReason::None as u8
+        );
+    }
+
+    #[test]
+    fn resumed_queued_job_wakes_the_worker_and_publishes_the_owner_update() {
+        let (state, config_path, _guard) = fixture();
+        let key = [1_u8; 32];
+        let principal_id = PrincipalId::from_client_public_key(&key);
+        let accepted = submit_job(&state, key);
+        let paused = {
+            let mut locked = state.lock().expect("state");
+            match locked
+                .library
+                .control_job(
+                    principal_id,
+                    &accepted.id,
+                    Some(accepted.revision),
+                    crate::library::JobControl::Pause,
+                )
+                .expect("pause")
+            {
+                ControlResult::Updated(job) => job,
+                other => panic!("unexpected pause result: {other:?}"),
+            }
+        };
+        assert_eq!(paused.state, JobState::Paused);
+        let mut session = authenticated_session(key);
+        let (events, mut received) = mpsc::channel(4);
+
+        let response = dispatch(
+            &state,
+            &config_path,
+            &mut session,
+            json!({
+                "t": "job.resume",
+                "v": 2,
+                "id": "resume",
+                "job_id": paused.id,
+                "expected_revision": paused.revision
+            }),
+            &events,
+        );
+
+        let controlled = match response {
+            NodeMessage::JobControlled { job, .. } => job,
+            other => panic!("unexpected resume response: {other:?}"),
+        };
+        assert_eq!(controlled.state, JobState::Queued);
+        assert!(take_job_notification(&state));
+        match received.try_recv().expect("owner job event") {
+            NodeEvent::JobUpdated {
+                principal_id: event_principal,
+                job,
+            } => {
+                assert_eq!(event_principal, principal_id);
+                assert_eq!(job, controlled);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn successful_song_update_publishes_the_exact_committed_revision() {
+        let (state, config_path, _guard) = fixture();
+        let key = [1_u8; 32];
+        let principal_id = PrincipalId::from_client_public_key(&key);
+        let song_id = complete_song(&state, key);
+        let mut session = authenticated_session(key);
+        let (events, mut received) = mpsc::channel(4);
+
+        let response = dispatch(
+            &state,
+            &config_path,
+            &mut session,
+            json!({
+                "t": "song.patch",
+                "v": 2,
+                "id": "patch",
+                "song_id": song_id,
+                "expected_revision": 1,
+                "patch": { "favorite": true }
+            }),
+            &events,
+        );
+
+        assert!(matches!(response, NodeMessage::SongUpdated { .. }));
+        let committed_revision = state
+            .lock()
+            .expect("state")
+            .library
+            .library_revision(principal_id)
+            .expect("library revision");
+        match received.try_recv().expect("library event") {
+            NodeEvent::LibraryChanged {
+                principal_id: event_principal,
+                revision,
+            } => {
+                assert_eq!(event_principal, principal_id);
+                assert_eq!(revision, committed_revision);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn conflict_response_does_not_wake_stop_or_publish() {
+        let (state, config_path, _guard) = fixture();
+        let key = [1_u8; 32];
+        let principal_id = PrincipalId::from_client_public_key(&key);
+        let accepted = submit_job(&state, key);
+        let signal = Arc::new(AtomicU8::new(StopReason::None as u8));
+        state.lock().expect("state").active_job = Some(ActiveJobControl {
+            job_id: accepted.id.clone(),
+            principal_id,
+            signal: Arc::clone(&signal),
+        });
+        let mut session = authenticated_session(key);
+        let (events, mut received) = mpsc::channel(4);
+
+        let response = dispatch(
+            &state,
+            &config_path,
+            &mut session,
+            json!({
+                "t": "job.pause",
+                "v": 2,
+                "id": "conflict",
+                "job_id": accepted.id,
+                "expected_revision": accepted.revision + 1
+            }),
+            &events,
+        );
+
+        assert!(matches!(
+            response,
+            NodeMessage::Error {
+                code: ErrorCode::RevisionConflict,
+                ..
+            }
+        ));
+        assert_eq!(signal.load(Ordering::Acquire), StopReason::None as u8);
+        assert!(!take_job_notification(&state));
+        assert!(received.try_recv().is_err());
+
+        let response = dispatch(
+            &state,
+            &config_path,
+            &mut session,
+            json!({
+                "t": "job.pause",
+                "v": 2,
+                "id": "malformed"
+            }),
+            &events,
+        );
+
+        assert!(matches!(
+            response,
+            NodeMessage::Error {
+                code: ErrorCode::InvalidRequest,
+                ..
+            }
+        ));
+        assert_eq!(signal.load(Ordering::Acquire), StopReason::None as u8);
+        assert!(!take_job_notification(&state));
+        assert!(received.try_recv().is_err());
+    }
+
+    #[test]
+    fn full_or_closed_event_channel_never_fails_a_control_response() {
+        for channel_state in ["full", "closed"] {
+            let (state, config_path, _guard) = fixture();
+            let key = [1_u8; 32];
+            let accepted = submit_job(&state, key);
+            let mut session = authenticated_session(key);
+            let (events, mut received) = mpsc::channel(1);
+            if channel_state == "full" {
+                events
+                    .try_send(NodeEvent::NodeInfoChanged)
+                    .expect("fill event channel");
+            } else {
+                received.close();
+            }
+
+            let response = dispatch(
+                &state,
+                &config_path,
+                &mut session,
+                json!({
+                    "t": "job.pause",
+                    "v": 2,
+                    "id": channel_state,
+                    "job_id": accepted.id,
+                    "expected_revision": accepted.revision
+                }),
+                &events,
+            );
+
+            assert!(matches!(response, NodeMessage::JobControlled { .. }));
+        }
     }
 
     fn secure_authenticated(
