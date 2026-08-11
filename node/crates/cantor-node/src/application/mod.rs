@@ -5,6 +5,7 @@ mod context;
 mod errors;
 mod outcome;
 mod session;
+mod transfers;
 
 use anyhow::Result;
 use cantor_proto::NodeMessage;
