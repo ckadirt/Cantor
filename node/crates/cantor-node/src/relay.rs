@@ -17,9 +17,10 @@ use tokio::time::MissedTickBehavior;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::application::ApplicationEffect;
 use crate::config::NodeConfig;
 use crate::identity::NodeIdentity;
-use crate::runtime::{NodeEvent, SharedState};
+use crate::runtime::{NodeEvent, NodeState, SharedState};
 use crate::secure::{MAX_SECURE_CIPHERTEXT_BYTES, SECURE_CARRIER_VERSION};
 use crate::session::ClientSession;
 use crate::signing::relay_claim_message;
@@ -269,7 +270,7 @@ async fn serve_once(
                         if text.as_str() == KEEPALIVE_PONG {
                             continue;
                         }
-                        let Some((response, load_changed)) = handle_relay_text(
+                        let Some((response, refresh_node_info)) = handle_relay_text(
                             text.as_ref(),
                             &mut sessions,
                             state,
@@ -280,7 +281,7 @@ async fn serve_once(
                         if outbound.send(response).await.is_err() {
                             break Err(anyhow::anyhow!("relay writer stopped"));
                         }
-                        if load_changed {
+                        if refresh_node_info {
                             node_info = {
                                 let locked = lock(state)?;
                                 static_node_info(&locked.config, &locked.library)
@@ -302,7 +303,7 @@ async fn serve_once(
                         }
                     }
                     Message::Binary(bytes) => {
-                        let Some((frames, load_changed)) = handle_relay_binary(
+                        let Some((frames, refresh_node_info)) = handle_relay_binary(
                             bytes.as_ref(),
                             &mut sessions,
                             state,
@@ -318,7 +319,7 @@ async fn serve_once(
                                 break;
                             }
                         }
-                        if load_changed {
+                        if refresh_node_info {
                             node_info = {
                                 let locked = lock(state)?;
                                 static_node_info(&locked.config, &locked.library)
@@ -623,7 +624,7 @@ fn handle_relay_binary(
             return Ok(None);
         }
     };
-    let response = dispatch_application(
+    let (response, refresh_node_info) = dispatch_application(
         session,
         payload,
         state,
@@ -632,13 +633,9 @@ fn handle_relay_binary(
         node_info,
         event_sender,
     )?;
-    let load_changed = matches!(
-        response,
-        NodeMessage::JobAccepted { .. } | NodeMessage::JobControlled { .. }
-    );
     Ok(Some((
         encrypted_frames(sid, session, &response)?,
-        load_changed,
+        refresh_node_info,
     )))
 }
 
@@ -651,10 +648,10 @@ fn dispatch_application(
     public_key: &str,
     node_info: &NodeInfo,
     event_sender: &mpsc::Sender<NodeEvent>,
-) -> Result<NodeMessage> {
+) -> Result<(NodeMessage, bool)> {
     let mut locked = lock(state)?;
     let locked = &mut *locked;
-    let response = session.handle(
+    let outcome = session.handle_application(
         payload,
         &mut locked.config,
         config_path,
@@ -663,45 +660,35 @@ fn dispatch_application(
         node_info,
         &mut locked.library,
     )?;
-    if matches!(response, NodeMessage::JobAccepted { .. }) {
-        locked.job_notify.notify_one();
-    }
-    if let NodeMessage::JobControlled { job, .. } = &response
-        && let Some(context) = session.authenticated()
-    {
-        if let Some(active) = locked
-            .active_job
-            .as_ref()
-            .filter(|active| active.job_id == job.id)
-        {
-            match job.state {
-                cantor_proto::JobState::PauseRequested => {
-                    crate::jobs::request_stop(&active.signal, crate::jobs::StopReason::Pause)
+    let refresh_node_info = execute_application_effects(locked, outcome.effects, event_sender);
+    Ok((outcome.response, refresh_node_info))
+}
+
+fn execute_application_effects(
+    state: &mut NodeState,
+    effects: Vec<ApplicationEffect>,
+    event_sender: &mpsc::Sender<NodeEvent>,
+) -> bool {
+    let mut refresh_node_info = false;
+    for effect in effects {
+        match effect {
+            ApplicationEffect::WakeJobWorker => state.job_notify.notify_one(),
+            ApplicationEffect::StopActiveJob { job_id, reason } => {
+                if let Some(active) = state
+                    .active_job
+                    .as_ref()
+                    .filter(|active| active.job_id == job_id)
+                {
+                    crate::jobs::request_stop(&active.signal, reason);
                 }
-                cantor_proto::JobState::CancelRequested => {
-                    crate::jobs::request_stop(&active.signal, crate::jobs::StopReason::Cancel)
-                }
-                _ => {}
             }
+            ApplicationEffect::Publish(event) => {
+                let _ = event_sender.try_send(event);
+            }
+            ApplicationEffect::RefreshNodeInfo => refresh_node_info = true,
         }
-        if job.state == cantor_proto::JobState::Queued {
-            locked.job_notify.notify_one();
-        }
-        let _ = event_sender.try_send(NodeEvent::JobUpdated {
-            principal_id: context.principal_id,
-            job: job.clone(),
-        });
     }
-    if matches!(response, NodeMessage::SongUpdated { .. })
-        && let Some(context) = session.authenticated()
-    {
-        let revision = locked.library.library_revision(context.principal_id)?;
-        let _ = event_sender.try_send(NodeEvent::LibraryChanged {
-            principal_id: context.principal_id,
-            revision,
-        });
-    }
-    Ok(response)
+    refresh_node_info
 }
 
 fn secure_error_value(code: &str) -> Value {
@@ -1026,6 +1013,16 @@ mod tests {
         payload: Value,
         events: &mpsc::Sender<NodeEvent>,
     ) -> NodeMessage {
+        dispatch_with_refresh(state, config_path, session, payload, events).0
+    }
+
+    fn dispatch_with_refresh(
+        state: &SharedState,
+        config_path: &std::path::Path,
+        session: &mut ClientSession,
+        payload: Value,
+        events: &mpsc::Sender<NodeEvent>,
+    ) -> (NodeMessage, bool) {
         let (node_public_key, node_info) = {
             let locked = state.lock().expect("state");
             (
@@ -1059,7 +1056,7 @@ mod tests {
         let mut session = authenticated_session(key);
         let (events, mut received) = mpsc::channel(4);
 
-        let response = dispatch(
+        let (response, refresh_node_info) = dispatch_with_refresh(
             &state,
             &config_path,
             &mut session,
@@ -1080,6 +1077,7 @@ mod tests {
         );
 
         assert!(matches!(response, NodeMessage::JobAccepted { .. }));
+        assert!(refresh_node_info);
         assert!(take_job_notification(&state));
         assert!(received.try_recv().is_err());
     }
@@ -1163,7 +1161,7 @@ mod tests {
         let mut session = authenticated_session(key);
         let (events, _received) = mpsc::channel(4);
 
-        let response = dispatch(
+        let (response, refresh_node_info) = dispatch_with_refresh(
             &state,
             &config_path,
             &mut session,
@@ -1178,6 +1176,7 @@ mod tests {
         );
 
         assert!(matches!(response, NodeMessage::JobControlled { .. }));
+        assert!(refresh_node_info);
         assert_eq!(
             unrelated_signal.load(Ordering::Acquire),
             StopReason::None as u8
@@ -1210,7 +1209,7 @@ mod tests {
         let mut session = authenticated_session(key);
         let (events, mut received) = mpsc::channel(4);
 
-        let response = dispatch(
+        let (response, refresh_node_info) = dispatch_with_refresh(
             &state,
             &config_path,
             &mut session,
@@ -1228,6 +1227,7 @@ mod tests {
             NodeMessage::JobControlled { job, .. } => job,
             other => panic!("unexpected resume response: {other:?}"),
         };
+        assert!(refresh_node_info);
         assert_eq!(controlled.state, JobState::Queued);
         assert!(take_job_notification(&state));
         match received.try_recv().expect("owner job event") {
@@ -1251,7 +1251,7 @@ mod tests {
         let mut session = authenticated_session(key);
         let (events, mut received) = mpsc::channel(4);
 
-        let response = dispatch(
+        let (response, refresh_node_info) = dispatch_with_refresh(
             &state,
             &config_path,
             &mut session,
@@ -1267,6 +1267,7 @@ mod tests {
         );
 
         assert!(matches!(response, NodeMessage::SongUpdated { .. }));
+        assert!(!refresh_node_info);
         let committed_revision = state
             .lock()
             .expect("state")

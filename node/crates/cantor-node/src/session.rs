@@ -166,6 +166,29 @@ struct ArtifactTransfer {
 
 impl ClientSession {
     #[allow(clippy::too_many_arguments)]
+    pub fn handle_application(
+        &mut self,
+        payload: Value,
+        config: &mut NodeConfig,
+        config_path: &Path,
+        active_pair_offer: &mut Option<PairOffer>,
+        node_public_key: &str,
+        node_info: &NodeInfo,
+        library: &mut Library,
+    ) -> Result<crate::application::ApplicationOutcome> {
+        crate::application::handle_application(
+            self,
+            payload,
+            config,
+            config_path,
+            active_pair_offer,
+            node_public_key,
+            node_info,
+            library,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     pub fn handle(
         &mut self,
         payload: Value,
