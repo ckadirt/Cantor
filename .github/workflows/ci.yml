@@ -13,6 +13,26 @@ permissions:
   contents: read
 
 jobs:
+  # The four implementations agree because one manifest generates their
+  # constants and one fixture corpus pins their bytes. This job is what stops a
+  # transport change from reaching only three of them.
+  transport:
+    name: transport contract
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: generated transport constants are current
+        run: node protocol/transport/generate.mjs --check
+      - name: the manifest and generator hold
+        run: node --test protocol/transport/generate.test.mjs
+      - name: the integration client agrees with the shared fixtures
+        run: node --test node/scripts/lib/transport.test.mjs
+      - name: the relay smoke client parses
+        run: node --check relay/scripts/smoke.mjs
+
   node:
     name: node (rust)
     runs-on: ubuntu-22.04
