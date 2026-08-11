@@ -68,16 +68,18 @@ pub(in crate::control) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
                 seed: None,
             },
         };
-        let max_queued = locked.config.jobs.max_queued_per_principal;
-        let minimum_free = locked.config.jobs.minimum_free_bytes;
-        let job = match locked.library.submit(
-            principal,
-            &local_key,
-            &submission,
-            variant,
-            max_queued,
-            minimum_free,
-        )? {
+        let result = {
+            let state = &mut *locked;
+            crate::application::admit_job(
+                &mut state.library,
+                &state.config,
+                principal,
+                &local_key,
+                &submission,
+                variant,
+            )
+        }?;
+        let job = match result {
             crate::library::SubmitResult::Accepted(job) => job,
             crate::library::SubmitResult::QueueFull => bail!("the local durable queue is full"),
             crate::library::SubmitResult::InsufficientDisk => {
