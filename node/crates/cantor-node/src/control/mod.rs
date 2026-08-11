@@ -16,7 +16,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -25,12 +24,19 @@ use tokio::sync::mpsc;
 use crate::accel;
 use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::catalog::Catalog;
-use crate::config::Pairing;
 use crate::engine;
 use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer, new_pair_token, pairing_uri};
 use crate::principal::PrincipalId;
 use crate::runtime::NodeEvent;
-use crate::store::{InstalledVariant, Store, human_bytes};
+use crate::store::{Store, human_bytes};
+
+mod wire;
+
+pub use wire::{CONTROL_VERSION, Response};
+use wire::{
+    MAX_REQUEST_BYTES, Request, frame_kind, reject_version, write_response_line,
+    write_value_line as write_line,
+};
 
 // Keep the original control-module entry points available while downstream
 // callers migrate to runtime ownership.
@@ -42,7 +48,6 @@ pub use crate::runtime::{NodeState, SharedState, shared};
 #[allow(dead_code)] // Deliberate migration shim; production code uses NodeEvent.
 pub type ControlEvent = NodeEvent;
 
-pub const CONTROL_VERSION: u8 = 1;
 const SOCKET_DIRECTORY_MODE: u32 = 0o750;
 /// Group-writable so an operator in the `cantor` group can drive the daemon.
 /// World-writable would let any local user pair their own phone or revoke yours.
@@ -54,7 +59,6 @@ const CONTROL_GROUP: &str = "cantor";
 /// A control request is local and answered from memory; anything slower than
 /// this is a stuck daemon, and the CLI should say so rather than hang.
 pub const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
-const MAX_REQUEST_BYTES: u64 = 64 * 1024;
 /// `sockaddr_un.sun_path` is 108 bytes on Linux, including the terminator.
 const MAX_SOCKET_PATH_BYTES: usize = 107;
 
@@ -263,18 +267,9 @@ async fn serve_connection(
             continue;
         }
         let response = dispatch(&line, &state, &events);
-        let mut encoded = serde_json::to_string(&response).context("failed to encode response")?;
-        encoded.push('\n');
-        writer.write_all(encoded.as_bytes()).await?;
-        writer.flush().await?;
+        write_response_line(&mut writer, &response).await?;
     }
     Ok(())
-}
-
-fn frame_kind(line: &str) -> Option<String> {
-    serde_json::from_str::<Value>(line)
-        .ok()
-        .and_then(|value| value.get("t").and_then(Value::as_str).map(str::to_owned))
 }
 
 /// Everything a pull needs, copied out under the lock so the download itself
@@ -296,14 +291,6 @@ fn pull_plan(state: &SharedState) -> Result<PullPlan> {
         backends_url: locked.config.backends_url(),
         backend: locked.config.backend.clone(),
     })
-}
-
-async fn write_line<W: tokio::io::AsyncWrite + Unpin>(writer: &mut W, value: &Value) -> Result<()> {
-    let mut encoded = serde_json::to_string(value).context("failed to encode a response")?;
-    encoded.push('\n');
-    writer.write_all(encoded.as_bytes()).await?;
-    writer.flush().await?;
-    Ok(())
 }
 
 async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
@@ -991,99 +978,6 @@ async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     .await
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(tag = "t")]
-enum Request {
-    #[serde(rename = "status")]
-    Status { v: u8, id: String },
-    #[serde(rename = "pair")]
-    Pair {
-        v: u8,
-        id: String,
-        #[serde(default)]
-        expires_in: Option<u64>,
-    },
-    #[serde(rename = "pairings")]
-    Pairings { v: u8, id: String },
-    #[serde(rename = "revoke")]
-    Revoke { v: u8, id: String, selector: String },
-    #[serde(rename = "rename")]
-    Rename {
-        v: u8,
-        id: String,
-        selector: String,
-        petname: String,
-    },
-    #[serde(rename = "rename-node")]
-    RenameNode { v: u8, id: String, name: String },
-    #[serde(rename = "list")]
-    List { v: u8, id: String },
-    #[serde(rename = "rm")]
-    Remove { v: u8, id: String, selector: String },
-}
-
-#[derive(Debug, Serialize)]
-#[serde(tag = "t")]
-pub enum Response {
-    #[serde(rename = "status")]
-    Status {
-        v: u8,
-        id: String,
-        name: String,
-        pubkey: String,
-        relay_url: String,
-        connected: bool,
-        pairings: usize,
-        pair_expires_in: Option<u64>,
-    },
-    #[serde(rename = "pair")]
-    Pair {
-        v: u8,
-        id: String,
-        uri: String,
-        expires_in: u64,
-    },
-    #[serde(rename = "pairings")]
-    Pairings {
-        v: u8,
-        id: String,
-        pairings: Vec<Pairing>,
-    },
-    #[serde(rename = "ok")]
-    Ok { v: u8, id: String },
-    #[serde(rename = "list")]
-    List {
-        v: u8,
-        id: String,
-        installed: Vec<InstalledVariant>,
-        available_bytes: u64,
-    },
-    #[serde(rename = "removed")]
-    Removed {
-        v: u8,
-        id: String,
-        reclaimed_bytes: u64,
-    },
-    #[serde(rename = "error")]
-    Error {
-        v: u8,
-        id: String,
-        code: String,
-        msg: String,
-    },
-}
-
-impl Response {
-    fn error(id: impl Into<String>, code: &str, msg: impl Into<String>) -> Self {
-        Self::Error {
-            v: CONTROL_VERSION,
-            id: id.into(),
-            code: code.to_owned(),
-            msg: msg.into(),
-        }
-    }
-}
-
 fn dispatch(line: &str, state: &SharedState, events: &mpsc::Sender<NodeEvent>) -> Response {
     let fallback_id = serde_json::from_str::<Value>(line)
         .ok()
@@ -1240,13 +1134,6 @@ fn handle(
             })
         }
     }
-}
-
-fn reject_version(v: u8, id: &str) -> Result<()> {
-    if v != CONTROL_VERSION {
-        bail!("control protocol version {v} is not supported (id {id})");
-    }
-    Ok(())
 }
 
 /// Client half: one request, one response, used by the CLI subcommands.
