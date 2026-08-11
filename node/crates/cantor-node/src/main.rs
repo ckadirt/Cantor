@@ -1,4 +1,5 @@
 mod accel;
+mod application;
 mod backends;
 mod catalog;
 mod checkpoints;
