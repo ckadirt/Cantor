@@ -5,6 +5,7 @@ mod context;
 mod errors;
 mod jobs;
 mod outcome;
+mod router;
 mod session;
 mod songs;
 mod transfers;
