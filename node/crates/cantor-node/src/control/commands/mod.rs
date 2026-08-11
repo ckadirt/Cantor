@@ -1,5 +1,5 @@
 mod backends;
-mod models;
+pub(super) mod models;
 pub(super) mod pairing;
 
 pub(super) use backends::run_backends;
