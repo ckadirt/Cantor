@@ -2,24 +2,21 @@ use std::path::Path;
 
 use anyhow::Result;
 use cantor_proto::{
-    ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails, MAX_CAPTION_BYTES, MAX_CFG,
-    MAX_CLIENT_REQUEST_ID_BYTES, MAX_LYRICS_BYTES, MAX_MODEL_SELECTOR_BYTES, MAX_PAGE_LIMIT,
-    MAX_SAFE_SEED, MAX_SONG_SECONDS, MAX_STEPS, MIN_CFG, MIN_SONG_SECONDS, MIN_STEPS, NodeInfo,
+    ClientMessage, DEFAULT_PAGE_LIMIT, ErrorCode, ErrorDetails, MAX_PAGE_LIMIT, NodeInfo,
     NodeMessage, PROTOCOL_VERSION,
 };
 use serde_json::Value;
 
 use crate::config::NodeConfig;
 use crate::library::{
-    ChangePageResult, ControlResult, JobControl, Library, MutationResult, PresenceMutation,
-    SongPageResult, Submission, SubmitResult,
+    ChangePageResult, JobControl, Library, MutationResult, PresenceMutation, SongPageResult,
 };
 use crate::pairing::PairOffer;
 use crate::secure::{SecureSession, TransportIdentity};
-use crate::store::Store;
 
 use super::auth::{AuthSession, AuthenticatedSession};
-use super::errors::{invalid_field, song_not_found, unauthenticated, unsupported_version};
+use super::errors::{invalid_field, song_not_found, unauthenticated};
+use super::jobs;
 use super::transfers::ArtifactTransferSession;
 
 #[derive(Default)]
@@ -145,193 +142,88 @@ impl ClientSession {
                 }
                 Ok(outcome.response)
             }
-            ClientMessage::Status { v, id } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(unsupported_version(id));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "status"));
-                };
-                Ok(NodeMessage::JobsPage {
-                    v: PROTOCOL_VERSION,
-                    id,
-                    jobs: library.list(context.principal_id, DEFAULT_PAGE_LIMIT)?,
-                    next_cursor: None,
-                })
-            }
+            ClientMessage::Status { v, id } => jobs::status(v, id, self.authenticated(), library),
             ClientMessage::JobsList {
                 v,
                 id,
                 states,
                 cursor,
                 limit,
-            } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "jobs"));
-                };
-                if cursor.is_some() {
-                    return Ok(invalid_field(id, "cursor"));
-                }
-                let limit = limit.unwrap_or(DEFAULT_PAGE_LIMIT);
-                if limit == 0 || limit > MAX_PAGE_LIMIT {
-                    return Ok(invalid_field(id, "limit"));
-                }
-                let mut jobs = library.list(context.principal_id, limit)?;
-                if let Some(states) = states {
-                    jobs.retain(|job| states.contains(&job.state));
-                }
-                Ok(NodeMessage::JobsPage {
-                    v: PROTOCOL_VERSION,
-                    id,
-                    jobs,
-                    next_cursor: None,
-                })
-            }
+            } => jobs::list(v, id, states, cursor, limit, self.authenticated(), library),
             ClientMessage::JobCreate {
                 v,
                 id,
                 client_request_id,
                 model,
                 generation,
-            } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "jobs"));
-                };
-                if let Some(field) = invalid_submission(&client_request_id, &model, &generation) {
-                    return Ok(invalid_field(id, field));
-                }
-                let variants = Store::new(config.model_root()).installed();
-                let Some(variant) = variants.iter().find(|variant| variant.selector() == model)
-                else {
-                    return Ok(NodeMessage::Error {
-                        v: PROTOCOL_VERSION,
-                        id: Some(id),
-                        code: ErrorCode::ModelNotInstalled,
-                        message: "That model is not installed on this node.".into(),
-                        retryable: false,
-                        details: Some(ErrorDetails::Model { selector: model }),
-                    });
-                };
-                let submission = Submission {
-                    client_request_id,
-                    model,
-                    generation,
-                };
-                match library.submit(
-                    context.principal_id,
-                    &context.client_public_key,
-                    &submission,
-                    variant,
-                    config.jobs.max_queued_per_principal,
-                    config.jobs.minimum_free_bytes,
-                )? {
-                    SubmitResult::Accepted(job) => Ok(NodeMessage::JobAccepted {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        job,
-                    }),
-                    SubmitResult::Conflict => Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::IdempotencyConflict,
-                        "That submission ID was already used for different content.",
-                        false,
-                    )),
-                    SubmitResult::QueueFull => Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::QueueFull,
-                        "This client's durable queue is full.",
-                        true,
-                    )),
-                    SubmitResult::InsufficientDisk => Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::InsufficientDisk,
-                        "The node is below its configured free-space reserve.",
-                        true,
-                    )),
-                }
-            }
+            } => jobs::create(
+                v,
+                id,
+                client_request_id,
+                model,
+                generation,
+                self.authenticated(),
+                config,
+                library,
+            ),
             ClientMessage::JobGet { v, id, job_id } => {
-                if v != PROTOCOL_VERSION {
-                    return Ok(NodeMessage::unsupported_version(Some(id)));
-                }
-                let Some(context) = self.authenticated() else {
-                    return Ok(unauthenticated(id, "jobs"));
-                };
-                match library.get(context.principal_id, &job_id)? {
-                    Some(job) => Ok(NodeMessage::JobDetail {
-                        v: PROTOCOL_VERSION,
-                        id,
-                        job,
-                    }),
-                    None => Ok(NodeMessage::error(
-                        Some(id),
-                        ErrorCode::NotFound,
-                        "That job was not found.",
-                        false,
-                    )),
-                }
+                jobs::get(v, id, job_id, self.authenticated(), library)
             }
             ClientMessage::JobPause {
                 v,
                 id,
                 job_id,
                 expected_revision,
-            } => control_job(
-                self,
-                library,
+            } => jobs::control(
                 v,
                 id,
                 job_id,
                 expected_revision,
                 JobControl::Pause,
+                self.authenticated(),
+                library,
             ),
             ClientMessage::JobResume {
                 v,
                 id,
                 job_id,
                 expected_revision,
-            } => control_job(
-                self,
-                library,
+            } => jobs::control(
                 v,
                 id,
                 job_id,
                 expected_revision,
                 JobControl::Resume,
+                self.authenticated(),
+                library,
             ),
             ClientMessage::JobCancel {
                 v,
                 id,
                 job_id,
                 expected_revision,
-            } => control_job(
-                self,
-                library,
+            } => jobs::control(
                 v,
                 id,
                 job_id,
                 expected_revision,
                 JobControl::Cancel,
+                self.authenticated(),
+                library,
             ),
             ClientMessage::JobRetry {
                 v,
                 id,
                 job_id,
                 expected_revision,
-            } => control_job(
-                self,
-                library,
+            } => jobs::control(
                 v,
                 id,
                 job_id,
                 expected_revision,
                 JobControl::Retry,
+                self.authenticated(),
+                library,
             ),
             ClientMessage::LibraryList {
                 v,
@@ -522,54 +414,6 @@ impl ClientSession {
     }
 }
 
-fn control_job(
-    session: &ClientSession,
-    library: &mut Library,
-    version: u8,
-    id: String,
-    job_id: String,
-    expected_revision: Option<u32>,
-    control: JobControl,
-) -> Result<NodeMessage> {
-    if version != PROTOCOL_VERSION {
-        return Ok(NodeMessage::unsupported_version(Some(id)));
-    }
-    let Some(context) = session.authenticated() else {
-        return Ok(unauthenticated(id, "jobs"));
-    };
-    Ok(
-        match library.control_job(context.principal_id, &job_id, expected_revision, control)? {
-            ControlResult::Updated(job) => NodeMessage::JobControlled {
-                v: PROTOCOL_VERSION,
-                id,
-                job,
-            },
-            ControlResult::Conflict(current) => NodeMessage::Error {
-                v: PROTOCOL_VERSION,
-                id: Some(id),
-                code: ErrorCode::RevisionConflict,
-                message: "The job changed before this control reached the node.".into(),
-                retryable: false,
-                details: Some(ErrorDetails::JobRevisionConflict { current }),
-            },
-            ControlResult::InvalidTransition(current) => NodeMessage::Error {
-                v: PROTOCOL_VERSION,
-                id: Some(id),
-                code: ErrorCode::InvalidTransition,
-                message: "That control is not valid in the job's current state.".into(),
-                retryable: false,
-                details: Some(ErrorDetails::JobState { current }),
-            },
-            ControlResult::NotFound => NodeMessage::error(
-                Some(id),
-                ErrorCode::NotFound,
-                "That job was not found.",
-                false,
-            ),
-        },
-    )
-}
-
 fn mutation_message(id: String, result: MutationResult) -> Result<NodeMessage> {
     Ok(match result {
         MutationResult::Updated(song) => NodeMessage::SongUpdated {
@@ -590,57 +434,6 @@ fn mutation_message(id: String, result: MutationResult) -> Result<NodeMessage> {
     })
 }
 
-fn invalid_submission(
-    client_request_id: &str,
-    model: &str,
-    generation: &cantor_proto::GenerationRequest,
-) -> Option<&'static str> {
-    if client_request_id.len() > MAX_CLIENT_REQUEST_ID_BYTES
-        || uuid::Uuid::parse_str(client_request_id).is_err()
-    {
-        return Some("client_request_id");
-    }
-    if model.is_empty() || model.len() > MAX_MODEL_SELECTOR_BYTES {
-        return Some("model");
-    }
-    if generation.caption.trim().is_empty()
-        || generation.caption.len() > MAX_CAPTION_BYTES as usize
-        || generation.caption.chars().any(char::is_control)
-    {
-        return Some("caption");
-    }
-    if generation.lyrics.as_ref().is_some_and(|lyrics| {
-        lyrics.len() > MAX_LYRICS_BYTES as usize
-            || lyrics
-                .chars()
-                .any(|c| c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
-    }) {
-        return Some("lyrics");
-    }
-    if generation
-        .duration
-        .is_some_and(|v| !(MIN_SONG_SECONDS..=MAX_SONG_SECONDS).contains(&v))
-    {
-        return Some("duration");
-    }
-    if generation
-        .steps
-        .is_some_and(|v| !(MIN_STEPS..=MAX_STEPS).contains(&v))
-    {
-        return Some("steps");
-    }
-    if generation
-        .cfg
-        .is_some_and(|v| !v.is_finite() || !(MIN_CFG..=MAX_CFG).contains(&v))
-    {
-        return Some("cfg");
-    }
-    if generation.seed.is_some_and(|seed| seed > MAX_SAFE_SEED) {
-        return Some("seed");
-    }
-    None
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -654,7 +447,7 @@ mod tests {
     use serde_json::json;
     use tempfile::tempdir;
 
-    use super::{ClientSession, invalid_submission};
+    use super::ClientSession;
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::library::Library;
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
@@ -928,23 +721,6 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    #[test]
-    fn seed_is_bounded_to_jsons_exact_integer_range() {
-        let request_id = uuid::Uuid::new_v4().to_string();
-        let request = cantor_proto::GenerationRequest {
-            caption: "seed".into(),
-            lyrics: None,
-            duration: None,
-            steps: None,
-            cfg: None,
-            seed: Some(cantor_proto::MAX_SAFE_SEED + 1),
-        };
-        assert_eq!(
-            invalid_submission(&request_id, "acestep:test", &request),
-            Some("seed")
-        );
     }
 
     #[test]

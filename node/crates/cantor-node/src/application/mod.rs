@@ -3,6 +3,7 @@
 mod auth;
 mod context;
 mod errors;
+mod jobs;
 mod outcome;
 mod session;
 mod transfers;
