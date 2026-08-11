@@ -342,8 +342,28 @@ RF0 will rerun and expand this baseline before moving production owners.
   Relay executes those effects under the existing lock and no longer infers
   domain behavior by matching response variants; response-before-refresh order
   remains unchanged.
+- `ClientSession` is now owned by `application/session.rs`, while the root module
+  is a compatibility re-export. `RequestContext` carries request-scoped runtime
+  inputs and stable protocol error constructors live in `application/errors.rs`;
+  relay calls the application façade instead of a transport-owned wrapper.
+- Authentication state and challenge verification now live in a dedicated
+  `AuthSession`. Focused tests pin challenge consumption, pending-state reset,
+  failed proof behavior, and transfer reset only after successful authentication.
+- Job scheduling is behind a seven-line `jobs` façade. Stop policy, planning,
+  native worker/runner ownership, and scheduler orchestration each have one
+  module without changing queue claim, retry, checkpoint, or event ordering.
+- Relay and control have both moved behind directory façades. Relay carrier bytes
+  are isolated and checked against the shared fixture corpus. Control wire and
+  Unix-socket ownership are isolated with the existing line framing, path bound,
+  symlink refusal, stale-socket replacement, and permission behavior intact.
+- Characterization now covers the control adapter's whole-connection 64-KiB
+  budget, short-versus-long version behavior, malformed-request survival, and
+  one-shot/streaming client terminal ordering before those clients are moved.
 - RF5 commits so far: `a502512`, `f11439e`, `8127764`, `309a219`, `4e7dcf1`,
-  and `8ac3e1e`. The combined strict Clippy and 156-test Rust matrix is green.
+  `8ac3e1e`, `986f382`, `43e52ea`, `596e9ab`, `1ab3011`, `3c6bc7a`,
+  `8e70193`, `a45fd41`, `2cc838b`, `26aced5`, and `7789a22` (plus note
+  commit `f93a08a`). Each integrated boundary passed formatting, strict
+  all-target Clippy, the full Rust workspace tests, and whitespace checks.
 
 ## Deviations
 
