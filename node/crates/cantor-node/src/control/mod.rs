@@ -8,17 +8,11 @@
 //! The wire format is line-delimited JSON using the same `{v, id, t, …}`
 //! envelope as the app protocol, so the two stay legible side by side.
 
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
-
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
-use crate::principal::PrincipalId;
 use crate::runtime::NodeEvent;
-use crate::store::Store;
 
 mod client;
 mod commands;
@@ -28,7 +22,7 @@ mod wire;
 
 pub use client::{CLIENT_TIMEOUT, request, request_streaming};
 use commands::{models, pairing};
-use commands::{run_backends, run_catalog, run_pull};
+use commands::{run_backends, run_catalog, run_generate, run_pull};
 pub use server::serve;
 #[cfg(test)]
 use server::serve_connection;
@@ -110,165 +104,6 @@ async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
         .await?;
     }
     Ok(())
-}
-
-/// Submits under the reserved local-operator principal and follows the same
-/// durable views the app receives. Inference belongs exclusively to `jobs`.
-async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
-    request: &Value,
-    state: &SharedState,
-    writer: &mut W,
-    id: &str,
-) -> Result<()> {
-    let caption = request
-        .get("caption")
-        .and_then(Value::as_str)
-        .context("generate needs a caption")?
-        .to_owned();
-    let selector = request
-        .get("model")
-        .and_then(Value::as_str)
-        .map(str::to_owned);
-    let output = request
-        .get("output")
-        .and_then(Value::as_str)
-        .map(PathBuf::from);
-    let detach = request
-        .get("detach")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    let principal = PrincipalId::local_operator();
-    let local_key = [0_u8; 32];
-
-    let (job, notify) = {
-        let mut locked = state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
-        let installed = Store::new(locked.config.model_root()).installed();
-        let variant = match &selector {
-            Some(selector) => installed
-                .iter()
-                .find(|variant| &variant.selector() == selector)
-                .with_context(|| {
-                    format!("{selector} is not installed — run `cantor pull {selector}`")
-                })?,
-            None => installed
-                .first()
-                .context("no model is installed — run `cantor pull acestep:1.5-fast`")?,
-        };
-        let submission = crate::library::Submission {
-            client_request_id: uuid::Uuid::new_v4().to_string(),
-            model: variant.selector(),
-            generation: cantor_proto::GenerationRequest {
-                caption: caption.clone(),
-                lyrics: None,
-                duration: None,
-                steps: None,
-                cfg: None,
-                seed: None,
-            },
-        };
-        let max_queued = locked.config.jobs.max_queued_per_principal;
-        let minimum_free = locked.config.jobs.minimum_free_bytes;
-        let job = match locked.library.submit(
-            principal,
-            &local_key,
-            &submission,
-            variant,
-            max_queued,
-            minimum_free,
-        )? {
-            crate::library::SubmitResult::Accepted(job) => job,
-            crate::library::SubmitResult::QueueFull => bail!("the local durable queue is full"),
-            crate::library::SubmitResult::InsufficientDisk => {
-                bail!("the node is below its free-space reserve")
-            }
-            crate::library::SubmitResult::Conflict => {
-                bail!("the generated local submission ID conflicted")
-            }
-        };
-        (job, Arc::clone(&locked.job_notify))
-    };
-    notify.notify_one();
-    write_line(
-        writer,
-        &json!({"v":CONTROL_VERSION,"id":id,"t":"generating",
-                "job_id":job.id,"model":job.model,"caption":caption,
-                "output":output.as_ref().map(|path| path.display().to_string())}),
-    )
-    .await?;
-    if detach {
-        return write_line(
-            writer,
-            &json!({"v":CONTROL_VERSION,"id":id,"t":"ok",
-                    "msg":format!("queued job {}", job.id)}),
-        )
-        .await;
-    }
-
-    let mut revision = job.revision;
-    loop {
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let current = state
-            .lock()
-            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
-            .library
-            .get(principal, &job.id)?
-            .context("the local job disappeared")?;
-        if current.revision > revision {
-            revision = current.revision;
-            let done = current.progress.as_ref().map_or(0, |value| value.completed);
-            let total = current
-                .progress
-                .as_ref()
-                .and_then(|value| value.total)
-                .unwrap_or(1);
-            write_line(
-                writer,
-                &json!({"v":CONTROL_VERSION,"id":id,"t":"progress",
-                        "role":current.stage.map(|stage| format!("{stage:?}").to_lowercase())
-                            .unwrap_or_else(|| format!("{:?}", current.state).to_lowercase()),
-                        "done":done,"total":total,"overall_done":done,
-                        "overall_total":total,"revision":current.revision}),
-            )
-            .await?;
-        }
-        match current.state {
-            cantor_proto::JobState::Completed => {
-                let canonical = state
-                    .lock()
-                    .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
-                    .library
-                    .verified_master_path(principal, &job.id)?;
-                if let Some(destination) = output.as_ref() {
-                    state
-                        .lock()
-                        .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
-                        .library
-                        .export_master(principal, &job.id, destination)?;
-                }
-                return write_line(
-                    writer,
-                    &json!({"v":CONTROL_VERSION,"id":id,"t":"ok",
-                            "msg":match output.as_ref() {
-                                Some(path) => format!("completed {} (exported to {})", canonical.display(), path.display()),
-                                None => format!("completed {}", canonical.display()),
-                            }}),
-                )
-                .await;
-            }
-            cantor_proto::JobState::Failed => {
-                bail!(
-                    "job {} failed: {}",
-                    job.id,
-                    current
-                        .error
-                        .map_or_else(|| "unknown error".into(), |error| error.message)
-                )
-            }
-            _ => {}
-        }
-    }
 }
 
 fn dispatch(line: &str, state: &SharedState, events: &mpsc::Sender<NodeEvent>) -> Response {
