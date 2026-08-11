@@ -67,19 +67,9 @@ import {
   rejectResponse,
   resolveResponse,
 } from './requestRegistry';
+import { RelaySocket } from './relaySocket';
 
-const RECONNECT_BASE_MS = 1_000;
-const RECONNECT_MAX_MS = 30_000;
-const RECONNECT_JITTER_MS = 250;
 const REQUEST_TIMEOUT_MS = 15_000;
-/**
- * Mobile networks drop idle sockets well before the relay would notice. The
- * relay answers this exact text frame from `setWebSocketAutoResponse` without
- * waking the Durable Object, so the keepalive is free on its side.
- */
-const KEEPALIVE_INTERVAL_MS = 25_000;
-const KEEPALIVE_PING = 'ping';
-const KEEPALIVE_PONG = 'pong';
 /** Matches `MAX_PETNAME_BYTES` in the node's `config.rs`. */
 const MAX_PETNAME_BYTES = 64;
 
@@ -115,12 +105,7 @@ export class SongRevisionConflict extends NodeRequestError {
 }
 
 export class BackendConnection {
-  private socket: WebSocket | null = null;
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private keepaliveTimer: ReturnType<typeof setInterval> | null = null;
-  private stopped = false;
-  private fatal = false;
-  private reconnectAttempt = 0;
+  private readonly relay: RelaySocket;
   private pairToken: string | undefined;
   private secureChannel: SecureChannel | null = null;
   private secureHandshakeId: string | null = null;
@@ -150,89 +135,38 @@ export class BackendConnection {
     this.pairToken = pairToken;
     this.confirmedTransport = backend.transport;
     this.requests = new RequestRegistry(kind => this.nextRequestId(kind));
+    this.relay = new RelaySocket(backendRoomUrl(backend), {
+      onBeforeConnect: () => {
+        this.clearPending('Backend reconnected before the request completed.');
+        this.resetSecure();
+        this.resetLibrarySync();
+        this.setSnapshot({
+          ...this.snapshot,
+          phase: 'connecting',
+          error: null,
+        });
+      },
+      onMessage: data => this.handleRelayMessage(data),
+      onSocketClosed: () => this.resetSecure(),
+      onReconnectScheduled: message => {
+        this.setSnapshot({
+          ...this.snapshot,
+          phase: 'disconnected',
+          error: message,
+          librarySyncing: false,
+        });
+      },
+    });
   }
 
   start(): void {
-    if (this.stopped) {
-      return;
-    }
-    this.connect();
+    this.relay.start();
   }
 
   stop(): void {
-    this.stopped = true;
+    this.relay.stop();
     this.resetSecure();
     this.clearPending('Backend connection stopped.');
-    if (this.reconnectTimer !== null) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-    this.stopKeepalive();
-    const socket = this.socket;
-    this.socket = null;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.close(1000, 'backend-stopped');
-    }
-  }
-
-  private connect(): void {
-    if (this.stopped || this.fatal) {
-      return;
-    }
-    this.clearPending('Backend reconnected before the request completed.');
-    this.resetSecure();
-    this.resetLibrarySync();
-    this.setSnapshot({
-      ...this.snapshot,
-      phase: 'connecting',
-      error: null,
-    });
-    let socket: WebSocket;
-    try {
-      socket = new WebSocket(backendRoomUrl(this.backend));
-    } catch (error) {
-      this.scheduleReconnect(readError(error));
-      return;
-    }
-    (socket as WebSocket & { binaryType: string }).binaryType = 'arraybuffer';
-    this.socket = socket;
-    socket.onopen = () => {
-      if (this.socket === socket) {
-        this.startKeepalive();
-      }
-    };
-    socket.onmessage = event => this.handleRelayMessage(event.data);
-    socket.onerror = () => {
-      // React Native follows this with onclose; that event owns retry timing.
-    };
-    socket.onclose = event => {
-      if (this.socket === socket) {
-        this.socket = null;
-        this.stopKeepalive();
-        this.resetSecure();
-      }
-      if (!this.stopped && !this.fatal) {
-        this.scheduleReconnect(
-          event.reason || `Relay connection closed (${event.code}).`,
-        );
-      }
-    };
-  }
-
-  private startKeepalive(): void {
-    this.stopKeepalive();
-    this.keepaliveTimer = setInterval(() => {
-      if (this.socket?.readyState === WebSocket.OPEN) {
-        this.socket.send(KEEPALIVE_PING);
-      }
-    }, KEEPALIVE_INTERVAL_MS);
-  }
-
-  private stopKeepalive(): void {
-    if (this.keepaliveTimer !== null) {
-      clearInterval(this.keepaliveTimer);
-      this.keepaliveTimer = null;
-    }
   }
 
   // Anything this build does not understand is skipped rather than treated as
@@ -243,7 +177,7 @@ export class BackendConnection {
       this.handleSecureBinary(data);
       return;
     }
-    if (typeof data !== 'string' || data === KEEPALIVE_PONG) {
+    if (typeof data !== 'string') {
       return;
     }
     let frame: unknown;
@@ -501,7 +435,7 @@ export class BackendConnection {
         return;
       }
       this.handshakeId = null;
-      this.reconnectAttempt = 0;
+      this.relay.resetReconnectAttempt();
       if (this.pairToken !== undefined) {
         this.pairToken = undefined;
         this.callbacks.onPairTokenConsumed();
@@ -698,7 +632,7 @@ export class BackendConnection {
   }
 
   private sendApplication(payload: ClientMessage): void {
-    if (this.socket?.readyState !== WebSocket.OPEN) {
+    if (!this.relay.isOpen()) {
       this.fail('Relay connection is not open.', false);
       return;
     }
@@ -710,7 +644,7 @@ export class BackendConnection {
       for (const ciphertext of this.secureChannel.encrypt(
         encodeControlInner(payload),
       )) {
-        this.socket.send(encodeClientCarrier(ciphertext));
+        this.relay.send(encodeClientCarrier(ciphertext));
       }
     } catch (error) {
       this.fail(`Secure channel failed: ${readError(error)}`, false);
@@ -718,11 +652,11 @@ export class BackendConnection {
   }
 
   private sendSecureText(payload: Record<string, unknown>): void {
-    if (this.socket?.readyState !== WebSocket.OPEN) {
+    if (!this.relay.isOpen()) {
       this.fail('Relay connection is not open.', false);
       return;
     }
-    this.socket.send(
+    this.relay.send(
       JSON.stringify({ v: RELAY_PROTOCOL_VERSION, t: 'tunnel', payload }),
     );
   }
@@ -1193,7 +1127,6 @@ export class BackendConnection {
   }
 
   private fail(message: string, fatal: boolean): void {
-    this.fatal = this.fatal || fatal;
     this.resetLibrarySync(false);
     this.resetSecure();
     this.setSnapshot({
@@ -1202,34 +1135,7 @@ export class BackendConnection {
       error: message,
       librarySyncing: false,
     });
-    const socket = this.socket;
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.close(fatal ? 1008 : 1011, fatal ? 'backend-error' : 'retry');
-    } else if (!fatal) {
-      this.scheduleReconnect(message);
-    }
-  }
-
-  private scheduleReconnect(message: string): void {
-    if (this.stopped || this.fatal || this.reconnectTimer !== null) {
-      return;
-    }
-    this.setSnapshot({
-      ...this.snapshot,
-      phase: 'disconnected',
-      error: message,
-      librarySyncing: false,
-    });
-    const exponential = Math.min(
-      RECONNECT_BASE_MS * 2 ** Math.min(this.reconnectAttempt, 15),
-      RECONNECT_MAX_MS,
-    );
-    const delay = exponential + Math.random() * RECONNECT_JITTER_MS;
-    this.reconnectAttempt += 1;
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connect();
-    }, delay);
+    this.relay.fail(message, fatal);
   }
 
   private nextRequestId(kind: string): string {
