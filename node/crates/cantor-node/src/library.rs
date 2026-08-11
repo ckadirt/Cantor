@@ -8,6 +8,7 @@ mod artifacts;
 mod jobs;
 mod rows;
 mod schema;
+mod songs;
 
 #[cfg(test)]
 mod contract_tests;
@@ -29,6 +30,11 @@ use self::artifacts::{inspect_wav, write_artifact_manifest};
 use self::jobs::MAX_ATTEMPTS;
 pub use self::jobs::{ControlResult, FinishResult, JobControl, Submission, SubmitResult, WorkItem};
 use self::rows::{JOB_VIEW_COLUMNS, enum_text, job_from_row};
+pub(crate) use self::songs::publish_delivery;
+#[allow(unused_imports)]
+pub use self::songs::{
+    ChangePage, ChangePageResult, MutationResult, PresenceMutation, SongPage, SongPageResult,
+};
 use crate::config::now_rfc3339;
 use crate::principal::PrincipalId;
 
@@ -93,7 +99,7 @@ impl Library {
         connection.busy_timeout(Duration::from_secs(5))?;
         schema::migrate(&connection)?;
         fs::set_permissions(&database, fs::Permissions::from_mode(FILE_MODE))?;
-        let cursor_key = crate::songs::load_or_create_cursor_key(&root)?;
+        let cursor_key = songs::load_or_create_cursor_key(&root)?;
         let mut library = Self {
             root,
             connection,
@@ -233,7 +239,7 @@ impl Library {
                      WHERE id=?1 AND state='finalizing'",
                     params![id, now_rfc3339()],
                 )?;
-                crate::songs::publish_song(&transaction, &id)?;
+                songs::publish_song(&transaction, &id)?;
                 transaction.commit()?;
                 continue;
             }
@@ -1302,7 +1308,6 @@ mod tests {
 
     #[test]
     fn signed_pages_sync_mutations_and_privacy_converge() {
-        use crate::songs::{ChangePageResult, MutationResult, PresenceMutation, SongPageResult};
         use cantor_proto::SongPatch;
 
         let temporary = tempdir().unwrap();

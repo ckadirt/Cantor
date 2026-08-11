@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use uuid::Uuid;
 
+use super::{ArtifactRecord, Library};
 use crate::config::now_rfc3339;
-use crate::library::{ArtifactRecord, Library};
 use crate::principal::PrincipalId;
 
 const FILE_MODE: u32 = 0o600;
@@ -70,7 +70,7 @@ struct CursorPayload {
     include_trashed: bool,
 }
 
-pub fn load_or_create_cursor_key(root: &Path) -> Result<[u8; 32]> {
+pub(super) fn load_or_create_cursor_key(root: &Path) -> Result<[u8; 32]> {
     let path = root.join("cursor.key");
     if path.exists() {
         let metadata = fs::symlink_metadata(&path)?;
@@ -98,7 +98,7 @@ pub fn load_or_create_cursor_key(root: &Path) -> Result<[u8; 32]> {
 
 /// Called inside the M2 finalization transaction. The artifact row must already
 /// exist; job completion and this publication commit together.
-pub fn publish_song(transaction: &Transaction<'_>, id: &str) -> Result<(SongHeader, u64)> {
+pub(super) fn publish_song(transaction: &Transaction<'_>, id: &str) -> Result<(SongHeader, u64)> {
     if let Some(song) = header_by_id(transaction, None, id)? {
         let revision = library_revision_for_hex(transaction, &song.1)?;
         return Ok((song.0, revision));
@@ -152,7 +152,10 @@ pub fn publish_song(transaction: &Transaction<'_>, id: &str) -> Result<(SongHead
 /// Makes a newly indexed delivery artifact visible through the owner's normal
 /// revision stream. Artifact bytes stay out of change notifications; clients
 /// learn only that the song header should be refreshed.
-pub fn publish_delivery(transaction: &Transaction<'_>, id: &str) -> Result<(PrincipalId, u64)> {
+pub(crate) fn publish_delivery(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> Result<(PrincipalId, u64)> {
     let principal: String = transaction.query_row(
         "SELECT principal_id FROM songs WHERE id=?1 AND trashed_at IS NULL",
         params![id],

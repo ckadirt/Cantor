@@ -118,7 +118,7 @@ impl Library {
         }
         insert_artifact(&transaction, &candidate.job_id, &record)?;
         let (principal, revision) =
-            crate::songs::publish_delivery(&transaction, &candidate.job_id)?;
+            crate::library::publish_delivery(&transaction, &candidate.job_id)?;
         if principal != candidate.principal_id {
             bail!("delivery owner changed during publication");
         }

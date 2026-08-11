@@ -16,11 +16,13 @@ use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde_json::Value;
 
 use crate::config::{NodeConfig, sanitize_petname};
-use crate::library::{ControlResult, JobControl, Library, Submission, SubmitResult};
+use crate::library::{
+    ChangePageResult, ControlResult, JobControl, Library, MutationResult, PresenceMutation,
+    SongPageResult, Submission, SubmitResult,
+};
 use crate::pairing::PairOffer;
 use crate::principal::PrincipalId;
 use crate::secure::{SecureSession, TransportIdentity};
-use crate::songs::{ChangePageResult, MutationResult, PresenceMutation, SongPageResult};
 use crate::store::Store;
 
 const CHALLENGE_BYTES: usize = 32;
