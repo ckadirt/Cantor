@@ -1,5 +1,6 @@
 import type { ClientMessage } from '../../../protocol/ClientMessage';
 import { readError } from '../core/errors';
+import { SECURE_NEGOTIATION_VERSION } from '../core/transport';
 import { isRecord } from '../core/validation';
 import {
   buildHandshakePrologue,
@@ -47,7 +48,7 @@ export class SecureTunnel {
     this.reset();
     this.handshakeId = handshakeId;
     this.callbacks.sendText({
-      v: 1,
+      v: SECURE_NEGOTIATION_VERSION,
       t: 'secure.init',
       id: handshakeId,
       suite: TRANSPORT_SUITE,
@@ -73,7 +74,7 @@ export class SecureTunnel {
     }
     if (
       payload.t === 'secure.offer' &&
-      payload.v === 1 &&
+      payload.v === SECURE_NEGOTIATION_VERSION &&
       payload.id === this.handshakeId
     ) {
       if (this.channel !== null || this.ready) {
@@ -109,7 +110,7 @@ export class SecureTunnel {
         this.channel = channel;
         this.pendingTransport = descriptor;
         this.callbacks.sendText({
-          v: 1,
+          v: SECURE_NEGOTIATION_VERSION,
           t: 'secure.handshake',
           id: handshakeId,
           step: 1,
@@ -122,7 +123,7 @@ export class SecureTunnel {
     }
     if (
       payload.t === 'secure.handshake' &&
-      payload.v === 1 &&
+      payload.v === SECURE_NEGOTIATION_VERSION &&
       payload.id === this.handshakeId &&
       payload.step === 2 &&
       typeof payload.data === 'string' &&

@@ -1,6 +1,9 @@
 package com.cantor.app.security
 
 import android.app.Application
+import com.cantor.app.transport.GeneratedTransport.MAX_HANDSHAKE_MESSAGE_BYTES
+import com.cantor.app.transport.GeneratedTransport.NOISE_AUTHENTICATION_TAG_BYTES
+import com.cantor.app.transport.GeneratedTransport.NOISE_PROTOCOL_NAME
 import com.facebook.react.bridge.ReactApplicationContext
 import com.southernstorm.noise.protocol.CipherStatePair
 import com.southernstorm.noise.protocol.HandshakeState
@@ -17,9 +20,6 @@ import org.junit.runner.RunWith
 import org.mockito.Mockito.mock
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
-
-private const val NOISE_PROTOCOL = "Noise_NK_25519_ChaChaPoly_SHA256"
-private const val MAX_HANDSHAKE_BYTES = 4 * 1024
 
 @RunWith(RobolectricTestRunner::class)
 @Config(application = Application::class, manifest = Config.NONE, sdk = [35])
@@ -96,7 +96,7 @@ class TransportFixtureTest {
         Base64.getEncoder().encodeToString(prologue),
     )
 
-    val responder = HandshakeState(NOISE_PROTOCOL, HandshakeState.RESPONDER)
+    val responder = HandshakeState(NOISE_PROTOCOL_NAME, HandshakeState.RESPONDER)
     try {
       responder.localKeyPair.setPrivateKey(transportSecret, 0)
       responder.setPrologue(prologue, 0, prologue.size)
@@ -104,7 +104,7 @@ class TransportFixtureTest {
       val first = Base64.getUrlDecoder().decode(firstEncoded)
       val empty = ByteArray(0)
       assertEquals(0, responder.readMessage(first, 0, first.size, empty, 0))
-      val second = ByteArray(MAX_HANDSHAKE_BYTES)
+      val second = ByteArray(MAX_HANDSHAKE_MESSAGE_BYTES)
       val secondLength = responder.writeMessage(second, 0, null, 0, 0)
       val secondEncoded = Base64.getUrlEncoder().withoutPadding().encodeToString(
           second.copyOf(secondLength),
@@ -126,7 +126,7 @@ class TransportFixtureTest {
       cipher: com.southernstorm.noise.protocol.CipherState,
       plaintext: ByteArray,
   ): ByteArray {
-    val output = ByteArray(plaintext.size + 16)
+    val output = ByteArray(plaintext.size + NOISE_AUTHENTICATION_TAG_BYTES)
     val length = cipher.encryptWithAd(null, plaintext, 0, output, 0, plaintext.size)
     return output.copyOf(length)
   }

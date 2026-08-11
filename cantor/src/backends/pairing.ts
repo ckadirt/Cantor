@@ -4,11 +4,11 @@ import { sha256 } from '@noble/hashes/sha2.js';
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import type { PairingRequest } from './types';
 import {
-  SECURE_CHANNEL_VERSION,
+  TRANSPORT_DESCRIPTOR_VERSION,
   verifyTransportDescriptor,
 } from '../security/descriptor';
+import { ED25519_PUBLIC_KEY_BYTES } from '../core/transport';
 
-const ED25519_PUBLIC_KEY_BYTES = 32;
 const PAIR_TOKEN_BYTES = 32;
 const MAX_PETNAME_BYTES = 64;
 const PAIR_PROOF_DOMAIN = utf8ToBytes('cantor-pair-proof-v1');
@@ -82,7 +82,7 @@ export function parsePairingUri(value: string): PairingRequest {
 
   const transport = verifyTransportDescriptor(
     {
-      schema: SECURE_CHANNEL_VERSION,
+      schema: TRANSPORT_DESCRIPTOR_VERSION,
       node_ed25519: nodePubkey,
       transport_suite: transportSuite,
       transport_key_id: transportKeyId,
