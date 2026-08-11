@@ -18,7 +18,6 @@ mod secure;
 mod service;
 mod session;
 mod signing;
-mod songs;
 mod store;
 mod update;
 

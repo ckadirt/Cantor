@@ -94,7 +94,7 @@ impl Library {
             params![work.id],
             |row| job_from_row(row, 0),
         )?;
-        let (song, library_revision) = crate::songs::publish_song(&transaction, &work.id)?;
+        let (song, library_revision) = super::songs::publish_song(&transaction, &work.id)?;
         transaction.commit()?;
         write_status(&work.artifact_directory, &job, work.attempt)?;
         Ok(Some((job, record, song, library_revision)))
