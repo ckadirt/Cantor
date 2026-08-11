@@ -4,6 +4,11 @@ This file is durable working context for coding agents. Treat it as guidance for
 all work under `cantor/`. The code remains the source of truth when details drift;
 update this file when the product direction or established motion rules change.
 
+For the app's module map, dependency rules, extension recipes, and review
+checklist, see [`../docs/refactor/hacking-app.md`](../docs/refactor/hacking-app.md).
+For where a change belongs across the whole repository, see
+[`../docs/refactor/architecture.md`](../docs/refactor/architecture.md).
+
 ## Product vision
 
 Cantor is a local-first Android song-generation app built around ACE-Step 1.5

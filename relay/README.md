@@ -1,5 +1,10 @@
 # cantor-relay
 
+Changing this Worker? Read
+[`../docs/refactor/hacking-relay.md`](../docs/refactor/hacking-relay.md) first,
+and [`../docs/refactor/hacking-protocol.md`](../docs/refactor/hacking-protocol.md)
+before touching carrier framing.
+
 The relay is a Cloudflare Worker backed by one hibernating `NodeRoom` Durable
 Object per node public key. It verifies node ownership, reports node presence,
 splices opaque tunnel payloads between a node and its attached clients, and
