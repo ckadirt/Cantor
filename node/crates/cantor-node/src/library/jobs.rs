@@ -17,9 +17,10 @@ use crate::config::now_rfc3339;
 use crate::principal::PrincipalId;
 use crate::store::InstalledVariant;
 
+use super::artifacts::hex;
 use super::rows::{JOB_VIEW_COLUMNS, enum_text, job_from_row};
 use super::{
-    AcceptedModel, AcceptedRequestSidecar, Library, RequestSidecar, accepted_sidecar_for, hex,
+    AcceptedModel, AcceptedRequestSidecar, Library, RequestSidecar, accepted_sidecar_for,
     prepare_real_directory, write_json_atomic, write_status,
 };
 
