@@ -2,8 +2,8 @@
 
 ## Status
 
-Approved direction. RF0 through RF3 are complete; RF4 node runtime and persistence
-framework extraction is next.
+Approved direction. RF0 through RF4 are complete; RF5 node application and adapter
+framework extraction is current.
 
 ## Objective
 

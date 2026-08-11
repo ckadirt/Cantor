@@ -7,8 +7,8 @@ the reasoning only at the end.
 ## Program status
 
 - Started: 2026-08-09
-- Current milestone: RF4 node runtime and persistence framework
-- Production refactor code: RF1, RF2, and RF3 complete
+- Current milestone: RF5 node application and adapter framework
+- Production refactor code: RF1 through RF4 complete
 - Last completed product milestone: M6, commit `d3f890d`
 
 ## Decisions
@@ -294,6 +294,41 @@ RF0 will rerun and expand this baseline before moving production owners.
   `0df8134`, and `0351d20` (plus start note `e7bc49d`). After each extraction,
   formatting, strict workspace Clippy, all 141 Rust tests, and whitespace checks
   passed.
+
+### 2026-08-11 — RF4 completed
+
+- Delivery candidate selection, publication, verification, and indexed manifests
+  now belong to `library/artifacts.rs`. `delivery.rs` owns only worker/retry/event
+  orchestration and the Opus encoder. The existing SQL-before-manifest ordering
+  and all worker skip behavior remain unchanged.
+- Startup reconciliation and interrupted-job recovery live in
+  `library/recovery.rs`. Request/status sidecars and the shared library durable
+  write primitives live in `library/sidecars.rs` and `library/durable_fs.rs`;
+  checkpoint and cursor-key writers remain separate because their contracts and
+  errors differ.
+- Three delivery tests now pin newest/skipped/trashed selection, publication
+  rollback across artifact/song/principal revisions, canonical manifest order,
+  and the existing post-commit manifest-failure behavior.
+- `Library` now has private root/connection/cursor-key fields. The one sibling
+  test that previously inserted raw SQL now uses a test-only fixture method
+  owned by the library module.
+- No persistence trait was added: RF4 has one real SQLite implementation and one
+  transaction authority. Worker-facing ports will be introduced in RF5 where a
+  fake implementation has an actual consumer.
+- Final RF4 commits: `2bf6516`, `2c970cb`, and `caf7aab`. Formatting, strict
+  all-target/all-feature Clippy, 117 node tests, 27 protocol tests, and whitespace
+  checks pass. The physical M2 library was inspected read-only: SQLite
+  `quick_check` returned `ok`, migrations remain exactly 1–5, and the current
+  rows are 9 jobs, 5 songs, 10 artifacts, and 13 changes.
+
+### 2026-08-11 — RF5 started
+
+- RF5 will separate application decisions from relay/control/worker adapters in
+  small behavior-preserving steps. Explicit outcome/effect types come before
+  handler splitting so event timing remains testable.
+- The first honest ports are the delivery encoder/worker boundary and the native
+  generation-driver boundary. Dedicated native-thread ownership, cached engine
+  sessions, retry policy, and best-effort event publication remain fixed.
 
 ## Deviations
 
