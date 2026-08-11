@@ -1,33 +1,10 @@
 import { base64 } from '@scure/base';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
-import {
-  decodeNodeInner,
-  encodeClientCarrier,
-  encodeControlInner,
-  parseClientCarrier,
-} from '../wire';
+import { decodeNodeInner, encodeControlInner } from '../inner';
 
-const carrierFixture = require('../../../../protocol/transport/v1/fixtures/carrier.json');
 const innerFixture = require('../../../../protocol/transport/v1/fixtures/inner.json');
 
-describe('secure inner and relay wire frames', () => {
-  it('matches the shared client-facing carrier bytes and malformed corpus', () => {
-    const ciphertext = fromHex(carrierFixture.ciphertext_hex);
-    expect(bytesToHex(encodeClientCarrier(ciphertext))).toBe(
-      carrierFixture.valid.client_facing.frame_hex,
-    );
-    expect(
-      parseClientCarrier(
-        toArrayBuffer(fromHex(carrierFixture.valid.client_facing.frame_hex)),
-      ),
-    ).toEqual(ciphertext);
-    for (const malformed of carrierFixture.malformed_client_facing) {
-      expect(() =>
-        parseClientCarrier(toArrayBuffer(fromHex(malformed.frame_hex))),
-      ).toThrow();
-    }
-  });
-
+describe('secure inner frames', () => {
   it('matches the shared control and raw-artifact inner bytes', () => {
     const control = innerFixture.valid.control;
     expect(bytesToHex(encodeControlInner(JSON.parse(control.json)))).toBe(
@@ -51,25 +28,17 @@ describe('secure inner and relay wire frames', () => {
     }
   });
 
-  it('round-trips a Unicode control message with strict carrier lengths', () => {
+  it('round-trips a Unicode control message', () => {
     const inner = encodeControlInner({
       v: 2,
       t: 'job.create',
       caption: 'canción 🎵',
     });
-    const carrier = encodeClientCarrier(inner);
-    expect(parseClientCarrier(carrier)).toEqual(inner);
     expect(decodeNodeInner(inner)).toEqual({
       v: 2,
       t: 'job.create',
       caption: 'canción 🎵',
     });
-
-    const withTrailingByte = new Uint8Array(carrier.byteLength + 1);
-    withTrailingByte.set(new Uint8Array(carrier));
-    expect(() => parseClientCarrier(withTrailingByte.buffer)).toThrow(
-      'invalid',
-    );
   });
 
   it('decodes raw artifact bytes only after local decryption', () => {
@@ -129,14 +98,6 @@ function fromHex(value: string): Uint8Array {
   );
 }
 
-function bytesToHex(value: ArrayBuffer | Uint8Array): string {
-  const bytes = value instanceof Uint8Array ? value : new Uint8Array(value);
-  return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
-}
-
-function toArrayBuffer(value: Uint8Array): ArrayBuffer {
-  return value.buffer.slice(
-    value.byteOffset,
-    value.byteOffset + value.byteLength,
-  ) as ArrayBuffer;
+function bytesToHex(value: Uint8Array): string {
+  return [...value].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }

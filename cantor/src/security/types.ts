@@ -1,7 +1,12 @@
-export const TRANSPORT_SUITE = 'noise-nk-25519-chachapoly-sha256-v1' as const;
+import {
+  TRANSPORT_DESCRIPTOR_VERSION,
+  TRANSPORT_SUITE_ID,
+} from '../core/transport';
+
+export const TRANSPORT_SUITE = TRANSPORT_SUITE_ID;
 
 export type TransportDescriptor = {
-  schema: 1;
+  schema: typeof TRANSPORT_DESCRIPTOR_VERSION;
   node_ed25519: string;
   transport_suite: typeof TRANSPORT_SUITE;
   transport_key_id: string;

@@ -8,6 +8,7 @@ internal object GeneratedTransport {
   const val NOISE_AUTHENTICATION_TAG_BYTES: Int = 16
   const val FRAGMENT_RECORD_KIND: Byte = 1
   const val FRAGMENT_RECORD_HEADER_BYTES: Int = 18
+  const val X25519_KEY_BYTES: Int = 32
   const val MAX_HANDSHAKE_MESSAGE_BYTES: Int = 4_096
   const val MAX_NOISE_PLAINTEXT_BYTES: Int = 61_440
   const val MAX_SECURE_CIPHERTEXT_BYTES: Int = 98_304

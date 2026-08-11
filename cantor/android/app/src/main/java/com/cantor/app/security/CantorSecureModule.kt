@@ -1,6 +1,19 @@
 package com.cantor.app.security
 
 import android.util.Base64
+import com.cantor.app.transport.GeneratedTransport.EXPECTED_PROLOGUE_BYTES
+import com.cantor.app.transport.GeneratedTransport.FRAGMENT_RECORD_HEADER_BYTES
+import com.cantor.app.transport.GeneratedTransport.FRAGMENT_RECORD_KIND
+import com.cantor.app.transport.GeneratedTransport.MAX_FRAGMENT_DATA_BYTES
+import com.cantor.app.transport.GeneratedTransport.MAX_HANDSHAKE_MESSAGE_BYTES
+import com.cantor.app.transport.GeneratedTransport.MAX_LOGICAL_INNER_BYTES
+import com.cantor.app.transport.GeneratedTransport.MAX_SECURE_CIPHERTEXT_BYTES
+import com.cantor.app.transport.GeneratedTransport.MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION
+import com.cantor.app.transport.GeneratedTransport.MAX_SESSION_RECORDS_PER_DIRECTION
+import com.cantor.app.transport.GeneratedTransport.NOISE_AUTHENTICATION_TAG_BYTES
+import com.cantor.app.transport.GeneratedTransport.NOISE_PROTOCOL_NAME
+import com.cantor.app.transport.GeneratedTransport.SECURE_RECORD_VERSION
+import com.cantor.app.transport.GeneratedTransport.X25519_KEY_BYTES
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
@@ -10,19 +23,9 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 private const val MODULE_NAME = "CantorSecure"
-private const val NOISE_PROTOCOL = "Noise_NK_25519_ChaChaPoly_SHA256"
-private const val CHANNEL_VERSION: Byte = 1
-private const val RECORD_FRAGMENT: Byte = 1
+
+/** How many secure sessions one app process may keep open. Local policy. */
 private const val MAX_CHANNELS = 16
-private const val MAX_HANDSHAKE_BYTES = 4 * 1024
-private const val MAX_LOGICAL_BYTES = 1024 * 1024
-private const val MAX_NOISE_PLAINTEXT_BYTES = 60 * 1024
-private const val FRAGMENT_HEADER_BYTES = 18
-private const val MAX_FRAGMENT_DATA_BYTES = MAX_NOISE_PLAINTEXT_BYTES - FRAGMENT_HEADER_BYTES
-private const val MAX_CIPHERTEXT_BYTES = 96 * 1024
-private const val MAX_SESSION_RECORDS = 1_000_000L
-private const val MAX_SESSION_BYTES = 1024L * 1024L * 1024L
-private const val EXPECTED_PROLOGUE_BYTES = 123
 private val BASE64URL = Regex("^[A-Za-z0-9_-]+$")
 private val BASE64 = Regex("^[A-Za-z0-9+/]+={0,2}$")
 
@@ -51,9 +54,11 @@ class CantorSecureModule(
         drop(sessionId)
         val remote = decodeBase64Url(remotePublicKey, "transport public key")
         val prologue = decodeBase64(encodedPrologue, "secure prologue")
-        require(remote.size == 32) { "Transport public key must contain 32 bytes." }
+        require(remote.size == X25519_KEY_BYTES) {
+          "Transport public key must contain $X25519_KEY_BYTES bytes."
+        }
         require(prologue.size == EXPECTED_PROLOGUE_BYTES) { "Secure prologue has the wrong size." }
-        val handshake = HandshakeState(NOISE_PROTOCOL, HandshakeState.INITIATOR)
+        val handshake = HandshakeState(NOISE_PROTOCOL_NAME, HandshakeState.INITIATOR)
         try {
           handshake.remotePublicKey.setPublicKey(remote, 0)
           handshake.setPrologue(prologue, 0, prologue.size)
@@ -61,10 +66,10 @@ class CantorSecureModule(
           require(handshake.action == HandshakeState.WRITE_MESSAGE) {
             "Noise initiator is in the wrong state."
           }
-          val message = ByteArray(MAX_HANDSHAKE_BYTES)
+          val message = ByteArray(MAX_HANDSHAKE_MESSAGE_BYTES)
           try {
             val length = handshake.writeMessage(message, 0, null, 0, 0)
-            require(length in 1..MAX_HANDSHAKE_BYTES) { "Noise handshake message is invalid." }
+            require(length in 1..MAX_HANDSHAKE_MESSAGE_BYTES) { "Noise handshake message is invalid." }
             channels[sessionId] = Channel(handshake = handshake)
             encodeBase64Url(message.copyOf(length))
           } finally {
@@ -89,7 +94,7 @@ class CantorSecureModule(
       }
       val message = decodeBase64Url(encodedMessage, "Noise handshake response")
       try {
-        require(message.size in 1..MAX_HANDSHAKE_BYTES) {
+        require(message.size in 1..MAX_HANDSHAKE_MESSAGE_BYTES) {
           "Noise handshake response is outside its bound."
         }
         val empty = ByteArray(0)
@@ -116,7 +121,7 @@ class CantorSecureModule(
     try {
       val inner = decodeBase64(encodedInner, "secure inner message")
       try {
-        require(inner.isNotEmpty() && inner.size <= MAX_LOGICAL_BYTES) {
+        require(inner.isNotEmpty() && inner.size <= MAX_LOGICAL_INNER_BYTES) {
           "Secure inner message is outside its bound."
         }
         require(channel.sendMessageId <= 0xffff_ffffL) {
@@ -128,10 +133,10 @@ class CantorSecureModule(
         var offset = 0
         for (index in 0 until fragmentCount) {
           val fragmentLength = minOf(MAX_FRAGMENT_DATA_BYTES, inner.size - offset)
-          val record = ByteArray(FRAGMENT_HEADER_BYTES + fragmentLength)
+          val record = ByteArray(FRAGMENT_RECORD_HEADER_BYTES + fragmentLength)
           ByteBuffer.wrap(record).order(ByteOrder.BIG_ENDIAN).apply {
-            put(CHANNEL_VERSION)
-            put(RECORD_FRAGMENT)
+            put(SECURE_RECORD_VERSION)
+            put(FRAGMENT_RECORD_KIND)
             putInt(channel.sendMessageId.toInt())
             putShort(index.toShort())
             putShort(fragmentCount.toShort())
@@ -139,7 +144,7 @@ class CantorSecureModule(
             putInt(fragmentLength)
             put(inner, offset, fragmentLength)
           }
-          val ciphertext = ByteArray(record.size + 16)
+          val ciphertext = ByteArray(record.size + NOISE_AUTHENTICATION_TAG_BYTES)
           try {
             checkSendLimit(channel, ciphertext.size)
             val length = requireCiphers(channel).sender.encryptWithAd(
@@ -150,7 +155,7 @@ class CantorSecureModule(
                 0,
                 record.size,
             )
-            require(length == ciphertext.size && length <= MAX_CIPHERTEXT_BYTES) {
+            require(length == ciphertext.size && length <= MAX_SECURE_CIPHERTEXT_BYTES) {
               "Noise ciphertext exceeded the carrier bound."
             }
             channel.sentRecords += 1
@@ -180,7 +185,10 @@ class CantorSecureModule(
     try {
       val ciphertext = decodeBase64(encodedCiphertext, "Noise ciphertext")
       try {
-        require(ciphertext.size in 17..MAX_CIPHERTEXT_BYTES) {
+        require(
+            ciphertext.size in
+                (NOISE_AUTHENTICATION_TAG_BYTES + 1)..MAX_SECURE_CIPHERTEXT_BYTES,
+        ) {
           "Noise ciphertext is outside the carrier bound."
         }
         checkReceiveLimit(channel, ciphertext.size)
@@ -230,9 +238,9 @@ class CantorSecureModule(
   }
 
   private fun acceptFragment(channel: Channel, plaintext: ByteArray, length: Int): ByteArray? {
-    require(length >= FRAGMENT_HEADER_BYTES) { "Secure fragment is truncated." }
+    require(length >= FRAGMENT_RECORD_HEADER_BYTES) { "Secure fragment is truncated." }
     val buffer = ByteBuffer.wrap(plaintext, 0, length).order(ByteOrder.BIG_ENDIAN)
-    require(buffer.get() == CHANNEL_VERSION && buffer.get() == RECORD_FRAGMENT) {
+    require(buffer.get() == SECURE_RECORD_VERSION && buffer.get() == FRAGMENT_RECORD_KIND) {
       "Secure fragment header is invalid."
     }
     val messageId = buffer.int.toLong() and 0xffff_ffffL
@@ -244,9 +252,9 @@ class CantorSecureModule(
         messageId == channel.receiveMessageId &&
             fragmentCount > 0 &&
             fragmentIndex < fragmentCount &&
-            totalLength in 1..MAX_LOGICAL_BYTES &&
+            totalLength in 1..MAX_LOGICAL_INNER_BYTES &&
             fragmentLength in 1..MAX_FRAGMENT_DATA_BYTES &&
-            length == FRAGMENT_HEADER_BYTES + fragmentLength,
+            length == FRAGMENT_RECORD_HEADER_BYTES + fragmentLength,
     ) { "Secure fragment bounds or ordering are invalid." }
     if (fragmentIndex == 0) {
       require(channel.reassembly == null) { "Secure messages overlap." }
@@ -265,8 +273,8 @@ class CantorSecureModule(
     plaintext.copyInto(
         assembly.bytes,
         assembly.written,
-        FRAGMENT_HEADER_BYTES,
-        FRAGMENT_HEADER_BYTES + fragmentLength,
+        FRAGMENT_RECORD_HEADER_BYTES,
+        FRAGMENT_RECORD_HEADER_BYTES + fragmentLength,
     )
     assembly.written += fragmentLength
     assembly.nextFragment += 1
@@ -279,15 +287,15 @@ class CantorSecureModule(
 
   private fun checkSendLimit(channel: Channel, bytes: Int) {
     require(
-        channel.sentRecords < MAX_SESSION_RECORDS &&
-            channel.sentBytes + bytes <= MAX_SESSION_BYTES,
+        channel.sentRecords < MAX_SESSION_RECORDS_PER_DIRECTION &&
+            channel.sentBytes + bytes <= MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION,
     ) { "Secure send key limit reached; reconnect." }
   }
 
   private fun checkReceiveLimit(channel: Channel, bytes: Int) {
     require(
-        channel.receivedRecords < MAX_SESSION_RECORDS &&
-            channel.receivedBytes + bytes <= MAX_SESSION_BYTES,
+        channel.receivedRecords < MAX_SESSION_RECORDS_PER_DIRECTION &&
+            channel.receivedBytes + bytes <= MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION,
     ) { "Secure receive key limit reached; reconnect." }
   }
 

@@ -419,6 +419,7 @@ function renderAndroidKotlin(spec, derived) {
   const n = spec.noise;
   const k = spec.kinds;
   const h = spec.headers;
+  const s = spec.sizes;
   const b = spec.bounds;
   return `package com.cantor.app.transport
 
@@ -429,6 +430,7 @@ internal object GeneratedTransport {
   const val NOISE_AUTHENTICATION_TAG_BYTES: Int = ${kotlinNumber(n.authentication_tag_bytes)}
   const val FRAGMENT_RECORD_KIND: Byte = ${k.fragment_record}
   const val FRAGMENT_RECORD_HEADER_BYTES: Int = ${kotlinNumber(h.fragment_record_bytes)}
+  const val X25519_KEY_BYTES: Int = ${kotlinNumber(s.x25519_key_bytes)}
   const val MAX_HANDSHAKE_MESSAGE_BYTES: Int = ${kotlinNumber(b.handshake_message_bytes)}
   const val MAX_NOISE_PLAINTEXT_BYTES: Int = ${kotlinNumber(b.noise_plaintext_bytes)}
   const val MAX_SECURE_CIPHERTEXT_BYTES: Int = ${kotlinNumber(b.secure_ciphertext_bytes)}

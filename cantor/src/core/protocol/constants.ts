@@ -1,2 +1,4 @@
-export const APPLICATION_PROTOCOL_VERSION = 2;
-export const RELAY_PROTOCOL_VERSION = 1;
+export {
+  APPLICATION_PROTOCOL_VERSION,
+  RELAY_PROTOCOL_VERSION,
+} from '../transport';

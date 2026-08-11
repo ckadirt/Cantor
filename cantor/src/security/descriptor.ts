@@ -3,18 +3,26 @@ import * as ed from '@noble/ed25519';
 import { sha256, sha512 } from '@noble/hashes/sha2.js';
 import { concatBytes, utf8ToBytes } from '@noble/hashes/utils.js';
 import { APPLICATION_PROTOCOL_VERSION } from '../core/protocol';
+import {
+  CHANNEL_NONCE_BYTES,
+  ED25519_PUBLIC_KEY_BYTES,
+  ED25519_SIGNATURE_BYTES,
+  SECURE_CARRIER_VERSION,
+  SECURE_HANDSHAKE_PROLOGUE_DOMAIN,
+  SHA256_HEX_CHARS,
+  TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN,
+  TRANSPORT_DESCRIPTOR_VERSION,
+  X25519_KEY_BYTES,
+} from '../core/transport';
 import { isRecord } from '../core/validation';
 import { TRANSPORT_SUITE, type TransportDescriptor } from './types';
 
 export { TRANSPORT_SUITE } from './types';
-export const SECURE_CHANNEL_VERSION = 1;
-export const SECURE_CARRIER_VERSION = 1;
+export { SECURE_CARRIER_VERSION, TRANSPORT_DESCRIPTOR_VERSION };
 
-const KEY_BYTES = 32;
-const SIGNATURE_BYTES = 64;
-const DESCRIPTOR_DOMAIN = utf8ToBytes('cantor-transport-binding-v1');
-const PROLOGUE_DOMAIN = utf8ToBytes('cantor-secure-channel-v1');
-const SHA256_HEX = /^[0-9a-f]{64}$/;
+const DESCRIPTOR_DOMAIN = utf8ToBytes(TRANSPORT_DESCRIPTOR_SIGNATURE_DOMAIN);
+const PROLOGUE_DOMAIN = utf8ToBytes(SECURE_HANDSHAKE_PROLOGUE_DOMAIN);
+const SHA256_HEX = new RegExp(`^[0-9a-f]{${SHA256_HEX_CHARS}}$`);
 
 ed.hashes.sha512 = sha512;
 
@@ -24,7 +32,7 @@ export function verifyTransportDescriptor(
 ): TransportDescriptor {
   if (
     !isRecord(value) ||
-    value.schema !== SECURE_CHANNEL_VERSION ||
+    value.schema !== TRANSPORT_DESCRIPTOR_VERSION ||
     value.node_ed25519 !== expectedNodePublicKey ||
     value.transport_suite !== TRANSPORT_SUITE ||
     typeof value.transport_key_id !== 'string' ||
@@ -44,9 +52,9 @@ export function verifyTransportDescriptor(
     'transport signature',
   );
   if (
-    nodeKey.length !== KEY_BYTES ||
-    transportKey.length !== KEY_BYTES ||
-    signature.length !== SIGNATURE_BYTES ||
+    nodeKey.length !== ED25519_PUBLIC_KEY_BYTES ||
+    transportKey.length !== X25519_KEY_BYTES ||
+    signature.length !== ED25519_SIGNATURE_BYTES ||
     hex(sha256(transportKey)) !== value.transport_key_id ||
     !ed.verify(
       signature,
@@ -57,7 +65,7 @@ export function verifyTransportDescriptor(
     throw new Error('The node secure-transport descriptor failed verification.');
   }
   return {
-    schema: SECURE_CHANNEL_VERSION,
+    schema: TRANSPORT_DESCRIPTOR_VERSION,
     node_ed25519: expectedNodePublicKey,
     transport_suite: TRANSPORT_SUITE,
     transport_key_id: value.transport_key_id,
@@ -85,7 +93,7 @@ export function decodeChannelNonce(value: unknown): Uint8Array {
     throw new Error('The secure channel nonce is invalid.');
   }
   const nonce = decodeCanonicalBase64Url(value, 'secure channel nonce');
-  if (nonce.length !== KEY_BYTES) {
+  if (nonce.length !== CHANNEL_NONCE_BYTES) {
     throw new Error('The secure channel nonce is invalid.');
   }
   return nonce;
@@ -95,7 +103,7 @@ export function buildHandshakePrologue(
   descriptor: TransportDescriptor,
   channelNonce: Uint8Array,
 ): Uint8Array {
-  if (channelNonce.length !== KEY_BYTES) {
+  if (channelNonce.length !== CHANNEL_NONCE_BYTES) {
     throw new Error('The secure channel nonce is invalid.');
   }
   const protocol = new Uint8Array(2);
