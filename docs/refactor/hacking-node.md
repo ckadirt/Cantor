@@ -97,6 +97,29 @@ thread, `generation/runner.rs` drives one job, and `generation/failure.rs` owns
 retry and terminal classification. Fake drivers let you test order and failure
 without weights — use them; a refactor loop should never load a model.
 
+### Publish a new model or engine family
+
+This should need no node release. Add the model to
+`relay/public/catalog/v1.json` and its engine builds to
+`relay/public/backends/v1.json`, run `npm run verify:assets` in `relay/`, and
+deploy the worker. `Model::engine()` lets a model name an engine that is not
+its own name, and `required_engines()` derives what to fetch from what is
+installed, so `cantor pull <model>:<tag>` picks up the backend on its own.
+
+What the engine library has to hold up, because the node checks it:
+
+- `cantor_engine_model` must equal the catalog's `engine`, and the ABI must be
+  `SUPPORTED_ABI`. Roles in `cantor_engine_load` are the catalog's role strings
+  verbatim.
+- `cantor_engine_stages` may skip *leading* stages — LeVo has no planning pass
+  and starts at `codes` — but must be a contiguous run ending at `decode`.
+  `Engine::first_stage` is where a fresh job enters, and the request JSON goes
+  to that stage. See `check_stage_mask` for why a hole in the middle is refused.
+- `cantor_engine_audio` returns planar stereo, `n_samples` **per channel**.
+- A stage ahead of `diffuse` that finishes a request carrying an explicit
+  duration must return JSON with a top-level `duration` — `enforce_duration_ceiling`
+  refuses an engine that quietly grows the ask before allocating for it.
+
 ### Add a delivery format
 
 `delivery/` splits repository, worker, and encoder. `DeliveryEncoder` is a real

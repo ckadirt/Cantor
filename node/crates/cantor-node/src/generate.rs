@@ -145,6 +145,14 @@ impl Generation {
         match outcome {
             StageOutcome::Paused => Ok(StageExecution::Paused { resume: output }),
             StageOutcome::Done => {
+                // Both guards are scoped to the stage that produces the state
+                // they read, not to "whichever stage ran first". An engine
+                // without a planning pass simply never needs the reassert —
+                // that one repairs a specific ACE-Step behaviour, and forcing
+                // it onto another family's first blob would inject keys a
+                // stricter engine rejects. The ceiling stays on every stage
+                // ahead of `diffuse`, which is where an expanded duration
+                // starts costing real memory.
                 if stage == Stage::Plan {
                     reassert_explicit_inputs(&mut output, request)?;
                 }
