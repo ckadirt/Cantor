@@ -52,6 +52,43 @@ impl Stage {
     pub const ALL: [Stage; 4] = [Stage::Plan, Stage::Codes, Stage::Diffuse, Stage::Decode];
 }
 
+/// An engine may skip *leading* stages — a family that does no separate
+/// planning pass starts at `codes` — but the stages it does run have to be a
+/// contiguous run ending at `decode`, because that is the graph the durable
+/// checkpoint format encodes: a completed checkpoint records the linear next
+/// stage as its resume point, and `checkpoints::verify` rejects metadata that
+/// says anything else. An engine with a hole in the middle would therefore
+/// write checkpoints it could never resume from. Refusing it here says so at
+/// load time, instead of at the first pause on a caller's machine.
+fn check_stage_mask(stages: u32) -> Result<()> {
+    let supported: Vec<Stage> = Stage::ALL
+        .into_iter()
+        .filter(|stage| stages & stage.bit() != 0)
+        .collect();
+    let Some(first) = first_stage(stages) else {
+        bail!("the engine advertises no generation stages");
+    };
+    let expected: Vec<Stage> = Stage::ALL
+        .into_iter()
+        .filter(|stage| *stage as u32 >= first as u32)
+        .collect();
+    if supported != expected {
+        let names: Vec<&str> = supported.iter().map(|stage| stage.as_str()).collect();
+        bail!(
+            "the engine runs {} — stages must be a contiguous run ending at decode",
+            names.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// The lowest stage in a mask, or `None` if it advertises no stages at all.
+fn first_stage(stages: u32) -> Option<Stage> {
+    Stage::ALL
+        .into_iter()
+        .find(|stage| stages & stage.bit() != 0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StageOutcome {
     Done,
@@ -236,6 +273,12 @@ impl Engine {
                 .context("the engine does not export cantor_engine_stages")?;
             symbol()
         };
+        check_stage_mask(stages).with_context(|| {
+            format!(
+                "engine at {} advertises an unusable pipeline",
+                directory.display()
+            )
+        })?;
 
         Ok(Self {
             _dependencies: dependencies,
@@ -258,6 +301,14 @@ impl Engine {
             .into_iter()
             .filter(|stage| self.supports(*stage))
             .collect()
+    }
+
+    /// Where a fresh generation enters this engine. Not every family plans:
+    /// LeVo derives its own conditioning inside code generation, so its
+    /// pipeline starts at `codes` and the request JSON goes there instead.
+    /// `load` has already refused a mask with no stages, so this is total.
+    pub fn first_stage(&self) -> Stage {
+        first_stage(self.stages).unwrap_or(Stage::Decode)
     }
 
     /// The engine's own account of what went wrong, which is more specific than
@@ -603,16 +654,50 @@ fn to_cstring(value: &str) -> Result<CString> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Stage, select};
+    use super::{Stage, check_stage_mask, first_stage, select};
+
+    /// The two masks the published engines actually report.
+    const ACESTEP_MASK: u32 = 0b11110;
+    const LEVO2_MASK: u32 = 0b11100;
 
     #[test]
     fn stage_bits_match_the_engines_advertised_mask() {
         // The shipped acestep engine reports 0b11110 — all four stages, with
         // bit 0 unused because the enum starts at 1.
         let all: u32 = Stage::ALL.iter().map(|stage| 1 << (*stage as u32)).sum();
-        assert_eq!(all, 0b11110);
+        assert_eq!(all, ACESTEP_MASK);
         assert_eq!(Stage::Plan as u32, 1);
         assert_eq!(Stage::Decode as u32, 4);
+    }
+
+    /// LeVo has no planning pass: it derives conditioning inside code
+    /// generation. Skipping a leading stage is a legitimate pipeline shape,
+    /// not a malformed engine.
+    #[test]
+    fn an_engine_may_begin_after_plan() {
+        check_stage_mask(LEVO2_MASK).expect("codes/diffuse/decode is a usable pipeline");
+        check_stage_mask(ACESTEP_MASK).expect("all four stages are usable");
+        check_stage_mask(Stage::Decode.bit()).expect("decode alone is usable");
+
+        // Where a fresh job enters, which is what the runner seeds its loop
+        // with: the request JSON goes to `codes` on LeVo, `plan` on ACE-Step.
+        assert_eq!(first_stage(LEVO2_MASK), Some(Stage::Codes));
+        assert_eq!(first_stage(ACESTEP_MASK), Some(Stage::Plan));
+        assert_eq!(first_stage(0), None);
+    }
+
+    /// A hole in the middle is refused at load rather than at the first pause:
+    /// a completed checkpoint records the linear next stage as its resume
+    /// point, so such an engine could write checkpoints it cannot resume.
+    #[test]
+    fn a_pipeline_with_a_hole_is_refused_with_its_stages_named() {
+        let missing_diffuse = ACESTEP_MASK & !Stage::Diffuse.bit();
+        let error = check_stage_mask(missing_diffuse).expect_err("a mid-pipeline hole is unusable");
+        let text = error.to_string();
+        assert!(text.contains("plan"), "names what it runs: {text}");
+        assert!(text.contains("decode"), "names the required end: {text}");
+
+        assert!(check_stage_mask(0).is_err(), "an engine must run something");
     }
 
     #[test]

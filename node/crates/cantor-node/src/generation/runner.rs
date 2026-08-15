@@ -1,4 +1,7 @@
-//! Native ACE-Step generation runner and its thread-affine session cache.
+//! Native generation runner and its thread-affine session cache.
+//!
+//! The stage walk is driven by what the loaded engine advertises, not by a
+//! fixed pipeline: a family that begins at `codes` runs here unchanged.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -114,10 +117,13 @@ fn run_generation(
     for rejected in &selected.rejected {
         eprintln!("checkpoint.rejected job={} reason={rejected}", work.id);
     }
+    // A fresh job enters at whatever stage this engine actually begins with —
+    // `plan` for ACE-Step, `codes` for a family that has no separate planning
+    // pass — and the request JSON is what that first stage consumes either way.
     let (mut stage, mut input) = match selected.source {
         Some(source) => (source.stage, source.input),
         None => (
-            Stage::Plan,
+            engine.first_stage(),
             Generation::initial_state(request).map_err(WorkerFailure::from_internal)?,
         ),
     };
