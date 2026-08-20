@@ -39,6 +39,8 @@ reports/
 docs/*
 !docs/refactor/
 !docs/refactor/**
+!docs/interface/
+!docs/interface/**
 !docs/private-library-milestones/
 docs/private-library-milestones/*
 !docs/private-library-milestones/implementation-notes.md
