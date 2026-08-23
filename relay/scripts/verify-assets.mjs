@@ -48,22 +48,23 @@ for (const model of catalog.models) {
   }
 }
 
-// Shared components must carry the SAME digest in every variant. That
-// identity is what makes them download once; a drifted digest silently costs
-// every node a redundant multi-gigabyte fetch, and nothing else would catch it.
-const sharedDigest = new Map();
+// A repeated object URL must always describe the same bytes. Models may select
+// a different file for the same role at another quality tier (for example an
+// F16 versus F32 VAE), while genuinely shared objects still deduplicate by
+// their identical URL, digest, and byte count.
+const sharedObject = new Map();
 for (const model of catalog.models) {
   for (const variant of model.variants ?? []) {
     for (const component of variant.components ?? []) {
-      if (component.role !== 'vae' && component.role !== 'embed') continue;
-      const key = `${model.name}/${component.role}`;
-      const seen = sharedDigest.get(key);
-      if (seen && seen !== component.blob) {
+      const key = component.url;
+      const identity = `${component.blob}/${component.bytes}`;
+      const seen = sharedObject.get(key);
+      if (seen && seen !== identity) {
         throw new Error(
-          `${key} has different digests across variants - shared-blob dedup is broken`,
+          `${key} has conflicting identities across variants - shared-blob dedup is broken`,
         );
       }
-      sharedDigest.set(key, component.blob);
+      sharedObject.set(key, identity);
     }
   }
 }

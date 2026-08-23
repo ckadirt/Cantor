@@ -253,6 +253,160 @@
           }
         }
       ]
+    },
+    {
+      "name": "minimax-music3",
+      "licence": "MiniMax Music 3 Community License",
+      "engine": "minimax-music3",
+      "variants": [
+        {
+          "tag": "1.0-fast",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:5f67c61c1c130d2d8f0c8f30098eb1c9396c8d46ac9bbce2e212fc712340925b",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/lm-Q4_K_M.gguf",
+              "bytes": 5886073120,
+              "quant": "Q4_K_M"
+            },
+            {
+              "role": "rvq",
+              "blob": "sha256:f11c2408e4c7e6a606e126ffbd43b29db78dece6b9f3b5428436fcd9624d6477",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/rvq-Q4_K_M.gguf",
+              "bytes": 422072896,
+              "quant": "Q4_K_M"
+            },
+            {
+              "role": "condition",
+              "blob": "sha256:a1a89b8e9ec9ac3311fecfd8fe59d5fc4cf0b7776e09cc53e90423a1014fbd6d",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/condition-F32.gguf",
+              "bytes": 100679296,
+              "quant": "F32"
+            },
+            {
+              "role": "dit",
+              "blob": "sha256:8cbaeb770f66804178695846f096b1b21a982f4425d368ca2c2c6bba6455729d",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/dit-Q4_K_M.gguf",
+              "bytes": 1600478688,
+              "quant": "Q4_K_M"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:68bdb356f42168708063567c21ec0764e8fd78b8726d863ea70a11b855d359cd",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/vae-F16.gguf",
+              "bytes": 108498016,
+              "quant": "F16"
+            }
+          ],
+          "needs": {
+            "vram_bytes": 17179869184,
+            "backends": [
+              "cuda12",
+              "vulkan",
+              "metal",
+              "cpu"
+            ]
+          }
+        },
+        {
+          "tag": "1.0-balanced",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:96a8228332c7d8897ee560d524a596ba9ff30346c9821db47b0b974d675170bb",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/lm-Q6_K.gguf",
+              "bytes": 7053924608,
+              "quant": "Q6_K"
+            },
+            {
+              "role": "rvq",
+              "blob": "sha256:c88519ff7473f08fa4c03ed087db49d011531b44a2ca2e9aa23c9ec5e8049a03",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/rvq-Q6_K.gguf",
+              "bytes": 530207296,
+              "quant": "Q6_K"
+            },
+            {
+              "role": "condition",
+              "blob": "sha256:a1a89b8e9ec9ac3311fecfd8fe59d5fc4cf0b7776e09cc53e90423a1014fbd6d",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/condition-F32.gguf",
+              "bytes": 100679296,
+              "quant": "F32"
+            },
+            {
+              "role": "dit",
+              "blob": "sha256:d875ec9ce0d6ab0bbef0f97da8dbe66e7f2ce627190c10cf927eb0ad7477ae65",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/dit-Q6_K.gguf",
+              "bytes": 2029975008,
+              "quant": "Q6_K"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:68bdb356f42168708063567c21ec0764e8fd78b8726d863ea70a11b855d359cd",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/vae-F16.gguf",
+              "bytes": 108498016,
+              "quant": "F16"
+            }
+          ],
+          "needs": {
+            "vram_bytes": 21474836480,
+            "backends": [
+              "cuda12",
+              "vulkan",
+              "metal",
+              "cpu"
+            ]
+          }
+        },
+        {
+          "tag": "1.0-quality",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:17e8f57e5712ae47f3b6882fe9756b00fb648d6d8376029fbf1ab02daff5dbe8",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/lm-BF16.gguf",
+              "bytes": 17180559616,
+              "quant": "BF16"
+            },
+            {
+              "role": "rvq",
+              "blob": "sha256:10f34b7e4c3e6e49866ae39ca70bb72ec579654d80d43d3c58f72680035b3dbd",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/rvq-BF16.gguf",
+              "bytes": 1292063296,
+              "quant": "BF16"
+            },
+            {
+              "role": "condition",
+              "blob": "sha256:a1a89b8e9ec9ac3311fecfd8fe59d5fc4cf0b7776e09cc53e90423a1014fbd6d",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/condition-F32.gguf",
+              "bytes": 100679296,
+              "quant": "F32"
+            },
+            {
+              "role": "dit",
+              "blob": "sha256:f417afed1906598322e72aaf8353c0aa17a90a43d51abc135500e5184fb6fbe1",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/dit-F32.gguf",
+              "bytes": 9727688128,
+              "quant": "F32"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:4ec9da855b543e394c8abf20ba43c6a84d5b3d1f20cc9a22467195221cf68df9",
+              "url": "https://cantor-ckpts.ckadirt.xyz/minimax-music3-1.0/vae-F32.gguf",
+              "bytes": 216706336,
+              "quant": "F32"
+            }
+          ],
+          "needs": {
+            "vram_bytes": 51539607552,
+            "backends": [
+              "cuda12",
+              "vulkan",
+              "metal",
+              "cpu"
+            ]
+          }
+        }
+      ]
     }
   ]
 }
