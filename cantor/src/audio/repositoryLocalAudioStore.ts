@@ -2,6 +2,7 @@ import {
   appendAudioChunk,
   finalizeAudio,
   inspectAudio,
+  localAudioPath,
   pinAudio,
   playAudio,
   removeAudio,
@@ -31,6 +32,10 @@ export class RepositoryLocalAudioStore implements LocalAudioStore {
       finalize: byteLength =>
         finalizeAudio(nodeKey, songId, digest, byteLength),
     };
+  }
+
+  localPath(ref: AudioRef) {
+    return localAudioPath(ref.nodeKey, ref.songId, ref.digest);
   }
 
   play(ref: AudioRef) {

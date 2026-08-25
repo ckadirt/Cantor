@@ -139,6 +139,64 @@ class AudioStorageTest {
     )
   }
 
+  @Test
+  fun localPathResolvesVerifiedCachedAndPinnedAudioAndRefreshesLastUse() {
+    val bytes = "playable".toByteArray()
+    val digest = cache(SONG_ONE, bytes)
+    val cached = storage.playableFile(NODE, SONG_ONE, digest)
+    assertTrue(cached.setLastModified(1_000L))
+
+    val resolved = storage.localPath(NODE, SONG_ONE, digest)
+
+    assertEquals(cached.absolutePath, resolved)
+    assertTrue("loading must refresh last-used time", cached.lastModified() > 1_000L)
+
+    storage.pin(NODE, SONG_ONE, digest)
+    assertEquals(
+        storage.playableFile(NODE, SONG_ONE, digest).absolutePath,
+        storage.localPath(NODE, SONG_ONE, digest),
+    )
+  }
+
+  @Test
+  fun localPathRefusesAPartialDownload() {
+    val bytes = "half a song".toByteArray()
+    val digest = sha256(bytes)
+    storage.appendChunk(NODE, SONG_ONE, digest, 0.0, encoded(bytes.copyOfRange(0, 4)))
+
+    assertEquals("partial", storage.localState(NODE, SONG_ONE, digest).state)
+    assertEquals(
+        "Download the artifact before playing it.",
+        assertThrows(IllegalStateException::class.java) {
+          storage.localPath(NODE, SONG_ONE, digest)
+        }.message,
+    )
+  }
+
+  @Test
+  fun localPathRefusesAnArtifactThatNoLongerMatchesItsDigest() {
+    val digest = cache(SONG_ONE, "honest".toByteArray())
+    storage.playableFile(NODE, SONG_ONE, digest).writeBytes("tampered".toByteArray())
+
+    assertEquals(
+        "Local artifact is corrupt.",
+        assertThrows(IllegalArgumentException::class.java) {
+          storage.localPath(NODE, SONG_ONE, digest)
+        }.message,
+    )
+  }
+
+  @Test
+  fun inspectingAvailabilityDoesNotMakeASongLookFreshlyUsed() {
+    val digest = cache(SONG_ONE, "untouched".toByteArray())
+    val cached = storage.playableFile(NODE, SONG_ONE, digest)
+    assertTrue(cached.setLastModified(1_000L))
+
+    storage.localState(NODE, SONG_ONE, digest)
+
+    assertEquals(1_000L, cached.lastModified())
+  }
+
   private fun cache(songId: String, bytes: ByteArray): String {
     val digest = sha256(bytes)
     storage.appendChunk(NODE, songId, digest, 0.0, encoded(bytes))

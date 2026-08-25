@@ -17,10 +17,12 @@ module.exports = {
       '<rootDir>/jest/asyncStorageMock.js',
     '^react-native-keychain$': '<rootDir>/jest/keychainMock.js',
     '^react-native-vision-camera$': '<rootDir>/jest/visionCameraMock.js',
+    // audio-api ships its own mock; the real entry pulls in native audio
+    '^react-native-audio-api$': 'react-native-audio-api/mock',
     '\\.(ttf|otf)$': '<rootDir>/jest/assetStub.js',
   },
   // react-navigation and friends ship untranspiled ESM; @scure/@noble are ESM-only
   transformIgnorePatterns: [
-    'node_modules/(?!(react-native|@react-native|@react-navigation|react-native-screens|react-native-safe-area-context|react-native-reanimated|react-native-worklets|react-native-gesture-handler|@shopify/react-native-skia|moti|@scure|@noble)/)',
+    'node_modules/(?!(react-native|@react-native|@react-navigation|react-native-screens|react-native-safe-area-context|react-native-reanimated|react-native-worklets|react-native-gesture-handler|react-native-audio-api|@shopify/react-native-skia|moti|@scure|@noble)/)',
   ],
 };

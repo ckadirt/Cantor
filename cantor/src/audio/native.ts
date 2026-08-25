@@ -29,6 +29,7 @@ type CantorAudioNative = {
     songId: string,
     digest: string,
   ): Promise<boolean>;
+  localPath(nodeKey: string, songId: string, digest: string): Promise<unknown>;
   play(nodeKey: string, songId: string, digest: string): Promise<boolean>;
   stop(): Promise<boolean>;
   enforceCacheBudget(maxBytes: number): Promise<string[]>;
@@ -66,6 +67,25 @@ export async function inspectNativeAudio(
   return { state: value.state as LocalAudioState, bytes: value.bytes };
 }
 
+/**
+ * Resolve the verified local file the player should load.
+ *
+ * The native side returns a path only for a digest-verified cached or pinned
+ * artifact, never a partial one, and refreshes the last-used time as it does so.
+ * JavaScript never constructs a filesystem path: it asks for one.
+ */
+export async function resolveNativeAudioPath(
+  nodeKey: string,
+  songId: string,
+  digest: string,
+): Promise<string> {
+  const value = await module().localPath(nodeKey, songId, digest);
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('Native audio path is invalid.');
+  }
+  return value;
+}
+
 export const nativeAudio = {
   appendChunk: (
     nodeKey: string,
@@ -86,6 +106,8 @@ export const nativeAudio = {
     module().unpin(nodeKey, songId, digest),
   remove: (nodeKey: string, songId: string, digest: string) =>
     module().removeCached(nodeKey, songId, digest),
+  localPath: (nodeKey: string, songId: string, digest: string) =>
+    resolveNativeAudioPath(nodeKey, songId, digest),
   play: (nodeKey: string, songId: string, digest: string) =>
     module().play(nodeKey, songId, digest),
   stop: () => module().stop(),

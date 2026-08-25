@@ -23,6 +23,8 @@ export type LocalAudioSink = {
 export interface LocalAudioStore {
   inspect(ref: AudioRef): Promise<LocalAudio>;
   createSink(ref: AudioRef): LocalAudioSink;
+  /** Verified absolute path for playback; rejects anything not fully cached. */
+  localPath(ref: AudioRef): Promise<string>;
   play(ref: AudioRef): Promise<void>;
   pin(ref: AudioRef): Promise<LocalAudio>;
   unpin(ref: AudioRef): Promise<LocalAudio>;
