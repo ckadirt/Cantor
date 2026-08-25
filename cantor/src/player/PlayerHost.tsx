@@ -5,6 +5,7 @@ import {
   PlaybackNotificationManager,
 } from 'react-native-audio-api';
 import type { AudioApiPlayer } from './audioApiPlayer';
+import { declarePlaybackControls } from './createAudioApiPlayer';
 
 /**
  * The one `<Audio>` element in the app, and the system wiring around it.
@@ -61,11 +62,7 @@ export function PlayerHost({ player }: { player: AudioApiPlayer }) {
     // Showing the notification is not what makes it controllable: until the
     // controls are declared the session advertises `actions=0` and the system
     // routes no media button to us at all.
-    void (async () => {
-      for (const control of ['play', 'pause', 'seekTo'] as const) {
-        await PlaybackNotificationManager.enableControl(control, true);
-      }
-    })();
+    void declarePlaybackControls();
 
     return () => {
       interruption?.remove();

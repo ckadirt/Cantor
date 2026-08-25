@@ -124,11 +124,17 @@ needed, and now has:
   android:foregroundServiceType="mediaPlayback" />
 ```
 
-One non-obvious trap: showing the playback notification is **not** what makes
-the session remote-controllable. Until `enableControl(...)` is called the
-session advertises `actions=0` and the system routes no media button to the app
-at all. The first run of this gate looked like a lock-screen failure for exactly
-that reason.
+Two non-obvious traps, both of which first looked like lock-screen failures:
+
+Showing the playback notification is **not** what makes the session
+remote-controllable. Until `enableControl(...)` is called the session advertises
+`actions=0` and the system routes no media button to the app at all.
+
+Worse, `show()` **resets those actions back to none**. Updating the notification
+— which any honest player does on every transition — silently removes its own
+controls unless the controls are re-declared afterwards. `createAudioApiPlayer`
+re-declares them after every `show`, and `dumpsys media_session` reporting
+`actions=262` rather than `actions=0` is how to tell the difference.
 
 ## Reproducing
 

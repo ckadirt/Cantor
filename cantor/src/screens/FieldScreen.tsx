@@ -104,7 +104,10 @@ export function FieldScreen({ identity }: Props) {
   const playFocused = useCallback(async () => {
     if (focused === null) return;
     const artifact = focused.delivery;
-    if (artifact === undefined) return;
+    if (artifact === undefined) {
+      setPlaybackError('This song has no delivery audio yet.');
+      return;
+    }
     if (focusedIsCurrent) {
       transport.toggle();
       return;
