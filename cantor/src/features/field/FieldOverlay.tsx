@@ -12,8 +12,8 @@ type Props = {
 
 const HINTS: Record<Level, string> = {
   field: 'TAP A MARK TO OPEN A WEEK · PINCH TO ZOOM',
-  shelf: 'TAP A ROW TO FOCUS · BACK TO THE FIELD',
-  song: 'PLAYER ARRIVES IN M3',
+  shelf: 'TAP A ROW TO OPEN A SONG · BACK TO THE FIELD',
+  song: 'DRAG THE LINE TO SCRUB · BACK TO THE SHELF',
   grain: 'GRAIN ARRIVES IN M7',
 };
 

@@ -15,6 +15,7 @@ const SONG_SURFACE_KNOBS = {
   SCRUB_TRACK_HEIGHT_PX: 2, // the hairline the playhead runs along
   SCRUB_HIT_HEIGHT_PX: 44, // touch target around that hairline
   ELAPSED_SAMPLE_MS: 500, // how often the elapsed label reads the visual clock
+  ORIGIN_MARK_RESERVE_PX: 96, // keep the transport row clear of the persistent origin mark
 } as const;
 
 export type SongSurfaceSong = Readonly<{
@@ -139,7 +140,7 @@ export function SongSurface({
           </Pressable>
         </View>
 
-        {isCurrent && snapshot.error !== null ? (
+        {snapshot.error !== null ? (
           <Text style={[type.mono, { color: pal.ink }]}>{snapshot.error}</Text>
         ) : null}
       </View>
@@ -210,7 +211,12 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   playhead: { height: SONG_SURFACE_KNOBS.SCRUB_TRACK_HEIGHT_PX },
-  row: { flexDirection: 'row', alignItems: 'center', gap: space.md },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.md,
+    paddingRight: SONG_SURFACE_KNOBS.ORIGIN_MARK_RESERVE_PX,
+  },
   transport: {
     minHeight: touch.min,
     minWidth: 96,
