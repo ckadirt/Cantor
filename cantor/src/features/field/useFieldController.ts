@@ -4,6 +4,7 @@ import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { SongHeader } from '../../core/protocol';
 import type { BackendRecord } from '../../backends/types';
 import { deliveryArtifact, type BackendRuntimeState } from '../../runtime';
+import type { JobView } from '../../core/protocol';
 import type { FieldEntity } from '../../field';
 
 export type FieldPresentation = Readonly<{
@@ -16,15 +17,52 @@ export type FieldPresentation = Readonly<{
   localAudio: LocalAudio;
 }>;
 
+/**
+ * A generation in flight, as the field sees it.
+ *
+ * The caption comes from the persisted outbox rather than from `JobView`,
+ * because the wire model does not carry the words the person typed and M4 must
+ * not invent a field for them.
+ */
+export type JobPresentation = Readonly<{
+  entity: FieldEntity;
+  job: JobView;
+  backend: BackendRecord;
+  nodeLabels: readonly string[];
+  caption: string | null;
+}>;
+
 export type FieldController = Readonly<{
   entities: readonly FieldEntity[];
   presentations: ReadonlyMap<string, FieldPresentation>;
+  jobs: ReadonlyMap<string, JobPresentation>;
 }>;
 
 type FieldRuntimeState = Pick<
   BackendRuntimeState,
-  'backends' | 'snapshots' | 'localAudio'
+  'backends' | 'snapshots' | 'localAudio' | 'outbox'
 >;
+
+/**
+ * Job states that are still worth drawing.
+ *
+ * A cancelled job is absent rather than struck through: it was withdrawn, so
+ * leaving a mark for it would be keeping a record the person chose to end. A
+ * completed job stays until its song is observed, which is what makes the
+ * hand-off keep the same placement instead of blinking.
+ */
+const LIVE_JOB_STATES: ReadonlySet<string> = new Set([
+  'queued',
+  'preparing',
+  'running',
+  'pause_requested',
+  'paused',
+  'cancel_requested',
+  'recovering',
+  'finalizing',
+  'completed',
+  'failed',
+]);
 
 const REMOTE_AUDIO: LocalAudio = { state: 'remote', bytes: 0 };
 
@@ -67,7 +105,39 @@ export function buildFieldController(
       });
     }
   }
-  const ordered = [...presentations.values()].sort(
+  // Jobs join the same field as songs, keyed by canonical job id, so a job that
+  // resolves into a song keeps its identity and its place.
+  const jobs = new Map<string, JobPresentation>();
+  for (const backend of state.backends ?? []) {
+    const snapshot = state.snapshots[backend.nodePubkey];
+    for (const job of snapshot?.jobs ?? []) {
+      if (!LIVE_JOB_STATES.has(job.state)) continue;
+      const key = `${backend.nodePubkey}:${job.id}`;
+      // Once the song exists it owns the placement; the job stops drawing.
+      if (presentations.has(key)) continue;
+      const entity: FieldEntity = {
+        key,
+        nodePublicKey: backend.nodePubkey,
+        entityId: job.id,
+        kind: 'job',
+        createdAtMs: timestampOrEpoch(job.created_at),
+        tags: [],
+      };
+      jobs.set(key, {
+        entity,
+        job,
+        backend,
+        nodeLabels: [
+          backend.petname,
+          backend.lastNodeInfo?.name ?? '',
+          backend.nodePubkey,
+        ].filter(Boolean),
+        caption: state.outbox[key]?.generation.caption ?? null,
+      });
+    }
+  }
+
+  const ordered = [...presentations.values(), ...jobs.values()].sort(
     (left, right) =>
       right.entity.createdAtMs - left.entity.createdAtMs ||
       left.entity.key.localeCompare(right.entity.key),
@@ -75,6 +145,7 @@ export function buildFieldController(
   return {
     entities: ordered.map(presentation => presentation.entity),
     presentations,
+    jobs,
   };
 }
 

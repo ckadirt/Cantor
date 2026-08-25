@@ -9,6 +9,7 @@ import { audioKey } from '../audio/repository';
 import type { LocalAudio } from '../audio/native';
 import type { AudioRef, LocalAudioStore } from '../audio/localAudioStore';
 import { repositoryLocalAudioStore } from '../audio/repositoryLocalAudioStore';
+import type { JobControl } from '../jobs/policy';
 import {
   BackendConnection,
   NodeRequestError,
@@ -47,7 +48,7 @@ export const DEFAULT_BACKEND_SNAPSHOT: ConnectionSnapshot = {
   librarySyncing: false,
 };
 
-export type JobControl = 'pause' | 'resume' | 'cancel' | 'retry';
+
 /**
  * `download-play` and `play` belong to the retiring console and drive native
  * MediaPlayer. The field's player never uses them: it asks for `download`, then
@@ -111,6 +112,16 @@ export type BackendRuntimeState = {
   pairing: boolean;
   storageError: string | null;
   localAudio: Record<string, LocalAudio>;
+  /**
+   * Persisted submissions, keyed `${nodePublicKey}:${canonicalJobId}`.
+   *
+   * A job mark needs the caption the person actually typed, and `JobView` does
+   * not carry it. Reading it back off the outbox keeps that text in the one
+   * place that already stores it durably, instead of duplicating it onto the
+   * wire model or into a second store. Entries the node has not accepted yet
+   * have no canonical id and so are not addressable here.
+   */
+  outbox: Record<string, OutboxEntry>;
 };
 
 export type BackendRuntimeCommands = {
@@ -205,6 +216,20 @@ export function useBackendRuntime(
   const rejectOutboxEntry =
     dependencies.markRejected ?? defaultDependencies.markRejected;
   const audioStore = dependencies.audioStore ?? defaultDependencies.audioStore;
+  const [outbox, setOutbox] = useState<Record<string, OutboxEntry>>({});
+  const refreshOutbox = useCallback(async () => {
+    const entries = await loadPendingOutbox();
+    setOutbox(
+      Object.fromEntries(
+        entries
+          .filter(entry => entry.canonicalJobId !== undefined)
+          .map(entry => [
+            `${entry.nodePublicKey}:${entry.canonicalJobId}`,
+            entry,
+          ]),
+      ),
+    );
+  }, [loadPendingOutbox]);
   const [backends, setBackends] = useState<BackendRecord[] | null>(null);
   const [snapshots, setSnapshots] = useState<
     Record<string, ConnectionSnapshot>
@@ -228,16 +253,18 @@ export function useBackendRuntime(
           entry.generation,
         );
         await acceptOutboxEntry(entry.clientRequestId, job.id);
+        await refreshOutbox();
       } catch (error) {
         if (error instanceof NodeRequestError && !error.retryable) {
           await rejectOutboxEntry(entry.clientRequestId, error.message);
+          await refreshOutbox();
         }
         throw error;
       } finally {
         outboxInFlight.current.delete(entry.clientRequestId);
       }
     },
-    [acceptOutboxEntry, rejectOutboxEntry],
+    [acceptOutboxEntry, refreshOutbox, rejectOutboxEntry],
   );
 
   const replaceBackends = useCallback(
@@ -492,9 +519,10 @@ export function useBackendRuntime(
       const live = connections.current.get(nodePublicKey);
       if (live === undefined) throw new Error('Backend is not connected.');
       const entry = await createPendingEntry(nodePublicKey, model, generation);
+      await refreshOutbox();
       await sendOutbox(live.connection, entry);
     },
-    [createPendingEntry, sendOutbox],
+    [createPendingEntry, refreshOutbox, sendOutbox],
   );
 
   const patchSong = useCallback(
@@ -652,7 +680,7 @@ export function useBackendRuntime(
   }, []);
 
   return {
-    state: { backends, snapshots, pairing, storageError, localAudio },
+    state: { backends, snapshots, pairing, storageError, localAudio, outbox },
     commands: {
       showPairing: () => setPairing(true),
       hidePairing: () => setPairing(false),
@@ -677,3 +705,7 @@ export function deliveryArtifact(song: SongHeader): ArtifactView | undefined {
       artifact.profile === 'opus-stereo-160k-v1',
   );
 }
+
+// Job control policy is owned by the jobs domain; re-exported so the runtime's
+// public surface is unchanged for callers.
+export type { JobControl };
