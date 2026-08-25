@@ -42,7 +42,8 @@ type Props = {
 export function FieldScreen({ identity }: Props) {
   const pal = usePalette();
   const { state, commands } = useBackendRuntime(identity);
-  const { backends, snapshots, localAudio, pairing, storageError } = state;
+  const { backends, snapshots, localAudio, outbox, pairing, storageError } =
+    state;
   const [viewport, setViewport] = useState<Viewport | null>(null);
   // One player for the life of the screen. A second one would be a second
   // element and a second audio session.
@@ -57,8 +58,8 @@ export function FieldScreen({ identity }: Props) {
   const [songBusy, setSongBusy] = useState(false);
   const previousPlacements = useRef<FieldLayout['placements']>([]);
   const controller = useMemo(
-    () => buildFieldController({ backends, snapshots, localAudio }),
-    [backends, localAudio, snapshots],
+    () => buildFieldController({ backends, snapshots, localAudio, outbox }),
+    [backends, localAudio, outbox, snapshots],
   );
   const layout = useMemo(() => {
     if (viewport === null) return null;
