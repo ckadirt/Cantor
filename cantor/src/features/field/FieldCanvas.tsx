@@ -38,6 +38,8 @@ type Props = {
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   palette: Palette;
+  /** Entity key of the song the player holds, lit at every level. */
+  playingKey?: string | null;
   activeLensKey?: string;
 };
 
@@ -52,6 +54,7 @@ export function FieldCanvas({
   viewport,
   presentations,
   palette,
+  playingKey = null,
   activeLensKey = 'name',
 }: Props) {
   const displayFont = useMorphFont({
@@ -80,6 +83,7 @@ export function FieldCanvas({
       viewport,
       presentations,
       palette,
+      playingKey,
       lensKey: activeLensKey,
       fonts: { display: displayFont, body: bodyFont, mono: monoFont },
       paints,
@@ -94,6 +98,7 @@ export function FieldCanvas({
     paints,
     palette,
     placements,
+    playingKey,
     presentations,
     viewport,
   ]);
@@ -117,6 +122,7 @@ type PictureRequest = Readonly<{
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   palette: Palette;
+  playingKey?: string | null;
   lensKey: string;
   fonts: LensFonts;
   paints: LensPaints;
@@ -158,6 +164,7 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
       model: presentation.song.model,
       nodeLabel: presentation.nodeLabels[0] ?? presentation.backend.petname,
       audioState: presentation.localAudio.state,
+      playing: presentation.entity.key === request.playingKey,
     } as const;
     if (alpha.dot > 0.01) {
       lens.draw(

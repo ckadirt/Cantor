@@ -31,7 +31,9 @@ export const FIELD_CAMERA_KNOBS = {
   EDGE_PULL_OPEN_PX: 90,
   EDGE_PULL_HORIZONTAL_TOLERANCE_PX: 50,
   MIN_SCALE_RATIO: 0.5,
-  MAX_SCALE_RATIO: 12.9,
+  // Just under the song/grain boundary: L2 is reachable, L3 stays clamped
+  // until M7 builds the grain view.
+  MAX_SCALE_RATIO: 169.9,
 } as const;
 
 type PullDirection = 'compose' | 'engines';
@@ -256,27 +258,51 @@ export function useFieldCamera({
       renderedPlacements.find(placement => placement.key === focusKey) ?? null,
     [focusKey, renderedPlacements],
   );
+  const focusRef = useRef<Placement | null>(null);
+  useEffect(() => {
+    focusRef.current = focus;
+  }, [focus]);
   const level =
     layout === null ? 'field' : levelOf(camera.scale, layout.fitScale);
 
+  /**
+   * Move one level closer to the tapped placement.
+   *
+   * Descending is always a single step, never a jump: the zoom model is the
+   * navigation, so skipping a level would skip the only thing that tells you
+   * where you are.
+   */
   const descend = useCallback(
     (placement: Placement) => {
       const field = layoutRef.current;
       if (field === null) return;
       commitFocus(placement.key);
-      if (levelOf(cameraRef.current.scale, field.fitScale) !== 'field') return;
-      const target = levelCameraTarget('shelf', field, placement);
+      const current = levelOf(cameraRef.current.scale, field.fitScale);
+      // L3 stays clamped until M7, so a song is the end of the descent.
+      const next = current === 'field' ? 'shelf' : current === 'shelf' ? 'song' : null;
+      if (next === null) return;
+      const target = levelCameraTarget(next, field, placement);
       if (target) flyTo(target);
     },
     [commitFocus, flyTo],
   );
   const ascend = useCallback((): boolean => {
     const field = layoutRef.current;
-    if (
-      field === null ||
-      levelOf(cameraRef.current.scale, field.fitScale) === 'field'
-    ) {
-      return false;
+    if (field === null) return false;
+    const current = levelOf(cameraRef.current.scale, field.fitScale);
+    if (current === 'field') return false;
+
+    // Leaving a song returns to its shelf, which needs the placement we came
+    // in through; without one there is no group to return to, so go home.
+    if (current !== 'shelf') {
+      const placement = focusRef.current;
+      const shelf = placement
+        ? levelCameraTarget('shelf', field, placement)
+        : null;
+      if (shelf) {
+        flyTo(shelf);
+        return true;
+      }
     }
     commitFocus(null);
     const target = levelCameraTarget('field', field);

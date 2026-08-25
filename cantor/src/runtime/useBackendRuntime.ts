@@ -48,7 +48,18 @@ export const DEFAULT_BACKEND_SNAPSHOT: ConnectionSnapshot = {
 };
 
 export type JobControl = 'pause' | 'resume' | 'cancel' | 'retry';
-export type AudioAction = 'download-play' | 'play' | 'pin' | 'unpin' | 'remove';
+/**
+ * `download-play` and `play` belong to the retiring console and drive native
+ * MediaPlayer. The field's player never uses them: it asks for `download`, then
+ * for a verified path, and does its own loading. Both go when MainScreen does.
+ */
+export type AudioAction =
+  | 'download'
+  | 'download-play'
+  | 'play'
+  | 'pin'
+  | 'unpin'
+  | 'remove';
 
 export type BackendRuntimeConnection = Pick<
   BackendConnection,
@@ -133,6 +144,12 @@ export type BackendRuntimeCommands = {
     artifact: ArtifactView,
     action: AudioAction,
   ) => Promise<void>;
+  /** Verified local path for playback; rejects anything not fully cached. */
+  audioPath: (
+    nodePublicKey: string,
+    song: SongHeader,
+    artifact: ArtifactView,
+  ) => Promise<string>;
   refreshLibraries: () => void;
 };
 
@@ -530,6 +547,22 @@ export function useBackendRuntime(
     [],
   );
 
+  /**
+   * The verified local path for a song, for the player to load.
+   *
+   * Runtime resolves and verifies; it does not make sound and does not import
+   * `player/`. A partial download has no path — the native side refuses one.
+   */
+  const audioPath = useCallback(
+    async (
+      nodeKey: string,
+      song: SongHeader,
+      artifact: ArtifactView,
+    ): Promise<string> =>
+      audioStore.localPath({ nodeKey, songId: song.id, digest: artifact.sha256 }),
+    [audioStore],
+  );
+
   const audio = useCallback(
     async (
       nodeKey: string,
@@ -543,7 +576,7 @@ export function useBackendRuntime(
         digest: artifact.sha256,
       };
       const identify = () => audioStore.inspect(ref);
-      if (action === 'download-play') {
+      if (action === 'download' || action === 'download-play') {
         const live = connections.current.get(nodeKey);
         if (live === undefined) throw new Error('Song node is not connected.');
         const before = await identify();
@@ -560,7 +593,7 @@ export function useBackendRuntime(
               }),
           );
         }
-        await audioStore.play(ref);
+        if (action === 'download-play') await audioStore.play(ref);
       } else if (action === 'play') {
         await audioStore.play(ref);
       } else if (action === 'pin') {
@@ -631,6 +664,7 @@ export function useBackendRuntime(
       changeSongPresence,
       getSongDetail,
       audio,
+      audioPath,
       refreshLibraries,
     },
   };
