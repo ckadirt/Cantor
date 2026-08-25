@@ -20,10 +20,10 @@ import {
   FieldCanvas,
   FieldOverlay,
   OriginMark,
-  PullSheet,
   buildFieldController,
   useFieldCamera,
 } from '../features/field';
+import { ComposerSheet, type ComposerTarget } from '../features/composer';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import { byTime, layoutField, type FieldLayout, type Viewport } from '../field';
@@ -50,7 +50,9 @@ export function FieldScreen({ identity }: Props) {
   const player = useMemo(() => createAudioApiPlayer(), []);
   const transport = usePlayer(player);
   const [enginesOpen, setEnginesOpen] = useState(false);
-  const [composerNoticeOpen, setComposerNoticeOpen] = useState(false);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [songSheetOpen, setSongSheetOpen] = useState(false);
   const [songDetail, setSongDetail] = useState<SongDetail | null>(null);
@@ -74,7 +76,54 @@ export function FieldScreen({ identity }: Props) {
     if (layout !== null) previousPlacements.current = layout.placements;
   }, [layout]);
 
-  const openComposer = useCallback(() => setComposerNoticeOpen(true), []);
+  const openComposer = useCallback(() => {
+    setSubmitError(null);
+    setComposerOpen(true);
+  }, []);
+
+  /** What each paired node advertises, which is what the composer validates against. */
+  const composerTargets = useMemo<readonly ComposerTarget[]>(
+    () =>
+      (backends ?? []).map(backend => {
+        const snapshot = snapshots[backend.nodePubkey];
+        const info = backend.lastNodeInfo;
+        return {
+          nodePublicKey: backend.nodePubkey,
+          label: backend.petname || info?.name || backend.nodePubkey.slice(0, 8),
+          ready: snapshot?.phase === 'ready',
+          models: info?.models ?? [],
+          limits: info?.limits ?? null,
+        };
+      }),
+    [backends, snapshots],
+  );
+
+  /**
+   * Send one generation.
+   *
+   * Routed through `runtime.submit` so the persisted outbox and its idempotency
+   * behaviour stay intact: a submission survives the app dying between the tap
+   * and the node's answer.
+   */
+  const submitDraft = useCallback(
+    async (
+      nodePublicKey: string,
+      modelSelector: string,
+      generation: Parameters<typeof commands.submit>[2],
+    ) => {
+      setSubmitting(true);
+      setSubmitError(null);
+      try {
+        await commands.submit(nodePublicKey, modelSelector, generation);
+        setComposerOpen(false);
+      } catch (error) {
+        setSubmitError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [commands],
+  );
   const openEngines = useCallback(() => setEnginesOpen(true), []);
   const fieldCamera = useFieldCamera({
     layout,
@@ -234,8 +283,8 @@ export function FieldScreen({ identity }: Props) {
       commands.hidePairing();
       return true;
     }
-    if (composerNoticeOpen) {
-      setComposerNoticeOpen(false);
+    if (composerOpen) {
+      setComposerOpen(false);
       return true;
     }
     if (enginesOpen) {
@@ -243,7 +292,7 @@ export function FieldScreen({ identity }: Props) {
       return true;
     }
     return false;
-  }, [commands, composerNoticeOpen, enginesOpen, pairing, songSheetOpen]);
+  }, [commands, composerOpen, enginesOpen, pairing, songSheetOpen]);
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
@@ -354,9 +403,15 @@ export function FieldScreen({ identity }: Props) {
         snapshots={snapshots}
         visible={enginesOpen}
       />
-      <PullSheet
-        onClose={() => setComposerNoticeOpen(false)}
-        visible={composerNoticeOpen}
+      <ComposerSheet
+        error={submitError}
+        onClose={() => setComposerOpen(false)}
+        onSubmit={(nodePublicKey, modelSelector, generation) =>
+          void submitDraft(nodePublicKey, modelSelector, generation)
+        }
+        submitting={submitting}
+        targets={composerTargets}
+        visible={composerOpen}
       />
       <PairBackendModal
         onClose={commands.hidePairing}
