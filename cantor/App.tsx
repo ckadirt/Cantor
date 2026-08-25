@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { MainScreen } from './src/screens/MainScreen';
+import { FieldScreen } from './src/screens/FieldScreen';
 import { Onboarding } from './src/onboarding/Onboarding';
 import { MotionLab } from './src/dev/MotionLab';
 import { getIdentityPhrase } from './src/identity/mnemonic';
@@ -101,7 +101,7 @@ export default function App() {
         ) : (
           <>
             {boot.state === 'ready' ? (
-              <MainScreen identity={boot.identity} />
+              <FieldScreen identity={boot.identity} />
             ) : (
               <View style={[styles.flex, { backgroundColor: pal.bg }]} />
             )}
