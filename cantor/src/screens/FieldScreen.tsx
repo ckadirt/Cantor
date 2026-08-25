@@ -24,8 +24,11 @@ import {
   buildFieldController,
   useFieldCamera,
 } from '../features/field';
+import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import { byTime, layoutField, type FieldLayout, type Viewport } from '../field';
+import { normalise } from '../playlists';
+import type { SongDetail } from '../core/protocol';
 import type { AppIdentity } from '../identity/derive';
 import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
 import { useBackendRuntime } from '../runtime';
@@ -48,6 +51,10 @@ export function FieldScreen({ identity }: Props) {
   const [enginesOpen, setEnginesOpen] = useState(false);
   const [composerNoticeOpen, setComposerNoticeOpen] = useState(false);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
+  const [songSheetOpen, setSongSheetOpen] = useState(false);
+  const [songDetail, setSongDetail] = useState<SongDetail | null>(null);
+  const [songDetailError, setSongDetailError] = useState<string | null>(null);
+  const [songBusy, setSongBusy] = useState(false);
   const previousPlacements = useRef<FieldLayout['placements']>([]);
   const controller = useMemo(
     () => buildFieldController({ backends, snapshots, localAudio }),
@@ -141,7 +148,87 @@ export function FieldScreen({ identity }: Props) {
     }
   }, [commands, focused, focusedIsCurrent, transport]);
 
+  /**
+   * Run one song command, keeping the sheet honest about failure.
+   *
+   * Every control here mutates node-owned truth, so each one reports its own
+   * error rather than failing silently and leaving the sheet showing a state
+   * the node never accepted.
+   */
+  const runSongCommand = useCallback(
+    async (work: () => Promise<void>) => {
+      setSongBusy(true);
+      setSongDetailError(null);
+      try {
+        await work();
+      } catch (error) {
+        setSongDetailError(
+          error instanceof Error ? error.message : String(error),
+        );
+      } finally {
+        setSongBusy(false);
+      }
+    },
+    [],
+  );
+
+  const patchFocused = useCallback(
+    (patch: Parameters<typeof commands.patchSong>[2]) => {
+      if (focused === null) return;
+      void runSongCommand(() =>
+        commands.patchSong(focused.entity.nodePublicKey, focused.song, patch),
+      );
+    },
+    [commands, focused, runSongCommand],
+  );
+
+  const runAudioAction = useCallback(
+    (action: 'pin' | 'unpin' | 'remove') => {
+      if (focused === null || focused.delivery === undefined) return;
+      const artifact = focused.delivery;
+      void runSongCommand(async () => {
+        // Never delete a file the player still holds open: drop the reference
+        // first, then remove. Native storage stays authoritative either way.
+        if (action === 'remove' && focusedIsCurrent) await transport.close();
+        await commands.audio(
+          focused.entity.nodePublicKey,
+          focused.song,
+          artifact,
+          action,
+        );
+      });
+    },
+    [commands, focused, focusedIsCurrent, runSongCommand, transport],
+  );
+
+  // Ask the node for the recipe whenever the sheet opens on a song.
+  useEffect(() => {
+    if (!songSheetOpen || focused === null) return;
+    let active = true;
+    setSongDetail(null);
+    setSongDetailError(null);
+    commands
+      .getSongDetail(focused.entity.nodePublicKey, focused.entity.entityId)
+      .then(detail => {
+        if (active) setSongDetail(detail);
+      })
+      .catch(error => {
+        if (active) {
+          setSongDetailError(
+            error instanceof Error ? error.message : String(error),
+          );
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [commands, focused, songSheetOpen]);
+
   const closeTopmostSheet = useCallback((): boolean => {
+    if (songSheetOpen) {
+      setSongSheetOpen(false);
+      return true;
+    }
     if (pairing) {
       commands.hidePairing();
       return true;
@@ -155,7 +242,7 @@ export function FieldScreen({ identity }: Props) {
       return true;
     }
     return false;
-  }, [commands, composerNoticeOpen, enginesOpen, pairing]);
+  }, [commands, composerNoticeOpen, enginesOpen, pairing, songSheetOpen]);
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
@@ -218,7 +305,10 @@ export function FieldScreen({ identity }: Props) {
         {fieldCamera.level === 'song' && focused !== null && viewport !== null ? (
           <SongSurface
             isCurrent={focusedIsCurrent}
-            onOpenDetail={() => setPlaybackError(null)}
+            onOpenDetail={() => {
+              setPlaybackError(null);
+              setSongSheetOpen(true);
+            }}
             onSeek={transport.seek}
             onToggle={() => void playFocused()}
             positionSeconds={transport.positionSeconds}
@@ -271,6 +361,43 @@ export function FieldScreen({ identity }: Props) {
         onPair={commands.pairBackend}
         visible={pairing}
       />
+      {focused !== null ? (
+        <SongSheet
+          audioState={focused.localAudio.state}
+          busy={songBusy}
+          detail={songDetail}
+          detailError={songDetailError}
+          nodeLabel={focused.nodeLabels[0] ?? focused.backend.petname}
+          onAddTag={tag =>
+            patchFocused({ tags: [...normalise([...focused.song.tags, tag])] })
+          }
+          onClose={() => setSongSheetOpen(false)}
+          onPin={() => runAudioAction('pin')}
+          onRemoveDownload={() => runAudioAction('remove')}
+          onRemoveTag={tag =>
+            patchFocused({
+              tags: focused.song.tags.filter(value => value !== tag),
+            })
+          }
+          onRename={title => patchFocused({ title })}
+          onToggleFavourite={() =>
+            patchFocused({ favorite: !focused.song.favorite })
+          }
+          onTrash={() =>
+            void runSongCommand(async () => {
+              if (focusedIsCurrent) await transport.close();
+              await commands.changeSongPresence(
+                focused.entity.nodePublicKey,
+                focused.song,
+              );
+              setSongSheetOpen(false);
+            })
+          }
+          onUnpin={() => runAudioAction('unpin')}
+          song={focused.song}
+          visible={songSheetOpen}
+        />
+      ) : null}
       <PlayerHost player={player} />
     </SafeAreaView>
   );
