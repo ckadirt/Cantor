@@ -9,7 +9,7 @@ module.exports = {
   ],
   // reanimated's worklets runtime needs native modules; use the official mock
   moduleNameMapper: {
-    '^react-native-reanimated$': 'react-native-reanimated/mock',
+    '^react-native-reanimated$': '<rootDir>/jest/reanimatedMock.js',
     '^react-native-worklets$': 'react-native-worklets/src/mock',
     '^@react-native-clipboard/clipboard$':
       '@react-native-clipboard/clipboard/jest/clipboard-mock.js',

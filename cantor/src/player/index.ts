@@ -8,6 +8,8 @@ export type {
 export { createAudioApiPlayer } from './createAudioApiPlayer';
 export { PlayerHost } from './PlayerHost';
 export { FakePlayer, type FakePlayerOptions } from './fakePlayer';
+export { usePlayer, type NowPlayingInfo, type PlayerController } from './usePlayer';
+export { planVisualClock, type ClockPlan } from './visualClock';
 export {
   EMPTY_SNAPSHOT,
   sameTrack,
