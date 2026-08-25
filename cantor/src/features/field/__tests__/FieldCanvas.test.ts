@@ -145,6 +145,71 @@ describe('field canvas and accessibility mirror', () => {
     expect(styles).toEqual([]);
   });
 
+  it('draws a job mark without claiming progress the node never counted', () => {
+    const display = Skia.Font(undefined, 20);
+    const mono = Skia.Font(undefined, 9);
+    const ink = paint('#000000');
+    const styles: number[] = [];
+    const setStyle = ink.setStyle.bind(ink);
+    ink.setStyle = (style: number) => {
+      styles.push(style);
+      setStyle(style);
+    };
+    const jobEntity = { ...entity, key: 'node-a:job-1', kind: 'job' as const };
+    const jobLayout = layoutField({
+      entities: [jobEntity],
+      arrangement: byTime,
+      viewport,
+    });
+
+    const picture = recordFieldPicture({
+      layout: jobLayout,
+      placements: jobLayout.placements,
+      camera: {
+        x: jobLayout.fieldCenter.x,
+        y: jobLayout.fieldCenter.y,
+        scale: jobLayout.fitScale,
+      },
+      viewport,
+      presentations: new Map(),
+      jobs: new Map([
+        [
+          jobEntity.key,
+          {
+            entity: jobEntity,
+            job: {
+              id: 'job-1',
+              revision: 1,
+              state: 'running' as const,
+              stage: 'diffuse' as const,
+              model: 'light',
+              created_at: '2026-08-10T00:00:00Z',
+              updated_at: '2026-08-10T00:00:00Z',
+            },
+            backend: presentation.backend,
+            nodeLabels: ['Studio'],
+            caption: 'a slow piano piece',
+          },
+        ],
+      ]),
+      palette: {
+        bg: '#FFFFFF',
+        ink: '#000000',
+        muted: '#666666',
+        faint: '#A6A6A6',
+        line: '#E6E6E6',
+      },
+      lensKey: 'name',
+      fonts: { display, body: display, mono },
+      paints: { ink, muted: paint('#666666'), faint: paint('#A6A6A6') },
+    });
+
+    expect(picture).toBeTruthy();
+    // The ring is stroked, and the shared paint is handed back as a fill.
+    expect(styles).toContain(1);
+    expect(styles[styles.length - 1]).toBe(0);
+  });
+
   it('exposes labelled semantic actions instead of canvas nodes', async () => {
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
