@@ -53,6 +53,18 @@ export type NowPlaying = {
  * (`docs/interface/m3-audio-gate.md`), so a spurious swap is a real cost, not a
  * style issue — the adapter never assigns a source it already has.
  */
+/**
+ * An absolute local path as a URI the element cannot mistake for something else.
+ *
+ * A bare path is ambiguous: with a bundled JS build the library resolves a plain
+ * string against the app's bundled assets and fails with "Could not read asset
+ * bytes", even though the same string works under Metro. The scheme removes the
+ * guess.
+ */
+export function toFileUri(localPath: string): string {
+  return localPath.startsWith('file://') ? localPath : `file://${localPath}`;
+}
+
 export type ElementBinding = {
   readonly source: string | null;
   attach(handle: AudioElementHandle | null): void;
@@ -155,7 +167,8 @@ export class AudioApiPlayer implements PlayerPort {
     // Reloading the track already in the element is a rewind, not a swap. This
     // is the rule that keeps the per-load leak proportional to real track
     // changes instead of to how often a caller happens to call load.
-    if (this.source === localPath) {
+    const source = toFileUri(localPath);
+    if (this.source === source) {
       this.handle?.seekToTime(0);
       this.publish('paused');
       return;
@@ -163,7 +176,7 @@ export class AudioApiPlayer implements PlayerPort {
 
     await new Promise<void>(resolve => {
       this.pendingLoad = { resolve };
-      this.setSource(localPath);
+      this.setSource(source);
     });
   }
 
