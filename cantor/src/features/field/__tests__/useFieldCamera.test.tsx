@@ -78,7 +78,7 @@ function camera(): Camera {
 }
 
 describe('useFieldCamera', () => {
-  it('keeps the pinch focal world point stable and clamps before L2', async () => {
+  it('keeps the pinch focal world point stable and clamps before L3', async () => {
     const { layout } = await renderCamera();
     const [pinch] = gestures();
     const focal = { x: 111, y: 527 };
@@ -86,7 +86,7 @@ describe('useFieldCamera', () => {
 
     await ReactTestRenderer.act(async () => {
       pinch.onStart({ focalX: focal.x, focalY: focal.y });
-      pinch.onUpdate({ scale: 100 });
+      pinch.onUpdate({ scale: 10_000 });
     });
 
     expect(camera().scale).toBeCloseTo(
@@ -99,7 +99,9 @@ describe('useFieldCamera', () => {
         y: expect.closeTo(before.y, 10),
       }),
     );
-    expect(latest.level).toBe('shelf');
+    // Pinching as hard as possible reaches L2 and stops there; L3 is clamped
+    // until M7.
+    expect(latest.level).toBe('song');
   });
 
   it('gives top and bottom edge pulls priority over panning', async () => {
@@ -122,7 +124,7 @@ describe('useFieldCamera', () => {
     expect(onOpenEngines).toHaveBeenCalledTimes(1);
   });
 
-  it('descends from a field tap, records an L1 row tap, then ascends once', async () => {
+  it('descends a level per tap and ascends back a level at a time', async () => {
     const { layout } = await renderCamera();
     const placement = layout.placements[0];
     const [, , tap] = gestures();
@@ -138,7 +140,15 @@ describe('useFieldCamera', () => {
       shelfTap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
     });
     expect(latest.focus?.key).toBe(placement.key);
+    expect(latest.level).toBe('song');
+
+    // Leaving a song returns to its shelf, not all the way home: the level you
+    // came from is the only thing that says where you are.
+    await ReactTestRenderer.act(async () => {
+      expect(latest.ascend()).toBe(true);
+    });
     expect(latest.level).toBe('shelf');
+    expect(latest.focus?.key).toBe(placement.key);
 
     await ReactTestRenderer.act(async () => {
       expect(latest.ascend()).toBe(true);

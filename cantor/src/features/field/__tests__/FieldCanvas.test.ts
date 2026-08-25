@@ -102,6 +102,49 @@ describe('field canvas and accessibility mirror', () => {
     expect(picture).toBeTruthy();
   });
 
+  it('records the playing mark without leaving a stroked paint behind', () => {
+    const display = Skia.Font(undefined, 20);
+    const mono = Skia.Font(undefined, 9);
+    const ink = paint('#000000');
+    // CanvasKit's Paint exposes no style getter, so watch the writes instead.
+    const styles: number[] = [];
+    const setStyle = ink.setStyle.bind(ink);
+    ink.setStyle = (style: number) => {
+      styles.push(style);
+      setStyle(style);
+    };
+    const record = (playingKey: string | null) =>
+      recordFieldPicture({
+        layout,
+        placements: layout.placements,
+        camera,
+        viewport,
+        presentations: new Map([[entity.key, presentation]]),
+        palette: {
+          bg: '#FFFFFF',
+          ink: '#000000',
+          muted: '#666666',
+          faint: '#A6A6A6',
+          line: '#E6E6E6',
+        },
+        playingKey,
+        lensKey: 'name',
+        fonts: { display, body: display, mono },
+        paints: { ink, muted: paint('#666666'), faint: paint('#A6A6A6') },
+      });
+
+    expect(record(entity.key)).toBeTruthy();
+    // Paints are shared across the whole picture: a ring that forgot to restore
+    // the fill style would silently outline everything drawn afterwards.
+    expect(styles).toContain(1);
+    expect(styles[styles.length - 1]).toBe(0);
+
+    styles.length = 0;
+    expect(record(null)).toBeTruthy();
+    // Nothing is playing, so the ring never runs and the style is never touched.
+    expect(styles).toEqual([]);
+  });
+
   it('exposes labelled semantic actions instead of canvas nodes', async () => {
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {

@@ -24,8 +24,10 @@ import {
   buildFieldController,
   useFieldCamera,
 } from '../features/field';
+import { SongSurface } from '../features/song/SongSurface';
 import { byTime, layoutField, type FieldLayout, type Viewport } from '../field';
 import type { AppIdentity } from '../identity/derive';
+import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
 import { useBackendRuntime } from '../runtime';
 import { usePalette } from '../theme/tokens';
 
@@ -39,8 +41,13 @@ export function FieldScreen({ identity }: Props) {
   const { state, commands } = useBackendRuntime(identity);
   const { backends, snapshots, localAudio, pairing, storageError } = state;
   const [viewport, setViewport] = useState<Viewport | null>(null);
+  // One player for the life of the screen. A second one would be a second
+  // element and a second audio session.
+  const player = useMemo(() => createAudioApiPlayer(), []);
+  const transport = usePlayer(player);
   const [enginesOpen, setEnginesOpen] = useState(false);
   const [composerNoticeOpen, setComposerNoticeOpen] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const previousPlacements = useRef<FieldLayout['placements']>([]);
   const controller = useMemo(
     () => buildFieldController({ backends, snapshots, localAudio }),
@@ -67,6 +74,70 @@ export function FieldScreen({ identity }: Props) {
     onOpenComposer: openComposer,
     onOpenEngines: openEngines,
   });
+  // The song the camera is focused on, if the field still knows about it.
+  const focused = useMemo(() => {
+    const key = fieldCamera.focus?.entityKey;
+    return key === undefined
+      ? null
+      : controller.presentations.get(key) ?? null;
+  }, [controller.presentations, fieldCamera.focus]);
+
+  const currentTrack = transport.snapshot.track;
+  // One key lights every placement of that song, which is what M6 needs when a
+  // song sits in several playlists at once.
+  const playingKey =
+    transport.snapshot.state === 'playing' && currentTrack !== null
+      ? `${currentTrack.nodeKey}:${currentTrack.songId}`
+      : null;
+  const focusedIsCurrent =
+    focused !== null &&
+    currentTrack !== null &&
+    currentTrack.nodeKey === focused.entity.nodePublicKey &&
+    currentTrack.songId === focused.entity.entityId;
+
+  /**
+   * Play the focused song, fetching it first if the phone does not have it.
+   *
+   * Download belongs to the runtime and playback belongs to the player; this is
+   * the seam between them, and the only place they meet.
+   */
+  const playFocused = useCallback(async () => {
+    if (focused === null) return;
+    const artifact = focused.delivery;
+    if (artifact === undefined) return;
+    if (focusedIsCurrent) {
+      transport.toggle();
+      return;
+    }
+    setPlaybackError(null);
+    try {
+      if (focused.localAudio.state !== 'cached' && focused.localAudio.state !== 'pinned') {
+        await commands.audio(
+          focused.entity.nodePublicKey,
+          focused.song,
+          artifact,
+          'download',
+        );
+      }
+      const path = await commands.audioPath(
+        focused.entity.nodePublicKey,
+        focused.song,
+        artifact,
+      );
+      await transport.open(
+        {
+          nodeKey: focused.entity.nodePublicKey,
+          songId: focused.entity.entityId,
+          digest: artifact.sha256,
+        },
+        path,
+        { title: focused.song.title, artist: focused.nodeLabels[0] ?? 'Cantor' },
+      );
+    } catch (error) {
+      setPlaybackError(error instanceof Error ? error.message : String(error));
+    }
+  }, [commands, focused, focusedIsCurrent, transport]);
+
   const closeTopmostSheet = useCallback((): boolean => {
     if (pairing) {
       commands.hidePairing();
@@ -116,6 +187,7 @@ export function FieldScreen({ identity }: Props) {
                 layout={layout}
                 palette={pal}
                 placements={fieldCamera.renderedPlacements}
+                playingKey={playingKey}
                 presentations={controller.presentations}
                 viewport={viewport}
               />
@@ -139,6 +211,30 @@ export function FieldScreen({ identity }: Props) {
               onPress={fieldCamera.home}
             />
           </>
+        ) : null}
+        {fieldCamera.level === 'song' && focused !== null && viewport !== null ? (
+          <SongSurface
+            isCurrent={focusedIsCurrent}
+            onOpenDetail={() => setPlaybackError(null)}
+            onSeek={transport.seek}
+            onToggle={() => void playFocused()}
+            positionSeconds={transport.positionSeconds}
+            snapshot={
+              playbackError === null
+                ? transport.snapshot
+                : { ...transport.snapshot, error: playbackError }
+            }
+            song={{
+              key: focused.entity.key,
+              title: focused.song.title,
+              model: focused.song.model,
+              seed: focused.song.seed,
+              durationMs: focused.song.duration_ms,
+              nodeLabel: focused.nodeLabels[0] ?? focused.backend.petname,
+              audioState: focused.localAudio.state,
+            }}
+            width={viewport.width}
+          />
         ) : null}
         <FieldOverlay
           level={fieldCamera.level}
@@ -172,6 +268,7 @@ export function FieldScreen({ identity }: Props) {
         onPair={commands.pairBackend}
         visible={pairing}
       />
+      <PlayerHost player={player} />
     </SafeAreaView>
   );
 }

@@ -17,6 +17,8 @@ export type LensSong = Readonly<{
   model: string;
   nodeLabel: string;
   audioState: 'remote' | 'partial' | 'cached' | 'pinned';
+  /** True for the song the player currently holds, at every level it appears. */
+  playing: boolean;
 }>;
 
 export type LensFonts = Readonly<{
