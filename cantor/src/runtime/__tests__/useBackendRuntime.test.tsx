@@ -203,8 +203,12 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
   const removeAudioMock = jest
     .fn()
     .mockResolvedValue({ state: 'remote', bytes: 0 });
+  const localPathMock = jest
+    .fn()
+    .mockResolvedValue('/data/cantor-audio/cache/fixture.opus');
   const audioStore: LocalAudioStore = {
     inspect: ref => inspectAudioMock(ref.nodeKey, ref.songId, ref.digest),
+    localPath: ref => localPathMock(ref.nodeKey, ref.songId, ref.digest),
     createSink: ref => ({
       offset: async () => {
         const local = await inspectAudioMock(

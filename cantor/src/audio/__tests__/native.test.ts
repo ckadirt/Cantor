@@ -1,5 +1,9 @@
 import { NativeModules } from 'react-native';
-import { inspectNativeAudio, nativeAudio } from '../native';
+import {
+  inspectNativeAudio,
+  nativeAudio,
+  resolveNativeAudioPath,
+} from '../native';
 
 type NativeAudioMock = {
   localState: jest.Mock;
@@ -8,6 +12,7 @@ type NativeAudioMock = {
   pin: jest.Mock;
   unpin: jest.Mock;
   removeCached: jest.Mock;
+  localPath: jest.Mock;
   play: jest.Mock;
   stop: jest.Mock;
   enforceCacheBudget: jest.Mock;
@@ -21,6 +26,7 @@ function createNativeAudioMock(): NativeAudioMock {
     pin: jest.fn(),
     unpin: jest.fn(),
     removeCached: jest.fn(),
+    localPath: jest.fn(),
     play: jest.fn(),
     stop: jest.fn(),
     enforceCacheBudget: jest.fn(),
@@ -121,5 +127,35 @@ describe('CantorAudio native adapter characterization', () => {
     await expect(inspectNativeAudio('node', 'song', 'digest')).rejects.toThrow(
       'The native Cantor audio module is unavailable.',
     );
+  });
+
+  it('returns the verified path the native module resolved', async () => {
+    bridge.localPath.mockResolvedValue('/data/cantor-audio/cache/song.opus');
+
+    await expect(resolveNativeAudioPath('node', 'song', 'digest')).resolves.toBe(
+      '/data/cantor-audio/cache/song.opus',
+    );
+    expect(bridge.localPath).toHaveBeenCalledWith('node', 'song', 'digest');
+  });
+
+  it.each([[''], [null], [undefined], [42], [{}]])(
+    'rejects %p as a local audio path',
+    async value => {
+      bridge.localPath.mockResolvedValue(value);
+
+      await expect(
+        resolveNativeAudioPath('node', 'song', 'digest'),
+      ).rejects.toThrow('Native audio path is invalid.');
+    },
+  );
+
+  it('surfaces a native refusal to resolve a path', async () => {
+    bridge.localPath.mockRejectedValue(
+      new Error('Download the artifact before playing it.'),
+    );
+
+    await expect(
+      nativeAudio.localPath('node', 'song', 'digest'),
+    ).rejects.toThrow('Download the artifact before playing it.');
   });
 });

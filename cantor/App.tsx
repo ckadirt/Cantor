@@ -13,6 +13,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { FieldScreen } from './src/screens/FieldScreen';
 import { Onboarding } from './src/onboarding/Onboarding';
 import { MotionLab } from './src/dev/MotionLab';
+import { AudioSpike } from './src/dev/AudioSpike';
 import { getIdentityPhrase } from './src/identity/mnemonic';
 import {
   createAndStoreIdentity,
@@ -24,6 +25,10 @@ import { space, touch, type, usePalette } from './src/theme/tokens';
 // Dev workbench for the motion engine (src/dev/MotionLab). Flip to true to
 // iterate on shapes/text morphs with the scrubber; never ship it on.
 const MOTION_LAB = false;
+
+// M3 audio feasibility gate (src/dev/AudioSpike). Throwaway; flip to false and
+// delete the spike once the result is recorded in the M3 log.
+const AUDIO_SPIKE = false;
 
 type IdentityBoot =
   | { state: 'loading' }
@@ -77,7 +82,9 @@ export default function App() {
           barStyle={scheme === 'dark' ? 'light-content' : 'dark-content'}
           backgroundColor={pal.bg}
         />
-        {MOTION_LAB ? (
+        {AUDIO_SPIKE ? (
+          <AudioSpike />
+        ) : MOTION_LAB ? (
           <MotionLab />
         ) : boot.state === 'loading' ? (
           <View style={[styles.loading, { backgroundColor: pal.bg }]}>

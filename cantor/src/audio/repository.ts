@@ -68,6 +68,23 @@ export async function finalizeAudio(
   await nativeAudio.enforceCacheBudget(DEFAULT_AUDIO_CACHE_BYTES);
 }
 
+/**
+ * The verified local path for a song, for the player to load.
+ *
+ * This is the replacement for `playAudio`: storage resolves and verifies, the
+ * player decides when to make sound. The stored advisory state is refreshed
+ * afterwards because resolving also refreshes the artifact's last-used time.
+ */
+export async function localAudioPath(
+  nodeKey: string,
+  songId: string,
+  digest: string,
+): Promise<string> {
+  const path = await nativeAudio.localPath(nodeKey, songId, digest);
+  await inspectAudio(nodeKey, songId, digest);
+  return path;
+}
+
 export async function playAudio(
   nodeKey: string,
   songId: string,

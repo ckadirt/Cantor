@@ -92,6 +92,13 @@ class CantorAudioModule(
   }
 
   @ReactMethod
+  fun localPath(nodeKey: String, songId: String, digest: String, promise: Promise) {
+    runPromise(promise) {
+      synchronized(lock) { storage.localPath(nodeKey, songId, digest) }
+    }
+  }
+
+  @ReactMethod
   fun play(nodeKey: String, songId: String, digest: String, promise: Promise) {
     runPromise(promise) {
       synchronized(lock) {

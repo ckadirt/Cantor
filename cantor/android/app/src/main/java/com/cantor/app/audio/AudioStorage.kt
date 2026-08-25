@@ -134,6 +134,21 @@ internal class AudioStorage(
     return audio
   }
 
+  /**
+   * Resolve the verified local file the player should load, as an absolute path.
+   *
+   * Only a cached or pinned artifact is playable; a partial file is never
+   * returned, because a partial file is not the song. The last-used time is
+   * touched here rather than in [localState] because this is called when
+   * playback actually loads, and that is what protects a playing song from
+   * cache eviction. Inspecting availability must not make a song look fresh.
+   */
+  fun localPath(nodeKey: String, songId: String, digest: String): String {
+    val audio = playableFile(nodeKey, songId, digest)
+    touch(audio)
+    return audio.absolutePath
+  }
+
   fun touch(file: File) {
     file.setLastModified(System.currentTimeMillis())
   }
