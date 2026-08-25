@@ -4,11 +4,12 @@ Everything after the onboarding. The v1 UI in `src/screens/MainScreen.tsx` and
 `src/features/*` was built to exercise the node and the relay; it is a console,
 not a product, and this is the design that replaces it.
 
-| Document | What it settles |
-| --- | --- |
-| [`design.md`](design.md) | The zoom model: levels, gestures, lenses, arrangements, playlists, the symbol grammar, the motion budget |
-| [`structure.md`](structure.md) | Where every file goes, what each one owns, and the dependency rules |
-| [`milestones.md`](milestones.md) | Execution order, phase 1 and phase 2, with the protocol work called out |
+| Document                                             | What it settles                                                                                          |
+| ---------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| [`design.md`](design.md)                             | The zoom model: levels, gestures, lenses, arrangements, playlists, the symbol grammar, the motion budget |
+| [`structure.md`](structure.md)                       | Where every file goes, what each one owns, and the dependency rules                                      |
+| [`milestones.md`](milestones.md)                     | Execution order, phase 1 and phase 2, with the protocol work called out                                  |
+| [`implementation_steps.md`](implementation_steps.md) | The milestone-by-milestone build guide, interfaces, gates, tests, and retirement order                   |
 
 Read [`../refactor/hacking-app.md`](../refactor/hacking-app.md) first for the
 app's dependency direction, and `cantor/AGENTS.md` before touching motion.
