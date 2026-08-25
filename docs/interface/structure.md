@@ -82,13 +82,31 @@ mockup. They are verified.
 | File | Owns |
 | --- | --- |
 | `types.ts` | `PlayerPort` — `load/play/pause/seek/position/duration/state`, plus `samples()` for lenses |
-| `audioApiPlayer.ts` | the `react-native-audio-api` adapter, the only file that imports it |
+| `audioApiPlayer.ts` | the adapter's state machine. No React, and no import of the audio library |
+| `createAudioApiPlayer.ts` | binds the adapter to `react-native-audio-api` |
+| `PlayerHost.tsx` | the app's single `<Audio>` element, and the system wiring around it |
+| `fakePlayer.ts` | hand-clocked `PlayerPort` for tests above this layer |
+| `playerContract.ts` | the behavioural suite both implementations run |
 | `usePlayer.ts` | hook: current song, transport, position, exposed to features |
 | `analyser.ts` | live sample/FFT taps for L2 and L3 lenses |
 
 `PlayerPort` exists so the library choice stays swappable. **Position must not
 be polled at 60 fps.** Take duration and a start timestamp, run the visual on a
 Reanimated clock, and resync on discrete events.
+
+Three files touch the library rather than one, because it has no imperative way
+to create a streaming file source: `StreamerNode` is deprecated in favour of the
+`<Audio>` element, so the element must be rendered by React even though the port
+is imperative. `audioApiPlayer.ts` therefore holds the state machine and stays
+free of both React and the library; `PlayerHost.tsx` renders the element and
+owns the audio session, the playback notification and the remote-control
+subscriptions; `createAudioApiPlayer.ts` binds the two. Swapping engines means
+replacing that trio, not touching a feature.
+
+`PlayerHost` mounts **once**, above anything that plays. A second mount is a
+second element and a second audio session. It renders the element for as long as
+a source exists and changes only the `source` prop, because each source swap
+leaks about 1.6 MB — see [`m3-audio-gate.md`](m3-audio-gate.md).
 
 Needs `AudioStorage.kt` to expose a `localPath()` to JS — the path stays
 app-private, and nothing crosses the trust boundary.
