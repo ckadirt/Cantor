@@ -355,6 +355,7 @@ export function FieldScreen({ identity }: Props) {
         ) : null}
         {fieldCamera.level === 'song' && focused !== null && viewport !== null ? (
           <SongSurface
+            available={focused.delivery !== undefined}
             isCurrent={focusedIsCurrent}
             onOpenDetail={() => {
               setPlaybackError(null);

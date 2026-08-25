@@ -152,8 +152,13 @@ describe('AudioApiPlayer source discipline', () => {
     await player.load(FIRST, '/audio/first.opus');
     await player.load(SECOND, '/audio/second.opus');
 
-    expect(sources).toEqual(['/audio/first.opus', '/audio/second.opus']);
-    expect(element.mountedSource).toBe('/audio/second.opus');
+    // Sources carry an explicit file:// scheme; a bare path is resolved against
+    // bundled assets in a release build and fails to load.
+    expect(sources).toEqual([
+      'file:///audio/first.opus',
+      'file:///audio/second.opus',
+    ]);
+    expect(element.mountedSource).toBe('file:///audio/second.opus');
   });
 
   it('reloading the same path rewinds instead of replacing the source', async () => {

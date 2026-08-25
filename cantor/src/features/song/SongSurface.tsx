@@ -35,6 +35,8 @@ type Props = {
   positionSeconds: SharedValue<number>;
   /** True when this song is the one the player currently holds. */
   isCurrent: boolean;
+  /** True when the node has a delivery artifact this song can be fetched from. */
+  available: boolean;
   onToggle: () => void;
   onSeek: (seconds: number) => void;
   onOpenDetail: () => void;
@@ -53,6 +55,7 @@ export function SongSurface({
   snapshot,
   positionSeconds,
   isCurrent,
+  available,
   onToggle,
   onSeek,
   onOpenDetail,
@@ -86,8 +89,16 @@ export function SongSurface({
       .runOnJS(true);
   }, [durationSeconds, onSeek, width]);
 
-  const transportLabel = isCurrent && snapshot.state === 'playing' ? 'Pause' : 'Play';
-  const playable = song.audioState === 'cached' || song.audioState === 'pinned';
+  const onPhone = song.audioState === 'cached' || song.audioState === 'pinned';
+  // A song that lives on the node is still playable: pressing play fetches it
+  // first. Disabling it here would disable the only path that downloads it.
+  const playable = available;
+  const transportLabel =
+    isCurrent && snapshot.state === 'playing'
+      ? 'Pause'
+      : onPhone
+        ? 'Play'
+        : 'Fetch';
 
   return (
     <View style={styles.root} pointerEvents="box-none">
