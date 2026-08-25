@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
+  PaintStyle,
   Picture,
   Skia,
   type SkCanvas,
@@ -15,12 +16,15 @@ import {
   type Camera,
   type FieldLayout,
   type Placement,
+  type RepresentationAlphas,
   type Viewport,
 } from '../../field';
 import { lensByKey, type LensFonts, type LensPaints } from '../../lenses';
 import { useMorphFont } from '../../motion/fonts';
 import { font, type as textType, type Palette } from '../../theme/tokens';
-import type { FieldPresentation } from './useFieldController';
+import { jobMarkModel } from '../../jobs/marks';
+import { jobStateLabel } from '../../jobs/policy';
+import type { FieldPresentation, JobPresentation } from './useFieldController';
 
 /** KNOBS — screen-space culling and row dimensions from the HTML prototype. */
 const FIELD_CANVAS_KNOBS = {
@@ -29,6 +33,11 @@ const FIELD_CANVAS_KNOBS = {
   ROW_HEIGHT_PX: 30,
   SHELF_LABEL_GAP_PX: 32,
   NAME_LENS_TITLE_SIZE_PX: 15,
+  // A generation in flight: a ring the work fills, and the stage written inside.
+  JOB_RING_RADIUS_PX: 9,
+  JOB_RING_WIDTH_PX: 1.4,
+  JOB_INDETERMINATE_SWEEP_DEG: 70,
+  JOB_ROW_LABEL_OFFSET_PX: 42,
 } as const;
 
 type Props = {
@@ -37,6 +46,7 @@ type Props = {
   camera: Camera;
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
+  jobs?: ReadonlyMap<string, JobPresentation>;
   palette: Palette;
   /** Entity key of the song the player holds, lit at every level. */
   playingKey?: string | null;
@@ -53,6 +63,7 @@ export function FieldCanvas({
   camera,
   viewport,
   presentations,
+  jobs,
   palette,
   playingKey = null,
   activeLensKey = 'name',
@@ -82,6 +93,7 @@ export function FieldCanvas({
       camera,
       viewport,
       presentations,
+      jobs,
       palette,
       playingKey,
       lensKey: activeLensKey,
@@ -93,6 +105,7 @@ export function FieldCanvas({
     bodyFont,
     camera,
     displayFont,
+    jobs,
     layout,
     monoFont,
     paints,
@@ -121,6 +134,7 @@ type PictureRequest = Readonly<{
   camera: Camera;
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
+  jobs?: ReadonlyMap<string, JobPresentation>;
   palette: Palette;
   playingKey?: string | null;
   lensKey: string;
@@ -149,7 +163,13 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
 
   for (const placement of request.placements) {
     const presentation = request.presentations.get(placement.entityKey);
-    if (presentation === undefined) continue;
+    if (presentation === undefined) {
+      const pending = request.jobs?.get(placement.entityKey);
+      if (pending !== undefined) {
+        drawJobMark(canvas, request, placement, pending, alpha);
+      }
+      continue;
+    }
     const point = worldToScreen(
       { x: placement.x, y: placement.y },
       request.camera,
@@ -205,6 +225,86 @@ function paint(color: string): SkPaint {
   result.setAntiAlias(true);
   result.setColor(Skia.Color(color));
   return result;
+}
+
+/**
+ * A generation in flight, drawn as a mark rather than a queue row.
+ *
+ * The ring only fills when the node supplied a total. Without one it draws a
+ * fixed sweep — visibly working, claiming nothing — because before M8 there is
+ * no stage mask to compute a percentage from, and a ring that guessed would be
+ * a number that looks like knowledge.
+ */
+function drawJobMark(
+  canvas: SkCanvas,
+  request: PictureRequest,
+  placement: Placement,
+  pending: JobPresentation,
+  alpha: RepresentationAlphas,
+): void {
+  const point = worldToScreen(
+    { x: placement.x, y: placement.y },
+    request.camera,
+    request.viewport,
+  );
+  if (!withinOverscan(point, request.viewport)) return;
+
+  const model = jobMarkModel(pending.job, []);
+  const visible = Math.max(alpha.dot, alpha.row);
+  if (visible <= 0.01) return;
+
+  const paint = request.paints.ink;
+  const radius = FIELD_CANVAS_KNOBS.JOB_RING_RADIUS_PX;
+  const box = Skia.XYWHRect(
+    point.x - radius,
+    point.y - radius,
+    radius * 2,
+    radius * 2,
+  );
+
+  paint.setAlphaf(visible * (model.failed ? 0.45 : 1));
+  paint.setStyle(PaintStyle.Stroke);
+  paint.setStrokeWidth(FIELD_CANVAS_KNOBS.JOB_RING_WIDTH_PX);
+  if (model.progress.kind === 'determinate') {
+    canvas.drawArc(box, -90, 360 * model.progress.fraction, false, paint);
+  } else {
+    canvas.drawArc(
+      box,
+      -90,
+      FIELD_CANVAS_KNOBS.JOB_INDETERMINATE_SWEEP_DEG,
+      false,
+      paint,
+    );
+  }
+  paint.setStyle(PaintStyle.Fill);
+
+  // At L1 there is room for words; say what is happening and, when the node
+  // counted it, how far in.
+  if (alpha.row > 0.01) {
+    paint.setAlphaf(alpha.row);
+    const label = jobStateLabel(pending.job);
+    const counted =
+      model.progress.kind === 'determinate'
+        ? ` ${model.progress.completed}/${model.progress.total}`
+        : '';
+    canvas.drawText(
+      `${label}${counted}`,
+      point.x - FIELD_CANVAS_KNOBS.JOB_ROW_LABEL_OFFSET_PX,
+      point.y + 4,
+      paint,
+      request.fonts.mono,
+    );
+    if (pending.caption !== null) {
+      request.paints.muted.setAlphaf(alpha.row * 0.8);
+      canvas.drawText(
+        pending.caption.slice(0, 28),
+        point.x - FIELD_CANVAS_KNOBS.JOB_ROW_LABEL_OFFSET_PX,
+        point.y + 17,
+        request.paints.muted,
+        request.fonts.mono,
+      );
+    }
+  }
 }
 
 function drawShelfLabels(

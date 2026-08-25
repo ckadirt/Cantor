@@ -278,6 +278,7 @@ export function FieldScreen({ identity }: Props) {
                 layout={layout}
                 palette={pal}
                 placements={fieldCamera.renderedPlacements}
+                jobs={controller.jobs}
                 playingKey={playingKey}
                 presentations={controller.presentations}
                 viewport={viewport}
