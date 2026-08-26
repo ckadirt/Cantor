@@ -9,6 +9,55 @@
 
 const PLAYLIST_PREFIX = 'p/';
 
+/** KNOBS — bounds the node enforces, checked before a patch is sent. */
+const PLAYLIST_KNOBS = {
+  MAX_TAGS_PER_SONG: 32, // the node's tag-count bound
+  MAX_TAG_BYTES: 128, // per tag, UTF-8, matching the node's limit
+} as const;
+
+// Anything a name must not contain: control characters would make a tag that
+// cannot be typed back, searched or shown. The rule matches them on purpose.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/;
+
+/** UTF-8 byte length. The node bounds tags in bytes, not characters. */
+export function tagBytes(value: string): number {
+  let bytes = 0;
+  for (const character of value) {
+    const code = character.codePointAt(0) ?? 0;
+    if (code <= 0x7f) bytes += 1;
+    else if (code <= 0x7ff) bytes += 2;
+    else if (code <= 0xffff) bytes += 3;
+    else bytes += 4;
+  }
+  return bytes;
+}
+
+/**
+ * Why a name cannot be used, or null when it can.
+ *
+ * Checked before patching rather than after: a rejected patch costs a round
+ * trip and leaves the sheet showing a name the node never accepted.
+ */
+export function playlistNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return 'A playlist needs a name.';
+  if (CONTROL_CHARACTERS.test(trimmed)) {
+    return 'A playlist name cannot contain control characters.';
+  }
+  if (tagBytes(toTag(trimmed)) > PLAYLIST_KNOBS.MAX_TAG_BYTES) {
+    return `A playlist name is limited to ${PLAYLIST_KNOBS.MAX_TAG_BYTES} bytes.`;
+  }
+  return null;
+}
+
+/** True when a set of tags is already at the node's count bound. */
+export function tagsAreFull(tags: readonly string[]): boolean {
+  return normalise(tags).length >= PLAYLIST_KNOBS.MAX_TAGS_PER_SONG;
+}
+
+export const PLAYLIST_LIMITS = PLAYLIST_KNOBS;
+
 /** Compare names case-insensitively after trimming; keep the stored spelling. */
 function fold(name: string): string {
   return name.trim().toLocaleLowerCase();
@@ -65,7 +114,7 @@ export function toggle(
   member: boolean,
 ): readonly string[] {
   const wanted = fold(name);
-  if (wanted.length === 0) return normalise(tags);
+  if (playlistNameProblem(name) !== null) return normalise(tags);
   const without = normalise(tags).filter(
     tag => !(isPlaylistTag(tag) && fold(tag.slice(PLAYLIST_PREFIX.length)) === wanted),
   );

@@ -26,16 +26,18 @@ import {
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import { LensPicker } from '../features/song/LensPicker';
+import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
+  arrangementByKey,
   byTime,
   layoutField,
   worldToScreen,
   type FieldLayout,
   type Viewport,
 } from '../field';
-import { normalise } from '../playlists';
+import { allPlaylists, normalise, toggle } from '../playlists';
 import type { SongDetail } from '../core/protocol';
 import type { AppIdentity } from '../identity/derive';
 import {
@@ -86,6 +88,7 @@ export function FieldScreen({ identity }: Props) {
   const [songDetailError, setSongDetailError] = useState<string | null>(null);
   const [songBusy, setSongBusy] = useState(false);
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
+  const [arrangementKey, setArrangementKey] = useState(byTime.key);
   const [analyses, setAnalyses] = useState<ReadonlyMap<string, SongAnalysis>>(
     () => new Map(),
   );
@@ -99,11 +102,11 @@ export function FieldScreen({ identity }: Props) {
     if (viewport === null) return null;
     return layoutField({
       entities: controller.entities,
-      arrangement: byTime,
+      arrangement: arrangementByKey(arrangementKey) ?? byTime,
       previousPlacements: previousPlacements.current,
       viewport,
     });
-  }, [controller.entities, viewport]);
+  }, [arrangementKey, controller.entities, viewport]);
   useEffect(() => {
     if (layout !== null) previousPlacements.current = layout.placements;
   }, [layout]);
@@ -172,6 +175,12 @@ export function FieldScreen({ identity }: Props) {
       ? null
       : controller.presentations.get(key) ?? null;
   }, [controller.presentations, fieldCamera.focus]);
+
+  /** Every playlist that exists, which is every `p/` tag on every song. */
+  const knownPlaylists = useMemo(
+    () => allPlaylists(controller.entities.map(entity => entity.tags)),
+    [controller.entities],
+  );
 
   const currentTrack = transport.snapshot.track;
   // One key lights every placement of that song, which is what M6 needs when a
@@ -520,7 +529,9 @@ export function FieldScreen({ identity }: Props) {
           />
         ) : null}
         <FieldOverlay
+          arrangementKey={arrangementKey}
           level={fieldCamera.level}
+          onChangeArrangement={setArrangementKey}
           offline={offline}
           onOpenEngines={() => {
             fieldCamera.cancelGesture();
@@ -576,6 +587,18 @@ export function FieldScreen({ identity }: Props) {
             })
           }
           onRename={title => patchFocused({ title })}
+          playlists={
+            <PlaylistChips
+              busy={songBusy}
+              known={knownPlaylists}
+              onToggle={(name, member) =>
+                patchFocused({
+                  tags: [...toggle(focused.song.tags, name, member)],
+                })
+              }
+              tags={focused.song.tags}
+            />
+          }
           onToggleFavourite={() =>
             patchFocused({ favorite: !focused.song.favorite })
           }
