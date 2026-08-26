@@ -24,15 +24,22 @@ import {
   useFieldCamera,
 } from '../features/field';
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
+import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
-import { byTime, layoutField, type FieldLayout, type Viewport } from '../field';
+import {
+  byTime,
+  layoutField,
+  worldToScreen,
+  type FieldLayout,
+  type Viewport,
+} from '../field';
 import { normalise } from '../playlists';
 import type { SongDetail } from '../core/protocol';
 import type { AppIdentity } from '../identity/derive';
 import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
 import { useBackendRuntime } from '../runtime';
-import { usePalette } from '../theme/tokens';
+import { space, usePalette } from '../theme/tokens';
 
 type Props = {
   identity: AppIdentity;
@@ -53,6 +60,15 @@ export function FieldScreen({ identity }: Props) {
   const [composerOpen, setComposerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  /**
+   * The caption in flight, from the moment it is sent until it has become a
+   * mark. `jobKey` is filled in when the node names the job.
+   */
+  const [condensing, setCondensing] = useState<{
+    caption: string;
+    nodePublicKey: string;
+    jobKey: string | null;
+  } | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [songSheetOpen, setSongSheetOpen] = useState(false);
   const [songDetail, setSongDetail] = useState<SongDetail | null>(null);
@@ -114,9 +130,11 @@ export function FieldScreen({ identity }: Props) {
       setSubmitting(true);
       setSubmitError(null);
       try {
-        await commands.submit(nodePublicKey, modelSelector, generation);
+        setCondensing({ caption: generation.caption, nodePublicKey, jobKey: null });
         setComposerOpen(false);
+        await commands.submit(nodePublicKey, modelSelector, generation);
       } catch (error) {
+        setCondensing(null);
         setSubmitError(error instanceof Error ? error.message : String(error));
       } finally {
         setSubmitting(false);
@@ -273,6 +291,34 @@ export function FieldScreen({ identity }: Props) {
       active = false;
     };
   }, [commands, focused, songSheetOpen]);
+
+  /**
+   * Where the caption in flight should land.
+   *
+   * Null until the node has named the job *and* the field has laid out a
+   * placement for it. Both halves matter: a placement that does not exist yet
+   * is not a position to fly to, and guessing one would land the caption
+   * somewhere the mark is not.
+   */
+  const condenseTarget = useMemo(() => {
+    if (condensing === null || viewport === null) return null;
+    const key =
+      condensing.jobKey ??
+      [...controller.jobs.keys()].find(candidate =>
+        candidate.startsWith(`${condensing.nodePublicKey}:`),
+      ) ??
+      null;
+    if (key === null) return null;
+    const placement = fieldCamera.renderedPlacements.find(
+      candidate => candidate.entityKey === key,
+    );
+    if (placement === undefined) return null;
+    return worldToScreen(
+      { x: placement.x, y: placement.y },
+      fieldCamera.camera,
+      viewport,
+    );
+  }, [condensing, controller.jobs, fieldCamera.camera, fieldCamera.renderedPlacements, viewport]);
 
   const closeTopmostSheet = useCallback((): boolean => {
     if (songSheetOpen) {
@@ -454,6 +500,14 @@ export function FieldScreen({ identity }: Props) {
           onUnpin={() => runAudioAction('unpin')}
           song={focused.song}
           visible={songSheetOpen}
+        />
+      ) : null}
+      {condensing !== null && viewport !== null ? (
+        <CondenseOverlay
+          caption={condensing.caption}
+          from={{ x: space.lg, y: viewport.height * 0.24, width: viewport.width - space.lg * 2 }}
+          onSettled={() => setCondensing(null)}
+          to={condenseTarget}
         />
       ) : null}
       <PlayerHost player={player} />
