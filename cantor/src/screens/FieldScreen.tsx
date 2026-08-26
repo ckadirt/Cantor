@@ -25,6 +25,7 @@ import {
 } from '../features/field';
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
+import type { GrainRender } from '../features/field/FieldCanvas';
 import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
@@ -32,7 +33,10 @@ import { SongSurface } from '../features/song/SongSurface';
 import {
   arrangementByKey,
   byTime,
+  columnsFor,
+  grainWindow,
   layoutField,
+  visibleSecondsAt,
   worldToScreen,
   type FieldLayout,
   type Viewport,
@@ -89,6 +93,7 @@ export function FieldScreen({ identity }: Props) {
   const [songBusy, setSongBusy] = useState(false);
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
+  const [grain, setGrain] = useState<GrainRender | null>(null);
   const [analyses, setAnalyses] = useState<ReadonlyMap<string, SongAnalysis>>(
     () => new Map(),
   );
@@ -417,6 +422,78 @@ export function FieldScreen({ identity }: Props) {
     };
   }, [commands, focused, player]);
 
+  /**
+   * Resolve the visible slice of audio while the camera is inside a song.
+   *
+   * The window follows the camera scale, so zooming *is* scrubbing: the request
+   * is re-issued as the span changes, and only for the span on screen rather
+   * than for the whole song.
+   */
+  useEffect(() => {
+    if (fieldCamera.level !== 'grain' || focused === null || viewport === null) {
+      setGrain(null);
+      return;
+    }
+    const artifact = focused.delivery;
+    const onPhone =
+      focused.localAudio.state === 'cached' ||
+      focused.localAudio.state === 'pinned';
+    if (artifact === undefined || !onPhone) {
+      setGrain(null);
+      return;
+    }
+
+    const duration = focused.song.duration_ms / 1000;
+    const visible = visibleSecondsAt(
+      fieldCamera.camera.scale,
+      layout?.fitScale ?? fieldCamera.camera.scale,
+    );
+    const centre = transport.snapshot.positionSeconds;
+    const window = grainWindow(centre, visible, duration);
+
+    let active = true;
+    void (async () => {
+      try {
+        const path = await commands.audioPath(
+          focused.entity.nodePublicKey,
+          focused.song,
+          artifact,
+        );
+        const samples = await player.samples({
+          ref: {
+            nodeKey: focused.entity.nodePublicKey,
+            songId: focused.entity.entityId,
+            digest: artifact.sha256,
+          },
+          localPath: path,
+          startSeconds: window.startSeconds,
+          endSeconds: window.endSeconds,
+          buckets: columnsFor(viewport.width),
+        });
+        if (!active) return;
+        setGrain({
+          window: samples,
+          label: `${window.visibleSeconds.toFixed(2)}s VISIBLE · ${window.centerSeconds.toFixed(2)}s`,
+        });
+      } catch (error) {
+        if (active) setGrain(null);
+        console.warn('grain window failed', readError(error));
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [
+    commands,
+    fieldCamera.camera.scale,
+    fieldCamera.level,
+    focused,
+    layout,
+    player,
+    transport.snapshot.positionSeconds,
+    viewport,
+  ]);
+
   const closeTopmostSheet = useCallback((): boolean => {
     if (songSheetOpen) {
       setSongSheetOpen(false);
@@ -472,6 +549,7 @@ export function FieldScreen({ identity }: Props) {
                 placements={fieldCamera.renderedPlacements}
                 activeLensKey={lensKey}
                 analyses={analyses}
+                grain={grain}
                 jobs={controller.jobs}
                 playingKey={playingKey}
                 playingProgress={playingProgress}
