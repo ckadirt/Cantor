@@ -107,6 +107,8 @@ mod tests {
             installed_at: String::new(),
             engine: "acestep".into(),
             vram_bytes: 0,
+            stages: Vec::new(),
+            parameters: Vec::new(),
         }
     }
     fn submission(caption: &str) -> Submission {
@@ -120,6 +122,7 @@ mod tests {
                 steps: None,
                 cfg: None,
                 seed: Some(7),
+                extensions: None,
             },
         }
     }

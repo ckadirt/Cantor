@@ -7,7 +7,7 @@ rust-version.workspace = true
 
 [dependencies]
 serde.workspace = true
-ts-rs.workspace = true
-
-[dev-dependencies]
+# Runtime, not just tests: the extension map is bounded by its encoded size,
+# which is the size the node actually has to handle.
 serde_json.workspace = true
+ts-rs.workspace = true

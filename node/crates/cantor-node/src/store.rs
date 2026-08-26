@@ -10,6 +10,7 @@ use std::io::SeekFrom;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use cantor_proto::{GenerationStage, ModelParameter};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -47,11 +48,38 @@ pub struct InstalledVariant {
     /// field existed, which reads as "no budget" — the engine's own default.
     #[serde(default)]
     pub vram_bytes: u64,
+    /// Stages this variant runs, in order, copied from the catalog at install
+    /// time. Empty on records written before declarations existed; the node
+    /// does not guess, and clients fall back to observed stages.
+    #[serde(default)]
+    pub stages: Vec<GenerationStage>,
+    /// Controls this variant accepts, copied from the catalog at install time.
+    /// Empty means "declares nothing", which is also what an older marker says.
+    #[serde(default)]
+    pub parameters: Vec<ModelParameter>,
 }
 
 impl InstalledVariant {
     pub fn selector(&self) -> String {
         format!("{}:{}", self.model, self.tag)
+    }
+
+    /// Declarations as the protocol carries them: `None` when this marker has
+    /// none, so a client can tell "not declared" from "declares nothing".
+    pub fn declared_stages(&self) -> Option<Vec<GenerationStage>> {
+        if self.stages.is_empty() {
+            None
+        } else {
+            Some(self.stages.clone())
+        }
+    }
+
+    pub fn declared_parameters(&self) -> Option<Vec<ModelParameter>> {
+        if self.parameters.is_empty() {
+            None
+        } else {
+            Some(self.parameters.clone())
+        }
     }
 
     /// The engine this model needs, falling back to the model name for records
@@ -156,6 +184,14 @@ impl Store {
             installed_at: crate::config::now_rfc3339(),
             engine: model.engine().to_owned(),
             vram_bytes: variant.needs.vram_bytes,
+            stages: variant.stages.clone(),
+            // A variant whose declarations collide is stored as declaring
+            // nothing: half a control set is worse than none.
+            parameters: if variant.declarations_are_sound() {
+                variant.parameters.clone()
+            } else {
+                Vec::new()
+            },
         };
         let path = self.marker_path(&model.name, &variant.tag);
         let encoded =
@@ -421,6 +457,8 @@ mod tests {
                 .map(|(i, d)| component(&format!("role{i}"), d, 10))
                 .collect(),
             needs: Default::default(),
+            stages: Vec::new(),
+            parameters: Vec::new(),
         }
     }
 

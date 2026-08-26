@@ -9,6 +9,7 @@
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
+use cantor_proto::{GenerationStage, ModelParameter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -59,9 +60,40 @@ pub struct Variant {
     pub components: Vec<Component>,
     #[serde(default)]
     pub needs: Needs,
+    /// Stages this variant runs, in order. Absent in an older catalog, which
+    /// reads as "not declared" rather than as "no stages".
+    #[serde(default)]
+    pub stages: Vec<GenerationStage>,
+    /// Controls this variant accepts beyond caption, lyrics and duration.
+    ///
+    /// A malformed entry drops that entry rather than the whole catalog: a
+    /// catalog is data that can move ahead of an installed node, so one shape it
+    /// does not recognise must not make every model unavailable.
+    #[serde(default, deserialize_with = "lenient_parameters")]
+    pub parameters: Vec<ModelParameter>,
+}
+
+/// Keep the parameters this build understands and silently drop the rest.
+fn lenient_parameters<'de, D>(deserializer: D) -> Result<Vec<ModelParameter>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|value| serde_json::from_value::<ModelParameter>(value).ok())
+        .collect())
 }
 
 impl Variant {
+    /// True when every declared parameter has its own key.
+    ///
+    /// A duplicate makes one control unreachable, so a variant that has one is
+    /// treated as declaring nothing rather than as declaring something wrong.
+    pub fn declarations_are_sound(&self) -> bool {
+        cantor_proto::extensions::declarations_are_unique(&self.parameters)
+    }
+
     pub fn total_bytes(&self) -> u64 {
         self.components.iter().map(|c| c.bytes).sum()
     }

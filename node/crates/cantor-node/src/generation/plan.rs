@@ -1,6 +1,12 @@
 //! Resolve one accepted job into fully owned native generation inputs.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::LazyLock;
+
+/// Shared empty map so the common path allocates nothing.
+static EMPTY_EXTENSIONS: LazyLock<BTreeMap<String, cantor_proto::ParameterValue>> =
+    LazyLock::new(BTreeMap::new);
 
 use anyhow::Result;
 use cantor_proto::ErrorCode;
@@ -131,6 +137,16 @@ pub(crate) async fn resolve(
         steps: work.generation.steps,
         cfg: work.generation.cfg,
         seed: work.generation.seed,
+        // Declared fields, defaults filled in, flattened alongside the core
+        // ones. Validation already happened at admission against this exact
+        // installed variant; this only resolves what was left unset.
+        extensions: cantor_proto::extensions::resolve_with_defaults(
+            work.generation
+                .extensions
+                .as_ref()
+                .unwrap_or(&EMPTY_EXTENSIONS),
+            &variant.parameters,
+        ),
     };
 
     Ok(GenerationPlan {

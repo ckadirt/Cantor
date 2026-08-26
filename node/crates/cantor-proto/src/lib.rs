@@ -4,6 +4,10 @@
 //! inside a relay tunnel. Rust is the source of truth; TypeScript bindings are
 //! generated with `ts-rs`, while untrusted input is validated at each edge.
 
+pub mod extensions;
+
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -36,6 +40,103 @@ pub const MAX_TITLE_BYTES: usize = 160;
 pub const MAX_TAG_BYTES: usize = 64;
 pub const MAX_TAGS: usize = 16;
 
+/// Bounds on the declared-parameter extension map.
+///
+/// A node advertises what its engine accepts; the app sends values back through
+/// `GenerationRequest::extensions`. These bounds exist so an untrusted client
+/// cannot make admission expensive.
+pub const MAX_EXTENSIONS: usize = 32;
+pub const MAX_EXTENSION_KEY_BYTES: usize = 64;
+pub const MAX_EXTENSIONS_ENCODED_BYTES: usize = 4096;
+pub const MAX_PARAMETER_LABEL_BYTES: usize = 120;
+pub const MAX_PARAMETER_CHOICES: usize = 64;
+
+/// A scalar an engine parameter can carry. Scalars only: an engine field is a
+/// value, not a structure, and allowing nesting would make validation open.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(untagged)]
+#[ts(export)]
+pub enum ParameterValue {
+    Boolean(bool),
+    Number(f64),
+    Text(String),
+}
+
+/// One control an engine declares.
+///
+/// `key` is the field name the engine itself expects in its JSON input. The app
+/// never translates a family or a selector into a field name -- that is the
+/// whole point of declaring them.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum ModelParameter {
+    Integer {
+        key: String,
+        label: String,
+        // i32, not i64: these cross JSON, where anything past 2^53 stops
+        // round-tripping, and no engine control needs that range.
+        default: i32,
+        minimum: i32,
+        maximum: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        step: Option<i32>,
+    },
+    Number {
+        key: String,
+        label: String,
+        default: f64,
+        minimum: f64,
+        maximum: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        step: Option<f64>,
+    },
+    Boolean {
+        key: String,
+        label: String,
+        default: bool,
+    },
+    Choice {
+        key: String,
+        label: String,
+        default: String,
+        /// Ordered; the app shows them in this order and does not sort.
+        choices: Vec<String>,
+    },
+    Text {
+        key: String,
+        label: String,
+        default: String,
+        max_bytes: u32,
+    },
+}
+
+impl ModelView {
+    /// Declared stages, or an empty slice when the node declared none.
+    pub fn declared_stages(&self) -> &[GenerationStage] {
+        self.stages.as_deref().unwrap_or(&[])
+    }
+
+    /// Declared parameters, or an empty slice when the node declared none.
+    pub fn declared_parameters(&self) -> &[ModelParameter] {
+        self.parameters.as_deref().unwrap_or(&[])
+    }
+}
+
+impl ModelParameter {
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Integer { key, .. }
+            | Self::Number { key, .. }
+            | Self::Boolean { key, .. }
+            | Self::Choice { key, .. }
+            | Self::Text { key, .. } => key,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]
 pub struct ModelView {
@@ -43,6 +144,19 @@ pub struct ModelView {
     pub selector: String,
     pub family: String,
     pub engine: String,
+    /// The stages this model actually runs, in order.
+    ///
+    /// `None` means the node has not declared them -- an older node, or a
+    /// marker written before declarations existed. That is different from
+    /// declaring none, and clients draw observed stages rather than guessing an
+    /// arc when it is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stages: Option<Vec<GenerationStage>>,
+    /// Controls this model accepts beyond caption, lyrics and duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub parameters: Option<Vec<ModelParameter>>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -184,6 +298,15 @@ pub struct GenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "number | undefined")]
     pub seed: Option<u64>,
+    /// Values for the parameters the selected model declared.
+    ///
+    /// Empty for an old client, and for a model that declares nothing. A field
+    /// supplied here *and* through a legacy top-level field is rejected rather
+    /// than resolved by precedence: silently picking one would run a generation
+    /// the caller did not ask for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub extensions: Option<BTreeMap<String, ParameterValue>>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]

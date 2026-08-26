@@ -1,4 +1,7 @@
+import type { ModelParameter } from '../../../../protocol/ModelParameter';
 import type { ModelView } from '../../../../protocol/ModelView';
+import type { ParameterValue } from '../../../../protocol/ParameterValue';
+import { extensionsFor, parameterProblem } from '../../core/protocol/parameters';
 import type { NodeLimits } from '../../../../protocol/NodeLimits';
 
 /**
@@ -23,6 +26,8 @@ export type ComposerDraft = Readonly<{
   durationSeconds: number | null;
   nodePublicKey: string | null;
   modelSelector: string | null;
+  /** Values for whatever the selected model declared, keyed by parameter key. */
+  parameters: Readonly<Record<string, ParameterValue>>;
 }>;
 
 export const EMPTY_DRAFT: ComposerDraft = {
@@ -31,6 +36,7 @@ export const EMPTY_DRAFT: ComposerDraft = {
   durationSeconds: null,
   nodePublicKey: null,
   modelSelector: null,
+  parameters: {},
 };
 
 export type ComposerProblem =
@@ -41,7 +47,8 @@ export type ComposerProblem =
   | { kind: 'caption-empty' }
   | { kind: 'caption-too-long'; bytes: number; maxBytes: number }
   | { kind: 'lyrics-too-long'; bytes: number; maxBytes: number }
-  | { kind: 'duration-out-of-range'; min: number; max: number };
+  | { kind: 'duration-out-of-range'; min: number; max: number }
+  | { kind: 'parameter'; key: string; message: string };
 
 /**
  * UTF-8 byte length.
@@ -153,7 +160,29 @@ export function problemsWith(
     }
   }
 
+  // Declared controls are validated against the model that is selected, not
+  // against whatever the last model declared.
+  for (const parameter of declaredFor(targets, draft)) {
+    const value = draft.parameters[parameter.key] ?? parameter.default;
+    const message = parameterProblem(parameter, value);
+    if (message !== null) {
+      problems.push({ kind: 'parameter', key: parameter.key, message });
+    }
+  }
+
   return problems;
+}
+
+/** What the selected model on the selected node declares, if anything. */
+export function declaredFor(
+  targets: readonly ComposerTarget[],
+  draft: ComposerDraft,
+): readonly ModelParameter[] {
+  const target = targetOf(targets, draft.nodePublicKey);
+  const model = target?.models.find(
+    candidate => candidate.selector === draft.modelSelector,
+  );
+  return model?.parameters ?? [];
 }
 
 export function canSubmit(
@@ -164,13 +193,20 @@ export function canSubmit(
 }
 
 /** The request to send. Only call when {@link canSubmit} is true. */
-export function toGenerationRequest(draft: ComposerDraft) {
+export function toGenerationRequest(
+  draft: ComposerDraft,
+  declared: readonly ModelParameter[] = [],
+) {
+  const extensions = extensionsFor(declared, draft.parameters);
   return {
     caption: draft.caption.trim(),
     ...(draft.lyrics.trim().length > 0 ? { lyrics: draft.lyrics.trim() } : {}),
     ...(draft.durationSeconds !== null
       ? { duration: draft.durationSeconds }
       : {}),
+    // Only declared, only changed. A node that declares nothing receives
+    // nothing, which is exactly the M4 request it already understands.
+    ...(extensions === undefined ? {} : { extensions }),
   };
 }
 
@@ -192,5 +228,7 @@ export function describeProblem(problem: ComposerProblem): string {
       return `Lyrics are ${problem.bytes} bytes; this engine accepts ${problem.maxBytes}.`;
     case 'duration-out-of-range':
       return `Length must be between ${problem.min} and ${problem.max} seconds.`;
+    case 'parameter':
+      return problem.message;
   }
 }

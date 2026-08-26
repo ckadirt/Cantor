@@ -1,3 +1,4 @@
+import { parseModelParameters, parseStages } from './parameters';
 import type { NodeInfo } from '../../../../protocol/NodeInfo';
 import {
   isNonNegativeInteger,
@@ -22,10 +23,17 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       typeof model.engine !== 'string'
     )
       return null;
+    // Declarations are optional: an older node sends neither, and that is
+    // different from declaring nothing. Undefined means the app falls back to
+    // core fields and observed stages.
+    const stages = parseStages(model.stages);
+    const parameters = parseModelParameters(model.parameters);
     return {
       selector: model.selector,
       family: model.family,
       engine: model.engine,
+      ...(stages === undefined ? {} : { stages }),
+      ...(parameters === undefined ? {} : { parameters }),
     };
   });
   if (

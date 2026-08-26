@@ -102,6 +102,11 @@ pub(super) fn create(
             details: Some(ErrorDetails::Model { selector: model }),
         });
     };
+    // Against the variant that is actually installed, not the one the client
+    // believed was installed.
+    if let Some(field) = invalid_extensions(&generation, &variant.parameters) {
+        return Ok(invalid_field(id, &field));
+    }
     let submission = Submission {
         client_request_id,
         model,
@@ -269,6 +274,28 @@ fn invalid_submission(
     None
 }
 
+/// Check declared-parameter values against the model that is actually
+/// installed, not against whatever the client believed was installed.
+fn invalid_extensions(
+    generation: &GenerationRequest,
+    declared: &[cantor_proto::ModelParameter],
+) -> Option<String> {
+    let Some(extensions) = generation.extensions.as_ref() else {
+        return None;
+    };
+    let mut legacy = Vec::new();
+    if generation.steps.is_some() {
+        legacy.push("steps");
+    }
+    if generation.cfg.is_some() {
+        legacy.push("cfg");
+    }
+    match cantor_proto::extensions::validate_extensions(extensions, declared, &legacy) {
+        Ok(()) => None,
+        Err(error) => Some(error.field().to_owned()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -306,6 +333,8 @@ mod tests {
             installed_at: String::new(),
             engine: "effect-test".into(),
             vram_bytes: 0,
+            stages: Vec::new(),
+            parameters: Vec::new(),
         };
         let store = Store::new(config.model_root());
         store.prepare().expect("model store");
@@ -324,6 +353,8 @@ mod tests {
                         vram_bytes: installed.vram_bytes,
                         backends: Vec::new(),
                     },
+                    stages: Vec::new(),
+                    parameters: Vec::new(),
                 },
             )
             .expect("installed marker");
@@ -349,6 +380,7 @@ mod tests {
             steps: Some(1),
             cfg: None,
             seed: Some(7),
+            extensions: None,
         }
     }
 
@@ -563,6 +595,7 @@ mod tests {
             steps: None,
             cfg: None,
             seed: Some(cantor_proto::MAX_SAFE_SEED + 1),
+            extensions: None,
         };
         assert_eq!(
             invalid_submission(&request_id, "acestep:test", &request),
