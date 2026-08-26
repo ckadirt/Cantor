@@ -1,4 +1,5 @@
 import type { SkCanvas, SkFont, SkPaint } from '@shopify/react-native-skia';
+import type { SongAnalysis } from './analysis';
 
 export type LensBox = Readonly<{
   kind: 'mark' | 'row';
@@ -19,6 +20,18 @@ export type LensSong = Readonly<{
   audioState: 'remote' | 'partial' | 'cached' | 'pinned';
   /** True for the song the player currently holds, at every level it appears. */
   playing: boolean;
+  /**
+   * One RMS and one peak per Cantor interval, already reduced to 0..1.
+   *
+   * Never null: a song with no local audio carries the neutral skeleton, so a
+   * lens never has to decide whether to download something in order to draw.
+   */
+  analysis: SongAnalysis;
+  /**
+   * How far through this song playback is, 0..1, or null when it is not the
+   * playing song. Lets a lens distinguish the part already heard.
+   */
+  progress: number | null;
 }>;
 
 export type LensFonts = Readonly<{

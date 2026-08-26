@@ -25,6 +25,7 @@ import {
 } from '../features/field';
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
+import { LensPicker } from '../features/song/LensPicker';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
@@ -37,13 +38,23 @@ import {
 import { normalise } from '../playlists';
 import type { SongDetail } from '../core/protocol';
 import type { AppIdentity } from '../identity/derive';
+import {
+  AnalysisCache,
+  DEFAULT_LENS_KEY,
+  analyseWindow,
+  type SongAnalysis,
+} from '../lenses';
 import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
 import { useBackendRuntime } from '../runtime';
+import { readError } from '../core/errors';
 import { space, usePalette } from '../theme/tokens';
 
 type Props = {
   identity: AppIdentity;
 };
+
+/** KNOBS */
+const ANALYSIS_BUCKETS = 512; // resolution the Cantor intervals are reduced from
 
 /** The post-onboarding surface: one field, no parallel console navigation. */
 export function FieldScreen({ identity }: Props) {
@@ -74,6 +85,11 @@ export function FieldScreen({ identity }: Props) {
   const [songDetail, setSongDetail] = useState<SongDetail | null>(null);
   const [songDetailError, setSongDetailError] = useState<string | null>(null);
   const [songBusy, setSongBusy] = useState(false);
+  const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
+  const [analyses, setAnalyses] = useState<ReadonlyMap<string, SongAnalysis>>(
+    () => new Map(),
+  );
+  const analysisCache = useRef(new AnalysisCache());
   const previousPlacements = useRef<FieldLayout['placements']>([]);
   const controller = useMemo(
     () => buildFieldController({ backends, snapshots, localAudio, outbox }),
@@ -163,6 +179,10 @@ export function FieldScreen({ identity }: Props) {
   const playingKey =
     transport.snapshot.state === 'playing' && currentTrack !== null
       ? `${currentTrack.nodeKey}:${currentTrack.songId}`
+      : null;
+  const playingProgress =
+    transport.snapshot.durationSeconds > 0
+      ? transport.snapshot.positionSeconds / transport.snapshot.durationSeconds
       : null;
   const focusedIsCurrent =
     focused !== null &&
@@ -320,6 +340,74 @@ export function FieldScreen({ identity }: Props) {
     );
   }, [condensing, controller.jobs, fieldCamera.camera, fieldCamera.renderedPlacements, viewport]);
 
+  /**
+   * Measure the focused song, once its audio is already on the phone.
+   *
+   * Deliberately narrow: decoding a song costs tens of megabytes, so this runs
+   * for the song being looked at rather than for every cached song in the
+   * field. Everything else draws the neutral skeleton, and nothing is ever
+   * downloaded in order to decorate a mark.
+   */
+  useEffect(() => {
+    if (focused === null || focused.delivery === undefined) return;
+    const onPhone =
+      focused.localAudio.state === 'cached' ||
+      focused.localAudio.state === 'pinned';
+    if (!onPhone) return;
+
+    const key = {
+      nodePublicKey: focused.entity.nodePublicKey,
+      songId: focused.entity.entityId,
+      artifactDigest: focused.delivery.sha256,
+      resolution: ANALYSIS_BUCKETS,
+    };
+    const cached = analysisCache.current.get(key);
+    const entityKey = focused.entity.key;
+    if (cached !== null) {
+      setAnalyses(current =>
+        current.get(entityKey) === cached
+          ? current
+          : new Map(current).set(entityKey, cached),
+      );
+      return;
+    }
+
+    let active = true;
+    const artifact = focused.delivery;
+    void (async () => {
+      try {
+        const path = await commands.audioPath(
+          focused.entity.nodePublicKey,
+          focused.song,
+          artifact,
+        );
+        const window = await player.samples({
+          ref: {
+            nodeKey: focused.entity.nodePublicKey,
+            songId: focused.entity.entityId,
+            digest: artifact.sha256,
+          },
+          localPath: path,
+          startSeconds: 0,
+          endSeconds: focused.song.duration_ms / 1000,
+          buckets: ANALYSIS_BUCKETS,
+        });
+        if (!active) return;
+        const analysis = analyseWindow(window);
+        analysisCache.current.put(key, analysis);
+        setAnalyses(current => new Map(current).set(entityKey, analysis));
+      } catch (error) {
+        // A song we cannot measure keeps its skeleton — drawing is not worth an
+        // error surface of its own. It is still worth saying why in the log,
+        // because a silent fallback and a broken decoder look identical.
+        console.warn('lens analysis failed', readError(error));
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [commands, focused, player]);
+
   const closeTopmostSheet = useCallback((): boolean => {
     if (songSheetOpen) {
       setSongSheetOpen(false);
@@ -373,8 +461,11 @@ export function FieldScreen({ identity }: Props) {
                 layout={layout}
                 palette={pal}
                 placements={fieldCamera.renderedPlacements}
+                activeLensKey={lensKey}
+                analyses={analyses}
                 jobs={controller.jobs}
                 playingKey={playingKey}
+                playingProgress={playingProgress}
                 presentations={controller.presentations}
                 viewport={viewport}
               />
@@ -403,6 +494,7 @@ export function FieldScreen({ identity }: Props) {
           <SongSurface
             available={focused.delivery !== undefined}
             isCurrent={focusedIsCurrent}
+            lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
             onOpenDetail={() => {
               setPlaybackError(null);
               setSongSheetOpen(true);
