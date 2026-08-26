@@ -19,7 +19,13 @@ import {
   type RepresentationAlphas,
   type Viewport,
 } from '../../field';
-import { lensByKey, type LensFonts, type LensPaints } from '../../lenses';
+import {
+  lensByKey,
+  neutralAnalysis,
+  type LensFonts,
+  type LensPaints,
+  type SongAnalysis,
+} from '../../lenses';
 import { useMorphFont } from '../../motion/fonts';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import { jobMarkModel } from '../../jobs/marks';
@@ -50,6 +56,10 @@ type Props = {
   palette: Palette;
   /** Entity key of the song the player holds, lit at every level. */
   playingKey?: string | null;
+  /** Analysis by entity key. Anything absent draws the neutral skeleton. */
+  analyses?: ReadonlyMap<string, SongAnalysis>;
+  /** How far through the playing song we are, 0..1. */
+  playingProgress?: number | null;
   activeLensKey?: string;
 };
 
@@ -66,6 +76,8 @@ export function FieldCanvas({
   jobs,
   palette,
   playingKey = null,
+  analyses,
+  playingProgress = null,
   activeLensKey = 'name',
 }: Props) {
   const displayFont = useMorphFont({
@@ -96,12 +108,15 @@ export function FieldCanvas({
       jobs,
       palette,
       playingKey,
+      analyses,
+      playingProgress,
       lensKey: activeLensKey,
       fonts: { display: displayFont, body: bodyFont, mono: monoFont },
       paints,
     });
   }, [
     activeLensKey,
+    analyses,
     bodyFont,
     camera,
     displayFont,
@@ -112,6 +127,7 @@ export function FieldCanvas({
     palette,
     placements,
     playingKey,
+    playingProgress,
     presentations,
     viewport,
   ]);
@@ -137,6 +153,8 @@ type PictureRequest = Readonly<{
   jobs?: ReadonlyMap<string, JobPresentation>;
   palette: Palette;
   playingKey?: string | null;
+  analyses?: ReadonlyMap<string, SongAnalysis>;
+  playingProgress?: number | null;
   lensKey: string;
   fonts: LensFonts;
   paints: LensPaints;
@@ -185,6 +203,12 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
       nodeLabel: presentation.nodeLabels[0] ?? presentation.backend.petname,
       audioState: presentation.localAudio.state,
       playing: presentation.entity.key === request.playingKey,
+      analysis:
+        request.analyses?.get(presentation.entity.key) ?? neutralAnalysis(),
+      progress:
+        presentation.entity.key === request.playingKey
+          ? (request.playingProgress ?? null)
+          : null,
     } as const;
     if (alpha.dot > 0.01) {
       lens.draw(

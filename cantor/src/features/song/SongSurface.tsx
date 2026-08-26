@@ -41,6 +41,8 @@ type Props = {
   onSeek: (seconds: number) => void;
   onOpenDetail: () => void;
   width: number;
+  /** The lens control lives here: one place, every level. */
+  lens: React.ReactNode;
 };
 
 /**
@@ -60,6 +62,7 @@ export function SongSurface({
   onSeek,
   onOpenDetail,
   width,
+  lens,
 }: Props) {
   const pal = usePalette();
   const durationSeconds = song.durationMs / 1000;
@@ -113,6 +116,7 @@ export function SongSurface({
       </View>
 
       <View style={styles.foot}>
+        {lens}
         <GestureDetector gesture={scrub}>
           <View style={styles.scrubHit} accessibilityRole="adjustable"
             accessibilityLabel={`Scrub ${song.title}`}>
