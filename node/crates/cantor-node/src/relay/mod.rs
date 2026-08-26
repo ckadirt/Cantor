@@ -139,6 +139,8 @@ mod tests {
             installed_at: String::new(),
             engine: "effect-test".into(),
             vram_bytes: 0,
+            stages: Vec::new(),
+            parameters: Vec::new(),
         }
     }
 
@@ -163,6 +165,8 @@ mod tests {
                 vram_bytes: variant.vram_bytes,
                 backends: Vec::new(),
             },
+            stages: variant.stages.clone(),
+            parameters: variant.parameters.clone(),
         };
         store
             .mark_installed(&model, &catalog_variant)
@@ -194,6 +198,7 @@ mod tests {
                         steps: Some(1),
                         cfg: None,
                         seed: Some(7),
+                        extensions: None,
                     },
                 },
                 &variant,

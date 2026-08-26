@@ -529,6 +529,8 @@ mod tests {
             installed_at: String::new(),
             engine: "acestep".into(),
             vram_bytes: 0,
+            stages: Vec::new(),
+            parameters: Vec::new(),
         }
     }
 
@@ -547,6 +549,7 @@ mod tests {
                         steps: Some(1),
                         cfg: None,
                         seed: Some(7),
+                        extensions: None,
                     },
                 },
                 &variant(),

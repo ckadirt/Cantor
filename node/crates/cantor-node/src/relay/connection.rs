@@ -505,6 +505,8 @@ mod tests {
                 installed_at: String::new(),
                 engine: "connection-test".into(),
                 vram_bytes: 0,
+                stages: Vec::new(),
+                parameters: Vec::new(),
             };
             match locked.library.submit(
                 PrincipalId::from_client_public_key(&client_key_bytes),
@@ -519,6 +521,7 @@ mod tests {
                         steps: Some(1),
                         cfg: None,
                         seed: Some(7),
+                        extensions: None,
                     },
                 },
                 &variant,

@@ -66,6 +66,7 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
                 steps: None,
                 cfg: None,
                 seed: None,
+                extensions: None,
             },
         };
         let result = {
@@ -216,6 +217,8 @@ mod tests {
                         tag: (*tag).to_owned(),
                         components: Vec::new(),
                         needs: Needs::default(),
+                        stages: Vec::new(),
+                        parameters: Vec::new(),
                     },
                 )
                 .expect("installed marker");

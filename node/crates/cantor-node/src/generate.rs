@@ -11,6 +11,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context as _, Result, bail};
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Engine, LoadOptions, Session, Stage, StageOutcome};
@@ -45,6 +47,12 @@ pub struct Request {
     pub cfg: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
+    /// Declared engine fields, flattened alongside the core ones.
+    ///
+    /// The engine receives its own field names because the node never
+    /// translates a family or selector into one -- the catalog declared them.
+    #[serde(flatten)]
+    pub extensions: BTreeMap<String, cantor_proto::ParameterValue>,
 }
 
 impl Request {
@@ -57,6 +65,7 @@ impl Request {
             steps: None,
             cfg: None,
             seed: None,
+            extensions: BTreeMap::new(),
         }
     }
 

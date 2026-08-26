@@ -9,9 +9,11 @@ import {
   View,
 } from 'react-native';
 import { space, touch, type, usePalette } from '../../theme/tokens';
+import { ModelParams } from './ModelParams';
 import {
   EMPTY_DRAFT,
   canSubmit,
+  declaredFor,
   describeProblem,
   modelUnion,
   problemsWith,
@@ -71,6 +73,7 @@ export function ComposerSheet({
       draft.modelSelector ?? (models.length === 1 ? models[0].selector : null),
   };
 
+  const declared = declaredFor(targets, resolved);
   const problems = problemsWith(resolved, targets);
   const ready = canSubmit(resolved, targets);
   const target = targetOf(targets, resolved.nodePublicKey);
@@ -203,6 +206,21 @@ export function ComposerSheet({
               </View>
             </View>
 
+            {/*
+              Whatever this model declares. A node that declares nothing renders
+              nothing here, which is the M4 composer unchanged.
+            */}
+            <ModelParams
+              declared={declared}
+              disabled={submitting}
+              onChange={(key, value) =>
+                update({
+                  parameters: { ...resolved.parameters, [key]: value },
+                })
+              }
+              values={resolved.parameters}
+            />
+
             <View style={styles.field}>
               <Text style={[type.eyebrow, { color: pal.muted }]}>ENGINE</Text>
               <View style={styles.chips}>
@@ -243,7 +261,7 @@ export function ComposerSheet({
                 onSubmit(
                   resolved.nodePublicKey as string,
                   resolved.modelSelector as string,
-                  toGenerationRequest(resolved),
+                  toGenerationRequest(resolved, declared),
                 );
                 setDraft(EMPTY_DRAFT);
               }}

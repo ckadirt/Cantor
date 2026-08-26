@@ -19,6 +19,11 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             selector: variant.selector(),
             family: variant.model.clone(),
             engine: variant.engine().to_owned(),
+            // Straight from the installed marker. The node converts nothing
+            // here: an engine's internal stage bitmask was already turned into
+            // an ordered list at install time.
+            stages: variant.declared_stages(),
+            parameters: variant.declared_parameters(),
         })
         .collect();
     let has_disk = library

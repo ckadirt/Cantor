@@ -219,6 +219,8 @@ mod tests {
                 selector: "acestep:1.5-fast".to_owned(),
                 family: "acestep".to_owned(),
                 engine: "acestep".to_owned(),
+                stages: None,
+                parameters: None,
             }],
             limits: NodeLimits {
                 max_concurrent_jobs: 0,
@@ -868,6 +870,8 @@ mod tests {
             installed_at: String::new(),
             engine: "acestep".into(),
             vram_bytes: 0,
+            stages: Vec::new(),
+            parameters: Vec::new(),
         };
         let accepted = match library
             .submit(
@@ -883,6 +887,7 @@ mod tests {
                         steps: Some(1),
                         cfg: None,
                         seed: Some(7),
+                        extensions: None,
                     },
                 },
                 &variant,

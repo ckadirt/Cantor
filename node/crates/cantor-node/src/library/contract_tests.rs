@@ -34,6 +34,8 @@ fn variant() -> InstalledVariant {
         installed_at: String::new(),
         engine: "acestep".into(),
         vram_bytes: 0,
+        stages: Vec::new(),
+        parameters: Vec::new(),
     }
 }
 
@@ -48,6 +50,7 @@ fn submission(caption: &str) -> Submission {
             steps: None,
             cfg: None,
             seed: Some(7),
+            extensions: None,
         },
     }
 }

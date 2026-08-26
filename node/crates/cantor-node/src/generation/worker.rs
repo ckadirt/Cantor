@@ -205,6 +205,7 @@ mod tests {
                     steps: None,
                     cfg: None,
                     seed: Some(7),
+                    extensions: None,
                 },
                 engine: "fake".to_owned(),
                 component_digests: Vec::new(),
