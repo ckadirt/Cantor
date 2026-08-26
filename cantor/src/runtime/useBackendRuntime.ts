@@ -50,17 +50,10 @@ export const DEFAULT_BACKEND_SNAPSHOT: ConnectionSnapshot = {
 
 
 /**
- * `download-play` and `play` belong to the retiring console and drive native
- * MediaPlayer. The field's player never uses them: it asks for `download`, then
- * for a verified path, and does its own loading. Both go when MainScreen does.
+ * Runtime owns getting bytes onto the phone and keeping them there. Making
+ * sound is the player's job, reached through `audioPath`.
  */
-export type AudioAction =
-  | 'download'
-  | 'download-play'
-  | 'play'
-  | 'pin'
-  | 'unpin'
-  | 'remove';
+export type AudioAction = 'download' | 'pin' | 'unpin' | 'remove';
 
 export type BackendRuntimeConnection = Pick<
   BackendConnection,
@@ -604,7 +597,7 @@ export function useBackendRuntime(
         digest: artifact.sha256,
       };
       const identify = () => audioStore.inspect(ref);
-      if (action === 'download' || action === 'download-play') {
+      if (action === 'download') {
         const live = connections.current.get(nodeKey);
         if (live === undefined) throw new Error('Song node is not connected.');
         const before = await identify();
@@ -621,9 +614,6 @@ export function useBackendRuntime(
               }),
           );
         }
-        if (action === 'download-play') await audioStore.play(ref);
-      } else if (action === 'play') {
-        await audioStore.play(ref);
       } else if (action === 'pin') {
         await audioStore.pin(ref);
       } else if (action === 'unpin') {

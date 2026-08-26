@@ -30,9 +30,10 @@ type CantorAudioNative = {
     digest: string,
   ): Promise<boolean>;
   localPath(nodeKey: string, songId: string, digest: string): Promise<unknown>;
-  play(nodeKey: string, songId: string, digest: string): Promise<boolean>;
-  stop(): Promise<boolean>;
-  enforceCacheBudget(maxBytes: number): Promise<string[]>;
+  enforceCacheBudget(
+    maxBytes: number,
+    protectedPath: string | null,
+  ): Promise<string[]>;
 };
 
 function module(): CantorAudioNative {
@@ -108,8 +109,6 @@ export const nativeAudio = {
     module().removeCached(nodeKey, songId, digest),
   localPath: (nodeKey: string, songId: string, digest: string) =>
     resolveNativeAudioPath(nodeKey, songId, digest),
-  play: (nodeKey: string, songId: string, digest: string) =>
-    module().play(nodeKey, songId, digest),
-  stop: () => module().stop(),
-  enforceCacheBudget: (bytes: number) => module().enforceCacheBudget(bytes),
+  enforceCacheBudget: (bytes: number, protectedPath: string | null = null) =>
+    module().enforceCacheBudget(bytes, protectedPath),
 };

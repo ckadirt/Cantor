@@ -37,9 +37,12 @@ Keep, untouched: `core/`, `security/`, `backends/`, `runtime/`, `library/`,
 `jobs/`, `identity/`, `motion/`, `onboarding/`, `theme/`, and the native audio
 **storage** in `AudioStorage.kt`.
 
-Retire, once the replacement lands: `screens/MainScreen.tsx`,
+Retired in M4, once the field replaced them: `screens/MainScreen.tsx`,
 `features/library/`, `features/jobs/`, `features/backends/`, and
-`android/.../audio/AudioPlayback.kt`.
+`android/.../audio/AudioPlayback.kt` with the native `play`/`stop` bridge.
+Playback lives in `src/player/`, so native storage no longer holds a player: the
+caller releases a file before removing it and passes the protected path into
+cache-budget enforcement.
 
 `useBackendRuntime` is the seam. Its commands (`submit`, `controlJob`,
 `patchSong`, `changeSongPresence`, `getSongDetail`, `audio`, `refreshLibraries`)

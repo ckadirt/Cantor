@@ -4,7 +4,6 @@ import {
   inspectAudio,
   localAudioPath,
   pinAudio,
-  playAudio,
   removeAudio,
   unpinAudio,
 } from './repository';
@@ -36,10 +35,6 @@ export class RepositoryLocalAudioStore implements LocalAudioStore {
 
   localPath(ref: AudioRef) {
     return localAudioPath(ref.nodeKey, ref.songId, ref.digest);
-  }
-
-  play(ref: AudioRef) {
-    return playAudio(ref.nodeKey, ref.songId, ref.digest);
   }
 
   pin(ref: AudioRef) {

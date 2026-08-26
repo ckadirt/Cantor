@@ -73,3 +73,10 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Offline JS bundle and the assets copied beside it. Produced by
+# `react-native bundle` when building an APK that must run without Metro;
+# regenerate it, never commit it.
+android/app/src/main/assets/index.android.bundle
+android/app/src/main/res/raw/
+android/app/src/main/res/drawable-*/

@@ -59,12 +59,12 @@ class AudioStorageTest {
     assertTrue(storage.pin(NODE, SONG_ONE, digest))
     assertEquals("pinned", storage.localState(NODE, SONG_ONE, digest).state)
     assertThrows(IllegalArgumentException::class.java) {
-      storage.removeCached(NODE, SONG_ONE, digest, null) {}
+      storage.removeCached(NODE, SONG_ONE, digest)
     }
 
     assertTrue(storage.unpin(NODE, SONG_ONE, digest))
     assertEquals("cached", storage.localState(NODE, SONG_ONE, digest).state)
-    assertTrue(storage.removeCached(NODE, SONG_ONE, digest, null) {})
+    assertTrue(storage.removeCached(NODE, SONG_ONE, digest))
     assertEquals(LocalAudioState("remote", 0.0), storage.localState(NODE, SONG_ONE, digest))
   }
 

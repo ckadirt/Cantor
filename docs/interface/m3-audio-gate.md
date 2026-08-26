@@ -138,8 +138,15 @@ re-declares them after every `show`, and `dumpsys media_session` reporting
 
 ## Reproducing
 
-The throwaway harness is `cantor/src/dev/AudioSpike.tsx`, reached by flipping
-`AUDIO_SPIKE` in `App.tsx`. It logs every result as
-`AUDIOSPIKE <gate> <verdict> <detail>`, so a run is read out of
-`adb logcat -s ReactNativeJS:*` rather than off the screen — which is what makes
-the screen-off gates measurable at all. Delete both once M3 lands.
+The throwaway harness was `cantor/src/dev/AudioSpike.tsx`, deleted with the rest
+of the console in M4 now that the player is real and verified end to end. It
+logged every result as `AUDIOSPIKE <gate> <verdict> <detail>` so a run could be
+read out of `adb logcat -s ReactNativeJS:*` rather than off the screen — which
+is what made the screen-off gates measurable at all. Recover it from history
+(`git log -- cantor/src/dev/AudioSpike.tsx`) before re-qualifying a different
+audio library; the gate list above is the thing worth keeping, not the file.
+
+One defect this file records was later found the hard way rather than by the
+gate: a bare absolute path works as an element source under Metro but resolves
+against bundled assets in a release build. Sources carry an explicit `file://`
+scheme for that reason.

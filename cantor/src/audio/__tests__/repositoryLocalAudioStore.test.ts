@@ -3,7 +3,6 @@ import {
   finalizeAudio,
   inspectAudio,
   pinAudio,
-  playAudio,
   removeAudio,
   unpinAudio,
 } from '../repository';
@@ -23,7 +22,6 @@ jest.mock('../repository', () => ({
 const inspect = inspectAudio as jest.MockedFunction<typeof inspectAudio>;
 const append = appendAudioChunk as jest.MockedFunction<typeof appendAudioChunk>;
 const finalize = finalizeAudio as jest.MockedFunction<typeof finalizeAudio>;
-const play = playAudio as jest.MockedFunction<typeof playAudio>;
 const pin = pinAudio as jest.MockedFunction<typeof pinAudio>;
 const unpin = unpinAudio as jest.MockedFunction<typeof unpinAudio>;
 const remove = removeAudio as jest.MockedFunction<typeof removeAudio>;
@@ -42,7 +40,6 @@ describe('RepositoryLocalAudioStore', () => {
     inspect.mockResolvedValue({ state: 'remote', bytes: 0 });
     append.mockResolvedValue(0);
     finalize.mockResolvedValue();
-    play.mockResolvedValue();
     pin.mockResolvedValue({ state: 'pinned', bytes: 10 });
     unpin.mockResolvedValue({ state: 'cached', bytes: 10 });
     remove.mockResolvedValue({ state: 'remote', bytes: 0 });
@@ -111,12 +108,11 @@ describe('RepositoryLocalAudioStore', () => {
     unpin.mockResolvedValue(cached);
     remove.mockResolvedValue(remote);
 
-    await expect(store.play(ref)).resolves.toBeUndefined();
     await expect(store.pin(ref)).resolves.toBe(pinned);
     await expect(store.unpin(ref)).resolves.toBe(cached);
     await expect(store.remove(ref)).resolves.toBe(remote);
 
-    for (const operation of [play, pin, unpin, remove]) {
+    for (const operation of [pin, unpin, remove]) {
       expect(operation).toHaveBeenCalledWith(
         ref.nodeKey,
         ref.songId,

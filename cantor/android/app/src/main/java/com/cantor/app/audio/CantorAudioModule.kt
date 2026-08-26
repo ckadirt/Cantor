@@ -14,7 +14,6 @@ class CantorAudioModule(
 ) : ReactContextBaseJavaModule(context) {
   private val lock = Any()
   private val storage = AudioStorage(context.noBackupFilesDir, context.cacheDir)
-  private val playback = AudioPlayback(lock)
 
   override fun getName(): String = MODULE_NAME
 
@@ -80,13 +79,7 @@ class CantorAudioModule(
   fun removeCached(nodeKey: String, songId: String, digest: String, promise: Promise) {
     runPromise(promise) {
       synchronized(lock) {
-        storage.removeCached(
-            nodeKey,
-            songId,
-            digest,
-            playback.playingPath,
-            playback::stop,
-        )
+        storage.removeCached(nodeKey, songId, digest)
       }
     }
   }
@@ -98,44 +91,20 @@ class CantorAudioModule(
     }
   }
 
+  /**
+   * @param protectedPath the file the player currently holds, or null. Playback
+   *   moved to JavaScript, so the caller is now the only thing that knows which
+   *   file must survive eviction.
+   */
   @ReactMethod
-  fun play(nodeKey: String, songId: String, digest: String, promise: Promise) {
-    runPromise(promise) {
-      synchronized(lock) {
-        val audio = storage.playableFile(nodeKey, songId, digest)
-        playback.play(audio)
-        storage.touch(audio)
-        true
-      }
-    }
-  }
-
-  @ReactMethod
-  fun stop(promise: Promise) {
-    runPromise(promise) {
-      synchronized(lock) {
-        playback.stop()
-        true
-      }
-    }
-  }
-
-  @ReactMethod
-  fun enforceCacheBudget(maxBytes: Double, promise: Promise) {
+  fun enforceCacheBudget(maxBytes: Double, protectedPath: String?, promise: Promise) {
     runPromise(promise) {
       synchronized(lock) {
         WritableNativeArray().apply {
-          storage
-              .enforceCacheBudget(maxBytes, playback.playingPath)
-              .forEach(::pushString)
+          storage.enforceCacheBudget(maxBytes, protectedPath).forEach(::pushString)
         }
       }
     }
-  }
-
-  override fun invalidate() {
-    synchronized(lock) { playback.stop() }
-    super.invalidate()
   }
 
   private inline fun runPromise(promise: Promise, operation: () -> Any?) {

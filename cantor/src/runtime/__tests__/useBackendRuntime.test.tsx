@@ -131,7 +131,6 @@ type Fixture = {
   inspectAudio: jest.Mock;
   appendAudioChunk: jest.Mock;
   finalizeAudio: jest.Mock;
-  playAudio: jest.Mock;
   pinAudio: jest.Mock;
   unpinAudio: jest.Mock;
   removeAudio: jest.Mock;
@@ -193,7 +192,6 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
     .mockResolvedValue({ state: 'pinned', bytes: 10 });
   const appendAudioChunkMock = jest.fn().mockResolvedValue(10);
   const finalizeAudioMock = jest.fn().mockResolvedValue(undefined);
-  const playAudioMock = jest.fn().mockResolvedValue(undefined);
   const pinAudioMock = jest
     .fn()
     .mockResolvedValue({ state: 'pinned', bytes: 10 });
@@ -229,7 +227,6 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
       finalize: byteLength =>
         finalizeAudioMock(ref.nodeKey, ref.songId, ref.digest, byteLength),
     }),
-    play: ref => playAudioMock(ref.nodeKey, ref.songId, ref.digest),
     pin: ref => pinAudioMock(ref.nodeKey, ref.songId, ref.digest),
     unpin: ref => unpinAudioMock(ref.nodeKey, ref.songId, ref.digest),
     remove: ref => removeAudioMock(ref.nodeKey, ref.songId, ref.digest),
@@ -269,7 +266,6 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
     inspectAudio: inspectAudioMock,
     appendAudioChunk: appendAudioChunkMock,
     finalizeAudio: finalizeAudioMock,
-    playAudio: playAudioMock,
     pinAudio: pinAudioMock,
     unpinAudio: unpinAudioMock,
     removeAudio: removeAudioMock,
@@ -495,7 +491,7 @@ describe('useBackendRuntime', () => {
     await ReactTestRenderer.act(async () => {
       await mounted
         .current()
-        .commands.audio('node-a', song(), artifact, 'download-play');
+        .commands.audio('node-a', song(), artifact, 'download');
     });
 
     expect(f.appendAudioChunk).toHaveBeenCalledWith(
@@ -510,11 +506,6 @@ describe('useBackendRuntime', () => {
       'song-a',
       artifact.sha256,
       10,
-    );
-    expect(f.playAudio).toHaveBeenCalledWith(
-      'node-a',
-      'song-a',
-      artifact.sha256,
     );
     expect(
       mounted.current().state.localAudio[`node-a:song-a:${artifact.sha256}`],
