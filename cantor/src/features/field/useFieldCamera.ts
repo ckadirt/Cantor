@@ -6,6 +6,7 @@ import {
   type SharedValue,
 } from 'react-native-reanimated';
 import {
+  GRAIN_KNOBS,
   hitTestPlacement,
   interpolateCamera,
   levelCameraTarget,
@@ -31,9 +32,12 @@ export const FIELD_CAMERA_KNOBS = {
   EDGE_PULL_OPEN_PX: 90,
   EDGE_PULL_HORIZONTAL_TOLERANCE_PX: 50,
   MIN_SCALE_RATIO: 0.5,
-  // Just under the song/grain boundary: L2 is reachable, L3 stays clamped
-  // until M7 builds the grain view.
-  MAX_SCALE_RATIO: 169.9,
+  // L3 is reachable now. The ceiling is the scale that shows the closest look
+  // the grain view offers, derived from the grain knobs so the two cannot drift
+  // apart: zooming further would resolve nothing new.
+  MAX_SCALE_RATIO:
+    GRAIN_KNOBS.ENTRY_RATIO *
+    (GRAIN_KNOBS.ENTRY_SECONDS / GRAIN_KNOBS.MIN_SECONDS),
 } as const;
 
 type PullDirection = 'compose' | 'engines';
@@ -279,7 +283,14 @@ export function useFieldCamera({
       commitFocus(placement.key);
       const current = levelOf(cameraRef.current.scale, field.fitScale);
       // L3 stays clamped until M7, so a song is the end of the descent.
-      const next = current === 'field' ? 'shelf' : current === 'shelf' ? 'song' : null;
+      const next =
+        current === 'field'
+          ? 'shelf'
+          : current === 'shelf'
+            ? 'song'
+            : current === 'song'
+              ? 'grain'
+              : null;
       if (next === null) return;
       const target = levelCameraTarget(next, field, placement);
       if (target) flyTo(target);

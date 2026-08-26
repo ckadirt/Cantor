@@ -78,7 +78,7 @@ function camera(): Camera {
 }
 
 describe('useFieldCamera', () => {
-  it('keeps the pinch focal world point stable and clamps before L3', async () => {
+  it('keeps the pinch focal world point stable and clamps at the closest look', async () => {
     const { layout } = await renderCamera();
     const [pinch] = gestures();
     const focal = { x: 111, y: 527 };
@@ -86,7 +86,7 @@ describe('useFieldCamera', () => {
 
     await ReactTestRenderer.act(async () => {
       pinch.onStart({ focalX: focal.x, focalY: focal.y });
-      pinch.onUpdate({ scale: 10_000 });
+      pinch.onUpdate({ scale: 10_000_000 });
     });
 
     expect(camera().scale).toBeCloseTo(
@@ -99,9 +99,9 @@ describe('useFieldCamera', () => {
         y: expect.closeTo(before.y, 10),
       }),
     );
-    // Pinching as hard as possible reaches L2 and stops there; L3 is clamped
-    // until M7.
-    expect(latest.level).toBe('song');
+    // Pinching as hard as possible now reaches L3 and stops at the scale that
+    // shows the closest look the grain view offers.
+    expect(latest.level).toBe('grain');
   });
 
   it('gives top and bottom edge pulls priority over panning', async () => {

@@ -1,6 +1,7 @@
 export * from './bands';
 export * from './camera';
 export * from './geometry';
+export * from './grain';
 export * from './hitTest';
 export * from './layout';
 export * from './types';
