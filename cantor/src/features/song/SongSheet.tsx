@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
 import type { LocalAudioState } from '../../audio/native';
-import { plainTagsOf } from '../../playlists/playlists';
+import { isPlaylistTag, plainTagsOf } from '../../playlists/playlists';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS */
@@ -31,6 +31,8 @@ type Props = {
   onRename: (title: string) => void;
   onToggleFavourite: () => void;
   onAddTag: (tag: string) => void;
+  /** Playlist membership, which is the only writer of the reserved namespace. */
+  playlists: React.ReactNode;
   onRemoveTag: (tag: string) => void;
   onTrash: () => void;
   onPin: () => void;
@@ -57,6 +59,7 @@ export function SongSheet({
   onRename,
   onToggleFavourite,
   onAddTag,
+  playlists,
   onRemoveTag,
   onTrash,
   onPin,
@@ -74,6 +77,7 @@ export function SongSheet({
   }, [song.id, song.title]);
 
   const plainTags = plainTagsOf(song.tags);
+  const [tagProblem, setTagProblem] = useState<string | null>(null);
   const downloaded = audioState === 'cached' || audioState === 'pinned';
 
   return (
@@ -148,7 +152,15 @@ export function SongSheet({
                 onChangeText={setTag}
                 onSubmitEditing={() => {
                   const next = tag.trim();
-                  if (next.length > 0) onAddTag(next);
+                  if (next.length === 0) return;
+                  // `p/` is reserved. Letting it be typed here would create a
+                  // playlist that the playlist UI never made and cannot see.
+                  if (isPlaylistTag(next)) {
+                    setTagProblem('Use the playlist field to make a playlist.');
+                    return;
+                  }
+                  setTagProblem(null);
+                  onAddTag(next);
                   setTag('');
                 }}
                 placeholder="add a tag"
@@ -157,7 +169,14 @@ export function SongSheet({
                 style={[styles.input, type.body, { color: pal.ink, borderColor: pal.line }]}
                 value={tag}
               />
+              {tagProblem !== null ? (
+                <Text style={[type.mono, { color: pal.muted }]}>
+                  {tagProblem}
+                </Text>
+              ) : null}
             </Field>
+
+            <Field label="PLAYLISTS">{playlists}</Field>
 
             <Field label={`OFFLINE · ${audioState.toUpperCase()}`}>
               <View style={styles.row}>

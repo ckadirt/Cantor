@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { Level } from '../../field';
+import { ARRANGEMENTS, type Level } from '../../field';
 import { space, type, usePalette } from '../../theme/tokens';
 
 type Props = {
@@ -8,6 +8,9 @@ type Props = {
   offline: boolean;
   storageError: string | null;
   onOpenEngines: () => void;
+  /** How the field is grouped, and the control that changes it. */
+  arrangementKey: string;
+  onChangeArrangement: (key: string) => void;
 };
 
 const HINTS: Record<Level, string> = {
@@ -25,6 +28,8 @@ export function FieldOverlay({
   offline,
   storageError,
   onOpenEngines,
+  arrangementKey,
+  onChangeArrangement,
 }: Props) {
   const pal = usePalette();
   return (
@@ -48,6 +53,32 @@ export function FieldOverlay({
           L{['field', 'shelf', 'song', 'grain'].indexOf(level)} ·{' '}
           {level.toUpperCase()}
         </Text>
+        {/*
+          The arrangement is a property of the field, not of a song, so its
+          control lives at every distance rather than inside L2.
+        */}
+        <View style={styles.arrangements} pointerEvents="box-none">
+          {ARRANGEMENTS.map(arrangement => {
+            const active = arrangement.key === arrangementKey;
+            return (
+              <Pressable
+                accessibilityLabel={`Arrange by ${arrangement.label}`}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                key={arrangement.key}
+                onPress={() => onChangeArrangement(arrangement.key)}
+                style={styles.arrangement}>
+                <Text
+                  style={[
+                    type.eyebrow,
+                    { color: active ? pal.ink : pal.faint },
+                  ]}>
+                  {arrangement.label.toUpperCase()}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
       </View>
       <View style={styles.bottom} pointerEvents="none">
         {storageError ? (
@@ -80,6 +111,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.sm,
     paddingVertical: space.xs,
   },
+  arrangements: { flexDirection: 'row', gap: 12, justifyContent: 'flex-end' },
+  arrangement: { paddingVertical: 6, paddingHorizontal: 2 },
   level: { paddingRight: space.xs },
   bottom: {
     bottom: OVERLAY_KNOBS.ORIGIN_CLEARANCE_PX,
