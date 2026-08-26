@@ -7,7 +7,6 @@ import {
   finalizeAudio,
   inspectAudio,
   pinAudio,
-  playAudio,
   removeAudio,
   unpinAudio,
 } from '../repository';
@@ -20,8 +19,6 @@ jest.mock('../native', () => ({
     pin: jest.fn(),
     unpin: jest.fn(),
     remove: jest.fn(),
-    play: jest.fn(),
-    stop: jest.fn(),
     enforceCacheBudget: jest.fn(),
   },
 }));
@@ -73,8 +70,6 @@ describe('local audio repository characterization', () => {
     native.pin.mockResolvedValue(true);
     native.unpin.mockResolvedValue(true);
     native.remove.mockResolvedValue(true);
-    native.play.mockResolvedValue(true);
-    native.stop.mockResolvedValue(true);
     native.enforceCacheBudget.mockResolvedValue([]);
   });
 
@@ -177,17 +172,4 @@ describe('local audio repository characterization', () => {
     expect(await storedIndex()).toEqual({});
   });
 
-  it('refreshes native state after playback instead of trusting the saved index', async () => {
-    inspectNative.mockResolvedValue({ state: 'cached', bytes: 700 });
-
-    await playAudio(NODE, SONG, DIGEST);
-
-    expect(native.play).toHaveBeenCalledWith(NODE, SONG, DIGEST);
-    expect(native.play.mock.invocationCallOrder[0]).toBeLessThan(
-      inspectNative.mock.invocationCallOrder[0],
-    );
-    expect(await storedIndex()).toMatchObject({
-      [audioKey(NODE, SONG, DIGEST)]: expectedRecord('cached', 700),
-    });
-  });
 });

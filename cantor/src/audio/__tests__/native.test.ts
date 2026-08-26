@@ -13,8 +13,6 @@ type NativeAudioMock = {
   unpin: jest.Mock;
   removeCached: jest.Mock;
   localPath: jest.Mock;
-  play: jest.Mock;
-  stop: jest.Mock;
   enforceCacheBudget: jest.Mock;
 };
 
@@ -27,8 +25,6 @@ function createNativeAudioMock(): NativeAudioMock {
     unpin: jest.fn(),
     removeCached: jest.fn(),
     localPath: jest.fn(),
-    play: jest.fn(),
-    stop: jest.fn(),
     enforceCacheBudget: jest.fn(),
   };
 }
@@ -83,8 +79,6 @@ describe('CantorAudio native adapter characterization', () => {
     bridge.pin.mockResolvedValue(true);
     bridge.unpin.mockResolvedValue(true);
     bridge.removeCached.mockResolvedValue(true);
-    bridge.play.mockResolvedValue(true);
-    bridge.stop.mockResolvedValue(true);
     bridge.enforceCacheBudget.mockResolvedValue(['digest']);
 
     await expect(
@@ -94,9 +88,7 @@ describe('CantorAudio native adapter characterization', () => {
     await nativeAudio.pin('node', 'song', 'digest');
     await nativeAudio.unpin('node', 'song', 'digest');
     await nativeAudio.remove('node', 'song', 'digest');
-    await nativeAudio.play('node', 'song', 'digest');
-    await nativeAudio.stop();
-    await expect(nativeAudio.enforceCacheBudget(256)).resolves.toEqual([
+    await expect(nativeAudio.enforceCacheBudget(256, null)).resolves.toEqual([
       'digest',
     ]);
 
@@ -116,9 +108,7 @@ describe('CantorAudio native adapter characterization', () => {
     expect(bridge.pin).toHaveBeenCalledWith('node', 'song', 'digest');
     expect(bridge.unpin).toHaveBeenCalledWith('node', 'song', 'digest');
     expect(bridge.removeCached).toHaveBeenCalledWith('node', 'song', 'digest');
-    expect(bridge.play).toHaveBeenCalledWith('node', 'song', 'digest');
-    expect(bridge.stop).toHaveBeenCalledWith();
-    expect(bridge.enforceCacheBudget).toHaveBeenCalledWith(256);
+    expect(bridge.enforceCacheBudget).toHaveBeenCalledWith(256, null);
   });
 
   it('fails explicitly when the native module is absent', async () => {

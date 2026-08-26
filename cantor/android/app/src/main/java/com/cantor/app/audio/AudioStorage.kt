@@ -109,16 +109,15 @@ internal class AudioStorage(
     return true
   }
 
-  fun removeCached(
-      nodeKey: String,
-      songId: String,
-      digest: String,
-      playingPath: String?,
-      stopPlayer: () -> Unit,
-  ): Boolean {
+  /**
+   * Delete a cached artifact.
+   *
+   * The caller releases the file first: playback lives in JavaScript now, so
+   * native storage has no player to stop and no way to know one is open.
+   */
+  fun removeCached(nodeKey: String, songId: String, digest: String): Boolean {
     val paths = paths(nodeKey, songId, digest)
     require(!paths.pinned.exists()) { "Unpin this artifact before removing it." }
-    if (playingPath == paths.cached.absolutePath) stopPlayer()
     return (!paths.cached.exists() || paths.cached.delete()) &&
         (!paths.partial.exists() || paths.partial.delete())
   }
