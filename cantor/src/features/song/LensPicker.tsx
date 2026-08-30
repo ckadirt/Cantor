@@ -16,7 +16,7 @@ type Props = {
  * marks at L0 and the rows at L1 as well. Its contents come from the registry,
  * so a new lens appears here without touching this file.
  */
-export function LensPicker({ activeKey, onChange }: Props) {
+function LensPickerImpl({ activeKey, onChange }: Props) {
   const pal = usePalette();
   return (
     <View style={styles.row}>
@@ -56,3 +56,9 @@ const styles = StyleSheet.create({
   },
   active: { borderWidth: 2 },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const LensPicker = React.memo(LensPickerImpl);

@@ -21,7 +21,7 @@ type Props = {
   onPair: (request: PairingRequest) => void;
 };
 
-export function PairBackendModal({ visible, onClose, onPair }: Props) {
+function PairBackendModalImpl({ visible, onClose, onPair }: Props) {
   const pal = usePalette();
   const device = useCameraDevice('back');
   const { hasPermission, requestPermission } = useCameraPermission();
@@ -225,3 +225,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: space.md,
   },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const PairBackendModal = React.memo(PairBackendModalImpl);

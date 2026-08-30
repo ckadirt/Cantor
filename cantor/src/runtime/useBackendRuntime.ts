@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ArtifactView } from '../../../protocol/ArtifactView';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
 import type { JobView } from '../../../protocol/JobView';
@@ -669,12 +669,21 @@ export function useBackendRuntime(
     }
   }, []);
 
-  return {
-    state: { backends, snapshots, pairing, storageError, localAudio, outbox },
-    commands: {
-      showPairing: () => setPairing(true),
-      hidePairing: () => setPairing(false),
-      reportError: error => setStorageError(readError(error)),
+  const showPairing = useCallback(() => setPairing(true), []);
+  const hidePairing = useCallback(() => setPairing(false), []);
+  const reportError = useCallback(
+    (error: unknown) => setStorageError(readError(error)),
+    [],
+  );
+
+  // Stable identity: the field re-renders its screen on every camera frame, and
+  // a fresh commands object on each render would defeat every memoised sheet
+  // downstream. Every member here is already a stable useCallback.
+  const commands = useMemo(
+    () => ({
+      showPairing,
+      hidePairing,
+      reportError,
       pairBackend,
       submit,
       controlJob,
@@ -684,7 +693,26 @@ export function useBackendRuntime(
       audio,
       audioPath,
       refreshLibraries,
-    },
+    }),
+    [
+      audio,
+      audioPath,
+      changeSongPresence,
+      controlJob,
+      getSongDetail,
+      hidePairing,
+      patchSong,
+      pairBackend,
+      refreshLibraries,
+      reportError,
+      showPairing,
+      submit,
+    ],
+  );
+
+  return {
+    state: { backends, snapshots, pairing, storageError, localAudio, outbox },
+    commands,
   };
 }
 

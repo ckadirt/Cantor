@@ -20,7 +20,7 @@ import { declarePlaybackControls } from './createAudioApiPlayer';
  * Mount it once, high in the tree, above anything that plays audio. Mounting it
  * twice would create two elements and two audio sessions.
  */
-export function PlayerHost({ player }: { player: AudioApiPlayer }) {
+function PlayerHostImpl({ player }: { player: AudioApiPlayer }) {
   const binding = player.binding;
 
   const source = useSyncExternalStore(
@@ -86,3 +86,9 @@ export function PlayerHost({ player }: { player: AudioApiPlayer }) {
     />
   );
 }
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const PlayerHost = React.memo(PlayerHostImpl);

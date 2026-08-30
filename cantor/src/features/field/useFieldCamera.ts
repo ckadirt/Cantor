@@ -202,12 +202,20 @@ export function useFieldCamera({
     }
 
     const scaleRatio = cameraRef.current.scale / previousFit;
-    commitCamera({
-      ...cameraRef.current,
-      scale: clampScale(scaleRatio * layout.fitScale, layout),
-    });
+    const correctedScale = clampScale(scaleRatio * layout.fitScale, layout);
+    // A fresh layout object carrying the same fit scale is the common case: a
+    // library snapshot arrives, nothing about the field's geometry moves.
+    // Committing a numerically identical camera would re-record the picture
+    // and re-render the screen for nothing.
+    if (correctedScale !== cameraRef.current.scale) {
+      commitCamera({ ...cameraRef.current, scale: correctedScale });
+    }
     cancelRelayout();
-    if (reducedMotion) {
+    // Same reasoning one level up: a relayout where every mark is already at
+    // its target has nothing to tween. Animating it anyway drives
+    // setLayoutProgress at frame rate for RELAYOUT_MS, rebuilding every
+    // rendered placement each frame, while not one mark changes place.
+    if (reducedMotion || !relayoutMoves(layout)) {
       layoutProgressShared.value = 1;
       setLayoutProgress(1);
       return;
@@ -481,6 +489,15 @@ export function useFieldCamera({
     home,
     cancelGesture,
   };
+}
+
+/** Whether any mark in this layout is somewhere other than its target. */
+function relayoutMoves(field: FieldLayout): boolean {
+  return field.placements.some(
+    placement =>
+      placement.fromX !== placement.targetX ||
+      placement.fromY !== placement.targetY,
+  );
 }
 
 function placementAtProgress(

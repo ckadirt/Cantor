@@ -76,7 +76,7 @@ type Props = {
  * The only field canvas. Each React render records one immediate-mode Picture,
  * culls before lens work, then lets Skia replay that picture in one view.
  */
-export function FieldCanvas({
+function FieldCanvasImpl({
   layout,
   placements,
   camera,
@@ -475,3 +475,10 @@ function withinOverscan(
     point.y <= viewport.height + FIELD_CANVAS_KNOBS.OVERSCAN_PX
   );
 }
+
+/**
+ * Memoised so a screen re-render that leaves the camera and content untouched
+ * does not re-record the picture. A camera change still re-records: the level
+ * crossfades and screen-space type genuinely differ at every scale.
+ */
+export const FieldCanvas = React.memo(FieldCanvasImpl);

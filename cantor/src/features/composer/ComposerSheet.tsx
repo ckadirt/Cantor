@@ -51,7 +51,7 @@ type Props = {
  * decided by `draft.ts` against what each node actually advertises, so this
  * component never encodes a limit or an engine name of its own.
  */
-export function ComposerSheet({
+function ComposerSheetImpl({
   visible,
   targets,
   submitting,
@@ -359,3 +359,9 @@ const styles = StyleSheet.create({
     minHeight: touch.min,
   },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const ComposerSheet = React.memo(ComposerSheetImpl);
