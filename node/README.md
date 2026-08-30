@@ -211,9 +211,13 @@ symlinked config/service targets and unmanaged `cantor.service` files, and says
 so plainly when systemd is absent (Docker, WSL1) rather than writing a unit
 nothing will read.
 
-The installer offers to start the node and then pair, in that order: pairing is
-a daemon operation over the control socket, so the service has to be running
-first.
+The interactive installer offers to start the node, pair a phone, show the live
+model catalog, and pull a first model variant. These steps are optional but
+recommended and default to yes; the catalog is shown before the download so the
+operator sees each variant's licence, size, fit and available disk space. The
+default starter is `acestep:1.5-fast`, and `cantor pull` also downloads its
+matching backend. Non-interactive installs skip all service starts, pairing and
+downloads, then print the commands needed to finish later.
 
 ## Controlling a running node
 

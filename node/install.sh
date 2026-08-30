@@ -63,18 +63,29 @@ cantor_prompt() {
   fi
 }
 
-cantor_confirm() {
+# Recommended setup steps are opt-out rather than opt-in, but only at a real
+# terminal. Non-interactive installs still perform no service starts, pairing,
+# or multi-gigabyte downloads unless an operator runs those commands later.
+cantor_confirm_recommended() {
   if [ "$cantor_interactive" != '1' ]; then
     return 1
   fi
-  printf '%s [y/N]: ' "$1" >&2
+  printf '%s [Y/n]: ' "$1" >&2
   if ! IFS= read -r cantor_confirm_reply; then
     return 1
   fi
   case "$cantor_confirm_reply" in
-    y | Y | yes | YES | Yes) return 0 ;;
+    '' | y | Y | yes | YES | Yes) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+cantor_pause() {
+  if [ "$cantor_interactive" != '1' ]; then
+    return 0
+  fi
+  printf '%s' "$1" >&2
+  IFS= read -r cantor_pause_reply || true
 }
 
 [ "$(uname -s)" = 'Linux' ] || cantor_fail 'only Linux is supported'
@@ -444,9 +455,9 @@ esac
 
 printf '\n'
 
-# Pairing is now a daemon operation over the control socket, so the service has
-# to be running first. That also means the pair command no longer needs
-# --config-dir: it reaches whichever node is actually running.
+# Pairing, catalog and pull are daemon operations over the control socket, so
+# the service has to be running first. These commands reach whichever node is
+# actually running and do not need --config-dir.
 cantor_pair_command="$cantor_binary_path pair"
 if [ "$cantor_privileged" = '1' ]; then
   cantor_enable_command='systemctl enable --now cantor.service'
@@ -455,29 +466,69 @@ else
 fi
 
 cantor_started=0
-if [ "$cantor_has_systemd" = '1' ] && cantor_confirm 'Start the node now?'; then
+cantor_phone_ready=0
+cantor_model_ready=0
+if [ "$cantor_has_systemd" = '1' ] &&
+  cantor_confirm_recommended 'Start the node now? Recommended for pairing and model setup.'; then
   if $cantor_enable_command; then
-    cantor_started=1
     # The socket appears a moment after the unit does; pairing right away would
     # otherwise race it and look like the daemon is missing.
     cantor_waited=0
     while [ "$cantor_waited" -lt 10 ]; do
       if "$cantor_binary_path" status >/dev/null 2>&1; then
+        cantor_started=1
         break
       fi
       sleep 1
       cantor_waited=$((cantor_waited + 1))
     done
+    if [ "$cantor_started" != '1' ]; then
+      cantor_warn 'the service started but its control socket did not become ready'
+    fi
   else
     cantor_warn 'could not start the service; start it yourself and then pair'
   fi
 fi
 
-if [ "$cantor_started" = '1' ] && cantor_confirm 'Pair a phone with this node now?'; then
-  printf '\n'
-  "$cantor_binary_path" pair || cantor_warn 'pairing could not be started'
-  printf '\n%s\n' 'Scan that code in Cantor, then check it arrived with:'
-  printf '  %s pairings\n' "$cantor_binary_path"
+if [ "$cantor_started" = '1' ]; then
+  if cantor_confirm_recommended 'Pair a phone with this node now? Strongly recommended.'; then
+    printf '\n'
+    if "$cantor_binary_path" pair; then
+      cantor_pause 'Scan that code in Cantor. Press Enter after the phone reports it is connected: '
+      printf '\n%s\n' 'Paired devices:'
+      if "$cantor_binary_path" pairings; then
+        cantor_pairing_count=$("$cantor_binary_path" status 2>/dev/null |
+          sed -n 's/^pairings[[:space:]]*//p')
+        case "$cantor_pairing_count" in
+          '' | 0) cantor_warn 'no phone is paired yet; run `cantor pair` to try again' ;;
+          *) cantor_phone_ready=1 ;;
+        esac
+      else
+        cantor_warn 'could not check paired devices'
+      fi
+    else
+      cantor_warn 'pairing could not be started; run `cantor pair` later'
+    fi
+  fi
+
+  printf '\n%s\n' 'A generation node needs at least one model variant and its matching backend.'
+  printf '%s\n' '`cantor list --all` shows every available variant, its licence and size,'
+  printf '%s\n\n' 'whether it fits, and how much free space this node has.'
+  if "$cantor_binary_path" list --all; then
+    if cantor_confirm_recommended 'Download a model variant and matching backend now? Strongly recommended.'; then
+      cantor_prompt 'Model variant to download' 'acestep:1.5-fast'
+      cantor_setup_model=$cantor_prompt_result
+      cantor_reject_control 'model selector' "$cantor_setup_model"
+      printf '\n%s\n' "Downloading $cantor_setup_model. This can take a while and resumes if interrupted."
+      if "$cantor_binary_path" pull "$cantor_setup_model"; then
+        cantor_model_ready=1
+      else
+        cantor_warn "could not install $cantor_setup_model; run cantor pull $cantor_setup_model later"
+      fi
+    fi
+  else
+    cantor_warn 'could not load the model catalog; run `cantor list --all` later'
+  fi
 elif [ "$cantor_has_systemd" = '1' ]; then
   printf '%s\n' 'Start the node, then pair a phone with it:'
   printf '  %s\n' "$cantor_enable_command"
@@ -489,3 +540,16 @@ else
   printf '  %s run --config-dir %s\n' "$cantor_binary_path" "$cantor_config_dir"
   printf '  %s\n' "$cantor_pair_command"
 fi
+
+if [ "$cantor_phone_ready" = '1' ] && [ "$cantor_model_ready" = '1' ]; then
+  printf '\n%s\n' 'Recommended setup complete: a phone is paired and a model plus backend are ready.'
+fi
+
+printf '\n%s\n' 'Useful model and backend commands for later:'
+printf '  %s list --all             # available variants, licences, sizes and fit\n' "$cantor_binary_path"
+printf '  %s pull <model:tag>       # download a variant and its matching backend\n' "$cantor_binary_path"
+printf '  %s list                   # variants already installed\n' "$cantor_binary_path"
+printf '  %s backends               # detected and selected compute backends\n' "$cantor_binary_path"
+printf '  %s backends --install     # try and install the best backend for this machine\n' "$cantor_binary_path"
+printf '  %s pair                   # open another phone-pairing code\n' "$cantor_binary_path"
+printf '  %s pairings               # confirm which phones are paired\n' "$cantor_binary_path"
