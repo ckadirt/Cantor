@@ -23,7 +23,7 @@ type Props = {
  * does not exist: a playlist *is* the set of songs tagged with it, so there is
  * nowhere for an empty one to live and nothing for it to mean.
  */
-export function PlaylistChips({ tags, known, busy, onToggle }: Props) {
+function PlaylistChipsImpl({ tags, known, busy, onToggle }: Props) {
   const pal = usePalette();
   const [draft, setDraft] = useState('');
   const mine = playlistsOf(tags);
@@ -110,3 +110,9 @@ const styles = StyleSheet.create({
   member: { borderWidth: 2 },
   input: { borderWidth: 1, minHeight: touch.min, paddingHorizontal: space.sm },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const PlaylistChips = React.memo(PlaylistChipsImpl);

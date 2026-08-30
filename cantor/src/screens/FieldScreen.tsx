@@ -167,12 +167,32 @@ export function FieldScreen({ identity }: Props) {
     [commands],
   );
   const openEngines = useCallback(() => setEnginesOpen(true), []);
+  const closeEngines = useCallback(() => setEnginesOpen(false), []);
+  const closeComposer = useCallback(() => setComposerOpen(false), []);
+  const closeSongSheet = useCallback(() => setSongSheetOpen(false), []);
+  const pairFromEngines = useCallback(() => {
+    setEnginesOpen(false);
+    commands.showPairing();
+  }, [commands]);
+  const onComposerSubmit = useCallback<
+    React.ComponentProps<typeof ComposerSheet>['onSubmit']
+  >(
+    (nodePublicKey, modelSelector, generation) =>
+      void submitDraft(nodePublicKey, modelSelector, generation),
+    [submitDraft],
+  );
   const fieldCamera = useFieldCamera({
     layout,
     viewport,
     onOpenComposer: openComposer,
     onOpenEngines: openEngines,
   });
+  // The overlay button drops any gesture in flight before the sheet arrives.
+  const { cancelGesture } = fieldCamera;
+  const openEnginesFromField = useCallback(() => {
+    cancelGesture();
+    openEngines();
+  }, [cancelGesture, openEngines]);
   // The song the camera is focused on, if the field still knows about it.
   const focused = useMemo(() => {
     const key = fieldCamera.focus?.entityKey;
@@ -611,21 +631,15 @@ export function FieldScreen({ identity }: Props) {
           level={fieldCamera.level}
           onChangeArrangement={setArrangementKey}
           offline={offline}
-          onOpenEngines={() => {
-            fieldCamera.cancelGesture();
-            openEngines();
-          }}
+          onOpenEngines={openEnginesFromField}
           storageError={storageError}
         />
       </View>
 
       <EnginesSheet
         backends={backends}
-        onClose={() => setEnginesOpen(false)}
-        onPair={() => {
-          setEnginesOpen(false);
-          commands.showPairing();
-        }}
+        onClose={closeEngines}
+        onPair={pairFromEngines}
         onRefresh={commands.refreshLibraries}
         refreshing={refreshing}
         snapshots={snapshots}
@@ -633,10 +647,8 @@ export function FieldScreen({ identity }: Props) {
       />
       <ComposerSheet
         error={submitError}
-        onClose={() => setComposerOpen(false)}
-        onSubmit={(nodePublicKey, modelSelector, generation) =>
-          void submitDraft(nodePublicKey, modelSelector, generation)
-        }
+        onClose={closeComposer}
+        onSubmit={onComposerSubmit}
         submitting={submitting}
         targets={composerTargets}
         visible={composerOpen}
@@ -656,7 +668,7 @@ export function FieldScreen({ identity }: Props) {
           onAddTag={tag =>
             patchFocused({ tags: [...normalise([...focused.song.tags, tag])] })
           }
-          onClose={() => setSongSheetOpen(false)}
+          onClose={closeSongSheet}
           onPin={() => runAudioAction('pin')}
           onRemoveDownload={() => runAudioAction('remove')}
           onRemoveTag={tag =>

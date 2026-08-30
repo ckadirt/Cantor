@@ -13,7 +13,7 @@ type Props = {
 };
 
 /** Skia is hidden from screen readers; this mirror uses the same field data. */
-export function FieldA11yList({
+function FieldA11yListImpl({
   layout,
   placements,
   presentations,
@@ -83,3 +83,9 @@ const styles = StyleSheet.create({
   },
   item: { height: 1, width: 1 },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const FieldA11yList = React.memo(FieldA11yListImpl);

@@ -23,7 +23,7 @@ const HINTS: Record<Level, string> = {
 /** Keep text clear of the 96px persistent origin control. */
 const OVERLAY_KNOBS = { ORIGIN_CLEARANCE_PX: 120 } as const;
 
-export function FieldOverlay({
+function FieldOverlayImpl({
   level,
   offline,
   storageError,
@@ -123,3 +123,9 @@ const styles = StyleSheet.create({
   },
   hint: { textAlign: 'center' },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const FieldOverlay = React.memo(FieldOverlayImpl);

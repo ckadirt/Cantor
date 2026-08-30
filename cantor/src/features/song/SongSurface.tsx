@@ -52,7 +52,7 @@ type Props = {
  * exists only at this distance. It reads position from the shared visual clock
  * rather than from React state, so the playhead moves without re-rendering.
  */
-export function SongSurface({
+function SongSurfaceImpl({
   song,
   snapshot,
   positionSeconds,
@@ -241,3 +241,9 @@ const styles = StyleSheet.create({
   },
   detail: { marginLeft: 'auto', minHeight: touch.min, justifyContent: 'center' },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const SongSurface = React.memo(SongSurfaceImpl);

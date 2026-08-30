@@ -47,7 +47,7 @@ type Props = {
  * cache management are conventional list-and-form work, and giving them a
  * distance in the field would make the zoom model mean two different things.
  */
-export function SongSheet({
+function SongSheetImpl({
   visible,
   song,
   nodeLabel,
@@ -321,3 +321,9 @@ const styles = StyleSheet.create({
   factLabel: { width: 72 },
   factValue: { flex: 1 },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const SongSheet = React.memo(SongSheetImpl);

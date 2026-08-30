@@ -14,7 +14,7 @@ type Props = {
 };
 
 /** Conventional management belongs in a sheet, not in the zoom hierarchy. */
-export function EnginesSheet({
+function EnginesSheetImpl({
   visible,
   backends,
   snapshots,
@@ -147,3 +147,9 @@ const styles = StyleSheet.create({
   },
   actionDisabled: { opacity: 0.45 },
 });
+
+/**
+ * Memoised: the field camera re-renders its screen on every gesture frame, and
+ * this component's props do not depend on the camera.
+ */
+export const EnginesSheet = React.memo(EnginesSheetImpl);

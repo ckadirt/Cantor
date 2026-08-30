@@ -19,7 +19,7 @@ type Props = {
 };
 
 /** The app mark doubles as the persistent escape hatch back to FIT. */
-export function OriginMark({ layout, camera, level, onPress }: Props) {
+function OriginMarkImpl({ layout, camera, level, onPress }: Props) {
   const pal = usePalette();
   const bars = useMemo(
     () =>
@@ -96,4 +96,24 @@ const styles = StyleSheet.create({
     width: ORIGIN_KNOBS.HIT_SIZE_PX,
   },
   bar: { position: 'absolute' },
+});
+
+/**
+ * The camera reaches this mark only through which third of the field it is
+ * inside — one integer that changes when you cross a boundary, not every frame.
+ * Comparing that instead of the raw camera keeps a pan from re-laying out all
+ * 29 bars, which is the difference between a smooth pan and a dropped frame.
+ */
+export const OriginMark = React.memo(OriginMarkImpl, (previous, next) => {
+  if (
+    previous.layout !== next.layout ||
+    previous.level !== next.level ||
+    previous.onPress !== next.onPress
+  ) {
+    return false;
+  }
+  return (
+    intervalForCamera(previous.layout, previous.camera, previous.level) ===
+    intervalForCamera(next.layout, next.camera, next.level)
+  );
 });
