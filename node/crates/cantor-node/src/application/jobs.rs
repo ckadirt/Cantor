@@ -280,9 +280,7 @@ fn invalid_extensions(
     generation: &GenerationRequest,
     declared: &[cantor_proto::ModelParameter],
 ) -> Option<String> {
-    let Some(extensions) = generation.extensions.as_ref() else {
-        return None;
-    };
+    let extensions = generation.extensions.as_ref()?;
     let mut legacy = Vec::new();
     if generation.steps.is_some() {
         legacy.push("steps");
