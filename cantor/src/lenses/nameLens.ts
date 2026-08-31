@@ -1,4 +1,9 @@
-import { PaintStyle, Skia, type SkPaint, type SkPath } from '@shopify/react-native-skia';
+import {
+  PaintStyle,
+  Skia,
+  type SkPaint,
+  type SkPath,
+} from '@shopify/react-native-skia';
 import { facePoints, type FaceRecipe } from './face';
 import type { Lens, LensSong } from './types';
 
@@ -27,7 +32,14 @@ export const nameLens: Lens = {
     if (alpha <= 0) return;
     if (box.kind === 'mark') {
       paints.outline.setAlphaf(alpha * 0.85);
-      drawFace(canvas, song, box.x, box.y, NAME_LENS_KNOBS.MARK_RADIUS_PX, paints.outline);
+      drawFace(
+        canvas,
+        song,
+        box.x,
+        box.y,
+        NAME_LENS_KNOBS.MARK_RADIUS_PX,
+        paints.outline,
+      );
       if (song.playing) drawPlayingRing(canvas, box.x, box.y, alpha, paints);
       return;
     }
@@ -104,30 +116,53 @@ function drawFace(
   radius: number,
   paint: SkPaint,
 ): void {
-  canvas.drawPath(facePath(song, cx, cy, radius), paint);
+  // The contour is identity, not animation state. Build each of the two drawn
+  // sizes once, then translate it. Rebuilding 96 points (and all their trig)
+  // for every transition frame starves the UI thread. Scaling the canvas is
+  // intentionally avoided because it would also scale the hairline stroke.
+  canvas.save();
+  canvas.translate(cx, cy);
+  canvas.drawPath(nameLensFacePath(song, radius), paint);
+  canvas.restore();
 }
 
-/** Build the closed contour. Kept separate so the geometry stays testable. */
-function facePath(
-  song: LensSong,
-  cx: number,
-  cy: number,
-  radius: number,
+const FACE_PATH_CACHE_LIMIT = 512;
+const facePathCache = new Map<string, SkPath>();
+
+/** Build the closed contour once per song recipe and requested display size. */
+export function nameLensFacePath(
+  song: Pick<LensSong, 'seed' | 'id' | 'model' | 'durationMs'>,
+  radius: number = NAME_LENS_KNOBS.MARK_RADIUS_PX,
 ): SkPath {
+  const cacheKey = JSON.stringify([
+    song.seed ?? null,
+    song.id,
+    song.model,
+    song.durationMs,
+    radius,
+  ]);
+  const cached = facePathCache.get(cacheKey);
+  if (cached !== undefined) return cached;
   const recipe: FaceRecipe = {
     seed: song.seed,
     id: song.id,
     model: song.model,
     durationMs: song.durationMs,
   };
-  const path = Skia.Path.Make();
+  const builder = Skia.PathBuilder.Make();
   facePoints(recipe).forEach((point, index) => {
-    const x = cx + point.x * radius;
-    const y = cy + point.y * radius;
-    if (index === 0) path.moveTo(x, y);
-    else path.lineTo(x, y);
+    const x = point.x * radius;
+    const y = point.y * radius;
+    if (index === 0) builder.moveTo(x, y);
+    else builder.lineTo(x, y);
   });
-  path.close();
+  builder.close();
+  const path = builder.detach();
+  if (facePathCache.size >= FACE_PATH_CACHE_LIMIT) {
+    const oldest = facePathCache.keys().next().value;
+    if (oldest !== undefined) facePathCache.delete(oldest);
+  }
+  facePathCache.set(cacheKey, path);
   return path;
 }
 

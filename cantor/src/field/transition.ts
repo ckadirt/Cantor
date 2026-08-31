@@ -1,6 +1,31 @@
 import type { Placement } from './types';
 
 /**
+ * How one visual owner participates when an entity family changes size.
+ * A branch has one owner at the coincident source pose, then reveals sibling
+ * copies as their paths separate. A fold removes surplus owners before they
+ * converge. That one-owner-at-overlap rule prevents duplicate-dark flashes.
+ */
+export type FlightOwnership =
+  | 'carry'
+  | 'branch'
+  | 'fold'
+  | 'enter'
+  | 'exit';
+
+/** KNOBS — ownership handoff windows on the shared 0..1 re-cut clock. */
+export const FIELD_TRANSITION_KNOBS = {
+  BRANCH_REVEAL_START: 0.02,
+  BRANCH_REVEAL_END: 0.18,
+  FOLD_RELEASE_START: 0.55,
+  FOLD_RELEASE_END: 0.82,
+  ENTER_START: 0.08,
+  ENTER_END: 0.42,
+  EXIT_START: 0.58,
+  EXIT_END: 0.9,
+} as const;
+
+/**
  * A placement with both endpoint ownership values.
  *
  * Position and bloom endpoints reuse Placement's existing from/target fields;
@@ -11,6 +36,7 @@ export type PlacementFlight = Placement &
   Readonly<{
     fromAlpha: number;
     targetAlpha: number;
+    ownership: FlightOwnership;
     targetPlacementKey: string | null;
   }>;
 
@@ -55,9 +81,68 @@ export function placementFlightAt(
     y: lerp(placementFlight.fromY, placementFlight.targetY, t),
     bloomX: lerp(placementFlight.fromBloomX, placementFlight.targetBloomX, t),
     bloomY: lerp(placementFlight.fromBloomY, placementFlight.targetBloomY, t),
-    opacity: lerp(placementFlight.fromAlpha, placementFlight.targetAlpha, t),
+    opacity: ownershipAlphaAt(
+      placementFlight.ownership,
+      placementFlight.fromAlpha,
+      placementFlight.targetAlpha,
+      t,
+    ),
     targetPlacementKey: placementFlight.targetPlacementKey,
   };
+}
+
+/** Alpha for one ownership handoff, with zero velocity at each window edge. */
+export function ownershipAlphaAt(
+  ownership: FlightOwnership,
+  fromAlpha: number,
+  targetAlpha: number,
+  progress: number,
+): number {
+  const t = clamp01(progress);
+  switch (ownership) {
+    case 'branch':
+      return lerp(
+        fromAlpha,
+        targetAlpha,
+        windowedSmootherstep(
+          t,
+          FIELD_TRANSITION_KNOBS.BRANCH_REVEAL_START,
+          FIELD_TRANSITION_KNOBS.BRANCH_REVEAL_END,
+        ),
+      );
+    case 'fold':
+      return lerp(
+        fromAlpha,
+        targetAlpha,
+        windowedSmootherstep(
+          t,
+          FIELD_TRANSITION_KNOBS.FOLD_RELEASE_START,
+          FIELD_TRANSITION_KNOBS.FOLD_RELEASE_END,
+        ),
+      );
+    case 'enter':
+      return lerp(
+        fromAlpha,
+        targetAlpha,
+        windowedSmootherstep(
+          t,
+          FIELD_TRANSITION_KNOBS.ENTER_START,
+          FIELD_TRANSITION_KNOBS.ENTER_END,
+        ),
+      );
+    case 'exit':
+      return lerp(
+        fromAlpha,
+        targetAlpha,
+        windowedSmootherstep(
+          t,
+          FIELD_TRANSITION_KNOBS.EXIT_START,
+          FIELD_TRANSITION_KNOBS.EXIT_END,
+        ),
+      );
+    case 'carry':
+      return lerp(fromAlpha, targetAlpha, t);
+  }
 }
 
 /** Positive scale interpolation matching the camera's logarithmic zoom. */
@@ -76,7 +161,9 @@ function planEntity(
   generation: number,
 ): readonly PlacementFlight[] {
   if (sources.length === 0) {
-    return targets.map(target => flight(target, target, 0, 1, target.key));
+    return targets.map(target =>
+      flight(target, target, 0, 1, 'enter', target.key),
+    );
   }
   if (targets.length === 0) {
     return sources.map((source, index) =>
@@ -85,6 +172,7 @@ function planEntity(
         source,
         alphaOf(source),
         0,
+        'exit',
         null,
         exitKey(generation, source, index),
       ),
@@ -105,7 +193,14 @@ function planEntity(
     const ownsSource = !usedSources.has(source);
     usedSources.add(source);
     flights.push(
-      flight(source, target, ownsSource ? alphaOf(source) : 0, 1, target.key),
+      flight(
+        source,
+        target,
+        ownsSource ? alphaOf(source) : 0,
+        1,
+        ownsSource ? 'carry' : 'branch',
+        target.key,
+      ),
     );
   }
 
@@ -119,6 +214,7 @@ function planEntity(
         target,
         alphaOf(source),
         0,
+        'fold',
         null,
         exitKey(generation, source, index),
       ),
@@ -132,6 +228,7 @@ function flight(
   target: Placement,
   fromAlpha: number,
   targetAlpha: number,
+  ownership: FlightOwnership,
   targetPlacementKey: string | null,
   key = target.key,
 ): PlacementFlight {
@@ -148,6 +245,7 @@ function flight(
     targetBloomY: target.bloomY,
     fromAlpha,
     targetAlpha,
+    ownership,
     opacity: fromAlpha,
     targetPlacementKey,
   };
@@ -221,4 +319,9 @@ function lerp(from: number, to: number, progress: number): number {
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 1;
   return Math.min(Math.max(value, 0), 1);
+}
+
+function windowedSmootherstep(value: number, start: number, end: number): number {
+  const t = clamp01((value - start) / (end - start));
+  return t * t * t * (t * (t * 6 - 15) + 10);
 }

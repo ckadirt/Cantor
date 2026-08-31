@@ -197,6 +197,12 @@ export function FieldScreen({ identity }: Props) {
     viewport,
     onOpenComposer: openComposer,
     onOpenEngines: openEngines,
+    nativeRelayout:
+      lensKey === 'name' &&
+      layout !== null &&
+      layout.placements.every(placement =>
+        controller.presentations.has(placement.entityKey),
+      ),
   });
   // The overlay button drops any gesture in flight before the sheet arrives.
   const { cancelGesture } = fieldCamera;
@@ -630,6 +636,7 @@ export function FieldScreen({ identity }: Props) {
                 relayoutLinear={fieldCamera.relayoutLinear}
                 renderFitScale={fieldCamera.renderFitScale}
                 transitionGeneration={fieldCamera.transitionGeneration}
+                recut={fieldCamera.recut}
                 presentations={controller.presentations}
                 viewport={viewport}
               />

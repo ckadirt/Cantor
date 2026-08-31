@@ -52,6 +52,8 @@ type Options = {
   viewport: Viewport | null;
   onOpenComposer: () => void;
   onOpenEngines: () => void;
+  /** The active canvas can play an L0 re-cut without React frame commits. */
+  nativeRelayout?: boolean;
 };
 
 type CameraState = {
@@ -70,10 +72,11 @@ type CameraState = {
   labelFromGroups: readonly Group[];
   /** Born with every accepted target; stale frames cannot cross generations. */
   transitionGeneration: number;
+  /** Static endpoints consumed by the native-clock L0 renderer. */
+  recut: FieldRecutModel | null;
   gesture: ReturnType<typeof Gesture.Simultaneous>;
   cameraShared: SharedValue<Camera>;
   focusKeyShared: SharedValue<string | null>;
-  layoutProgressShared: SharedValue<number>;
   fitScaleShared: SharedValue<number>;
   descend: (placement: Placement) => void;
   ascend: () => boolean;
@@ -96,7 +99,7 @@ type PinchStart = {
 
 const EMPTY_CAMERA: Camera = { x: 0, y: 0, scale: 0.9 };
 
-type RecutModel = Readonly<{
+export type FieldRecutModel = Readonly<{
   generation: number;
   layout: FieldLayout;
   flights: readonly PlacementFlight[];
@@ -106,6 +109,7 @@ type RecutModel = Readonly<{
   toCamera: Camera;
   fromGroups: readonly Group[];
   animate: boolean;
+  nativeDriven: boolean;
 }>;
 
 type RecutClock = Readonly<{
@@ -122,6 +126,7 @@ export function useFieldCamera({
   viewport,
   onOpenComposer,
   onOpenEngines,
+  nativeRelayout = false,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
@@ -135,7 +140,7 @@ export function useFieldCamera({
   const focusKeyRef = useRef(focusKey);
   const flightFrame = useRef<number | null>(null);
   const relayoutFrame = useRef<number | null>(null);
-  const recutModel = useRef<RecutModel | null>(null);
+  const recutModel = useRef<FieldRecutModel | null>(null);
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
   const lastRenderFitScale = useRef<number | null>(null);
   const panStart = useRef<PanStart | null>(null);
@@ -145,11 +150,9 @@ export function useFieldCamera({
   // which deliberately returns a fresh object for every render.
   const cameraSharedCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const focusKeySharedCandidate = useSharedValue<string | null>(null);
-  const layoutProgressSharedCandidate = useSharedValue(1);
   const fitScaleSharedCandidate = useSharedValue(EMPTY_CAMERA.scale);
   const cameraShared = useRef(cameraSharedCandidate).current;
   const focusKeyShared = useRef(focusKeySharedCandidate).current;
-  const layoutProgressShared = useRef(layoutProgressSharedCandidate).current;
   const fitScaleShared = useRef(fitScaleSharedCandidate).current;
 
   layoutRef.current = layout;
@@ -230,7 +233,11 @@ export function useFieldCamera({
    * ritual. The prop change itself creates a born generation at progress zero;
    * no commit can therefore expose the new target under the old 1.0 clock.
    */
-  if (layout !== null && recutModel.current?.layout !== layout) {
+  if (
+    layout !== null &&
+    (recutModel.current === null ||
+      layoutsDiffer(recutModel.current.layout, layout))
+  ) {
     const previous = recutModel.current;
     const generation = (previous?.generation ?? 0) + 1;
     const firstLayout = previous === null;
@@ -264,6 +271,10 @@ export function useFieldCamera({
         groupsChanged(fromGroups, layout.groups) ||
         camerasDiffer(fromCamera, toCamera) ||
         fromFitScale !== layout.fitScale);
+    const nativeDriven =
+      nativeRelayout &&
+      levelOf(fromCamera.scale, fromFitScale) === 'field' &&
+      levelOf(toCamera.scale, layout.fitScale) === 'field';
     recutModel.current = {
       generation,
       layout,
@@ -274,6 +285,7 @@ export function useFieldCamera({
       toCamera,
       fromGroups,
       animate,
+      nativeDriven,
     };
   }
 
@@ -315,9 +327,13 @@ export function useFieldCamera({
       ),
     [visualPlacements],
   );
-  // A later prop change captures exactly what this render hands to the canvas.
-  lastVisualPlacements.current = visualPlacements;
-  lastRenderFitScale.current = renderFitScale;
+  // Native-driven frames update these refs from their lightweight clock tick.
+  // A parent data refresh must not overwrite that live capture with the born
+  // React snapshot while the UI-runtime canvas is already farther along.
+  if (!activeRecut?.nativeDriven || !activeRecut.animate || !recutBorn) {
+    lastVisualPlacements.current = visualPlacements;
+    lastRenderFitScale.current = renderFitScale;
+  }
 
   useEffect(() => {
     const model = recutModel.current;
@@ -327,13 +343,11 @@ export function useFieldCamera({
     if (!model.animate) {
       commitCamera(model.toCamera);
       fitScaleShared.value = model.toFitScale;
-      layoutProgressShared.value = 1;
       setRecutClock({ generation, linear: 1 });
       return;
     }
     const startedAt = Date.now();
     fitScaleShared.value = model.fromFitScale;
-    layoutProgressShared.value = 0;
     setRecutClock({ generation, linear: 0 });
     const tick = () => {
       if (recutModel.current?.generation !== generation) return;
@@ -342,29 +356,45 @@ export function useFieldCamera({
         (Date.now() - startedAt) / FIELD_CAMERA_KNOBS.RELAYOUT_MS,
       );
       const eased = smootherstep(progress);
-      layoutProgressShared.value = eased;
-      fitScaleShared.value = interpolatePositiveScale(
+      const nextFitScale = interpolatePositiveScale(
         model.fromFitScale,
         model.toFitScale,
         eased,
       );
-      setRecutClock({ generation, linear: progress });
-      commitCamera(
-        interpolateCamera(model.fromCamera, model.toCamera, progress),
+      const nextCamera = interpolateCamera(
+        model.fromCamera,
+        model.toCamera,
+        progress,
       );
+      fitScaleShared.value = nextFitScale;
+      if (model.nativeDriven) {
+        lastVisualPlacements.current = model.flights.map(flight =>
+          placementFlightAt(flight, eased),
+        );
+        lastRenderFitScale.current = nextFitScale;
+        cameraRef.current = nextCamera;
+        cameraShared.value = nextCamera;
+      } else {
+        setRecutClock({ generation, linear: progress });
+        commitCamera(nextCamera);
+      }
       if (progress < 1) {
         relayoutFrame.current = requestAnimationFrame(tick);
       } else {
         relayoutFrame.current = null;
+        if (model.nativeDriven) {
+          setRecutClock({ generation, linear: 1 });
+          commitCamera(model.toCamera);
+        }
       }
     };
     relayoutFrame.current = requestAnimationFrame(tick);
   }, [
     activeRecut?.generation,
+    cameraShared,
     cancelRelayout,
     commitCamera,
     fitScaleShared,
-    layoutProgressShared,
   ]);
 
   useEffect(
@@ -602,16 +632,86 @@ export function useFieldCamera({
     renderFitScale,
     labelFromGroups: activeRecut?.fromGroups ?? [],
     transitionGeneration: activeRecut?.generation ?? 0,
+    recut: activeRecut,
     gesture,
     cameraShared,
     focusKeyShared,
-    layoutProgressShared,
     fitScaleShared,
     descend,
     ascend,
     home,
     cancelGesture,
   };
+}
+
+/** Ignore data refreshes that rebuild an identical layout object. */
+function layoutsDiffer(left: FieldLayout, right: FieldLayout): boolean {
+  if (left === right) return false;
+  if (
+    left.fitScale !== right.fitScale ||
+    left.fieldCenter.x !== right.fieldCenter.x ||
+    left.fieldCenter.y !== right.fieldCenter.y ||
+    boxesDiffer(left.targetBounds, right.targetBounds) ||
+    left.groups.length !== right.groups.length ||
+    left.placements.length !== right.placements.length
+  ) {
+    return true;
+  }
+  for (let index = 0; index < left.groups.length; index += 1) {
+    const before = left.groups[index];
+    const after = right.groups[index];
+    if (
+      before.key !== after.key ||
+      before.label !== after.label ||
+      before.cx !== after.cx ||
+      before.cy !== after.cy ||
+      before.entityKeys.length !== after.entityKeys.length ||
+      before.entityKeys.some(
+        (key, entityIndex) => key !== after.entityKeys[entityIndex],
+      )
+    ) {
+      return true;
+    }
+  }
+  for (let index = 0; index < left.placements.length; index += 1) {
+    const before = left.placements[index];
+    const after = right.placements[index];
+    if (
+      before.key !== after.key ||
+      before.entityKey !== after.entityKey ||
+      before.groupKey !== after.groupKey ||
+      before.x !== after.x ||
+      before.y !== after.y ||
+      before.fromX !== after.fromX ||
+      before.fromY !== after.fromY ||
+      before.targetX !== after.targetX ||
+      before.targetY !== after.targetY ||
+      before.bloomX !== after.bloomX ||
+      before.bloomY !== after.bloomY ||
+      before.fromBloomX !== after.fromBloomX ||
+      before.fromBloomY !== after.fromBloomY ||
+      before.targetBloomX !== after.targetBloomX ||
+      before.targetBloomY !== after.targetBloomY ||
+      before.opacity !== after.opacity ||
+      before.targetPlacementKey !== after.targetPlacementKey
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function boxesDiffer(
+  left: FieldLayout['targetBounds'],
+  right: FieldLayout['targetBounds'],
+): boolean {
+  if (left === null || right === null) return left !== right;
+  return (
+    left.x !== right.x ||
+    left.y !== right.y ||
+    left.width !== right.width ||
+    left.height !== right.height
+  );
 }
 
 /** Whether the field is cut into different clusters than it was. */
