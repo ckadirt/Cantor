@@ -213,7 +213,9 @@ export function FieldScreen({ identity }: Props) {
   // The song the camera is focused on, if the field still knows about it.
   const focused = useMemo(() => {
     const key = fieldCamera.focus?.entityKey;
-    return key === undefined ? null : controller.presentations.get(key) ?? null;
+    return key === undefined
+      ? null
+      : controller.presentations.get(key) ?? null;
   }, [controller.presentations, fieldCamera.focus]);
 
   /** Every playlist that exists, which is every `p/` tag on every song. */
@@ -281,10 +283,7 @@ export function FieldScreen({ identity }: Props) {
           digest: artifact.sha256,
         },
         path,
-        {
-          title: focused.song.title,
-          artist: focused.nodeLabels[0] ?? 'Cantor',
-        },
+        { title: focused.song.title, artist: focused.nodeLabels[0] ?? 'Cantor' },
       );
     } catch (error) {
       setPlaybackError(error instanceof Error ? error.message : String(error));

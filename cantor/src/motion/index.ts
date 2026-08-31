@@ -16,6 +16,7 @@ export * from './shapes';
 export * from './silhouette';
 export * from './transition';
 export * from './text';
+export * from './glyphs';
 export { LIBRARY, CENTERLINES, type LibraryName } from './library';
 export {
   SYMBOL_LIBRARY,
