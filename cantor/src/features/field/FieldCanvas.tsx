@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useLayoutEffect, useMemo, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
@@ -94,6 +94,7 @@ type Props = {
   layout: FieldLayout;
   placements: readonly Placement[];
   camera: Camera;
+  cameraShared: SharedValue<Camera>;
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   jobs?: ReadonlyMap<string, JobPresentation>;
@@ -137,6 +138,7 @@ function FieldCanvasImpl({
   layout,
   placements,
   camera,
+  cameraShared,
   viewport,
   presentations,
   jobs,
@@ -167,25 +169,21 @@ function FieldCanvasImpl({
     fontFamily: font.mono,
     fontSize: 9,
   });
-  // Alternate two pre-zeroed clocks. The inactive slot is reset after every
-  // accepted generation, so the next born frame can select a guaranteed zero
-  // without writing to a shared value during render.
-  const evenProgress = useSharedValue(0);
-  const oddProgress = useSharedValue(0);
-  const nativeProgress =
-    recut !== null && recut.generation % 2 !== 0 ? oddProgress : evenProgress;
-  useEffect(() => {
+  // One atomic clock carries generation in its integer part and progress in
+  // its fractional part. The previous generation's terminal value is exactly
+  // the next generation's born value, so no cross-thread ordering can expose
+  // a new scene under stale progress `1`.
+  const nativeClock = useSharedValue(0);
+  useLayoutEffect(() => {
     if (recut === null) return;
-    const active = recut.generation % 2 !== 0 ? oddProgress : evenProgress;
-    const standby = recut.generation % 2 !== 0 ? evenProgress : oddProgress;
-    standby.value = 0;
-    active.value = recut.animate
-      ? withTiming(1, {
+    nativeClock.value = recut.generation;
+    nativeClock.value = recut.animate
+      ? withTiming(recut.generation + 1, {
           duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS,
           easing: nativeSmootherstep,
         })
-      : 1;
-  }, [evenProgress, oddProgress, recut]);
+      : recut.generation + 1;
+  }, [nativeClock, recut]);
   /**
    * The label transition, planned once per re-cut.
    *
@@ -228,6 +226,7 @@ function FieldCanvasImpl({
     recut !== null &&
     levelOf(recut.fromCamera.scale, recut.fromFitScale) === 'field' &&
     levelOf(recut.toCamera.scale, recut.toFitScale) === 'field' &&
+    levelOf(camera.scale, renderFitScale) === 'field' &&
     monoFont !== null &&
     labelFlights !== null &&
     recut.flights.every(flight => presentations.has(flight.entityKey));
@@ -295,7 +294,8 @@ function FieldCanvasImpl({
       >
         <NativeFieldContent
           recut={recut}
-          progress={nativeProgress}
+          clock={nativeClock}
+          cameraShared={cameraShared}
           viewport={viewport}
           presentations={presentations}
           playingKey={playingKey}
@@ -321,7 +321,8 @@ function FieldCanvasImpl({
 
 type NativeFieldContentProps = Readonly<{
   recut: FieldRecutModel;
-  progress: SharedValue<number>;
+  clock: SharedValue<number>;
+  cameraShared: SharedValue<Camera>;
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   playingKey: string | null;
@@ -336,7 +337,8 @@ type NativeFieldContentProps = Readonly<{
  */
 const NativeFieldContent = React.memo(function NativeFieldContent({
   recut,
-  progress,
+  clock,
+  cameraShared,
   viewport,
   presentations,
   playingKey,
@@ -366,7 +368,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             flight.toGroupKey ?? 'gone'
           }:${index}`}
           flight={flight}
-          progress={progress}
+          clock={clock}
+          cameraShared={cameraShared}
           recut={recut}
           viewport={viewport}
           targetTopWorld={
@@ -386,7 +389,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           <NativeFaceFlight
             key={flight.key}
             flight={flight}
-            progress={progress}
+            clock={clock}
+            cameraShared={cameraShared}
             recut={recut}
             viewport={viewport}
             path={nameLensFacePath({
@@ -406,7 +410,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
 
 function NativeFaceFlight({
   flight,
-  progress,
+  clock,
+  cameraShared,
   recut,
   viewport,
   path,
@@ -414,7 +419,8 @@ function NativeFaceFlight({
   color,
 }: {
   flight: PlacementFlight;
-  progress: SharedValue<number>;
+  clock: SharedValue<number>;
+  cameraShared: SharedValue<Camera>;
   recut: FieldRecutModel;
   viewport: Viewport;
   path: ReturnType<typeof nameLensFacePath>;
@@ -422,15 +428,22 @@ function NativeFaceFlight({
   color: string;
 }) {
   const transform = useDerivedValue(() => {
-    const p = progress.value;
+    const clockProgress = clock.value - recut.generation;
+    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const liveCamera = p >= 1 ? cameraShared.value : null;
     const cameraX =
+      liveCamera?.x ??
       recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
     const cameraY =
+      liveCamera?.y ??
       recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
-    const cameraScale = Math.exp(
-      Math.log(recut.fromCamera.scale) +
-        (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) * p,
-    );
+    const cameraScale =
+      liveCamera?.scale ??
+      Math.exp(
+        Math.log(recut.fromCamera.scale) +
+          (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) *
+            p,
+      );
     const worldX =
       flight.fromX +
       flight.fromBloomX +
@@ -457,7 +470,8 @@ function NativeFaceFlight({
     ];
   });
   const opacity = useDerivedValue(() => {
-    const p = Math.min(Math.max(progress.value, 0), 1);
+    const clockProgress = clock.value - recut.generation;
+    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
     let start = 0;
     let end = 1;
     if (flight.ownership === 'branch') {
@@ -505,7 +519,8 @@ function NativeFaceFlight({
 
 function NativeShelfLabel({
   flight,
-  progress,
+  clock,
+  cameraShared,
   recut,
   viewport,
   targetTopWorld,
@@ -513,7 +528,8 @@ function NativeShelfLabel({
   palette,
 }: {
   flight: LabelFlight;
-  progress: SharedValue<number>;
+  clock: SharedValue<number>;
+  cameraShared: SharedValue<Camera>;
   recut: FieldRecutModel;
   viewport: Viewport;
   targetTopWorld: number;
@@ -529,7 +545,8 @@ function NativeShelfLabel({
         color={palette.muted}
         {...{
           flight,
-          progress,
+          clock,
+          cameraShared,
           recut,
           viewport,
           targetTopWorld,
@@ -543,7 +560,8 @@ function NativeShelfLabel({
         color={palette.faint}
         {...{
           flight,
-          progress,
+          clock,
+          cameraShared,
           recut,
           viewport,
           targetTopWorld,
@@ -560,7 +578,8 @@ function NativeLabelLine({
   yOffset,
   color,
   flight,
-  progress,
+  clock,
+  cameraShared,
   recut,
   viewport,
   targetTopWorld,
@@ -571,7 +590,8 @@ function NativeLabelLine({
   yOffset: number;
   color: string;
   flight: LabelFlight;
-  progress: SharedValue<number>;
+  clock: SharedValue<number>;
+  cameraShared: SharedValue<Camera>;
   recut: FieldRecutModel;
   viewport: Viewport;
   targetTopWorld: number;
@@ -580,15 +600,22 @@ function NativeLabelLine({
   const fromWidth = labelFont.measureText(from).width;
   const toWidth = labelFont.measureText(to).width;
   const anchor = useDerivedValue(() => {
-    const p = progress.value;
+    const clockProgress = clock.value - recut.generation;
+    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const liveCamera = p >= 1 ? cameraShared.value : null;
     const cameraX =
+      liveCamera?.x ??
       recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
     const cameraY =
+      liveCamera?.y ??
       recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
-    const cameraScale = Math.exp(
-      Math.log(recut.fromCamera.scale) +
-        (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) * p,
-    );
+    const cameraScale =
+      liveCamera?.scale ??
+      Math.exp(
+        Math.log(recut.fromCamera.scale) +
+          (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) *
+            p,
+      );
     const worldX = flight.from.x + (flight.to.x - flight.from.x) * p;
     const worldY = targetTopWorld + (flight.from.y - flight.to.y) * (1 - p);
     return {
@@ -601,7 +628,8 @@ function NativeLabelLine({
     };
   });
   const owner = useDerivedValue(() => {
-    const p = Math.min(Math.max(progress.value, 0), 1);
+    const clockProgress = clock.value - recut.generation;
+    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
     let start = 0;
     let end = 1;
     if (flight.ownership === 'branch') {
@@ -625,15 +653,17 @@ function NativeLabelLine({
   const fromOpacity = useDerivedValue(() => {
     if (from.length === 0) return 0;
     if (from === to) return owner.value;
-    const raw =
-      to.length === 0 ? progress.value / 0.7 : (progress.value - 0.25) / 0.5;
+    const clockProgress = clock.value - recut.generation;
+    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const raw = to.length === 0 ? p / 0.7 : (p - 0.25) / 0.5;
     const t = Math.min(Math.max(raw, 0), 1);
     const amount = t * t * t * (t * (t * 6 - 15) + 10);
     return owner.value * (1 - amount);
   });
   const toOpacity = useDerivedValue(() => {
     if (to.length === 0 || from === to) return 0;
-    const p = Math.min(Math.max(progress.value, 0), 1);
+    const clockProgress = clock.value - recut.generation;
+    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
     let start = 0;
     let end = 1;
     if (flight.ownership === 'branch') {

@@ -622,6 +622,7 @@ export function FieldScreen({ identity }: Props) {
             <View collapsable={false} style={styles.field}>
               <FieldCanvas
                 camera={fieldCamera.camera}
+                cameraShared={fieldCamera.cameraShared}
                 layout={layout}
                 labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}
