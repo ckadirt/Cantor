@@ -1,6 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef } from 'react';
 import { StyleSheet } from 'react-native';
-import { useReducedMotion } from 'react-native-reanimated';
 import {
   Canvas,
   PaintStyle,
@@ -30,7 +29,6 @@ import {
   type LensPaints,
   type SongAnalysis,
 } from '../../lenses';
-import { DEFAULT_TEXT_TRANSFORM_MS } from '../../motion';
 import { useMorphFont } from '../../motion/fonts';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
@@ -40,7 +38,7 @@ import {
   drawLabelMorph,
   drawSettledLabel,
   planShelfLabels,
-  type ShelfLabelMorphs,
+  type ShelfLabelFlights,
 } from './labelMorph';
 import { shelfLabel } from './shelfLabels';
 import type { FieldPresentation, JobPresentation } from './useFieldController';
@@ -92,6 +90,12 @@ type Props = {
    * inputs or the memo below would hand back a stale one at midnight.
    */
   nowMs: number;
+  /**
+   * The relayout tween, un-eased. Shelf labels ride it so a re-cut is one
+   * movement: the marks travel, the camera corrects and the names change
+   * together rather than as three overlapping animations.
+   */
+  relayoutLinear?: number;
 };
 
 /**
@@ -112,6 +116,7 @@ function FieldCanvasImpl({
   grain = null,
   activeLensKey = 'name',
   nowMs,
+  relayoutLinear = 1,
 }: Props) {
   const displayFont = useMorphFont({
     fontFamily: font.display,
@@ -135,48 +140,13 @@ function FieldCanvasImpl({
    * survives the camera re-renders that happen on every frame of the tween —
    * rebuilding it per frame would restart the morph from wherever it had got to.
    */
-  const previousGroups = useRef<readonly { key: string; label: string }[]>([]);
-  const labelMorphs = useMemo(() => {
+  const previousGroups = useRef<FieldLayout['groups']>([]);
+  const labelFlights = useMemo(() => {
     const before = previousGroups.current;
-    previousGroups.current = layout.groups.map(group => ({
-      key: group.key,
-      label: group.label,
-    }));
+    previousGroups.current = layout.groups;
     if (monoFont === null || before.length === 0) return null;
-    const plan = planShelfLabels(before, layout.groups, monoFont, nowMs);
-    return plan;
+    return planShelfLabels(before, layout.groups, monoFont, nowMs);
   }, [layout, monoFont, nowMs]);
-  /**
-   * The morph's own clock.
-   *
-   * It cannot ride the relayout tween. A re-cut that renames every cluster
-   * without moving a single mark — one week becoming one month, with the same
-   * songs in it — leaves `relayoutMoves` false, so that tween never starts and
-   * the labels would snap in exactly the case this exists for.
-   *
-   * Linear on purpose: the engine's windows do the easing.
-   */
-  const reducedMotion = useReducedMotion();
-  const [morphProgress, setMorphProgress] = useState(1);
-  useEffect(() => {
-    if (labelMorphs === null || reducedMotion) {
-      setMorphProgress(1);
-      return;
-    }
-    let frame: number | null = null;
-    const startedAt = Date.now();
-    const tick = () => {
-      const elapsed = (Date.now() - startedAt) / DEFAULT_TEXT_TRANSFORM_MS;
-      const progress = Math.min(1, elapsed);
-      setMorphProgress(progress);
-      frame = progress < 1 ? requestAnimationFrame(tick) : null;
-    };
-    setMorphProgress(0);
-    frame = requestAnimationFrame(tick);
-    return () => {
-      if (frame !== null) cancelAnimationFrame(frame);
-    };
-  }, [labelMorphs, reducedMotion]);
   const paints = useMemo(() => createPaints(palette), [palette]);
   const picture = useMemo(() => {
     if (displayFont === null || bodyFont === null || monoFont === null) {
@@ -196,8 +166,8 @@ function FieldCanvasImpl({
       grain,
       lensKey: activeLensKey,
       nowMs,
-      labelMorphs,
-      morphProgress,
+      labelFlights,
+      relayoutLinear,
       fonts: { display: displayFont, body: bodyFont, mono: monoFont },
       paints,
     });
@@ -209,11 +179,11 @@ function FieldCanvasImpl({
     displayFont,
     grain,
     jobs,
-    labelMorphs,
+    labelFlights,
     layout,
     monoFont,
-    morphProgress,
     nowMs,
+    relayoutLinear,
     paints,
     palette,
     placements,
@@ -255,8 +225,8 @@ type PictureRequest = Readonly<{
   grain?: GrainRender | null;
   lensKey: string;
   nowMs: number;
-  labelMorphs?: ShelfLabelMorphs | null;
-  morphProgress?: number;
+  labelFlights?: ShelfLabelFlights | null;
+  relayoutLinear?: number;
   fonts: LensFonts;
   paints: LensPaints;
 }>;
@@ -511,6 +481,15 @@ function drawGrain(
   );
 }
 
+/**
+ * The name over each cluster.
+ *
+ * While a re-cut is running the labels are *flights* rather than group
+ * properties: one label can leave a cluster that no longer exists, and two can
+ * leave the same one. Each is drawn between the seat it came from and the seat
+ * it is going to, so a month splitting into playlists sends a copy of its name
+ * out to every one of them.
+ */
 function drawShelfLabels(
   canvas: SkCanvas,
   request: PictureRequest,
@@ -532,70 +511,102 @@ function drawShelfLabels(
   }
   request.paints.faint.setAlphaf(alpha);
   request.paints.muted.setAlphaf(alpha);
-  for (const group of request.layout.groups) {
+
+  /** Where a cluster's label sits once everything has settled. */
+  const seatOf = (group: (typeof request.layout.groups)[number]) => {
     const groupPoint = worldToScreen(
       { x: group.cx, y: group.cy },
       request.camera,
       request.viewport,
     );
-    const point = {
+    return {
       x: groupPoint.x,
       y:
         (topYByGroup.get(group.key) ?? groupPoint.y) -
         FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
     };
+  };
+
+  /** A cluster's centre lifted to where its name sits. */
+  const above = (point: { x: number; y: number }) => ({
+    x: point.x,
+    y: point.y - FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
+  });
+
+  const progress = request.relayoutLinear ?? 1;
+  const flights = progress < 1 ? (request.labelFlights ?? null) : null;
+  if (flights !== null) {
+    const groupsByKey = new Map(
+      request.layout.groups.map(group => [group.key, group]),
+    );
+    for (const flight of flights) {
+      const arriving =
+        flight.toGroupKey === null
+          ? null
+          : (groupsByKey.get(flight.toGroupKey) ?? null);
+      const from = above(
+        worldToScreen(flight.from, request.camera, request.viewport),
+      );
+      // The destination is the settled seat when there is a cluster to land on,
+      // so the flight ends exactly where the still label will be drawn and the
+      // last frame does not jump.
+      const to =
+        arriving === null
+          ? above(worldToScreen(flight.to, request.camera, request.viewport))
+          : seatOf(arriving);
+      const point = {
+        x: from.x + (to.x - from.x) * progress,
+        y: from.y + (to.y - from.y) * progress,
+      };
+      if (!withinOverscan(point, request.viewport)) continue;
+      if (flight.primary !== null) {
+        drawLabelMorph(
+          canvas,
+          flight.primary,
+          point.x,
+          point.y,
+          progress,
+          request.paints.muted,
+          alpha,
+          request.fonts.mono,
+        );
+      }
+      if (flight.secondary !== null) {
+        drawLabelMorph(
+          canvas,
+          flight.secondary,
+          point.x,
+          point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
+          progress,
+          request.paints.faint,
+          alpha,
+          request.fonts.mono,
+        );
+      }
+    }
+    return;
+  }
+
+  for (const group of request.layout.groups) {
+    const point = seatOf(group);
     if (!withinOverscan(point, request.viewport)) continue;
     // The axis hands over its key; the surface says it out loud, and keeps the
     // key underneath so the grouping is never a mystery.
     const read = shelfLabel(group.label, request.nowMs);
-    const primary = read.primary.toUpperCase();
-    const secondary = read.secondary;
-    // Mid-re-cut this cluster's name is still becoming its new one, so the
-    // planned geometry is replayed instead of the settled text.
-    const morph = request.labelMorphs?.get(group.key);
-    const progress = request.morphProgress ?? 1;
-    const running = morph !== undefined && progress < 1;
-
-    if (running && morph.primary !== null) {
-      drawLabelMorph(
-        canvas,
-        morph.primary,
-        point.x,
-        point.y,
-        progress,
-        request.paints.muted,
-        alpha,
-        request.fonts.mono,
-      );
-    } else {
+    drawSettledLabel(
+      canvas,
+      read.primary.toUpperCase(),
+      point.x,
+      point.y,
+      request.paints.muted,
+      request.fonts.mono,
+    );
+    if (read.secondary !== null) {
       drawSettledLabel(
         canvas,
-        primary,
+        read.secondary,
         point.x,
-        point.y,
-        request.paints.muted,
-        request.fonts.mono,
-      );
-    }
-
-    const keyY = point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX;
-    if (running && morph.secondary !== null) {
-      drawLabelMorph(
-        canvas,
-        morph.secondary,
-        point.x,
-        keyY,
-        progress,
-        request.paints.faint,
-        alpha,
-        request.fonts.mono,
-      );
-    } else if (secondary !== null) {
-      drawSettledLabel(
-        canvas,
-        secondary,
-        point.x,
-        keyY,
+        point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
         request.paints.faint,
         request.fonts.mono,
       );

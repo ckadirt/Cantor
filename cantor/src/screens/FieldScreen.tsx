@@ -631,6 +631,7 @@ export function FieldScreen({ identity }: Props) {
                 playingKey={playingKey}
                 nowMs={nowMs}
                 playingProgress={playingProgress}
+                relayoutLinear={fieldCamera.relayoutLinear}
                 presentations={controller.presentations}
                 viewport={viewport}
               />
