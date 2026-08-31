@@ -12,10 +12,18 @@ export type LensBox = Readonly<{
 /** Renderer-ready facts about a song. Runtime objects are never imported here. */
 export type LensSong = Readonly<{
   key: string;
+  /** The song's own id, so a face survives a node that reports no seed. */
+  id: string;
   title: string;
   createdAtMs: number;
   durationMs: number;
   model: string;
+  /**
+   * `SongHeader.seed` when the node sent one. With the model and the duration
+   * this is the whole recipe, which is what a lens draws the song's face from —
+   * see `face.ts` and `docs/interface/alpha-design.md`.
+   */
+  seed: number | undefined;
   nodeLabel: string;
   audioState: 'remote' | 'partial' | 'cached' | 'pinned';
   /** True for the song the player currently holds, at every level it appears. */
@@ -45,6 +53,11 @@ export type LensPaints = Readonly<{
   ink: SkPaint;
   muted: SkPaint;
   faint: SkPaint;
+  /**
+   * Ink, stroked at a hairline. A face is an outline, and creating a stroke
+   * paint per mark would allocate once per song per frame at L0.
+   */
+  outline: SkPaint;
 }>;
 
 export type LensOptions = Readonly<{
