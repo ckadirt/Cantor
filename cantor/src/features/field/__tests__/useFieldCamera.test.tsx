@@ -8,12 +8,14 @@ import {
   type FieldLayout,
   type Viewport,
 } from '../../../field';
-import { byTime } from '../../../field/arrangements';
+import { byDate, byPlaylist, byTime } from '../../../field/arrangements';
 import { FIELD_CAMERA_KNOBS, useFieldCamera } from '../useFieldCamera';
+
+let mockReducedMotion = true;
 
 jest.mock('react-native-reanimated', () => ({
   ...jest.requireActual('react-native-reanimated/mock'),
-  useReducedMotion: () => true,
+  useReducedMotion: () => mockReducedMotion,
 }));
 
 const viewport: Viewport = { width: 380, height: 800 };
@@ -78,6 +80,11 @@ function camera(): Camera {
 }
 
 describe('useFieldCamera', () => {
+  afterEach(() => {
+    mockReducedMotion = true;
+    jest.restoreAllMocks();
+  });
+
   it('keeps the pinch focal world point stable and clamps at the closest look', async () => {
     const { layout } = await renderCamera();
     const [pinch] = gestures();
@@ -156,5 +163,112 @@ describe('useFieldCamera', () => {
     expect(latest.focus).toBeNull();
     expect(latest.level).toBe('field');
     expect(latest.ascend()).toBe(false);
+  });
+
+  it('commits a born source frame and retargets rapid re-cuts continuously', async () => {
+    mockReducedMotion = false;
+    let now = 0;
+    const frames: Array<(timestamp: number) => void> = [];
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    jest
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((callback: (timestamp: number) => void) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+
+    const tagged: FieldEntity[] = [
+      {
+        ...entities[0],
+        tags: ['p/Drive', 'p/Focus'],
+      },
+    ];
+    const month = layoutField({
+      entities: tagged,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const playlist = layoutField({
+      entities: tagged,
+      arrangement: byPlaylist,
+      viewport,
+    });
+    const year = layoutField({
+      entities: tagged,
+      arrangement: byDate('year'),
+      viewport,
+    });
+    const renders: ReturnType<typeof useFieldCamera>[] = [];
+
+    function TransitionProbe({ field }: { field: FieldLayout }) {
+      const value = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      latest = value;
+      renders.push(value);
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<TransitionProbe field={month} />);
+    });
+    renders.length = 0;
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={playlist} />);
+    });
+    const born = renders[0];
+    expect(born.relayoutLinear).toBe(0);
+    expect(born.renderFitScale).toBeCloseTo(month.fitScale, 10);
+    expect(born.visualPlacements).toHaveLength(2);
+    expect(
+      born.visualPlacements.every(
+        item =>
+          item.x === month.placements[0].x &&
+          item.y === month.placements[0].y &&
+          item.bloomX === month.placements[0].bloomX &&
+          item.bloomY === month.placements[0].bloomY,
+      ),
+    ).toBe(true);
+    expect(renders.some(render => render.relayoutLinear === 1)).toBe(false);
+
+    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS / 2;
+    await ReactTestRenderer.act(async () => {
+      frames.shift()?.(now);
+    });
+    expect(latest.camera.scale / latest.renderFitScale).toBeCloseTo(1, 10);
+    const midpoint = latest.visualPlacements.map(item => ({
+      x: item.x,
+      y: item.y,
+      bloomX: item.bloomX,
+      bloomY: item.bloomY,
+      opacity: item.opacity,
+    }));
+    renders.length = 0;
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={year} />);
+    });
+    const retarget = renders[0].visualPlacements.map(item => ({
+      x: item.x,
+      y: item.y,
+      bloomX: item.bloomX,
+      bloomY: item.bloomY,
+      opacity: item.opacity,
+    }));
+    const byPose = (
+      left: (typeof midpoint)[number],
+      right: (typeof midpoint)[number],
+    ) =>
+      left.x - right.x ||
+      left.y - right.y ||
+      (left.opacity ?? 0) - (right.opacity ?? 0);
+    expect(retarget.sort(byPose)).toEqual(midpoint.sort(byPose));
+    expect(renders[0].relayoutLinear).toBe(0);
   });
 });

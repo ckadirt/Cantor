@@ -43,7 +43,6 @@ import {
   visibleSecondsAt,
   worldToScreen,
   type DateResolution,
-  type FieldLayout,
   type Viewport,
 } from '../field';
 import { allPlaylists, normalise, toggle } from '../playlists';
@@ -104,7 +103,6 @@ export function FieldScreen({ identity }: Props) {
     () => new Map(),
   );
   const analysisCache = useRef(new AnalysisCache());
-  const previousPlacements = useRef<FieldLayout['placements']>([]);
   const controller = useMemo(
     () => buildFieldController({ backends, snapshots, localAudio, outbox }),
     [backends, localAudio, outbox, snapshots],
@@ -120,13 +118,9 @@ export function FieldScreen({ identity }: Props) {
     return layoutField({
       entities: controller.entities,
       arrangement,
-      previousPlacements: previousPlacements.current,
       viewport,
     });
   }, [arrangementKey, controller.entities, dateResolution, viewport]);
-  useEffect(() => {
-    if (layout !== null) previousPlacements.current = layout.placements;
-  }, [layout]);
 
   const openComposer = useCallback(() => {
     setSubmitError(null);
@@ -213,9 +207,7 @@ export function FieldScreen({ identity }: Props) {
   // The song the camera is focused on, if the field still knows about it.
   const focused = useMemo(() => {
     const key = fieldCamera.focus?.entityKey;
-    return key === undefined
-      ? null
-      : controller.presentations.get(key) ?? null;
+    return key === undefined ? null : controller.presentations.get(key) ?? null;
   }, [controller.presentations, fieldCamera.focus]);
 
   /** Every playlist that exists, which is every `p/` tag on every song. */
@@ -283,7 +275,10 @@ export function FieldScreen({ identity }: Props) {
           digest: artifact.sha256,
         },
         path,
-        { title: focused.song.title, artist: focused.nodeLabels[0] ?? 'Cantor' },
+        {
+          title: focused.song.title,
+          artist: focused.nodeLabels[0] ?? 'Cantor',
+        },
       );
     } catch (error) {
       setPlaybackError(error instanceof Error ? error.message : String(error));
@@ -389,7 +384,7 @@ export function FieldScreen({ identity }: Props) {
     return worldToScreen(
       placementPoint(
         placement,
-        gatherFraction(fieldCamera.camera.scale, layout?.fitScale ?? 0),
+        gatherFraction(fieldCamera.camera.scale, fieldCamera.renderFitScale),
       ),
       fieldCamera.camera,
       viewport,
@@ -399,7 +394,7 @@ export function FieldScreen({ identity }: Props) {
     controller.jobs,
     fieldCamera.camera,
     fieldCamera.renderedPlacements,
-    layout,
+    fieldCamera.renderFitScale,
     viewport,
   ]);
 
@@ -499,7 +494,7 @@ export function FieldScreen({ identity }: Props) {
     const duration = focused.song.duration_ms / 1000;
     const visible = visibleSecondsAt(
       fieldCamera.camera.scale,
-      layout?.fitScale ?? fieldCamera.camera.scale,
+      fieldCamera.renderFitScale,
     );
     const centre = transport.snapshot.positionSeconds;
     const window = grainWindow(centre, visible, duration);
@@ -542,8 +537,8 @@ export function FieldScreen({ identity }: Props) {
     commands,
     fieldCamera.camera.scale,
     fieldCamera.level,
+    fieldCamera.renderFitScale,
     focused,
-    layout,
     player,
     transport.snapshot.positionSeconds,
     viewport,
@@ -622,8 +617,9 @@ export function FieldScreen({ identity }: Props) {
               <FieldCanvas
                 camera={fieldCamera.camera}
                 layout={layout}
+                labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}
-                placements={fieldCamera.renderedPlacements}
+                placements={fieldCamera.visualPlacements}
                 activeLensKey={lensKey}
                 analyses={analyses}
                 grain={grain}
@@ -632,6 +628,8 @@ export function FieldScreen({ identity }: Props) {
                 nowMs={nowMs}
                 playingProgress={playingProgress}
                 relayoutLinear={fieldCamera.relayoutLinear}
+                renderFitScale={fieldCamera.renderFitScale}
+                transitionGeneration={fieldCamera.transitionGeneration}
                 presentations={controller.presentations}
                 viewport={viewport}
               />

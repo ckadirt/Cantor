@@ -9,14 +9,19 @@ import {
   GRAIN_KNOBS,
   hitTestPlacement,
   interpolateCamera,
+  interpolatePositiveScale,
   levelCameraTarget,
   levelOf,
+  placementFlightAt,
+  planPlacementFlights,
   smootherstep,
   zoomAroundFocalPoint,
   type Camera,
   type FieldLayout,
+  type Group,
   type Level,
   type Placement,
+  type PlacementFlight,
   type Point,
   type Viewport,
 } from '../../field';
@@ -54,9 +59,17 @@ type CameraState = {
   focus: Placement | null;
   level: Level;
   renderedPlacements: readonly Placement[];
+  /** Drawn placements, including fading alignment copies during a split/fold. */
+  visualPlacements: readonly Placement[];
   layoutProgress: number;
   /** The relayout tween without its easing. */
   relayoutLinear: number;
+  /** FIT as it is currently drawn, not the new layout's terminal value. */
+  renderFitScale: number;
+  /** Semantic source groups for this transition's label plan. */
+  labelFromGroups: readonly Group[];
+  /** Born with every accepted target; stale frames cannot cross generations. */
+  transitionGeneration: number;
   gesture: ReturnType<typeof Gesture.Simultaneous>;
   cameraShared: SharedValue<Camera>;
   focusKeyShared: SharedValue<string | null>;
@@ -83,6 +96,23 @@ type PinchStart = {
 
 const EMPTY_CAMERA: Camera = { x: 0, y: 0, scale: 0.9 };
 
+type RecutModel = Readonly<{
+  generation: number;
+  layout: FieldLayout;
+  flights: readonly PlacementFlight[];
+  fromFitScale: number;
+  toFitScale: number;
+  fromCamera: Camera;
+  toCamera: Camera;
+  fromGroups: readonly Group[];
+  animate: boolean;
+}>;
+
+type RecutClock = Readonly<{
+  generation: number;
+  linear: number;
+}>;
+
 /**
  * Owns the field's interaction state. Shared values mirror the rendered state
  * for the M2 camera seam; React state records the one Skia picture per frame.
@@ -96,19 +126,18 @@ export function useFieldCamera({
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
   const [focusKey, setFocusKey] = useState<string | null>(null);
-  const [layoutProgress, setLayoutProgress] = useState(1);
-  /**
-   * The same tween, un-eased, for anything the motion engine windows itself.
-   */
-  const [relayoutLinear, setRelayoutLinear] = useState(1);
-  /** The group set the last layout carried, so a re-cut can be recognised. */
-  const previousGroups = useRef<readonly FieldLayout['groups'][number][]>([]);
+  const [recutClock, setRecutClock] = useState<RecutClock>({
+    generation: 0,
+    linear: 1,
+  });
   const cameraRef = useRef(camera);
   const layoutRef = useRef(layout);
   const focusKeyRef = useRef(focusKey);
   const flightFrame = useRef<number | null>(null);
   const relayoutFrame = useRef<number | null>(null);
-  const previousFitScale = useRef<number | null>(null);
+  const recutModel = useRef<RecutModel | null>(null);
+  const lastVisualPlacements = useRef<readonly Placement[]>([]);
+  const lastRenderFitScale = useRef<number | null>(null);
   const panStart = useRef<PanStart | null>(null);
   const pinchStart = useRef<PinchStart | null>(null);
   const pinching = useRef(false);
@@ -196,70 +225,133 @@ export function useFieldCamera({
     [cancelCameraFlight, commitCamera, reducedMotion],
   );
 
+  /*
+   * Diff and capture during render, following the motion engine's trigger
+   * ritual. The prop change itself creates a born generation at progress zero;
+   * no commit can therefore expose the new target under the old 1.0 clock.
+   */
+  if (layout !== null && recutModel.current?.layout !== layout) {
+    const previous = recutModel.current;
+    const generation = (previous?.generation ?? 0) + 1;
+    const firstLayout = previous === null;
+    const fromFitScale =
+      lastRenderFitScale.current ?? previous?.toFitScale ?? layout.fitScale;
+    const fromCamera = firstLayout
+      ? levelCameraTarget('field', layout) ?? EMPTY_CAMERA
+      : cameraRef.current;
+    const toCamera = firstLayout
+      ? fromCamera
+      : {
+          ...fromCamera,
+          scale: clampScale(
+            (fromCamera.scale / fromFitScale) * layout.fitScale,
+            layout,
+          ),
+        };
+    const sources = firstLayout
+      ? layout.placements
+      : lastVisualPlacements.current;
+    const flights = planPlacementFlights(
+      sources,
+      layout.placements,
+      generation,
+    );
+    const fromGroups = previous?.layout.groups ?? [];
+    const animate =
+      !firstLayout &&
+      !reducedMotion &&
+      (flightsMove(flights) ||
+        groupsChanged(fromGroups, layout.groups) ||
+        camerasDiffer(fromCamera, toCamera) ||
+        fromFitScale !== layout.fitScale);
+    recutModel.current = {
+      generation,
+      layout,
+      flights,
+      fromFitScale,
+      toFitScale: layout.fitScale,
+      fromCamera,
+      toCamera,
+      fromGroups,
+      animate,
+    };
+  }
+
+  const activeRecut = recutModel.current;
+  const recutBorn =
+    activeRecut !== null && recutClock.generation !== activeRecut.generation;
+  const relayoutLinear =
+    activeRecut === null
+      ? 1
+      : recutBorn
+      ? activeRecut.animate
+        ? 0
+        : 1
+      : recutClock.linear;
+  const layoutProgress = smootherstep(relayoutLinear);
+  const renderedCamera =
+    activeRecut !== null && recutBorn ? activeRecut.fromCamera : camera;
+  const renderFitScale =
+    activeRecut === null
+      ? layout?.fitScale ?? EMPTY_CAMERA.scale
+      : interpolatePositiveScale(
+          activeRecut.fromFitScale,
+          activeRecut.toFitScale,
+          layoutProgress,
+        );
+  const visualPlacements = useMemo(
+    () =>
+      activeRecut === null
+        ? []
+        : activeRecut.flights.map(flight =>
+            placementFlightAt(flight, layoutProgress),
+          ),
+    [activeRecut, layoutProgress],
+  );
+  const renderedPlacements = useMemo(
+    () =>
+      visualPlacements.filter(
+        placement => placement.targetPlacementKey !== null,
+      ),
+    [visualPlacements],
+  );
+  // A later prop change captures exactly what this render hands to the canvas.
+  lastVisualPlacements.current = visualPlacements;
+  lastRenderFitScale.current = renderFitScale;
+
   useEffect(() => {
-    if (layout === null) return;
-    fitScaleShared.value = layout.fitScale;
-    const previousFit = previousFitScale.current;
-    previousFitScale.current = layout.fitScale;
-    if (previousFit === null) {
-      const target = levelCameraTarget('field', layout);
-      if (target) commitCamera(target);
-      layoutProgressShared.value = 1;
-      setLayoutProgress(1);
-      setRelayoutLinear(1);
-      previousGroups.current = layout.groups;
-      return;
-    }
-
-    const scaleRatio = cameraRef.current.scale / previousFit;
-    const correctedScale = clampScale(scaleRatio * layout.fitScale, layout);
-    // A fresh layout object carrying the same fit scale is the common case: a
-    // library snapshot arrives, nothing about the field's geometry moves.
-    const fromCamera = cameraRef.current;
-    const toCamera =
-      correctedScale === fromCamera.scale
-        ? null
-        : { ...fromCamera, scale: correctedScale };
-
+    const model = recutModel.current;
+    if (model === null) return;
+    const generation = model.generation;
     cancelRelayout();
-    // A re-cut is one movement, so it gets one clock.
-    //
-    // The marks travelling, the camera correcting for a new FIT, and the shelf
-    // labels morphing all belong to the same event, and each used to own a
-    // timer with its own duration. That read as three overlapping animations
-    // finishing at three different moments, and it drove three React renders
-    // per frame — three full picture re-records for one gesture. Everything
-    // now hangs off `progress` below.
-    const labelsChanged = groupsChanged(previousGroups.current, layout.groups);
-    previousGroups.current = layout.groups;
-    const marksMove = relayoutMoves(layout);
-    // Nothing to tween: animating anyway would drive state at frame rate while
-    // not one mark, letter or pixel of the camera changed.
-    if (reducedMotion || (!marksMove && !labelsChanged && toCamera === null)) {
+    if (!model.animate) {
+      commitCamera(model.toCamera);
+      fitScaleShared.value = model.toFitScale;
       layoutProgressShared.value = 1;
-      setLayoutProgress(1);
-      setRelayoutLinear(1);
-      if (toCamera !== null) commitCamera(toCamera);
+      setRecutClock({ generation, linear: 1 });
       return;
     }
     const startedAt = Date.now();
+    fitScaleShared.value = model.fromFitScale;
     layoutProgressShared.value = 0;
-    setLayoutProgress(0);
-    setRelayoutLinear(0);
+    setRecutClock({ generation, linear: 0 });
     const tick = () => {
+      if (recutModel.current?.generation !== generation) return;
       const progress = Math.min(
         1,
         (Date.now() - startedAt) / FIELD_CAMERA_KNOBS.RELAYOUT_MS,
       );
       const eased = smootherstep(progress);
       layoutProgressShared.value = eased;
-      setLayoutProgress(eased);
-      // Linear as well as eased: the motion engine's windows do their own
-      // easing, so the labels need the raw ramp.
-      setRelayoutLinear(progress);
-      if (toCamera !== null) {
-        commitCamera(interpolateCamera(fromCamera, toCamera, progress));
-      }
+      fitScaleShared.value = interpolatePositiveScale(
+        model.fromFitScale,
+        model.toFitScale,
+        eased,
+      );
+      setRecutClock({ generation, linear: progress });
+      commitCamera(
+        interpolateCamera(model.fromCamera, model.toCamera, progress),
+      );
       if (progress < 1) {
         relayoutFrame.current = requestAnimationFrame(tick);
       } else {
@@ -268,13 +360,11 @@ export function useFieldCamera({
     };
     relayoutFrame.current = requestAnimationFrame(tick);
   }, [
+    activeRecut?.generation,
     cancelRelayout,
-    clampScale,
     commitCamera,
     fitScaleShared,
-    layout,
     layoutProgressShared,
-    reducedMotion,
   ]);
 
   useEffect(
@@ -285,15 +375,6 @@ export function useFieldCamera({
     [cancelCameraFlight, cancelRelayout],
   );
 
-  const renderedPlacements = useMemo(
-    () =>
-      layout === null
-        ? []
-        : layout.placements.map(placement =>
-            placementAtProgress(placement, layoutProgress),
-          ),
-    [layout, layoutProgress],
-  );
   const focus = useMemo(
     () =>
       renderedPlacements.find(placement => placement.key === focusKey) ?? null,
@@ -304,7 +385,7 @@ export function useFieldCamera({
     focusRef.current = focus;
   }, [focus]);
   const level =
-    layout === null ? 'field' : levelOf(camera.scale, layout.fitScale);
+    layout === null ? 'field' : levelOf(renderedCamera.scale, renderFitScale);
 
   /**
    * Move one level closer to the tapped placement.
@@ -318,16 +399,19 @@ export function useFieldCamera({
       const field = layoutRef.current;
       if (field === null) return;
       commitFocus(placement.key);
-      const current = levelOf(cameraRef.current.scale, field.fitScale);
+      const current = levelOf(
+        cameraRef.current.scale,
+        lastRenderFitScale.current ?? field.fitScale,
+      );
       // L3 stays clamped until M7, so a song is the end of the descent.
       const next =
         current === 'field'
           ? 'shelf'
           : current === 'shelf'
-            ? 'song'
-            : current === 'song'
-              ? 'grain'
-              : null;
+          ? 'song'
+          : current === 'song'
+          ? 'grain'
+          : null;
       if (next === null) return;
       const target = levelCameraTarget(next, field, placement);
       if (target) flyTo(target);
@@ -337,7 +421,10 @@ export function useFieldCamera({
   const ascend = useCallback((): boolean => {
     const field = layoutRef.current;
     if (field === null) return false;
-    const current = levelOf(cameraRef.current.scale, field.fitScale);
+    const current = levelOf(
+      cameraRef.current.scale,
+      lastRenderFitScale.current ?? field.fitScale,
+    );
     if (current === 'field') return false;
 
     // Leaving a song returns to its shelf, which needs the placement we came
@@ -369,13 +456,14 @@ export function useFieldCamera({
       const field = layoutRef.current;
       const size = viewport;
       if (field === null || size === null) return;
+      const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
       const hit = hitTestPlacement(
         renderedPlacements,
         cameraRef.current,
         size,
         point,
-        levelOf(cameraRef.current.scale, field.fitScale),
-        field.fitScale,
+        levelOf(cameraRef.current.scale, hitFitScale),
+        hitFitScale,
       );
       if (hit) descend(hit);
     },
@@ -504,12 +592,16 @@ export function useFieldCamera({
   ]);
 
   return {
-    camera,
+    camera: renderedCamera,
     focus,
     level,
     renderedPlacements,
+    visualPlacements,
     layoutProgress,
     relayoutLinear,
+    renderFitScale,
+    labelFromGroups: activeRecut?.fromGroups ?? [],
+    transitionGeneration: activeRecut?.generation ?? 0,
     gesture,
     cameraShared,
     focusKeyShared,
@@ -534,38 +626,18 @@ function groupsChanged(
   );
 }
 
-/** Whether any mark in this layout is somewhere other than its target. */
-function relayoutMoves(field: FieldLayout): boolean {
-  return field.placements.some(
-    placement =>
-      placement.fromX !== placement.targetX ||
-      placement.fromY !== placement.targetY ||
-      placement.fromBloomX !== placement.targetBloomX ||
-      placement.fromBloomY !== placement.targetBloomY,
+/** Whether a planned flight changes geometry or visual ownership. */
+function flightsMove(flights: readonly PlacementFlight[]): boolean {
+  return flights.some(
+    flight =>
+      flight.fromX !== flight.targetX ||
+      flight.fromY !== flight.targetY ||
+      flight.fromBloomX !== flight.targetBloomX ||
+      flight.fromBloomY !== flight.targetBloomY ||
+      flight.fromAlpha !== flight.targetAlpha,
   );
 }
 
-/**
- * Both poses move together.
- *
- * A re-sort changes a song's index, and the index decides its seat in the
- * column *and* its seat in the packing. Tweening only the column would leave
- * the bloom to snap, which is exactly the pop this tween exists to prevent —
- * and at L0, where the cluster is fully bloomed, the snap would be all you saw.
- */
-function placementAtProgress(
-  placement: Placement,
-  progress: number,
-): Placement {
-  return {
-    ...placement,
-    x: placement.fromX + (placement.targetX - placement.fromX) * progress,
-    y: placement.fromY + (placement.targetY - placement.fromY) * progress,
-    bloomX:
-      placement.fromBloomX +
-      (placement.targetBloomX - placement.fromBloomX) * progress,
-    bloomY:
-      placement.fromBloomY +
-      (placement.targetBloomY - placement.fromBloomY) * progress,
-  };
+function camerasDiffer(left: Camera, right: Camera): boolean {
+  return left.x !== right.x || left.y !== right.y || left.scale !== right.scale;
 }

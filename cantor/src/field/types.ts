@@ -90,6 +90,17 @@ export type Placement = Readonly<{
   fromBloomY: number;
   targetBloomX: number;
   targetBloomY: number;
+  /**
+   * Draw-time ownership during a re-cut. Settled layout placements omit it and
+   * therefore remain fully opaque; transition copies use it to split or fold
+   * without painting the same mark twice at either endpoint.
+   */
+  opacity?: number;
+  /**
+   * The settled placement this visual copy becomes. Null marks an outgoing,
+   * draw-only copy which must never enter hit testing or accessibility.
+   */
+  targetPlacementKey?: string | null;
 }>;
 
 /** The complete result of laying one arrangement into a viewport. */

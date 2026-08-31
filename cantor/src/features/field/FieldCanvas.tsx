@@ -18,6 +18,7 @@ import {
   worldToScreen,
   type Camera,
   type FieldLayout,
+  type Group,
   type Placement,
   type Point,
   type RepresentationAlphas,
@@ -36,9 +37,14 @@ import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
 import { jobStateLabel } from '../../jobs/policy';
 import {
+  captureLabelMorph,
+  captureLabelText,
   drawLabelMorph,
   drawSettledLabel,
   planShelfLabels,
+  retargetCapturedLabel,
+  type CapturedLabelMorph,
+  type LabelFlight,
   type ShelfLabelFlights,
 } from './labelMorph';
 import { shelfLabel } from './shelfLabels';
@@ -91,12 +97,18 @@ type Props = {
    * inputs or the memo below would hand back a stale one at midnight.
    */
   nowMs: number;
+  /** Groups visibly owned before this born re-cut generation. */
+  labelFromGroups?: readonly Group[];
   /**
    * The relayout tween, un-eased. Shelf labels ride it so a re-cut is one
    * movement: the marks travel, the camera corrects and the names change
    * together rather than as three overlapping animations.
    */
   relayoutLinear?: number;
+  /** FIT interpolated with the camera, used by every scale-derived band. */
+  renderFitScale?: number;
+  /** Born transition identity used to capture interrupted label geometry. */
+  transitionGeneration?: number;
 };
 
 /**
@@ -117,7 +129,10 @@ function FieldCanvasImpl({
   grain = null,
   activeLensKey = 'name',
   nowMs,
+  labelFromGroups = [],
   relayoutLinear = 1,
+  renderFitScale = layout.fitScale,
+  transitionGeneration = 0,
 }: Props) {
   const displayFont = useMorphFont({
     fontFamily: font.display,
@@ -137,17 +152,39 @@ function FieldCanvasImpl({
    * The label transition, planned once per re-cut.
    *
    * The engine's own ritual: diff during render, build the geometry once, play
-   * it. `previousGroups` only advances when the layout object does, so the plan
-   * survives the camera re-renders that happen on every frame of the tween —
-   * rebuilding it per frame would restart the morph from wherever it had got to.
+   * it. A born generation holds the plan across camera re-renders; when another
+   * generation arrives mid-flight, the live paths are captured before the new
+   * plan is built, so the morph cannot restart from a semantic endpoint.
    */
-  const previousGroups = useRef<FieldLayout['groups']>([]);
-  const labelFlights = useMemo(() => {
-    const before = previousGroups.current;
-    previousGroups.current = layout.groups;
-    if (monoFont === null || before.length === 0) return null;
-    return planShelfLabels(before, layout.groups, monoFont, nowMs);
-  }, [layout, monoFont, nowMs]);
+  const semanticLabelFlights = useMemo(() => {
+    if (monoFont === null || labelFromGroups.length === 0) return null;
+    return planShelfLabels(labelFromGroups, layout.groups, monoFont, nowMs);
+  }, [labelFromGroups, layout, monoFont, nowMs]);
+  const labelPlan = useRef<{
+    generation: number;
+    flights: ShelfLabelFlights | null;
+  } | null>(null);
+  const lastLabelLinear = useRef(1);
+  if (
+    monoFont !== null &&
+    labelPlan.current?.generation !== transitionGeneration
+  ) {
+    const previous = labelPlan.current;
+    labelPlan.current = {
+      generation: transitionGeneration,
+      flights:
+        previous?.flights != null && semanticLabelFlights != null
+          ? retargetShelfLabelFlights(
+              previous.flights,
+              lastLabelLinear.current,
+              semanticLabelFlights,
+              monoFont,
+            )
+          : semanticLabelFlights,
+    };
+  }
+  lastLabelLinear.current = relayoutLinear;
+  const labelFlights = labelPlan.current?.flights ?? semanticLabelFlights;
   const paints = useMemo(() => createPaints(palette), [palette]);
   const picture = useMemo(() => {
     if (displayFont === null || bodyFont === null || monoFont === null) {
@@ -169,6 +206,7 @@ function FieldCanvasImpl({
       nowMs,
       labelFlights,
       relayoutLinear,
+      renderFitScale,
       fonts: { display: displayFont, body: bodyFont, mono: monoFont },
       paints,
     });
@@ -185,6 +223,7 @@ function FieldCanvasImpl({
     monoFont,
     nowMs,
     relayoutLinear,
+    renderFitScale,
     paints,
     palette,
     placements,
@@ -228,6 +267,7 @@ type PictureRequest = Readonly<{
   nowMs: number;
   labelFlights?: ShelfLabelFlights | null;
   relayoutLinear?: number;
+  renderFitScale?: number;
   fonts: LensFonts;
   paints: LensPaints;
 }>;
@@ -241,16 +281,22 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
 
   const alpha = representationAlphas(
     request.camera.scale,
-    request.layout.fitScale,
+    request.renderFitScale ?? request.layout.fitScale,
   );
   // Where each cluster is between its two poses. Once per picture, from the
   // camera's scale — never in React state, which would rebuild every placement
   // on every pinch frame and lose the measured pan baseline.
-  const gather = gatherFraction(request.camera.scale, request.layout.fitScale);
+  const gather = gatherFraction(
+    request.camera.scale,
+    request.renderFitScale ?? request.layout.fitScale,
+  );
   drawShelfLabels(
     canvas,
     request,
-    shelfLabelAlpha(request.camera.scale, request.layout.fitScale),
+    shelfLabelAlpha(
+      request.camera.scale,
+      request.renderFitScale ?? request.layout.fitScale,
+    ),
     gather,
   );
   // At L3 the field gives way to one song's samples entirely.
@@ -263,6 +309,8 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
   if (lens === null) return recorder.finishRecordingAsPicture();
 
   for (const placement of request.placements) {
+    const placementOpacity = placement.opacity ?? 1;
+    if (placementOpacity <= 0.01) continue;
     const point = worldToScreen(
       placementPoint(placement, gather),
       request.camera,
@@ -273,7 +321,12 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
     if (presentation === undefined) {
       const pending = request.jobs?.get(placement.entityKey);
       if (pending !== undefined) {
-        drawJobMark(canvas, request, point, pending, alpha);
+        drawJobMark(canvas, request, point, pending, {
+          dot: alpha.dot * placementOpacity,
+          row: alpha.row * placementOpacity,
+          song: alpha.song * placementOpacity,
+          grain: alpha.grain * placementOpacity,
+        });
       }
       continue;
     }
@@ -292,7 +345,7 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
         request.analyses?.get(presentation.entity.key) ?? neutralAnalysis(),
       progress:
         presentation.entity.key === request.playingKey
-          ? (request.playingProgress ?? null)
+          ? request.playingProgress ?? null
           : null,
     } as const;
     if (alpha.dot > 0.01) {
@@ -300,7 +353,11 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
         canvas,
         { kind: 'mark', x: point.x, y: point.y, width: 0, height: 0 },
         song,
-        { alpha: alpha.dot, fonts: request.fonts, paints: request.paints },
+        {
+          alpha: alpha.dot * placementOpacity,
+          fonts: request.fonts,
+          paints: request.paints,
+        },
       );
     }
     if (alpha.row > 0.01) {
@@ -314,7 +371,11 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
           height: FIELD_CANVAS_KNOBS.ROW_HEIGHT_PX,
         },
         song,
-        { alpha: alpha.row, fonts: request.fonts, paints: request.paints },
+        {
+          alpha: alpha.row * placementOpacity,
+          fonts: request.fonts,
+          paints: request.paints,
+        },
       );
     }
   }
@@ -539,7 +600,7 @@ function drawShelfLabels(
   // engine eases inside its own windows; the seat travels on the same eased
   // curve the marks use, so a label and its cluster move at one rate.
   const travel = smootherstep(progress);
-  const flights = progress < 1 ? (request.labelFlights ?? null) : null;
+  const flights = progress < 1 ? request.labelFlights ?? null : null;
   if (flights !== null) {
     const groupsByKey = new Map(
       request.layout.groups.map(group => [group.key, group]),
@@ -548,7 +609,7 @@ function drawShelfLabels(
       const arriving =
         flight.toGroupKey === null
           ? null
-          : (groupsByKey.get(flight.toGroupKey) ?? null);
+          : groupsByKey.get(flight.toGroupKey) ?? null;
       // The seat is where a settled label for this cluster would be drawn, and
       // the flight is an *offset* from it that shrinks to nothing: the world
       // gap between the two cluster centres, projected. Anchoring both ends
@@ -577,6 +638,15 @@ function drawShelfLabels(
           alpha,
           request.fonts.mono,
         );
+      } else if (flight.primaryTo.length > 0) {
+        drawSettledLabel(
+          canvas,
+          flight.primaryTo,
+          point.x,
+          point.y,
+          request.paints.muted,
+          request.fonts.mono,
+        );
       }
       if (flight.secondary !== null) {
         drawLabelMorph(
@@ -587,6 +657,15 @@ function drawShelfLabels(
           progress,
           request.paints.faint,
           alpha,
+          request.fonts.mono,
+        );
+      } else if (flight.secondaryTo.length > 0) {
+        drawSettledLabel(
+          canvas,
+          flight.secondaryTo,
+          point.x,
+          point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
+          request.paints.faint,
           request.fonts.mono,
         );
       }
@@ -631,6 +710,96 @@ function withinOverscan(
     point.y >= -FIELD_CANVAS_KNOBS.OVERSCAN_PX &&
     point.y <= viewport.height + FIELD_CANVAS_KNOBS.OVERSCAN_PX
   );
+}
+
+type CapturedShelfFlight = Readonly<{
+  point: Point;
+  primary: CapturedLabelMorph | null;
+  secondary: CapturedLabelMorph | null;
+  survives: boolean;
+}>;
+
+/**
+ * Retarget label flights from the exact paths and world anchor drawn by the
+ * interrupted generation. This is the field-canvas equivalent of
+ * `captureSilhouette`: the next filter never restarts from either semantic
+ * endpoint when the person taps the dial mid-morph.
+ */
+function retargetShelfLabelFlights(
+  current: ShelfLabelFlights,
+  progress: number,
+  next: ShelfLabelFlights,
+  labelFont: Parameters<typeof captureLabelMorph>[2],
+): ShelfLabelFlights {
+  const travel = smootherstep(progress);
+  const capturedByGroup = new Map<string, CapturedShelfFlight>();
+  for (const flight of current) {
+    if (flight.toGroupKey === null) continue;
+    const captured: CapturedShelfFlight = {
+      point: {
+        x: flight.from.x + (flight.to.x - flight.from.x) * travel,
+        y: flight.from.y + (flight.to.y - flight.from.y) * travel,
+      },
+      primary: captureFlightLine(
+        flight.primary,
+        flight.primaryTo,
+        progress,
+        labelFont,
+      ),
+      secondary: captureFlightLine(
+        flight.secondary,
+        flight.secondaryTo,
+        progress,
+        labelFont,
+      ),
+      survives: flight.primaryTo.length > 0,
+    };
+    const previous = capturedByGroup.get(flight.toGroupKey);
+    if (previous === undefined || (!previous.survives && captured.survives)) {
+      capturedByGroup.set(flight.toGroupKey, captured);
+    }
+  }
+
+  return next.map(flight => {
+    const captured =
+      flight.fromGroupKey === null
+        ? undefined
+        : capturedByGroup.get(flight.fromGroupKey);
+    if (captured === undefined) return flight;
+    return {
+      ...flight,
+      from: captured.point,
+      primary:
+        captured.primary === null
+          ? flight.primary
+          : retargetCapturedLabel(
+              captured.primary,
+              flight.primaryTo,
+              labelFont,
+            ) ?? flight.primary,
+      secondary:
+        captured.secondary === null
+          ? flight.secondary
+          : retargetCapturedLabel(
+              captured.secondary,
+              flight.secondaryTo,
+              labelFont,
+            ) ?? flight.secondary,
+      primaryFrom: captured.primary?.text ?? flight.primaryFrom,
+      secondaryFrom: captured.secondary?.text ?? flight.secondaryFrom,
+    };
+  });
+}
+
+function captureFlightLine(
+  morph: LabelFlight['primary'],
+  settledText: string,
+  progress: number,
+  labelFont: Parameters<typeof captureLabelMorph>[2],
+): CapturedLabelMorph | null {
+  return morph === null
+    ? captureLabelText(settledText, labelFont)
+    : captureLabelMorph(morph, progress, labelFont);
 }
 
 /**

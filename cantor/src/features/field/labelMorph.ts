@@ -26,9 +26,14 @@ import {
   type SkPath,
 } from '@shopify/react-native-skia';
 import {
+  buildSilhouetteTransition,
   buildGlyphMorphPaths,
   buildTransformFlights,
+  collapsedSilhouette,
   layoutText,
+  placedGlyphPath,
+  sampleCompoundPath,
+  type Silhouette,
 } from '../../motion';
 import type { Group, Point } from '../../field';
 import { shelfLabel } from './shelfLabels';
@@ -68,6 +73,19 @@ export type LabelMorph = Readonly<{
   ascent: number;
 }>;
 
+type CapturedLabelPart = Readonly<{
+  silhouette: Silhouette;
+  alpha: number;
+}>;
+
+/** A line exactly as the canvas currently owns it, ready for interruption. */
+export type CapturedLabelMorph = Readonly<{
+  text: string;
+  parts: readonly CapturedLabelPart[];
+  width: number;
+  ascent: number;
+}>;
+
 /**
  * Plan one label's change. Runs once per relayout, never per frame.
  *
@@ -90,9 +108,7 @@ export function planLabelMorph(
     font.measureText(to).width,
   );
   const width = Number.isFinite(measured)
-    ? measured +
-      Math.abs(letterSpacing) * Math.max(from.length, to.length) +
-      2
+    ? measured + Math.abs(letterSpacing) * Math.max(from.length, to.length) + 2
     : 0;
   const ascent = -font.getMetrics().ascent;
   const shell = { from, to, width, ascent, pairs: [] as LabelPair[] };
@@ -182,6 +198,120 @@ export function drawLabelMorph(
   paint.setAlphaf(alpha);
 }
 
+/**
+ * Capture a label's interpolated paths rather than either semantic endpoint.
+ * Native glyph geometry is required; CanvasKit callers receive null and retain
+ * the ordinary semantic plan used by the existing fallback.
+ */
+export function captureLabelMorph(
+  morph: LabelMorph,
+  progress: number,
+  font: SkFont,
+): CapturedLabelMorph | null {
+  const t = clamp01(progress);
+  if (morph.kind !== 'morph') {
+    const text = morph.kind === 'enter' ? morph.to : morph.from;
+    const fade =
+      morph.kind === 'enter'
+        ? Math.min(1, t / LABEL_MORPH_KNOBS.FADE_END)
+        : Math.max(0, 1 - t / LABEL_MORPH_KNOBS.FADE_END);
+    return captureLabelText(text, font, morph.width, fade);
+  }
+  const parts: CapturedLabelPart[] = [];
+  for (const pair of morph.pairs) {
+    const path = interpolatePaths(t, [0, 1], [pair.from, pair.to]);
+    if (path === null) return null;
+    const contours = sampleCompoundPath(path);
+    if (contours.length === 0) return null;
+    parts.push({
+      silhouette: { contours },
+      alpha: lerp(pair.fromAlpha, pair.toAlpha, t),
+    });
+  }
+  return {
+    text: morph.to,
+    parts,
+    width: morph.width,
+    ascent: morph.ascent,
+  };
+}
+
+/** Capture a settled line through the same outline pipeline as a live morph. */
+export function captureLabelText(
+  text: string,
+  font: SkFont,
+  width = measuredWidth(text, font),
+  alpha = 1,
+): CapturedLabelMorph | null {
+  const ascent = -font.getMetrics().ascent;
+  if (text.length === 0) {
+    return { text, parts: [], width, ascent };
+  }
+  const boxes = layoutText(
+    text,
+    font,
+    0,
+    width,
+    LABEL_MORPH_KNOBS.LINE_HEIGHT_PX,
+    'center',
+  );
+  const parts: CapturedLabelPart[] = [];
+  for (const box of boxes) {
+    const path = placedGlyphPath(font, box);
+    if (path === null) return null;
+    const contours = sampleCompoundPath(path);
+    if (contours.length === 0) return null;
+    parts.push({ silhouette: { contours }, alpha });
+  }
+  return { text, parts, width, ascent };
+}
+
+/** Build a new line transform whose source is captured mid-morph geometry. */
+export function retargetCapturedLabel(
+  captured: CapturedLabelMorph,
+  to: string,
+  font: SkFont,
+): LabelMorph | null {
+  const width = Math.max(captured.width, measuredWidth(to, font));
+  const sourceShift = (width - captured.width) / 2;
+  const source = captured.parts.map(part => ({
+    silhouette: translateSilhouette(part.silhouette, sourceShift, 0),
+    alpha: part.alpha,
+  }));
+  const targetCapture = captureLabelText(to, font, width);
+  if (targetCapture === null) return null;
+  const target = targetCapture.parts;
+  const count = Math.max(source.length, target.length);
+  if (count === 0) return null;
+  const alignedSource = alignCapturedFamily(source, count);
+  const alignedTarget = alignCapturedFamily(target, count);
+  const pairs: LabelPair[] = [];
+  for (let index = 0; index < count; index += 1) {
+    const sourcePart = alignedSource[index];
+    const targetPart = alignedTarget[index];
+    if (sourcePart === undefined && targetPart === undefined) continue;
+    const fromShape =
+      sourcePart?.silhouette ?? collapsedSilhouette(targetPart!.silhouette);
+    const toShape =
+      targetPart?.silhouette ?? collapsedSilhouette(sourcePart!.silhouette);
+    const transition = buildSilhouetteTransition(fromShape, toShape);
+    pairs.push({
+      from: transition.from,
+      to: transition.to,
+      fromAlpha: sourcePart?.alpha ?? 0,
+      toAlpha: targetPart?.alpha ?? 0,
+    });
+  }
+  return {
+    kind: 'morph',
+    from: captured.text,
+    to,
+    pairs,
+    width,
+    ascent: captured.ascent,
+  };
+}
+
 /** A settled label, drawn the plain way. Shared so the two paths agree. */
 export function drawSettledLabel(
   canvas: SkCanvas,
@@ -209,8 +339,43 @@ function lerp(from: number, to: number, t: number): number {
   return from + (to - from) * t;
 }
 
+function measuredWidth(text: string, font: SkFont): number {
+  const measured = font.measureText(text).width;
+  return Number.isFinite(measured) ? measured + 2 : 0;
+}
+
+function translateSilhouette(
+  silhouette: Silhouette,
+  dx: number,
+  dy: number,
+): Silhouette {
+  return {
+    contours: silhouette.contours.map(contour =>
+      contour.map(point => ({ x: point.x + dx, y: point.y + dy })),
+    ),
+  };
+}
+
+function alignCapturedFamily(
+  parts: readonly CapturedLabelPart[],
+  count: number,
+): Array<CapturedLabelPart | undefined> {
+  if (parts.length === 0) return Array.from({ length: count });
+  if (parts.length === count) return [...parts];
+  const seen = new Set<number>();
+  return Array.from({ length: count }, (_, index) => {
+    const sourceIndex = Math.floor((index * parts.length) / count);
+    const part = parts[sourceIndex];
+    const alpha = seen.has(sourceIndex) ? 0 : part.alpha;
+    seen.add(sourceIndex);
+    return { ...part, alpha };
+  });
+}
+
 /** Both lines of one cluster's label, and where it travels while changing. */
 export type LabelFlight = Readonly<{
+  /** The semantic cluster whose current label this flight leaves. */
+  fromGroupKey: string | null;
   /**
    * The cluster whose seat this label lands on. Set for a label that becomes
    * that cluster's name *and* for one folding into it, so both end up where a
@@ -226,6 +391,11 @@ export type LabelFlight = Readonly<{
   to: Point;
   primary: LabelMorph | null;
   secondary: LabelMorph | null;
+  /** Endpoint text is retained even when equal and therefore needs no morph. */
+  primaryFrom: string;
+  primaryTo: string;
+  secondaryFrom: string;
+  secondaryTo: string;
 }>;
 
 export type ShelfLabelFlights = readonly LabelFlight[];
@@ -266,6 +436,7 @@ export function planShelfLabels(
     const source = majority(group, ownerOfEntity);
     if (source !== null) used.add(source.key);
     const flight = plan(source, group, font, nowMs, {
+      fromGroupKey: source?.key ?? null,
       from: source === null ? centre(group) : centre(source),
       to: centre(group),
       toGroupKey: group.key,
@@ -287,6 +458,7 @@ export function planShelfLabels(
     if (used.has(group.key)) continue;
     const destination = majority(group, destinationOfEntity);
     const flight = plan(group, null, font, nowMs, {
+      fromGroupKey: group.key,
       from: centre(group),
       to: centre(destination ?? group),
       toGroupKey: destination?.key ?? null,
@@ -333,7 +505,12 @@ function plan(
   to: Group | null,
   font: SkFont,
   nowMs: number,
-  seat: { from: Point; to: Point; toGroupKey: string | null },
+  seat: {
+    fromGroupKey: string | null;
+    from: Point;
+    to: Point;
+    toGroupKey: string | null;
+  },
 ): LabelFlight | null {
   const source = from === null ? EMPTY_READ : read(from.label, nowMs);
   const target = to === null ? EMPTY_READ : read(to.label, nowMs);
@@ -341,7 +518,15 @@ function plan(
   const secondary = planLabelMorph(source.secondary, target.secondary, font);
   const travels = seat.from.x !== seat.to.x || seat.from.y !== seat.to.y;
   if (primary === null && secondary === null && !travels) return null;
-  return { ...seat, primary, secondary };
+  return {
+    ...seat,
+    primary,
+    secondary,
+    primaryFrom: source.primary,
+    primaryTo: target.primary,
+    secondaryFrom: source.secondary,
+    secondaryTo: target.secondary,
+  };
 }
 
 const EMPTY_READ = { primary: '', secondary: '' } as const;
