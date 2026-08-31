@@ -310,6 +310,132 @@ describe('useFieldCamera', () => {
     expect(latest.transitionGeneration).toBe(generation);
   });
 
+  it('moves the camera every touch frame but only mirrors what React commits', async () => {
+    await renderCamera();
+    const [, pan] = gestures();
+    const start = latest.camera;
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 40, translationY: 0 });
+      pan.onUpdate({ translationX: 120, translationY: 0 });
+    });
+
+    // Both frames reached the camera the canvas reads on the UI thread.
+    expect(latest.cameraShared.value.x).toBeCloseTo(
+      start.x - 120 / start.scale,
+      10,
+    );
+    // React took the first and skipped the second: one mirror is allowed in
+    // flight at a time, so a slow commit cannot build a backlog of frames the
+    // finger has already left behind.
+    expect(latest.camera.x).toBeCloseTo(start.x - 40 / start.scale, 10);
+
+    await ReactTestRenderer.act(async () => {
+      pan.onEnd({});
+    });
+    // The gesture always ends with React holding the camera it ended on.
+    expect(latest.camera.x).toBeCloseTo(start.x - 120 / start.scale, 10);
+    expect(latest.camera).toEqual(latest.cameraShared.value);
+  });
+
+  it('reopens the mirror after a gesture that never moved the camera', async () => {
+    await renderCamera();
+    const [, pan] = gestures();
+    const start = latest.camera;
+
+    // Begin and end without a single update: the settle carries a camera React
+    // is already holding, so React bails out and the commit that reopens the
+    // mirror never happens unless the mirror notices.
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onEnd({});
+    });
+
+    const [, second] = gestures();
+    await ReactTestRenderer.act(async () => {
+      second.onBegin({ x: 190, y: 400 });
+      second.onUpdate({ translationX: 40, translationY: 0 });
+    });
+    expect(latest.camera.x).toBeCloseTo(start.x - 40 / start.scale, 10);
+  });
+
+  it('keeps a native re-cut capture across an unrelated re-render', async () => {
+    mockReducedMotion = false;
+    let now = 0;
+    const frames: Array<(timestamp: number) => void> = [];
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    jest
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((callback: (timestamp: number) => void) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    const tagged = [{ ...entities[0], tags: ['p/Drive', 'p/Focus'] }];
+    const month = layoutField({
+      entities: tagged,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const playlist = layoutField({
+      entities: tagged,
+      arrangement: byPlaylist,
+      viewport,
+    });
+    const year = layoutField({
+      entities: tagged,
+      arrangement: byDate('year'),
+      viewport,
+    });
+
+    function NativeProbe({ field, tick }: { field: FieldLayout; tick: number }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+        nativeRelayout: true,
+      });
+      void tick;
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <NativeProbe field={month} tick={0} />,
+      );
+    });
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<NativeProbe field={playlist} tick={0} />);
+    });
+
+    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS / 2;
+    await ReactTestRenderer.act(async () => {
+      frames.shift()?.(now);
+    });
+
+    // Anything upstream — a library refresh, a playhead tick — re-renders the
+    // screen mid-flight. The UI-runtime canvas is already halfway through and
+    // React state is not; the live capture belongs to the flight, not to the
+    // one render that was born with it.
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<NativeProbe field={playlist} tick={1} />);
+    });
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<NativeProbe field={year} tick={1} />);
+    });
+    expect(
+      latest.visualPlacements.some(
+        placement =>
+          placement.x !== month.placements[0].x ||
+          placement.y !== month.placements[0].y,
+      ),
+    ).toBe(true);
+  });
+
   it('keeps native L0 frame ticks out of React while retaining interruption capture', async () => {
     mockReducedMotion = false;
     let now = 0;

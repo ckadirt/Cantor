@@ -16,7 +16,6 @@ import {
 } from '@shopify/react-native-skia';
 import {
   useDerivedValue,
-  useSharedValue,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -45,6 +44,7 @@ import {
   type LensPaints,
   type SongAnalysis,
 } from '../../lenses';
+import { bornClock } from '../../motion/clock';
 import { useMorphFont } from '../../motion/fonts';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
@@ -169,20 +169,32 @@ function FieldCanvasImpl({
     fontFamily: font.mono,
     fontSize: 9,
   });
-  // One atomic clock carries generation in its integer part and progress in
-  // its fractional part. The previous generation's terminal value is exactly
-  // the next generation's born value, so no cross-thread ordering can expose
-  // a new scene under stale progress `1`.
-  const nativeClock = useSharedValue(0);
+  // House rule 5: born clocks, generation keys. A clock shared across
+  // generations is advanced by this layout effect while the outgoing
+  // generation's mappers are still installed — `useDerivedValue` restarts them
+  // from a *passive* effect, one scheduling step later — so the outgoing tree
+  // reads the newborn clock for a frame and paints its own source pose. Tap
+  // the dial back and forth and that pose is the arrangement you are returning
+  // to: the destination, flashed once before the animation starts.
+  const clockPlan = useRef<{
+    generation: number;
+    clock: SharedValue<number>;
+  } | null>(null);
+  if (recut !== null && clockPlan.current?.generation !== recut.generation) {
+    // A re-cut that does not animate is born finished rather than born at its
+    // source, so reduced motion shows the new cut instead of one stale frame.
+    clockPlan.current = {
+      generation: recut.generation,
+      clock: bornClock(recut.animate ? 0 : 1),
+    };
+  }
+  const nativeClock = clockPlan.current?.clock ?? null;
   useLayoutEffect(() => {
-    if (recut === null) return;
-    nativeClock.value = recut.generation;
-    nativeClock.value = recut.animate
-      ? withTiming(recut.generation + 1, {
-          duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS,
-          easing: nativeSmootherstep,
-        })
-      : recut.generation + 1;
+    if (recut === null || nativeClock === null || !recut.animate) return;
+    nativeClock.value = withTiming(1, {
+      duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+      easing: nativeSmootherstep,
+    });
   }, [nativeClock, recut]);
   /**
    * The label transition, planned once per re-cut.
@@ -227,6 +239,7 @@ function FieldCanvasImpl({
     levelOf(recut.fromCamera.scale, recut.fromFitScale) === 'field' &&
     levelOf(recut.toCamera.scale, recut.toFitScale) === 'field' &&
     levelOf(camera.scale, renderFitScale) === 'field' &&
+    nativeClock !== null &&
     monoFont !== null &&
     labelFlights !== null &&
     recut.flights.every(flight => presentations.has(flight.entityKey));
@@ -293,6 +306,7 @@ function FieldCanvasImpl({
         style={StyleSheet.absoluteFill}
       >
         <NativeFieldContent
+          key={recut.generation}
           recut={recut}
           clock={nativeClock}
           cameraShared={cameraShared}
@@ -428,8 +442,7 @@ function NativeFaceFlight({
   color: string;
 }) {
   const transform = useDerivedValue(() => {
-    const clockProgress = clock.value - recut.generation;
-    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
     const liveCamera = p >= 1 ? cameraShared.value : null;
     const cameraX =
       liveCamera?.x ??
@@ -470,8 +483,7 @@ function NativeFaceFlight({
     ];
   });
   const opacity = useDerivedValue(() => {
-    const clockProgress = clock.value - recut.generation;
-    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
     let start = 0;
     let end = 1;
     if (flight.ownership === 'branch') {
@@ -600,8 +612,7 @@ function NativeLabelLine({
   const fromWidth = labelFont.measureText(from).width;
   const toWidth = labelFont.measureText(to).width;
   const anchor = useDerivedValue(() => {
-    const clockProgress = clock.value - recut.generation;
-    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
     const liveCamera = p >= 1 ? cameraShared.value : null;
     const cameraX =
       liveCamera?.x ??
@@ -628,8 +639,7 @@ function NativeLabelLine({
     };
   });
   const owner = useDerivedValue(() => {
-    const clockProgress = clock.value - recut.generation;
-    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
     let start = 0;
     let end = 1;
     if (flight.ownership === 'branch') {
@@ -653,8 +663,7 @@ function NativeLabelLine({
   const fromOpacity = useDerivedValue(() => {
     if (from.length === 0) return 0;
     if (from === to) return owner.value;
-    const clockProgress = clock.value - recut.generation;
-    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
     const raw = to.length === 0 ? p / 0.7 : (p - 0.25) / 0.5;
     const t = Math.min(Math.max(raw, 0), 1);
     const amount = t * t * t * (t * (t * 6 - 15) + 10);
@@ -662,8 +671,7 @@ function NativeLabelLine({
   });
   const toOpacity = useDerivedValue(() => {
     if (to.length === 0 || from === to) return 0;
-    const clockProgress = clock.value - recut.generation;
-    const p = clockProgress >= 0 && clockProgress <= 1 ? clockProgress : 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
     let start = 0;
     let end = 1;
     if (flight.ownership === 'branch') {

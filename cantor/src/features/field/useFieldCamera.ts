@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Gesture } from 'react-native-gesture-handler';
 import {
+  runOnJS,
   useReducedMotion,
   useSharedValue,
   type SharedValue,
@@ -143,17 +144,27 @@ export function useFieldCamera({
   const recutModel = useRef<FieldRecutModel | null>(null);
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
   const lastRenderFitScale = useRef<number | null>(null);
-  const panStart = useRef<PanStart | null>(null);
-  const pinchStart = useRef<PinchStart | null>(null);
-  const pinching = useRef(false);
+  // Gesture state lives on the UI thread, because that is where the gesture
+  // now runs. Each write replaces the whole record: mutating a field of an
+  // object held by a shared value does not propagate.
+  const panStart = useSharedValue<PanStart | null>(null);
+  const pinchStart = useSharedValue<PinchStart | null>(null);
+  const pinching = useSharedValue(false);
+  /** Whether a native L0 re-cut is still writing the live capture refs. */
+  const nativeFlight = useRef<number | null>(null);
   // Native shared values are stable. Keep that property in the Jest mock too,
   // which deliberately returns a fresh object for every render.
   const cameraSharedCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const focusKeySharedCandidate = useSharedValue<string | null>(null);
   const fitScaleSharedCandidate = useSharedValue(EMPTY_CAMERA.scale);
+  const layoutFitSharedCandidate = useSharedValue(0);
+  const mirrorBusyCandidate = useSharedValue(false);
   const cameraShared = useRef(cameraSharedCandidate).current;
   const focusKeyShared = useRef(focusKeySharedCandidate).current;
   const fitScaleShared = useRef(fitScaleSharedCandidate).current;
+  /** The live layout's terminal FIT, which is what the pinch clamps against. */
+  const layoutFitShared = useRef(layoutFitSharedCandidate).current;
+  const mirrorBusy = useRef(mirrorBusyCandidate).current;
 
   layoutRef.current = layout;
 
@@ -165,6 +176,37 @@ export function useFieldCamera({
     },
     [cameraShared],
   );
+  /**
+   * Copy a UI-thread camera frame into React.
+   *
+   * The camera is authored on the UI thread while a finger is down, and React
+   * is a mirror of it rather than its owner. Only one mirror is allowed in
+   * flight at a time — `mirrorBusy` is cleared by the effect below, after the
+   * commit that used the frame — so React receives camera frames exactly as
+   * fast as it can commit them. Publishing every touch frame instead made a
+   * pan re-render the whole screen, and re-record the Skia picture, per event,
+   * with a backlog that outlived the gesture.
+   */
+  const mirrorCamera = useCallback(
+    (next: Camera) => {
+      // A frame React already holds would be a bail-out, and a bail-out never
+      // reaches the effect that reopens the mirror — so clear it here instead
+      // of leaving the gesture permanently unable to reach React again.
+      if (cameraRef.current === next) {
+        mirrorBusy.value = false;
+        return;
+      }
+      cameraRef.current = next;
+      setCameraState(next);
+    },
+    [mirrorBusy],
+  );
+  useEffect(() => {
+    mirrorBusy.value = false;
+  }, [camera, mirrorBusy]);
+  useEffect(() => {
+    layoutFitShared.value = layout?.fitScale ?? 0;
+  }, [layout, layoutFitShared]);
   const commitFocus = useCallback(
     (next: string | null) => {
       focusKeyRef.current = next;
@@ -187,10 +229,10 @@ export function useFieldCamera({
   }, []);
   const cancelGesture = useCallback(() => {
     cancelCameraFlight();
-    pinching.current = false;
-    pinchStart.current = null;
-    panStart.current = null;
-  }, [cancelCameraFlight]);
+    pinching.value = false;
+    pinchStart.value = null;
+    panStart.value = null;
+  }, [cancelCameraFlight, panStart, pinchStart, pinching]);
 
   const clampScale = useCallback(
     (scale: number, field: FieldLayout): number => {
@@ -329,8 +371,15 @@ export function useFieldCamera({
   );
   // Native-driven frames update these refs from their lightweight clock tick.
   // A parent data refresh must not overwrite that live capture with the born
-  // React snapshot while the UI-runtime canvas is already farther along.
-  if (!activeRecut?.nativeDriven || !activeRecut.animate || !recutBorn) {
+  // React snapshot while the UI-runtime canvas is already farther along — and
+  // "born" is one render, while the flight is hundreds of milliseconds during
+  // which anything upstream may re-render. The flight itself is the window.
+  const nativeFlightLive =
+    activeRecut !== null &&
+    activeRecut.nativeDriven &&
+    activeRecut.animate &&
+    (recutBorn || nativeFlight.current === activeRecut.generation);
+  if (!nativeFlightLive) {
     lastVisualPlacements.current = visualPlacements;
     lastRenderFitScale.current = renderFitScale;
   }
@@ -341,6 +390,7 @@ export function useFieldCamera({
     const generation = model.generation;
     cancelRelayout();
     if (!model.animate) {
+      nativeFlight.current = null;
       commitCamera(model.toCamera);
       fitScaleShared.value = model.toFitScale;
       setRecutClock({ generation, linear: 1 });
@@ -348,6 +398,7 @@ export function useFieldCamera({
     }
     const startedAt = Date.now();
     fitScaleShared.value = model.fromFitScale;
+    if (model.nativeDriven) nativeFlight.current = generation;
     setRecutClock({ generation, linear: 0 });
     const tick = () => {
       if (recutModel.current?.generation !== generation) return;
@@ -383,6 +434,7 @@ export function useFieldCamera({
       } else {
         relayoutFrame.current = null;
         if (model.nativeDriven) {
+          nativeFlight.current = null;
           setRecutClock({ generation, linear: 1 });
           commitCamera(model.toCamera);
         }
@@ -500,123 +552,168 @@ export function useFieldCamera({
     [descend, renderedPlacements, viewport],
   );
 
+  /** Leaving the field by an edge pull, which is a JS-side navigation. */
+  const completePull = useCallback(
+    (pull: PullDirection) => {
+      cancelGesture();
+      if (pull === 'compose') onOpenComposer();
+      else onOpenEngines();
+    },
+    [cancelGesture, onOpenComposer, onOpenEngines],
+  );
+
+  /**
+   * Pan, pinch and tap, resolved on the UI thread.
+   *
+   * The camera moves with the finger inside one worklet: no thread hop per
+   * touch event, no React render per frame, and at L0 no JS involvement at all
+   * because the canvas reads `cameraShared` directly. React still learns every
+   * camera it can keep up with, which is what the level chrome, hit testing
+   * and the picture path at L1 and closer are drawn from.
+   */
   const gesture = useMemo(() => {
+    const knobs = FIELD_CAMERA_KNOBS;
+    const publish = (next: Camera) => {
+      'worklet';
+      cameraShared.value = next;
+      if (mirrorBusy.value) return;
+      mirrorBusy.value = true;
+      runOnJS(mirrorCamera)(next);
+    };
+    /** A gesture always ends with React holding the camera it ended on. */
+    const settle = () => {
+      'worklet';
+      mirrorBusy.value = true;
+      runOnJS(mirrorCamera)(cameraShared.value);
+    };
     const pinch = Gesture.Pinch()
-      .runOnJS(true)
       .onStart(event => {
-        cancelCameraFlight();
-        pinching.current = true;
-        pinchStart.current = {
+        'worklet';
+        runOnJS(cancelCameraFlight)();
+        pinching.value = true;
+        pinchStart.value = {
           focal: { x: event.focalX, y: event.focalY },
-          camera: cameraRef.current,
+          camera: cameraShared.value,
         };
       })
       .onUpdate(event => {
-        const field = layoutRef.current;
+        'worklet';
+        const fitScale = layoutFitShared.value;
         const size = viewport;
-        const start = pinchStart.current;
-        if (field === null || size === null || start === null) return;
-        const multiplier =
-          clampScale(start.camera.scale * event.scale, field) /
-          start.camera.scale;
-        commitCamera(
-          zoomAroundFocalPoint(start.camera, start.focal, multiplier, size),
+        const start = pinchStart.value;
+        if (fitScale <= 0 || size === null || start === null) return;
+        const clamped = Math.min(
+          Math.max(
+            start.camera.scale * event.scale,
+            fitScale * knobs.MIN_SCALE_RATIO,
+          ),
+          fitScale * knobs.MAX_SCALE_RATIO,
+        );
+        publish(
+          zoomAroundFocalPoint(
+            start.camera,
+            start.focal,
+            clamped / start.camera.scale,
+            size,
+          ),
         );
       })
       .onEnd(() => {
-        pinching.current = false;
-        pinchStart.current = null;
+        'worklet';
+        pinching.value = false;
+        pinchStart.value = null;
+        settle();
       });
     const pan = Gesture.Pan()
-      .runOnJS(true)
       .maxPointers(1)
-      .minDistance(FIELD_CAMERA_KNOBS.PAN_SLOP_PX)
+      .minDistance(knobs.PAN_SLOP_PX)
       .onBegin(event => {
-        cancelCameraFlight();
-        panStart.current = {
+        'worklet';
+        runOnJS(cancelCameraFlight)();
+        panStart.value = {
           x: event.x,
           y: event.y,
-          camera: cameraRef.current,
+          camera: cameraShared.value,
           pull: null,
           pullAmount: 0,
         };
       })
       .onUpdate(event => {
-        const field = layoutRef.current;
+        'worklet';
         const size = viewport;
-        const start = panStart.current;
+        const start = panStart.value;
         if (
-          field === null ||
+          layoutFitShared.value <= 0 ||
           size === null ||
           start === null ||
-          pinching.current
+          pinching.value
         )
           return;
         const horizontal = Math.abs(event.translationX);
         const vertical = event.translationY;
         if (
-          start.y < FIELD_CAMERA_KNOBS.EDGE_PULL_ZONE_PX &&
+          start.y < knobs.EDGE_PULL_ZONE_PX &&
           vertical > 0 &&
-          horizontal < FIELD_CAMERA_KNOBS.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
+          horizontal < knobs.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
         ) {
-          start.pull = 'compose';
-          start.pullAmount = Math.min(
-            vertical,
-            FIELD_CAMERA_KNOBS.EDGE_PULL_MAX_PX,
-          );
+          panStart.value = {
+            ...start,
+            pull: 'compose',
+            pullAmount: Math.min(vertical, knobs.EDGE_PULL_MAX_PX),
+          };
           return;
         }
         if (
-          start.y > size.height - FIELD_CAMERA_KNOBS.EDGE_PULL_ZONE_PX &&
+          start.y > size.height - knobs.EDGE_PULL_ZONE_PX &&
           vertical < 0 &&
-          horizontal < FIELD_CAMERA_KNOBS.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
+          horizontal < knobs.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
         ) {
-          start.pull = 'engines';
-          start.pullAmount = Math.min(
-            -vertical,
-            FIELD_CAMERA_KNOBS.EDGE_PULL_MAX_PX,
-          );
+          panStart.value = {
+            ...start,
+            pull: 'engines',
+            pullAmount: Math.min(-vertical, knobs.EDGE_PULL_MAX_PX),
+          };
           return;
         }
         if (start.pull !== null) return;
-        commitCamera({
+        publish({
           ...start.camera,
           x: start.camera.x - event.translationX / start.camera.scale,
           y: start.camera.y - event.translationY / start.camera.scale,
         });
       })
       .onEnd(() => {
-        const start = panStart.current;
-        panStart.current = null;
+        'worklet';
+        const start = panStart.value;
+        panStart.value = null;
         if (
-          start?.pull === 'compose' &&
-          start.pullAmount >= FIELD_CAMERA_KNOBS.EDGE_PULL_OPEN_PX
+          start?.pull != null &&
+          start.pullAmount >= knobs.EDGE_PULL_OPEN_PX
         ) {
-          cancelGesture();
-          onOpenComposer();
+          runOnJS(completePull)(start.pull);
+          return;
         }
-        if (
-          start?.pull === 'engines' &&
-          start.pullAmount >= FIELD_CAMERA_KNOBS.EDGE_PULL_OPEN_PX
-        ) {
-          cancelGesture();
-          onOpenEngines();
-        }
+        settle();
       });
     const tap = Gesture.Tap()
-      .runOnJS(true)
-      .maxDistance(FIELD_CAMERA_KNOBS.TAP_SLOP_PX)
+      .maxDistance(knobs.TAP_SLOP_PX)
       .onEnd((event, success) => {
-        if (success && !pinching.current) tapAt({ x: event.x, y: event.y });
+        'worklet';
+        if (success && !pinching.value) {
+          runOnJS(tapAt)({ x: event.x, y: event.y });
+        }
       });
     return Gesture.Simultaneous(pinch, pan, tap);
   }, [
+    cameraShared,
     cancelCameraFlight,
-    cancelGesture,
-    clampScale,
-    commitCamera,
-    onOpenComposer,
-    onOpenEngines,
+    completePull,
+    layoutFitShared,
+    mirrorBusy,
+    mirrorCamera,
+    panStart,
+    pinchStart,
+    pinching,
     tapAt,
     viewport,
   ]);
