@@ -3,8 +3,17 @@ import { drawLabelMorph, planLabelMorph, planShelfLabels } from '../labelMorph';
 
 const NOW = new Date(2026, 7, 30, 12).getTime();
 const font = Skia.Font(undefined, 9);
-const groups = (...labels: string[]) =>
-  labels.map(label => ({ key: label, label }));
+/**
+ * Clusters as `layoutField` reports them: a key, a name, and their songs.
+ * A cluster's seat is stable for its name, the way a grid slot is, so an
+ * unchanged cluster does not look like one that moved.
+ */
+const seats = new Map<string, number>();
+const group = (label: string, ...entityKeys: string[]) => {
+  if (!seats.has(label)) seats.set(label, (seats.size + 1) * 100);
+  return { key: label, label, entityKeys, cx: seats.get(label)!, cy: 0 };
+};
+const groups = (...labels: string[]) => labels.map(label => group(label, 's1'));
 
 describe('shelf label morphs', () => {
   it('plans nothing when the label did not change', () => {
@@ -23,29 +32,64 @@ describe('shelf label morphs', () => {
     expect(planLabelMorph('2026-08', '', font)?.kind).toBe('exit');
   });
 
-  it('pairs clusters by index, so a re-cut keeps chronological order', () => {
-    // Three weeks become one month: only the surviving cluster can be keyed,
-    // and the surplus weeks leave with their marks rather than being paired.
-    const shrunk = planShelfLabels(
-      groups('2026-W33', '2026-W34', '2026-W35'),
-      groups('2026-08'),
+  it('duplicates one name into every cluster its songs went to', () => {
+    // One month becomes three playlists. Every playlist's label is born from
+    // the month, so three copies of AUGUST leave the same seat.
+    const flights = planShelfLabels(
+      [group('2026-08', 'a', 'b', 'c')],
+      [group('Drive', 'a'), group('Dusk', 'b'), group('Focus', 'c')],
       font,
       NOW,
     );
-    for (const key of shrunk?.keys() ?? []) expect(key).toBe('2026-08');
+    expect(flights).toHaveLength(3);
+    const departures = flights!.map(flight => flight.from.x);
+    expect(new Set(departures).size).toBe(1);
+    // And each copy is going somewhere of its own.
+    expect(new Set(flights!.map(flight => flight.to.x)).size).toBe(3);
+    expect(flights!.map(flight => flight.toGroupKey)).toEqual([
+      'Drive',
+      'Dusk',
+      'Focus',
+    ]);
+  });
 
-    // One month becomes three weeks: index 0 pairs with the month, and the two
-    // beyond the old list's end have no predecessor at all.
-    const grown = planShelfLabels(
-      groups('2026-08'),
-      groups('2026-W33', '2026-W34', '2026-W35'),
+  it('folds the names that lost their cluster into the one that took it', () => {
+    // Three playlists become one month: one label becomes AUGUST and the other
+    // two travel into it with nothing to become.
+    const flights = planShelfLabels(
+      [group('Drive', 'a'), group('Dusk', 'b'), group('Focus', 'c')],
+      [group('2026-08', 'a', 'b', 'c')],
       font,
       NOW,
     );
-    expect(grown?.get('2026-W34')?.primary?.kind).toBe('enter');
-    expect(grown?.get('2026-W35')?.primary?.kind).toBe('enter');
-    // The paired one is a morph, or absent where the runtime cannot build it.
-    expect(grown?.get('2026-W33')?.primary?.kind ?? 'morph').toBe('morph');
+    expect(flights).toHaveLength(3);
+    const becoming = flights!.filter(flight => flight.toGroupKey !== null);
+    const folding = flights!.filter(flight => flight.toGroupKey === null);
+    expect(becoming).toHaveLength(1);
+    expect(folding).toHaveLength(2);
+    // The folding names all head for the cluster that absorbed their songs.
+    for (const flight of folding) {
+      expect(flight.to).toEqual(becoming[0].to);
+      expect(flight.from).not.toEqual(flight.to);
+    }
+  });
+
+  it('follows the songs rather than the order of the list', () => {
+    // The new cluster's songs all came from the *second* old cluster, so that
+    // is what its name grows out of — index pairing would have picked the first.
+    const flights = planShelfLabels(
+      [group('First', 'x'), group('Second', 'a', 'b')],
+      [group('Only', 'a', 'b')],
+      font,
+      NOW,
+    );
+    const becoming = flights!.find(flight => flight.toGroupKey === 'Only');
+    const folding = flights!.find(flight => flight.toGroupKey === null);
+    expect(becoming).toBeDefined();
+    expect(folding).toBeDefined();
+    // `Second` was seated after `First`, so a larger seat is how we can tell
+    // the name grew out of the cluster that actually held those songs.
+    expect(becoming!.from.x).toBeGreaterThan(folding!.from.x);
   });
 
   it('never plans against an empty history, so first paint does not animate', () => {

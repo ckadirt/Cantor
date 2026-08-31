@@ -30,6 +30,7 @@ import {
   buildTransformFlights,
   layoutText,
 } from '../../motion';
+import type { Group, Point } from '../../field';
 import { shelfLabel } from './shelfLabels';
 
 /** KNOBS — how a label changes into another label. */
@@ -200,47 +201,135 @@ function lerp(from: number, to: number, t: number): number {
   return from + (to - from) * t;
 }
 
-/** Both lines of one cluster's label, mid-change. */
-export type ShelfLabelMorph = Readonly<{
+/** Both lines of one cluster's label, and where it travels while changing. */
+export type LabelFlight = Readonly<{
+  /**
+   * The cluster this label becomes, or null when it is folding away because
+   * its songs went somewhere that already has a label of its own.
+   */
+  toGroupKey: string | null;
+  /** The cluster it leaves from, in world units. */
+  from: Point;
+  /** Where it lands when it has no cluster to follow. */
+  to: Point;
   primary: LabelMorph | null;
   secondary: LabelMorph | null;
 }>;
 
-/** Planned morphs by the *new* group key. */
-export type ShelfLabelMorphs = ReadonlyMap<string, ShelfLabelMorph>;
+export type ShelfLabelFlights = readonly LabelFlight[];
 
 /**
- * Pair the clusters that were with the clusters that are, and plan each pair.
+ * Plan the labels for a re-cut: which becomes which, and which travels where.
  *
- * Pairing is by index, because both lists are sorted by the axis: cutting weeks
- * into months keeps chronological order, so the earliest week becomes the
- * earliest month. Key-matching would pair almost nothing — that is the whole
- * point of a re-cut, the keys are new — and position-matching would pair the
- * cluster that happens to sit in the same grid slot, which is the same thing as
- * index-matching with more arithmetic.
+ * Correspondence comes from the *songs*, not from position in the list. A
+ * cluster's label is born from whichever old cluster most of its songs came
+ * from, which is the same rule the marks follow — each copy of a song leaves
+ * from where that song's single mark was. So one month splitting into four
+ * playlists gives four labels all born from `AUGUST`, each carrying a copy of
+ * it out to its own cluster and morphing on the way; five weeks merging into
+ * one month gives one label that becomes `AUGUST` and four that travel into it
+ * and fade.
  *
- * A cluster with no counterpart on the old side enters; the surplus on the old
- * side has no seat to leave from, so it goes with its marks.
+ * Matching by index instead would pair the first old cluster with the first
+ * new one and call everything past that an arrival out of nowhere, which is
+ * exactly the "it just refreshed" the marks were fixed for.
  */
 export function planShelfLabels(
-  before: readonly { key: string; label: string }[],
-  after: readonly { key: string; label: string }[],
+  before: readonly Group[],
+  after: readonly Group[],
   font: SkFont,
   nowMs: number,
-): ShelfLabelMorphs | null {
+): ShelfLabelFlights | null {
   if (before.length === 0) return null;
-  const plans = new Map<string, ShelfLabelMorph>();
-  for (let index = 0; index < after.length; index += 1) {
-    const next = read(after[index].label, nowMs);
-    const previous =
-      index < before.length ? read(before[index].label, nowMs) : EMPTY_READ;
-    const primary = planLabelMorph(previous.primary, next.primary, font);
-    const secondary = planLabelMorph(previous.secondary, next.secondary, font);
-    if (primary !== null || secondary !== null) {
-      plans.set(after[index].key, { primary, secondary });
+  const ownerOfEntity = new Map<string, Group>();
+  for (const group of before) {
+    for (const entityKey of group.entityKeys) {
+      if (!ownerOfEntity.has(entityKey)) ownerOfEntity.set(entityKey, group);
     }
   }
-  return plans.size === 0 ? null : plans;
+
+  const flights: LabelFlight[] = [];
+  const used = new Set<string>();
+  for (const group of after) {
+    const source = majority(group, ownerOfEntity);
+    if (source !== null) used.add(source.key);
+    const flight = plan(source, group, font, nowMs, {
+      from: source === null ? centre(group) : centre(source),
+      to: centre(group),
+      toGroupKey: group.key,
+    });
+    if (flight !== null) flights.push(flight);
+  }
+
+  // Whatever is left on the old side has nowhere to become, so it folds into
+  // wherever its songs went and fades on the way.
+  const destinationOfEntity = new Map<string, Group>();
+  for (const group of after) {
+    for (const entityKey of group.entityKeys) {
+      if (!destinationOfEntity.has(entityKey)) {
+        destinationOfEntity.set(entityKey, group);
+      }
+    }
+  }
+  for (const group of before) {
+    if (used.has(group.key)) continue;
+    const destination = majority(group, destinationOfEntity);
+    const flight = plan(group, null, font, nowMs, {
+      from: centre(group),
+      to: centre(destination ?? group),
+      toGroupKey: null,
+    });
+    if (flight !== null) flights.push(flight);
+  }
+  return flights.length === 0 ? null : flights;
+}
+
+/** The cluster most of this group's songs came from, or went to. */
+function majority(
+  group: Group,
+  owner: ReadonlyMap<string, Group>,
+): Group | null {
+  const votes = new Map<string, { group: Group; count: number }>();
+  for (const entityKey of group.entityKeys) {
+    const other = owner.get(entityKey);
+    if (other === undefined) continue;
+    const tally = votes.get(other.key);
+    if (tally === undefined) votes.set(other.key, { group: other, count: 1 });
+    else tally.count += 1;
+  }
+  let best: { group: Group; count: number } | null = null;
+  for (const tally of votes.values()) {
+    // Ties break on the group key so the plan is the same on every device.
+    if (
+      best === null ||
+      tally.count > best.count ||
+      (tally.count === best.count && tally.group.key < best.group.key)
+    ) {
+      best = tally;
+    }
+  }
+  return best?.group ?? null;
+}
+
+function centre(group: Group): Point {
+  return { x: group.cx, y: group.cy };
+}
+
+/** Build one flight's two lines, or null when neither line changes. */
+function plan(
+  from: Group | null,
+  to: Group | null,
+  font: SkFont,
+  nowMs: number,
+  seat: { from: Point; to: Point; toGroupKey: string | null },
+): LabelFlight | null {
+  const source = from === null ? EMPTY_READ : read(from.label, nowMs);
+  const target = to === null ? EMPTY_READ : read(to.label, nowMs);
+  const primary = planLabelMorph(source.primary, target.primary, font);
+  const secondary = planLabelMorph(source.secondary, target.secondary, font);
+  const travels = seat.from.x !== seat.to.x || seat.from.y !== seat.to.y;
+  if (primary === null && secondary === null && !travels) return null;
+  return { ...seat, primary, secondary };
 }
 
 const EMPTY_READ = { primary: '', secondary: '' } as const;

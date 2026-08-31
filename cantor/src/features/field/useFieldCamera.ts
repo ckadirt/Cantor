@@ -55,6 +55,8 @@ type CameraState = {
   level: Level;
   renderedPlacements: readonly Placement[];
   layoutProgress: number;
+  /** The relayout tween without its easing. */
+  relayoutLinear: number;
   gesture: ReturnType<typeof Gesture.Simultaneous>;
   cameraShared: SharedValue<Camera>;
   focusKeyShared: SharedValue<string | null>;
@@ -95,6 +97,12 @@ export function useFieldCamera({
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
   const [focusKey, setFocusKey] = useState<string | null>(null);
   const [layoutProgress, setLayoutProgress] = useState(1);
+  /**
+   * The same tween, un-eased, for anything the motion engine windows itself.
+   */
+  const [relayoutLinear, setRelayoutLinear] = useState(1);
+  /** The group set the last layout carried, so a re-cut can be recognised. */
+  const previousGroups = useRef<readonly FieldLayout['groups'][number][]>([]);
   const cameraRef = useRef(camera);
   const layoutRef = useRef(layout);
   const focusKeyRef = useRef(focusKey);
@@ -198,6 +206,8 @@ export function useFieldCamera({
       if (target) commitCamera(target);
       layoutProgressShared.value = 1;
       setLayoutProgress(1);
+      setRelayoutLinear(1);
+      previousGroups.current = layout.groups;
       return;
     }
 
@@ -205,31 +215,37 @@ export function useFieldCamera({
     const correctedScale = clampScale(scaleRatio * layout.fitScale, layout);
     // A fresh layout object carrying the same fit scale is the common case: a
     // library snapshot arrives, nothing about the field's geometry moves.
-    // Committing a numerically identical camera would re-record the picture
-    // and re-render the screen for nothing.
-    if (correctedScale !== cameraRef.current.scale) {
-      // Flown, not committed. Re-cutting the field changes what FIT means —
-      // one month becomes four playlists and the fitted scale more than
-      // halves — and this correction is what keeps you at the level you were
-      // on. Applied in one frame it rescales the whole screen at once, which
-      // reads as the map reloading rather than reorganising. The marks are
-      // already tweening to their new seats below; the camera should travel
-      // with them.
-      flyTo({ ...cameraRef.current, scale: correctedScale });
-    }
+    const fromCamera = cameraRef.current;
+    const toCamera =
+      correctedScale === fromCamera.scale
+        ? null
+        : { ...fromCamera, scale: correctedScale };
+
     cancelRelayout();
-    // Same reasoning one level up: a relayout where every mark is already at
-    // its target has nothing to tween. Animating it anyway drives
-    // setLayoutProgress at frame rate for RELAYOUT_MS, rebuilding every
-    // rendered placement each frame, while not one mark changes place.
-    if (reducedMotion || !relayoutMoves(layout)) {
+    // A re-cut is one movement, so it gets one clock.
+    //
+    // The marks travelling, the camera correcting for a new FIT, and the shelf
+    // labels morphing all belong to the same event, and each used to own a
+    // timer with its own duration. That read as three overlapping animations
+    // finishing at three different moments, and it drove three React renders
+    // per frame — three full picture re-records for one gesture. Everything
+    // now hangs off `progress` below.
+    const labelsChanged = groupsChanged(previousGroups.current, layout.groups);
+    previousGroups.current = layout.groups;
+    const marksMove = relayoutMoves(layout);
+    // Nothing to tween: animating anyway would drive state at frame rate while
+    // not one mark, letter or pixel of the camera changed.
+    if (reducedMotion || (!marksMove && !labelsChanged && toCamera === null)) {
       layoutProgressShared.value = 1;
       setLayoutProgress(1);
+      setRelayoutLinear(1);
+      if (toCamera !== null) commitCamera(toCamera);
       return;
     }
     const startedAt = Date.now();
     layoutProgressShared.value = 0;
     setLayoutProgress(0);
+    setRelayoutLinear(0);
     const tick = () => {
       const progress = Math.min(
         1,
@@ -238,6 +254,12 @@ export function useFieldCamera({
       const eased = smootherstep(progress);
       layoutProgressShared.value = eased;
       setLayoutProgress(eased);
+      // Linear as well as eased: the motion engine's windows do their own
+      // easing, so the labels need the raw ramp.
+      setRelayoutLinear(progress);
+      if (toCamera !== null) {
+        commitCamera(interpolateCamera(fromCamera, toCamera, progress));
+      }
       if (progress < 1) {
         relayoutFrame.current = requestAnimationFrame(tick);
       } else {
@@ -250,7 +272,6 @@ export function useFieldCamera({
     clampScale,
     commitCamera,
     fitScaleShared,
-    flyTo,
     layout,
     layoutProgressShared,
     reducedMotion,
@@ -488,6 +509,7 @@ export function useFieldCamera({
     level,
     renderedPlacements,
     layoutProgress,
+    relayoutLinear,
     gesture,
     cameraShared,
     focusKeyShared,
@@ -498,6 +520,18 @@ export function useFieldCamera({
     home,
     cancelGesture,
   };
+}
+
+/** Whether the field is cut into different clusters than it was. */
+function groupsChanged(
+  before: readonly FieldLayout['groups'][number][],
+  after: readonly FieldLayout['groups'][number][],
+): boolean {
+  if (before.length !== after.length) return true;
+  return before.some(
+    (group, index) =>
+      group.key !== after[index].key || group.label !== after[index].label,
+  );
 }
 
 /** Whether any mark in this layout is somewhere other than its target. */
