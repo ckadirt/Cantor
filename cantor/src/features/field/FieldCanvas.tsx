@@ -1,31 +1,45 @@
-import React, { useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
+  Circle,
+  Fill,
+  Group as SkiaGroup,
   PaintStyle,
+  Path,
   Picture,
   Skia,
+  Text,
   type SkCanvas,
   type SkPaint,
   type SkPicture,
 } from '@shopify/react-native-skia';
+import {
+  useDerivedValue,
+  useSharedValue,
+  withTiming,
+  type SharedValue,
+} from 'react-native-reanimated';
 import {
   gatherFraction,
   placementPoint,
   representationAlphas,
   shelfLabelAlpha,
   smootherstep,
+  levelOf,
   worldToScreen,
   type Camera,
   type FieldLayout,
   type Group,
   type Placement,
+  type PlacementFlight,
   type Point,
   type RepresentationAlphas,
   type Viewport,
 } from '../../field';
 import {
   lensByKey,
+  nameLensFacePath,
   neutralAnalysis,
   type LensFonts,
   type LensPaints,
@@ -41,6 +55,7 @@ import {
   captureLabelText,
   drawLabelMorph,
   drawSettledLabel,
+  labelFlightAlpha,
   planShelfLabels,
   retargetCapturedLabel,
   type CapturedLabelMorph,
@@ -49,6 +64,7 @@ import {
 } from './labelMorph';
 import { shelfLabel } from './shelfLabels';
 import type { FieldPresentation, JobPresentation } from './useFieldController';
+import { FIELD_CAMERA_KNOBS, type FieldRecutModel } from './useFieldCamera';
 
 /** KNOBS — screen-space culling and row dimensions from the HTML prototype. */
 const FIELD_CANVAS_KNOBS = {
@@ -109,6 +125,8 @@ type Props = {
   renderFitScale?: number;
   /** Born transition identity used to capture interrupted label geometry. */
   transitionGeneration?: number;
+  /** Static endpoints for the native-clock L0 renderer. */
+  recut?: FieldRecutModel | null;
 };
 
 /**
@@ -133,6 +151,7 @@ function FieldCanvasImpl({
   relayoutLinear = 1,
   renderFitScale = layout.fitScale,
   transitionGeneration = 0,
+  recut = null,
 }: Props) {
   const displayFont = useMorphFont({
     fontFamily: font.display,
@@ -148,6 +167,25 @@ function FieldCanvasImpl({
     fontFamily: font.mono,
     fontSize: 9,
   });
+  // Alternate two pre-zeroed clocks. The inactive slot is reset after every
+  // accepted generation, so the next born frame can select a guaranteed zero
+  // without writing to a shared value during render.
+  const evenProgress = useSharedValue(0);
+  const oddProgress = useSharedValue(0);
+  const nativeProgress =
+    recut !== null && recut.generation % 2 !== 0 ? oddProgress : evenProgress;
+  useEffect(() => {
+    if (recut === null) return;
+    const active = recut.generation % 2 !== 0 ? oddProgress : evenProgress;
+    const standby = recut.generation % 2 !== 0 ? evenProgress : oddProgress;
+    standby.value = 0;
+    active.value = recut.animate
+      ? withTiming(1, {
+          duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+          easing: nativeSmootherstep,
+        })
+      : 1;
+  }, [evenProgress, oddProgress, recut]);
   /**
    * The label transition, planned once per re-cut.
    *
@@ -185,9 +223,22 @@ function FieldCanvasImpl({
   }
   lastLabelLinear.current = relayoutLinear;
   const labelFlights = labelPlan.current?.flights ?? semanticLabelFlights;
+  const nativeField =
+    activeLensKey === 'name' &&
+    recut !== null &&
+    levelOf(recut.fromCamera.scale, recut.fromFitScale) === 'field' &&
+    levelOf(recut.toCamera.scale, recut.toFitScale) === 'field' &&
+    monoFont !== null &&
+    labelFlights !== null &&
+    recut.flights.every(flight => presentations.has(flight.entityKey));
   const paints = useMemo(() => createPaints(palette), [palette]);
   const picture = useMemo(() => {
-    if (displayFont === null || bodyFont === null || monoFont === null) {
+    if (
+      nativeField ||
+      displayFont === null ||
+      bodyFont === null ||
+      monoFont === null
+    ) {
       return null;
     }
     return recordFieldPicture({
@@ -222,6 +273,7 @@ function FieldCanvasImpl({
     layout,
     monoFont,
     nowMs,
+    nativeField,
     relayoutLinear,
     renderFitScale,
     paints,
@@ -233,6 +285,28 @@ function FieldCanvasImpl({
     viewport,
   ]);
 
+  if (nativeField) {
+    return (
+      <Canvas
+        importantForAccessibility="no-hide-descendants"
+        opaque
+        pointerEvents="none"
+        style={StyleSheet.absoluteFill}
+      >
+        <NativeFieldContent
+          recut={recut}
+          progress={nativeProgress}
+          viewport={viewport}
+          presentations={presentations}
+          playingKey={playingKey}
+          labelFlights={labelFlights}
+          font={monoFont}
+          palette={palette}
+        />
+      </Canvas>
+    );
+  }
+
   return (
     <Canvas
       importantForAccessibility="no-hide-descendants"
@@ -243,6 +317,383 @@ function FieldCanvasImpl({
       {picture === null ? null : <Picture picture={picture} />}
     </Canvas>
   );
+}
+
+type NativeFieldContentProps = Readonly<{
+  recut: FieldRecutModel;
+  progress: SharedValue<number>;
+  viewport: Viewport;
+  presentations: ReadonlyMap<string, FieldPresentation>;
+  playingKey: string | null;
+  labelFlights: ShelfLabelFlights | null;
+  font: NonNullable<ReturnType<typeof useMorphFont>>;
+  palette: Palette;
+}>;
+
+/**
+ * L0's hot path. The family is built once per re-cut; Reanimated then updates
+ * Skia properties on the UI runtime without a React render or Fabric commit.
+ */
+const NativeFieldContent = React.memo(function NativeFieldContent({
+  recut,
+  progress,
+  viewport,
+  presentations,
+  playingKey,
+  labelFlights,
+  font: labelFont,
+  palette,
+}: NativeFieldContentProps) {
+  const targetTopByGroup = useMemo(() => {
+    const result = new Map<string, number>();
+    for (const flight of recut.flights) {
+      if (flight.targetPlacementKey === null) continue;
+      const y = flight.targetY + flight.targetBloomY;
+      const previous = result.get(flight.groupKey);
+      if (previous === undefined || y < previous) {
+        result.set(flight.groupKey, y);
+      }
+    }
+    return result;
+  }, [recut]);
+
+  return (
+    <>
+      <Fill color={palette.bg} />
+      {(labelFlights ?? []).map((flight, index) => (
+        <NativeShelfLabel
+          key={`${flight.fromGroupKey ?? 'new'}:${
+            flight.toGroupKey ?? 'gone'
+          }:${index}`}
+          flight={flight}
+          progress={progress}
+          recut={recut}
+          viewport={viewport}
+          targetTopWorld={
+            flight.toGroupKey === null
+              ? flight.to.y
+              : targetTopByGroup.get(flight.toGroupKey) ?? flight.to.y
+          }
+          font={labelFont}
+          palette={palette}
+        />
+      ))}
+      {recut.flights.map(flight => {
+        const presentation = presentations.get(flight.entityKey);
+        if (presentation === undefined) return null;
+        const song = presentation.song;
+        return (
+          <NativeFaceFlight
+            key={flight.key}
+            flight={flight}
+            progress={progress}
+            recut={recut}
+            viewport={viewport}
+            path={nameLensFacePath({
+              seed: song.seed,
+              id: presentation.entity.entityId,
+              model: song.model,
+              durationMs: song.duration_ms,
+            })}
+            playing={flight.entityKey === playingKey}
+            color={palette.ink}
+          />
+        );
+      })}
+    </>
+  );
+});
+
+function NativeFaceFlight({
+  flight,
+  progress,
+  recut,
+  viewport,
+  path,
+  playing,
+  color,
+}: {
+  flight: PlacementFlight;
+  progress: SharedValue<number>;
+  recut: FieldRecutModel;
+  viewport: Viewport;
+  path: ReturnType<typeof nameLensFacePath>;
+  playing: boolean;
+  color: string;
+}) {
+  const transform = useDerivedValue(() => {
+    const p = progress.value;
+    const cameraX =
+      recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
+    const cameraY =
+      recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
+    const cameraScale = Math.exp(
+      Math.log(recut.fromCamera.scale) +
+        (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) * p,
+    );
+    const worldX =
+      flight.fromX +
+      flight.fromBloomX +
+      (flight.targetX +
+        flight.targetBloomX -
+        flight.fromX -
+        flight.fromBloomX) *
+        p;
+    const worldY =
+      flight.fromY +
+      flight.fromBloomY +
+      (flight.targetY +
+        flight.targetBloomY -
+        flight.fromY -
+        flight.fromBloomY) *
+        p;
+    return [
+      {
+        translateX: (worldX - cameraX) * cameraScale + viewport.width / 2,
+      },
+      {
+        translateY: (worldY - cameraY) * cameraScale + viewport.height / 2,
+      },
+    ];
+  });
+  const opacity = useDerivedValue(() => {
+    const p = Math.min(Math.max(progress.value, 0), 1);
+    let start = 0;
+    let end = 1;
+    if (flight.ownership === 'branch') {
+      start = 0.02;
+      end = 0.18;
+    } else if (flight.ownership === 'fold') {
+      start = 0.55;
+      end = 0.82;
+    } else if (flight.ownership === 'enter') {
+      start = 0.08;
+      end = 0.42;
+    } else if (flight.ownership === 'exit') {
+      start = 0.58;
+      end = 0.9;
+    }
+    const raw = flight.ownership === 'carry' ? p : (p - start) / (end - start);
+    const t = Math.min(Math.max(raw, 0), 1);
+    const amount = t * t * t * (t * (t * 6 - 15) + 10);
+    return (
+      0.85 *
+      (flight.fromAlpha + (flight.targetAlpha - flight.fromAlpha) * amount)
+    );
+  });
+  return (
+    <SkiaGroup transform={transform} opacity={opacity}>
+      <Path
+        path={path}
+        color={color}
+        style="stroke"
+        strokeWidth={FIELD_CANVAS_KNOBS.FACE_STROKE_PX}
+      />
+      {playing ? (
+        <Circle
+          cx={0}
+          cy={0}
+          r={7.5}
+          color={color}
+          style="stroke"
+          strokeWidth={1.2}
+        />
+      ) : null}
+    </SkiaGroup>
+  );
+}
+
+function NativeShelfLabel({
+  flight,
+  progress,
+  recut,
+  viewport,
+  targetTopWorld,
+  font: labelFont,
+  palette,
+}: {
+  flight: LabelFlight;
+  progress: SharedValue<number>;
+  recut: FieldRecutModel;
+  viewport: Viewport;
+  targetTopWorld: number;
+  font: NonNullable<ReturnType<typeof useMorphFont>>;
+  palette: Palette;
+}) {
+  return (
+    <>
+      <NativeLabelLine
+        from={flight.primaryFrom}
+        to={flight.primaryTo}
+        yOffset={0}
+        color={palette.muted}
+        {...{
+          flight,
+          progress,
+          recut,
+          viewport,
+          targetTopWorld,
+          font: labelFont,
+        }}
+      />
+      <NativeLabelLine
+        from={flight.secondaryFrom}
+        to={flight.secondaryTo}
+        yOffset={FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX}
+        color={palette.faint}
+        {...{
+          flight,
+          progress,
+          recut,
+          viewport,
+          targetTopWorld,
+          font: labelFont,
+        }}
+      />
+    </>
+  );
+}
+
+function NativeLabelLine({
+  from,
+  to,
+  yOffset,
+  color,
+  flight,
+  progress,
+  recut,
+  viewport,
+  targetTopWorld,
+  font: labelFont,
+}: {
+  from: string;
+  to: string;
+  yOffset: number;
+  color: string;
+  flight: LabelFlight;
+  progress: SharedValue<number>;
+  recut: FieldRecutModel;
+  viewport: Viewport;
+  targetTopWorld: number;
+  font: NonNullable<ReturnType<typeof useMorphFont>>;
+}) {
+  const fromWidth = labelFont.measureText(from).width;
+  const toWidth = labelFont.measureText(to).width;
+  const anchor = useDerivedValue(() => {
+    const p = progress.value;
+    const cameraX =
+      recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
+    const cameraY =
+      recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
+    const cameraScale = Math.exp(
+      Math.log(recut.fromCamera.scale) +
+        (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) * p,
+    );
+    const worldX = flight.from.x + (flight.to.x - flight.from.x) * p;
+    const worldY = targetTopWorld + (flight.from.y - flight.to.y) * (1 - p);
+    return {
+      x: (worldX - cameraX) * cameraScale + viewport.width / 2,
+      y:
+        (worldY - cameraY) * cameraScale +
+        viewport.height / 2 -
+        FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX +
+        yOffset,
+    };
+  });
+  const owner = useDerivedValue(() => {
+    const p = Math.min(Math.max(progress.value, 0), 1);
+    let start = 0;
+    let end = 1;
+    if (flight.ownership === 'branch') {
+      start = 0.02;
+      end = 0.18;
+    } else if (flight.ownership === 'fold') {
+      start = 0.55;
+      end = 0.82;
+    } else if (flight.ownership === 'enter') {
+      start = 0.08;
+      end = 0.42;
+    } else if (flight.ownership === 'exit') {
+      start = 0.58;
+      end = 0.9;
+    }
+    const raw = flight.ownership === 'carry' ? p : (p - start) / (end - start);
+    const t = Math.min(Math.max(raw, 0), 1);
+    const amount = t * t * t * (t * (t * 6 - 15) + 10);
+    return flight.fromAlpha + (flight.targetAlpha - flight.fromAlpha) * amount;
+  });
+  const fromOpacity = useDerivedValue(() => {
+    if (from.length === 0) return 0;
+    if (from === to) return owner.value;
+    const raw =
+      to.length === 0 ? progress.value / 0.7 : (progress.value - 0.25) / 0.5;
+    const t = Math.min(Math.max(raw, 0), 1);
+    const amount = t * t * t * (t * (t * 6 - 15) + 10);
+    return owner.value * (1 - amount);
+  });
+  const toOpacity = useDerivedValue(() => {
+    if (to.length === 0 || from === to) return 0;
+    const p = Math.min(Math.max(progress.value, 0), 1);
+    let start = 0;
+    let end = 1;
+    if (flight.ownership === 'branch') {
+      start = 0.02;
+      end = 0.18;
+    } else if (flight.ownership === 'fold') {
+      start = 0.55;
+      end = 0.82;
+    } else if (flight.ownership === 'enter') {
+      start = 0.08;
+      end = 0.42;
+    } else if (flight.ownership === 'exit') {
+      start = 0.58;
+      end = 0.9;
+    }
+    const ownerRaw =
+      flight.ownership === 'carry' ? p : (p - start) / (end - start);
+    const ownerT = Math.min(Math.max(ownerRaw, 0), 1);
+    const ownerAmount =
+      ownerT * ownerT * ownerT * (ownerT * (ownerT * 6 - 15) + 10);
+    const ownerAlpha =
+      flight.fromAlpha + (flight.targetAlpha - flight.fromAlpha) * ownerAmount;
+    const textRaw = from.length === 0 ? p / 0.7 : (p - 0.25) / 0.5;
+    const textT = Math.min(Math.max(textRaw, 0), 1);
+    const textAmount = textT * textT * textT * (textT * (textT * 6 - 15) + 10);
+    return ownerAlpha * textAmount;
+  });
+  const fromX = useDerivedValue(() => anchor.value.x - fromWidth / 2);
+  const toX = useDerivedValue(() => anchor.value.x - toWidth / 2);
+  const y = useDerivedValue(() => anchor.value.y);
+  return (
+    <>
+      {from.length > 0 ? (
+        <Text
+          text={from}
+          x={fromX}
+          y={y}
+          font={labelFont}
+          color={color}
+          opacity={fromOpacity}
+        />
+      ) : null}
+      {to.length > 0 && to !== from ? (
+        <Text
+          text={to}
+          x={toX}
+          y={y}
+          font={labelFont}
+          color={color}
+          opacity={toOpacity}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function nativeSmootherstep(value: number): number {
+  'worklet';
+  const t = Math.min(Math.max(value, 0), 1);
+  return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
 /** What L3 needs to draw: the resolved samples and what to call the span. */
@@ -606,6 +1057,8 @@ function drawShelfLabels(
       request.layout.groups.map(group => [group.key, group]),
     );
     for (const flight of flights) {
+      const ownerAlpha = alpha * labelFlightAlpha(flight, travel);
+      if (ownerAlpha <= 0.01) continue;
       const arriving =
         flight.toGroupKey === null
           ? null
@@ -635,10 +1088,11 @@ function drawShelfLabels(
           point.y,
           progress,
           request.paints.muted,
-          alpha,
+          ownerAlpha,
           request.fonts.mono,
         );
       } else if (flight.primaryTo.length > 0) {
+        request.paints.muted.setAlphaf(ownerAlpha);
         drawSettledLabel(
           canvas,
           flight.primaryTo,
@@ -656,10 +1110,11 @@ function drawShelfLabels(
           point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
           progress,
           request.paints.faint,
-          alpha,
+          ownerAlpha,
           request.fonts.mono,
         );
       } else if (flight.secondaryTo.length > 0) {
+        request.paints.faint.setAlphaf(ownerAlpha);
         drawSettledLabel(
           canvas,
           flight.secondaryTo,
@@ -670,6 +1125,8 @@ function drawShelfLabels(
         );
       }
     }
+    request.paints.faint.setAlphaf(alpha);
+    request.paints.muted.setAlphaf(alpha);
     return;
   }
 
@@ -717,6 +1174,7 @@ type CapturedShelfFlight = Readonly<{
   primary: CapturedLabelMorph | null;
   secondary: CapturedLabelMorph | null;
   survives: boolean;
+  alpha: number;
 }>;
 
 /**
@@ -753,6 +1211,7 @@ function retargetShelfLabelFlights(
         labelFont,
       ),
       survives: flight.primaryTo.length > 0,
+      alpha: labelFlightAlpha(flight, travel),
     };
     const previous = capturedByGroup.get(flight.toGroupKey);
     if (previous === undefined || (!previous.survives && captured.survives)) {
@@ -769,6 +1228,8 @@ function retargetShelfLabelFlights(
     return {
       ...flight,
       from: captured.point,
+      fromAlpha:
+        flight.ownership === 'branch' ? flight.fromAlpha : captured.alpha,
       primary:
         captured.primary === null
           ? flight.primary

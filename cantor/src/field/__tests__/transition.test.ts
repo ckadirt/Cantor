@@ -39,6 +39,7 @@ describe('field re-cut placement flights', () => {
     ];
     const flights = planPlacementFlights([source], targets, 1);
     const start = flights.map(flight => placementFlightAt(flight, 0));
+    const divided = flights.map(flight => placementFlightAt(flight, 0.18));
     const end = flights.map(flight => placementFlightAt(flight, 1));
 
     expect(start).toHaveLength(2);
@@ -46,6 +47,8 @@ describe('field re-cut placement flights', () => {
     expect(
       start.every(item => item.x === source.x && item.y === source.y),
     ).toBe(true);
+    expect(divided.map(item => item.opacity)).toEqual([1, 1]);
+    expect(new Set(divided.map(item => `${item.x},${item.y}`)).size).toBe(2);
     expect(end.map(item => item.opacity)).toEqual([1, 1]);
     expect(end.map(item => item.x).sort((a, b) => a - b)).toEqual([-100, 100]);
   });
@@ -58,12 +61,14 @@ describe('field re-cut placement flights', () => {
     const target = placement('date:a', 'song-a', 0, 0);
     const flights = planPlacementFlights(sources, [target], 2);
     const start = flights.map(flight => placementFlightAt(flight, 0));
+    const released = flights.map(flight => placementFlightAt(flight, 0.82));
     const end = flights.map(flight => placementFlightAt(flight, 1));
 
     expect(start.map(item => item.opacity)).toEqual([1, 1]);
     expect(new Set(start.map(item => `${item.x},${item.y}`)).size).toBe(2);
     expect(end.filter(item => item.opacity === 1)).toHaveLength(1);
     expect(end.filter(item => item.opacity === 0)).toHaveLength(1);
+    expect(released.filter(item => item.opacity === 0)).toHaveLength(1);
     expect(end.every(item => item.x === 0 && item.y === 0)).toBe(true);
   });
 

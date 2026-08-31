@@ -35,7 +35,13 @@ import {
   sampleCompoundPath,
   type Silhouette,
 } from '../../motion';
-import type { Group, Point } from '../../field';
+import {
+  ownershipAlphaAt,
+  smootherstep,
+  type FlightOwnership,
+  type Group,
+  type Point,
+} from '../../field';
 import { shelfLabel } from './shelfLabels';
 
 /** KNOBS — how a label changes into another label. */
@@ -50,6 +56,9 @@ const LABEL_MORPH_KNOBS = {
   LINE_HEIGHT_PX: 14,
   /** A line that appears or leaves has nothing to morph with, so it fades. */
   FADE_END: 0.7,
+  /** Field labels crossfade on their flight without allocating glyph paths. */
+  FIELD_CROSSFADE_START: 0.25,
+  FIELD_CROSSFADE_END: 0.75,
 } as const;
 
 /** One glyph pair, already placed, ready to interpolate. */
@@ -62,7 +71,7 @@ type LabelPair = Readonly<{
 }>;
 
 export type LabelMorph = Readonly<{
-  kind: 'morph' | 'enter' | 'exit';
+  kind: 'morph' | 'crossfade' | 'enter' | 'exit';
   /** The text to draw when the morph cannot run, or once it has settled. */
   from: string;
   to: string;
@@ -152,6 +161,35 @@ export function planLabelMorph(
 }
 
 /**
+ * Lightweight label plan for the field's per-frame picture recorder.
+ *
+ * Full outline interpolation belongs on a native shared-value canvas. Here it
+ * would allocate a path for every glyph on every JS frame, so traveling shelf
+ * titles use two stable text runs whose opacity sums to one instead.
+ */
+function planShelfLabelMorph(
+  from: string,
+  to: string,
+  font: SkFont,
+): LabelMorph | null {
+  if (from === to) return null;
+  const measured = Math.max(
+    font.measureText(from).width,
+    font.measureText(to).width,
+  );
+  const shell = {
+    from,
+    to,
+    pairs: [] as LabelPair[],
+    width: Number.isFinite(measured) ? measured + 2 : 0,
+    ascent: -font.getMetrics().ascent,
+  };
+  if (from.length === 0) return { ...shell, kind: 'enter' };
+  if (to.length === 0) return { ...shell, kind: 'exit' };
+  return { ...shell, kind: 'crossfade' };
+}
+
+/**
  * Replay a planned morph into the field's picture.
  *
  * `progress` must be **linear** — the engine's windows do the easing, and
@@ -168,6 +206,15 @@ export function drawLabelMorph(
   font: SkFont,
 ): void {
   const t = clamp01(progress);
+  if (morph.kind === 'crossfade') {
+    const amount = fieldCrossfade(t);
+    paint.setAlphaf(alpha * (1 - amount));
+    drawSettledLabel(canvas, morph.from, x, baselineY, paint, font);
+    paint.setAlphaf(alpha * amount);
+    drawSettledLabel(canvas, morph.to, x, baselineY, paint, font);
+    paint.setAlphaf(alpha);
+    return;
+  }
   if (morph.kind !== 'morph') {
     // Nothing to correspond with, so the line simply arrives or leaves.
     const text = morph.kind === 'enter' ? morph.to : morph.from;
@@ -209,6 +256,16 @@ export function captureLabelMorph(
   font: SkFont,
 ): CapturedLabelMorph | null {
   const t = clamp01(progress);
+  if (morph.kind === 'crossfade') {
+    const amount = fieldCrossfade(t);
+    const targetOwns = amount >= 0.5;
+    return captureLabelText(
+      targetOwns ? morph.to : morph.from,
+      font,
+      morph.width,
+      targetOwns ? amount : 1 - amount,
+    );
+  }
   if (morph.kind !== 'morph') {
     const text = morph.kind === 'enter' ? morph.to : morph.from;
     const fade =
@@ -339,6 +396,15 @@ function lerp(from: number, to: number, t: number): number {
   return from + (to - from) * t;
 }
 
+function fieldCrossfade(progress: number): number {
+  const span =
+    LABEL_MORPH_KNOBS.FIELD_CROSSFADE_END -
+    LABEL_MORPH_KNOBS.FIELD_CROSSFADE_START;
+  return smootherstep(
+    clamp01((progress - LABEL_MORPH_KNOBS.FIELD_CROSSFADE_START) / span),
+  );
+}
+
 function measuredWidth(text: string, font: SkFont): number {
   const measured = font.measureText(text).width;
   return Number.isFinite(measured) ? measured + 2 : 0;
@@ -396,6 +462,10 @@ export type LabelFlight = Readonly<{
   primaryTo: string;
   secondaryFrom: string;
   secondaryTo: string;
+  /** One owner at a shared source; siblings appear only as they divide. */
+  ownership: FlightOwnership;
+  fromAlpha: number;
+  targetAlpha: number;
 }>;
 
 export type ShelfLabelFlights = readonly LabelFlight[];
@@ -432,14 +502,35 @@ export function planShelfLabels(
 
   const flights: LabelFlight[] = [];
   const used = new Set<string>();
-  for (const group of after) {
-    const source = majority(group, ownerOfEntity);
+  const arrivals = after.map(group => ({
+    group,
+    source: majority(group, ownerOfEntity),
+  }));
+  const sourceUseCount = new Map<string, number>();
+  for (const { source } of arrivals) {
+    if (source === null) continue;
+    sourceUseCount.set(source.key, (sourceUseCount.get(source.key) ?? 0) + 1);
+  }
+  const sourceUseIndex = new Map<string, number>();
+  for (const { group, source } of arrivals) {
     if (source !== null) used.add(source.key);
+    const useIndex = source === null ? 0 : sourceUseIndex.get(source.key) ?? 0;
+    if (source !== null) sourceUseIndex.set(source.key, useIndex + 1);
+    const branches =
+      source !== null && (sourceUseCount.get(source.key) ?? 0) > 1;
     const flight = plan(source, group, font, nowMs, {
       fromGroupKey: source?.key ?? null,
       from: source === null ? centre(group) : centre(source),
       to: centre(group),
       toGroupKey: group.key,
+      ownership:
+        source === null
+          ? 'enter'
+          : branches && useIndex > 0
+          ? 'branch'
+          : 'carry',
+      fromAlpha: source === null || (branches && useIndex > 0) ? 0 : 1,
+      targetAlpha: 1,
     });
     if (flight !== null) flights.push(flight);
   }
@@ -462,6 +553,9 @@ export function planShelfLabels(
       from: centre(group),
       to: centre(destination ?? group),
       toGroupKey: destination?.key ?? null,
+      ownership: destination === null ? 'exit' : 'fold',
+      fromAlpha: 1,
+      targetAlpha: 0,
     });
     if (flight !== null) flights.push(flight);
   }
@@ -510,12 +604,19 @@ function plan(
     from: Point;
     to: Point;
     toGroupKey: string | null;
+    ownership: FlightOwnership;
+    fromAlpha: number;
+    targetAlpha: number;
   },
 ): LabelFlight | null {
   const source = from === null ? EMPTY_READ : read(from.label, nowMs);
   const target = to === null ? EMPTY_READ : read(to.label, nowMs);
-  const primary = planLabelMorph(source.primary, target.primary, font);
-  const secondary = planLabelMorph(source.secondary, target.secondary, font);
+  const primary = planShelfLabelMorph(source.primary, target.primary, font);
+  const secondary = planShelfLabelMorph(
+    source.secondary,
+    target.secondary,
+    font,
+  );
   const travels = seat.from.x !== seat.to.x || seat.from.y !== seat.to.y;
   if (primary === null && secondary === null && !travels) return null;
   return {
@@ -527,6 +628,19 @@ function plan(
     secondaryFrom: source.secondary,
     secondaryTo: target.secondary,
   };
+}
+
+/** Alpha for one label owner on the shared re-cut clock. */
+export function labelFlightAlpha(
+  flight: LabelFlight,
+  progress: number,
+): number {
+  return ownershipAlphaAt(
+    flight.ownership,
+    flight.fromAlpha,
+    flight.targetAlpha,
+    progress,
+  );
 }
 
 const EMPTY_READ = { primary: '', secondary: '' } as const;

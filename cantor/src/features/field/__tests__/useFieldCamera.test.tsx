@@ -271,4 +271,112 @@ describe('useFieldCamera', () => {
     expect(retarget.sort(byPose)).toEqual(midpoint.sort(byPose));
     expect(renders[0].relayoutLinear).toBe(0);
   });
+
+  it('does not restart a re-cut for an equivalent rebuilt layout', async () => {
+    const field = layoutField({ entities, arrangement: byTime, viewport });
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <Probe
+          layout={field}
+          onOpenComposer={jest.fn()}
+          onOpenEngines={jest.fn()}
+        />,
+      );
+    });
+    const generation = latest.transitionGeneration;
+    const equivalent: FieldLayout = {
+      ...field,
+      groups: field.groups.map(group => ({
+        ...group,
+        entityKeys: [...group.entityKeys],
+      })),
+      placements: field.placements.map(placement => ({ ...placement })),
+      fieldCenter: { ...field.fieldCenter },
+      targetBounds:
+        field.targetBounds === null ? null : { ...field.targetBounds },
+    };
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(
+        <Probe
+          layout={equivalent}
+          onOpenComposer={jest.fn()}
+          onOpenEngines={jest.fn()}
+        />,
+      );
+    });
+
+    expect(latest.transitionGeneration).toBe(generation);
+  });
+
+  it('keeps native L0 frame ticks out of React while retaining interruption capture', async () => {
+    mockReducedMotion = false;
+    let now = 0;
+    const frames: Array<(timestamp: number) => void> = [];
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    jest
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((callback: (timestamp: number) => void) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    const tagged = [{ ...entities[0], tags: ['p/Drive', 'p/Focus'] }];
+    const month = layoutField({
+      entities: tagged,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const playlist = layoutField({
+      entities: tagged,
+      arrangement: byPlaylist,
+      viewport,
+    });
+    const year = layoutField({
+      entities: tagged,
+      arrangement: byDate('year'),
+      viewport,
+    });
+    let renderCount = 0;
+
+    function NativeProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+        nativeRelayout: true,
+      });
+      renderCount += 1;
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<NativeProbe field={month} />);
+    });
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<NativeProbe field={playlist} />);
+    });
+    const rendersAtBorn = renderCount;
+
+    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS / 2;
+    await ReactTestRenderer.act(async () => {
+      frames.shift()?.(now);
+    });
+    expect(renderCount).toBe(rendersAtBorn);
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<NativeProbe field={year} />);
+    });
+    expect(
+      latest.visualPlacements.some(
+        placement =>
+          placement.x !== month.placements[0].x ||
+          placement.y !== month.placements[0].y,
+      ),
+    ).toBe(true);
+    expect(latest.relayoutLinear).toBe(0);
+  });
 });

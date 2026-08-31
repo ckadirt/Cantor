@@ -1,5 +1,10 @@
 import { Skia } from '@shopify/react-native-skia';
-import { drawLabelMorph, planLabelMorph, planShelfLabels } from '../labelMorph';
+import {
+  drawLabelMorph,
+  labelFlightAlpha,
+  planLabelMorph,
+  planShelfLabels,
+} from '../labelMorph';
 
 const NOW = new Date(2026, 7, 30, 12).getTime();
 const font = Skia.Font(undefined, 9);
@@ -51,6 +56,28 @@ describe('shelf label morphs', () => {
       'Dusk',
       'Focus',
     ]);
+    expect(flights!.map(flight => flight.ownership)).toEqual([
+      'carry',
+      'branch',
+      'branch',
+    ]);
+    expect(flights!.map(flight => labelFlightAlpha(flight, 0))).toEqual([
+      1,
+      0,
+      0,
+    ]);
+    expect(flights!.map(flight => labelFlightAlpha(flight, 0.18))).toEqual([
+      1,
+      1,
+      1,
+    ]);
+    expect(
+      flights!.every(
+        flight =>
+          flight.primary?.kind === 'crossfade' &&
+          flight.primary.pairs.length === 0,
+      ),
+    ).toBe(true);
   });
 
   it('folds the names that lost their cluster into the one that took it', () => {
@@ -69,6 +96,10 @@ describe('shelf label morphs', () => {
       flight => flight.primary?.kind === 'exit',
     );
     expect(folding).toHaveLength(2);
+    expect(folding.every(flight => flight.ownership === 'fold')).toBe(true);
+    expect(folding.every(flight => labelFlightAlpha(flight, 0.82) === 0)).toBe(
+      true,
+    );
     for (const flight of flights!) {
       expect(flight.toGroupKey).toBe('2026-08');
       expect(flight.from).not.toEqual(flight.to);
