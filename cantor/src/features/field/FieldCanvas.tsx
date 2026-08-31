@@ -1,5 +1,6 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet } from 'react-native';
+import { useReducedMotion } from 'react-native-reanimated';
 import {
   Canvas,
   PaintStyle,
@@ -29,11 +30,18 @@ import {
   type LensPaints,
   type SongAnalysis,
 } from '../../lenses';
+import { DEFAULT_TEXT_TRANSFORM_MS } from '../../motion';
 import { useMorphFont } from '../../motion/fonts';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
 import { jobStateLabel } from '../../jobs/policy';
+import {
+  drawLabelMorph,
+  drawSettledLabel,
+  planShelfLabels,
+  type ShelfLabelMorphs,
+} from './labelMorph';
 import { shelfLabel } from './shelfLabels';
 import type { FieldPresentation, JobPresentation } from './useFieldController';
 
@@ -119,6 +127,56 @@ function FieldCanvasImpl({
     fontFamily: font.mono,
     fontSize: 9,
   });
+  /**
+   * The label transition, planned once per re-cut.
+   *
+   * The engine's own ritual: diff during render, build the geometry once, play
+   * it. `previousGroups` only advances when the layout object does, so the plan
+   * survives the camera re-renders that happen on every frame of the tween —
+   * rebuilding it per frame would restart the morph from wherever it had got to.
+   */
+  const previousGroups = useRef<readonly { key: string; label: string }[]>([]);
+  const labelMorphs = useMemo(() => {
+    const before = previousGroups.current;
+    previousGroups.current = layout.groups.map(group => ({
+      key: group.key,
+      label: group.label,
+    }));
+    if (monoFont === null || before.length === 0) return null;
+    const plan = planShelfLabels(before, layout.groups, monoFont, nowMs);
+    return plan;
+  }, [layout, monoFont, nowMs]);
+  /**
+   * The morph's own clock.
+   *
+   * It cannot ride the relayout tween. A re-cut that renames every cluster
+   * without moving a single mark — one week becoming one month, with the same
+   * songs in it — leaves `relayoutMoves` false, so that tween never starts and
+   * the labels would snap in exactly the case this exists for.
+   *
+   * Linear on purpose: the engine's windows do the easing.
+   */
+  const reducedMotion = useReducedMotion();
+  const [morphProgress, setMorphProgress] = useState(1);
+  useEffect(() => {
+    if (labelMorphs === null || reducedMotion) {
+      setMorphProgress(1);
+      return;
+    }
+    let frame: number | null = null;
+    const startedAt = Date.now();
+    const tick = () => {
+      const elapsed = (Date.now() - startedAt) / DEFAULT_TEXT_TRANSFORM_MS;
+      const progress = Math.min(1, elapsed);
+      setMorphProgress(progress);
+      frame = progress < 1 ? requestAnimationFrame(tick) : null;
+    };
+    setMorphProgress(0);
+    frame = requestAnimationFrame(tick);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+    };
+  }, [labelMorphs, reducedMotion]);
   const paints = useMemo(() => createPaints(palette), [palette]);
   const picture = useMemo(() => {
     if (displayFont === null || bodyFont === null || monoFont === null) {
@@ -138,6 +196,8 @@ function FieldCanvasImpl({
       grain,
       lensKey: activeLensKey,
       nowMs,
+      labelMorphs,
+      morphProgress,
       fonts: { display: displayFont, body: bodyFont, mono: monoFont },
       paints,
     });
@@ -149,8 +209,10 @@ function FieldCanvasImpl({
     displayFont,
     grain,
     jobs,
+    labelMorphs,
     layout,
     monoFont,
+    morphProgress,
     nowMs,
     paints,
     palette,
@@ -193,6 +255,8 @@ type PictureRequest = Readonly<{
   grain?: GrainRender | null;
   lensKey: string;
   nowMs: number;
+  labelMorphs?: ShelfLabelMorphs | null;
+  morphProgress?: number;
   fonts: LensFonts;
   paints: LensPaints;
 }>;
@@ -257,7 +321,7 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
         request.analyses?.get(presentation.entity.key) ?? neutralAnalysis(),
       progress:
         presentation.entity.key === request.playingKey
-          ? request.playingProgress ?? null
+          ? (request.playingProgress ?? null)
           : null,
     } as const;
     if (alpha.dot > 0.01) {
@@ -486,18 +550,52 @@ function drawShelfLabels(
     const read = shelfLabel(group.label, request.nowMs);
     const primary = read.primary.toUpperCase();
     const secondary = read.secondary;
-    canvas.drawText(
-      primary,
-      point.x - request.fonts.mono.measureText(primary).width / 2,
-      point.y,
-      request.paints.muted,
-      request.fonts.mono,
-    );
-    if (secondary !== null) {
-      canvas.drawText(
+    // Mid-re-cut this cluster's name is still becoming its new one, so the
+    // planned geometry is replayed instead of the settled text.
+    const morph = request.labelMorphs?.get(group.key);
+    const progress = request.morphProgress ?? 1;
+    const running = morph !== undefined && progress < 1;
+
+    if (running && morph.primary !== null) {
+      drawLabelMorph(
+        canvas,
+        morph.primary,
+        point.x,
+        point.y,
+        progress,
+        request.paints.muted,
+        alpha,
+        request.fonts.mono,
+      );
+    } else {
+      drawSettledLabel(
+        canvas,
+        primary,
+        point.x,
+        point.y,
+        request.paints.muted,
+        request.fonts.mono,
+      );
+    }
+
+    const keyY = point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX;
+    if (running && morph.secondary !== null) {
+      drawLabelMorph(
+        canvas,
+        morph.secondary,
+        point.x,
+        keyY,
+        progress,
+        request.paints.faint,
+        alpha,
+        request.fonts.mono,
+      );
+    } else if (secondary !== null) {
+      drawSettledLabel(
+        canvas,
         secondary,
-        point.x - request.fonts.mono.measureText(secondary).width / 2,
-        point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
+        point.x,
+        keyY,
         request.paints.faint,
         request.fonts.mono,
       );
