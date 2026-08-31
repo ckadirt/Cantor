@@ -1,9 +1,13 @@
-import { PaintStyle } from '@shopify/react-native-skia';
-import type { Lens } from './types';
+import { PaintStyle, Skia, type SkPaint, type SkPath } from '@shopify/react-native-skia';
+import { facePoints, type FaceRecipe } from './face';
+import type { Lens, LensSong } from './types';
 
 /** KNOBS — pixel measurements match the verified name-lens prototype. */
 const NAME_LENS_KNOBS = {
-  MARK_RADIUS_PX: 3.2,
+  /** Radius the face is drawn at as a mark. Was the dot's radius. */
+  MARK_RADIUS_PX: 7.5,
+  /** The same face beside a row, small enough to leave the title its width. */
+  ROW_FACE_RADIUS_PX: 9,
   ROW_PREVIEW_OFFSET_PX: 98,
   ROW_TITLE_OFFSET_PX: 42,
   ROW_TITLE_BASELINE_PX: -1,
@@ -22,25 +26,23 @@ export const nameLens: Lens = {
     const { alpha, fonts, paints } = options;
     if (alpha <= 0) return;
     if (box.kind === 'mark') {
-      paints.ink.setAlphaf(alpha * 0.72);
-      canvas.drawCircle(
-        box.x,
-        box.y,
-        NAME_LENS_KNOBS.MARK_RADIUS_PX,
-        paints.ink,
-      );
+      paints.outline.setAlphaf(alpha * 0.85);
+      drawFace(canvas, song, box.x, box.y, NAME_LENS_KNOBS.MARK_RADIUS_PX, paints.outline);
       if (song.playing) drawPlayingRing(canvas, box.x, box.y, alpha, paints);
       return;
     }
 
     paints.ink.setAlphaf(alpha);
+    paints.outline.setAlphaf(alpha);
     paints.muted.setAlphaf(alpha);
     paints.faint.setAlphaf(alpha);
-    canvas.drawCircle(
+    drawFace(
+      canvas,
+      song,
       box.x - NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX,
       box.y,
-      NAME_LENS_KNOBS.MARK_RADIUS_PX,
-      paints.ink,
+      NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
+      paints.outline,
     );
     if (song.playing) {
       drawPlayingRing(
@@ -86,6 +88,49 @@ function formatDuration(durationMs: number): string {
  * whole picture, so leaving one stroked would silently outline everything drawn
  * after it.
  */
+/**
+ * The song's face, stroked at `radius`.
+ *
+ * The geometry is a pure function of the recipe, so this is the same silhouette
+ * the row and the player draw — only `radius` changes. Stroking rather than
+ * filling is what carries availability later: outline is a song on the node,
+ * filled is one on this phone.
+ */
+function drawFace(
+  canvas: Parameters<Lens['draw']>[0],
+  song: LensSong,
+  cx: number,
+  cy: number,
+  radius: number,
+  paint: SkPaint,
+): void {
+  canvas.drawPath(facePath(song, cx, cy, radius), paint);
+}
+
+/** Build the closed contour. Kept separate so the geometry stays testable. */
+function facePath(
+  song: LensSong,
+  cx: number,
+  cy: number,
+  radius: number,
+): SkPath {
+  const recipe: FaceRecipe = {
+    seed: song.seed,
+    id: song.id,
+    model: song.model,
+    durationMs: song.durationMs,
+  };
+  const path = Skia.Path.Make();
+  facePoints(recipe).forEach((point, index) => {
+    const x = cx + point.x * radius;
+    const y = cy + point.y * radius;
+    if (index === 0) path.moveTo(x, y);
+    else path.lineTo(x, y);
+  });
+  path.close();
+  return path;
+}
+
 function drawPlayingRing(
   canvas: Parameters<typeof nameLens.draw>[0],
   x: number,

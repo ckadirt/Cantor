@@ -18,6 +18,8 @@ function paint(color: string) {
 function song(overrides: Partial<LensSong> = {}): LensSong {
   return {
     key: 'node-a:song-a',
+    id: 'song-a',
+    seed: 41822,
     title: 'A song with a fairly long title',
     createdAtMs: Date.parse('2026-08-10T00:00:00Z'),
     durationMs: 141_000,
@@ -80,6 +82,7 @@ describe('every lens draws', () => {
     ink,
     muted: paint('#666666'),
     faint: paint('#A6A6A6'),
+    outline: paint('#000000'),
   };
   const display = Skia.Font(undefined, 20);
   const fonts = { display, body: display, mono: Skia.Font(undefined, 9) };
