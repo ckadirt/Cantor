@@ -89,11 +89,13 @@ describe('field canvas and accessibility mirror', () => {
         line: '#E6E6E6',
       },
       lensKey: 'name',
+      nowMs: Date.UTC(2026, 7, 30),
       fonts: { display, body: display, mono },
       paints: {
         ink: paint('#000000'),
         muted: paint('#666666'),
         faint: paint('#A6A6A6'),
+      outline: paint('#A6A6A6'),
       },
     });
     expect(picture).not.toBeNull();
@@ -129,8 +131,14 @@ describe('field canvas and accessibility mirror', () => {
         },
         playingKey,
         lensKey: 'name',
+        nowMs: Date.UTC(2026, 7, 30),
         fonts: { display, body: display, mono },
-        paints: { ink, muted: paint('#666666'), faint: paint('#A6A6A6') },
+        paints: {
+          ink,
+          muted: paint('#666666'),
+          faint: paint('#A6A6A6'),
+          outline: paint('#000000'),
+        },
       });
 
     expect(record(entity.key)).toBeTruthy();
@@ -200,8 +208,14 @@ describe('field canvas and accessibility mirror', () => {
         line: '#E6E6E6',
       },
       lensKey: 'name',
+      nowMs: Date.UTC(2026, 7, 30),
       fonts: { display, body: display, mono },
-      paints: { ink, muted: paint('#666666'), faint: paint('#A6A6A6') },
+      paints: {
+          ink,
+          muted: paint('#666666'),
+          faint: paint('#A6A6A6'),
+          outline: paint('#000000'),
+        },
     });
 
     expect(picture).toBeTruthy();

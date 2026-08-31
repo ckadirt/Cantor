@@ -346,6 +346,7 @@ export function useFieldCamera({
         size,
         point,
         levelOf(cameraRef.current.scale, field.fitScale),
+        field.fitScale,
       );
       if (hit) descend(hit);
     },
@@ -496,10 +497,20 @@ function relayoutMoves(field: FieldLayout): boolean {
   return field.placements.some(
     placement =>
       placement.fromX !== placement.targetX ||
-      placement.fromY !== placement.targetY,
+      placement.fromY !== placement.targetY ||
+      placement.fromBloomX !== placement.targetBloomX ||
+      placement.fromBloomY !== placement.targetBloomY,
   );
 }
 
+/**
+ * Both poses move together.
+ *
+ * A re-sort changes a song's index, and the index decides its seat in the
+ * column *and* its seat in the packing. Tweening only the column would leave
+ * the bloom to snap, which is exactly the pop this tween exists to prevent —
+ * and at L0, where the cluster is fully bloomed, the snap would be all you saw.
+ */
 function placementAtProgress(
   placement: Placement,
   progress: number,
@@ -508,5 +519,11 @@ function placementAtProgress(
     ...placement,
     x: placement.fromX + (placement.targetX - placement.fromX) * progress,
     y: placement.fromY + (placement.targetY - placement.fromY) * progress,
+    bloomX:
+      placement.fromBloomX +
+      (placement.targetBloomX - placement.fromBloomX) * progress,
+    bloomY:
+      placement.fromBloomY +
+      (placement.targetBloomY - placement.fromBloomY) * progress,
   };
 }

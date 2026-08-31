@@ -1,4 +1,5 @@
 export * from './bands';
+export * from './bloom';
 export * from './camera';
 export * from './geometry';
 export * from './grain';

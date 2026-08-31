@@ -10,12 +10,15 @@ import {
   type SkPicture,
 } from '@shopify/react-native-skia';
 import {
+  gatherFraction,
+  placementPoint,
   representationAlphas,
   shelfLabelAlpha,
   worldToScreen,
   type Camera,
   type FieldLayout,
   type Placement,
+  type Point,
   type RepresentationAlphas,
   type Viewport,
 } from '../../field';
@@ -31,6 +34,7 @@ import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
 import { jobStateLabel } from '../../jobs/policy';
+import { shelfLabel } from './shelfLabels';
 import type { FieldPresentation, JobPresentation } from './useFieldController';
 
 /** KNOBS — screen-space culling and row dimensions from the HTML prototype. */
@@ -39,6 +43,8 @@ const FIELD_CANVAS_KNOBS = {
   ROW_WIDTH_PX: 240,
   ROW_HEIGHT_PX: 30,
   SHELF_LABEL_GAP_PX: 32,
+  /** The axis key, drawn under the name a person would say. */
+  SHELF_KEY_GAP_PX: 13,
   NAME_LENS_TITLE_SIZE_PX: 15,
   // L3: the waveform fills the viewport, with the playhead fixed at its centre
   // because at this level the audio moves past the head rather than the other
@@ -51,6 +57,8 @@ const FIELD_CANVAS_KNOBS = {
   JOB_RING_WIDTH_PX: 1.4,
   JOB_INDETERMINATE_SWEEP_DEG: 70,
   JOB_ROW_LABEL_OFFSET_PX: 42,
+  // A face is an outline, not a blob: hairline everywhere, per the house rule.
+  FACE_STROKE_PX: 1,
 } as const;
 
 type Props = {
@@ -70,6 +78,12 @@ type Props = {
   /** The resolved audio window at L3, or null at every other distance. */
   grain?: GrainRender | null;
   activeLensKey?: string;
+  /**
+   * What the phone thinks the time is, so a week can read as `THIS WEEK`.
+   * Passed rather than read here: a Picture must be a pure function of its
+   * inputs or the memo below would hand back a stale one at midnight.
+   */
+  nowMs: number;
 };
 
 /**
@@ -89,6 +103,7 @@ function FieldCanvasImpl({
   playingProgress = null,
   grain = null,
   activeLensKey = 'name',
+  nowMs,
 }: Props) {
   const displayFont = useMorphFont({
     fontFamily: font.display,
@@ -122,6 +137,7 @@ function FieldCanvasImpl({
       playingProgress,
       grain,
       lensKey: activeLensKey,
+      nowMs,
       fonts: { display: displayFont, body: bodyFont, mono: monoFont },
       paints,
     });
@@ -135,6 +151,7 @@ function FieldCanvasImpl({
     jobs,
     layout,
     monoFont,
+    nowMs,
     paints,
     palette,
     placements,
@@ -175,6 +192,7 @@ type PictureRequest = Readonly<{
   playingProgress?: number | null;
   grain?: GrainRender | null;
   lensKey: string;
+  nowMs: number;
   fonts: LensFonts;
   paints: LensPaints;
 }>;
@@ -190,10 +208,15 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
     request.camera.scale,
     request.layout.fitScale,
   );
+  // Where each cluster is between its two poses. Once per picture, from the
+  // camera's scale — never in React state, which would rebuild every placement
+  // on every pinch frame and lose the measured pan baseline.
+  const gather = gatherFraction(request.camera.scale, request.layout.fitScale);
   drawShelfLabels(
     canvas,
     request,
     shelfLabelAlpha(request.camera.scale, request.layout.fitScale),
+    gather,
   );
   // At L3 the field gives way to one song's samples entirely.
   if (request.grain != null) {
@@ -205,22 +228,24 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
   if (lens === null) return recorder.finishRecordingAsPicture();
 
   for (const placement of request.placements) {
-    const presentation = request.presentations.get(placement.entityKey);
-    if (presentation === undefined) {
-      const pending = request.jobs?.get(placement.entityKey);
-      if (pending !== undefined) {
-        drawJobMark(canvas, request, placement, pending, alpha);
-      }
-      continue;
-    }
     const point = worldToScreen(
-      { x: placement.x, y: placement.y },
+      placementPoint(placement, gather),
       request.camera,
       request.viewport,
     );
     if (!withinOverscan(point, request.viewport)) continue;
+    const presentation = request.presentations.get(placement.entityKey);
+    if (presentation === undefined) {
+      const pending = request.jobs?.get(placement.entityKey);
+      if (pending !== undefined) {
+        drawJobMark(canvas, request, point, pending, alpha);
+      }
+      continue;
+    }
     const song = {
       key: presentation.entity.key,
+      id: presentation.entity.entityId,
+      seed: presentation.song.seed,
       title: presentation.song.title,
       createdAtMs: presentation.entity.createdAtMs,
       durationMs: presentation.song.duration_ms,
@@ -232,7 +257,7 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
         request.analyses?.get(presentation.entity.key) ?? neutralAnalysis(),
       progress:
         presentation.entity.key === request.playingKey
-          ? (request.playingProgress ?? null)
+          ? request.playingProgress ?? null
           : null,
     } as const;
     if (alpha.dot > 0.01) {
@@ -266,7 +291,16 @@ function createPaints(palette: Palette): LensPaints {
     ink: paint(palette.ink),
     muted: paint(palette.muted),
     faint: paint(palette.faint),
+    outline: outlinePaint(palette.ink),
   };
+}
+
+/** Ink as a hairline stroke — what a face is drawn with. */
+function outlinePaint(color: string): SkPaint {
+  const result = paint(color);
+  result.setStyle(PaintStyle.Stroke);
+  result.setStrokeWidth(FIELD_CANVAS_KNOBS.FACE_STROKE_PX);
+  return result;
 }
 
 function paint(color: string): SkPaint {
@@ -287,17 +321,10 @@ function paint(color: string): SkPaint {
 function drawJobMark(
   canvas: SkCanvas,
   request: PictureRequest,
-  placement: Placement,
+  point: Point,
   pending: JobPresentation,
   alpha: RepresentationAlphas,
 ): void {
-  const point = worldToScreen(
-    { x: placement.x, y: placement.y },
-    request.camera,
-    request.viewport,
-  );
-  if (!withinOverscan(point, request.viewport)) return;
-
   const model = jobMarkModel(pending.job, []);
   const visible = Math.max(alpha.dot, alpha.row);
   if (visible <= 0.01) return;
@@ -424,12 +451,13 @@ function drawShelfLabels(
   canvas: SkCanvas,
   request: PictureRequest,
   alpha: number,
+  gather: number,
 ): void {
   if (alpha <= 0.01) return;
   const topYByGroup = new Map<string, number>();
   for (const placement of request.placements) {
     const point = worldToScreen(
-      { x: placement.x, y: placement.y },
+      placementPoint(placement, gather),
       request.camera,
       request.viewport,
     );
@@ -439,6 +467,7 @@ function drawShelfLabels(
     }
   }
   request.paints.faint.setAlphaf(alpha);
+  request.paints.muted.setAlphaf(alpha);
   for (const group of request.layout.groups) {
     const groupPoint = worldToScreen(
       { x: group.cx, y: group.cy },
@@ -452,15 +481,27 @@ function drawShelfLabels(
         FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
     };
     if (!withinOverscan(point, request.viewport)) continue;
-    const label = group.label.toUpperCase();
-    const width = request.fonts.mono.measureText(label).width;
+    // The axis hands over its key; the surface says it out loud, and keeps the
+    // key underneath so the grouping is never a mystery.
+    const read = shelfLabel(group.label, request.nowMs);
+    const primary = read.primary.toUpperCase();
+    const secondary = read.secondary;
     canvas.drawText(
-      label,
-      point.x - width / 2,
+      primary,
+      point.x - request.fonts.mono.measureText(primary).width / 2,
       point.y,
-      request.paints.faint,
+      request.paints.muted,
       request.fonts.mono,
     );
+    if (secondary !== null) {
+      canvas.drawText(
+        secondary,
+        point.x - request.fonts.mono.measureText(secondary).width / 2,
+        point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
+        request.paints.faint,
+        request.fonts.mono,
+      );
+    }
   }
 }
 

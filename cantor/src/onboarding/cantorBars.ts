@@ -30,6 +30,27 @@ const MAX_Y = 413; // 387 + 26
 const CONTENT_W = MAX_X - MIN_X;
 const CONTENT_H = MAX_Y - MIN_Y;
 
+/**
+ * The one-dimensional Cantor set the mark is built from: repeatedly drop the
+ * middle third, `depth` times, and report what is left as `[x, width]` pairs in
+ * a 0..1 box. `ROWS` above is this same construction drawn at four depths at
+ * once; this returns one of them, for callers that want the set itself rather
+ * than the logo — the origin mark and the breadcrumb.
+ */
+export function cantorSegments(depth: number): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  const cut = (x: number, width: number, left: number): void => {
+    if (left <= 0) {
+      out.push([x, width]);
+      return;
+    }
+    cut(x, width / 3, left - 1);
+    cut(x + (2 * width) / 3, width / 3, left - 1);
+  };
+  cut(0, 1, Math.max(0, Math.floor(depth)));
+  return out;
+}
+
 export type LaidBar = {
   rect: Rect; // canvas pixels
   cx: number;
