@@ -48,6 +48,16 @@ export function smootherstep(a: number, b: number, x: number): number {
   return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
+/**
+ * The same curve in the shape Reanimated's `easing` option wants: one argument
+ * over 0..1. Shared so the house curve has exactly one definition — a second
+ * copy is a second thing to drift.
+ */
+export function easeSmoother(value: number): number {
+  'worklet';
+  return smootherstep(0, 1, value);
+}
+
 /* ------------------------------------------------------------------ sampling */
 
 /** True when every verb is Move/Line/Close — a polyline whose corners matter. */

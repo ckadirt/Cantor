@@ -12,7 +12,7 @@ import Animated, {
   withDelay,
   withTiming,
 } from 'react-native-reanimated';
-import { TransformText } from '../../motion';
+import { TransformText, easeSmoother } from '../../motion';
 import { font, type as textType, usePalette } from '../../theme/tokens';
 
 /** KNOBS — the condense gesture, in real units. */
@@ -24,20 +24,6 @@ const CONDENSE_KNOBS = {
   MARK_LABEL_CHARS: 12, // what the caption condenses down to
   SHEET_EXIT_MS: 320, // the composer's own slide-out, which the caption must outlive
 } as const;
-
-/**
- * The house easing, as a worklet.
- *
- * `src/field/bands.ts` owns the same curve for layout, but that module is pure
- * geometry with no runtime attached; importing it here would only work by
- * marking it as a worklet and pulling Reanimated into a layer that must not
- * know about it.
- */
-function easeSmoother(value: number): number {
-  'worklet';
-  const t = Math.min(Math.max(value, 0), 1);
-  return t * t * t * (t * (t * 6 - 15) + 10);
-}
 
 export type CondenseTarget = Readonly<{ x: number; y: number }>;
 
@@ -85,7 +71,10 @@ export function CondenseOverlay({ caption, from, to, onSettled }: Props) {
   // would run the whole gesture behind the sheet that is closing over it.
   const [armed, setArmed] = useState(false);
   useEffect(() => {
-    const timer = setTimeout(() => setArmed(true), CONDENSE_KNOBS.SHEET_EXIT_MS);
+    const timer = setTimeout(
+      () => setArmed(true),
+      CONDENSE_KNOBS.SHEET_EXIT_MS,
+    );
     return () => clearTimeout(timer);
   }, []);
 
