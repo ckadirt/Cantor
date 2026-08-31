@@ -68,12 +68,22 @@ export function layoutField(request: LayoutRequest): FieldLayout {
     const cx = (column - (groupsInRow - 1) / 2) * LAYOUT_KNOBS.SHELF_GAP_WORLD;
     const cy = row * LAYOUT_KNOBS.CLUSTER_ROW_GAP_WORLD - verticalMidpoint;
     const entityKeys = [...definition.entityKeys];
+    // The seat is the top of the cluster once bloomed, which is the pose the
+    // field is drawn in wherever a re-cut can be asked for.
+    const tops = entityKeys.map(
+      (_entityKey, entityIndex) =>
+        cy +
+        (entityIndex - (entityKeys.length - 1) / 2) *
+          LAYOUT_KNOBS.SONG_GAP_WORLD +
+        bloomOffset(entityIndex, entityKeys.length).y,
+    );
     const group: Group = {
       key: definition.key,
       label: definition.label,
       entityKeys,
       cx,
       cy,
+      top: tops.length === 0 ? cy : Math.min(...tops),
     };
     groups.push(group);
 

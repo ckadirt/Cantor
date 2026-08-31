@@ -61,6 +61,14 @@ export type Group = Readonly<{
   entityKeys: readonly string[];
   cx: number;
   cy: number;
+  /**
+   * The world y of the cluster's highest bloomed placement — where its name
+   * hangs from, which is not the same thing as its centre. A cluster of three
+   * and a cluster of twelve share a centre and sit a long way apart at the
+   * top, so a label transition expressed in centres travels by that difference
+   * even when nothing moved.
+   */
+  top: number;
 }>;
 
 /**

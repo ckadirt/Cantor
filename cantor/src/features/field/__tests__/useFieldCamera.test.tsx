@@ -389,7 +389,9 @@ describe('useFieldCamera', () => {
       viewport,
     });
 
-    function NativeProbe({ field, tick }: { field: FieldLayout; tick: number }) {
+    // `tick` is never read: it exists to force a render the camera did not ask
+    // for, the way a library refresh or a playhead update would.
+    function NativeProbe({ field }: { field: FieldLayout; tick: number }) {
       latest = useFieldCamera({
         layout: field,
         viewport,
@@ -397,7 +399,6 @@ describe('useFieldCamera', () => {
         onOpenEngines: jest.fn(),
         nativeRelayout: true,
       });
-      void tick;
       return null;
     }
 

@@ -1,4 +1,6 @@
 import { Skia } from '@shopify/react-native-skia';
+import { byDate, byPlaylist } from '../../../field/arrangements';
+import { layoutField, type FieldEntity } from '../../../field';
 import {
   drawLabelMorph,
   labelFlightAlpha,
@@ -16,7 +18,7 @@ const font = Skia.Font(undefined, 9);
 const seats = new Map<string, number>();
 const group = (label: string, ...entityKeys: string[]) => {
   if (!seats.has(label)) seats.set(label, (seats.size + 1) * 100);
-  return { key: label, label, entityKeys, cx: seats.get(label)!, cy: 0 };
+  return { key: label, label, entityKeys, cx: seats.get(label)!, cy: 0, top: 0 };
 };
 const groups = (...labels: string[]) => labels.map(label => group(label, 's1'));
 
@@ -137,6 +139,71 @@ describe('shelf label morphs', () => {
     expect(flights).toHaveLength(1);
     expect(flights![0].from).toEqual(flights![0].to);
     expect(flights![0].toGroupKey).toBe('2026');
+  });
+
+  /**
+   * The seat, not the centre. A name hangs from the top of its cluster, so a
+   * flight has to be expressed in tops at both ends: a cluster that changes
+   * size keeps its centre and moves its top, and a flight that lerps an offset
+   * between centres into a destination seat steps by that difference on its
+   * very first frame. Switching dates for playlists re-cuts every cluster, so
+   * every name stepped.
+   */
+  it('leaves and lands on cluster tops, so the first frame does not step', () => {
+    const viewport = { width: 380, height: 800 };
+    const entities: FieldEntity[] = [
+      'a',
+      'b',
+      'c',
+      'd',
+      'e',
+    ].map((id, index) => ({
+      key: `node-a:${id}`,
+      nodePublicKey: 'node-a',
+      entityId: id,
+      kind: 'song' as const,
+      createdAtMs: Date.UTC(2026, index < 2 ? 6 : 7, 8),
+      tags: index % 2 === 0 ? ['p/Drive'] : ['p/Dusk'],
+    }));
+    const dates = layoutField({
+      entities,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const playlists = layoutField({
+      entities,
+      arrangement: byPlaylist,
+      viewport,
+    });
+    // Clusters of different sizes, which is what makes centre and top differ.
+    expect(new Set(dates.groups.map(cluster => cluster.top)).size).toBe(
+      dates.groups.length,
+    );
+    for (const cluster of [...dates.groups, ...playlists.groups]) {
+      expect(cluster.top).toBeLessThan(cluster.cy);
+    }
+
+    const flights = planShelfLabels(dates.groups, playlists.groups, font, NOW);
+    expect(flights).not.toBeNull();
+    for (const flight of flights!) {
+      const leaves = dates.groups.find(
+        cluster => cluster.key === flight.fromGroupKey,
+      );
+      const lands = playlists.groups.find(
+        cluster => cluster.key === flight.toGroupKey,
+      );
+      // Where the settled label was drawn a frame ago, and where a settled
+      // label will be drawn when this lands.
+      if (leaves !== undefined) expect(flight.fromTop).toBe(leaves.top);
+      if (lands !== undefined) expect(flight.toTop).toBe(lands.top);
+    }
+  });
+
+  it('does not move the seat of a cluster that kept its songs', () => {
+    const august = group('2026-08', 'a', 'b');
+    const year = { ...group('2026', 'a', 'b'), cx: august.cx, cy: august.cy };
+    const flights = planShelfLabels([august], [year], font, NOW);
+    expect(flights![0].fromTop).toBe(flights![0].toTop);
   });
 
   it('sends a folding label to the seat of the cluster that absorbed it', () => {
