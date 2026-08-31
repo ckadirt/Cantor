@@ -14,6 +14,7 @@ import {
   placementPoint,
   representationAlphas,
   shelfLabelAlpha,
+  smootherstep,
   worldToScreen,
   type Camera,
   type FieldLayout,
@@ -534,6 +535,10 @@ function drawShelfLabels(
   });
 
   const progress = request.relayoutLinear ?? 1;
+  // Two clocks, one tween. The glyphs morph on the raw ramp because the motion
+  // engine eases inside its own windows; the seat travels on the same eased
+  // curve the marks use, so a label and its cluster move at one rate.
+  const travel = smootherstep(progress);
   const flights = progress < 1 ? (request.labelFlights ?? null) : null;
   if (flights !== null) {
     const groupsByKey = new Map(
@@ -544,19 +549,21 @@ function drawShelfLabels(
         flight.toGroupKey === null
           ? null
           : (groupsByKey.get(flight.toGroupKey) ?? null);
-      const from = above(
-        worldToScreen(flight.from, request.camera, request.viewport),
-      );
-      // The destination is the settled seat when there is a cluster to land on,
-      // so the flight ends exactly where the still label will be drawn and the
-      // last frame does not jump.
-      const to =
+      // The seat is where a settled label for this cluster would be drawn, and
+      // the flight is an *offset* from it that shrinks to nothing: the world
+      // gap between the two cluster centres, projected. Anchoring both ends
+      // the same way is what makes a re-cut that does not move a cluster —
+      // one month becoming one year — morph in place instead of swooping.
+      // Lerping a centre into a seat would always travel, because a cluster's
+      // centre is not where its name sits.
+      const seat =
         arriving === null
           ? above(worldToScreen(flight.to, request.camera, request.viewport))
           : seatOf(arriving);
+      const rest = 1 - travel;
       const point = {
-        x: from.x + (to.x - from.x) * progress,
-        y: from.y + (to.y - from.y) * progress,
+        x: seat.x + (flight.from.x - flight.to.x) * request.camera.scale * rest,
+        y: seat.y + (flight.from.y - flight.to.y) * request.camera.scale * rest,
       };
       if (!withinOverscan(point, request.viewport)) continue;
       if (flight.primary !== null) {

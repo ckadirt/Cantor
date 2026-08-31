@@ -63,13 +63,14 @@ describe('shelf label morphs', () => {
       NOW,
     );
     expect(flights).toHaveLength(3);
-    const becoming = flights!.filter(flight => flight.toGroupKey !== null);
-    const folding = flights!.filter(flight => flight.toGroupKey === null);
-    expect(becoming).toHaveLength(1);
+    // Folding is carried by the morph's kind, not by the seat: every flight
+    // lands on a real cluster so it can aim at the seat a label would use.
+    const folding = flights!.filter(
+      flight => flight.primary?.kind === 'exit',
+    );
     expect(folding).toHaveLength(2);
-    // The folding names all head for the cluster that absorbed their songs.
-    for (const flight of folding) {
-      expect(flight.to).toEqual(becoming[0].to);
+    for (const flight of flights!) {
+      expect(flight.toGroupKey).toBe('2026-08');
       expect(flight.from).not.toEqual(flight.to);
     }
   });
@@ -83,13 +84,44 @@ describe('shelf label morphs', () => {
       font,
       NOW,
     );
-    const becoming = flights!.find(flight => flight.toGroupKey === 'Only');
-    const folding = flights!.find(flight => flight.toGroupKey === null);
+    const becoming = flights!.find(flight => flight.primary?.kind !== 'exit');
+    const folding = flights!.find(flight => flight.primary?.kind === 'exit');
     expect(becoming).toBeDefined();
     expect(folding).toBeDefined();
     // `Second` was seated after `First`, so a larger seat is how we can tell
     // the name grew out of the cluster that actually held those songs.
     expect(becoming!.from.x).toBeGreaterThan(folding!.from.x);
+  });
+
+  /**
+   * The case that exposed the bug. One month becomes one year: same songs,
+   * same cluster, same seat. The label has to morph where it stands, and it
+   * only can if both ends of the flight are the same point — the drawing side
+   * turns that into a zero offset from the settled seat.
+   */
+  it('leaves a cluster that did not move exactly where it is', () => {
+    const august = group('2026-08', 'a', 'b');
+    const year = { ...group('2026', 'a', 'b'), cx: august.cx, cy: august.cy };
+    const flights = planShelfLabels([august], [year], font, NOW);
+    expect(flights).toHaveLength(1);
+    expect(flights![0].from).toEqual(flights![0].to);
+    expect(flights![0].toGroupKey).toBe('2026');
+  });
+
+  it('sends a folding label to the seat of the cluster that absorbed it', () => {
+    // Not to that cluster's centre — to the cluster itself, so the drawing
+    // side can aim at the same seat a settled label would use.
+    const flights = planShelfLabels(
+      [group('Drive', 'a'), group('Dusk', 'b')],
+      [group('2026-08', 'a', 'b')],
+      font,
+      NOW,
+    );
+    const folding = flights!.filter(
+      flight => flight.primary?.kind === 'exit' || flight.secondary?.kind === 'exit',
+    );
+    expect(folding.length).toBeGreaterThan(0);
+    for (const flight of folding) expect(flight.toGroupKey).toBe('2026-08');
   });
 
   it('never plans against an empty history, so first paint does not animate', () => {

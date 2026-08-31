@@ -82,10 +82,18 @@ export function planLabelMorph(
   letterSpacing = 0,
 ): LabelMorph | null {
   if (from === to) return null;
-  const width =
-    Math.max(font.measureText(from).width, font.measureText(to).width) +
-    Math.abs(letterSpacing) * Math.max(from.length, to.length) +
-    2;
+  // A font with no typeface measures every string as NaN, and a NaN would
+  // reach a canvas translate. Nothing is drawn at zero width, which is the
+  // honest answer when the text cannot be measured.
+  const measured = Math.max(
+    font.measureText(from).width,
+    font.measureText(to).width,
+  );
+  const width = Number.isFinite(measured)
+    ? measured +
+      Math.abs(letterSpacing) * Math.max(from.length, to.length) +
+      2
+    : 0;
   const ascent = -font.getMetrics().ascent;
   const shell = { from, to, width, ascent, pairs: [] as LabelPair[] };
   if (from.length === 0) return { ...shell, kind: 'enter' };
@@ -204,13 +212,17 @@ function lerp(from: number, to: number, t: number): number {
 /** Both lines of one cluster's label, and where it travels while changing. */
 export type LabelFlight = Readonly<{
   /**
-   * The cluster this label becomes, or null when it is folding away because
-   * its songs went somewhere that already has a label of its own.
+   * The cluster whose seat this label lands on. Set for a label that becomes
+   * that cluster's name *and* for one folding into it, so both end up where a
+   * settled label would be drawn. Null only when no destination could be
+   * identified at all.
+   *
+   * Whether the label survives is carried by the morph's `kind`, not by this.
    */
   toGroupKey: string | null;
-  /** The cluster it leaves from, in world units. */
+  /** The centre of the cluster it leaves, in world units. */
   from: Point;
-  /** Where it lands when it has no cluster to follow. */
+  /** The centre of the cluster it lands on, in world units. */
   to: Point;
   primary: LabelMorph | null;
   secondary: LabelMorph | null;
@@ -277,7 +289,7 @@ export function planShelfLabels(
     const flight = plan(group, null, font, nowMs, {
       from: centre(group),
       to: centre(destination ?? group),
-      toGroupKey: null,
+      toGroupKey: destination?.key ?? null,
     });
     if (flight !== null) flights.push(flight);
   }
