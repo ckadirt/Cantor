@@ -71,12 +71,25 @@ export type Placement = Readonly<{
   key: string;
   entityKey: string;
   groupKey: string;
+  /** The gathered pose: the shared-x column, animated by the relayout tween. */
   x: number;
   y: number;
   fromX: number;
   fromY: number;
   targetX: number;
   targetY: number;
+  /**
+   * The bloomed pose, as a world-unit *offset* from the gathered one. The
+   * camera blends between the two — see `bloom.ts`. It carries the same
+   * from/target pair as the position so a re-sort moves both poses at once
+   * instead of snapping the packing while the column tweens.
+   */
+  bloomX: number;
+  bloomY: number;
+  fromBloomX: number;
+  fromBloomY: number;
+  targetBloomX: number;
+  targetBloomY: number;
 }>;
 
 /** The complete result of laying one arrangement into a viewport. */

@@ -1,17 +1,25 @@
 import {
   ARRANGEMENTS,
+  BLOOM_KNOBS,
+  DATE_RESOLUTIONS,
   HIT_TEST_KNOBS,
   LAYOUT_KNOBS,
+  bloomOffset,
+  bloomedTargetPoint,
   boxCenter,
   boxContainsPoint,
+  byDate,
   byTime,
+  dateKey,
   distance,
+  gatherFraction,
   hitTestPlacement,
   interpolateCamera,
   isoWeekKey,
   layoutField,
   levelCameraTarget,
   localIsoWeekKey,
+  placementPoint,
   representationAlphas,
   safeViewportBox,
   screenToWorld,
@@ -23,6 +31,8 @@ import {
 } from '..';
 
 const VIEWPORT = { width: 380, height: 800 };
+/** `FIELD_CANVAS_KNOBS.ROW_HEIGHT_PX`, which the renderer owns and this mirrors. */
+const ROW_HEIGHT_PX = 30;
 const DAY_MS = 86_400_000;
 
 function entities(count: number, stepDays = 1): FieldEntity[] {
@@ -36,7 +46,12 @@ function entities(count: number, stepDays = 1): FieldEntity[] {
   }));
 }
 
-function placement(key: string, x: number, y: number): Placement {
+function placement(
+  key: string,
+  x: number,
+  y: number,
+  bloom: { x: number; y: number } = { x: 0, y: 0 },
+): Placement {
   return {
     key,
     entityKey: `node-a:${key}`,
@@ -47,6 +62,12 @@ function placement(key: string, x: number, y: number): Placement {
     fromY: y,
     targetX: x,
     targetY: y,
+    bloomX: bloom.x,
+    bloomY: bloom.y,
+    fromBloomX: bloom.x,
+    fromBloomY: bloom.y,
+    targetBloomX: bloom.x,
+    targetBloomY: bloom.y,
   };
 }
 
@@ -209,6 +230,9 @@ describe('field layout', () => {
 
 describe('placement hit testing', () => {
   const camera = { x: 0, y: 0, scale: 1 };
+  // A fit scale this far below the camera's leaves every case fully gathered,
+  // so these assertions are about the mark radius and the row band alone.
+  const GATHERED_FIT = 1 / BLOOM_KNOBS.GATHER_END_FIT;
   const first = placement('a', -10, 0);
   const second = placement('b', 10, 0);
 
@@ -220,6 +244,7 @@ describe('placement hit testing', () => {
         VIEWPORT,
         { x: 190, y: 400 },
         'field',
+        GATHERED_FIT,
       ),
     ).toBe(first);
   });
@@ -235,8 +260,220 @@ describe('placement hit testing', () => {
           y: 400 + HIT_TEST_KNOBS.ROW_HALF_HEIGHT_PX - 1,
         },
         'shelf',
+        GATHERED_FIT,
       ),
     ).toBe(first);
+  });
+
+  /**
+   * The one that matters. A bloomed mark is drawn a long way from its column,
+   * so a hit test that ignored the gather would answer for the empty seat.
+   */
+  it('follows the mark into the bloom instead of testing the gathered seat', () => {
+    const bloomed = placement('a', 0, 0, { x: 40, y: -25 });
+    const atBloom = { x: 200 + 40, y: 400 - 25 };
+    const atColumn = { x: 200, y: 400 };
+
+    expect(
+      hitTestPlacement([bloomed], camera, VIEWPORT, atBloom, 'field', 1),
+    ).toBe(bloomed);
+    expect(
+      hitTestPlacement([bloomed], camera, VIEWPORT, atColumn, 'field', 1),
+    ).toBeNull();
+
+    // Gathered, the answers swap.
+    expect(
+      hitTestPlacement(
+        [bloomed],
+        camera,
+        VIEWPORT,
+        atColumn,
+        'field',
+        GATHERED_FIT,
+      ),
+    ).toBe(bloomed);
+  });
+});
+
+describe('bloom and gather', () => {
+  it('holds the bloom across the dot band and closes it by the row band', () => {
+    expect(gatherFraction(1, 1)).toBe(0);
+    expect(gatherFraction(BLOOM_KNOBS.GATHER_START_FIT, 1)).toBe(0);
+    expect(gatherFraction(BLOOM_KNOBS.GATHER_END_FIT, 1)).toBe(1);
+    expect(gatherFraction(BLOOM_KNOBS.GATHER_END_FIT * 10, 1)).toBe(1);
+    const middle = gatherFraction(
+      (BLOOM_KNOBS.GATHER_START_FIT + BLOOM_KNOBS.GATHER_END_FIT) / 2,
+      1,
+    );
+    expect(middle).toBeCloseTo(0.5, 10);
+  });
+
+  it('never divides by a missing fit scale', () => {
+    expect(gatherFraction(1, 0)).toBe(1);
+    expect(gatherFraction(Number.NaN, 1)).toBe(1);
+  });
+
+  it('packs a cluster inside its shelf and keeps every seat distinct', () => {
+    for (const count of [1, 2, 7, 23, 200]) {
+      const seats = Array.from({ length: count }, (_unused, index) =>
+        bloomOffset(index, count),
+      );
+      for (const seat of seats) {
+        expect(Number.isFinite(seat.x) && Number.isFinite(seat.y)).toBe(true);
+        expect(Math.hypot(seat.x, seat.y)).toBeLessThanOrEqual(
+          BLOOM_KNOBS.MAX_RADIUS_WORLD + 1e-9,
+        );
+      }
+      expect(new Set(seats.map(seat => `${seat.x},${seat.y}`)).size).toBe(
+        count,
+      );
+    }
+  });
+
+  /**
+   * The reason the gather exists. A row is a fixed 240x30 *screen* box drawn at
+   * the mark's own point, so two marks that are still bloomed when the row band
+   * arrives draw their titles on top of each other. By the time rows hold full
+   * alpha every member of a cluster must share one x and stand clear
+   * vertically.
+   */
+  it('leaves no two rows overlapping once the row band holds', () => {
+    for (const [count, stepDays] of [
+      [23, 1],
+      [23, 3],
+      [60, 1],
+      [120, 1],
+    ] as const) {
+      const layout = layoutField({
+        entities: entities(count, stepDays),
+        arrangement: byTime,
+        viewport: VIEWPORT,
+      });
+      const scale = layout.fitScale * BLOOM_KNOBS.GATHER_END_FIT;
+      expect(representationAlphas(scale, layout.fitScale).row).toBe(1);
+      const camera = {
+        x: layout.fieldCenter.x,
+        y: layout.fieldCenter.y,
+        scale,
+      };
+      const gather = gatherFraction(scale, layout.fitScale);
+      const byGroup = new Map<string, { x: number; y: number }[]>();
+      for (const item of layout.placements) {
+        const screen = worldToScreen(
+          placementPoint(item, gather),
+          camera,
+          VIEWPORT,
+        );
+        byGroup.set(item.groupKey, [
+          ...(byGroup.get(item.groupKey) ?? []),
+          screen,
+        ]);
+      }
+      for (const seats of byGroup.values()) {
+        expect(new Set(seats.map(seat => seat.x.toFixed(6))).size).toBe(1);
+        const ys = seats.map(seat => seat.y).sort((left, right) => left - right);
+        for (let index = 1; index < ys.length; index += 1) {
+          expect(ys[index] - ys[index - 1]).toBeGreaterThanOrEqual(
+            ROW_HEIGHT_PX,
+          );
+        }
+      }
+    }
+  });
+
+  it('gives a lone song the centre of its cluster', () => {
+    expect(bloomOffset(0, 1)).toEqual({ x: 0, y: 0 });
+    expect(bloomOffset(0, 9)).toEqual({ x: 0, y: 0 });
+  });
+
+  it('blooms the layout and gathers it back onto the column', () => {
+    const layout = layoutField({
+      entities: entities(9),
+      arrangement: byTime,
+      viewport: VIEWPORT,
+    });
+    const group = layout.groups[0];
+    const members = layout.placements.filter(
+      item => item.groupKey === group.key,
+    );
+    expect(members.length).toBeGreaterThan(1);
+
+    // Gathered, every member of a cluster shares one x.
+    const gathered = members.map(item => placementPoint(item, 1));
+    expect(new Set(gathered.map(point => point.x)).size).toBe(1);
+
+    // Bloomed, they spread in both axes.
+    const bloomed = members.map(item => placementPoint(item, 0));
+    expect(new Set(bloomed.map(point => point.x)).size).toBeGreaterThan(1);
+
+    // And FIT frames what L0 actually shows.
+    for (const point of members.map(bloomedTargetPoint)) {
+      expect(point.x).toBeGreaterThanOrEqual(layout.targetBounds!.x - 1e-9);
+      expect(point.y).toBeGreaterThanOrEqual(layout.targetBounds!.y - 1e-9);
+    }
+  });
+});
+
+describe('date resolution', () => {
+  const at = (year: number, month: number, day: number) =>
+    new Date(year, month - 1, day, 12).getTime();
+
+  it('cuts time three ways, each key sorting chronologically as text', () => {
+    expect(dateKey(at(2026, 8, 30), 'week')).toBe('2026-W35');
+    expect(dateKey(at(2026, 8, 30), 'month')).toBe('2026-08');
+    expect(dateKey(at(2026, 8, 30), 'year')).toBe('2026');
+    // Zero-padded and big-endian, so localeCompare is chronological order.
+    const keys = [
+      dateKey(at(2026, 9, 1), 'month'),
+      dateKey(at(2026, 12, 1), 'month'),
+      dateKey(at(2026, 1, 1), 'month'),
+    ];
+    expect([...keys].sort((left, right) => left.localeCompare(right))).toEqual([
+      '2026-01',
+      '2026-09',
+      '2026-12',
+    ]);
+  });
+
+  it('coarsening merges clusters without losing or duplicating a song', () => {
+    // Built from local noon on named days so the assertion does not depend on
+    // the machine's offset from UTC: five ISO weeks, two months, one year.
+    const days = [
+      [2026, 3, 2],
+      [2026, 3, 10],
+      [2026, 3, 18],
+      [2026, 3, 26],
+      [2026, 4, 3],
+      [2026, 4, 4],
+    ] as const;
+    const input: FieldEntity[] = days.map(([y, m, d], index) => ({
+      key: `node-a:entity-${index}`,
+      nodePublicKey: 'node-a',
+      entityId: `entity-${index}`,
+      kind: 'song' as const,
+      createdAtMs: new Date(y, m - 1, d, 12).getTime(),
+      tags: [],
+    }));
+    const counts = DATE_RESOLUTIONS.map(resolution => {
+      const layout = layoutField({
+        entities: input,
+        arrangement: byDate(resolution),
+        viewport: VIEWPORT,
+      });
+      expect(new Set(layout.placements.map(item => item.entityKey))).toEqual(
+        new Set(input.map(entity => entity.key)),
+      );
+      return layout.groups.length;
+    });
+    expect(counts[0]).toBeGreaterThan(counts[1]);
+    expect(counts[1]).toBeGreaterThan(counts[2]);
+    expect(counts[2]).toBe(1);
+  });
+
+  it('keeps one dial position, so resolution is not a fourth arrangement', () => {
+    for (const resolution of DATE_RESOLUTIONS) {
+      expect(byDate(resolution).key).toBe(byTime.key);
+    }
   });
 });
 
@@ -289,6 +526,7 @@ describe('time arrangement', () => {
               VIEWPORT,
               screen,
               'field',
+              layout.fitScale,
             );
           }
         }).not.toThrow();

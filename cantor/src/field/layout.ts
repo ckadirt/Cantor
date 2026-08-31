@@ -1,3 +1,4 @@
+import { bloomOffset, bloomedTargetPoint } from './bloom';
 import { fit, type FitOptions } from './camera';
 import { boxCenter, boxFromPoints } from './geometry';
 import type {
@@ -88,6 +89,9 @@ export function layoutField(request: LayoutRequest): FieldLayout {
         cy +
         (entityIndex - (entityKeys.length - 1) / 2) *
           LAYOUT_KNOBS.SONG_GAP_WORLD;
+      // The other pose. Indexed by the same number as the column, so changing
+      // the order re-forms the packing and the column together.
+      const bloom = bloomOffset(entityIndex, entityKeys.length);
       const key = placementKey(
         request.arrangement.key,
         definition.key,
@@ -104,10 +108,16 @@ export function layoutField(request: LayoutRequest): FieldLayout {
         groupKey: definition.key,
         x: targetX,
         y: targetY,
-        fromX: previous?.x ?? targetX,
-        fromY: previous?.y ?? targetY,
+        fromX: previous?.point.x ?? targetX,
+        fromY: previous?.point.y ?? targetY,
         targetX,
         targetY,
+        bloomX: bloom.x,
+        bloomY: bloom.y,
+        fromBloomX: previous?.bloom.x ?? bloom.x,
+        fromBloomY: previous?.bloom.y ?? bloom.y,
+        targetBloomX: bloom.x,
+        targetBloomY: bloom.y,
       });
     });
   });
@@ -167,27 +177,34 @@ function mapEntities(
   return result;
 }
 
+/** Both poses of a placement, as the relayout tween has them right now. */
+type Pose = Readonly<{ point: Point; bloom: Point }>;
+
 function firstPreviousPlacementByEntity(
   placements: readonly Placement[],
-): ReadonlyMap<string, Point> {
-  const result = new Map<string, Point>();
+): ReadonlyMap<string, Pose> {
+  const result = new Map<string, Pose>();
   for (const placement of [...placements].sort((left, right) =>
     left.key.localeCompare(right.key),
   )) {
     if (!result.has(placement.entityKey)) {
-      result.set(placement.entityKey, { x: placement.x, y: placement.y });
+      result.set(placement.entityKey, {
+        point: { x: placement.x, y: placement.y },
+        bloom: { x: placement.bloomX, y: placement.bloomY },
+      });
     }
   }
   return result;
 }
 
+/**
+ * What FIT has to frame: the *bloomed* targets, because that is the pose L0
+ * shows. Framing the gathered column instead would reserve room for a stack
+ * that only exists once you have zoomed past the point where FIT applies, and
+ * leave the whole field small and sparse at the one level it is read from.
+ */
 function placementBounds(placements: readonly Placement[]): Box | null {
-  return boxFromPoints(
-    placements.map(placement => ({
-      x: placement.targetX,
-      y: placement.targetY,
-    })),
-  );
+  return boxFromPoints(placements.map(bloomedTargetPoint));
 }
 
 function assertViewport(viewport: Viewport): void {

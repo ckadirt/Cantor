@@ -40,33 +40,78 @@ export function localIsoWeekKey(createdAtMs: number): string {
   return isoWeekKey(localCalendarDate(createdAtMs));
 }
 
-/** The v1 arrangement: one chronological shelf per local ISO week. */
-export const byTime: Arrangement = {
-  key: 'time',
-  label: 'Time',
-  group(entities: readonly FieldEntity[]): readonly ArrangementGroup[] {
-    const entitiesByWeek = new Map<string, FieldEntity[]>();
-    for (const entity of entities) {
-      const key = localIsoWeekKey(entity.createdAtMs);
-      const members = entitiesByWeek.get(key) ?? [];
-      members.push(entity);
-      entitiesByWeek.set(key, members);
-    }
-    return [...entitiesByWeek.entries()]
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, members]) => ({
-        key,
-        label: key,
-        entityKeys: members
-          .sort(
-            (left, right) =>
-              left.createdAtMs - right.createdAtMs ||
-              left.key.localeCompare(right.key),
-          )
-          .map(entity => entity.key),
-      }));
-  },
-};
+/**
+ * How coarsely the date axis cuts time.
+ *
+ * Resolution is a property of an *axis*, not a new arrangement: the dial still
+ * has one date position, and this decides what a cluster on it means. Playlist
+ * has no resolution and semantics will offer cluster count instead, which is
+ * why this lives beside the date grouping rather than in the registry.
+ */
+export type DateResolution = 'week' | 'month' | 'year';
+
+/** In the order the control offers them, coarsening left to right. */
+export const DATE_RESOLUTIONS: readonly DateResolution[] = [
+  'week',
+  'month',
+  'year',
+];
+
+/**
+ * The cluster key for one song at one resolution.
+ *
+ * Every form is zero-padded and big-endian, so `localeCompare` sorts them
+ * chronologically without parsing anything back into a date.
+ */
+export function dateKey(
+  createdAtMs: number,
+  resolution: DateResolution,
+): string {
+  if (resolution === 'week') return localIsoWeekKey(createdAtMs);
+  const date = localCalendarDate(createdAtMs);
+  if (resolution === 'year') return String(date.year);
+  return `${date.year}-${String(date.month).padStart(2, '0')}`;
+}
+
+/**
+ * The date arrangement at one resolution.
+ *
+ * `label` stays the raw key. The domain hands over `2026-W35` and presentation
+ * turns it into something a person would say — see `shelfLabels.ts`. Keeping
+ * the key here is what lets the label be re-read when the phone's idea of
+ * "this week" moves on.
+ */
+export function byDate(resolution: DateResolution): Arrangement {
+  return {
+    key: 'time',
+    label: 'Date',
+    group(entities: readonly FieldEntity[]): readonly ArrangementGroup[] {
+      const entitiesByKey = new Map<string, FieldEntity[]>();
+      for (const entity of entities) {
+        const key = dateKey(entity.createdAtMs, resolution);
+        const members = entitiesByKey.get(key) ?? [];
+        members.push(entity);
+        entitiesByKey.set(key, members);
+      }
+      return [...entitiesByKey.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, members]) => ({
+          key,
+          label: key,
+          entityKeys: members
+            .sort(
+              (left, right) =>
+                left.createdAtMs - right.createdAtMs ||
+                left.key.localeCompare(right.key),
+            )
+            .map(entity => entity.key),
+        }));
+    },
+  };
+}
+
+/** The registry entry and the default: one chronological shelf per ISO week. */
+export const byTime: Arrangement = byDate('week');
 
 function assertCalendarDate(date: LocalCalendarDate): void {
   if (

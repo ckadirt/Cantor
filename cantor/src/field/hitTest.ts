@@ -1,3 +1,4 @@
+import { gatherFraction, placementPoint } from './bloom';
 import { worldToScreen } from './camera';
 import { distance as pointDistance } from './geometry';
 import type { Camera, Level, Placement, Point, Viewport } from './types';
@@ -12,6 +13,11 @@ export const HIT_TEST_KNOBS = {
 /**
  * Return the nearest tap target. L1 accepts the full row band as well as the
  * mark; placement-key tie-breaking keeps results independent of input order.
+ *
+ * `fitScale` is not optional and is not a convenience: a cluster is bloomed at
+ * L0 and gathered at L1, so a mark's screen position depends on the camera's
+ * distance. Hit testing the gathered column while the canvas draws the packing
+ * would send every tap to whichever song happens to hold that seat.
  */
 export function hitTestPlacement(
   placements: readonly Placement[],
@@ -19,11 +25,13 @@ export function hitTestPlacement(
   viewport: Viewport,
   point: Point,
   level: Level,
+  fitScale: number,
 ): Placement | null {
+  const gather = gatherFraction(camera.scale, fitScale);
   let winner: { placement: Placement; distance: number } | null = null;
   for (const placement of placements) {
     const screen = worldToScreen(
-      { x: placement.x, y: placement.y },
+      placementPoint(placement, gather),
       camera,
       viewport,
     );

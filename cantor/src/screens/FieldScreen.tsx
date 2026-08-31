@@ -30,14 +30,19 @@ import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
+import { shelfLabel } from '../features/field/shelfLabels';
 import {
   arrangementByKey,
+  byDate,
   byTime,
   columnsFor,
+  gatherFraction,
   grainWindow,
   layoutField,
+  placementPoint,
   visibleSecondsAt,
   worldToScreen,
+  type DateResolution,
   type FieldLayout,
   type Viewport,
 } from '../field';
@@ -93,6 +98,7 @@ export function FieldScreen({ identity }: Props) {
   const [songBusy, setSongBusy] = useState(false);
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
+  const [dateResolution, setDateResolution] = useState<DateResolution>('week');
   const [grain, setGrain] = useState<GrainRender | null>(null);
   const [analyses, setAnalyses] = useState<ReadonlyMap<string, SongAnalysis>>(
     () => new Map(),
@@ -105,13 +111,19 @@ export function FieldScreen({ identity }: Props) {
   );
   const layout = useMemo(() => {
     if (viewport === null) return null;
+    // Resolution is a property of the date axis, so it is applied here rather
+    // than being a third entry in the registry.
+    const arrangement =
+      arrangementKey === byTime.key
+        ? byDate(dateResolution)
+        : arrangementByKey(arrangementKey) ?? byTime;
     return layoutField({
       entities: controller.entities,
-      arrangement: arrangementByKey(arrangementKey) ?? byTime,
+      arrangement,
       previousPlacements: previousPlacements.current,
       viewport,
     });
-  }, [arrangementKey, controller.entities, viewport]);
+  }, [arrangementKey, controller.entities, dateResolution, viewport]);
   useEffect(() => {
     if (layout !== null) previousPlacements.current = layout.placements;
   }, [layout]);
@@ -129,7 +141,8 @@ export function FieldScreen({ identity }: Props) {
         const info = backend.lastNodeInfo;
         return {
           nodePublicKey: backend.nodePubkey,
-          label: backend.petname || info?.name || backend.nodePubkey.slice(0, 8),
+          label:
+            backend.petname || info?.name || backend.nodePubkey.slice(0, 8),
           ready: snapshot?.phase === 'ready',
           models: info?.models ?? [],
           limits: info?.limits ?? null,
@@ -154,7 +167,11 @@ export function FieldScreen({ identity }: Props) {
       setSubmitting(true);
       setSubmitError(null);
       try {
-        setCondensing({ caption: generation.caption, nodePublicKey, jobKey: null });
+        setCondensing({
+          caption: generation.caption,
+          nodePublicKey,
+          jobKey: null,
+        });
         setComposerOpen(false);
         await commands.submit(nodePublicKey, modelSelector, generation);
       } catch (error) {
@@ -196,9 +213,7 @@ export function FieldScreen({ identity }: Props) {
   // The song the camera is focused on, if the field still knows about it.
   const focused = useMemo(() => {
     const key = fieldCamera.focus?.entityKey;
-    return key === undefined
-      ? null
-      : controller.presentations.get(key) ?? null;
+    return key === undefined ? null : controller.presentations.get(key) ?? null;
   }, [controller.presentations, fieldCamera.focus]);
 
   /** Every playlist that exists, which is every `p/` tag on every song. */
@@ -243,7 +258,10 @@ export function FieldScreen({ identity }: Props) {
     }
     setPlaybackError(null);
     try {
-      if (focused.localAudio.state !== 'cached' && focused.localAudio.state !== 'pinned') {
+      if (
+        focused.localAudio.state !== 'cached' &&
+        focused.localAudio.state !== 'pinned'
+      ) {
         await commands.audio(
           focused.entity.nodePublicKey,
           focused.song,
@@ -263,7 +281,10 @@ export function FieldScreen({ identity }: Props) {
           digest: artifact.sha256,
         },
         path,
-        { title: focused.song.title, artist: focused.nodeLabels[0] ?? 'Cantor' },
+        {
+          title: focused.song.title,
+          artist: focused.nodeLabels[0] ?? 'Cantor',
+        },
       );
     } catch (error) {
       setPlaybackError(error instanceof Error ? error.message : String(error));
@@ -277,22 +298,19 @@ export function FieldScreen({ identity }: Props) {
    * error rather than failing silently and leaving the sheet showing a state
    * the node never accepted.
    */
-  const runSongCommand = useCallback(
-    async (work: () => Promise<void>) => {
-      setSongBusy(true);
-      setSongDetailError(null);
-      try {
-        await work();
-      } catch (error) {
-        setSongDetailError(
-          error instanceof Error ? error.message : String(error),
-        );
-      } finally {
-        setSongBusy(false);
-      }
-    },
-    [],
-  );
+  const runSongCommand = useCallback(async (work: () => Promise<void>) => {
+    setSongBusy(true);
+    setSongDetailError(null);
+    try {
+      await work();
+    } catch (error) {
+      setSongDetailError(
+        error instanceof Error ? error.message : String(error),
+      );
+    } finally {
+      setSongBusy(false);
+    }
+  }, []);
 
   const patchFocused = useCallback(
     (patch: Parameters<typeof commands.patchSong>[2]) => {
@@ -367,12 +385,24 @@ export function FieldScreen({ identity }: Props) {
       candidate => candidate.entityKey === key,
     );
     if (placement === undefined) return null;
+    // The same pose the canvas drew this mark at, or the panel condenses onto
+    // the seat the job would have had if its cluster were gathered.
     return worldToScreen(
-      { x: placement.x, y: placement.y },
+      placementPoint(
+        placement,
+        gatherFraction(fieldCamera.camera.scale, layout?.fitScale ?? 0),
+      ),
       fieldCamera.camera,
       viewport,
     );
-  }, [condensing, controller.jobs, fieldCamera.camera, fieldCamera.renderedPlacements, viewport]);
+  }, [
+    condensing,
+    controller.jobs,
+    fieldCamera.camera,
+    fieldCamera.renderedPlacements,
+    layout,
+    viewport,
+  ]);
 
   /**
    * Measure the focused song, once its audio is already on the phone.
@@ -450,7 +480,11 @@ export function FieldScreen({ identity }: Props) {
    * than for the whole song.
    */
   useEffect(() => {
-    if (fieldCamera.level !== 'grain' || focused === null || viewport === null) {
+    if (
+      fieldCamera.level !== 'grain' ||
+      focused === null ||
+      viewport === null
+    ) {
       setGrain(null);
       return;
     }
@@ -493,7 +527,9 @@ export function FieldScreen({ identity }: Props) {
         if (!active) return;
         setGrain({
           window: samples,
-          label: `${window.visibleSeconds.toFixed(2)}s VISIBLE · ${window.centerSeconds.toFixed(2)}s`,
+          label: `${window.visibleSeconds.toFixed(
+            2,
+          )}s VISIBLE · ${window.centerSeconds.toFixed(2)}s`,
         });
       } catch (error) {
         if (active) setGrain(null);
@@ -544,6 +580,28 @@ export function FieldScreen({ identity }: Props) {
     return () => subscription.remove();
   }, [closeTopmostSheet, fieldCamera]);
 
+  /**
+   * What the phone thinks the time is, for labels that read relatively.
+   *
+   * Re-read when the library changes rather than on a timer: a clock ticking
+   * in state would re-record the field picture every minute for a word that
+   * changes once a week, and the library changing is the only moment the
+   * screen is already re-rendering *and* a week boundary could have passed
+   * unnoticed.
+   */
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, [controller.entities]);
+  const songCount = controller.presentations.size;
+  /** The cluster you are inside, named the way its axis names it. */
+  const focusedGroupLabel = useMemo(() => {
+    const key = fieldCamera.focus?.groupKey;
+    if (key === undefined || layout === null) return null;
+    const group = layout.groups.find(candidate => candidate.key === key);
+    return group === undefined ? null : shelfLabel(group.label, nowMs).primary;
+  }, [fieldCamera.focus, layout, nowMs]);
+
   const onLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     if (width > 0 && height > 0) setViewport({ width, height });
@@ -572,6 +630,7 @@ export function FieldScreen({ identity }: Props) {
                 grain={grain}
                 jobs={controller.jobs}
                 playingKey={playingKey}
+                nowMs={nowMs}
                 playingProgress={playingProgress}
                 presentations={controller.presentations}
                 viewport={viewport}
@@ -597,7 +656,9 @@ export function FieldScreen({ identity }: Props) {
             />
           </>
         ) : null}
-        {fieldCamera.level === 'song' && focused !== null && viewport !== null ? (
+        {fieldCamera.level === 'song' &&
+        focused !== null &&
+        viewport !== null ? (
           <SongSurface
             available={focused.delivery !== undefined}
             isCurrent={focusedIsCurrent}
@@ -628,10 +689,16 @@ export function FieldScreen({ identity }: Props) {
         ) : null}
         <FieldOverlay
           arrangementKey={arrangementKey}
+          dateResolution={dateResolution}
+          groupCount={layout?.groups.length ?? 0}
+          groupLabel={focusedGroupLabel}
           level={fieldCamera.level}
           onChangeArrangement={setArrangementKey}
+          onChangeDateResolution={setDateResolution}
           offline={offline}
+          onOpenComposer={openComposer}
           onOpenEngines={openEnginesFromField}
+          songCount={songCount}
           storageError={storageError}
         />
       </View>
@@ -710,7 +777,11 @@ export function FieldScreen({ identity }: Props) {
       {condensing !== null && viewport !== null ? (
         <CondenseOverlay
           caption={condensing.caption}
-          from={{ x: space.lg, y: viewport.height * 0.24, width: viewport.width - space.lg * 2 }}
+          from={{
+            x: space.lg,
+            y: viewport.height * 0.24,
+            width: viewport.width - space.lg * 2,
+          }}
           onSettled={() => setCondensing(null)}
           to={condenseTarget}
         />
