@@ -35,6 +35,19 @@ export type FitOptions = Readonly<{
   emptyScale: number;
 }>;
 
+/*
+ * Declared before its callers, not after them: the worklets plugin rewrites a
+ * `'worklet'` function declaration into a module-scope `const`, and captures it
+ * into a calling worklet's closure at the point that caller is defined. A
+ * helper defined further down the file is captured as `undefined`.
+ */
+function assertPositive(value: number, label: string): void {
+  'worklet';
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${label} must be a finite positive number.`);
+  }
+}
+
 export function worldToScreen(
   point: Point,
   camera: Camera,
@@ -51,6 +64,7 @@ export function screenToWorld(
   camera: Camera,
   viewport: Viewport,
 ): Point {
+  'worklet';
   assertPositive(camera.scale, 'Camera scale');
   return {
     x: (point.x - viewport.width / 2) / camera.scale + camera.x,
@@ -58,13 +72,20 @@ export function screenToWorld(
   };
 }
 
-/** Zoom without letting the world point under the focal point drift. */
+/**
+ * Zoom without letting the world point under the focal point drift.
+ *
+ * A worklet as well as a function: the pinch handler runs on the UI thread, so
+ * the focal-point correction has to be available there rather than a thread
+ * hop away.
+ */
 export function zoomAroundFocalPoint(
   camera: Camera,
   focalPoint: Point,
   scaleMultiplier: number,
   viewport: Viewport,
 ): Camera {
+  'worklet';
   assertPositive(scaleMultiplier, 'Scale multiplier');
   const worldPoint = screenToWorld(focalPoint, camera, viewport);
   const scale = camera.scale * scaleMultiplier;
@@ -173,10 +194,4 @@ function lerp(from: number, to: number, progress: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
-}
-
-function assertPositive(value: number, label: string): void {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new RangeError(`${label} must be a finite positive number.`);
-  }
 }
