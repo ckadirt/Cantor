@@ -35,7 +35,8 @@ icons/
 /*.html
 
 implementation-notes.md
-reports/
+reports/*
+!reports/todo.md
 docs/*
 !docs/refactor/
 !docs/refactor/**

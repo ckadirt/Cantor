@@ -5,5 +5,6 @@ export * from './geometry';
 export * from './grain';
 export * from './hitTest';
 export * from './layout';
+export * from './transition';
 export * from './types';
 export * from './arrangements';
