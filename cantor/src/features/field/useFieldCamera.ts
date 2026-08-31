@@ -208,7 +208,14 @@ export function useFieldCamera({
     // Committing a numerically identical camera would re-record the picture
     // and re-render the screen for nothing.
     if (correctedScale !== cameraRef.current.scale) {
-      commitCamera({ ...cameraRef.current, scale: correctedScale });
+      // Flown, not committed. Re-cutting the field changes what FIT means —
+      // one month becomes four playlists and the fitted scale more than
+      // halves — and this correction is what keeps you at the level you were
+      // on. Applied in one frame it rescales the whole screen at once, which
+      // reads as the map reloading rather than reorganising. The marks are
+      // already tweening to their new seats below; the camera should travel
+      // with them.
+      flyTo({ ...cameraRef.current, scale: correctedScale });
     }
     cancelRelayout();
     // Same reasoning one level up: a relayout where every mark is already at
@@ -243,6 +250,7 @@ export function useFieldCamera({
     clampScale,
     commitCamera,
     fitScaleShared,
+    flyTo,
     layout,
     layoutProgressShared,
     reducedMotion,

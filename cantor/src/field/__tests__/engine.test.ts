@@ -9,6 +9,7 @@ import {
   boxCenter,
   boxContainsPoint,
   byDate,
+  byPlaylist,
   byTime,
   dateKey,
   distance,
@@ -411,6 +412,88 @@ describe('bloom and gather', () => {
       expect(point.x).toBeGreaterThanOrEqual(layout.targetBounds!.x - 1e-9);
       expect(point.y).toBeGreaterThanOrEqual(layout.targetBounds!.y - 1e-9);
     }
+  });
+});
+
+describe('re-cutting the field', () => {
+  /**
+   * The unfold. A song in two playlists is two placements on that axis and one
+   * on the date axis, and the arrival of the second copy is the only thing
+   * that makes many-to-many membership visible. Both copies have to leave from
+   * where the single mark was, or the field reads as a reload rather than as
+   * one mark splitting in two.
+   */
+  const tagged = [
+    ['p/Drive'],
+    ['p/Dusk'],
+    ['p/Focus', 'p/Drive'],
+    [],
+  ].map((tags, index) => ({
+    key: `node-a:entity-${index}`,
+    nodePublicKey: 'node-a',
+    entityId: `entity-${index}`,
+    kind: 'song' as const,
+    createdAtMs: new Date(2026, 7, 24 + index, 12).getTime(),
+    tags,
+  }));
+
+  it('leaves every copy of a song from where its single mark was', () => {
+    const dated = layoutField({
+      entities: tagged,
+      arrangement: byDate('month'),
+      viewport: VIEWPORT,
+    });
+    const before = dated.placements.find(
+      item => item.entityKey === 'node-a:entity-2',
+    );
+    expect(before).toBeDefined();
+
+    const filed = layoutField({
+      entities: tagged,
+      arrangement: byPlaylist,
+      viewport: VIEWPORT,
+      previousPlacements: dated.placements,
+    });
+    const copies = filed.placements.filter(
+      item => item.entityKey === 'node-a:entity-2',
+    );
+    // Two playlists, so two placements of one song.
+    expect(copies).toHaveLength(2);
+    for (const copy of copies) {
+      expect(copy.fromX).toBeCloseTo(before!.x, 10);
+      expect(copy.fromY).toBeCloseTo(before!.y, 10);
+      expect(copy.fromBloomX).toBeCloseTo(before!.bloomX, 10);
+    }
+    // And they are going somewhere else, so the tween has something to carry.
+    expect(copies[0].groupKey).not.toBe(copies[1].groupKey);
+    expect(
+      Math.hypot(
+        copies[0].targetX - copies[1].targetX,
+        copies[0].targetY - copies[1].targetY,
+      ),
+    ).toBeGreaterThan(1);
+  });
+
+  it('folds back to a single mark that leaves from one of the copies', () => {
+    const filed = layoutField({
+      entities: tagged,
+      arrangement: byPlaylist,
+      viewport: VIEWPORT,
+    });
+    const dated = layoutField({
+      entities: tagged,
+      arrangement: byDate('month'),
+      viewport: VIEWPORT,
+      previousPlacements: filed.placements,
+    });
+    const survivor = dated.placements.find(
+      item => item.entityKey === 'node-a:entity-2',
+    );
+    const sources = filed.placements
+      .filter(item => item.entityKey === 'node-a:entity-2')
+      .map(item => item.x);
+    expect(sources).toHaveLength(2);
+    expect(sources).toContain(survivor!.fromX);
   });
 });
 
