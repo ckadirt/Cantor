@@ -10,6 +10,7 @@
  * the animation starts.
  */
 import React from 'react';
+import { Canvas, Skia } from '@shopify/react-native-skia';
 import ReactTestRenderer from 'react-test-renderer';
 import {
   byDate,
@@ -20,16 +21,18 @@ import {
   type FieldLayout,
 } from '../../../field';
 import { FieldCanvas } from '../FieldCanvas';
+import type { FieldPresentation } from '../useFieldController';
 import type { FieldRecutModel } from '../useFieldCamera';
 
 const mockBornClocks: Array<{ born: number; clock: { value: number } }> = [];
 
-// CanvasKit's system font manager is empty under Jest. The clock plan is
-// built before any font is resolved, which is the whole point: it is a
-// property of the transition, not of what the transition happens to draw.
+// CanvasKit's system font manager is empty under Jest, so hand the canvas a
+// face built the way the other canvas tests build one.
+let mockFont: ReturnType<typeof Skia.Font> | null = null;
+
 jest.mock('../../../motion/fonts', () => ({
   __esModule: true,
-  useMorphFont: () => null,
+  useMorphFont: () => mockFont,
 }));
 
 jest.mock('../../../motion/clock', () => ({
@@ -97,6 +100,40 @@ function recutBetween(
   };
 }
 
+const backend = {
+  nodePubkey: 'node-a',
+  relayUrl: 'wss://relay.example',
+  petname: 'Studio',
+  lastNodeInfo: null,
+};
+
+const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
+  entities.map(entity => [
+    entity.key,
+    {
+      entity,
+      song: {
+        id: entity.entityId,
+        revision: 1,
+        title: `Song ${entity.entityId}`,
+        caption_summary: '',
+        created_at: new Date(entity.createdAtMs).toISOString(),
+        duration_ms: 11_000,
+        model: 'light',
+        favorite: false,
+        tags: [],
+        trashed: false,
+        artifacts: [],
+      },
+      backend,
+      ready: true,
+      nodeLabels: ['Studio'],
+      delivery: undefined,
+      localAudio: { state: 'remote', bytes: 0 },
+    } as FieldPresentation,
+  ]),
+);
+
 describe('field canvas re-cut clock', () => {
   const month = layoutField({
     entities,
@@ -104,6 +141,10 @@ describe('field canvas re-cut clock', () => {
     viewport,
   });
   const year = layoutField({ entities, arrangement: byDate('year'), viewport });
+
+  beforeAll(() => {
+    mockFont = Skia.Font(undefined, 9);
+  });
 
   beforeEach(() => {
     mockBornClocks.length = 0;
@@ -157,5 +198,49 @@ describe('field canvas re-cut clock', () => {
       renderer.update(canvas(second, year));
     });
     expect(mockBornClocks).toHaveLength(2);
+  });
+
+  /**
+   * Skia re-renders the canvas from a layout effect keyed on the children
+   * *element*, and its reanimated container's redraw stops the animation
+   * mapper, re-records the tree from whatever the JS thread holds, paints that
+   * frame, and only then restarts the mapper. A fresh element on every camera
+   * render therefore paints a stale frame of the whole scene between two live
+   * ones — which is what a pan looked like.
+   */
+  it('hands the canvas the same scene while only the camera moves', async () => {
+    const recut = recutBetween(1, month, year, true);
+    const cameraShared = { value: cameraFor(month) };
+    const canvas = (camera: Camera) => (
+      <FieldCanvas
+        camera={camera}
+        cameraShared={cameraShared as never}
+        layout={year}
+        labelFromGroups={recut.fromGroups}
+        palette={palette}
+        placements={year.placements}
+        nowMs={Date.UTC(2026, 7, 30)}
+        recut={recut}
+        renderFitScale={year.fitScale}
+        transitionGeneration={recut.generation}
+        presentations={presentations}
+        viewport={viewport}
+      />
+    );
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(canvas(cameraFor(year)));
+    });
+    const scene = renderer.root.findByType(Canvas).props.children;
+    // The native path is what this is about; a picture would legitimately be
+    // rebuilt on every camera frame.
+    expect(scene).not.toBeNull();
+
+    const panned = { ...cameraFor(year), x: cameraFor(year).x + 240 };
+    await ReactTestRenderer.act(async () => {
+      renderer.update(canvas(panned));
+    });
+    expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
   });
 });

@@ -297,6 +297,54 @@ function FieldCanvasImpl({
     viewport,
   ]);
 
+  /**
+   * The scene element, held by identity.
+   *
+   * Skia's canvas re-renders its children through `root.render(children)` in a
+   * layout effect keyed on the *element*, and the reanimated container's
+   * `redraw` stops the animation mapper, re-records the tree from the values
+   * the JS thread happens to hold, paints that frame, and only then restarts
+   * the mapper. So any React render that hands the canvas a fresh element
+   * paints one frame of every node at its last JS-thread value — which, while
+   * the UI thread owns the camera, is a stale one. That is the flicker: not a
+   * node losing its place, the whole canvas being redrawn behind the animation
+   * for a frame. A pan mirrors a camera into React, a playing song ticks the
+   * playhead, a library refresh lands — each was a flicker.
+   *
+   * Nothing here reads the camera: the scene is a function of the re-cut, and
+   * the camera reaches it through `cameraShared` on the UI thread. So the
+   * element only has to change when the re-cut does.
+   */
+  const nativeScene = useMemo(() => {
+    if (recut === null || nativeClock === null || monoFont === null) {
+      return null;
+    }
+    return (
+      <NativeFieldContent
+        key={recut.generation}
+        recut={recut}
+        clock={nativeClock}
+        cameraShared={cameraShared}
+        viewport={viewport}
+        presentations={presentations}
+        playingKey={playingKey}
+        labelFlights={labelFlights}
+        font={monoFont}
+        palette={palette}
+      />
+    );
+  }, [
+    cameraShared,
+    labelFlights,
+    monoFont,
+    nativeClock,
+    palette,
+    playingKey,
+    presentations,
+    recut,
+    viewport,
+  ]);
+
   if (nativeField) {
     return (
       <Canvas
@@ -305,18 +353,7 @@ function FieldCanvasImpl({
         pointerEvents="none"
         style={StyleSheet.absoluteFill}
       >
-        <NativeFieldContent
-          key={recut.generation}
-          recut={recut}
-          clock={nativeClock}
-          cameraShared={cameraShared}
-          viewport={viewport}
-          presentations={presentations}
-          playingKey={playingKey}
-          labelFlights={labelFlights}
-          font={monoFont}
-          palette={palette}
-        />
+        {nativeScene}
       </Canvas>
     );
   }
