@@ -360,19 +360,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   font: labelFont,
   palette,
 }: NativeFieldContentProps) {
-  const targetTopByGroup = useMemo(() => {
-    const result = new Map<string, number>();
-    for (const flight of recut.flights) {
-      if (flight.targetPlacementKey === null) continue;
-      const y = flight.targetY + flight.targetBloomY;
-      const previous = result.get(flight.groupKey);
-      if (previous === undefined || y < previous) {
-        result.set(flight.groupKey, y);
-      }
-    }
-    return result;
-  }, [recut]);
-
   return (
     <>
       <Fill color={palette.bg} />
@@ -386,11 +373,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           cameraShared={cameraShared}
           recut={recut}
           viewport={viewport}
-          targetTopWorld={
-            flight.toGroupKey === null
-              ? flight.to.y
-              : targetTopByGroup.get(flight.toGroupKey) ?? flight.to.y
-          }
           font={labelFont}
           palette={palette}
         />
@@ -529,13 +511,23 @@ function NativeFaceFlight({
   );
 }
 
+/**
+ * One cluster's name, carried by one animated value.
+ *
+ * Both lines ride a single group transform, and each glyph run sits at a fixed
+ * offset inside it. Positioning the runs individually meant four shared values
+ * per label — a screen anchor, two x's derived from it and a y — so a camera
+ * frame reached the four Skia properties across two mapper hops instead of
+ * one, and a pan tore the name apart between them. One value per node moves
+ * like the faces do, and leaves the opacities off the camera's path entirely:
+ * they answer to the clock, so a pan does not wake them at all.
+ */
 function NativeShelfLabel({
   flight,
   clock,
   cameraShared,
   recut,
   viewport,
-  targetTopWorld,
   font: labelFont,
   palette,
 }: {
@@ -544,74 +536,10 @@ function NativeShelfLabel({
   cameraShared: SharedValue<Camera>;
   recut: FieldRecutModel;
   viewport: Viewport;
-  targetTopWorld: number;
   font: NonNullable<ReturnType<typeof useMorphFont>>;
   palette: Palette;
 }) {
-  return (
-    <>
-      <NativeLabelLine
-        from={flight.primaryFrom}
-        to={flight.primaryTo}
-        yOffset={0}
-        color={palette.muted}
-        {...{
-          flight,
-          clock,
-          cameraShared,
-          recut,
-          viewport,
-          targetTopWorld,
-          font: labelFont,
-        }}
-      />
-      <NativeLabelLine
-        from={flight.secondaryFrom}
-        to={flight.secondaryTo}
-        yOffset={FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX}
-        color={palette.faint}
-        {...{
-          flight,
-          clock,
-          cameraShared,
-          recut,
-          viewport,
-          targetTopWorld,
-          font: labelFont,
-        }}
-      />
-    </>
-  );
-}
-
-function NativeLabelLine({
-  from,
-  to,
-  yOffset,
-  color,
-  flight,
-  clock,
-  cameraShared,
-  recut,
-  viewport,
-  targetTopWorld,
-  font: labelFont,
-}: {
-  from: string;
-  to: string;
-  yOffset: number;
-  color: string;
-  flight: LabelFlight;
-  clock: SharedValue<number>;
-  cameraShared: SharedValue<Camera>;
-  recut: FieldRecutModel;
-  viewport: Viewport;
-  targetTopWorld: number;
-  font: NonNullable<ReturnType<typeof useMorphFont>>;
-}) {
-  const fromWidth = labelFont.measureText(from).width;
-  const toWidth = labelFont.measureText(to).width;
-  const anchor = useDerivedValue(() => {
+  const transform = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
     const liveCamera = p >= 1 ? cameraShared.value : null;
     const cameraX =
@@ -627,17 +555,64 @@ function NativeLabelLine({
           (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) *
             p,
       );
+    // Seat to seat, in the same units at both ends. The previous generation
+    // left this name on its cluster's top, which is exactly this flight's
+    // `fromTop`, so the first frame lands where the last one did instead of
+    // stepping by the difference between a centre and a top.
     const worldX = flight.from.x + (flight.to.x - flight.from.x) * p;
-    const worldY = targetTopWorld + (flight.from.y - flight.to.y) * (1 - p);
-    return {
-      x: (worldX - cameraX) * cameraScale + viewport.width / 2,
-      y:
-        (worldY - cameraY) * cameraScale +
-        viewport.height / 2 -
-        FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX +
-        yOffset,
-    };
+    const worldY = flight.fromTop + (flight.toTop - flight.fromTop) * p;
+    return [
+      {
+        translateX: (worldX - cameraX) * cameraScale + viewport.width / 2,
+      },
+      {
+        translateY:
+          (worldY - cameraY) * cameraScale +
+          viewport.height / 2 -
+          FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
+      },
+    ];
   });
+  return (
+    <SkiaGroup transform={transform}>
+      <NativeLabelLine
+        from={flight.primaryFrom}
+        to={flight.primaryTo}
+        y={0}
+        color={palette.muted}
+        {...{ flight, clock, font: labelFont }}
+      />
+      <NativeLabelLine
+        from={flight.secondaryFrom}
+        to={flight.secondaryTo}
+        y={FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX}
+        color={palette.faint}
+        {...{ flight, clock, font: labelFont }}
+      />
+    </SkiaGroup>
+  );
+}
+
+/** One line of a name, centred in its label's frame and fading on the clock. */
+function NativeLabelLine({
+  from,
+  to,
+  y,
+  color,
+  flight,
+  clock,
+  font: labelFont,
+}: {
+  from: string;
+  to: string;
+  y: number;
+  color: string;
+  flight: LabelFlight;
+  clock: SharedValue<number>;
+  font: NonNullable<ReturnType<typeof useMorphFont>>;
+}) {
+  const fromWidth = labelFont.measureText(from).width;
+  const toWidth = labelFont.measureText(to).width;
   const owner = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
     let start = 0;
@@ -672,42 +647,17 @@ function NativeLabelLine({
   const toOpacity = useDerivedValue(() => {
     if (to.length === 0 || from === to) return 0;
     const p = Math.min(Math.max(clock.value, 0), 1);
-    let start = 0;
-    let end = 1;
-    if (flight.ownership === 'branch') {
-      start = 0.02;
-      end = 0.18;
-    } else if (flight.ownership === 'fold') {
-      start = 0.55;
-      end = 0.82;
-    } else if (flight.ownership === 'enter') {
-      start = 0.08;
-      end = 0.42;
-    } else if (flight.ownership === 'exit') {
-      start = 0.58;
-      end = 0.9;
-    }
-    const ownerRaw =
-      flight.ownership === 'carry' ? p : (p - start) / (end - start);
-    const ownerT = Math.min(Math.max(ownerRaw, 0), 1);
-    const ownerAmount =
-      ownerT * ownerT * ownerT * (ownerT * (ownerT * 6 - 15) + 10);
-    const ownerAlpha =
-      flight.fromAlpha + (flight.targetAlpha - flight.fromAlpha) * ownerAmount;
-    const textRaw = from.length === 0 ? p / 0.7 : (p - 0.25) / 0.5;
-    const textT = Math.min(Math.max(textRaw, 0), 1);
-    const textAmount = textT * textT * textT * (textT * (textT * 6 - 15) + 10);
-    return ownerAlpha * textAmount;
+    const raw = from.length === 0 ? p / 0.7 : (p - 0.25) / 0.5;
+    const t = Math.min(Math.max(raw, 0), 1);
+    const amount = t * t * t * (t * (t * 6 - 15) + 10);
+    return owner.value * amount;
   });
-  const fromX = useDerivedValue(() => anchor.value.x - fromWidth / 2);
-  const toX = useDerivedValue(() => anchor.value.x - toWidth / 2);
-  const y = useDerivedValue(() => anchor.value.y);
   return (
     <>
       {from.length > 0 ? (
         <Text
           text={from}
-          x={fromX}
+          x={-fromWidth / 2}
           y={y}
           font={labelFont}
           color={color}
@@ -717,7 +667,7 @@ function NativeLabelLine({
       {to.length > 0 && to !== from ? (
         <Text
           text={to}
-          x={toX}
+          x={-toWidth / 2}
           y={y}
           font={labelFont}
           color={color}
@@ -1063,6 +1013,12 @@ function drawShelfLabels(
   request.paints.faint.setAlphaf(alpha);
   request.paints.muted.setAlphaf(alpha);
 
+  /** A world point lifted to where a name sits above it. */
+  const above = (point: { x: number; y: number }) => ({
+    x: point.x,
+    y: point.y - FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
+  });
+
   /** Where a cluster's label sits once everything has settled. */
   const seatOf = (group: (typeof request.layout.groups)[number]) => {
     const groupPoint = worldToScreen(
@@ -1078,12 +1034,6 @@ function drawShelfLabels(
     };
   };
 
-  /** A cluster's centre lifted to where its name sits. */
-  const above = (point: { x: number; y: number }) => ({
-    x: point.x,
-    y: point.y - FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
-  });
-
   const progress = request.relayoutLinear ?? 1;
   // Two clocks, one tween. The glyphs morph on the raw ramp because the motion
   // engine eases inside its own windows; the seat travels on the same eased
@@ -1091,32 +1041,27 @@ function drawShelfLabels(
   const travel = smootherstep(progress);
   const flights = progress < 1 ? request.labelFlights ?? null : null;
   if (flights !== null) {
-    const groupsByKey = new Map(
-      request.layout.groups.map(group => [group.key, group]),
-    );
     for (const flight of flights) {
       const ownerAlpha = alpha * labelFlightAlpha(flight, travel);
       if (ownerAlpha <= 0.01) continue;
-      const arriving =
-        flight.toGroupKey === null
-          ? null
-          : groupsByKey.get(flight.toGroupKey) ?? null;
-      // The seat is where a settled label for this cluster would be drawn, and
-      // the flight is an *offset* from it that shrinks to nothing: the world
-      // gap between the two cluster centres, projected. Anchoring both ends
-      // the same way is what makes a re-cut that does not move a cluster —
-      // one month becoming one year — morph in place instead of swooping.
-      // Lerping a centre into a seat would always travel, because a cluster's
-      // centre is not where its name sits.
-      const seat =
-        arriving === null
-          ? above(worldToScreen(flight.to, request.camera, request.viewport))
-          : seatOf(arriving);
-      const rest = 1 - travel;
-      const point = {
-        x: seat.x + (flight.from.x - flight.to.x) * request.camera.scale * rest,
-        y: seat.y + (flight.from.y - flight.to.y) * request.camera.scale * rest,
-      };
+      // A name travels seat to seat: the top of the cluster it leaves to the
+      // top of the one it lands on, both in world units, projected once. Both
+      // ends being the same quantity is what makes a re-cut that does not move
+      // a cluster — one month becoming one year — morph in place instead of
+      // swooping. Anchoring on the destination and lerping an *offset between
+      // centres* into it steps by the difference between the two clusters'
+      // heights on the first frame, because a cluster's centre is not where
+      // its name sits.
+      const point = above(
+        worldToScreen(
+          {
+            x: flight.from.x + (flight.to.x - flight.from.x) * travel,
+            y: flight.fromTop + (flight.toTop - flight.fromTop) * travel,
+          },
+          request.camera,
+          request.viewport,
+        ),
+      );
       if (!withinOverscan(point, request.viewport)) continue;
       if (flight.primary !== null) {
         drawLabelMorph(
@@ -1209,6 +1154,8 @@ function withinOverscan(
 
 type CapturedShelfFlight = Readonly<{
   point: Point;
+  /** The seat the interrupted flight had reached, in world units. */
+  top: number;
   primary: CapturedLabelMorph | null;
   secondary: CapturedLabelMorph | null;
   survives: boolean;
@@ -1236,6 +1183,7 @@ function retargetShelfLabelFlights(
         x: flight.from.x + (flight.to.x - flight.from.x) * travel,
         y: flight.from.y + (flight.to.y - flight.from.y) * travel,
       },
+      top: flight.fromTop + (flight.toTop - flight.fromTop) * travel,
       primary: captureFlightLine(
         flight.primary,
         flight.primaryTo,
@@ -1266,6 +1214,7 @@ function retargetShelfLabelFlights(
     return {
       ...flight,
       from: captured.point,
+      fromTop: captured.top,
       fromAlpha:
         flight.ownership === 'branch' ? flight.fromAlpha : captured.alpha,
       primary:

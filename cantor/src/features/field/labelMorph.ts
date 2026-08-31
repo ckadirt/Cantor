@@ -455,6 +455,15 @@ export type LabelFlight = Readonly<{
   from: Point;
   /** The centre of the cluster it lands on, in world units. */
   to: Point;
+  /**
+   * The seat at each end: the top of the cluster it leaves and the top of the
+   * one it lands on. A name travels seat to seat, in the same units at both
+   * ends, so a cluster that keeps its shape — one month becoming one year —
+   * morphs in place instead of swooping by the difference between a centre and
+   * a top.
+   */
+  fromTop: number;
+  toTop: number;
   primary: LabelMorph | null;
   secondary: LabelMorph | null;
   /** Endpoint text is retained even when equal and therefore needs no morph. */
@@ -522,6 +531,8 @@ export function planShelfLabels(
       fromGroupKey: source?.key ?? null,
       from: source === null ? centre(group) : centre(source),
       to: centre(group),
+      fromTop: (source ?? group).top,
+      toTop: group.top,
       toGroupKey: group.key,
       ownership:
         source === null
@@ -552,6 +563,8 @@ export function planShelfLabels(
       fromGroupKey: group.key,
       from: centre(group),
       to: centre(destination ?? group),
+      fromTop: group.top,
+      toTop: (destination ?? group).top,
       toGroupKey: destination?.key ?? null,
       ownership: destination === null ? 'exit' : 'fold',
       fromAlpha: 1,
@@ -603,6 +616,8 @@ function plan(
     fromGroupKey: string | null;
     from: Point;
     to: Point;
+    fromTop: number;
+    toTop: number;
     toGroupKey: string | null;
     ownership: FlightOwnership;
     fromAlpha: number;
@@ -617,7 +632,10 @@ function plan(
     target.secondary,
     font,
   );
-  const travels = seat.from.x !== seat.to.x || seat.from.y !== seat.to.y;
+  const travels =
+    seat.from.x !== seat.to.x ||
+    seat.from.y !== seat.to.y ||
+    seat.fromTop !== seat.toTop;
   if (primary === null && secondary === null && !travels) return null;
   return {
     ...seat,
