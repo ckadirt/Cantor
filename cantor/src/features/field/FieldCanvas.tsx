@@ -840,6 +840,7 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
         presentation.localAudio.bytes,
         presentation.delivery?.byte_length,
       ),
+      byteLength: presentation.delivery?.byte_length ?? null,
       playing: presentation.entity.key === request.playingKey,
       analysis:
         request.analyses?.get(presentation.entity.key) ?? neutralAnalysis(),

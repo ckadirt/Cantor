@@ -4,7 +4,12 @@ import {
   type SkPaint,
   type SkPath,
 } from '@shopify/react-native-skia';
-import { availabilityOf, type Availability } from './availability';
+import {
+  availabilityAction,
+  availabilityLine,
+  availabilityOf,
+  type Availability,
+} from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
 import type { Lens, LensPaints, LensSong } from './types';
 
@@ -24,7 +29,26 @@ export const NAME_LENS_KNOBS = {
   ROW_TITLE_OFFSET_PX: 42,
   ROW_TITLE_BASELINE_PX: -1,
   ROW_META_BASELINE_PX: 13,
-  MAX_TITLE_CHARS: 24,
+  /**
+   * The row's right edge, from its point. The face sits 98 px left of the
+   * point and 22 px in from the row's own left edge, so a 240 px row ends here.
+   */
+  ROW_RIGHT_PX: 120,
+  /**
+   * Air between the longest a title may run and the action word beside it.
+   * Titles are cut to fit rather than to a character count, because a
+   * proportional face makes a count a guess.
+   */
+  ROW_TITLE_GAP_PX: 14,
+  /** Where the action word sits between the two lines it belongs to. */
+  ROW_ACTION_BASELINE_PX: 5,
+  /**
+   * The action word is drawn muted rather than in ink: it is the row's second
+   * voice, and `REMOVE` in particular should never look like the way forward.
+   */
+  ROW_ACTION_ALPHA: 0.8,
+  /** A title on a song that is not on the phone reads as quietly as its face. */
+  ROW_TITLE_AWAY_ALPHA: 0.55,
   // The playing mark keeps its face and gains a ring, so "which one is playing"
   // is legible at L0 without any mini-player chrome anywhere. Both rings clear
   // the face's furthest lobe by this much: drawn any closer they cut through the
@@ -120,19 +144,48 @@ export const nameLens: Lens = {
         paints,
       );
     }
-    paints.ink.setAlphaf(alpha);
+    // The action word is right-aligned against the row's edge, and the title
+    // is cut to whatever is left. Measuring both keeps a long title from
+    // running under the word that acts on it.
+    const availability = availabilityOf(song.audioState);
+    const action = availabilityAction(availability);
+    const titleLeft = box.x - NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
+    const rowRight = box.x + NAME_LENS_KNOBS.ROW_RIGHT_PX;
+    let titleRight = rowRight;
+    if (action !== null) {
+      const width = textWidth(action, fonts.mono);
+      paints.muted.setAlphaf(alpha * NAME_LENS_KNOBS.ROW_ACTION_ALPHA);
+      canvas.drawText(
+        action,
+        rowRight - width,
+        box.y + NAME_LENS_KNOBS.ROW_ACTION_BASELINE_PX,
+        paints.muted,
+        fonts.mono,
+      );
+      titleRight = rowRight - width - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
+    }
+    // A song that is not on the phone says so twice: in the weight of its face
+    // and in the weight of its name.
+    paints.ink.setAlphaf(
+      alpha *
+        (availability === 'cached' || availability === 'downloaded'
+          ? 1
+          : NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA),
+    );
     paints.muted.setAlphaf(alpha);
     paints.faint.setAlphaf(alpha);
     canvas.drawText(
-      truncate(song.title),
-      box.x - NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX,
+      fitText(song.title, fonts.display, titleRight - titleLeft),
+      titleLeft,
       box.y + NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX,
       paints.ink,
       fonts.display,
     );
     canvas.drawText(
-      `${formatDuration(song.durationMs)} · ${song.model.toUpperCase()}`,
-      box.x - NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX,
+      // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
+      // the longest line here and it must not run under the action word.
+      fitText(availabilityLine(song), fonts.mono, titleRight - titleLeft),
+      titleLeft,
       box.y + NAME_LENS_KNOBS.ROW_META_BASELINE_PX,
       paints.muted,
       fonts.mono,
@@ -140,15 +193,77 @@ export const nameLens: Lens = {
   },
 };
 
-function truncate(value: string): string {
-  return value.length > NAME_LENS_KNOBS.MAX_TITLE_CHARS
-    ? `${value.slice(0, NAME_LENS_KNOBS.MAX_TITLE_CHARS - 1)}…`
-    : value;
+/**
+ * The part of `SkFont` this file needs.
+ *
+ * Named so the cut can be tested against a font whose widths are known: the
+ * Skia jest mock has no typeface, so a real font measures nothing there.
+ */
+export type MeasuredFont = Readonly<{
+  getSize: () => number;
+  measureText: (text: string) => { width: number };
+}>;
+
+const textWidthCache = new Map<string, number>();
+const fitTextCache = new Map<string, string>();
+const TEXT_CACHE_LIMIT = 512;
+
+/** `measureText` is not free, and a row is measured on every recorded frame. */
+function textWidth(value: string, font: MeasuredFont): number {
+  const key = `${font.getSize()}:${value}`;
+  const cached = textWidthCache.get(key);
+  if (cached !== undefined) return cached;
+  // A font with no typeface measures nothing and also draws nothing, so zero
+  // is the honest answer rather than a NaN that silently disables the cut.
+  const measured = font.measureText(value)?.width;
+  const width = Number.isFinite(measured) ? measured : 0;
+  remember(textWidthCache, key, width);
+  return width;
 }
 
-function formatDuration(durationMs: number): string {
-  const seconds = Math.max(0, Math.floor(durationMs / 1000));
-  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
+/**
+ * The longest prefix of `value` that fits `maxWidth`, ellipsed when it had to
+ * be cut.
+ *
+ * Cut by measurement rather than by a character count: the display face is
+ * proportional, so a count either wastes the column or overruns it. The first
+ * guess comes from the average glyph width and is corrected from there, which
+ * lands in one or two steps for a real title.
+ */
+export function fitText(
+  value: string,
+  font: MeasuredFont,
+  maxWidth: number,
+): string {
+  if (maxWidth <= 0) return '';
+  const key = `${font.getSize()}:${Math.round(maxWidth)}:${value}`;
+  const cached = fitTextCache.get(key);
+  if (cached !== undefined) return cached;
+  let result = value;
+  if (textWidth(value, font) > maxWidth) {
+    const perChar = textWidth(value, font) / value.length;
+    let count = Math.max(0, Math.min(value.length - 1, Math.floor(maxWidth / perChar) - 1));
+    while (count > 0 && textWidth(`${value.slice(0, count)}…`, font) > maxWidth) {
+      count -= 1;
+    }
+    while (
+      count < value.length - 1 &&
+      textWidth(`${value.slice(0, count + 1)}…`, font) <= maxWidth
+    ) {
+      count += 1;
+    }
+    result = count <= 0 ? '' : `${value.slice(0, count)}…`;
+  }
+  remember(fitTextCache, key, result);
+  return result;
+}
+
+function remember<T>(cache: Map<string, T>, key: string, value: T): void {
+  if (cache.size >= TEXT_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (oldest !== undefined) cache.delete(oldest);
+  }
+  cache.set(key, value);
 }
 
 /**

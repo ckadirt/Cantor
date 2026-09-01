@@ -34,6 +34,11 @@ export type LensSong = Readonly<{
    * which turns both facts into the four marks the field draws.
    */
   arriving: number | null;
+  /**
+   * The delivery artifact's size in bytes, or null when the node has not
+   * offered one yet. What a downloaded row weighs, and what a shelf sums.
+   */
+  byteLength: number | null;
   /** True for the song the player currently holds, at every level it appears. */
   playing: boolean;
   /**

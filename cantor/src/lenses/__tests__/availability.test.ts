@@ -1,8 +1,12 @@
 import { PaintStyle, Skia } from '@shopify/react-native-skia';
 import { FACE_MAX_EXTENT } from '../face';
+import { fitText } from '../nameLens';
 import {
   arrivingFraction,
+  availabilityAction,
+  availabilityLine,
   availabilityOf,
+  formatBytes,
   nameLens,
   neutralAnalysis,
   type LensPaints,
@@ -21,6 +25,7 @@ function song(overrides: Partial<LensSong> = {}): LensSong {
     nodeLabel: 'Studio',
     audioState: 'remote',
     arriving: null,
+    byteLength: 3_400_000,
     playing: false,
     analysis: neutralAnalysis(),
     progress: null,
@@ -51,6 +56,49 @@ describe('what a song promises about its audio', () => {
   it('clamps a node that reports more bytes than it promised', () => {
     expect(arrivingFraction(2000, 1000)).toBe(1);
     expect(arrivingFraction(-10, 1000)).toBe(0);
+  });
+});
+
+describe('what a row says and offers', () => {
+  it('offers the one action the state allows', () => {
+    expect(availabilityAction('not-synced')).toBe('GET');
+    expect(availabilityAction('cached')).toBe('KEEP');
+    expect(availabilityAction('downloaded')).toBe('REMOVE');
+    // Nothing to offer while the bytes are already on their way.
+    expect(availabilityAction('arriving')).toBeNull();
+  });
+
+  it('says where the audio is, in the words the design uses', () => {
+    expect(availabilityLine(song({ audioState: 'remote' }))).toBe(
+      'ON STUDIO',
+    );
+    expect(availabilityLine(song({ audioState: 'cached' }))).toBe(
+      'CACHED · MAY BE RECLAIMED',
+    );
+    expect(
+      availabilityLine(song({ audioState: 'pinned', byteLength: 3_400_000 })),
+    ).toBe('DOWNLOADED · 3.2 MB');
+    expect(
+      availabilityLine(song({ audioState: 'partial', arriving: 0.423 })),
+    ).toBe('DOWNLOADING · 42%');
+  });
+
+  it('says less rather than something false when the node offered no size', () => {
+    expect(
+      availabilityLine(song({ audioState: 'pinned', byteLength: null })),
+    ).toBe('DOWNLOADED');
+    expect(
+      availabilityLine(song({ audioState: 'partial', arriving: null })),
+    ).toBe('DOWNLOADING');
+  });
+
+  it('says bytes the way a person would', () => {
+    expect(formatBytes(812 * 1024)).toBe('812 KB');
+    expect(formatBytes(3_400_000)).toBe('3.2 MB');
+    expect(formatBytes(34 * 1024 * 1024)).toBe('34 MB');
+    expect(formatBytes(1.4 * 1024 ** 3)).toBe('1.4 GB');
+    expect(formatBytes(0)).toBe('0 KB');
+    expect(formatBytes(Number.NaN)).toBe('0 KB');
   });
 });
 
@@ -157,5 +205,48 @@ describe('the four marks are four different marks', () => {
     const playing = draw(song({ audioState: 'cached', playing: true }));
 
     expect(playing.ring).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Tap descends and the word at the end acts, so the title has to stop before
+ * the word does. The Skia jest mock has no typeface — it measures nothing and
+ * draws no glyphs — so the cut is tested against a font whose widths are known
+ * and the drawn result is checked on the device.
+ */
+describe('cutting a title to the column it has', () => {
+  /** A font where every character is exactly seven wide. */
+  const font = {
+    getSize: () => 15,
+    measureText: (text: string) => ({ width: text.length * 7 }),
+  };
+
+  it('leaves a title that already fits exactly as it is', () => {
+    expect(fitText('Lanterns', font, 200)).toBe('Lanterns');
+  });
+
+  it('cuts to the widest prefix that fits, and says it was cut', () => {
+    // 10 characters of room: nine of the title and the ellipsis.
+    const cut = fitText('Distant Signal', font, 70);
+    expect(cut.endsWith('…')).toBe(true);
+    expect(cut.length * 7).toBeLessThanOrEqual(70);
+    expect(fitText('Distant Signal', font, 77).length).toBeGreaterThan(
+      cut.length,
+    );
+  });
+
+  it('never returns more than it was asked for, at any width', () => {
+    const title = 'A title far longer than any row could hope to hold';
+    for (let width = 0; width <= 400; width += 7) {
+      expect(fitText(title, font, width).length * 7).toBeLessThanOrEqual(
+        Math.max(width, 0),
+      );
+    }
+  });
+
+  it('gives up rather than drawing an ellipsis alone', () => {
+    expect(fitText('Lanterns', font, 6)).toBe('');
+    expect(fitText('Lanterns', font, 0)).toBe('');
+    expect(fitText('Lanterns', font, -10)).toBe('');
   });
 });

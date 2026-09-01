@@ -39,6 +39,15 @@ type Props = {
   groupCount: number;
   /** The name of the cluster you are inside, at L1. */
   groupLabel: string | null;
+  /**
+   * The bulk action for the shelf you are inside, already carrying its size —
+   * `DOWNLOAD ALL · 84 MB` — or null when there is nothing left to fetch.
+   *
+   * Bulk work is list work, so it lives at L1 only: at L0 it would act on a
+   * cluster you are looking at rather than one you are inside.
+   */
+  shelfAction: string | null;
+  onShelfAction: () => void;
 };
 
 /**
@@ -119,6 +128,8 @@ function FieldOverlayImpl({
   songCount,
   groupCount,
   groupLabel,
+  shelfAction,
+  onShelfAction,
 }: Props) {
   const pal = usePalette();
   const onDateAxis = arrangementKey === byTime.key;
@@ -135,17 +146,52 @@ function FieldOverlayImpl({
         onPress={onOpenComposer}
       />
       {showHeader ? (
-        <View style={styles.header} pointerEvents="none">
-          <Text style={[type.eyebrow, { color: pal.muted }]}>
+        // box-none, not none: the count is not touchable but the shelf action
+        // beside it is, and it is the only thing in this corner that is.
+        <View style={styles.header} pointerEvents="box-none">
+          <Text style={[type.eyebrow, { color: pal.muted }]} pointerEvents="none">
             L{LEVELS[level].index} · {LEVELS[level].name}
           </Text>
-          <Text style={[type.title, styles.title, { color: pal.ink }]}>
+          <Text
+            style={[type.title, styles.title, { color: pal.ink }]}
+            pointerEvents="none"
+          >
             {level === 'shelf' ? groupLabel ?? 'Group' : 'Field'}
           </Text>
-          <Text style={[type.eyebrow, styles.meta, { color: pal.faint }]}>
-            {metaLine(level, songCount, groupCount, onDateAxis, dateResolution)}
-            {offline ? ' · OFFLINE' : ''}
-          </Text>
+          <View style={styles.metaRow} pointerEvents="box-none">
+            <Text
+              style={[type.eyebrow, { color: pal.faint }]}
+              pointerEvents="none"
+            >
+              {metaLine(
+                level,
+                songCount,
+                groupCount,
+                onDateAxis,
+                dateResolution,
+              )}
+              {offline ? ' · OFFLINE' : ''}
+            </Text>
+            {level === 'shelf' && shelfAction !== null ? (
+              <Pressable
+                accessibilityLabel={shelfAction}
+                accessibilityRole="button"
+                hitSlop={space.md}
+                onPress={onShelfAction}
+              >
+                {({ pressed }) => (
+                  <Text
+                    style={[
+                      type.eyebrow,
+                      { color: pressed ? pal.muted : pal.ink },
+                    ]}
+                  >
+                    {shelfAction}
+                  </Text>
+                )}
+              </Pressable>
+            ) : null}
+          </View>
         </View>
       ) : null}
 
@@ -465,7 +511,14 @@ const styles = StyleSheet.create({
     top: space.xl,
   },
   title: { marginTop: space.sm },
-  meta: { marginTop: space.sm },
+  // The count and the shelf's bulk action share one line, at opposite ends:
+  // what is here, and the one thing you can do to all of it.
+  metaRow: {
+    alignItems: 'flex-end',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: space.sm,
+  },
   // No `gap`: a flex gap is spent even on a zero-height child, so a collapsed
   // resolution row would still push the dial up by 8. Children carry their own.
   foot: {
