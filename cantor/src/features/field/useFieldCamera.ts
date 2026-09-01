@@ -4,8 +4,10 @@ import {
   runOnJS,
   useReducedMotion,
   useSharedValue,
+  withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
+import { easeSmoother } from '../../motion';
 import {
   GRAIN_KNOBS,
   hitTestPlacement,
@@ -44,6 +46,8 @@ export const FIELD_CAMERA_KNOBS = {
   EDGE_PULL_MAX_PX: 140,
   EDGE_PULL_OPEN_PX: 90,
   EDGE_PULL_HORIZONTAL_TOLERANCE_PX: 50,
+  /** How long a pull released short of the threshold takes to roll back up. */
+  EDGE_PULL_RETRACT_MS: 260,
   MIN_SCALE_RATIO: 0.5,
   // L3 is reachable now. The ceiling is the scale that shows the closest look
   // the grain view offers, derived from the grain knobs so the two cannot drift
@@ -100,6 +104,8 @@ type CameraState = {
   cameraShared: SharedValue<Camera>;
   focusKeyShared: SharedValue<string | null>;
   fitScaleShared: SharedValue<number>;
+  /** How far an edge pull has come, in screen pixels; see the shared value. */
+  pullShared: SharedValue<number>;
   descend: (placement: Placement) => void;
   ascend: () => boolean;
   home: () => void;
@@ -182,12 +188,24 @@ export function useFieldCamera({
   const fitScaleSharedCandidate = useSharedValue(EMPTY_CAMERA.scale);
   const layoutFitSharedCandidate = useSharedValue(0);
   const mirrorBusyCandidate = useSharedValue(false);
+  /**
+   * How far an edge pull has come, in screen pixels: positive is the composer
+   * being drawn down from the top, negative is engines being drawn up from the
+   * bottom, zero is neither.
+   *
+   * A surface reads this directly on the UI thread, so a pull *is* the sheet
+   * moving rather than a gesture whose result appears afterwards. It stays the
+   * one place that position lives: the gesture writes it with the finger, and
+   * React writes it — through a timing curve — when the sheet opens or closes.
+   */
+  const pullSharedCandidate = useSharedValue(0);
   const cameraShared = useRef(cameraSharedCandidate).current;
   const focusKeyShared = useRef(focusKeySharedCandidate).current;
   const fitScaleShared = useRef(fitScaleSharedCandidate).current;
   /** The live layout's terminal FIT, which is what the pinch clamps against. */
   const layoutFitShared = useRef(layoutFitSharedCandidate).current;
   const mirrorBusy = useRef(mirrorBusyCandidate).current;
+  const pullShared = useRef(pullSharedCandidate).current;
 
   layoutRef.current = layout;
 
@@ -589,7 +607,7 @@ export function useFieldCamera({
       const size = viewport;
       if (field === null || size === null) return;
       const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
-      const level = levelOf(cameraRef.current.scale, hitFitScale);
+      const hitLevel = levelOf(cameraRef.current.scale, hitFitScale);
       // The action column is answered before the row it sits in, so `GET` on a
       // song you are not opening does not also open it.
       const actionRow = hitTestRowAction(
@@ -597,7 +615,7 @@ export function useFieldCamera({
         cameraRef.current,
         size,
         point,
-        level,
+        hitLevel,
         hitFitScale,
       );
       if (actionRow !== null && onRowAction?.(actionRow) === true) return;
@@ -606,7 +624,7 @@ export function useFieldCamera({
         cameraRef.current,
         size,
         point,
-        level,
+        hitLevel,
         hitFitScale,
       );
       if (hit) descend(hit);
@@ -723,6 +741,9 @@ export function useFieldCamera({
             pull: 'compose',
             pullAmount: Math.min(vertical, knobs.EDGE_PULL_MAX_PX),
           };
+          // The raw distance, not the clamped one: the decision saturates at
+          // EDGE_PULL_MAX_PX but the blind keeps following the finger.
+          pullShared.value = vertical;
           return;
         }
         if (
@@ -735,6 +756,7 @@ export function useFieldCamera({
             pull: 'engines',
             pullAmount: Math.min(-vertical, knobs.EDGE_PULL_MAX_PX),
           };
+          pullShared.value = vertical;
           return;
         }
         if (start.pull !== null) return;
@@ -752,8 +774,18 @@ export function useFieldCamera({
           start?.pull != null &&
           start.pullAmount >= knobs.EDGE_PULL_OPEN_PX
         ) {
+          // Hold where the finger left it. The screen opens the sheet, and the
+          // opening animation carries on from exactly here rather than from a
+          // position the finger never visited.
           runOnJS(completePull)(start.pull);
           return;
+        }
+        if (start?.pull != null) {
+          // Released short: it rolls back up, like letting go of a blind.
+          pullShared.value = withTiming(0, {
+            duration: knobs.EDGE_PULL_RETRACT_MS,
+            easing: easeSmoother,
+          });
         }
         settle();
       });
@@ -789,6 +821,7 @@ export function useFieldCamera({
     panStart,
     pinchStart,
     pinching,
+    pullShared,
     holdAt,
     tapAt,
     viewport,
@@ -810,6 +843,7 @@ export function useFieldCamera({
     cameraShared,
     focusKeyShared,
     fitScaleShared,
+    pullShared,
     descend,
     ascend,
     home,
