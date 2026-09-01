@@ -37,8 +37,14 @@ import {
   type Viewport,
 } from '../../field';
 import {
+  FACE_FILL_ALPHA,
+  FACE_STROKE_ALPHA,
+  NAME_LENS_KNOBS,
+  arrivingFraction,
+  availabilityOf,
   lensByKey,
   nameLensFacePath,
+  nameLensRingRadius,
   neutralAnalysis,
   type LensFonts,
   type LensPaints,
@@ -418,6 +424,11 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         const presentation = presentations.get(flight.entityKey);
         if (presentation === undefined) return null;
         const song = presentation.song;
+        // A face keeps what it promises while it flies. Weighting the flight
+        // the way the picture weights the mark is what stops a downloaded song
+        // from emptying out on its way to a new seat and filling again when it
+        // lands.
+        const availability = availabilityOf(presentation.localAudio.state);
         return (
           <NativeFaceFlight
             key={flight.key}
@@ -434,6 +445,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             })}
             playing={flight.entityKey === playingKey}
             color={palette.ink}
+            weight={FACE_STROKE_ALPHA[availability]}
+            filled={FACE_FILL_ALPHA[availability] > 0}
           />
         );
       })}
@@ -450,6 +463,8 @@ function NativeFaceFlight({
   path,
   playing,
   color,
+  weight,
+  filled,
 }: {
   flight: PlacementFlight;
   clock: SharedValue<number>;
@@ -459,6 +474,10 @@ function NativeFaceFlight({
   path: ReturnType<typeof nameLensFacePath>;
   playing: boolean;
   color: string;
+  /** The availability alpha the picture would draw this face at. */
+  weight: number;
+  /** True for a downloaded song, whose face is filled rather than outlined. */
+  filled: boolean;
 }) {
   const transform = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
@@ -522,12 +541,13 @@ function NativeFaceFlight({
     const t = Math.min(Math.max(raw, 0), 1);
     const amount = t * t * t * (t * (t * 6 - 15) + 10);
     return (
-      0.85 *
+      weight *
       (flight.fromAlpha + (flight.targetAlpha - flight.fromAlpha) * amount)
     );
   });
   return (
     <SkiaGroup transform={transform} opacity={opacity}>
+      {filled ? <Path path={path} color={color} style="fill" /> : null}
       <Path
         path={path}
         color={color}
@@ -538,10 +558,10 @@ function NativeFaceFlight({
         <Circle
           cx={0}
           cy={0}
-          r={7.5}
+          r={nameLensRingRadius(NAME_LENS_KNOBS.MARK_RADIUS_PX)}
           color={color}
           style="stroke"
-          strokeWidth={1.2}
+          strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
         />
       ) : null}
     </SkiaGroup>
@@ -816,6 +836,10 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
       model: presentation.song.model,
       nodeLabel: presentation.nodeLabels[0] ?? presentation.backend.petname,
       audioState: presentation.localAudio.state,
+      arriving: arrivingFraction(
+        presentation.localAudio.bytes,
+        presentation.delivery?.byte_length,
+      ),
       playing: presentation.entity.key === request.playingKey,
       analysis:
         request.analyses?.get(presentation.entity.key) ?? neutralAnalysis(),

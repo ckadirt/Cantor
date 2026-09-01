@@ -26,6 +26,14 @@ export type LensSong = Readonly<{
   seed: number | undefined;
   nodeLabel: string;
   audioState: 'remote' | 'partial' | 'cached' | 'pinned';
+  /**
+   * How much of the delivery artifact has landed, 0..1, or null when nothing is
+   * arriving or the total byte length is unknown.
+   *
+   * Only meaningful while `audioState` is `partial`; see `availability.ts`,
+   * which turns both facts into the four marks the field draws.
+   */
+  arriving: number | null;
   /** True for the song the player currently holds, at every level it appears. */
   playing: boolean;
   /**
