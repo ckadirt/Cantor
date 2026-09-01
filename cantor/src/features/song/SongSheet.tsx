@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
 import type { LocalAudioState } from '../../audio/native';
+import { formatBytes } from '../../lenses';
 import { isPlaylistTag, plainTagsOf } from '../../playlists/playlists';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 
@@ -34,6 +35,19 @@ type Props = {
   /** Playlist membership, which is the only writer of the reserved namespace. */
   playlists: React.ReactNode;
   onRemoveTag: (tag: string) => void;
+  /**
+   * Where this sheet was opened from, and how much of the song it accounts
+   * for. A mark is a placement, not a song: one delete must never silently
+   * remove three.
+   */
+  scopeLabel: string | null;
+  placementCount: number;
+  playlistCount: number;
+  /** The playlist this mark sits in, when the scope is one you can leave. */
+  scopePlaylist: string | null;
+  onRemoveFromScope: () => void;
+  /** What the local copy weighs, for the line that says what removing frees. */
+  downloadedBytes: number | null;
   onTrash: () => void;
   onPin: () => void;
   onUnpin: () => void;
@@ -61,6 +75,12 @@ function SongSheetImpl({
   onAddTag,
   playlists,
   onRemoveTag,
+  scopeLabel,
+  placementCount,
+  playlistCount,
+  scopePlaylist,
+  onRemoveFromScope,
+  downloadedBytes,
   onTrash,
   onPin,
   onUnpin,
@@ -78,7 +98,14 @@ function SongSheetImpl({
 
   const plainTags = plainTagsOf(song.tags);
   const [tagProblem, setTagProblem] = useState<string | null>(null);
+  const [confirmingTrash, setConfirmingTrash] = useState(false);
   const downloaded = audioState === 'cached' || audioState === 'pinned';
+
+  // A sheet that opens on a different song must never open already asking to
+  // destroy it.
+  useEffect(() => {
+    setConfirmingTrash(false);
+  }, [song.id, visible]);
 
   return (
     <Modal
@@ -93,7 +120,9 @@ function SongSheetImpl({
             { backgroundColor: pal.bg, borderColor: pal.line },
           ]}>
           <View style={styles.header}>
-            <Text style={[type.title, { color: pal.ink }]}>Song</Text>
+            <Text numberOfLines={1} style={[type.title, styles.name, { color: pal.ink }]}>
+              {song.title}
+            </Text>
             <Pressable
               accessibilityLabel="Close song"
               accessibilityRole="button"
@@ -101,6 +130,19 @@ function SongSheetImpl({
               <Text style={[type.eyebrow, { color: pal.muted }]}>CLOSE</Text>
             </Pressable>
           </View>
+
+          {/*
+            Scope, before anything that acts: which mark you held, and how many
+            others this song has. `design.md` warns that many-to-many membership
+            "silently shows one copy"; this is that warning answered from the
+            other side.
+          */}
+          <Text style={[type.eyebrow, { color: pal.muted }]}>
+            {scopeLabel === null ? nodeLabel.toUpperCase() : `FROM · ${scopeLabel.toUpperCase()}`}
+          </Text>
+          <Text style={[type.eyebrow, styles.scope, { color: pal.faint }]}>
+            {scopeSummary(playlistCount, placementCount)}
+          </Text>
 
           <ScrollView contentContainerStyle={styles.body}>
             <Field label="TITLE">
@@ -123,7 +165,6 @@ function SongSheetImpl({
                 onPress={onToggleFavourite}
                 disabled={busy}
               />
-              <SheetButton label="Trash" onPress={onTrash} disabled={busy} />
             </View>
 
             <Field label="TAGS">
@@ -184,18 +225,66 @@ function SongSheetImpl({
                   <SheetButton label="Unpin" onPress={onUnpin} disabled={busy} />
                 ) : (
                   <SheetButton
-                    label="Pin"
+                    label="Keep"
                     onPress={onPin}
                     disabled={busy || !downloaded}
                   />
                 )}
-                <SheetButton
-                  label="Remove download"
-                  onPress={onRemoveDownload}
-                  disabled={busy || audioState === 'remote' || audioState === 'pinned'}
-                />
               </View>
             </Field>
+
+            {/*
+              Three ways to make a song go, in increasing order of how much
+              goes, each saying what it costs. The rules between them are the
+              point: they are not variations of one action.
+            */}
+            <View style={[styles.rule, { backgroundColor: pal.line }]} />
+            <Leaving
+              busy={busy || !downloaded}
+              consequence={`${
+                downloadedBytes === null
+                  ? 'FREES THE LOCAL COPY'
+                  : `FREES ${formatBytes(downloadedBytes)}`
+              } · STAYS ON ${nodeLabel.toUpperCase()}`}
+              label="Remove from this phone"
+              onPress={onRemoveDownload}
+            />
+            {scopePlaylist === null ? null : (
+              <>
+                <View style={[styles.rule, { backgroundColor: pal.line }]} />
+                <Leaving
+                  busy={busy}
+                  consequence={`KEEPS THE SONG · ${marksRemain(placementCount)}`}
+                  label={`Remove from ${scopePlaylist}`}
+                  onPress={onRemoveFromScope}
+                />
+              </>
+            )}
+            <View style={[styles.rule, { backgroundColor: pal.ink }]} />
+            {confirmingTrash ? (
+              <View style={styles.row}>
+                <SheetButton
+                  label="Trash the song"
+                  onPress={() => {
+                    setConfirmingTrash(false);
+                    onTrash();
+                  }}
+                  disabled={busy}
+                />
+                <SheetButton
+                  label="Keep it"
+                  onPress={() => setConfirmingTrash(false)}
+                  disabled={busy}
+                />
+              </View>
+            ) : (
+              <Leaving
+                busy={busy}
+                consequence={trashConsequence(placementCount)}
+                label="Trash the song"
+                onPress={() => setConfirmingTrash(true)}
+              />
+            )}
 
             <Field label="RECIPE">
               {detailError !== null ? (
@@ -233,6 +322,66 @@ function SongSheetImpl({
         </View>
       </View>
     </Modal>
+  );
+}
+
+/** `IN 3 PLAYLISTS · 3 PLACEMENTS`, and the honest singulars. */
+function scopeSummary(playlistCount: number, placementCount: number): string {
+  const playlists =
+    playlistCount === 0
+      ? 'IN NO PLAYLIST'
+      : `IN ${playlistCount} PLAYLIST${playlistCount === 1 ? '' : 'S'}`;
+  const placements = `${placementCount} PLACEMENT${
+    placementCount === 1 ? '' : 'S'
+  }`;
+  return `${playlists} · ${placements}`;
+}
+
+function marksRemain(placementCount: number): string {
+  const remaining = Math.max(0, placementCount - 1);
+  return remaining === 1 ? '1 MARK REMAINS' : `${remaining} MARKS REMAIN`;
+}
+
+function trashConsequence(placementCount: number): string {
+  return placementCount <= 1
+    ? 'THE SONG AND ITS AUDIO, EVERYWHERE'
+    : `EVERY PLACEMENT · ${placementCount} MARKS GO AT ONCE`;
+}
+
+/**
+ * One way out, and what it costs.
+ *
+ * The consequence is not a caption on a button — it is the difference between
+ * dropping a tag and destroying a song, and it is why these three rows are
+ * rows rather than three buttons in a line.
+ */
+function Leaving({
+  label,
+  consequence,
+  onPress,
+  busy,
+}: {
+  label: string;
+  consequence: string;
+  onPress: () => void;
+  busy: boolean;
+}) {
+  const pal = usePalette();
+  return (
+    <Pressable
+      accessibilityLabel={`${label}. ${consequence}`}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: busy }}
+      disabled={busy}
+      onPress={onPress}
+      style={styles.leaving}>
+      <Text style={[type.body, { color: busy ? pal.faint : pal.ink }]}>
+        {label}
+      </Text>
+      <Text style={[type.eyebrow, styles.consequence, { color: pal.faint }]}>
+        {consequence}
+      </Text>
+    </Pressable>
   );
 }
 
@@ -293,6 +442,13 @@ function SheetButton({
 
 const styles = StyleSheet.create({
   scrim: { flex: 1, justifyContent: 'flex-end' },
+  name: { flexShrink: 1, marginRight: space.md },
+  // The scope lines are the sheet's header, not the first field: they need to
+  // sit apart from the form under them or they read as its label.
+  scope: { marginBottom: space.md, marginTop: space.xs },
+  rule: { height: 1, marginTop: space.md },
+  leaving: { minHeight: touch.min, paddingTop: space.md },
+  consequence: { marginTop: space.xs },
   sheet: { borderTopWidth: 1, maxHeight: '85%', padding: space.lg },
   header: {
     alignItems: 'center',

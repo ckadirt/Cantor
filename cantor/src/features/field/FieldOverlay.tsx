@@ -108,7 +108,12 @@ const HINTS = {
   shelf: 'TAP A ROW TO ARRIVE',
 } as const;
 
-/** What one cluster is, so the L0 hint names the thing you are opening. */
+/**
+ * What one cluster is, so the L0 hint names the thing you are opening.
+ *
+ * Only the date axis cuts time; every other axis says its own noun, because a
+ * hint that promises a week and opens a playlist is a hint that lies.
+ */
 const CLUSTER_NOUN: Record<DateResolution, string> = {
   week: 'WEEK',
   month: 'MONTH',
@@ -258,7 +263,7 @@ function FieldOverlayImpl({
           <Text style={[type.eyebrow, styles.hint, { color: pal.faint }]}>
             {level === 'field'
               ? `${HINTS.field} ${
-                  CLUSTER_NOUN[onDateAxis ? dateResolution : 'week']
+                  onDateAxis ? CLUSTER_NOUN[dateResolution] : 'PLAYLIST'
                 }`
               : HINTS.shelf}
           </Text>

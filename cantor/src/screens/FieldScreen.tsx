@@ -35,6 +35,7 @@ import { shelfLabel } from '../features/field/shelfLabels';
 import {
   arrangementByKey,
   byDate,
+  byPlaylist,
   byTime,
   columnsFor,
   gatherFraction,
@@ -47,7 +48,7 @@ import {
   type Placement,
   type Viewport,
 } from '../field';
-import { allPlaylists, normalise, toggle } from '../playlists';
+import { allPlaylists, normalise, playlistsOf, toggle } from '../playlists';
 import type { SongDetail } from '../core/protocol';
 import type { AppIdentity } from '../identity/derive';
 import {
@@ -97,7 +98,18 @@ export function FieldScreen({ identity }: Props) {
     jobKey: string | null;
   } | null>(null);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
-  const [songSheetOpen, setSongSheetOpen] = useState(false);
+  /**
+   * The song the sheet is open on, and the cluster it was opened from.
+   *
+   * A subject rather than a flag: the sheet used to be reachable only from the
+   * player, so "the focused song" was the only song it could mean. A hold at
+   * L0 opens it on a song the camera is nowhere near, and the placement is
+   * what says which of a song's several marks was held.
+   */
+  const [sheetTarget, setSheetTarget] = useState<{
+    entityKey: string;
+    groupKey: string | null;
+  } | null>(null);
   const [songDetail, setSongDetail] = useState<SongDetail | null>(null);
   const [songDetailError, setSongDetailError] = useState<string | null>(null);
   const [songBusy, setSongBusy] = useState(false);
@@ -116,6 +128,19 @@ export function FieldScreen({ identity }: Props) {
     () => buildFieldController({ backends, snapshots, localAudio, outbox }),
     [backends, localAudio, outbox, snapshots],
   );
+  /**
+   * What the phone thinks the time is, for labels that read relatively.
+   *
+   * Re-read when the library changes rather than on a timer: a clock ticking
+   * in state would re-record the field picture every minute for a word that
+   * changes once a week, and the library changing is the only moment the
+   * screen is already re-rendering *and* a week boundary could have passed
+   * unnoticed.
+   */
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  useEffect(() => {
+    setNowMs(Date.now());
+  }, [controller.entities]);
   const layout = useMemo(() => {
     if (viewport === null) return null;
     // Resolution is a property of the date axis, so it is applied here rather
@@ -189,7 +214,7 @@ export function FieldScreen({ identity }: Props) {
   const openEngines = useCallback(() => setEnginesOpen(true), []);
   const closeEngines = useCallback(() => setEnginesOpen(false), []);
   const closeComposer = useCallback(() => setComposerOpen(false), []);
-  const closeSongSheet = useCallback(() => setSongSheetOpen(false), []);
+  const closeSongSheet = useCallback(() => setSheetTarget(null), []);
   const pairFromEngines = useCallback(() => {
     setEnginesOpen(false);
     commands.showPairing();
@@ -274,12 +299,22 @@ export function FieldScreen({ identity }: Props) {
     [controller.presentations, runRowAudio],
   );
 
+  /** Hold acts: everything about a song that is not the act of listening. */
+  const onHoldPlacement = useCallback((placement: Placement) => {
+    setPlaybackError(null);
+    setSheetTarget({
+      entityKey: placement.entityKey,
+      groupKey: placement.groupKey,
+    });
+  }, []);
+
   const fieldCamera = useFieldCamera({
     layout,
     viewport,
     onOpenComposer: openComposer,
     onOpenEngines: openEngines,
     onRowAction,
+    onHoldPlacement,
     nativeRelayout:
       lensKey === 'name' &&
       layout !== null &&
@@ -298,6 +333,55 @@ export function FieldScreen({ identity }: Props) {
     const key = fieldCamera.focus?.entityKey;
     return key === undefined ? null : controller.presentations.get(key) ?? null;
   }, [controller.presentations, fieldCamera.focus]);
+
+  /** The song the sheet is open on, if the field still knows about it. */
+  const sheetSong = useMemo(
+    () =>
+      sheetTarget === null
+        ? null
+        : controller.presentations.get(sheetTarget.entityKey) ?? null,
+    [controller.presentations, sheetTarget],
+  );
+
+  /**
+   * What the sheet is allowed to say about scope.
+   *
+   * A mark is a `(song, group)` pair, so the same song can be three marks in
+   * three clusters. The sheet names the one that was held, counts the rest,
+   * and — when that cluster is a playlist — offers to leave just that one.
+   */
+  const sheetScope = useMemo(() => {
+    if (sheetSong === null) {
+      return {
+        label: null as string | null,
+        playlist: null as string | null,
+        placements: 0,
+        playlists: 0,
+      };
+    }
+    const group =
+      sheetTarget?.groupKey === undefined || layout === null
+        ? undefined
+        : layout.groups.find(
+            candidate => candidate.key === sheetTarget.groupKey,
+          );
+    const playlists = playlistsOf(sheetSong.song.tags);
+    const onPlaylistAxis = arrangementKey === byPlaylist.key;
+    const isPlaylistGroup =
+      onPlaylistAxis &&
+      group !== undefined &&
+      playlists.some(name => name === group.label);
+    return {
+      label:
+        group === undefined ? null : shelfLabel(group.label, nowMs).primary,
+      playlist: isPlaylistGroup ? group.label : null,
+      placements:
+        layout?.placements.filter(
+          placement => placement.entityKey === sheetSong.entity.key,
+        ).length ?? 1,
+      playlists: playlists.length,
+    };
+  }, [arrangementKey, layout, nowMs, sheetSong, sheetTarget]);
 
   /** Every playlist that exists, which is every `p/` tag on every song. */
   const knownPlaylists = useMemo(
@@ -395,43 +479,59 @@ export function FieldScreen({ identity }: Props) {
     }
   }, []);
 
-  const patchFocused = useCallback(
+  const patchSheetSong = useCallback(
     (patch: Parameters<typeof commands.patchSong>[2]) => {
-      if (focused === null) return;
+      if (sheetSong === null) return;
       void runSongCommand(() =>
-        commands.patchSong(focused.entity.nodePublicKey, focused.song, patch),
+        commands.patchSong(sheetSong.entity.nodePublicKey, sheetSong.song, patch),
       );
     },
-    [commands, focused, runSongCommand],
+    [commands, runSongCommand, sheetSong],
   );
 
   const runAudioAction = useCallback(
     (action: 'pin' | 'unpin' | 'remove') => {
-      if (focused === null || focused.delivery === undefined) return;
-      const artifact = focused.delivery;
+      if (sheetSong === null || sheetSong.delivery === undefined) return;
+      const artifact = sheetSong.delivery;
+      const track = transport.snapshot.track;
+      const isCurrent =
+        track?.nodeKey === sheetSong.entity.nodePublicKey &&
+        track?.songId === sheetSong.entity.entityId;
       void runSongCommand(async () => {
         // Never delete a file the player still holds open: drop the reference
         // first, then remove. Native storage stays authoritative either way.
-        if (action === 'remove' && focusedIsCurrent) await transport.close();
+        if (action === 'remove' && isCurrent) await transport.close();
+        // Native storage refuses to delete a pinned artifact, so removing one
+        // from the phone is unpin-then-remove — the same compound the row does.
+        if (action === 'remove' && sheetSong.localAudio.state === 'pinned') {
+          await commands.audio(
+            sheetSong.entity.nodePublicKey,
+            sheetSong.song,
+            artifact,
+            'unpin',
+          );
+        }
         await commands.audio(
-          focused.entity.nodePublicKey,
-          focused.song,
+          sheetSong.entity.nodePublicKey,
+          sheetSong.song,
           artifact,
           action,
         );
       });
     },
-    [commands, focused, focusedIsCurrent, runSongCommand, transport],
+    [commands, runSongCommand, sheetSong, transport],
   );
 
   // Ask the node for the recipe whenever the sheet opens on a song.
+  // Keyed on the sheet's subject, not the camera's: they are no longer the
+  // same song.
   useEffect(() => {
-    if (!songSheetOpen || focused === null) return;
+    if (sheetSong === null) return;
     let active = true;
     setSongDetail(null);
     setSongDetailError(null);
     commands
-      .getSongDetail(focused.entity.nodePublicKey, focused.entity.entityId)
+      .getSongDetail(sheetSong.entity.nodePublicKey, sheetSong.entity.entityId)
       .then(detail => {
         if (active) setSongDetail(detail);
       })
@@ -445,7 +545,7 @@ export function FieldScreen({ identity }: Props) {
     return () => {
       active = false;
     };
-  }, [commands, focused, songSheetOpen]);
+  }, [commands, sheetSong]);
 
   /**
    * Where the caption in flight should land.
@@ -634,8 +734,8 @@ export function FieldScreen({ identity }: Props) {
   ]);
 
   const closeTopmostSheet = useCallback((): boolean => {
-    if (songSheetOpen) {
-      setSongSheetOpen(false);
+    if (sheetTarget !== null) {
+      setSheetTarget(null);
       return true;
     }
     if (pairing) {
@@ -651,7 +751,7 @@ export function FieldScreen({ identity }: Props) {
       return true;
     }
     return false;
-  }, [commands, composerOpen, enginesOpen, pairing, songSheetOpen]);
+  }, [commands, composerOpen, enginesOpen, pairing, sheetTarget]);
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
@@ -663,19 +763,6 @@ export function FieldScreen({ identity }: Props) {
     return () => subscription.remove();
   }, [closeTopmostSheet, fieldCamera]);
 
-  /**
-   * What the phone thinks the time is, for labels that read relatively.
-   *
-   * Re-read when the library changes rather than on a timer: a clock ticking
-   * in state would re-record the field picture every minute for a word that
-   * changes once a week, and the library changing is the only moment the
-   * screen is already re-rendering *and* a week boundary could have passed
-   * unnoticed.
-   */
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  useEffect(() => {
-    setNowMs(Date.now());
-  }, [controller.entities]);
   const songCount = controller.presentations.size;
   /** The cluster you are inside, named the way its axis names it. */
   const focusedGroupLabel = useMemo(() => {
@@ -801,7 +888,10 @@ export function FieldScreen({ identity }: Props) {
             lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
             onOpenDetail={() => {
               setPlaybackError(null);
-              setSongSheetOpen(true);
+              setSheetTarget({
+                entityKey: focused.entity.key,
+                groupKey: fieldCamera.focus?.groupKey ?? null,
+              });
             }}
             onSeek={transport.seek}
             onToggle={() => void playFocused()}
@@ -863,53 +953,74 @@ export function FieldScreen({ identity }: Props) {
         onPair={commands.pairBackend}
         visible={pairing}
       />
-      {focused !== null ? (
+      {sheetSong !== null ? (
         <SongSheet
-          audioState={focused.localAudio.state}
+          audioState={sheetSong.localAudio.state}
           busy={songBusy}
           detail={songDetail}
           detailError={songDetailError}
-          nodeLabel={focused.nodeLabels[0] ?? focused.backend.petname}
+          downloadedBytes={sheetSong.delivery?.byte_length ?? null}
+          nodeLabel={sheetSong.nodeLabels[0] ?? sheetSong.backend.petname}
           onAddTag={tag =>
-            patchFocused({ tags: [...normalise([...focused.song.tags, tag])] })
+            patchSheetSong({
+              tags: [...normalise([...sheetSong.song.tags, tag])],
+            })
           }
           onClose={closeSongSheet}
           onPin={() => runAudioAction('pin')}
           onRemoveDownload={() => runAudioAction('remove')}
+          onRemoveFromScope={() => {
+            const playlist = sheetScope.playlist;
+            if (playlist === null) return;
+            patchSheetSong({
+              tags: [...toggle(sheetSong.song.tags, playlist, false)],
+            });
+            setSheetTarget(null);
+          }}
           onRemoveTag={tag =>
-            patchFocused({
-              tags: focused.song.tags.filter(value => value !== tag),
+            patchSheetSong({
+              tags: sheetSong.song.tags.filter(value => value !== tag),
             })
           }
-          onRename={title => patchFocused({ title })}
+          onRename={title => patchSheetSong({ title })}
+          placementCount={sheetScope.placements}
+          playlistCount={sheetScope.playlists}
           playlists={
             <PlaylistChips
               busy={songBusy}
               known={knownPlaylists}
               onToggle={(name, member) =>
-                patchFocused({
-                  tags: [...toggle(focused.song.tags, name, member)],
+                patchSheetSong({
+                  tags: [...toggle(sheetSong.song.tags, name, member)],
                 })
               }
-              tags={focused.song.tags}
+              tags={sheetSong.song.tags}
             />
           }
           onToggleFavourite={() =>
-            patchFocused({ favorite: !focused.song.favorite })
+            patchSheetSong({ favorite: !sheetSong.song.favorite })
           }
           onTrash={() =>
             void runSongCommand(async () => {
-              if (focusedIsCurrent) await transport.close();
+              const track = transport.snapshot.track;
+              if (
+                track?.nodeKey === sheetSong.entity.nodePublicKey &&
+                track?.songId === sheetSong.entity.entityId
+              ) {
+                await transport.close();
+              }
               await commands.changeSongPresence(
-                focused.entity.nodePublicKey,
-                focused.song,
+                sheetSong.entity.nodePublicKey,
+                sheetSong.song,
               );
-              setSongSheetOpen(false);
+              setSheetTarget(null);
             })
           }
           onUnpin={() => runAudioAction('unpin')}
-          song={focused.song}
-          visible={songSheetOpen}
+          scopeLabel={sheetScope.label}
+          scopePlaylist={sheetScope.playlist}
+          song={sheetSong.song}
+          visible={sheetSong !== null}
         />
       ) : null}
       {condensing !== null && viewport !== null ? (
