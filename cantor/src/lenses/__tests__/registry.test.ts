@@ -26,6 +26,7 @@ function song(overrides: Partial<LensSong> = {}): LensSong {
     model: 'acestep:1.5-fast',
     nodeLabel: 'Studio',
     audioState: 'remote',
+    arriving: null,
     playing: false,
     analysis: neutralAnalysis(),
     progress: null,
@@ -98,6 +99,19 @@ describe('every lens draws', () => {
     ['the playing song', song({ playing: true, progress: 0.42 })],
     ['a song at its very end', song({ playing: true, progress: 1 })],
     ['a silent song', song({ analysis: analyseWindow(silence()) })],
+    // The four availability marks: every lens has to survive all of them, and
+    // the name lens has to tell the last two apart.
+    ['a song still on the node', song({ audioState: 'remote' })],
+    ['a song arriving', song({ audioState: 'partial', arriving: 0.4 })],
+    [
+      'a song arriving with no known total',
+      song({ audioState: 'partial', arriving: null }),
+    ],
+    ['a downloaded song', song({ audioState: 'pinned' })],
+    [
+      'a downloaded song that is playing',
+      song({ audioState: 'pinned', playing: true, progress: 0.2 }),
+    ],
   ];
 
   for (const lens of LENSES) {

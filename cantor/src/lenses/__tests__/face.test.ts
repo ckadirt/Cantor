@@ -1,5 +1,6 @@
 import {
   FACE_KNOBS,
+  FACE_MAX_EXTENT,
   faceParams,
   facePoints,
   faceSeed,
@@ -58,6 +59,21 @@ describe('the face', () => {
       (1 + FACE_KNOBS.ECCENTRICITY / 2);
     expect(maxRadius(points)).toBeLessThanOrEqual(bound);
     expect(maxRadius(points)).toBeGreaterThan(0.5);
+  });
+
+  it('never reaches past FACE_MAX_EXTENT, which is where the rings sit', () => {
+    // A ring drawn inside this radius cuts through a lobe, so the bound has to
+    // hold for every recipe rather than for the one this file usually draws.
+    for (let index = 0; index < 500; index += 1) {
+      const points = facePoints(
+        recipe({
+          seed: index * 7919,
+          id: `song-${index}`,
+          durationMs: index * 1_337,
+        }),
+      );
+      expect(maxRadius(points)).toBeLessThanOrEqual(FACE_MAX_EXTENT);
+    }
   });
 
   it('survives a zero, absurd or negative duration', () => {

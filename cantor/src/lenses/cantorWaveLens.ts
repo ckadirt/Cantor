@@ -1,4 +1,5 @@
 import { PaintStyle } from '@shopify/react-native-skia';
+import { availabilityOf } from './availability';
 import { LENS_INTERVALS } from './cantorIntervals';
 import type { Lens } from './types';
 
@@ -22,6 +23,11 @@ const CANTOR_WAVE_KNOBS = {
   BAR_GAP_RATIO: 0.18, // fraction of a bar's slot left as air
   HEARD_ALPHA: 1, // the part already played
   UNHEARD_ALPHA: 0.38, // the part still to come
+  // Availability, in the one term this lens has: a song whose audio is not on
+  // the phone is drawn lighter than one that is. The face's cached-versus-
+  // downloaded distinction has no bar equivalent and is not drawn here --
+  // see docs/interfacealpha/implementation_notes.md.
+  NOT_HERE_ALPHA: 0.45,
   PLAYING_RING_RADIUS_PX: 9,
   PLAYING_RING_WIDTH_PX: 1.2,
 } as const;
@@ -67,6 +73,11 @@ export const cantorWaveLens: Lens = {
     );
     const levels = song.analysis.rms;
     const heardUntil = song.progress === null ? -1 : song.progress;
+    const availability = availabilityOf(song.audioState);
+    const here =
+      availability === 'cached' || availability === 'downloaded'
+        ? 1
+        : CANTOR_WAVE_KNOBS.NOT_HERE_ALPHA;
 
     for (let index = 0; index < LENS_INTERVALS.length; index += 1) {
       const interval = LENS_INTERVALS[index];
@@ -79,6 +90,7 @@ export const cantorWaveLens: Lens = {
       const heard = heardUntil >= interval.start;
       paints.ink.setAlphaf(
         alpha *
+          here *
           (heardUntil < 0
             ? CANTOR_WAVE_KNOBS.HEARD_ALPHA
             : heard

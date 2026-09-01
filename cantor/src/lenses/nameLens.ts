@@ -4,11 +4,18 @@ import {
   type SkPaint,
   type SkPath,
 } from '@shopify/react-native-skia';
-import { facePoints, type FaceRecipe } from './face';
-import type { Lens, LensSong } from './types';
+import { availabilityOf, type Availability } from './availability';
+import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
+import type { Lens, LensPaints, LensSong } from './types';
 
-/** KNOBS — pixel measurements match the verified name-lens prototype. */
-const NAME_LENS_KNOBS = {
+/**
+ * KNOBS — pixel measurements match the verified name-lens prototype.
+ *
+ * Exported because `FieldCanvas` draws this same face from React during a
+ * re-cut flight, and a mark that changed size or ring gap on the way to its new
+ * seat would be a different mark.
+ */
+export const NAME_LENS_KNOBS = {
   /** Radius the face is drawn at as a mark. Was the dot's radius. */
   MARK_RADIUS_PX: 7.5,
   /** The same face beside a row, small enough to leave the title its width. */
@@ -18,11 +25,51 @@ const NAME_LENS_KNOBS = {
   ROW_TITLE_BASELINE_PX: -1,
   ROW_META_BASELINE_PX: 13,
   MAX_TITLE_CHARS: 24,
-  // The playing mark keeps its dot and gains a ring, so "which one is playing"
-  // is legible at L0 without any mini-player chrome anywhere.
-  PLAYING_RING_RADIUS_PX: 7.5,
+  // The playing mark keeps its face and gains a ring, so "which one is playing"
+  // is legible at L0 without any mini-player chrome anywhere. Both rings clear
+  // the face's furthest lobe by this much: drawn any closer they cut through the
+  // contour and read as part of it rather than around it, and a ring inside a
+  // filled face is not a ring at all.
+  RING_GAP_PX: 1.5,
   PLAYING_RING_WIDTH_PX: 1.2,
+  /** The arriving arc, in the same hand as the ring a generating job draws. */
+  ARRIVING_RING_WIDTH_PX: 1.4,
+  /** Swept when the artifact's byte length is unknown, so progress is unknowable. */
+  ARRIVING_INDETERMINATE_SWEEP_DEG: 70,
 } as const;
+
+/**
+ * Availability as weight: how much of the face is drawn.
+ *
+ * Faint is a song you do not have, firm is one you have for now, and filled is
+ * one you are promised. The whole field's offline-readiness is legible at a
+ * glance, with no badges anywhere. `cached` keeps the alpha the face has always
+ * been drawn at, so the state the field mostly shows today does not move.
+ */
+export const FACE_STROKE_ALPHA: Readonly<Record<Availability, number>> = {
+  'not-synced': 0.38,
+  arriving: 0.38,
+  cached: 0.85,
+  downloaded: 1,
+};
+
+/** Only a downloaded song is filled — the promise the budget may not reclaim. */
+export const FACE_FILL_ALPHA: Readonly<Record<Availability, number>> = {
+  'not-synced': 0,
+  arriving: 0,
+  cached: 0,
+  downloaded: 1,
+};
+
+/**
+ * Where a ring goes around a face drawn at `radius`.
+ *
+ * Exported because the flying face in `FieldCanvas` draws the playing ring from
+ * React, and the two have to agree or the ring would jump size on landing.
+ */
+export function nameLensRingRadius(radius: number): number {
+  return radius * FACE_MAX_EXTENT + NAME_LENS_KNOBS.RING_GAP_PX;
+}
 
 export const nameLens: Lens = {
   key: 'name',
@@ -31,40 +78,51 @@ export const nameLens: Lens = {
     const { alpha, fonts, paints } = options;
     if (alpha <= 0) return;
     if (box.kind === 'mark') {
-      paints.outline.setAlphaf(alpha * 0.85);
-      drawFace(
+      drawAvailableFace(
         canvas,
         song,
         box.x,
         box.y,
         NAME_LENS_KNOBS.MARK_RADIUS_PX,
-        paints.outline,
+        alpha,
+        paints,
       );
-      if (song.playing) drawPlayingRing(canvas, box.x, box.y, alpha, paints);
+      if (song.playing) {
+        drawPlayingRing(
+          canvas,
+          box.x,
+          box.y,
+          NAME_LENS_KNOBS.MARK_RADIUS_PX,
+          alpha,
+          paints,
+        );
+      }
       return;
     }
 
-    paints.ink.setAlphaf(alpha);
-    paints.outline.setAlphaf(alpha);
-    paints.muted.setAlphaf(alpha);
-    paints.faint.setAlphaf(alpha);
-    drawFace(
+    const faceX = box.x - NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX;
+    drawAvailableFace(
       canvas,
       song,
-      box.x - NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX,
+      faceX,
       box.y,
       NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
-      paints.outline,
+      alpha,
+      paints,
     );
     if (song.playing) {
       drawPlayingRing(
         canvas,
-        box.x - NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX,
+        faceX,
         box.y,
+        NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
         alpha,
         paints,
       );
     }
+    paints.ink.setAlphaf(alpha);
+    paints.muted.setAlphaf(alpha);
+    paints.faint.setAlphaf(alpha);
     canvas.drawText(
       truncate(song.title),
       box.x - NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX,
@@ -94,19 +152,12 @@ function formatDuration(durationMs: number): string {
 }
 
 /**
- * The playing indicator: a ring around the mark, drawn at every level.
- *
- * Restores the paint's fill style afterwards — paints are shared across the
- * whole picture, so leaving one stroked would silently outline everything drawn
- * after it.
- */
-/**
- * The song's face, stroked at `radius`.
+ * The song's face, drawn at `radius` with whatever paint the caller hands in.
  *
  * The geometry is a pure function of the recipe, so this is the same silhouette
  * the row and the player draw — only `radius` changes. Stroking rather than
- * filling is what carries availability later: outline is a song on the node,
- * filled is one on this phone.
+ * filling is what carries availability: outline is a song on the node, filled
+ * is one on this phone. `drawAvailableFace` decides which.
  */
 function drawFace(
   canvas: Parameters<Lens['draw']>[0],
@@ -166,16 +217,92 @@ export function nameLensFacePath(
   return path;
 }
 
+/**
+ * The face, weighted by what the song promises about its audio.
+ *
+ * Three states, three promises, and cached and downloaded never look alike: a
+ * faint contour is a song that will not play offline, a firm one is a loan the
+ * budget may reclaim, and a filled one is here until you remove it. A song
+ * still arriving keeps the faint contour and gains the arc.
+ */
+function drawAvailableFace(
+  canvas: Parameters<Lens['draw']>[0],
+  song: LensSong,
+  cx: number,
+  cy: number,
+  radius: number,
+  alpha: number,
+  paints: LensPaints,
+): void {
+  const availability = availabilityOf(song.audioState);
+  const fill = FACE_FILL_ALPHA[availability];
+  if (fill > 0) {
+    paints.ink.setAlphaf(alpha * fill);
+    drawFace(canvas, song, cx, cy, radius, paints.ink);
+  }
+  paints.outline.setAlphaf(alpha * FACE_STROKE_ALPHA[availability]);
+  drawFace(canvas, song, cx, cy, radius, paints.outline);
+  if (availability === 'arriving') {
+    drawArrivingArc(canvas, song.arriving, cx, cy, radius, alpha, paints);
+  }
+}
+
+/**
+ * The wait, drawn: the same ring a generating job traces, around the face the
+ * bytes are on their way to.
+ *
+ * Pressing play on a song that is not here is a full download with a silence in
+ * front of it — `playFocused` fetches the whole delivery artifact before it
+ * opens anything — so the arrival has to be visible rather than implied.
+ *
+ * Restores the paint's fill style afterwards; paints are shared across the
+ * whole picture, so leaving one stroked would silently outline everything drawn
+ * after it.
+ */
+function drawArrivingArc(
+  canvas: Parameters<Lens['draw']>[0],
+  fraction: number | null,
+  cx: number,
+  cy: number,
+  radius: number,
+  alpha: number,
+  paints: LensPaints,
+): void {
+  const ringRadius = nameLensRingRadius(radius);
+  const box = Skia.XYWHRect(
+    cx - ringRadius,
+    cy - ringRadius,
+    ringRadius * 2,
+    ringRadius * 2,
+  );
+  paints.ink.setAlphaf(alpha);
+  paints.ink.setStyle(PaintStyle.Stroke);
+  paints.ink.setStrokeWidth(NAME_LENS_KNOBS.ARRIVING_RING_WIDTH_PX);
+  const sweep =
+    fraction === null
+      ? NAME_LENS_KNOBS.ARRIVING_INDETERMINATE_SWEEP_DEG
+      : 360 * Math.min(1, Math.max(0, fraction));
+  canvas.drawArc(box, -90, sweep, false, paints.ink);
+  paints.ink.setStyle(PaintStyle.Fill);
+}
+
+/**
+ * The playing indicator: a ring around the mark, drawn at every level.
+ *
+ * Restores the paint's fill style afterwards, for the same reason the arriving
+ * arc does.
+ */
 function drawPlayingRing(
-  canvas: Parameters<typeof nameLens.draw>[0],
+  canvas: Parameters<Lens['draw']>[0],
   x: number,
   y: number,
+  radius: number,
   alpha: number,
-  paints: Parameters<typeof nameLens.draw>[3]['paints'],
+  paints: LensPaints,
 ): void {
   paints.ink.setAlphaf(alpha);
   paints.ink.setStyle(PaintStyle.Stroke);
   paints.ink.setStrokeWidth(NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX);
-  canvas.drawCircle(x, y, NAME_LENS_KNOBS.PLAYING_RING_RADIUS_PX, paints.ink);
+  canvas.drawCircle(x, y, nameLensRingRadius(radius), paints.ink);
   paints.ink.setStyle(PaintStyle.Fill);
 }

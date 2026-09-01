@@ -47,6 +47,24 @@ export const FACE_KNOBS = {
   DURATION_CYCLE_S: 97,
 } as const;
 
+/**
+ * The furthest any face can reach from its centre, as a multiple of the radius
+ * it is drawn at.
+ *
+ * The contour is a radius of 1 pushed out by both harmonics and then stretched
+ * by the eccentricity, so it is never a circle of `R` and anything drawn *around*
+ * a face — the playing ring, the arriving arc — has to clear this or it cuts
+ * through the lobes and reads as part of the contour. Derived from the knobs
+ * rather than measured, so tuning an amplitude moves the rings with it.
+ */
+export const FACE_MAX_EXTENT =
+  (1 +
+    FACE_KNOBS.PRIMARY_MIN +
+    FACE_KNOBS.PRIMARY_SPAN +
+    FACE_KNOBS.SECONDARY_MIN +
+    FACE_KNOBS.SECONDARY_SPAN) /
+  (1 - FACE_KNOBS.ECCENTRICITY / 2);
+
 export type FaceRecipe = Readonly<{
   /** `SongHeader.seed` when the node sent one. */
   seed: number | undefined;
