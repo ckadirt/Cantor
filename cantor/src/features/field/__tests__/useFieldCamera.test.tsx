@@ -31,12 +31,42 @@ const entities: FieldEntity[] = [
 ];
 
 type GestureHandlers = Record<string, (...args: any[]) => void>;
-type TestGesture = { gestures: Array<{ handlers: GestureHandlers }> };
+type TestGesture = {
+  gestures?: Array<TestGesture>;
+  handlers?: GestureHandlers;
+};
 
-function gestures(): [GestureHandlers, GestureHandlers, GestureHandlers] {
-  return (latest.gesture as unknown as TestGesture).gestures.map(
-    gesture => gesture.handlers,
-  ) as [GestureHandlers, GestureHandlers, GestureHandlers];
+/**
+ * The composed gesture's leaves, as `[pinch, pan, tap, hold]`.
+ *
+ * Tap and hold are exclusive to each other inside the simultaneous group — a
+ * recognised hold must cancel the tap under it — so the tree is one level
+ * deeper than it looks, and the hold comes *first* in that pair because
+ * `Gesture.Exclusive` takes them in priority order. This flattens the tree and
+ * puts them back in the order a reader expects.
+ */
+function gestures(): [
+  GestureHandlers,
+  GestureHandlers,
+  GestureHandlers,
+  GestureHandlers,
+] {
+  const leaves: GestureHandlers[] = [];
+  const walk = (node: TestGesture) => {
+    if (node.gestures === undefined) {
+      if (node.handlers !== undefined) leaves.push(node.handlers);
+      return;
+    }
+    node.gestures.forEach(walk);
+  };
+  walk(latest.gesture as unknown as TestGesture);
+  const [pinch, pan, hold, tap] = leaves;
+  return [pinch, pan, tap, hold] as [
+    GestureHandlers,
+    GestureHandlers,
+    GestureHandlers,
+    GestureHandlers,
+  ];
 }
 
 let latest: ReturnType<typeof useFieldCamera>;
@@ -45,16 +75,19 @@ function Probe({
   layout,
   onOpenComposer,
   onOpenEngines,
+  onHoldPlacement,
 }: {
   layout: FieldLayout;
   onOpenComposer: () => void;
   onOpenEngines: () => void;
+  onHoldPlacement?: (placement: { entityKey: string }) => void;
 }) {
   latest = useFieldCamera({
     layout,
     viewport,
     onOpenComposer,
     onOpenEngines,
+    onHoldPlacement,
   });
   return null;
 }
@@ -62,17 +95,19 @@ function Probe({
 async function renderCamera() {
   const onOpenComposer = jest.fn();
   const onOpenEngines = jest.fn();
+  const onHoldPlacement = jest.fn();
   const layout = layoutField({ entities, arrangement: byTime, viewport });
   await ReactTestRenderer.act(async () => {
     ReactTestRenderer.create(
       <Probe
         layout={layout}
+        onHoldPlacement={onHoldPlacement}
         onOpenComposer={onOpenComposer}
         onOpenEngines={onOpenEngines}
       />,
     );
   });
-  return { layout, onOpenComposer, onOpenEngines };
+  return { layout, onHoldPlacement, onOpenComposer, onOpenEngines };
 }
 
 function camera(): Camera {
@@ -129,6 +164,32 @@ describe('useFieldCamera', () => {
       pan.onEnd({});
     });
     expect(onOpenEngines).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers a hold with the mark under it, and stays where it is', async () => {
+    const { layout, onHoldPlacement } = await renderCamera();
+    const centre = { x: viewport.width / 2, y: viewport.height / 2 };
+
+    await ReactTestRenderer.act(async () => {
+      gestures()[3].onStart(centre);
+    });
+
+    expect(onHoldPlacement).toHaveBeenCalledWith(
+      expect.objectContaining({ key: layout.placements[0].key }),
+    );
+    // Hold acts, tap descends: holding a mark must not also open it.
+    expect(latest.level).toBe('field');
+    expect(latest.focus).toBeNull();
+  });
+
+  it('says nothing when a hold lands on empty field', async () => {
+    const { onHoldPlacement } = await renderCamera();
+
+    await ReactTestRenderer.act(async () => {
+      gestures()[3].onStart({ x: 4, y: 4 });
+    });
+
+    expect(onHoldPlacement).not.toHaveBeenCalled();
   });
 
   it('descends a level per tap and ascends back a level at a time', async () => {

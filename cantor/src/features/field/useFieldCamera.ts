@@ -33,6 +33,12 @@ export const FIELD_CAMERA_KNOBS = {
   CAMERA_FLIGHT_MS: 700,
   RELAYOUT_MS: 850,
   TAP_SLOP_PX: 8,
+  /**
+   * Hold acts. Long enough that a slow tap is still a tap and a pan that
+   * starts late is still a pan, short enough to feel like an answer.
+   */
+  HOLD_MS: 380,
+  HOLD_SLOP_PX: 12,
   PAN_SLOP_PX: 4,
   EDGE_PULL_ZONE_PX: 110,
   EDGE_PULL_MAX_PX: 140,
@@ -62,6 +68,12 @@ type Options = {
    * and the tap descends into the song as any other tap would.
    */
   onRowAction?: (placement: Placement) => boolean;
+  /**
+   * A hold on a mark or a row: everything about a song that is not listening
+   * to it. Tap descends, hold acts — the convention the design asks for, and
+   * the only unclaimed gesture that fights neither pan nor pinch.
+   */
+  onHoldPlacement?: (placement: Placement) => void;
   /** The active canvas can play an L0 re-cut without React frame commits. */
   nativeRelayout?: boolean;
 };
@@ -137,6 +149,7 @@ export function useFieldCamera({
   onOpenComposer,
   onOpenEngines,
   onRowAction,
+  onHoldPlacement,
   nativeRelayout = false,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
@@ -543,6 +556,33 @@ export function useFieldCamera({
     const target = levelCameraTarget('field', field);
     if (target) flyTo(target);
   }, [commitFocus, flyTo]);
+  /** What a tap or a hold landed on, at whatever distance the camera is. */
+  const placementAt = useCallback(
+    (point: Point): Placement | null => {
+      const field = layoutRef.current;
+      const size = viewport;
+      if (field === null || size === null) return null;
+      const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
+      return hitTestPlacement(
+        renderedPlacements,
+        cameraRef.current,
+        size,
+        point,
+        levelOf(cameraRef.current.scale, hitFitScale),
+        hitFitScale,
+      );
+    },
+    [renderedPlacements, viewport],
+  );
+
+  const holdAt = useCallback(
+    (point: Point) => {
+      const hit = placementAt(point);
+      if (hit !== null) onHoldPlacement?.(hit);
+    },
+    [onHoldPlacement, placementAt],
+  );
+
   const tapAt = useCallback(
     (point: Point) => {
       const field = layoutRef.current;
@@ -725,7 +765,20 @@ export function useFieldCamera({
           runOnJS(tapAt)({ x: event.x, y: event.y });
         }
       });
-    return Gesture.Simultaneous(pinch, pan, tap);
+    // The hold fires the moment it is recognised rather than on release, so
+    // the sheet is already arriving when the finger lifts. A hold that turned
+    // into a pinch is not a hold.
+    const hold = Gesture.LongPress()
+      .minDuration(knobs.HOLD_MS)
+      .maxDistance(knobs.HOLD_SLOP_PX)
+      .onStart(event => {
+        'worklet';
+        if (pinching.value) return;
+        runOnJS(holdAt)({ x: event.x, y: event.y });
+      });
+    // Exclusive, so a recognised hold cancels the tap that would otherwise
+    // fire under it and descend a level the person did not ask for.
+    return Gesture.Simultaneous(pinch, pan, Gesture.Exclusive(hold, tap));
   }, [
     cameraShared,
     cancelCameraFlight,
@@ -736,6 +789,7 @@ export function useFieldCamera({
     panStart,
     pinchStart,
     pinching,
+    holdAt,
     tapAt,
     viewport,
   ]);
