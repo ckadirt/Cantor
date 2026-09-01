@@ -36,6 +36,7 @@ import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
+import { JobSheet } from '../features/field/JobSheet';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
   DEFAULT_ORDER_KEY,
@@ -129,6 +130,10 @@ export function FieldScreen({ identity }: Props) {
    * a shuffle an order rather than a re-roll on every render.
    */
   const [orderKey, setOrderKey] = useState<string>(DEFAULT_ORDER_KEY);
+  /** The generation whose detail is open, if any. */
+  const [jobKey, setJobKey] = useState<string | null>(null);
+  const [jobBusy, setJobBusy] = useState(false);
+  const [jobError, setJobError] = useState<string | null>(null);
   const [orderSeed, setOrderSeed] = useState(() => Date.now());
   const chooseOrder = useCallback((key: string) => {
     setOrderKey(current => {
@@ -332,6 +337,16 @@ export function FieldScreen({ identity }: Props) {
     [controller.presentations, runRowAudio],
   );
 
+  /** A generating mark opens what it is doing; it has no inside to descend to. */
+  const onClaimTap = useCallback(
+    (placement: Placement): boolean => {
+      if (!controller.jobs.has(placement.entityKey)) return false;
+      setJobKey(placement.entityKey);
+      return true;
+    },
+    [controller.jobs],
+  );
+
   /** Hold acts: everything about a song that is not the act of listening. */
   const onHoldPlacement = useCallback((placement: Placement) => {
     setPlaybackError(null);
@@ -348,6 +363,7 @@ export function FieldScreen({ identity }: Props) {
     onOpenEngines: openEngines,
     onRowAction,
     onHoldPlacement,
+    onClaimTap,
     nativeRelayout:
       lensKey === 'name' &&
       layout !== null &&
@@ -1072,6 +1088,25 @@ export function FieldScreen({ identity }: Props) {
           visible={sheetSong !== null}
         />
       ) : null}
+      <JobSheet
+        busy={jobBusy}
+        error={jobError}
+        onClose={() => {
+          setJobKey(null);
+          setJobError(null);
+        }}
+        onControl={control => {
+          const pending = jobKey === null ? null : controller.jobs.get(jobKey);
+          if (pending === undefined || pending === null) return;
+          setJobBusy(true);
+          setJobError(null);
+          void commands
+            .controlJob(pending.entity.nodePublicKey, pending.job, control)
+            .catch(problem => setJobError(readError(problem)))
+            .finally(() => setJobBusy(false));
+        }}
+        pending={jobKey === null ? null : controller.jobs.get(jobKey) ?? null}
+      />
       {condensing !== null && viewport !== null ? (
         <CondenseOverlay
           caption={condensing.caption}

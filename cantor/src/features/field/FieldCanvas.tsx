@@ -12,6 +12,7 @@ import {
   Text,
   type SkCanvas,
   type SkPaint,
+  type SkPath,
   type SkPicture,
 } from '@shopify/react-native-skia';
 import {
@@ -56,6 +57,9 @@ import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
 import { jobStateLabel } from '../../jobs/policy';
+import { compoundPolygonPath } from '../../motion/geometry';
+import { resolveSilhouette } from '../../motion/silhouette';
+import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
 import {
   captureLabelMorph,
   captureLabelText,
@@ -88,9 +92,20 @@ const FIELD_CANVAS_KNOBS = {
   GRAIN_PLAYHEAD_WIDTH_PX: 1.5,
   GRAIN_LABEL_OFFSET_PX: 28,
   // A generation in flight: a ring the work fills, and the stage written inside.
-  JOB_RING_RADIUS_PX: 9,
+  // Just outside the face's own ring, so a job's halo and a playing song's
+  // read as one vocabulary. Larger than that and the ring encloses whichever
+  // neighbour the bloom seated next to it.
+  JOB_RING_RADIUS_PX: 12,
   JOB_RING_WIDTH_PX: 1.4,
   JOB_INDETERMINATE_SWEEP_DEG: 70,
+  /** The whole arc, drawn ahead of the work in the palette's lightest ink. */
+  JOB_RING_AHEAD_ALPHA: 0.16,
+  /** The stage's own symbol, inside the ring it is working its way around. */
+  JOB_GLYPH_PX: 11,
+  /** `DIFFUSE 18/32`, centred under the mark. */
+  JOB_STAGE_LABEL_GAP_PX: 26,
+  /** A failed job keeps its seat, and says so by going quiet rather than red. */
+  JOB_FAILED_ALPHA: 0.35,
   JOB_ROW_LABEL_OFFSET_PX: 42,
   // A face is an outline, not a blob: hairline everywhere, per the house rule.
   FACE_STROKE_PX: 1,
@@ -922,7 +937,7 @@ function drawJobMark(
   pending: JobPresentation,
   alpha: RepresentationAlphas,
 ): void {
-  const model = jobMarkModel(pending.job, []);
+  const model = jobMarkModel(pending.job, [], pending.declaredStages);
   const visible = Math.max(alpha.dot, alpha.row);
   if (visible <= 0.01) return;
 
@@ -934,11 +949,21 @@ function drawJobMark(
     radius * 2,
     radius * 2,
   );
+  const quiet = model.failed ? FIELD_CANVAS_KNOBS.JOB_FAILED_ALPHA : 1;
 
-  paint.setAlphaf(visible * (model.failed ? 0.45 : 1));
   paint.setStyle(PaintStyle.Stroke);
   paint.setStrokeWidth(FIELD_CANVAS_KNOBS.JOB_RING_WIDTH_PX);
-  if (model.progress.kind === 'determinate') {
+  // The arc it *will* trace, drawn before the work reaches it. Only a model
+  // that declared its stages gets one: the ring is a claim about the shape of
+  // the work, and an undeclared pipeline has made no such claim.
+  if (model.arc !== null) {
+    paint.setAlphaf(visible * FIELD_CANVAS_KNOBS.JOB_RING_AHEAD_ALPHA);
+    canvas.drawCircle(point.x, point.y, radius, paint);
+  }
+  paint.setAlphaf(visible * quiet);
+  if (model.arc !== null) {
+    canvas.drawArc(box, -90, 360 * model.arc, false, paint);
+  } else if (model.progress.kind === 'determinate') {
     canvas.drawArc(box, -90, 360 * model.progress.fraction, false, paint);
   } else {
     canvas.drawArc(
@@ -951,33 +976,77 @@ function drawJobMark(
   }
   paint.setStyle(PaintStyle.Fill);
 
-  // At L1 there is room for words; say what is happening and, when the node
-  // counted it, how far in.
-  if (alpha.row > 0.01) {
-    paint.setAlphaf(alpha.row);
+  // The stage's own symbol, inside its ring. Real outlines from the symbol
+  // library rather than letters, which is what `STAGE_SYMBOLS` exists for.
+  if (model.symbol !== null) {
+    paint.setAlphaf(visible * quiet);
+    canvas.save();
+    canvas.translate(point.x, point.y);
+    canvas.drawPath(
+      stageGlyphPath(model.symbol as SymbolName, FIELD_CANVAS_KNOBS.JOB_GLYPH_PX),
+      paint,
+    );
+    canvas.restore();
+  }
+
+  // What is happening, under the mark, where the shelf label would be for a
+  // cluster: a job is the one mark that says its own state out loud.
+  if (alpha.dot > 0.01) {
     const label = jobStateLabel(pending.job);
     const counted =
       model.progress.kind === 'determinate'
         ? ` ${model.progress.completed}/${model.progress.total}`
         : '';
+    const line = `${label}${counted}`;
+    request.paints.muted.setAlphaf(alpha.dot * quiet);
     canvas.drawText(
-      `${label}${counted}`,
-      point.x - FIELD_CANVAS_KNOBS.JOB_ROW_LABEL_OFFSET_PX,
-      point.y + 4,
-      paint,
+      line,
+      point.x - request.fonts.mono.measureText(line).width / 2,
+      point.y + FIELD_CANVAS_KNOBS.JOB_STAGE_LABEL_GAP_PX,
+      request.paints.muted,
       request.fonts.mono,
     );
-    if (pending.caption !== null) {
-      request.paints.muted.setAlphaf(alpha.row * 0.8);
-      canvas.drawText(
-        pending.caption.slice(0, 28),
-        point.x - FIELD_CANVAS_KNOBS.JOB_ROW_LABEL_OFFSET_PX,
-        point.y + 17,
-        request.paints.muted,
-        request.fonts.mono,
-      );
-    }
   }
+
+  // At L1 there is room for the words that were typed.
+  if (alpha.row > 0.01 && pending.caption !== null) {
+    request.paints.muted.setAlphaf(alpha.row * 0.8);
+    canvas.drawText(
+      pending.caption.slice(0, 28),
+      point.x - FIELD_CANVAS_KNOBS.JOB_ROW_LABEL_OFFSET_PX,
+      point.y + 17,
+      request.paints.muted,
+      request.fonts.mono,
+    );
+  }
+}
+
+const stageGlyphCache = new Map<string, SkPath>();
+
+/**
+ * One stage symbol as a path, around the origin.
+ *
+ * Built through the same `resolveSilhouette` the onboarding and the composer
+ * use, so a stage glyph in the field is the identical artwork at a different
+ * size. Built at the origin and translated by the caller for the same reason a
+ * face is: keyed on where it is drawn, the cache would miss on every camera
+ * frame and re-resolve every contour of every job in the field.
+ */
+function stageGlyphPath(symbol: SymbolName, size: number): SkPath {
+  const key = `${symbol}:${size}`;
+  const cached = stageGlyphCache.get(key);
+  if (cached !== undefined) return cached;
+  const silhouette = resolveSilhouette(SYMBOL_LIBRARY[symbol], size, size, 1, {
+    centerX: 0,
+    centerY: 0,
+  });
+  const path = compoundPolygonPath(silhouette.contours);
+  if (stageGlyphCache.size >= 256) {
+    const oldest = stageGlyphCache.keys().next().value;
+    if (oldest !== undefined) stageGlyphCache.delete(oldest);
+  }
+  stageGlyphCache.set(key, path);
+  return path;
 }
 
 /**

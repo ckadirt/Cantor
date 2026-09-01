@@ -78,6 +78,11 @@ type Options = {
    * the only unclaimed gesture that fights neither pan nor pinch.
    */
   onHoldPlacement?: (placement: Placement) => void;
+  /**
+   * A tap on a mark the screen wants for itself — a generating job, which has
+   * no inside to descend into. Returns whether it was consumed.
+   */
+  onClaimTap?: (placement: Placement) => boolean;
   /** The active canvas can play an L0 re-cut without React frame commits. */
   nativeRelayout?: boolean;
 };
@@ -156,6 +161,7 @@ export function useFieldCamera({
   onOpenEngines,
   onRowAction,
   onHoldPlacement,
+  onClaimTap,
   nativeRelayout = false,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
@@ -627,9 +633,13 @@ export function useFieldCamera({
         hitLevel,
         hitFitScale,
       );
-      if (hit) descend(hit);
+      if (hit === null) return;
+      // A job is a mark with nothing inside it: tapping one opens what it is
+      // doing rather than flying the camera into an empty seat.
+      if (onClaimTap?.(hit) === true) return;
+      descend(hit);
     },
-    [descend, onRowAction, renderedPlacements, viewport],
+    [descend, onClaimTap, onRowAction, renderedPlacements, viewport],
   );
 
   /** Leaving the field by an edge pull, which is a JS-side navigation. */

@@ -5,6 +5,7 @@ import type { SongHeader } from '../../core/protocol';
 import type { BackendRecord } from '../../backends/types';
 import { deliveryArtifact, type BackendRuntimeState } from '../../runtime';
 import type { JobView } from '../../core/protocol';
+import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import type { FieldEntity } from '../../field';
 
 export type FieldPresentation = Readonly<{
@@ -30,6 +31,14 @@ export type JobPresentation = Readonly<{
   backend: BackendRecord;
   nodeLabels: readonly string[];
   caption: string | null;
+  /**
+   * The stages the model running this job said it runs.
+   *
+   * Read from the node's advertised catalogue rather than from the job, because
+   * the mask is a property of the model: it is how the mark can draw the arc
+   * ahead of the work instead of only the part already watched.
+   */
+  declaredStages: readonly GenerationStage[];
 }>;
 
 export type FieldController = Readonly<{
@@ -137,6 +146,10 @@ export function buildFieldController(
           backend.nodePubkey,
         ].filter(Boolean),
         caption: state.outbox[key]?.generation.caption ?? null,
+        declaredStages:
+          backend.lastNodeInfo?.models?.find(
+            model => model.selector === job.model,
+          )?.stages ?? [],
       });
     }
   }
