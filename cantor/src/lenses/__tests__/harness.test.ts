@@ -36,6 +36,7 @@ function song(key: string): LensSong {
     nodeLabel: 'Studio',
     audioState: 'remote',
     arriving: null,
+    byteLength: 3_400_000,
     playing: false,
     analysis: neutralAnalysis(),
     progress: null,

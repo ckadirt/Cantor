@@ -27,6 +27,7 @@ function song(overrides: Partial<LensSong> = {}): LensSong {
     nodeLabel: 'Studio',
     audioState: 'remote',
     arriving: null,
+    byteLength: 3_400_000,
     playing: false,
     analysis: neutralAnalysis(),
     progress: null,

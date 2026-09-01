@@ -9,6 +9,7 @@ import {
 import {
   GRAIN_KNOBS,
   hitTestPlacement,
+  hitTestRowAction,
   interpolateCamera,
   interpolatePositiveScale,
   levelCameraTarget,
@@ -53,6 +54,14 @@ type Options = {
   viewport: Viewport | null;
   onOpenComposer: () => void;
   onOpenEngines: () => void;
+  /**
+   * A tap on the action word at the end of a row, at L1.
+   *
+   * Returns whether it was consumed: the camera knows where the column is but
+   * not what a song promises, so a row with no action to offer answers `false`
+   * and the tap descends into the song as any other tap would.
+   */
+  onRowAction?: (placement: Placement) => boolean;
   /** The active canvas can play an L0 re-cut without React frame commits. */
   nativeRelayout?: boolean;
 };
@@ -127,6 +136,7 @@ export function useFieldCamera({
   viewport,
   onOpenComposer,
   onOpenEngines,
+  onRowAction,
   nativeRelayout = false,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
@@ -539,17 +549,29 @@ export function useFieldCamera({
       const size = viewport;
       if (field === null || size === null) return;
       const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
+      const level = levelOf(cameraRef.current.scale, hitFitScale);
+      // The action column is answered before the row it sits in, so `GET` on a
+      // song you are not opening does not also open it.
+      const actionRow = hitTestRowAction(
+        renderedPlacements,
+        cameraRef.current,
+        size,
+        point,
+        level,
+        hitFitScale,
+      );
+      if (actionRow !== null && onRowAction?.(actionRow) === true) return;
       const hit = hitTestPlacement(
         renderedPlacements,
         cameraRef.current,
         size,
         point,
-        levelOf(cameraRef.current.scale, hitFitScale),
+        level,
         hitFitScale,
       );
       if (hit) descend(hit);
     },
-    [descend, renderedPlacements, viewport],
+    [descend, onRowAction, renderedPlacements, viewport],
   );
 
   /** Leaving the field by an edge pull, which is a JS-side navigation. */

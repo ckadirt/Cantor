@@ -26,6 +26,7 @@ import {
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import type { GrainRender } from '../features/field/FieldCanvas';
+import type { FieldPresentation } from '../features/field/useFieldController';
 import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
@@ -43,6 +44,7 @@ import {
   visibleSecondsAt,
   worldToScreen,
   type DateResolution,
+  type Placement,
   type Viewport,
 } from '../field';
 import { allPlaylists, normalise, toggle } from '../playlists';
@@ -52,6 +54,10 @@ import {
   AnalysisCache,
   DEFAULT_LENS_KEY,
   analyseWindow,
+  availabilityAction,
+  availabilityOf,
+  formatBytes,
+  type AvailabilityAction,
   type SongAnalysis,
 } from '../lenses';
 import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
@@ -99,6 +105,9 @@ export function FieldScreen({ identity }: Props) {
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
   const [dateResolution, setDateResolution] = useState<DateResolution>('week');
   const [grain, setGrain] = useState<GrainRender | null>(null);
+  /** Rows whose audio command is in flight, so a second tap cannot double it. */
+  const audioBusy = useRef(new Set<string>());
+  const [audioError, setAudioError] = useState<string | null>(null);
   const [analyses, setAnalyses] = useState<ReadonlyMap<string, SongAnalysis>>(
     () => new Map(),
   );
@@ -192,11 +201,85 @@ export function FieldScreen({ identity }: Props) {
       void submitDraft(nodePublicKey, modelSelector, generation),
     [submitDraft],
   );
+  /**
+   * One row's audio action, from the word at the end of the row.
+   *
+   * `GET` downloads *and* pins, because asking for a song is the definition of
+   * a download: cached is what you get by listening. `KEEP` promotes the loan
+   * the budget may reclaim into the promise it may not, and `REMOVE` takes the
+   * bytes off the phone — the megabytes the row names are the ones it frees.
+   *
+   * Both compound verbs are compositions rather than new commands: native
+   * storage refuses to delete a pinned artifact outright — `removeCached` says
+   * *"Unpin this artifact before removing it"* — so `REMOVE` unpins first, and
+   * pinning requires a verified cached file, so `GET` downloads first.
+   */
+  const runRowAudio = useCallback(
+    async (presentation: FieldPresentation, action: AvailabilityAction) => {
+      const artifact = presentation.delivery;
+      if (artifact === undefined) return;
+      const key = presentation.entity.key;
+      // A second tap on a row already working would submit the same transfer
+      // twice; the runtime would survive it, the row would not read honestly.
+      if (audioBusy.current.has(key)) return;
+      audioBusy.current.add(key);
+      setAudioError(null);
+      const run = (verb: Parameters<typeof commands.audio>[3]) =>
+        commands.audio(
+          presentation.entity.nodePublicKey,
+          presentation.song,
+          artifact,
+          verb,
+        );
+      try {
+        if (action === 'GET') {
+          await run('download');
+          await run('pin');
+        } else if (action === 'KEEP') {
+          await run('pin');
+        } else {
+          // Never delete a file the player still holds open.
+          const track = transport.snapshot.track;
+          if (
+            track?.nodeKey === presentation.entity.nodePublicKey &&
+            track?.songId === presentation.entity.entityId
+          ) {
+            await transport.close();
+          }
+          if (presentation.localAudio.state === 'pinned') await run('unpin');
+          await run('remove');
+        }
+      } catch (error) {
+        setAudioError(readError(error));
+      } finally {
+        audioBusy.current.delete(key);
+      }
+    },
+    [commands, transport],
+  );
+
+  const onRowAction = useCallback(
+    (placement: Placement): boolean => {
+      const presentation = controller.presentations.get(placement.entityKey);
+      if (presentation === undefined || presentation.delivery === undefined) {
+        return false;
+      }
+      const action = availabilityAction(
+        availabilityOf(presentation.localAudio.state),
+      );
+      if (action === null) return false;
+      void runRowAudio(presentation, action);
+      return true;
+    },
+    [controller.presentations, runRowAudio],
+  );
+
   const fieldCamera = useFieldCamera({
     layout,
     viewport,
     onOpenComposer: openComposer,
     onOpenEngines: openEngines,
+    onRowAction,
     nativeRelayout:
       lensKey === 'name' &&
       layout !== null &&
@@ -602,6 +685,53 @@ export function FieldScreen({ identity }: Props) {
     return group === undefined ? null : shelfLabel(group.label, nowMs).primary;
   }, [fieldCamera.focus, layout, nowMs]);
 
+  /** The cluster you are standing inside, at L1 and nowhere else. */
+  const shelfGroup = useMemo(() => {
+    if (fieldCamera.level !== 'shelf' || layout === null) return null;
+    const groupKey = fieldCamera.focus?.groupKey;
+    return (
+      layout.groups.find(candidate => candidate.key === groupKey) ?? null
+    );
+  }, [fieldCamera.focus, fieldCamera.level, layout]);
+
+  /**
+   * What `DOWNLOAD ALL` would fetch from the shelf you are standing in, and
+   * what it weighs.
+   *
+   * The size is the point: downloads and the cache are different things, so
+   * nothing here is measured against the cache budget and nothing is refused.
+   * What a person is owed before asking for a whole shelf is the number.
+   * Songs already downloaded are not counted — they are already yours.
+   */
+  const shelfDownload = useMemo(() => {
+    if (shelfGroup === null) return null;
+    const group = shelfGroup;
+    const pending = group.entityKeys.flatMap(key => {
+      const presentation = controller.presentations.get(key);
+      return presentation === undefined ||
+        presentation.delivery === undefined ||
+        presentation.localAudio.state === 'pinned'
+        ? []
+        : [presentation];
+    });
+    if (pending.length === 0) return null;
+    const bytes = pending.reduce(
+      (total, presentation) => total + (presentation.delivery?.byte_length ?? 0),
+      0,
+    );
+    return { pending, label: `DOWNLOAD ALL · ${formatBytes(bytes)}` };
+  }, [controller.presentations, shelfGroup]);
+
+  /** One at a time: the shelf shares one relay socket with everything else. */
+  const downloadShelf = useCallback(() => {
+    if (shelfDownload === null) return;
+    void (async () => {
+      for (const presentation of shelfDownload.pending) {
+        await runRowAudio(presentation, 'GET');
+      }
+    })();
+  }, [runRowAudio, shelfDownload]);
+
   const onLayout = useCallback((event: LayoutChangeEvent) => {
     const { width, height } = event.nativeEvent.layout;
     if (width > 0 && height > 0) setViewport({ width, height });
@@ -704,8 +834,10 @@ export function FieldScreen({ identity }: Props) {
           offline={offline}
           onOpenComposer={openComposer}
           onOpenEngines={openEnginesFromField}
-          songCount={songCount}
-          storageError={storageError}
+          onShelfAction={downloadShelf}
+          shelfAction={shelfDownload?.label ?? null}
+          songCount={shelfGroup?.entityKeys.length ?? songCount}
+          storageError={audioError ?? storageError}
         />
       </View>
 

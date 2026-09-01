@@ -15,6 +15,7 @@ import {
   distance,
   gatherFraction,
   hitTestPlacement,
+  hitTestRowAction,
   interpolateCamera,
   isoWeekKey,
   layoutField,
@@ -293,6 +294,71 @@ describe('placement hit testing', () => {
         GATHERED_FIT,
       ),
     ).toBe(bloomed);
+  });
+});
+
+describe('the action column at the end of a row', () => {
+  const camera = { x: 0, y: 0, scale: 1 };
+  const GATHERED_FIT = 1 / BLOOM_KNOBS.GATHER_END_FIT;
+  const row = placement('a', 0, 0);
+  // The row's point lands at the middle of the viewport when the camera is
+  // centred on it, so the column is that x plus the band.
+  const POINT_X = VIEWPORT.width / 2;
+  const POINT_Y = VIEWPORT.height / 2;
+  const inColumn = {
+    x: POINT_X + HIT_TEST_KNOBS.ROW_ACTION_LEFT_PX + 4,
+    y: POINT_Y,
+  };
+
+  it('answers for a tap on the action word', () => {
+    expect(
+      hitTestRowAction([row], camera, VIEWPORT, inColumn, 'shelf', GATHERED_FIT),
+    ).toBe(row);
+  });
+
+  it('leaves the title alone, so most of a row still descends', () => {
+    expect(
+      hitTestRowAction(
+        [row],
+        camera,
+        VIEWPORT,
+        { x: POINT_X + HIT_TEST_KNOBS.ROW_ACTION_LEFT_PX - 4, y: POINT_Y },
+        'shelf',
+        GATHERED_FIT,
+      ),
+    ).toBeNull();
+    // And the column is not a full-width band: past the row's end is nothing.
+    expect(
+      hitTestRowAction(
+        [row],
+        camera,
+        VIEWPORT,
+        { x: POINT_X + HIT_TEST_KNOBS.ROW_ACTION_RIGHT_PX + 4, y: POINT_Y },
+        'shelf',
+        GATHERED_FIT,
+      ),
+    ).toBeNull();
+  });
+
+  it('exists only where rows are drawn', () => {
+    for (const level of ['field', 'song', 'grain'] as const) {
+      expect(
+        hitTestRowAction([row], camera, VIEWPORT, inColumn, level, GATHERED_FIT),
+      ).toBeNull();
+    }
+  });
+
+  it('never reaches a row above or below it', () => {
+    expect(
+      hitTestRowAction(
+        [row],
+        camera,
+        VIEWPORT,
+        { x: inColumn.x, y: POINT_Y + HIT_TEST_KNOBS.ROW_HALF_HEIGHT_PX + 2 },
+        'shelf',
+        GATHERED_FIT,
+      ),
+    ).toBeNull();
   });
 });
 
