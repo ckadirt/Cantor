@@ -1,3 +1,5 @@
+import type { SongOrder } from './order';
+
 /** A position in field world coordinates or screen pixels, depending on use. */
 export type Point = Readonly<{
   x: number;
@@ -37,6 +39,12 @@ export type FieldEntity = Readonly<{
   entityId: string;
   kind: 'song' | 'job';
   createdAtMs: number;
+  /**
+   * How long the song is, in milliseconds; zero for a job, which has no length
+   * until it becomes one. Carried here because ordering by duration is a
+   * property of where a mark *sits*, and seating is this layer's job.
+   */
+  durationMs: number;
   tags: readonly string[];
 }>;
 
@@ -125,4 +133,8 @@ export type LayoutRequest = Readonly<{
   arrangement: Arrangement;
   viewport: Viewport;
   previousPlacements?: readonly Placement[];
+  /** How members are seated inside their cluster. Defaults to date. */
+  order?: SongOrder;
+  /** The seed a random order is held at; ignored by every other order. */
+  orderSeed?: number;
 }>;

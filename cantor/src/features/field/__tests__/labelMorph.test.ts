@@ -163,6 +163,7 @@ describe('shelf label morphs', () => {
       entityId: id,
       kind: 'song' as const,
       createdAtMs: Date.UTC(2026, index < 2 ? 6 : 7, 8),
+      durationMs: 0,
       tags: index % 2 === 0 ? ['p/Drive'] : ['p/Dusk'],
     }));
     const dates = layoutField({

@@ -1,6 +1,7 @@
 import { bloomOffset, bloomedTargetPoint } from './bloom';
 import { fit, type FitOptions } from './camera';
 import { boxCenter, boxFromPoints } from './geometry';
+import { orderByKey, orderMembers, DEFAULT_ORDER_KEY } from './order';
 import type {
   Box,
   FieldEntity,
@@ -67,7 +68,16 @@ export function layoutField(request: LayoutRequest): FieldLayout {
     const groupsInRow = Math.min(columns, definitions.length - row * columns);
     const cx = (column - (groupsInRow - 1) / 2) * LAYOUT_KNOBS.SHELF_GAP_WORLD;
     const cy = row * LAYOUT_KNOBS.CLUSTER_ROW_GAP_WORLD - verticalMidpoint;
-    const entityKeys = [...definition.entityKeys];
+    // Seating order is the layout's, not the arrangement's: the same three
+    // orders apply to every axis, and applying them here is what stops
+    // `byPlaylist` from seating its members in whatever order their tags
+    // happened to produce.
+    const entityKeys = orderMembers(
+      definition.entityKeys,
+      entitiesByKey,
+      request.order ?? orderByKey(DEFAULT_ORDER_KEY),
+      request.orderSeed ?? 0,
+    );
     // The seat is the top of the cluster once bloomed, which is the pose the
     // field is drawn in wherever a re-cut can be asked for.
     const tops = entityKeys.map(

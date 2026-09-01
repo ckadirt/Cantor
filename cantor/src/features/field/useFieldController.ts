@@ -85,6 +85,7 @@ export function buildFieldController(
         entityId: song.id,
         kind: 'song',
         createdAtMs: timestampOrEpoch(song.created_at),
+        durationMs: song.duration_ms,
         tags: song.tags,
       };
       presentations.set(entity.key, {
@@ -121,6 +122,9 @@ export function buildFieldController(
         entityId: job.id,
         kind: 'job',
         createdAtMs: timestampOrEpoch(job.created_at),
+        // A job has no length until it becomes a song; by duration it sorts
+        // to the head, which is where a thing being made belongs anyway.
+        durationMs: 0,
         tags: [],
       };
       jobs.set(key, {

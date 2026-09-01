@@ -11,6 +11,7 @@ function entity(id: string, tags: string[]): FieldEntity {
     entityId: id,
     kind: 'song',
     createdAtMs: Date.parse('2026-08-10T00:00:00Z'),
+    durationMs: 0,
     tags,
   };
 }

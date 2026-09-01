@@ -1,8 +1,9 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
+  useAnimatedReaction,
   useAnimatedStyle,
   withTiming,
   type SharedValue,
@@ -67,6 +68,23 @@ function ComposerCurtainImpl({
 }: Props) {
   const pal = usePalette();
   const height = Math.max(0, viewportHeight - CURTAIN_KNOBS.PEEK_PX);
+  /**
+   * Whether the blind is in the tree at all.
+   *
+   * A sheet drawn to zero height is still a view sitting over the field: it
+   * swallowed every tap below its seat — the shelf's `DOWNLOAD ALL`, the order
+   * dial, the whole header — while looking completely absent. Clipping is not
+   * absence. This unmounts it instead, and the reaction costs one hop per
+   * crossing rather than one per frame.
+   */
+  const [live, setLive] = useState(false);
+  useAnimatedReaction(
+    () => pull.value > 0.5,
+    (drawn, previous) => {
+      if (drawn !== previous) runOnJS(setLive)(drawn);
+    },
+    [],
+  );
 
   // React owns only the destination. The finger owns everything before it, and
   // the animation starts from wherever the finger stopped.
@@ -129,6 +147,8 @@ function ComposerCurtainImpl({
         }),
     [height, onClose, open, pull],
   );
+
+  if (!live && !open) return null;
 
   return (
     <>

@@ -52,6 +52,7 @@ const entities: FieldEntity[] = [
     entityId: 'song-a',
     kind: 'song',
     createdAtMs: Date.UTC(2026, 7, 8),
+    durationMs: 0,
     tags: [],
   },
   {
@@ -60,6 +61,7 @@ const entities: FieldEntity[] = [
     entityId: 'song-b',
     kind: 'song',
     createdAtMs: Date.UTC(2026, 6, 8),
+    durationMs: 0,
     tags: [],
   },
 ];
