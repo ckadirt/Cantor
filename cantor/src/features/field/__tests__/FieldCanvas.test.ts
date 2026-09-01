@@ -198,6 +198,7 @@ describe('field canvas and accessibility mirror', () => {
             backend: presentation.backend,
             nodeLabels: ['Studio'],
             caption: 'a slow piano piece',
+            declaredStages: ['plan', 'codes', 'diffuse', 'decode'] as const,
           },
         ],
       ]),
