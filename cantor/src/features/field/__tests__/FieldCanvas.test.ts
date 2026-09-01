@@ -37,6 +37,7 @@ const entity = {
   entityId: 'song-a',
   kind: 'song' as const,
   createdAtMs: Date.parse(song.created_at),
+  durationMs: 0,
   tags: [],
 };
 const presentation: FieldPresentation = {

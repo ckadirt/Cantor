@@ -20,6 +20,7 @@ function entities(count: number): FieldEntity[] {
     kind: 'song' as const,
     // Spread across weeks so time bucketing actually produces several groups.
     createdAtMs: Date.parse('2026-01-01T00:00:00Z') + index * day * 3,
+    durationMs: 0,
     tags: index % 3 === 0 ? ['p/Focus'] : ['ambient'],
   }));
 }

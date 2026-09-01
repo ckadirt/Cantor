@@ -38,6 +38,7 @@ import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
+  DEFAULT_ORDER_KEY,
   arrangementByKey,
   byDate,
   byPlaylist,
@@ -46,6 +47,7 @@ import {
   gatherFraction,
   grainWindow,
   layoutField,
+  orderByKey,
   placementPoint,
   visibleSecondsAt,
   worldToScreen,
@@ -120,6 +122,23 @@ export function FieldScreen({ identity }: Props) {
   const [songBusy, setSongBusy] = useState(false);
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
+  /**
+   * How members are seated, and the seed a random seating is held at.
+   *
+   * The seed changes only when random is asked for again, which is what makes
+   * a shuffle an order rather than a re-roll on every render.
+   */
+  const [orderKey, setOrderKey] = useState<string>(DEFAULT_ORDER_KEY);
+  const [orderSeed, setOrderSeed] = useState(() => Date.now());
+  const chooseOrder = useCallback((key: string) => {
+    setOrderKey(current => {
+      if (key === 'random' && current === 'random') {
+        // Asking for random again is asking for a different random.
+        setOrderSeed(Date.now());
+      }
+      return key;
+    });
+  }, []);
   const [dateResolution, setDateResolution] = useState<DateResolution>('week');
   const [grain, setGrain] = useState<GrainRender | null>(null);
   /** Rows whose audio command is in flight, so a second tap cannot double it. */
@@ -158,8 +177,17 @@ export function FieldScreen({ identity }: Props) {
       entities: controller.entities,
       arrangement,
       viewport,
+      order: orderByKey(orderKey),
+      orderSeed,
     });
-  }, [arrangementKey, controller.entities, dateResolution, viewport]);
+  }, [
+    arrangementKey,
+    controller.entities,
+    dateResolution,
+    orderKey,
+    orderSeed,
+    viewport,
+  ]);
 
   const openComposer = useCallback(() => {
     setSubmitError(null);
@@ -929,7 +957,9 @@ export function FieldScreen({ identity }: Props) {
           offline={offline}
           onOpenComposer={openComposer}
           onOpenEngines={openEnginesFromField}
+          onChangeOrder={chooseOrder}
           onShelfAction={downloadShelf}
+          orderKey={orderKey}
           shelfAction={shelfDownload?.label ?? null}
           songCount={shelfGroup?.entityKeys.length ?? songCount}
           storageError={audioError ?? storageError}

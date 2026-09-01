@@ -44,6 +44,7 @@ function entities(count: number, stepDays = 1): FieldEntity[] {
     entityId: `entity-${index}`,
     kind: index % 3 === 0 ? 'job' : 'song',
     createdAtMs: Date.UTC(2026, 0, 1) + index * stepDays * DAY_MS,
+    durationMs: 0,
     tags: [],
   }));
 }
@@ -500,6 +501,7 @@ describe('re-cutting the field', () => {
     entityId: `entity-${index}`,
     kind: 'song' as const,
     createdAtMs: new Date(2026, 7, 24 + index, 12).getTime(),
+    durationMs: 0,
     tags,
   }));
 
@@ -601,6 +603,7 @@ describe('date resolution', () => {
       entityId: `entity-${index}`,
       kind: 'song' as const,
       createdAtMs: new Date(y, m - 1, d, 12).getTime(),
+      durationMs: 0,
       tags: [],
     }));
     const counts = DATE_RESOLUTIONS.map(resolution => {

@@ -102,6 +102,7 @@ describe('field re-cut placement flights', () => {
       entityId: `song-${index}`,
       kind: 'song' as const,
       createdAtMs: new Date(year, month - 1, day, 12).getTime(),
+      durationMs: 0,
       tags: [],
     }));
     const viewport = { width: 380, height: 800 };

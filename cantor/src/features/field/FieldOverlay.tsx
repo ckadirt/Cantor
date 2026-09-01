@@ -16,6 +16,7 @@ import { easeSmoother } from '../../motion';
 import {
   ARRANGEMENTS,
   DATE_RESOLUTIONS,
+  SONG_ORDERS,
   byTime,
   type DateResolution,
   type Level,
@@ -48,6 +49,13 @@ type Props = {
    */
   shelfAction: string | null;
   onShelfAction: () => void;
+  /**
+   * How members are seated inside the shelf you are inside, and the control
+   * that changes it. Order is position, so this is a dial like the axis is —
+   * you watch a cluster re-form rather than watching a list re-sort.
+   */
+  orderKey: string;
+  onChangeOrder: (key: string) => void;
 };
 
 /**
@@ -135,6 +143,8 @@ function FieldOverlayImpl({
   groupLabel,
   shelfAction,
   onShelfAction,
+  orderKey,
+  onChangeOrder,
 }: Props) {
   const pal = usePalette();
   const onDateAxis = arrangementKey === byTime.key;
@@ -197,6 +207,28 @@ function FieldOverlayImpl({
               </Pressable>
             ) : null}
           </View>
+          {level === 'shelf' ? (
+            <View style={styles.orderRow} pointerEvents="box-none">
+              <Text
+                style={[type.eyebrow, styles.orderLabel, { color: pal.line }]}
+                pointerEvents="none">
+                ORDER
+              </Text>
+              <Dial
+                activeKey={orderKey}
+                activeColour={pal.ink}
+                items={SONG_ORDERS.map(order => ({
+                  key: order.key,
+                  label: order.label.toUpperCase(),
+                  accessibilityLabel: `Order by ${order.label}`,
+                }))}
+                onSelect={onChangeOrder}
+                restColour={pal.faint}
+                textStyle={type.eyebrow}
+                tickColour={pal.ink}
+              />
+            </View>
+          ) : null}
         </View>
       ) : null}
 
@@ -516,6 +548,11 @@ const styles = StyleSheet.create({
     top: space.xl,
   },
   title: { marginTop: space.sm },
+  // `ORDER` names the dial beside it, the way `WEEK · MONTH · YEAR` sits under
+  // the axis it belongs to. Drawn in `line` rather than `faint`: it is a label
+  // for a control, not a value, and it must not compete with the words it names.
+  orderRow: { alignItems: 'center', flexDirection: 'row', marginTop: space.md },
+  orderLabel: { marginRight: space.md },
   // The count and the shelf's bulk action share one line, at opposite ends:
   // what is here, and the one thing you can do to all of it.
   metaRow: {
