@@ -3,7 +3,7 @@ import {
   EMPTY_DRAFT,
   canSubmit,
   describeProblem,
-  modelUnion,
+  modelsFor,
   problemsWith,
   toGenerationRequest,
   utf8Bytes,
@@ -52,27 +52,32 @@ describe('utf8Bytes', () => {
   });
 });
 
-describe('modelUnion', () => {
-  it('is every model any paired node has, de-duplicated', () => {
-    const union = modelUnion([
-      target(),
-      target({
-        nodePublicKey: 'node-b',
-        models: [
-          { selector: 'levo:2', family: 'levo', engine: 'levo' },
-          { selector: 'acestep:1.5-fast', family: 'acestep', engine: 'acestep' },
-        ],
-      }),
-    ]);
+describe('modelsFor', () => {
+  it('offers what one node has, and never a union across nodes', () => {
+    const engine = (selector: string) => ({
+      selector,
+      family: selector.split(':')[0],
+      engine: selector.split(':')[0],
+    });
+    const agentbox = target({
+      nodePublicKey: 'a',
+      models: [engine('levo2:1.0'), engine('acestep:1.5-fast')],
+    });
+    const phone = target({ nodePublicKey: 'b', models: [engine('levo2:1.0')] });
 
-    expect(union.map(model => model.selector)).toEqual([
+    // Sorted, and scoped: picking the phone must not offer ACE-Step just
+    // because another node has it.
+    expect(modelsFor(agentbox).map(entry => entry.selector)).toEqual([
       'acestep:1.5-fast',
-      'levo:2',
+      'levo2:1.0',
+    ]);
+    expect(modelsFor(phone).map(entry => entry.selector)).toEqual([
+      'levo2:1.0',
     ]);
   });
 
-  it('is empty when nothing is paired', () => {
-    expect(modelUnion([])).toEqual([]);
+  it('has nothing to offer before a node is chosen', () => {
+    expect(modelsFor(null)).toEqual([]);
   });
 });
 

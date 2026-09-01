@@ -70,22 +70,20 @@ export function utf8Bytes(value: string): number {
 }
 
 /**
- * Every model any paired node has installed, de-duplicated by selector.
+ * What one node has installed, in a stable order.
  *
- * The union is deliberate: the person picks a model, then a node, and the app
- * tells them whether that pairing can actually run. Listing only one node's
- * models would hide the fact that another node already has the model.
+ * The composer asks in dependency order — where it runs, *then* what runs it —
+ * so the models on offer are always the ones this node actually has. The old
+ * union across every paired node offered a model one node had and another did
+ * not, let you pick the other node, and then reported `model-not-installed` as
+ * though it were the person's mistake. A combination the app knows cannot exist
+ * is not a choice.
  */
-export function modelUnion(
-  targets: readonly ComposerTarget[],
+export function modelsFor(
+  target: ComposerTarget | null,
 ): readonly ModelView[] {
-  const seen = new Map<string, ModelView>();
-  for (const target of targets) {
-    for (const model of target.models) {
-      if (!seen.has(model.selector)) seen.set(model.selector, model);
-    }
-  }
-  return [...seen.values()].sort((left, right) =>
+  if (target === null) return [];
+  return [...target.models].sort((left, right) =>
     left.selector.localeCompare(right.selector),
   );
 }

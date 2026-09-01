@@ -23,7 +23,12 @@ import {
   buildFieldController,
   useFieldCamera,
 } from '../features/field';
-import { ComposerSheet, type ComposerTarget } from '../features/composer';
+import {
+  ComposerCurtain,
+  ComposerSheet,
+  type ComposerTarget,
+} from '../features/composer';
+import { FIELD_CAMERA_KNOBS } from '../features/field/useFieldCamera';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import type { GrainRender } from '../features/field/FieldCanvas';
 import type { FieldPresentation } from '../features/field/useFieldController';
@@ -940,14 +945,28 @@ export function FieldScreen({ identity }: Props) {
         snapshots={snapshots}
         visible={enginesOpen}
       />
-      <ComposerSheet
-        error={submitError}
-        onClose={closeComposer}
-        onSubmit={onComposerSubmit}
-        submitting={submitting}
-        targets={composerTargets}
-        visible={composerOpen}
-      />
+      {/*
+        The composer is a blind, not a modal: it hangs above the top edge and
+        comes down with the finger that pulls it. `pullShared` is where it is,
+        written by the field's own edge gesture on the UI thread; `composerOpen`
+        is only whether it ends up down or back up.
+      */}
+      {viewport !== null ? (
+        <ComposerCurtain
+          onClose={closeComposer}
+          open={composerOpen}
+          openAtPx={FIELD_CAMERA_KNOBS.EDGE_PULL_OPEN_PX}
+          pull={fieldCamera.pullShared}
+          viewportHeight={viewport.height}>
+          <ComposerSheet
+            error={submitError}
+            onClose={closeComposer}
+            onSubmit={onComposerSubmit}
+            submitting={submitting}
+            targets={composerTargets}
+          />
+        </ComposerCurtain>
+      ) : null}
       <PairBackendModal
         onClose={commands.hidePairing}
         onPair={commands.pairBackend}
