@@ -69,6 +69,11 @@ import {
   type AvailabilityAction,
   type SongAnalysis,
 } from '../lenses';
+import {
+  DEFAULT_AUDIO_CACHE_BYTES,
+  loadAudioBudget,
+  saveAudioBudget,
+} from '../audio/budget';
 import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
 import { useBackendRuntime } from '../runtime';
 import { readError } from '../core/errors';
@@ -130,6 +135,22 @@ export function FieldScreen({ identity }: Props) {
    * a shuffle an order rather than a re-roll on every render.
    */
   const [orderKey, setOrderKey] = useState<string>(DEFAULT_ORDER_KEY);
+  /** The cache ceiling, read once and written when it is changed. */
+  const [budgetBytes, setBudgetBytes] = useState(DEFAULT_AUDIO_CACHE_BYTES);
+  useEffect(() => {
+    let active = true;
+    void loadAudioBudget().then(bytes => {
+      if (active) setBudgetBytes(bytes);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  const changeBudget = useCallback((bytes: number) => {
+    setBudgetBytes(bytes);
+    saveAudioBudget(bytes).catch(error => setAudioError(readError(error)));
+  }, []);
+
   /** The generation whose detail is open, if any. */
   const [jobKey, setJobKey] = useState<string | null>(null);
   const [jobBusy, setJobBusy] = useState(false);
@@ -857,6 +878,40 @@ export function FieldScreen({ identity }: Props) {
     return totals;
   }, [controller.presentations]);
 
+  /** What settings counts: the library as placements, not only as songs. */
+  const libraryReport = useMemo(() => {
+    const playlists = new Set<string>();
+    for (const presentation of controller.presentations.values()) {
+      for (const name of playlistsOf(presentation.song.tags)) {
+        playlists.add(normalise([name])[0] ?? name);
+      }
+    }
+    return {
+      songs: controller.presentations.size,
+      placements: layout?.placements.length ?? controller.presentations.size,
+      playlists: playlists.size,
+    };
+  }, [controller.presentations, layout]);
+
+  /** The two bands, counted apart because they promise different things. */
+  const storageReport = useMemo(() => {
+    let downloadedSongs = 0;
+    let downloadedBytes = 0;
+    let cachedSongs = 0;
+    let cachedBytes = 0;
+    for (const presentation of controller.presentations.values()) {
+      const bytes = presentation.delivery?.byte_length ?? 0;
+      if (presentation.localAudio.state === 'pinned') {
+        downloadedSongs += 1;
+        downloadedBytes += bytes;
+      } else if (presentation.localAudio.state === 'cached') {
+        cachedSongs += 1;
+        cachedBytes += bytes;
+      }
+    }
+    return { downloadedSongs, downloadedBytes, cachedSongs, cachedBytes };
+  }, [controller.presentations]);
+
   /** The cluster you are standing inside, at L1 and nowhere else. */
   const shelfGroup = useMemo(() => {
     if (fieldCamera.level !== 'shelf' || layout === null) return null;
@@ -1024,7 +1079,12 @@ export function FieldScreen({ identity }: Props) {
         onPair={pairFromEngines}
         onRefresh={commands.refreshLibraries}
         refreshing={refreshing}
+        budgetBytes={budgetBytes}
         footprints={footprints}
+        library={libraryReport}
+        onChangeBudget={changeBudget}
+        publicKey={identity.publicKey}
+        storage={storageReport}
         onForget={nodePublicKey => {
           setEnginesOpen(false);
           void commands.forgetBackend(nodePublicKey);

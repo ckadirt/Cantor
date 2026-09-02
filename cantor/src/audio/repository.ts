@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { loadAudioBudget } from './budget';
 import { isRecord } from '../core/validation';
 import {
   inspectNativeAudio,
@@ -6,7 +7,7 @@ import {
   type LocalAudio,
 } from './native';
 
-export const DEFAULT_AUDIO_CACHE_BYTES = 256 * 1024 * 1024;
+export { DEFAULT_AUDIO_CACHE_BYTES } from './budget';
 const AUDIO_INDEX_KEY = 'cantor.local-audio.v1';
 let writeQueue = Promise.resolve();
 
@@ -65,7 +66,7 @@ export async function finalizeAudio(
     state: 'cached',
     bytes: byteLength,
   });
-  await nativeAudio.enforceCacheBudget(DEFAULT_AUDIO_CACHE_BYTES);
+  await nativeAudio.enforceCacheBudget(await loadAudioBudget());
 }
 
 /**
@@ -99,7 +100,7 @@ export async function unpinAudio(
   digest: string,
 ): Promise<LocalAudio> {
   await nativeAudio.unpin(nodeKey, songId, digest);
-  await nativeAudio.enforceCacheBudget(DEFAULT_AUDIO_CACHE_BYTES);
+  await nativeAudio.enforceCacheBudget(await loadAudioBudget());
   return inspectAudio(nodeKey, songId, digest);
 }
 
