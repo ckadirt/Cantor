@@ -3,9 +3,9 @@ import { Skia } from '@shopify/react-native-skia';
 import ReactTestRenderer from 'react-test-renderer';
 import type { ArtifactView } from '../../../../../protocol/ArtifactView';
 import type { SongHeader } from '../../../../../protocol/SongHeader';
-import { byTime, layoutField } from '../../../field';
+import { byTime, layoutField, worldToScreen } from '../../../field';
 import { FieldA11yList } from '../FieldA11yList';
-import { recordFieldPicture } from '../FieldCanvas';
+import { pictureTransformFor, recordFieldPicture } from '../FieldCanvas';
 import type { FieldPresentation } from '../useFieldController';
 
 const viewport = { width: 380, height: 800 };
@@ -245,5 +245,86 @@ describe('field canvas and accessibility mirror', () => {
         accessibilityLabel: 'A field song, 2026-W32, 11 seconds',
       }),
     ).toBeTruthy();
+  });
+});
+
+/**
+ * The one piece of maths the whole field's smoothness rests on: between two
+ * recordings, every mark's position is this transform and nothing else. A sign
+ * error here does not fail anything, it just draws the field in the wrong
+ * place, so it is checked against the function it has to agree with.
+ */
+describe('the picture transform', () => {
+  /** Apply the transform the way Skia does: canvas operations, in order. */
+  function apply(
+    transform: readonly Record<string, number>[],
+    point: { x: number; y: number },
+  ): { x: number; y: number } {
+    // Walk backwards: each op maps the *local* point outward to the parent.
+    let { x, y } = point;
+    for (let index = transform.length - 1; index >= 0; index -= 1) {
+      const op = transform[index];
+      if (op.scale !== undefined) {
+        x *= op.scale;
+        y *= op.scale;
+      }
+      if (op.translateX !== undefined) x += op.translateX;
+      if (op.translateY !== undefined) y += op.translateY;
+    }
+    return { x, y };
+  }
+
+  const recorded = { x: 120, y: -40, scale: 1.4 };
+  const world = [
+    { x: 0, y: 0 },
+    { x: 300, y: 220 },
+    { x: -180, y: 95 },
+  ];
+
+  it('puts a recorded mark exactly where the live camera would draw it', () => {
+    for (const live of [
+      // A pan: the same scale, which is the case that must be exact.
+      { x: 260, y: 30, scale: 1.4 },
+      // A pinch, in both directions.
+      { x: 120, y: -40, scale: 2.1 },
+      { x: 55, y: 400, scale: 0.6 },
+    ]) {
+      const transform = pictureTransformFor(recorded, live, viewport);
+      for (const point of world) {
+        const asRecorded = worldToScreen(point, recorded, viewport);
+        const shown = apply(
+          transform as unknown as Record<string, number>[],
+          asRecorded,
+        );
+        const truth = worldToScreen(point, live, viewport);
+        expect(shown.x).toBeCloseTo(truth.x, 6);
+        expect(shown.y).toBeCloseTo(truth.y, 6);
+      }
+    }
+  });
+
+  it('is the identity when nothing has moved', () => {
+    const transform = pictureTransformFor(recorded, recorded, viewport);
+    for (const point of world) {
+      const asRecorded = worldToScreen(point, recorded, viewport);
+      const shown = apply(
+        transform as unknown as Record<string, number>[],
+        asRecorded,
+      );
+      expect(shown.x).toBeCloseTo(asRecorded.x, 6);
+      expect(shown.y).toBeCloseTo(asRecorded.y, 6);
+    }
+  });
+
+  it('answers with a harmless transform before a scale exists', () => {
+    const zero = { x: 0, y: 0, scale: 0 };
+    expect(pictureTransformFor(zero, recorded, viewport)).toEqual([
+      { translateX: 0 },
+      { translateY: 0 },
+    ]);
+    expect(pictureTransformFor(recorded, zero, viewport)).toEqual([
+      { translateX: 0 },
+      { translateY: 0 },
+    ]);
   });
 });

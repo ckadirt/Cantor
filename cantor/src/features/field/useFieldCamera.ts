@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Gesture } from 'react-native-gesture-handler';
 import {
+  Easing,
+  cancelAnimation,
   runOnJS,
+  useAnimatedReaction,
   useReducedMotion,
   useSharedValue,
   withTiming,
@@ -199,7 +202,6 @@ export function useFieldCamera({
   const cameraRef = useRef(camera);
   const layoutRef = useRef(layout);
   const focusKeyRef = useRef(focusKey);
-  const flightFrame = useRef<number | null>(null);
   const relayoutFrame = useRef<number | null>(null);
   const recutModel = useRef<FieldRecutModel | null>(null);
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
@@ -229,6 +231,19 @@ export function useFieldCamera({
    */
   const shelfSeatsSharedCandidate = useSharedValue<readonly ShelfSeat[]>([]);
   /**
+   * A camera flight, as three shared values the UI thread owns.
+   *
+   * It used to be a `requestAnimationFrame` loop calling `commitCamera`, which
+   * made every flight exactly as smooth as React could re-render and re-record
+   * the picture — the same ceiling a pan used to have. The clock is linear and
+   * the *camera* is eased, which is where the house curve has always been:
+   * `interpolateCamera` smoothersteps position and moves scale logarithmically
+   * so a zoom reads as even.
+   */
+  const flightFromCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
+  const flightToCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
+  const flightProgressCandidate = useSharedValue(1);
+  /**
    * How far an edge pull has come, in screen pixels: positive is the composer
    * being drawn down from the top, negative is engines being drawn up from the
    * bottom, zero is neither.
@@ -247,6 +262,9 @@ export function useFieldCamera({
   const mirrorBusy = useRef(mirrorBusyCandidate).current;
   const pullShared = useRef(pullSharedCandidate).current;
   const shelfSeatsShared = useRef(shelfSeatsSharedCandidate).current;
+  const flightFrom = useRef(flightFromCandidate).current;
+  const flightTo = useRef(flightToCandidate).current;
+  const flightProgress = useRef(flightProgressCandidate).current;
 
   layoutRef.current = layout;
   const seats = useMemo(
@@ -305,11 +323,8 @@ export function useFieldCamera({
     [focusKeyShared],
   );
   const cancelCameraFlight = useCallback(() => {
-    if (flightFrame.current !== null) {
-      cancelAnimationFrame(flightFrame.current);
-      flightFrame.current = null;
-    }
-  }, []);
+    cancelAnimation(flightProgress);
+  }, [flightProgress]);
   const cancelRelayout = useCallback(() => {
     if (relayoutFrame.current !== null) {
       cancelAnimationFrame(relayoutFrame.current);
@@ -339,24 +354,95 @@ export function useFieldCamera({
       durationMs: number = FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS,
     ) => {
       cancelCameraFlight();
-      const from = cameraRef.current;
       if (reducedMotion) {
         commitCamera(target);
         return;
       }
-      const startedAt = Date.now();
-      const tick = () => {
-        const progress = Math.min(1, (Date.now() - startedAt) / durationMs);
-        commitCamera(interpolateCamera(from, target, progress));
-        if (progress < 1) {
-          flightFrame.current = requestAnimationFrame(tick);
-        } else {
-          flightFrame.current = null;
-        }
-      };
-      flightFrame.current = requestAnimationFrame(tick);
+      // From the *live* camera, not React's copy of it. A flight that begins
+      // where the last mirrored frame happened to land would start with a jump
+      // back to it — the exact distance the gesture covered after React's last
+      // commit, which is precisely when flights are asked for.
+      flightFrom.value = cameraShared.value;
+      flightTo.value = target;
+      flightProgress.value = 0;
+      // Linear, because `interpolateCamera` in the reaction below is where the
+      // house curve lives. Easing both would smootherstep a smootherstep.
+      flightProgress.value = withTiming(
+        1,
+        { duration: durationMs, easing: Easing.linear },
+        finished => {
+          'worklet';
+          // Arrival does not depend on the reaction below having run. The
+          // reaction is what makes the flight *smooth*; this is what makes it
+          // *land*, so a flight can never leave the camera short of the target
+          // it was given.
+          if (finished !== true) return;
+          const landed = flightTo.value;
+          cameraShared.value = landed;
+          mirrorBusy.value = true;
+          runOnJS(mirrorCamera)(landed);
+        },
+      );
     },
-    [cancelCameraFlight, commitCamera, reducedMotion],
+    [
+      cameraShared,
+      cancelCameraFlight,
+      commitCamera,
+      flightFrom,
+      flightProgress,
+      flightTo,
+      mirrorBusy,
+      mirrorCamera,
+      reducedMotion,
+    ],
+  );
+
+  /**
+   * The flight itself, one frame at a time on the UI thread.
+   *
+   * `interpolateCamera` inlined rather than called. Not because the call would
+   * cross a module — `zoomAroundFocalPoint` already does that from the pinch —
+   * but because it reaches `smootherstep` in `bands.ts`, which is not a
+   * worklet, and neither is the `lerp` below it in `camera.ts`. Making it
+   * callable from here means marking a chain of helpers in two other modules
+   * and moving one of them above its caller, which is a larger change than the
+   * six lines it would save. The maths is the same: smootherstep on position,
+   * logarithmic on scale, so a zoom reads as even.
+   *
+   * React learns the camera exactly as fast as it can commit one, through the
+   * same back-pressure a pan uses; the picture's transform covers every frame in
+   * between. The last frame is mirrored unconditionally, because a flight has to
+   * *end* with React holding the camera it landed on.
+   */
+  useAnimatedReaction(
+    () => flightProgress.value,
+    progress => {
+      'worklet';
+      if (progress >= 1) {
+        const landed = flightTo.value;
+        cameraShared.value = landed;
+        mirrorBusy.value = true;
+        runOnJS(mirrorCamera)(landed);
+        return;
+      }
+      const from = flightFrom.value;
+      const to = flightTo.value;
+      if (!(from.scale > 0) || !(to.scale > 0)) return;
+      const t = progress;
+      const eased = t * t * t * (t * (t * 6 - 15) + 10);
+      const next = {
+        x: from.x + (to.x - from.x) * eased,
+        y: from.y + (to.y - from.y) * eased,
+        scale: Math.exp(
+          Math.log(from.scale) +
+            (Math.log(to.scale) - Math.log(from.scale)) * eased,
+        ),
+      };
+      cameraShared.value = next;
+      if (mirrorBusy.value) return;
+      mirrorBusy.value = true;
+      runOnJS(mirrorCamera)(next);
+    },
   );
 
   /*

@@ -14,9 +14,11 @@ import {
   type SkPaint,
   type SkPath,
   type SkPicture,
+  type Transforms3d,
 } from '@shopify/react-native-skia';
 import {
   useDerivedValue,
+  useSharedValue,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -215,6 +217,45 @@ type Props = {
 };
 
 /**
+ * The map from a picture recorded at one camera to the screen at another.
+ *
+ * A recorded picture is baked in *screen* coordinates, so moving the camera has
+ * always meant recording it again. It does not have to: for a picture recorded
+ * at `N` and shown at `M`, screen points are related by one affine map.
+ *
+ *     p_M = (p_N − V/2)·(M.scale/N.scale) + (N.xy − M.xy)·M.scale + V/2
+ *
+ * Returned in canvas-operation order, which is the order Skia's `transform`
+ * prop applies: translate to where the centre goes, scale about it, then bring
+ * the centre back. For a pan the scale factor is exactly 1, so the map is a
+ * pure translation and nothing is approximated — text stays crisp and a row
+ * keeps its 240×30 screen box however far the finger travels.
+ *
+ * Defined above the component on purpose: the worklets plugin captures a
+ * `'worklet'` declaration into a calling worklet's closure where that caller is
+ * defined, so a helper further down the file arrives as `undefined`.
+ */
+export function pictureTransformFor(
+  recorded: Camera,
+  live: Camera,
+  viewport: Viewport,
+): Transforms3d {
+  'worklet';
+  const halfWidth = viewport.width / 2;
+  const halfHeight = viewport.height / 2;
+  if (!(live.scale > 0) || !(recorded.scale > 0)) {
+    return [{ translateX: 0 }, { translateY: 0 }];
+  }
+  return [
+    { translateX: halfWidth + (recorded.x - live.x) * live.scale },
+    { translateY: halfHeight + (recorded.y - live.y) * live.scale },
+    { scale: live.scale / recorded.scale },
+    { translateX: -halfWidth },
+    { translateY: -halfHeight },
+  ];
+}
+
+/**
  * The only field canvas. Each React render records one immediate-mode Picture,
  * culls before lens work, then lets Skia replay that picture in one view.
  */
@@ -330,6 +371,32 @@ function FieldCanvasImpl({
     labelFlights !== null &&
     recut.flights.every(flight => presentations.has(flight.entityKey));
   const paints = useMemo(() => createPaints(palette), [palette]);
+  /**
+   * The camera the picture is *recorded* at, which is not the camera it is
+   * *shown* at.
+   *
+   * Once the transform below exists, re-recording for every camera frame stops
+   * being what makes the field move and becomes only what keeps the culling
+   * honest — so it can happen far less often. That matters for more than the
+   * frame budget: a new picture is a new element, and the note below this one
+   * explains what a new element costs. Holding the recording still through a
+   * pan is what keeps the canvas from being re-rendered behind the animation.
+   *
+   * A re-record is owed when the camera has drifted far enough that the
+   * overscan margin might no longer cover what has come on screen, or when the
+   * scale has moved enough for the representation bands to be visibly wrong.
+   */
+  const recordCamera = useRecordCamera(camera, viewport);
+  /**
+   * The camera the current picture was recorded at.
+   *
+   * Written inside the memo rather than from an effect, and read only by the
+   * worklet below. An effect would run *after* the commit that painted the new
+   * picture, so for one frame the transform would be measured from the camera
+   * of the picture before it — the whole field jumping by exactly the distance
+   * the pan had covered since the last re-record.
+   */
+  const pictureCamera = useSharedValue<Camera>(camera);
   const picture = useMemo(() => {
     if (
       nativeField ||
@@ -339,10 +406,11 @@ function FieldCanvasImpl({
     ) {
       return null;
     }
+    pictureCamera.value = recordCamera;
     return recordFieldPicture({
       layout,
       placements,
-      camera,
+      camera: recordCamera,
       viewport,
       presentations,
       jobs,
@@ -364,7 +432,6 @@ function FieldCanvasImpl({
     activeLensKey,
     analyses,
     bodyFont,
-    camera,
     displayFont,
     grain,
     jobs,
@@ -381,9 +448,31 @@ function FieldCanvasImpl({
     focusKey,
     playingKey,
     playingProgress,
+    pictureCamera,
     presentations,
+    recordCamera,
     viewport,
   ]);
+
+  /**
+   * The camera's motion, carried on the UI thread.
+   *
+   * Why panning at L1 was coarser than at L0: L0 has `NativeFieldContent`
+   * reading `cameraShared` directly, and every level closer fell back to a
+   * picture that could only move by being recorded again — on the JS thread,
+   * once per React commit, throttled by `mirrorBusy`. `pictureTransformFor` is
+   * what replaces that. Identity is stable across renders on purpose; the note
+   * on `scene` explains what a fresh element would cost here.
+   */
+  const pictureTransform = useDerivedValue(
+    () => pictureTransformFor(pictureCamera.value, cameraShared.value, viewport),
+    // Explicit, and all three stable: the two shared values are refs and the
+    // viewport only changes on a rotation. Left implicit, the plugin would
+    // infer the same list — but the identity of this value is what holds the
+    // scene element still, so it is worth saying out loud rather than
+    // inheriting from whatever the closure happened to capture.
+    [cameraShared, pictureCamera, viewport],
+  );
 
   /**
    * The scene element, held by identity.
@@ -477,6 +566,46 @@ function FieldCanvasImpl({
     viewport,
   ]);
 
+  /**
+   * The picture, its paper and its playhead as one element held by identity.
+   *
+   * This is the whole point of the transform above. Skia re-renders its
+   * children through `root.render(children)` keyed on the *element*, so a fresh
+   * one on every camera frame would re-record the node tree from JS-thread
+   * values and repaint it — which is the flicker the note above describes, and
+   * which a `transform` fed by a shared value would walk straight into. While
+   * the camera is only moving, `picture` is the same object, `pictureTransform`
+   * has stable identity, and this memo hands back the same element: nothing
+   * re-renders, and the UI thread carries the motion alone. Exactly how L0 has
+   * always worked, now for every level.
+   */
+  const scene = useMemo(
+    () => (
+      <>
+        {/*
+          Under the picture rather than inside it. The recording's own
+          `drawColor` fills its bounds, which are the viewport — so the moment
+          the picture is translated, the paper would move with it and leave the
+          canvas showing through at the edge it came from.
+        */}
+        <Fill color={palette.bg} />
+        {picture === null ? null : grain !== null ? (
+          // L3 is drawn from the viewport, not from the camera: the grain
+          // fills the screen and the camera decides which *samples* it holds,
+          // not where they sit. Transforming it would slide the waveform under
+          // a pan that is supposed to be scrubbing through it.
+          <Picture picture={picture} />
+        ) : (
+          <SkiaGroup transform={pictureTransform}>
+            <Picture picture={picture} />
+          </SkiaGroup>
+        )}
+        {playhead}
+      </>
+    ),
+    [grain, palette.bg, picture, pictureTransform, playhead],
+  );
+
   if (nativeField) {
     return (
       <Canvas
@@ -497,10 +626,63 @@ function FieldCanvasImpl({
       pointerEvents="none"
       style={StyleSheet.absoluteFill}
     >
-      {picture === null ? null : <Picture picture={picture} />}
-      {playhead}
+      {scene}
     </Canvas>
   );
+}
+
+/**
+ * How far the camera may drift before the picture owes a re-recording.
+ *
+ * The translation threshold is well inside `OVERSCAN_PX`, so a mark that comes
+ * on screen was already recorded before it was needed. The scale threshold is
+ * the point where holding the representation bands still would start to read as
+ * the wrong drawing rather than as a slightly early one.
+ */
+const RECORD_DRIFT = {
+  TRANSLATION_PX: FIELD_CANVAS_KNOBS.OVERSCAN_PX / 2,
+  /**
+   * The knob to turn on a device. Between re-recordings the transform scales
+   * the recording itself, so at 1.03 a row's 240×30 screen box can be drawn up
+   * to 3% large before a fresh recording puts it back — invisible in a pinch,
+   * and a pan does not move the scale at all. Tighter costs more recordings
+   * during a zoom; looser lets the drawing breathe.
+   */
+  SCALE_RATIO: 1.03,
+} as const;
+
+/**
+ * The camera to record at: the last one recorded, until it is too far away.
+ *
+ * Returned by identity, so a caller's `useMemo` naturally does nothing while
+ * the camera is only moving. The comparison is in *screen* pixels — a world
+ * distance means nothing without a scale to read it at.
+ */
+function useRecordCamera(camera: Camera, viewport: Viewport): Camera {
+  const held = useRef<{ camera: Camera; viewport: Viewport }>({
+    camera,
+    viewport,
+  });
+  const previous = held.current;
+  // A rotation changes what the overscan covers, so a recording made for the
+  // other orientation is stale however still the camera has been.
+  const resized =
+    previous.viewport.width !== viewport.width ||
+    previous.viewport.height !== viewport.height;
+  const drifted =
+    resized ||
+    !(previous.camera.scale > 0) ||
+    !(camera.scale > 0) ||
+    Math.abs(camera.x - previous.camera.x) * camera.scale >
+      RECORD_DRIFT.TRANSLATION_PX ||
+    Math.abs(camera.y - previous.camera.y) * camera.scale >
+      RECORD_DRIFT.TRANSLATION_PX ||
+    camera.scale > previous.camera.scale * RECORD_DRIFT.SCALE_RATIO ||
+    camera.scale * RECORD_DRIFT.SCALE_RATIO < previous.camera.scale;
+  if (drifted) {
+    held.current = { camera, viewport };
+  }
+  return held.current.camera;
 }
 
 /**
@@ -1423,17 +1605,27 @@ function drawShelfLabels(
   gather: number,
 ): void {
   if (alpha <= 0.01) return;
-  const topYByGroup = new Map<string, number>();
+  // In world units, and without building a point per placement. This runs over
+  // every placement in the field on every recorded frame — the one loop here
+  // that is not culled — so the two allocations `placementPoint` and
+  // `worldToScreen` would each make are the whole of its cost at 500 songs.
+  // One conversion per *group* at the end says the same thing.
+  const bloom = 1 - (gather < 0 ? 0 : gather > 1 ? 1 : gather);
+  const topWorldByGroup = new Map<string, number>();
   for (const placement of request.placements) {
-    const point = worldToScreen(
-      placementPoint(placement, gather),
-      request.camera,
-      request.viewport,
-    );
-    const previous = topYByGroup.get(placement.groupKey);
-    if (previous === undefined || point.y < previous) {
-      topYByGroup.set(placement.groupKey, point.y);
+    const y = placement.y + placement.bloomY * bloom;
+    const previous = topWorldByGroup.get(placement.groupKey);
+    if (previous === undefined || y < previous) {
+      topWorldByGroup.set(placement.groupKey, y);
     }
+  }
+  const topYByGroup = new Map<string, number>();
+  for (const [groupKey, worldY] of topWorldByGroup) {
+    topYByGroup.set(
+      groupKey,
+      (worldY - request.camera.y) * request.camera.scale +
+        request.viewport.height / 2,
+    );
   }
   request.paints.faint.setAlphaf(alpha);
   request.paints.muted.setAlphaf(alpha);
