@@ -380,13 +380,13 @@ export function nameLensFacePath(
   song: Pick<LensSong, 'seed' | 'id' | 'model' | 'durationMs'>,
   radius: number = NAME_LENS_KNOBS.MARK_RADIUS_PX,
 ): SkPath {
-  const cacheKey = JSON.stringify([
-    song.seed ?? null,
-    song.id,
-    song.model,
-    song.durationMs,
-    radius,
-  ]);
+  // A template literal, not `JSON.stringify`: this runs for every face on
+  // every recorded frame, and stringify builds an array and walks it before it
+  // ever produces the string the map is actually keyed by. The unit separator
+  // keeps fields that could contain the delimiter from colliding.
+  const cacheKey = `${song.seed ?? ''}\u001f${song.id}\u001f${song.model}\u001f${
+    song.durationMs
+  }\u001f${radius}`;
   const cached = facePathCache.get(cacheKey);
   if (cached !== undefined) return cached;
   const recipe: FaceRecipe = {

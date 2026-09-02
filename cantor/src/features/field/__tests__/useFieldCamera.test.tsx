@@ -227,6 +227,31 @@ describe('useFieldCamera', () => {
     expect(latest.ascend()).toBe(false);
   });
 
+  // The full-motion flight is a shared value driven on the UI thread, so under
+  // Jest's reanimated mock the per-frame reaction never runs. What must survive
+  // that is arrival: the timing callback commits the target, so a tap descends
+  // whether or not a single frame of the flight was ever drawn.
+  it('lands a full-motion flight on its target, not short of it', async () => {
+    mockReducedMotion = false;
+    const { layout } = await renderCamera();
+    const placement = layout.placements[0];
+    const [, , tap] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+    });
+    expect(latest.focus?.key).toBe(placement.key);
+    expect(latest.level).toBe('shelf');
+    // The shelf's own seat, exactly — `LEVEL_SCALE_RATIOS.shelf` above FIT.
+    expect(camera().scale).toBeCloseTo(layout.fitScale * 5);
+
+    await ReactTestRenderer.act(async () => {
+      expect(latest.ascend()).toBe(true);
+    });
+    expect(latest.level).toBe('field');
+    expect(camera().scale).toBeCloseTo(layout.fitScale);
+  });
+
   it('commits a born source frame and retargets rapid re-cuts continuously', async () => {
     mockReducedMotion = false;
     let now = 0;
