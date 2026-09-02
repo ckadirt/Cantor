@@ -8,10 +8,16 @@
  *
  * One phrase per onboarding run: the panels (reveal, backup) must all show the
  * same words, and remounting a panel must never mint a new identity. Completion
- * derives the app's Ed25519 secret and stores it behind Android Keystore; the
- * phrase itself is deliberately not copied into ordinary app storage.
+ * derives the app's Ed25519 secret and stores it behind Android Keystore,
+ * together with the 16 bytes of entropy the words encode — see
+ * `secureIdentity.ts`. Both live in the Keystore and nowhere else; the phrase is
+ * never copied into ordinary app storage.
  */
-import { entropyToMnemonic, validateMnemonic } from '@scure/bip39';
+import {
+  entropyToMnemonic,
+  mnemonicToEntropy,
+  validateMnemonic,
+} from '@scure/bip39';
 import { wordlist } from '@scure/bip39/wordlists/english.js';
 
 // crypto.getRandomValues exists at runtime (polyfill on device, WebCrypto in
@@ -54,4 +60,37 @@ export function wordBits(word: string): string {
     throw new Error(`identity: '${word}' is not a BIP39 word`);
   }
   return index.toString(2).padStart(11, '0');
+}
+
+/**
+ * Whether these words are a real BIP39 phrase.
+ *
+ * The checksum is the point: a mistyped or mis-ordered word fails here rather
+ * than silently deriving a different identity that no node has ever heard of.
+ */
+export function phraseIsValid(words: readonly string[]): boolean {
+  const phrase = words.join(' ').trim().toLocaleLowerCase();
+  if (phrase.length === 0) return false;
+  try {
+    return validateMnemonic(phrase, wordlist);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The entropy a phrase encodes — the 16 bytes the words *are*.
+ *
+ * Keeping this rather than only the key it derives is what makes the words
+ * showable again and a restore possible: the secret is a pure function of the
+ * phrase, so the phrase is strictly the more useful thing to hold.
+ */
+export function phraseToEntropy(words: readonly string[]): Uint8Array {
+  const phrase = words.join(' ').trim().toLocaleLowerCase();
+  return mnemonicToEntropy(phrase, wordlist);
+}
+
+/** The same words back. Round-trips `phraseToEntropy` exactly. */
+export function entropyToPhrase(entropy: Uint8Array): readonly string[] {
+  return Object.freeze(entropyToMnemonic(entropy, wordlist).split(' '));
 }

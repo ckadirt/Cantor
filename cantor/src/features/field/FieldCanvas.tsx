@@ -990,15 +990,17 @@ function drawJobMark(
   }
 
   // What is happening, under the mark, where the shelf label would be for a
-  // cluster: a job is the one mark that says its own state out loud.
-  if (alpha.dot > 0.01) {
+  // cluster: a job is the one mark that says its own state out loud, at every
+  // distance. Gated on the dot alpha alone it went silent exactly when the
+  // rows arrived — a ring with nothing to say.
+  if (visible > 0.01) {
     const label = jobStateLabel(pending.job);
     const counted =
       model.progress.kind === 'determinate'
         ? ` ${model.progress.completed}/${model.progress.total}`
         : '';
     const line = `${label}${counted}`;
-    request.paints.muted.setAlphaf(alpha.dot * quiet);
+    request.paints.muted.setAlphaf(visible * quiet);
     canvas.drawText(
       line,
       point.x - request.fonts.mono.measureText(line).width / 2,

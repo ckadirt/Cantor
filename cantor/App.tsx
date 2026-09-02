@@ -106,7 +106,10 @@ export default function App() {
               <View style={[styles.flex, { backgroundColor: pal.bg }]} />
             )}
             {boot.state === 'onboarding' ? (
-              <Onboarding onDone={finishOnboarding} />
+              <Onboarding
+                onDone={finishOnboarding}
+                onRestored={identity => setBoot({ state: 'ready', identity })}
+              />
             ) : null}
           </>
         )}
