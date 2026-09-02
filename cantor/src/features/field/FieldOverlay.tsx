@@ -76,6 +76,13 @@ const OVERLAY_KNOBS = {
   /** How far a tab's body reaches back into the screen from its edge. */
   TAB_REACH_PX: 28,
   /**
+   * Added to that body in every direction to make a finger's target.
+   *
+   * `touch.min` is 48: a 28 px body plus 20 either side clears it with room,
+   * and it costs the drawing nothing because slop is not layout.
+   */
+  TAB_HIT_SLOP_PX: 20,
+  /**
    * The mark under the selected word on a dial.
    *
    * A tick, not a triangle or a pill: the edge tabs already say "this is the
@@ -368,6 +375,12 @@ function EdgeTab({
     <Pressable
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
+      // The mark is a hairline and a tick; the *target* has to be a finger's
+      // worth of screen. The bottom tab measured three device-independent
+      // pixels tall — which is why nothing could ever be made to press it —
+      // while the identical top one measured twenty-eight. Slop rather than
+      // height, so the drawn mark stays exactly where the design puts it.
+      hitSlop={OVERLAY_KNOBS.TAB_HIT_SLOP_PX}
       onPress={onPress}
       style={[styles.tab, edge === 'top' ? styles.tabTop : styles.tabBottom]}
     >

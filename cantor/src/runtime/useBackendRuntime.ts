@@ -122,6 +122,19 @@ export type BackendRuntimeCommands = {
   hidePairing: () => void;
   reportError: (error: unknown) => void;
   pairBackend: (request: PairingRequest) => void;
+  /** Change what this phone calls a node. Nothing on the node changes. */
+  renameBackend: (nodePublicKey: string, petname: string) => void;
+  /**
+   * Remove a node from this phone, with everything of its that lives here.
+   *
+   * `buildFieldController` sources every entity from
+   * `backends → snapshots[pubkey].songs`, so forgetting a node removes all of
+   * its songs from the field — downloaded ones included. Their files would
+   * otherwise linger as orphans no screen could ever reach, so the audio goes
+   * with the record. Nothing is deleted on the node itself: pair again and
+   * everything returns.
+   */
+  forgetBackend: (nodePublicKey: string) => Promise<void>;
   submit: (
     nodePublicKey: string,
     model: string,
@@ -231,6 +244,14 @@ export function useBackendRuntime(
   const [storageError, setStorageError] = useState<string | null>(null);
   const [localAudio, setLocalAudio] = useState<Record<string, LocalAudio>>({});
   const backendsRef = useRef<BackendRecord[]>([]);
+  /**
+   * The snapshots as they are *now*.
+   *
+   * `forgetBackend` walks a node's songs to delete their audio, and a callback
+   * closing over the rendered `snapshots` would walk whatever list existed when
+   * it was created. Mirrored for the same reason `backendsRef` is.
+   */
+  const snapshotsRef = useRef<Record<string, ConnectionSnapshot>>({});
   const connections = useRef(new Map<string, LiveConnection>());
   const pairTokens = useRef(new Map<string, string>());
   const outboxInFlight = useRef(new Set<string>());
@@ -479,6 +500,8 @@ export function useBackendRuntime(
     [],
   );
 
+  snapshotsRef.current = snapshots;
+
   const pairBackend = useCallback(
     (request: PairingRequest) => {
       const nodePublicKey = request.backend.nodePubkey;
@@ -501,6 +524,67 @@ export function useBackendRuntime(
       setPairing(false);
     },
     [replaceBackends],
+  );
+
+  const renameBackend = useCallback(
+    (nodePublicKey: string, petname: string) => {
+      const trimmed = petname.trim();
+      if (trimmed.length === 0) return;
+      replaceBackends(
+        backendsRef.current.map(backend =>
+          backend.nodePubkey === nodePublicKey
+            ? { ...backend, petname: trimmed }
+            : backend,
+        ),
+      );
+    },
+    [replaceBackends],
+  );
+
+  const forgetBackend = useCallback(
+    async (nodePublicKey: string) => {
+      // Stop talking to it first: a live socket would re-populate the snapshot
+      // the moment the record is gone.
+      connections.current.get(nodePublicKey)?.connection.stop();
+      connections.current.delete(nodePublicKey);
+      pairTokens.current.delete(nodePublicKey);
+
+      const snapshot = snapshotsRef.current[nodePublicKey];
+      const audioKeys: string[] = [];
+      for (const song of snapshot?.songs ?? []) {
+        const artifact = deliveryArtifact(song);
+        if (artifact === undefined) continue;
+        audioKeys.push(audioKey(nodePublicKey, song.id, artifact.sha256));
+        // One failure must not strand the rest: a file that is already gone,
+        // or that native refuses, still leaves the record to remove.
+        try {
+          await audioStore.remove({
+            nodeKey: nodePublicKey,
+            songId: song.id,
+            digest: artifact.sha256,
+          });
+        } catch (error) {
+          setStorageError(readError(error));
+        }
+      }
+
+      replaceBackends(
+        backendsRef.current.filter(
+          backend => backend.nodePubkey !== nodePublicKey,
+        ),
+      );
+      setSnapshots(current => {
+        const next = { ...current };
+        delete next[nodePublicKey];
+        return next;
+      });
+      setLocalAudio(current => {
+        const next = { ...current };
+        for (const key of audioKeys) delete next[key];
+        return next;
+      });
+    },
+    [audioStore, replaceBackends],
   );
 
   const submit = useCallback(
@@ -685,6 +769,8 @@ export function useBackendRuntime(
       hidePairing,
       reportError,
       pairBackend,
+      renameBackend,
+      forgetBackend,
       submit,
       controlJob,
       patchSong,
@@ -703,6 +789,8 @@ export function useBackendRuntime(
       hidePairing,
       patchSong,
       pairBackend,
+      renameBackend,
+      forgetBackend,
       refreshLibraries,
       reportError,
       showPairing,
