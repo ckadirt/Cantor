@@ -86,6 +86,14 @@ type Props = {
 
 /** KNOBS */
 const ANALYSIS_BUCKETS = 512; // resolution the Cantor intervals are reduced from
+/**
+ * How often the field re-reads the visual clock while a song plays.
+ *
+ * Six times a second: fast enough that the player's ring is never seen standing
+ * still, slow enough that a playing song is not re-recording the picture at
+ * frame rate for a boundary that moves a fraction of a degree.
+ */
+const PROGRESS_SAMPLE_MS = 160;
 
 /** The post-onboarding surface: one field, no parallel console navigation. */
 export function FieldScreen({ identity }: Props) {
@@ -480,13 +488,48 @@ export function FieldScreen({ identity }: Props) {
   const currentTrack = transport.snapshot.track;
   // One key lights every placement of that song, which is what M6 needs when a
   // song sits in several playlists at once.
-  const playingKey =
-    transport.snapshot.state === 'playing' && currentTrack !== null
+  /**
+   * The song the player holds — playing *or* paused.
+   *
+   * `LensSong.playing` has always documented itself as "the song the player
+   * currently holds", and this was reading `state === 'playing'`: pausing
+   * dropped the key, which dropped the ring at L0 and L1 and took the player's
+   * progress with it. Holding is not the same as sounding.
+   */
+  const heldKey =
+    currentTrack !== null
       ? `${currentTrack.nodeKey}:${currentTrack.songId}`
       : null;
+  const playingKey = heldKey;
+  /**
+   * Where the head is, sampled from the *visual clock*.
+   *
+   * `PlayerSnapshot.positionSeconds` says of itself that it is "a resync point,
+   * not a per-frame value… goes stale immediately while playing", and this used
+   * to divide by it — so the player's ring stood still through an entire song
+   * and only jumped when a pause published a new snapshot. The clock that
+   * actually moves is the shared value the scrub playhead rides.
+   *
+   * Sampled rather than read per frame: the picture is recorded in a React
+   * memo, so the ring can only advance as often as this screen re-renders.
+   * `PROGRESS_SAMPLE_MS` is that rate, and it is the knob to turn if the ring
+   * ever looks like it is stepping.
+   */
+  const [visualPosition, setVisualPosition] = useState(0);
+  useEffect(() => {
+    if (heldKey === null) return;
+    const read = () => setVisualPosition(transport.positionSeconds.value);
+    read();
+    if (transport.snapshot.state !== 'playing') return;
+    const timer = setInterval(read, PROGRESS_SAMPLE_MS);
+    return () => clearInterval(timer);
+  }, [heldKey, transport.positionSeconds, transport.snapshot.state]);
   const playingProgress =
     transport.snapshot.durationSeconds > 0
-      ? transport.snapshot.positionSeconds / transport.snapshot.durationSeconds
+      ? Math.min(
+          Math.max(visualPosition / transport.snapshot.durationSeconds, 0),
+          1,
+        )
       : null;
   const focusedIsCurrent =
     focused !== null &&
@@ -881,8 +924,8 @@ export function FieldScreen({ identity }: Props) {
         playlists: 0,
       });
       entry.songs += 1;
-      const state = presentation.localAudio.state;
-      if (state === 'cached' || state === 'pinned') {
+      const audio = presentation.localAudio.state;
+      if (audio === 'cached' || audio === 'pinned') {
         entry.downloaded += 1;
         entry.bytesHere += presentation.delivery?.byte_length ?? 0;
       }
