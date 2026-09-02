@@ -25,11 +25,11 @@ import {
 import {
   REPRESENTATION_WINDOWS,
   gatherFraction,
+  isMarksOnlyDistance,
   placementPoint,
   representationAlphas,
   shelfLabelAlpha,
   smootherstep,
-  levelOf,
   worldToScreen,
   type Camera,
   type FieldLayout,
@@ -217,6 +217,39 @@ type Props = {
 };
 
 /**
+ * The camera the field is actually being *shown* at, right now.
+ *
+ * `camera` and `cameraShared` are the same quantity sampled at different times:
+ * React's copy is whatever the last mirrored frame carried, and the shared one
+ * is what the UI thread is drawing from this instant. Recording against React's
+ * copy bakes React's commit latency into the transform — and that latency is
+ * not constant, so it does not read as a lag, it reads as a *flicker*: every
+ * fresh recording is one element, Skia repaints the tree from the JS thread's
+ * last transform, and the difference between that and the live one is however
+ * long React happened to take. Recording against the live camera instead makes
+ * the transform ≈ identity at the moment of recording, so the repainted frame
+ * and the animated frame agree to within one frame of motion.
+ *
+ * The guard is for the one case where the two are not the same quantity: before
+ * the first camera is published, React holds the fitted camera and the shared
+ * value still holds its placeholder. A disagreement wider than the screen is
+ * not latency, so React's is the one to believe.
+ */
+function drawCamera(
+  camera: Camera,
+  cameraShared: SharedValue<Camera>,
+  viewport: Viewport,
+): Camera {
+  const live = cameraShared.value;
+  if (!(live.scale > 0)) return camera;
+  const dx = (live.x - camera.x) * live.scale;
+  const dy = (live.y - camera.y) * live.scale;
+  const reach = viewport.width + viewport.height;
+  if (dx * dx + dy * dy > reach * reach) return camera;
+  return live;
+}
+
+/**
  * The map from a picture recorded at one camera to the screen at another.
  *
  * A recorded picture is baked in *screen* coordinates, so moving the camera has
@@ -360,17 +393,6 @@ function FieldCanvasImpl({
   }
   lastLabelLinear.current = relayoutLinear;
   const labelFlights = labelPlan.current?.flights ?? semanticLabelFlights;
-  const nativeField =
-    activeLensKey === 'name' &&
-    recut !== null &&
-    levelOf(recut.fromCamera.scale, recut.fromFitScale) === 'field' &&
-    levelOf(recut.toCamera.scale, recut.toFitScale) === 'field' &&
-    levelOf(camera.scale, renderFitScale) === 'field' &&
-    nativeClock !== null &&
-    monoFont !== null &&
-    labelFlights !== null &&
-    recut.flights.every(flight => presentations.has(flight.entityKey));
-  const paints = useMemo(() => createPaints(palette), [palette]);
   /**
    * The camera the picture is *recorded* at, which is not the camera it is
    * *shown* at.
@@ -386,7 +408,22 @@ function FieldCanvasImpl({
    * overscan margin might no longer cover what has come on screen, or when the
    * scale has moved enough for the representation bands to be visibly wrong.
    */
-  const recordCamera = useRecordCamera(camera, viewport);
+  const recordCamera = useRecordCamera(
+    drawCamera(camera, cameraShared, viewport),
+    viewport,
+  );
+
+  const nativeField =
+    activeLensKey === 'name' &&
+    recut !== null &&
+    isMarksOnlyDistance(recut.fromCamera.scale, recut.fromFitScale) &&
+    isMarksOnlyDistance(recut.toCamera.scale, recut.toFitScale) &&
+    isMarksOnlyDistance(recordCamera.scale, renderFitScale) &&
+    nativeClock !== null &&
+    monoFont !== null &&
+    labelFlights !== null &&
+    recut.flights.every(flight => presentations.has(flight.entityKey));
+  const paints = useMemo(() => createPaints(palette), [palette]);
   /**
    * The camera the current picture was recorded at.
    *
@@ -642,13 +679,22 @@ function FieldCanvasImpl({
 const RECORD_DRIFT = {
   TRANSLATION_PX: FIELD_CANVAS_KNOBS.OVERSCAN_PX / 2,
   /**
-   * The knob to turn on a device. Between re-recordings the transform scales
-   * the recording itself, so at 1.03 a row's 240×30 screen box can be drawn up
-   * to 3% large before a fresh recording puts it back — invisible in a pinch,
-   * and a pan does not move the scale at all. Tighter costs more recordings
-   * during a zoom; looser lets the drawing breathe.
+   * Tight, and it has to be — much tighter than the translation threshold.
+   *
+   * The transform can carry a *position*, exactly. What it cannot carry is
+   * anything the recording computed **from** the scale: the gather between a
+   * bloomed cluster and its column, and the representation bands that fade a
+   * dot into a row. Those step once per recording while the frame around them
+   * scales continuously, and relative motion is far more visible than slow
+   * motion — a mark that jumps 19 px against a smoothly moving background
+   * reads as a flicker, which is what 3% bought at the L1→L0 gather.
+   *
+   * At 0.5% that jump is under 3 px, and the cost is only paid where the scale
+   * is actually moving. A pan does not move it at all, which is the case this
+   * whole transform exists for: recordings there stay as rare as the
+   * translation threshold allows.
    */
-  SCALE_RATIO: 1.03,
+  SCALE_RATIO: 1.005,
 } as const;
 
 /**
