@@ -222,7 +222,10 @@ const styles = StyleSheet.create({
     paddingTop: space.xl,
     paddingBottom: space.sm,
   },
-  back: { minWidth: 56 },
+  // Both side slots take equal space so the counter sits at true centre. The
+  // right one used to be an empty spacer of the same width; a word in it is
+  // wider, and the frame must not shift while letters fly between panels.
+  back: { flexBasis: 0, flexGrow: 1, minWidth: 56 },
   restore: { textAlign: 'right' },
   sigilZone: {
     height: SIGIL_H,
