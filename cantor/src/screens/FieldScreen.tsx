@@ -49,6 +49,7 @@ import {
   grainWindow,
   layoutField,
   orderByKey,
+  representationAlphas,
   placementPoint,
   visibleSecondsAt,
   worldToScreen,
@@ -403,6 +404,23 @@ export function FieldScreen({ identity }: Props) {
     const key = fieldCamera.focus?.entityKey;
     return key === undefined ? null : controller.presentations.get(key) ?? null;
   }, [controller.presentations, fieldCamera.focus]);
+
+  /**
+   * How present the player is, 0..1, from the same band the canvas draws from.
+   *
+   * `representationAlphas` has computed this since the beginning and nothing
+   * read it: `SongSurface` mounted on `level === 'song'`, which is `13·FIT` —
+   * where the row is still at 0.998 and the song at 0.003 — so the player cut
+   * in seven units of FIT before its own crossfade would have begun. Reading
+   * the band is the whole of the seam: the row grows into the player across
+   * `12→27·FIT`, chrome and picture on one number.
+   */
+  const songAlpha = useMemo(
+    () =>
+      representationAlphas(fieldCamera.camera.scale, fieldCamera.renderFitScale)
+        .song,
+    [fieldCamera.camera.scale, fieldCamera.renderFitScale],
+  );
 
   /** The song the sheet is open on, if the field still knows about it. */
   const sheetSong = useMemo(
@@ -988,6 +1006,7 @@ export function FieldScreen({ identity }: Props) {
                 analyses={analyses}
                 grain={grain}
                 jobs={controller.jobs}
+                focusKey={fieldCamera.focus?.key ?? null}
                 playingKey={playingKey}
                 nowMs={nowMs}
                 playingProgress={playingProgress}
@@ -1019,10 +1038,13 @@ export function FieldScreen({ identity }: Props) {
             />
           </>
         ) : null}
-        {fieldCamera.level === 'song' &&
-        focused !== null &&
-        viewport !== null ? (
-          <SongSurface
+        {songAlpha > 0.01 && focused !== null && viewport !== null ? (
+          <View
+            // Touchable only once it is mostly here: a transport at 4% opacity
+            // is a control nobody can see and everybody can press.
+            pointerEvents={songAlpha > 0.6 ? 'box-none' : 'none'}
+            style={[StyleSheet.absoluteFill, { opacity: songAlpha }]}>
+            <SongSurface
             available={focused.delivery !== undefined}
             isCurrent={focusedIsCurrent}
             lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
@@ -1050,8 +1072,9 @@ export function FieldScreen({ identity }: Props) {
               nodeLabel: focused.nodeLabels[0] ?? focused.backend.petname,
               audioState: focused.localAudio.state,
             }}
-            width={viewport.width}
-          />
+              width={viewport.width}
+            />
+          </View>
         ) : null}
         <FieldOverlay
           arrangementKey={arrangementKey}

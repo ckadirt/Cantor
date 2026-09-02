@@ -106,6 +106,13 @@ const FIELD_CANVAS_KNOBS = {
   JOB_STAGE_LABEL_GAP_PX: 26,
   /** A failed job keeps its seat, and says so by going quiet rather than red. */
   JOB_FAILED_ALPHA: 0.35,
+  /**
+   * How much of the view the player's ring may take.
+   *
+   * Less than the width, because the song's name, its recipe and its transport
+   * all live under it in React and the ring must not sit behind them.
+   */
+  SONG_HEIGHT_RATIO: 0.62,
   JOB_ROW_LABEL_OFFSET_PX: 42,
   // A face is an outline, not a blob: hairline everywhere, per the house rule.
   FACE_STROKE_PX: 1,
@@ -122,6 +129,15 @@ type Props = {
   palette: Palette;
   /** Entity key of the song the player holds, lit at every level. */
   playingKey?: string | null;
+  /**
+   * The placement the camera has arrived at.
+   *
+   * Only this one is ever drawn as a player: the player *is* the song you have
+   * arrived at, so there is exactly one at a time by definition. Without it,
+   * every neighbour still inside the overscan draws its own ring and they
+   * overlap across the view.
+   */
+  focusKey?: string | null;
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
   /** How far through the playing song we are, 0..1. */
@@ -165,6 +181,7 @@ function FieldCanvasImpl({
   jobs,
   palette,
   playingKey = null,
+  focusKey = null,
   analyses,
   playingProgress = null,
   grain = null,
@@ -283,6 +300,7 @@ function FieldCanvasImpl({
       jobs,
       palette,
       playingKey,
+      focusKey,
       analyses,
       playingProgress,
       grain,
@@ -312,6 +330,7 @@ function FieldCanvasImpl({
     paints,
     palette,
     placements,
+    focusKey,
     playingKey,
     playingProgress,
     presentations,
@@ -771,6 +790,8 @@ type PictureRequest = Readonly<{
   jobs?: ReadonlyMap<string, JobPresentation>;
   palette: Palette;
   playingKey?: string | null;
+  /** The placement the camera arrived at; the only one drawn as a player. */
+  focusKey?: string | null;
   analyses?: ReadonlyMap<string, SongAnalysis>;
   playingProgress?: number | null;
   grain?: GrainRender | null;
@@ -889,6 +910,28 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
         song,
         {
           alpha: alpha.row * placementOpacity,
+          fonts: request.fonts,
+          paints: request.paints,
+        },
+      );
+    }
+    // L2. The player is the same lens with the room to be one, drawn at the
+    // mark's own point — which at this distance is the middle of the view,
+    // because that is what arriving at a song means.
+    if (alpha.song > 0.01 && placement.key === request.focusKey) {
+      lens.draw(
+        canvas,
+        {
+          kind: 'song',
+          x: point.x,
+          y: point.y,
+          width: request.viewport.width,
+          height:
+            request.viewport.height * FIELD_CANVAS_KNOBS.SONG_HEIGHT_RATIO,
+        },
+        song,
+        {
+          alpha: alpha.song * placementOpacity,
           fonts: request.fonts,
           paints: request.paints,
         },
