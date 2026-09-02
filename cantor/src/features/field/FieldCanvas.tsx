@@ -107,12 +107,25 @@ const FIELD_CANVAS_KNOBS = {
   /** A failed job keeps its seat, and says so by going quiet rather than red. */
   JOB_FAILED_ALPHA: 0.35,
   /**
-   * How much of the view the player's ring may take.
+   * The player's ring, as a fraction of the view's *width*.
    *
-   * Less than the width, because the song's name, its recipe and its transport
-   * all live under it in React and the ring must not sit behind them.
+   * Square and width-derived so the ring is the same size on any phone, and
+   * small enough that the song's name, its recipe and its words all clear it:
+   * they live under the ring in React, and a title crossing the waveform is
+   * two things claiming the same pixels.
    */
-  SONG_HEIGHT_RATIO: 0.62,
+  SONG_BOX_RATIO: 0.76,
+  /**
+   * How far the ring rises above the mark's own point, as a fraction of the
+   * view's height, once the player is fully here.
+   *
+   * The design seats the ring above the song's name rather than in the middle
+   * of the screen, and the name needs the lower third. Scaled by `alpha.song`
+   * so the ring is still centred on the mark where the row hands over and has
+   * risen to its seat by the time the player is the only thing left — the mark
+   * rises into its seat rather than jumping to it.
+   */
+  SONG_RISE_RATIO: 0.12,
   JOB_ROW_LABEL_OFFSET_PX: 42,
   // A face is an outline, not a blob: hairline everywhere, per the house rule.
   FACE_STROKE_PX: 1,
@@ -924,10 +937,13 @@ export function recordFieldPicture(request: PictureRequest): SkPicture {
         {
           kind: 'song',
           x: point.x,
-          y: point.y,
-          width: request.viewport.width,
-          height:
-            request.viewport.height * FIELD_CANVAS_KNOBS.SONG_HEIGHT_RATIO,
+          y:
+            point.y -
+            request.viewport.height *
+              FIELD_CANVAS_KNOBS.SONG_RISE_RATIO *
+              alpha.song,
+          width: request.viewport.width * FIELD_CANVAS_KNOBS.SONG_BOX_RATIO,
+          height: request.viewport.width * FIELD_CANVAS_KNOBS.SONG_BOX_RATIO,
         },
         song,
         {

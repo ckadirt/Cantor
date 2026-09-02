@@ -29,15 +29,18 @@ function LensPickerImpl({ activeKey, onChange }: Props) {
             accessibilityState={{ selected: active }}
             key={lens.key}
             onPress={() => onChange(lens.key)}
-            style={[
-              styles.chip,
-              { borderColor: active ? pal.ink : pal.line },
-              active ? styles.active : null,
-            ]}>
+            hitSlop={space.sm}
+            style={styles.chip}>
+            {/*
+              A word, not a box. At L2 the song is the picture and the chrome is
+              a line of small capitals — the same vocabulary the dials use, and
+              the reason this picker stopped being two bordered buttons sitting
+              under the ring.
+            */}
             <Text
-              style={[type.mono, { color: active ? pal.ink : pal.muted }]}
+              style={[type.eyebrow, { color: active ? pal.ink : pal.faint }]}
               numberOfLines={1}>
-              {lens.label}
+              {lens.label.toUpperCase()}
             </Text>
           </Pressable>
         );
@@ -47,14 +50,8 @@ function LensPickerImpl({ activeKey, onChange }: Props) {
 }
 
 const styles = StyleSheet.create({
-  row: { flexDirection: 'row', gap: space.xs, flexWrap: 'wrap' },
-  chip: {
-    borderWidth: 1,
-    minHeight: touch.min,
-    justifyContent: 'center',
-    paddingHorizontal: space.sm,
-  },
-  active: { borderWidth: 2 },
+  row: { flexDirection: 'row', gap: space.lg, flexWrap: 'wrap' },
+  chip: { justifyContent: 'center', minHeight: touch.min },
 });
 
 /**

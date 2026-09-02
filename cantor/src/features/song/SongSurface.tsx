@@ -16,6 +16,12 @@ const SONG_SURFACE_KNOBS = {
   SCRUB_HIT_HEIGHT_PX: 44, // touch target around that hairline
   ELAPSED_SAMPLE_MS: 500, // how often the elapsed label reads the visual clock
   ORIGIN_MARK_RESERVE_PX: 96, // keep the transport row clear of the persistent origin mark
+  /** The song's name at L2, the largest type in the app after the field's own. */
+  NAME_SIZE_PX: 26,
+  /** Clear of the origin mark, which sits at the same corner. */
+  FOOT_INSET_PX: 96,
+  /** Where the elapsed sits: above the ring, which is centred on the view. */
+  ELAPSED_TOP_RATIO_PCT: '13%',
 } as const;
 
 export type SongSurfaceSong = Readonly<{
@@ -26,6 +32,8 @@ export type SongSurfaceSong = Readonly<{
   durationMs: number;
   nodeLabel: string;
   audioState: LocalAudioState;
+  /** Every tag; the playlists among them are named at the foot. */
+  tags: readonly string[];
 }>;
 
 type Props = {
@@ -105,20 +113,36 @@ function SongSurfaceImpl({
 
   return (
     <View style={styles.root} pointerEvents="box-none">
-      <View style={styles.head} pointerEvents="none">
-        <Text numberOfLines={2} style={[type.title, { color: pal.ink }]}>
+      {/*
+        The level, in the corner the overlay leaves empty here: at L2 and L3 the
+        player draws its own name and metadata, so the chrome stands aside.
+      */}
+      <Text style={[type.eyebrow, styles.level, { color: pal.muted }]}>
+        L2 · SONG
+      </Text>
+
+      {/*
+        The elapsed time sits just above the ring, because the ring *is* the
+        timeline: the digits say where the head is, and the head is drawn where
+        every ring in Cantor starts.
+      */}
+      <Text style={[type.eyebrow, styles.elapsed, { color: pal.ink }]}>
+        {formatClock(isCurrent ? elapsed : 0)}
+      </Text>
+
+      {/* Everything the ring is not, below it, in reading order. */}
+      <View style={styles.foot}>
+        <Text numberOfLines={2} style={[type.title, styles.name, { color: pal.ink }]}>
           {song.title}
         </Text>
-        <Text style={[type.mono, { color: pal.muted }]}>
-          {song.model}
-          {song.seed === undefined ? '' : ` · seed ${song.seed}`}
+        <Text style={[type.eyebrow, { color: pal.faint }]}>
+          {recipeLine(song)}
         </Text>
-      </View>
 
-      <View style={styles.foot}>
-        {lens}
         <GestureDetector gesture={scrub}>
-          <View style={styles.scrubHit} accessibilityRole="adjustable"
+          <View
+            style={styles.scrubHit}
+            accessibilityRole="adjustable"
             accessibilityLabel={`Scrub ${song.title}`}>
             <View style={[styles.scrubTrack, { backgroundColor: pal.line }]}>
               <Animated.View
@@ -128,32 +152,40 @@ function SongSurfaceImpl({
           </View>
         </GestureDetector>
 
-        <View style={styles.row}>
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`${transportLabel} ${song.title}`}
+        {/*
+          Quiet words, not boxes: at this distance the song is the picture and
+          everything else is a line of small capitals under it.
+        */}
+        <View style={styles.words}>
+          <Word
             disabled={!playable}
+            label={transportLabel.toUpperCase()}
             onPress={onToggle}
-            style={[styles.transport, { borderColor: playable ? pal.ink : pal.faint }]}>
-            <Text style={[type.mono, { color: playable ? pal.ink : pal.faint }]}>
-              {transportLabel}
-            </Text>
-          </Pressable>
-
-          <Text style={[type.mono, { color: pal.muted }]}>
-            {formatClock(isCurrent ? elapsed : 0)} / {formatClock(durationSeconds)}
+            strong
+          />
+          <Word label="DETAIL" onPress={onOpenDetail} />
+          <Text style={[type.eyebrow, { color: pal.faint }]}>
+            {describeAudio(song.audioState)}
           </Text>
-
-          <Pressable
-            accessibilityRole="button"
-            accessibilityLabel={`Details for ${song.title}`}
-            onPress={onOpenDetail}
-            style={styles.detail}>
-            <Text style={[type.mono, { color: pal.muted }]}>
-              {describeAudio(song.audioState)}
-            </Text>
-          </Pressable>
         </View>
+
+        {playlistLine(song.tags) === null ? null : (
+          <Text style={[type.eyebrow, { color: pal.line }]}>
+            {playlistLine(song.tags)}
+          </Text>
+        )}
+
+        {lens}
+
+        {/*
+          The one gesture worth naming here. The overlay draws no hint at L2 —
+          its foot is the player's — so the player says its own: zooming past a
+          song is how L3 is reached, and nothing else on this screen suggests
+          there is anywhere further to go.
+        */}
+        <Text style={[type.eyebrow, { color: pal.line }]}>
+          ZOOM PAST TO ENTER THE AUDIO
+        </Text>
 
         {snapshot.error !== null ? (
           <Text style={[type.mono, { color: pal.ink }]}>{snapshot.error}</Text>
@@ -161,6 +193,55 @@ function SongSurfaceImpl({
       </View>
     </View>
   );
+}
+
+/** One quiet word in the foot's row. */
+function Word({
+  label,
+  onPress,
+  disabled = false,
+  strong = false,
+}: {
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  strong?: boolean;
+}) {
+  const pal = usePalette();
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      hitSlop={space.sm}
+      onPress={onPress}>
+      <Text
+        style={[
+          type.eyebrow,
+          { color: disabled ? pal.faint : strong ? pal.ink : pal.muted },
+        ]}>
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+/** `ACESTEP:1.5-FAST · SEED 41822 · 3:12` — the recipe, said once. */
+function recipeLine(song: SongSurfaceSong): string {
+  const parts = [song.model.toUpperCase()];
+  if (song.seed !== undefined) parts.push(`SEED ${song.seed}`);
+  parts.push(formatClock(song.durationMs / 1000));
+  return parts.join(' · ');
+}
+
+/** `P/ LATE NIGHT   P/ KEEP`, or nothing at all when it is in none. */
+function playlistLine(tags: readonly string[]): string | null {
+  const names = tags
+    .filter(tag => tag.startsWith('p/'))
+    .map(tag => tag.slice(2).trim().toUpperCase())
+    .filter(name => name.length > 0);
+  return names.length === 0 ? null : names.map(name => `P/ ${name}`).join('   ');
 }
 
 /**
@@ -213,10 +294,28 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    justifyContent: 'space-between',
   },
-  head: { padding: space.lg, gap: space.xs },
-  foot: { padding: space.lg, gap: space.md },
+  level: { left: space.lg, position: 'absolute', top: space.xl },
+  /**
+   * Above the ring, centred: the ring is drawn around the mark's own point,
+   * which at this distance is the middle of the view.
+   */
+  elapsed: {
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    textAlign: 'center',
+    top: SONG_SURFACE_KNOBS.ELAPSED_TOP_RATIO_PCT,
+  },
+  foot: {
+    bottom: SONG_SURFACE_KNOBS.FOOT_INSET_PX,
+    gap: space.sm,
+    left: space.lg,
+    position: 'absolute',
+    right: space.lg,
+  },
+  name: { fontSize: SONG_SURFACE_KNOBS.NAME_SIZE_PX },
+  words: { flexDirection: 'row', gap: space.lg, minHeight: touch.min },
   scrubHit: {
     height: SONG_SURFACE_KNOBS.SCRUB_HIT_HEIGHT_PX,
     justifyContent: 'center',
