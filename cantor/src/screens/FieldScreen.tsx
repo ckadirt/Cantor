@@ -1071,6 +1071,7 @@ export function FieldScreen({ identity }: Props) {
               durationMs: focused.song.duration_ms,
               nodeLabel: focused.nodeLabels[0] ?? focused.backend.petname,
               audioState: focused.localAudio.state,
+              tags: focused.song.tags,
             }}
               width={viewport.width}
             />
