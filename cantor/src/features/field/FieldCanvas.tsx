@@ -129,6 +129,22 @@ const FIELD_CANVAS_KNOBS = {
   SONG_RISE_RATIO: 0.12,
   /** Where the sweeping arc sits, as a fraction of the player's radius. */
   SONG_ARC_RATIO: 0.5,
+  /** The measured audio, drawn outward from that arc. */
+  SONG_WAVE_TICKS: 96,
+  SONG_WAVE_REACH_RATIO: 0.36,
+  SONG_WAVE_WIDTH_PX: 1.5,
+  SONG_WAVE_ALPHA: 0.55,
+  /** Music sits at 0.1–0.3 RMS; the wave lens takes the same fixed gain. */
+  SONG_WAVE_GAIN: 2.6,
+  /**
+   * The beat: how far either side of the playhead the lift reaches, in turns,
+   * and how tall it grows at its centre.
+   *
+   * A tenth of a turn is about 36°, wide enough to read as a swell travelling
+   * around the ring rather than a single tick twitching.
+   */
+  SONG_PULSE_WINDOW: 0.1,
+  SONG_PULSE_GAIN: 1.6,
   SONG_ARC_WIDTH_PX: 1.5,
   /** The hand, from near the centre out to the waveform's baseline. */
   SONG_HAND_INNER_RATIO: 0.12,
@@ -435,8 +451,8 @@ function FieldCanvasImpl({
       return null;
     }
     const held = placements.find(placement => placement.key === focusKey);
-    const presentation =
-      held === undefined ? undefined : presentations.get(held.entityKey);
+    if (held === undefined) return null;
+    const presentation = presentations.get(held.entityKey);
     if (presentation === undefined) return null;
     return (
       <NativePlayhead
@@ -444,11 +460,13 @@ function FieldCanvasImpl({
         colour={palette.ink}
         durationSeconds={presentation.song.duration_ms / 1000}
         fitScale={renderFitScale}
+        levels={levelsOf(analyses?.get(held.entityKey))}
         positionSeconds={positionSeconds}
         viewport={viewport}
       />
     );
   }, [
+    analyses,
     cameraShared,
     focusKey,
     palette.ink,
@@ -494,12 +512,19 @@ function FieldCanvasImpl({
  * trimming a circle it never rebuilds, the hand by rotating a line it never
  * rebuilds. Nothing here is a function of a React render.
  */
+/** The measured loudness as plain numbers; a worklet cannot hold a typed array. */
+function levelsOf(analysis: SongAnalysis | undefined): readonly number[] {
+  if (analysis === undefined) return [];
+  return Array.from(analysis.rms);
+}
+
 function NativePlayhead({
   cameraShared,
   positionSeconds,
   viewport,
   fitScale,
   durationSeconds,
+  levels,
   colour,
 }: {
   cameraShared: SharedValue<Camera>;
@@ -507,6 +532,8 @@ function NativePlayhead({
   viewport: Viewport;
   fitScale: number;
   durationSeconds: number;
+  /** The song's measured loudness, as plain numbers a worklet can hold. */
+  levels: readonly number[];
   colour: string;
 }) {
   const knobs = FIELD_CANVAS_KNOBS;
@@ -541,6 +568,43 @@ function NativePlayhead({
     return builder.detach();
   }, [centre.x, centre.y, knobs, radius]);
 
+  /**
+   * The measurement, rebuilt every frame.
+   *
+   * Each tick is as long as that moment of the song is loud — that much is the
+   * map, and it never changes. What moves is the *lift*: a bulge that rides the
+   * playhead, as tall as the audio is loud right now and falling away to either
+   * side of it. So the ring reads as the whole song at rest and beats with the
+   * music while it plays, from one array of numbers and no new work per frame
+   * beyond the arithmetic.
+   */
+  const bars = useDerivedValue(() => {
+    const at = durationSeconds > 0 ? positionSeconds.value / durationSeconds : 0;
+    const head = at < 0 ? 0 : at > 1 ? 1 : at;
+    const count = levels.length;
+    const now = count === 0 ? 0 : levels[Math.floor(head * (count - 1))] ?? 0;
+    const builder = Skia.PathBuilder.Make();
+    for (let index = 0; index < knobs.SONG_WAVE_TICKS; index += 1) {
+      const turn = index / knobs.SONG_WAVE_TICKS;
+      const level = count === 0 ? 0 : levels[Math.floor(turn * (count - 1))] ?? 0;
+      // Wrapped distance to the head, so the bulge crosses twelve o'clock
+      // without a seam.
+      const raw = Math.abs(turn - head);
+      const gap = raw > 0.5 ? 1 - raw : raw;
+      const near = 1 - gap / knobs.SONG_PULSE_WINDOW;
+      const lift = near > 0 ? near * near * now * knobs.SONG_PULSE_GAIN : 0;
+      const amp = Math.min(1, level * knobs.SONG_WAVE_GAIN + lift);
+      const angle = turn * Math.PI * 2 - Math.PI / 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const inner = radius * knobs.SONG_ARC_RATIO;
+      const outer = inner + amp * radius * knobs.SONG_WAVE_REACH_RATIO;
+      builder.moveTo(centre.x + cos * inner, centre.y + sin * inner);
+      builder.lineTo(centre.x + cos * outer, centre.y + sin * outer);
+    }
+    return builder.detach();
+  }, [centre.x, centre.y, durationSeconds, levels, radius]);
+
   const fraction = useDerivedValue(() => {
     if (durationSeconds <= 0) return 0;
     const value = positionSeconds.value / durationSeconds;
@@ -565,6 +629,13 @@ function NativePlayhead({
 
   return (
     <SkiaGroup opacity={opacity}>
+      <Path
+        color={colour}
+        opacity={knobs.SONG_WAVE_ALPHA}
+        path={bars}
+        strokeWidth={knobs.SONG_WAVE_WIDTH_PX}
+        style="stroke"
+      />
       <Path
         color={colour}
         end={fraction}

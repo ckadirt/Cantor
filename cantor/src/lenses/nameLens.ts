@@ -277,35 +277,10 @@ function drawPlayer(
     paints.outline,
   );
 
-  const levels = song.analysis.rms;
-  const ticks = knobs.SONG_WAVE_TICKS;
-  const inner = radius * knobs.SONG_WAVE_INNER_RATIO;
-  const reach = radius * knobs.SONG_WAVE_REACH_RATIO;
-  paints.ink.setStyle(PaintStyle.Stroke);
-  paints.ink.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
-  for (let index = 0; index < ticks; index += 1) {
-    const turn = index / ticks;
-    // Twelve o'clock is zero, and time runs clockwise: the same convention the
-    // arriving arc and the job ring use, so every ring in Cantor reads alike.
-    const angle = turn * Math.PI * 2 - Math.PI / 2;
-    const level = levels[Math.floor(turn * levels.length)] ?? 0;
-    const outer = inner + Math.min(1, level * knobs.SONG_WAVE_GAIN) * reach;
-    // Uniform: how far the song has come is drawn by the arc that sweeps over
-    // this ring at frame rate, not by re-recording these ticks in two tones. A
-    // boundary that can only move when the picture is re-recorded is a tone
-    // change, not a playhead.
-    paints.ink.setAlphaf(alpha * knobs.SONG_WAVE_ALPHA);
-    const cos = Math.cos(angle);
-    const sin = Math.sin(angle);
-    canvas.drawLine(
-      box.x + cos * inner,
-      box.y + sin * inner,
-      box.x + cos * outer,
-      box.y + sin * outer,
-      paints.ink,
-    );
-  }
-
+  // The measurement is not drawn here. It answers to the clock — the bars lift
+  // as the playhead passes them — so it is built per frame beside this picture
+  // rather than recorded into it; see `NativePlayhead`. What stays is the face:
+  // identity does not move.
   paints.ink.setStyle(PaintStyle.Fill);
 }
 
