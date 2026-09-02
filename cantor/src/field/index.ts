@@ -9,3 +9,4 @@ export * from './order';
 export * from './transition';
 export * from './types';
 export * from './arrangements';
+export * from './shelf';

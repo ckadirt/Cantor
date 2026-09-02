@@ -10,14 +10,21 @@ import {
 import { easeSmoother } from '../../motion';
 import {
   GRAIN_KNOBS,
+  LAYOUT_KNOBS,
+  containToSeat,
   hitTestPlacement,
   hitTestRowAction,
   interpolateCamera,
   interpolatePositiveScale,
+  isShelfDistance,
   levelCameraTarget,
   levelOf,
+  nearestSeat,
   placementFlightAt,
   planPlacementFlights,
+  seatAfterRelease,
+  seatCameraBounds,
+  shelfSeats,
   smootherstep,
   zoomAroundFocalPoint,
   type Camera,
@@ -27,6 +34,7 @@ import {
   type Placement,
   type PlacementFlight,
   type Point,
+  type ShelfSeat,
   type Viewport,
 } from '../../field';
 
@@ -48,6 +56,8 @@ export const FIELD_CAMERA_KNOBS = {
   EDGE_PULL_HORIZONTAL_TOLERANCE_PX: 50,
   /** How long a pull released short of the threshold takes to roll back up. */
   EDGE_PULL_RETRACT_MS: 260,
+  /** How long the camera takes to fall back into a seat it was pulled out of. */
+  SEAT_SETTLE_MS: 340,
   MIN_SCALE_RATIO: 0.5,
   // L3 is reachable now. The ceiling is the scale that shows the closest look
   // the grain view offers, derived from the grain knobs so the two cannot drift
@@ -91,6 +101,12 @@ type CameraState = {
   camera: Camera;
   focus: Placement | null;
   level: Level;
+  /**
+   * The cluster the camera is standing in, or null when it is not standing in
+   * one. Unlike `focus` this follows the camera rather than the last tap, so
+   * panning from September to August renames the header.
+   */
+  groupKey: string | null;
   renderedPlacements: readonly Placement[];
   /** Drawn placements, including fading alignment copies during a split/fold. */
   visualPlacements: readonly Placement[];
@@ -123,6 +139,15 @@ type PanStart = {
   camera: Camera;
   pull: PullDirection | null;
   pullAmount: number;
+  /**
+   * The seat the finger went down in, or -1 when it went down anywhere else.
+   *
+   * Held for the length of the gesture rather than looked up again on release:
+   * the damped camera can drift nearer a neighbour than to the seat it is
+   * being held in, and re-deciding at the end would let a pull the person
+   * abandoned still count as leaving.
+   */
+  seat: number;
 };
 
 type PinchStart = {
@@ -195,6 +220,15 @@ export function useFieldCamera({
   const layoutFitSharedCandidate = useSharedValue(0);
   const mirrorBusyCandidate = useSharedValue(false);
   /**
+   * Every cluster's column, in world units, for the UI thread.
+   *
+   * The gesture needs the geometry the layout owns — which seat it is in, and
+   * how far that seat runs — and it needs it inside the same worklet as the
+   * finger. A shared value is the only way across; `shelfSeats` is cheap and
+   * runs once per layout rather than once per frame.
+   */
+  const shelfSeatsSharedCandidate = useSharedValue<readonly ShelfSeat[]>([]);
+  /**
    * How far an edge pull has come, in screen pixels: positive is the composer
    * being drawn down from the top, negative is engines being drawn up from the
    * bottom, zero is neither.
@@ -212,8 +246,16 @@ export function useFieldCamera({
   const layoutFitShared = useRef(layoutFitSharedCandidate).current;
   const mirrorBusy = useRef(mirrorBusyCandidate).current;
   const pullShared = useRef(pullSharedCandidate).current;
+  const shelfSeatsShared = useRef(shelfSeatsSharedCandidate).current;
 
   layoutRef.current = layout;
+  const seats = useMemo(
+    () => (layout === null ? [] : shelfSeats(layout)),
+    [layout],
+  );
+  useEffect(() => {
+    shelfSeatsShared.value = seats;
+  }, [seats, shelfSeatsShared]);
 
   const commitCamera = useCallback(
     (next: Camera) => {
@@ -292,7 +334,10 @@ export function useFieldCamera({
   );
 
   const flyTo = useCallback(
-    (target: Camera) => {
+    (
+      target: Camera,
+      durationMs: number = FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS,
+    ) => {
       cancelCameraFlight();
       const from = cameraRef.current;
       if (reducedMotion) {
@@ -301,10 +346,7 @@ export function useFieldCamera({
       }
       const startedAt = Date.now();
       const tick = () => {
-        const progress = Math.min(
-          1,
-          (Date.now() - startedAt) / FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS,
-        );
+        const progress = Math.min(1, (Date.now() - startedAt) / durationMs);
         commitCamera(interpolateCamera(from, target, progress));
         if (progress < 1) {
           flightFrame.current = requestAnimationFrame(tick);
@@ -517,6 +559,28 @@ export function useFieldCamera({
     layout === null ? 'field' : levelOf(renderedCamera.scale, renderFitScale);
 
   /**
+   * The cluster the camera is standing in — geometry's answer, not the tap's.
+   *
+   * `focus` is the placement you descended through and is written only by
+   * `descend`, so the header it fed named the shelf you *entered*: pan from
+   * September to August and it still said September. This asks where the
+   * camera is instead, which is the question the chrome was always asking.
+   *
+   * Derived in React rather than pushed from the gesture: the header can only
+   * change as fast as React commits anyway, and React already re-renders on
+   * every camera frame it can take, because that is what records the picture.
+   */
+  const groupKey = useMemo(() => {
+    if (level === 'field' || seats.length === 0) return null;
+    // Below L1 the camera is inside one song, and the shelf it belongs to is
+    // the one that song was seated in — a nearest-seat answer would name
+    // whichever column the camera happens to be over.
+    if (level !== 'shelf') return focus?.groupKey ?? null;
+    const index = nearestSeat(seats, renderedCamera);
+    return index < 0 ? null : seats[index].key;
+  }, [focus, level, renderedCamera, seats]);
+
+  /**
    * Move one level closer to the tapped placement.
    *
    * Descending is always a single step, never a jump: the zoom model is the
@@ -642,6 +706,39 @@ export function useFieldCamera({
     [descend, onClaimTap, onRowAction, renderedPlacements, viewport],
   );
 
+  /**
+   * Put the camera back in a seat when the finger lifts.
+   *
+   * The gesture decides *which* seat, because only it knows what the finger
+   * asked for before the damping answered; this only flies there. Short, because
+   * it is the end of a movement the person is still watching rather than a
+   * navigation they asked for — `SEAT_SETTLE_MS`, not `CAMERA_FLIGHT_MS`.
+   */
+  const settleIntoSeat = useCallback(
+    (seatIndex: number) => {
+      const size = viewport;
+      if (size === null) return;
+      const seat = seats[seatIndex];
+      if (seat === undefined) return;
+      const current = cameraRef.current;
+      const bounds = seatCameraBounds(seat, size, current.scale);
+      const target: Camera = {
+        scale: current.scale,
+        x: seat.cx,
+        y: Math.min(Math.max(current.y, bounds.min), bounds.max),
+      };
+      if (
+        target.x === current.x &&
+        target.y === current.y &&
+        target.scale === current.scale
+      ) {
+        return;
+      }
+      flyTo(target, FIELD_CAMERA_KNOBS.SEAT_SETTLE_MS);
+    },
+    [flyTo, seats, viewport],
+  );
+
   /** Leaving the field by an edge pull, which is a JS-side navigation. */
   const completePull = useCallback(
     (pull: PullDirection) => {
@@ -720,12 +817,16 @@ export function useFieldCamera({
       .onBegin(event => {
         'worklet';
         runOnJS(cancelCameraFlight)();
+        const startCamera = cameraShared.value;
         panStart.value = {
           x: event.x,
           y: event.y,
-          camera: cameraShared.value,
+          camera: startCamera,
           pull: null,
           pullAmount: 0,
+          seat: isShelfDistance(startCamera.scale, layoutFitShared.value)
+            ? nearestSeat(shelfSeatsShared.value, startCamera)
+            : -1,
         };
       })
       .onUpdate(event => {
@@ -770,13 +871,35 @@ export function useFieldCamera({
           return;
         }
         if (start.pull !== null) return;
-        publish({
-          ...start.camera,
+        const moved = {
+          scale: start.camera.scale,
           x: start.camera.x - event.translationX / start.camera.scale,
           y: start.camera.y - event.translationY / start.camera.scale,
-        });
+        };
+        // A shelf is somewhere you stand, not somewhere you pass through. At
+        // L1 the camera is held in its column — damped sideways, clamped to
+        // the column's run — so a pan cannot walk into the empty world between
+        // clusters. It is resistance rather than a wall: the surface is still
+        // continuous, and a deliberate drag still leaves for the neighbour.
+        const liveSeats = shelfSeatsShared.value;
+        if (
+          start.seat >= 0 &&
+          start.seat < liveSeats.length &&
+          isShelfDistance(moved.scale, layoutFitShared.value)
+        ) {
+          publish(
+            containToSeat(
+              moved,
+              liveSeats[start.seat],
+              size,
+              LAYOUT_KNOBS.SHELF_GAP_WORLD,
+            ),
+          );
+          return;
+        }
+        publish(moved);
       })
-      .onEnd(() => {
+      .onEnd(event => {
         'worklet';
         const start = panStart.value;
         panStart.value = null;
@@ -796,6 +919,36 @@ export function useFieldCamera({
             duration: knobs.EDGE_PULL_RETRACT_MS,
             easing: easeSmoother,
           });
+          settle();
+          return;
+        }
+        const liveSeats = shelfSeatsShared.value;
+        if (
+          start !== null &&
+          start.seat >= 0 &&
+          start.seat < liveSeats.length &&
+          isShelfDistance(cameraShared.value.scale, layoutFitShared.value)
+        ) {
+          // Against what the finger asked for, not against where the damping
+          // left the camera: a person who drags a full screen sideways has
+          // asked to leave even though the camera only moved a third of it.
+          const released = {
+            scale: start.camera.scale,
+            x: start.camera.x - event.translationX / start.camera.scale,
+            y: start.camera.y - event.translationY / start.camera.scale,
+          };
+          // React first, so the flight starts from the camera the finger left
+          // rather than from whichever frame the mirror last managed to take.
+          settle();
+          runOnJS(settleIntoSeat)(
+            seatAfterRelease(
+              liveSeats,
+              released,
+              start.seat,
+              LAYOUT_KNOBS.SHELF_GAP_WORLD,
+            ),
+          );
+          return;
         }
         settle();
       });
@@ -833,6 +986,8 @@ export function useFieldCamera({
     pinching,
     pullShared,
     holdAt,
+    settleIntoSeat,
+    shelfSeatsShared,
     tapAt,
     viewport,
   ]);
@@ -840,6 +995,7 @@ export function useFieldCamera({
   return {
     camera: renderedCamera,
     focus,
+    groupKey,
     level,
     renderedPlacements,
     visualPlacements,

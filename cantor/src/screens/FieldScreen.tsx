@@ -897,11 +897,11 @@ export function FieldScreen({ identity }: Props) {
   const songCount = controller.presentations.size;
   /** The cluster you are inside, named the way its axis names it. */
   const focusedGroupLabel = useMemo(() => {
-    const key = fieldCamera.focus?.groupKey;
-    if (key === undefined || layout === null) return null;
+    const key = fieldCamera.groupKey;
+    if (key === null || layout === null) return null;
     const group = layout.groups.find(candidate => candidate.key === key);
     return group === undefined ? null : shelfLabel(group.label, nowMs).primary;
-  }, [fieldCamera.focus, layout, nowMs]);
+  }, [fieldCamera.groupKey, layout, nowMs]);
 
   /**
    * What each node would take with it, if it were forgotten.
@@ -976,11 +976,11 @@ export function FieldScreen({ identity }: Props) {
   /** The cluster you are standing inside, at L1 and nowhere else. */
   const shelfGroup = useMemo(() => {
     if (fieldCamera.level !== 'shelf' || layout === null) return null;
-    const groupKey = fieldCamera.focus?.groupKey;
+    const groupKey = fieldCamera.groupKey;
     return (
       layout.groups.find(candidate => candidate.key === groupKey) ?? null
     );
-  }, [fieldCamera.focus, fieldCamera.level, layout]);
+  }, [fieldCamera.groupKey, fieldCamera.level, layout]);
 
   /**
    * What `DOWNLOAD ALL` would fetch from the shelf you are standing in, and
