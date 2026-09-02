@@ -19,6 +19,7 @@ import {
   hitTestRowAction,
   interpolateCamera,
   interpolatePositiveScale,
+  isMarksOnlyDistance,
   isShelfDistance,
   levelCameraTarget,
   levelOf,
@@ -488,10 +489,14 @@ export function useFieldCamera({
         groupsChanged(fromGroups, layout.groups) ||
         camerasDiffer(fromCamera, toCamera) ||
         fromFitScale !== layout.fitScale);
+    // The same predicate the canvas chooses its renderer with, and it has to
+    // be: a re-cut marked native stops publishing to React, so if the canvas
+    // disagreed and drew the picture, it would record from state that is no
+    // longer moving.
     const nativeDriven =
       nativeRelayout &&
-      levelOf(fromCamera.scale, fromFitScale) === 'field' &&
-      levelOf(toCamera.scale, layout.fitScale) === 'field';
+      isMarksOnlyDistance(fromCamera.scale, fromFitScale) &&
+      isMarksOnlyDistance(toCamera.scale, layout.fitScale);
     recutModel.current = {
       generation,
       layout,

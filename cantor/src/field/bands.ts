@@ -12,6 +12,27 @@ export const REPRESENTATION_WINDOWS = {
 /** Shelf labels stay visible longer than marks; this is not a representation. */
 export const SHELF_LABEL_WINDOW = [0, 0, 5.5, 11] as const;
 
+/**
+ * Whether the field is nothing but marks at this distance.
+ *
+ * The handover between the two renderers has to be invisible, and it can only
+ * be invisible where they draw the same thing. `NativeFieldContent` knows one
+ * representation — a face at mark size — so the picture may only stand aside
+ * for it once the row band has faded to nothing, which is `row`'s own entry
+ * point rather than the `field`/`shelf` boundary at 2·FIT. At 2 a row is still
+ * a quarter visible, and handing over there pops that quarter out.
+ *
+ * One predicate, used by the renderer to choose a path and by the camera to
+ * decide whether a re-cut may skip React. If those two ever disagree, a re-cut
+ * animates on the UI thread while the picture is recorded from React state that
+ * is no longer being updated — so they share this rather than each testing a
+ * level of their own.
+ */
+export function isMarksOnlyDistance(scale: number, fitScale: number): boolean {
+  if (!(fitScale > 0) || !(scale > 0)) return false;
+  return scale / fitScale < REPRESENTATION_WINDOWS.row[0];
+}
+
 export type RepresentationAlphas = Readonly<{
   dot: number;
   row: number;
