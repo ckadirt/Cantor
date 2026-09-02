@@ -821,6 +821,42 @@ export function FieldScreen({ identity }: Props) {
     return group === undefined ? null : shelfLabel(group.label, nowMs).primary;
   }, [fieldCamera.focus, layout, nowMs]);
 
+  /**
+   * What each node would take with it, if it were forgotten.
+   *
+   * Counted from the same read model the field is drawn from, so the warning
+   * and the screen can never disagree about how many songs a node has here.
+   */
+  const footprints = useMemo(() => {
+    const totals: Record<
+      string,
+      { songs: number; downloaded: number; bytesHere: number; playlists: number }
+    > = {};
+    const playlistsByNode: Record<string, Set<string>> = {};
+    for (const presentation of controller.presentations.values()) {
+      const key = presentation.entity.nodePublicKey;
+      const entry = (totals[key] ??= {
+        songs: 0,
+        downloaded: 0,
+        bytesHere: 0,
+        playlists: 0,
+      });
+      entry.songs += 1;
+      const state = presentation.localAudio.state;
+      if (state === 'cached' || state === 'pinned') {
+        entry.downloaded += 1;
+        entry.bytesHere += presentation.delivery?.byte_length ?? 0;
+      }
+      const names = (playlistsByNode[key] ??= new Set<string>());
+      for (const name of playlistsOf(presentation.song.tags)) names.add(name);
+    }
+    for (const [key, names] of Object.entries(playlistsByNode)) {
+      const entry = totals[key];
+      if (entry !== undefined) entry.playlists = names.size;
+    }
+    return totals;
+  }, [controller.presentations]);
+
   /** The cluster you are standing inside, at L1 and nowhere else. */
   const shelfGroup = useMemo(() => {
     if (fieldCamera.level !== 'shelf' || layout === null) return null;
@@ -988,6 +1024,12 @@ export function FieldScreen({ identity }: Props) {
         onPair={pairFromEngines}
         onRefresh={commands.refreshLibraries}
         refreshing={refreshing}
+        footprints={footprints}
+        onForget={nodePublicKey => {
+          setEnginesOpen(false);
+          void commands.forgetBackend(nodePublicKey);
+        }}
+        onRename={commands.renameBackend}
         snapshots={snapshots}
         visible={enginesOpen}
       />
