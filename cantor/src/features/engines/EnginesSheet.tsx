@@ -11,6 +11,11 @@ import {
 import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { formatBytes } from '../../lenses';
+import {
+  SettingsSheet,
+  type LibraryReport,
+  type StorageReport,
+} from './SettingsSheet';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 
 /** What one node's songs weigh on this phone, and how many there are. */
@@ -33,6 +38,12 @@ type Props = {
   onRefresh: () => void;
   onRename: (nodePublicKey: string, petname: string) => void;
   onForget: (nodePublicKey: string) => void;
+  /** Settings hangs off this sheet's foot; everything it shows comes from here. */
+  publicKey: string;
+  library: LibraryReport;
+  storage: StorageReport;
+  budgetBytes: number;
+  onChangeBudget: (bytes: number) => void;
 };
 
 /**
@@ -53,11 +64,17 @@ function EnginesSheetImpl({
   onRefresh,
   onRename,
   onForget,
+  publicKey,
+  library,
+  storage,
+  budgetBytes,
+  onChangeBudget,
 }: Props) {
   const pal = usePalette();
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const [forgetting, setForgetting] = useState<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   /**
    * Models any paired node has installed.
@@ -98,20 +115,43 @@ function EnginesSheetImpl({
           ]}>
           <View style={styles.header}>
             <Text style={[type.eyebrow, { color: pal.muted }]}>
-              {target === null ? 'ENGINES' : `FORGET ${nameOf(targetBackend)}`}
+              {settingsOpen
+                ? 'SETTINGS'
+                : target === null
+                  ? 'ENGINES'
+                  : `FORGET ${nameOf(targetBackend)}`}
             </Text>
             <Pressable
-              accessibilityLabel={target === null ? 'Close engines' : 'Keep it'}
+              accessibilityLabel={
+                settingsOpen
+                  ? 'Back to engines'
+                  : target === null
+                    ? 'Close engines'
+                    : 'Keep it'
+              }
               accessibilityRole="button"
               hitSlop={space.md}
-              onPress={() => (target === null ? onClose() : setForgetting(null))}>
+              onPress={() => {
+                if (settingsOpen) setSettingsOpen(false);
+                else if (target === null) onClose();
+                else setForgetting(null);
+              }}>
               <Text style={[type.eyebrow, { color: pal.muted }]}>
-                {target === null ? 'CLOSE' : 'KEEP IT'}
+                {settingsOpen ? 'ENGINES' : target === null ? 'CLOSE' : 'KEEP IT'}
               </Text>
             </Pressable>
           </View>
 
-          {target !== null && targetBackend !== undefined ? (
+          {settingsOpen ? (
+            <SettingsSheet
+              budgetBytes={budgetBytes}
+              library={library}
+              onChangeBudget={onChangeBudget}
+              publicKey={publicKey}
+              storage={storage}
+              visible
+            />
+          ) : target !== null && targetBackend !== undefined ? (
             <Forget
               backend={targetBackend}
               footprint={footprints[target]}
@@ -243,6 +283,22 @@ function EnginesSheetImpl({
                 onPress={onRefresh}
                 disabled={refreshing}
               />
+
+              {/*
+                The app itself is the least interesting thing in the room, so
+                it sits at the very foot, behind an ink rule.
+              */}
+              <View style={[styles.rule, { backgroundColor: pal.ink }]} />
+              <Pressable
+                accessibilityLabel="Settings"
+                accessibilityRole="button"
+                onPress={() => setSettingsOpen(true)}
+                style={styles.action}>
+                <Text style={[type.body, { color: pal.ink }]}>Settings</Text>
+              </Pressable>
+              <Text style={[type.eyebrow, { color: pal.faint }]}>
+                IDENTITY · STORAGE · ABOUT
+              </Text>
             </ScrollView>
           )}
         </View>
