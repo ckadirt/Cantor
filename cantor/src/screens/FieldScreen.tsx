@@ -1050,6 +1050,7 @@ export function FieldScreen({ identity }: Props) {
                 grain={grain}
                 jobs={controller.jobs}
                 focusKey={fieldCamera.focus?.key ?? null}
+                positionSeconds={transport.positionSeconds}
                 playingKey={playingKey}
                 nowMs={nowMs}
                 playingProgress={playingProgress}

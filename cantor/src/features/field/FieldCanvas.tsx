@@ -21,6 +21,7 @@ import {
   type SharedValue,
 } from 'react-native-reanimated';
 import {
+  REPRESENTATION_WINDOWS,
   gatherFraction,
   placementPoint,
   representationAlphas,
@@ -126,6 +127,13 @@ const FIELD_CANVAS_KNOBS = {
    * rises into its seat rather than jumping to it.
    */
   SONG_RISE_RATIO: 0.12,
+  /** Where the sweeping arc sits, as a fraction of the player's radius. */
+  SONG_ARC_RATIO: 0.5,
+  SONG_ARC_WIDTH_PX: 1.5,
+  /** The hand, from near the centre out to the waveform's baseline. */
+  SONG_HAND_INNER_RATIO: 0.12,
+  SONG_HAND_OUTER_RATIO: 0.5,
+  SONG_HAND_WIDTH_PX: 1,
   JOB_ROW_LABEL_OFFSET_PX: 42,
   // A face is an outline, not a blob: hairline everywhere, per the house rule.
   FACE_STROKE_PX: 1,
@@ -141,6 +149,16 @@ type Props = {
   jobs?: ReadonlyMap<string, JobPresentation>;
   palette: Palette;
   /** Entity key of the song the player holds, lit at every level. */
+  /**
+   * The player's visual clock, in seconds, on the UI thread.
+   *
+   * The player's progress is drawn from this and never from React. The Flicker
+   * Law note below lists "a playing song ticks the playhead" among the renders
+   * that used to repaint the whole canvas from stale values — and a boundary
+   * stepped through React state is not movement anyway, it is a tone changing
+   * six times a second.
+   */
+  positionSeconds?: SharedValue<number> | null;
   playingKey?: string | null;
   /**
    * The placement the camera has arrived at.
@@ -193,6 +211,7 @@ function FieldCanvasImpl({
   presentations,
   jobs,
   palette,
+  positionSeconds = null,
   playingKey = null,
   focusKey = null,
   analyses,
@@ -398,6 +417,48 @@ function FieldCanvasImpl({
     viewport,
   ]);
 
+  /**
+   * The one thing on this canvas that moves without the camera moving.
+   *
+   * Held by identity and fed only shared values, for the reason the note above
+   * gives: an element that changes on a React render repaints every node from
+   * whatever the JS thread last held.
+   */
+  const playhead = useMemo(() => {
+    if (
+      positionSeconds === null ||
+      focusKey === null ||
+      viewport === null ||
+      renderFitScale === undefined ||
+      renderFitScale <= 0
+    ) {
+      return null;
+    }
+    const held = placements.find(placement => placement.key === focusKey);
+    const presentation =
+      held === undefined ? undefined : presentations.get(held.entityKey);
+    if (presentation === undefined) return null;
+    return (
+      <NativePlayhead
+        cameraShared={cameraShared}
+        colour={palette.ink}
+        durationSeconds={presentation.song.duration_ms / 1000}
+        fitScale={renderFitScale}
+        positionSeconds={positionSeconds}
+        viewport={viewport}
+      />
+    );
+  }, [
+    cameraShared,
+    focusKey,
+    palette.ink,
+    placements,
+    positionSeconds,
+    presentations,
+    renderFitScale,
+    viewport,
+  ]);
+
   if (nativeField) {
     return (
       <Canvas
@@ -419,7 +480,108 @@ function FieldCanvasImpl({
       style={StyleSheet.absoluteFill}
     >
       {picture === null ? null : <Picture picture={picture} />}
+      {playhead}
     </Canvas>
+  );
+}
+
+/**
+ * The playhead: an arc that fills and a hand that sweeps, both at frame rate.
+ *
+ * Progress *is* the ring, so it has to move like one. The waveform behind it is
+ * recorded once per camera change and never re-recorded for time; only these
+ * two paths answer to the clock, and they answer on the UI thread — the arc by
+ * trimming a circle it never rebuilds, the hand by rotating a line it never
+ * rebuilds. Nothing here is a function of a React render.
+ */
+function NativePlayhead({
+  cameraShared,
+  positionSeconds,
+  viewport,
+  fitScale,
+  durationSeconds,
+  colour,
+}: {
+  cameraShared: SharedValue<Camera>;
+  positionSeconds: SharedValue<number>;
+  viewport: Viewport;
+  fitScale: number;
+  durationSeconds: number;
+  colour: string;
+}) {
+  const knobs = FIELD_CANVAS_KNOBS;
+  const radius = (viewport.width * knobs.SONG_BOX_RATIO) / 2;
+  const centre = {
+    x: viewport.width / 2,
+    y: viewport.height / 2 - viewport.height * knobs.SONG_RISE_RATIO,
+  };
+  const ringRadius = radius * knobs.SONG_ARC_RATIO;
+
+  // Built once. The arc starts at twelve o'clock and runs clockwise, so
+  // trimming it from zero is the same sweep the waveform is drawn along.
+  const ring = useMemo(() => {
+    const builder = Skia.PathBuilder.Make();
+    builder.addArc(
+      Skia.XYWHRect(
+        centre.x - ringRadius,
+        centre.y - ringRadius,
+        ringRadius * 2,
+        ringRadius * 2,
+      ),
+      -90,
+      360,
+    );
+    return builder.detach();
+  }, [centre.x, centre.y, ringRadius]);
+
+  const hand = useMemo(() => {
+    const builder = Skia.PathBuilder.Make();
+    builder.moveTo(centre.x, centre.y - radius * knobs.SONG_HAND_INNER_RATIO);
+    builder.lineTo(centre.x, centre.y - radius * knobs.SONG_HAND_OUTER_RATIO);
+    return builder.detach();
+  }, [centre.x, centre.y, knobs, radius]);
+
+  const fraction = useDerivedValue(() => {
+    if (durationSeconds <= 0) return 0;
+    const value = positionSeconds.value / durationSeconds;
+    return value < 0 ? 0 : value > 1 ? 1 : value;
+  }, [durationSeconds]);
+
+  const turn = useDerivedValue(() => [
+    { rotate: fraction.value * Math.PI * 2 },
+  ]);
+
+  // The song band, inlined: `representationAlphas` is not a worklet, and the
+  // player's own opacity must not come through React either.
+  const [fadeIn, holdFrom, holdTo, fadeOut] = REPRESENTATION_WINDOWS.song;
+  const opacity = useDerivedValue(() => {
+    const ratio = cameraShared.value.scale / fitScale;
+    if (ratio <= fadeIn || ratio >= fadeOut) return 0;
+    const ease = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
+    if (ratio < holdFrom) return ease((ratio - fadeIn) / (holdFrom - fadeIn));
+    if (ratio > holdTo) return 1 - ease((ratio - holdTo) / (fadeOut - holdTo));
+    return 1;
+  }, [fadeIn, fadeOut, fitScale, holdFrom, holdTo]);
+
+  return (
+    <SkiaGroup opacity={opacity}>
+      <Path
+        color={colour}
+        end={fraction}
+        path={ring}
+        start={0}
+        strokeWidth={knobs.SONG_ARC_WIDTH_PX}
+        style="stroke"
+      />
+      <SkiaGroup origin={centre} transform={turn}>
+        <Path
+          color={colour}
+          path={hand}
+          strokeWidth={knobs.SONG_HAND_WIDTH_PX}
+          style="stroke"
+        />
+      </SkiaGroup>
+    </SkiaGroup>
   );
 }
 

@@ -86,12 +86,14 @@ export const NAME_LENS_KNOBS = {
    */
   SONG_WAVE_GAIN: 2.6,
   SONG_WAVE_WIDTH_PX: 1.5,
-  /** The part not yet heard is present but unweighted. */
-  SONG_WAVE_UNHEARD_ALPHA: 0.16,
-  /** The playhead, a spoke at twelve o'clock where the ring's head always is. */
-  SONG_HEAD_INNER_RATIO: 0.12,
-  SONG_HEAD_OUTER_RATIO: 0.44,
-  SONG_HEAD_ALPHA: 0.5,
+  /**
+   * The measured audio, drawn at one weight.
+   *
+   * The heard/unheard split the design draws belongs to something that moves;
+   * see `NativePlayhead`, which sweeps over this ring on the UI thread. Drawn
+   * here it could only step whenever the picture happened to be re-recorded.
+   */
+  SONG_WAVE_ALPHA: 0.55,
 } as const;
 
 /**
@@ -279,7 +281,6 @@ function drawPlayer(
   const ticks = knobs.SONG_WAVE_TICKS;
   const inner = radius * knobs.SONG_WAVE_INNER_RATIO;
   const reach = radius * knobs.SONG_WAVE_REACH_RATIO;
-  const heard = song.progress === null ? -1 : song.progress;
   paints.ink.setStyle(PaintStyle.Stroke);
   paints.ink.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
   for (let index = 0; index < ticks; index += 1) {
@@ -289,9 +290,11 @@ function drawPlayer(
     const angle = turn * Math.PI * 2 - Math.PI / 2;
     const level = levels[Math.floor(turn * levels.length)] ?? 0;
     const outer = inner + Math.min(1, level * knobs.SONG_WAVE_GAIN) * reach;
-    paints.ink.setAlphaf(
-      alpha * (heard < 0 || turn <= heard ? 1 : knobs.SONG_WAVE_UNHEARD_ALPHA),
-    );
+    // Uniform: how far the song has come is drawn by the arc that sweeps over
+    // this ring at frame rate, not by re-recording these ticks in two tones. A
+    // boundary that can only move when the picture is re-recorded is a tone
+    // change, not a playhead.
+    paints.ink.setAlphaf(alpha * knobs.SONG_WAVE_ALPHA);
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
     canvas.drawLine(
@@ -303,15 +306,6 @@ function drawPlayer(
     );
   }
 
-  // The head, where the ring's head always is.
-  paints.ink.setAlphaf(alpha * knobs.SONG_HEAD_ALPHA);
-  canvas.drawLine(
-    box.x,
-    box.y - radius * knobs.SONG_HEAD_OUTER_RATIO,
-    box.x,
-    box.y - radius * knobs.SONG_HEAD_INNER_RATIO,
-    paints.ink,
-  );
   paints.ink.setStyle(PaintStyle.Fill);
 }
 
