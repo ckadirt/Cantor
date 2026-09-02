@@ -60,6 +60,38 @@ export const NAME_LENS_KNOBS = {
   ARRIVING_RING_WIDTH_PX: 1.4,
   /** Swept when the artifact's byte length is unknown, so progress is unknowable. */
   ARRIVING_INDETERMINATE_SWEEP_DEG: 70,
+
+  /*
+   * L2 — the player. One song filling the view, and the same lens that drew it
+   * as a dot: the face recedes to a quiet contour and the measured audio takes
+   * its place on the ring, because progress *is* the ring and the timeline was
+   * always a circle.
+   */
+  /** The face, as a fraction of the player's radius. */
+  SONG_FACE_RATIO: 0.62,
+  /** How much of the recipe's contour is left once the measurement arrives. */
+  SONG_FACE_ALPHA: 0.16,
+  /** Where the waveform's baseline sits, as a fraction of the radius. */
+  SONG_WAVE_INNER_RATIO: 0.5,
+  /** How far a full-amplitude sample reaches past that baseline. */
+  SONG_WAVE_REACH_RATIO: 0.36,
+  /** Ticks around the ring. The design draws 96; the analysis has its own count. */
+  SONG_WAVE_TICKS: 96,
+  /**
+   * Music sits around 0.1–0.3 RMS, so drawing it raw spends a tenth of the
+   * reach and the ring reads as a dotted line. The same fixed gain the wave
+   * lens takes, and for the same reason: normalising per song would make a
+   * quiet song look as loud as a loud one, which is a lie about the only thing
+   * this drawing is showing.
+   */
+  SONG_WAVE_GAIN: 2.6,
+  SONG_WAVE_WIDTH_PX: 1.5,
+  /** The part not yet heard is present but unweighted. */
+  SONG_WAVE_UNHEARD_ALPHA: 0.16,
+  /** The playhead, a spoke at twelve o'clock where the ring's head always is. */
+  SONG_HEAD_INNER_RATIO: 0.12,
+  SONG_HEAD_OUTER_RATIO: 0.44,
+  SONG_HEAD_ALPHA: 0.5,
 } as const;
 
 /**
@@ -121,6 +153,11 @@ export const nameLens: Lens = {
           paints,
         );
       }
+      return;
+    }
+
+    if (box.kind === 'song') {
+      drawPlayer(canvas, box, song, alpha, paints);
       return;
     }
 
@@ -203,6 +240,80 @@ export type MeasuredFont = Readonly<{
   getSize: () => number;
   measureText: (text: string) => { width: number };
 }>;
+
+/**
+ * The player: the recipe's face gone quiet, and the audio it produced on the
+ * ring around it.
+ *
+ * This is the seam the whole zoom model rests on — *the mark is a promise and
+ * the player is the measurement*. The same contour that identified the song as
+ * a seven-pixel dot is still here, receded to a contour, while the waveform
+ * that only exists once the audio is on the phone takes the weight. A song with
+ * no measurement draws its skeleton, which is honest: it says the shape of the
+ * sound is not known yet rather than drawing a shape that is not the song's.
+ */
+function drawPlayer(
+  canvas: Parameters<Lens['draw']>[0],
+  box: Parameters<Lens['draw']>[1],
+  song: LensSong,
+  alpha: number,
+  paints: LensPaints,
+): void {
+  const radius = Math.min(box.width, box.height) / 2;
+  if (radius <= 0) return;
+  const knobs = NAME_LENS_KNOBS;
+
+  // The face first and faintest: identity underneath the measurement, not
+  // competing with it.
+  paints.outline.setAlphaf(alpha * knobs.SONG_FACE_ALPHA);
+  drawFace(
+    canvas,
+    song,
+    box.x,
+    box.y,
+    radius * knobs.SONG_FACE_RATIO,
+    paints.outline,
+  );
+
+  const levels = song.analysis.rms;
+  const ticks = knobs.SONG_WAVE_TICKS;
+  const inner = radius * knobs.SONG_WAVE_INNER_RATIO;
+  const reach = radius * knobs.SONG_WAVE_REACH_RATIO;
+  const heard = song.progress === null ? -1 : song.progress;
+  paints.ink.setStyle(PaintStyle.Stroke);
+  paints.ink.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
+  for (let index = 0; index < ticks; index += 1) {
+    const turn = index / ticks;
+    // Twelve o'clock is zero, and time runs clockwise: the same convention the
+    // arriving arc and the job ring use, so every ring in Cantor reads alike.
+    const angle = turn * Math.PI * 2 - Math.PI / 2;
+    const level = levels[Math.floor(turn * levels.length)] ?? 0;
+    const outer = inner + Math.min(1, level * knobs.SONG_WAVE_GAIN) * reach;
+    paints.ink.setAlphaf(
+      alpha * (heard < 0 || turn <= heard ? 1 : knobs.SONG_WAVE_UNHEARD_ALPHA),
+    );
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    canvas.drawLine(
+      box.x + cos * inner,
+      box.y + sin * inner,
+      box.x + cos * outer,
+      box.y + sin * outer,
+      paints.ink,
+    );
+  }
+
+  // The head, where the ring's head always is.
+  paints.ink.setAlphaf(alpha * knobs.SONG_HEAD_ALPHA);
+  canvas.drawLine(
+    box.x,
+    box.y - radius * knobs.SONG_HEAD_OUTER_RATIO,
+    box.x,
+    box.y - radius * knobs.SONG_HEAD_INNER_RATIO,
+    paints.ink,
+  );
+  paints.ink.setStyle(PaintStyle.Fill);
+}
 
 const textWidthCache = new Map<string, number>();
 const fitTextCache = new Map<string, string>();

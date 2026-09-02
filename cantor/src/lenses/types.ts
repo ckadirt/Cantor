@@ -2,7 +2,15 @@ import type { SkCanvas, SkFont, SkPaint } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
 
 export type LensBox = Readonly<{
-  kind: 'mark' | 'row';
+  /**
+   * How much room the lens has, and therefore what it is drawing.
+   *
+   * `song` is the player itself: the same lens at the distance where one song
+   * fills the view. `alpha.song` was computed by `representationAlphas` from
+   * the beginning and read by nothing, which is why the player used to cut in
+   * rather than grow out of its row.
+   */
+  kind: 'mark' | 'row' | 'song';
   x: number;
   y: number;
   width: number;
