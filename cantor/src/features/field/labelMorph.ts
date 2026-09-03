@@ -464,6 +464,17 @@ export type LabelFlight = Readonly<{
    */
   fromTop: number;
   toTop: number;
+  /**
+   * The same two seats with the clusters closed into their columns.
+   *
+   * A cluster has two poses and the gather chooses between them, so a name
+   * hanging from it has two seats at each end of its flight rather than one.
+   * The renderers blend `fromTop`/`toTop` towards these by the same gather
+   * fraction they move the marks with, which is what keeps a name over its
+   * column at L1 instead of over the packing the column used to be.
+   */
+  fromTopGathered: number;
+  toTopGathered: number;
   primary: LabelMorph | null;
   secondary: LabelMorph | null;
   /** Endpoint text is retained even when equal and therefore needs no morph. */
@@ -533,6 +544,8 @@ export function planShelfLabels(
       to: centre(group),
       fromTop: (source ?? group).top,
       toTop: group.top,
+      fromTopGathered: (source ?? group).topGathered,
+      toTopGathered: group.topGathered,
       toGroupKey: group.key,
       ownership:
         source === null
@@ -565,6 +578,8 @@ export function planShelfLabels(
       to: centre(destination ?? group),
       fromTop: group.top,
       toTop: (destination ?? group).top,
+      fromTopGathered: group.topGathered,
+      toTopGathered: (destination ?? group).topGathered,
       toGroupKey: destination?.key ?? null,
       ownership: destination === null ? 'exit' : 'fold',
       fromAlpha: 1,
@@ -618,6 +633,8 @@ function plan(
     to: Point;
     fromTop: number;
     toTop: number;
+    fromTopGathered: number;
+    toTopGathered: number;
     toGroupKey: string | null;
     ownership: FlightOwnership;
     fromAlpha: number;
@@ -659,6 +676,46 @@ export function labelFlightAlpha(
     flight.targetAlpha,
     progress,
   );
+}
+
+/**
+ * The names a settled field shows, as flights that are not going anywhere.
+ *
+ * `planShelfLabels` answers null when nothing moved and nothing was renamed,
+ * which is the ordinary state of the field — and the native renderer draws
+ * *only* flights, so without this it would have had nothing to say and the
+ * canvas would have fallen back to the picture for want of a label. A flight
+ * whose two ends are the same seat and the same text is exactly a settled
+ * name: one owner, no morph, alpha 1 at both ends.
+ */
+export function settledShelfLabelFlights(
+  groups: readonly Group[],
+  nowMs: number,
+): ShelfLabelFlights | null {
+  if (groups.length === 0) return null;
+  return groups.map(group => {
+    const value = read(group.label, nowMs);
+    const seat = { x: group.cx, y: group.cy };
+    return {
+      fromGroupKey: group.key,
+      toGroupKey: group.key,
+      from: seat,
+      to: seat,
+      fromTop: group.top,
+      toTop: group.top,
+      fromTopGathered: group.topGathered,
+      toTopGathered: group.topGathered,
+      primary: null,
+      secondary: null,
+      primaryFrom: value.primary,
+      primaryTo: value.primary,
+      secondaryFrom: value.secondary,
+      secondaryTo: value.secondary,
+      ownership: 'carry' as const,
+      fromAlpha: 1,
+      targetAlpha: 1,
+    };
+  });
 }
 
 const EMPTY_READ = { primary: '', secondary: '' } as const;

@@ -24,8 +24,9 @@ import {
 } from 'react-native-reanimated';
 import {
   REPRESENTATION_WINDOWS,
+  bandAlphaAt,
   gatherFraction,
-  isMarksOnlyDistance,
+  isNativeDrawnDistance,
   placementPoint,
   representationAlphas,
   shelfLabelAlpha,
@@ -35,6 +36,7 @@ import {
   type FieldLayout,
   type Group,
   type Placement,
+  type FlightOwnership,
   type PlacementFlight,
   type Point,
   type RepresentationAlphas,
@@ -45,7 +47,10 @@ import {
   FACE_STROKE_ALPHA,
   NAME_LENS_KNOBS,
   arrivingFraction,
+  availabilityAction,
+  availabilityLine,
   availabilityOf,
+  fitText,
   lensByKey,
   nameLensFacePath,
   nameLensRingRadius,
@@ -71,6 +76,7 @@ import {
   labelFlightAlpha,
   planShelfLabels,
   retargetCapturedLabel,
+  settledShelfLabelFlights,
   type CapturedLabelMorph,
   type LabelFlight,
   type ShelfLabelFlights,
@@ -145,7 +151,7 @@ const FIELD_CANVAS_KNOBS = {
    * A tenth of a turn is about 36°, wide enough to read as a swell travelling
    * around the ring rather than a single tick twitching.
    */
-  SONG_PULSE_WINDOW: 0.1,
+  SONG_PULSE_WINDOW: 0.5,
   SONG_PULSE_GAIN: 1.6,
   SONG_ARC_WIDTH_PX: 1.5,
   /** The hand, from near the centre out to the waveform's baseline. */
@@ -162,6 +168,15 @@ type Props = {
   placements: readonly Placement[];
   camera: Camera;
   cameraShared: SharedValue<Camera>;
+  /**
+   * FIT on the UI thread.
+   *
+   * Every band and the gather are measured against it, and the native renderer
+   * reads them on the frame it draws — so it needs the fit there too, not the
+   * number React last committed. During a re-cut the camera hook writes this
+   * every frame from its own tick.
+   */
+  fitScaleShared: SharedValue<number>;
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   jobs?: ReadonlyMap<string, JobPresentation>;
@@ -297,6 +312,7 @@ function FieldCanvasImpl({
   placements,
   camera,
   cameraShared,
+  fitScaleShared,
   viewport,
   presentations,
   jobs,
@@ -365,8 +381,18 @@ function FieldCanvasImpl({
    * plan is built, so the morph cannot restart from a semantic endpoint.
    */
   const semanticLabelFlights = useMemo(() => {
-    if (monoFont === null || labelFromGroups.length === 0) return null;
-    return planShelfLabels(labelFromGroups, layout.groups, monoFont, nowMs);
+    if (monoFont === null) return null;
+    // A settled field is the ordinary case, and `planShelfLabels` answers null
+    // for it — nothing moved and nothing was renamed. The native renderer
+    // draws only flights, so without a standing-still one to draw it would
+    // have no names and the canvas would fall back to the picture for want of
+    // a label. The picture is unaffected: it keeps using its own settled path
+    // once the relayout tween has finished.
+    const planned =
+      labelFromGroups.length === 0
+        ? null
+        : planShelfLabels(labelFromGroups, layout.groups, monoFont, nowMs);
+    return planned ?? settledShelfLabelFlights(layout.groups, nowMs);
   }, [labelFromGroups, layout, monoFont, nowMs]);
   const labelPlan = useRef<{
     generation: number;
@@ -378,10 +404,18 @@ function FieldCanvasImpl({
     labelPlan.current?.generation !== transitionGeneration
   ) {
     const previous = labelPlan.current;
+    // Retarget only what was actually interrupted. Now that a settled field
+    // carries standing-still flights rather than none, "there was a previous
+    // plan" is always true — but a plan that had reached 1 is not a flight in
+    // the air, it is a name sitting on its cluster, and the new plan already
+    // describes that as its own source. Capturing it anyway would sample the
+    // contours of every label in the field on every re-cut to morph each name
+    // into itself.
+    const interrupted = lastLabelLinear.current < 1;
     labelPlan.current = {
       generation: transitionGeneration,
       flights:
-        previous?.flights != null && semanticLabelFlights != null
+        interrupted && previous?.flights != null && semanticLabelFlights != null
           ? retargetShelfLabelFlights(
               previous.flights,
               lastLabelLinear.current,
@@ -416,25 +450,38 @@ function FieldCanvasImpl({
   const nativeField =
     activeLensKey === 'name' &&
     recut !== null &&
-    isMarksOnlyDistance(recut.fromCamera.scale, recut.fromFitScale) &&
-    isMarksOnlyDistance(recut.toCamera.scale, recut.toFitScale) &&
-    isMarksOnlyDistance(recordCamera.scale, renderFitScale) &&
+    isNativeDrawnDistance(recut.fromCamera.scale, recut.fromFitScale) &&
+    isNativeDrawnDistance(recut.toCamera.scale, recut.toFitScale) &&
+    isNativeDrawnDistance(recordCamera.scale, renderFitScale) &&
     nativeClock !== null &&
     monoFont !== null &&
+    displayFont !== null &&
     labelFlights !== null &&
     recut.flights.every(flight => presentations.has(flight.entityKey));
   const paints = useMemo(() => createPaints(palette), [palette]);
   /**
-   * The camera the current picture was recorded at.
+   * The camera the next picture will be recorded at.
    *
    * Written inside the memo rather than from an effect, and read only by the
    * worklet below. An effect would run *after* the commit that painted the new
    * picture, so for one frame the transform would be measured from the camera
    * of the picture before it — the whole field jumping by exactly the distance
    * the pan had covered since the last re-record.
+   *
+   * And written *before* the early return, not after it, which is the L0→L1
+   * crossing. While the native path owns the canvas there is no picture to
+   * correct — but Skia's redraw plays its first frame from the values the JS
+   * thread holds and only then starts the mapper, so the frame that introduces
+   * the picture is painted at whatever this last said. Left behind at the
+   * camera of the last picture recorded, that is wherever the field was the
+   * last time you were at L1: the first frame of the crossing lands at the
+   * previous shelf and the next one snaps back. Kept level with the record
+   * camera, the transform is identity the instant the picture appears, which
+   * is the whole point of recording against the live camera.
    */
   const pictureCamera = useSharedValue<Camera>(camera);
   const picture = useMemo(() => {
+    pictureCamera.value = recordCamera;
     if (
       nativeField ||
       displayFont === null ||
@@ -443,7 +490,6 @@ function FieldCanvasImpl({
     ) {
       return null;
     }
-    pictureCamera.value = recordCamera;
     return recordFieldPicture({
       layout,
       placements,
@@ -530,7 +576,12 @@ function FieldCanvasImpl({
    * element only has to change when the re-cut does.
    */
   const nativeScene = useMemo(() => {
-    if (recut === null || nativeClock === null || monoFont === null) {
+    if (
+      recut === null ||
+      nativeClock === null ||
+      monoFont === null ||
+      displayFont === null
+    ) {
       return null;
     }
     return (
@@ -539,16 +590,20 @@ function FieldCanvasImpl({
         recut={recut}
         clock={nativeClock}
         cameraShared={cameraShared}
+        fitScaleShared={fitScaleShared}
         viewport={viewport}
         presentations={presentations}
         playingKey={playingKey}
         labelFlights={labelFlights}
+        displayFont={displayFont}
         font={monoFont}
         palette={palette}
       />
     );
   }, [
     cameraShared,
+    displayFont,
+    fitScaleShared,
     labelFlights,
     monoFont,
     nativeClock,
@@ -884,31 +939,126 @@ function NativePlayhead({
   );
 }
 
+/**
+ * The camera scale this frame, whether the re-cut or the finger owns it.
+ *
+ * Defined above every worklet that calls it: the worklets plugin captures a
+ * `'worklet'` helper into its caller's closure where the caller is written, so
+ * one written below arrives as `undefined`. The same rule the band maths in
+ * `bands.ts` is ordered by.
+ */
+function nativeCameraScale(
+  progress: number,
+  recut: FieldRecutModel,
+  cameraShared: SharedValue<Camera>,
+): number {
+  'worklet';
+  if (progress >= 1) return cameraShared.value.scale;
+  return Math.exp(
+    Math.log(recut.fromCamera.scale) +
+      (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) *
+        progress,
+  );
+}
+
+/**
+ * FIT this frame, which is what every band and the gather are measured against.
+ *
+ * A re-cut can change the fit as well as the seats — a year is framed at a
+ * different distance than a week — so a band read against the settled fit
+ * while the field is still travelling to it would open early at one end of the
+ * cut and late at the other.
+ */
+function nativeFitScale(
+  progress: number,
+  recut: FieldRecutModel,
+  fitScaleShared: SharedValue<number>,
+): number {
+  'worklet';
+  if (progress >= 1) return fitScaleShared.value;
+  return Math.exp(
+    Math.log(recut.fromFitScale) +
+      (Math.log(recut.toFitScale) - Math.log(recut.fromFitScale)) * progress,
+  );
+}
+
+/**
+ * How much of a mark or a name this generation has handed over.
+ *
+ * The ownership windows are the transition engine's, not the camera's: a mark
+ * that branches appears early in the cut and one that folds leaves late, so
+ * two copies of the same song are never both solid at once.
+ */
+function flightOwnerAlpha(
+  ownership: FlightOwnership,
+  fromAlpha: number,
+  targetAlpha: number,
+  progress: number,
+): number {
+  'worklet';
+  let start = 0;
+  let end = 1;
+  if (ownership === 'branch') {
+    start = 0.02;
+    end = 0.18;
+  } else if (ownership === 'fold') {
+    start = 0.55;
+    end = 0.82;
+  } else if (ownership === 'enter') {
+    start = 0.08;
+    end = 0.42;
+  } else if (ownership === 'exit') {
+    start = 0.58;
+    end = 0.9;
+  }
+  const raw =
+    ownership === 'carry' ? progress : (progress - start) / (end - start);
+  const t = Math.min(Math.max(raw, 0), 1);
+  const amount = t * t * t * (t * (t * 6 - 15) + 10);
+  return fromAlpha + (targetAlpha - fromAlpha) * amount;
+}
+
 type NativeFieldContentProps = Readonly<{
   recut: FieldRecutModel;
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   playingKey: string | null;
   labelFlights: ShelfLabelFlights | null;
+  displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   font: NonNullable<ReturnType<typeof useMorphFont>>;
   palette: Palette;
 }>;
 
 /**
- * L0's hot path. The family is built once per re-cut; Reanimated then updates
- * Skia properties on the UI runtime without a React render or Fabric commit.
+ * L0 and L1's hot path. The family is built once per re-cut; Reanimated then
+ * updates Skia properties on the UI runtime without a React render or Fabric
+ * commit.
+ *
+ * Why this draws rows and not only marks: a recorded picture moves by being
+ * *scaled*, and a row is measured entirely in screen pixels — a 240×30 box, a
+ * 15 px title, a 9 px meta line. Scaling the recording inflates every one of
+ * them, and the recording can only be remade once per React commit, so a zoom
+ * swells the rows on screen and snaps them back at each new recording. That is
+ * invisible under a pan, where the scale factor is exactly 1, and it is the
+ * whole of what a zoom looked like. `bands.ts` and `bloom.ts` are worklets for
+ * this: the band alphas and the gather are read from the live camera on the
+ * frame they are drawn on, so a row is the size it is meant to be on every
+ * frame rather than only on the ones React kept up with.
  */
 const NativeFieldContent = React.memo(function NativeFieldContent({
   recut,
   clock,
   cameraShared,
+  fitScaleShared,
   viewport,
   presentations,
   playingKey,
   labelFlights,
-  font: labelFont,
+  displayFont,
+  font: monoFont,
   palette,
 }: NativeFieldContentProps) {
   return (
@@ -922,9 +1072,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           flight={flight}
           clock={clock}
           cameraShared={cameraShared}
+          fitScaleShared={fitScaleShared}
           recut={recut}
           viewport={viewport}
-          font={labelFont}
+          font={monoFont}
           palette={palette}
         />
       ))}
@@ -932,27 +1083,36 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         const presentation = presentations.get(flight.entityKey);
         if (presentation === undefined) return null;
         const song = presentation.song;
+        const recipe = {
+          seed: song.seed,
+          id: presentation.entity.entityId,
+          model: song.model,
+          durationMs: song.duration_ms,
+        };
         // A face keeps what it promises while it flies. Weighting the flight
         // the way the picture weights the mark is what stops a downloaded song
         // from emptying out on its way to a new seat and filling again when it
         // lands.
         const availability = availabilityOf(presentation.localAudio.state);
         return (
-          <NativeFaceFlight
+          <NativePlacementFlight
             key={flight.key}
             flight={flight}
             clock={clock}
             cameraShared={cameraShared}
+            fitScaleShared={fitScaleShared}
             recut={recut}
             viewport={viewport}
-            path={nameLensFacePath({
-              seed: song.seed,
-              id: presentation.entity.entityId,
-              model: song.model,
-              durationMs: song.duration_ms,
-            })}
+            markPath={nameLensFacePath(
+              recipe,
+              NAME_LENS_KNOBS.MARK_RADIUS_PX,
+            )}
+            row={nativeRowModel(presentation, recipe, displayFont, monoFont)}
+            displayFont={displayFont}
+            monoFont={monoFont}
             playing={flight.entityKey === playingKey}
             color={palette.ink}
+            mutedColor={palette.muted}
             weight={FACE_STROKE_ALPHA[availability]}
             filled={FACE_FILL_ALPHA[availability] > 0}
           />
@@ -962,31 +1122,133 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   );
 });
 
-function NativeFaceFlight({
+/**
+ * Everything about a row that does not answer to the camera.
+ *
+ * The strings, the cut and the widths are a function of the song and the fonts
+ * alone, so they are settled once per re-cut on the JS thread and the UI thread
+ * only moves and fades what comes out of here. The measuring is the reason:
+ * `fitText` searches the proportional display face for the longest prefix that
+ * fits, which is not something to do on a frame.
+ *
+ * The offsets are `nameLens`'s own knobs, and the strings come from the same
+ * two functions the lens calls, because a row that changed shape when the
+ * renderer changed would be a different row.
+ */
+type NativeRowModel = Readonly<{
+  facePath: SkPath;
+  action: string | null;
+  actionX: number;
+  title: string;
+  titleAlpha: number;
+  meta: string;
+}>;
+
+function nativeRowModel(
+  presentation: FieldPresentation,
+  recipe: Parameters<typeof nameLensFacePath>[0],
+  displayFont: NonNullable<ReturnType<typeof useMorphFont>>,
+  monoFont: NonNullable<ReturnType<typeof useMorphFont>>,
+): NativeRowModel {
+  const availability = availabilityOf(presentation.localAudio.state);
+  // The action word is right-aligned against the row's edge and the title is
+  // cut to whatever is left, so a long title cannot run under the word that
+  // acts on it. Both are measured from the row's own point, which is the
+  // origin of the group the UI thread moves.
+  const action = availabilityAction(availability);
+  const titleLeft = -NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
+  const rowRight = NAME_LENS_KNOBS.ROW_RIGHT_PX;
+  const actionWidth =
+    action === null ? 0 : monoFont.measureText(action).width;
+  const titleRight =
+    action === null
+      ? rowRight
+      : rowRight - actionWidth - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
+  const column = titleRight - titleLeft;
+  return {
+    facePath: nameLensFacePath(recipe, NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX),
+    action,
+    actionX: rowRight - actionWidth,
+    title: fitText(presentation.song.title, displayFont, column),
+    // A song that is not on the phone says so twice: in the weight of its face
+    // and in the weight of its name.
+    titleAlpha:
+      availability === 'cached' || availability === 'downloaded'
+        ? 1
+        : NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA,
+    meta: fitText(
+      // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
+      // the longest line here and it must not run under the action word.
+      availabilityLine({
+        audioState: presentation.localAudio.state,
+        arriving: arrivingFraction(
+          presentation.localAudio.bytes,
+          presentation.delivery?.byte_length,
+        ),
+        byteLength: presentation.delivery?.byte_length ?? null,
+        nodeLabel: presentation.nodeLabels[0] ?? presentation.backend.petname,
+      }),
+      monoFont,
+      column,
+    ),
+  };
+}
+
+/**
+ * One song, at whichever of its two representations the camera is showing.
+ *
+ * The mark and the row share an anchor and a flight and differ only in what
+ * hangs off it, so this is one node with two bands rather than two nodes that
+ * would have to be held on the same point by hand. Both bands stay mounted and
+ * the camera decides which is visible: a band that appeared when React noticed
+ * the scale had moved would arrive a commit late, which is the whole failure
+ * this renderer exists to end.
+ */
+function NativePlacementFlight({
   flight,
   clock,
   cameraShared,
+  fitScaleShared,
   recut,
   viewport,
-  path,
+  markPath,
+  row,
+  displayFont,
+  monoFont,
   playing,
   color,
+  mutedColor,
   weight,
   filled,
 }: {
   flight: PlacementFlight;
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
   recut: FieldRecutModel;
   viewport: Viewport;
-  path: ReturnType<typeof nameLensFacePath>;
+  markPath: SkPath;
+  row: NativeRowModel;
+  displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
   playing: boolean;
   color: string;
+  mutedColor: string;
   /** The availability alpha the picture would draw this face at. */
   weight: number;
   /** True for a downloaded song, whose face is filled rather than outlined. */
   filled: boolean;
 }) {
+  /**
+   * Where this song is, this frame.
+   *
+   * Two blends, and they are not the same one. `p` is the re-cut clock, which
+   * carries a mark from the seat it had to the seat it is getting. The gather
+   * is the *camera's* answer to how far the cluster has closed, and it applies
+   * to whichever seat the re-cut has reached — so a re-sort during a zoom moves
+   * the seat while the zoom closes the bloom around it, instead of one of the
+   * two winning.
+   */
   const transform = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
     const liveCamera = p >= 1 ? cameraShared.value : null;
@@ -996,82 +1258,138 @@ function NativeFaceFlight({
     const cameraY =
       liveCamera?.y ??
       recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
-    const cameraScale =
-      liveCamera?.scale ??
-      Math.exp(
-        Math.log(recut.fromCamera.scale) +
-          (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) *
-            p,
-      );
-    const worldX =
-      flight.fromX +
-      flight.fromBloomX +
-      (flight.targetX +
-        flight.targetBloomX -
-        flight.fromX -
-        flight.fromBloomX) *
-        p;
-    const worldY =
-      flight.fromY +
-      flight.fromBloomY +
-      (flight.targetY +
-        flight.targetBloomY -
-        flight.fromY -
-        flight.fromBloomY) *
-        p;
+    const cameraScale = nativeCameraScale(p, recut, cameraShared);
+    const bloom =
+      1 - gatherFraction(cameraScale, nativeFitScale(p, recut, fitScaleShared));
+    const seatX = flight.fromX + (flight.targetX - flight.fromX) * p;
+    const seatY = flight.fromY + (flight.targetY - flight.fromY) * p;
+    const bloomX =
+      flight.fromBloomX + (flight.targetBloomX - flight.fromBloomX) * p;
+    const bloomY =
+      flight.fromBloomY + (flight.targetBloomY - flight.fromBloomY) * p;
     return [
       {
-        translateX: (worldX - cameraX) * cameraScale + viewport.width / 2,
+        translateX:
+          (seatX + bloomX * bloom - cameraX) * cameraScale + viewport.width / 2,
       },
       {
-        translateY: (worldY - cameraY) * cameraScale + viewport.height / 2,
+        translateY:
+          (seatY + bloomY * bloom - cameraY) * cameraScale +
+          viewport.height / 2,
       },
     ];
   });
-  const opacity = useDerivedValue(() => {
+  /** How much of this mark the re-cut has handed over, before any band. */
+  const owner = useDerivedValue(() =>
+    flightOwnerAlpha(
+      flight.ownership,
+      flight.fromAlpha,
+      flight.targetAlpha,
+      Math.min(Math.max(clock.value, 0), 1),
+    ),
+  );
+  const markOpacity = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
-    let start = 0;
-    let end = 1;
-    if (flight.ownership === 'branch') {
-      start = 0.02;
-      end = 0.18;
-    } else if (flight.ownership === 'fold') {
-      start = 0.55;
-      end = 0.82;
-    } else if (flight.ownership === 'enter') {
-      start = 0.08;
-      end = 0.42;
-    } else if (flight.ownership === 'exit') {
-      start = 0.58;
-      end = 0.9;
-    }
-    const raw = flight.ownership === 'carry' ? p : (p - start) / (end - start);
-    const t = Math.min(Math.max(raw, 0), 1);
-    const amount = t * t * t * (t * (t * 6 - 15) + 10);
     return (
-      weight *
-      (flight.fromAlpha + (flight.targetAlpha - flight.fromAlpha) * amount)
+      owner.value *
+      bandAlphaAt(
+        nativeCameraScale(p, recut, cameraShared),
+        nativeFitScale(p, recut, fitScaleShared),
+        REPRESENTATION_WINDOWS.dot,
+      )
+    );
+  });
+  const rowOpacity = useDerivedValue(() => {
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    return (
+      owner.value *
+      bandAlphaAt(
+        nativeCameraScale(p, recut, cameraShared),
+        nativeFitScale(p, recut, fitScaleShared),
+        REPRESENTATION_WINDOWS.row,
+      )
     );
   });
   return (
-    <SkiaGroup transform={transform} opacity={opacity}>
-      {filled ? <Path path={path} color={color} style="fill" /> : null}
-      <Path
-        path={path}
-        color={color}
-        style="stroke"
-        strokeWidth={FIELD_CANVAS_KNOBS.FACE_STROKE_PX}
-      />
-      {playing ? (
-        <Circle
-          cx={0}
-          cy={0}
-          r={nameLensRingRadius(NAME_LENS_KNOBS.MARK_RADIUS_PX)}
+    <SkiaGroup transform={transform}>
+      <SkiaGroup opacity={markOpacity}>
+        {filled ? (
+          <Path path={markPath} color={color} style="fill" opacity={weight} />
+        ) : null}
+        <Path
+          path={markPath}
           color={color}
           style="stroke"
-          strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
+          strokeWidth={FIELD_CANVAS_KNOBS.FACE_STROKE_PX}
+          opacity={weight}
         />
-      ) : null}
+        {playing ? (
+          <Circle
+            cx={0}
+            cy={0}
+            r={nameLensRingRadius(NAME_LENS_KNOBS.MARK_RADIUS_PX)}
+            color={color}
+            style="stroke"
+            strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
+          />
+        ) : null}
+      </SkiaGroup>
+      <SkiaGroup opacity={rowOpacity}>
+        <SkiaGroup
+          transform={[{ translateX: -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX }]}
+        >
+          {filled ? (
+            <Path
+              path={row.facePath}
+              color={color}
+              style="fill"
+              opacity={weight}
+            />
+          ) : null}
+          <Path
+            path={row.facePath}
+            color={color}
+            style="stroke"
+            strokeWidth={FIELD_CANVAS_KNOBS.FACE_STROKE_PX}
+            opacity={weight}
+          />
+          {playing ? (
+            <Circle
+              cx={0}
+              cy={0}
+              r={nameLensRingRadius(NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX)}
+              color={color}
+              style="stroke"
+              strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
+            />
+          ) : null}
+        </SkiaGroup>
+        {row.action === null ? null : (
+          <Text
+            text={row.action}
+            x={row.actionX}
+            y={NAME_LENS_KNOBS.ROW_ACTION_BASELINE_PX}
+            font={monoFont}
+            color={mutedColor}
+            opacity={NAME_LENS_KNOBS.ROW_ACTION_ALPHA}
+          />
+        )}
+        <Text
+          text={row.title}
+          x={-NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX}
+          y={NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX}
+          font={displayFont}
+          color={color}
+          opacity={row.titleAlpha}
+        />
+        <Text
+          text={row.meta}
+          x={-NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX}
+          y={NAME_LENS_KNOBS.ROW_META_BASELINE_PX}
+          font={monoFont}
+          color={mutedColor}
+        />
+      </SkiaGroup>
     </SkiaGroup>
   );
 }
@@ -1091,6 +1409,7 @@ function NativeShelfLabel({
   flight,
   clock,
   cameraShared,
+  fitScaleShared,
   recut,
   viewport,
   font: labelFont,
@@ -1099,6 +1418,7 @@ function NativeShelfLabel({
   flight: LabelFlight;
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
   recut: FieldRecutModel;
   viewport: Viewport;
   font: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -1113,19 +1433,26 @@ function NativeShelfLabel({
     const cameraY =
       liveCamera?.y ??
       recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
-    const cameraScale =
-      liveCamera?.scale ??
-      Math.exp(
-        Math.log(recut.fromCamera.scale) +
-          (Math.log(recut.toCamera.scale) - Math.log(recut.fromCamera.scale)) *
-            p,
-      );
+    const cameraScale = nativeCameraScale(p, recut, cameraShared);
     // Seat to seat, in the same units at both ends. The previous generation
     // left this name on its cluster's top, which is exactly this flight's
     // `fromTop`, so the first frame lands where the last one did instead of
     // stepping by the difference between a centre and a top.
+    //
+    // And each of those seats is itself two, because a name hangs from a
+    // cluster and a cluster has two poses. The gather picks between the
+    // bloomed top and the column's, exactly as it does for the marks — without
+    // it the name would stay out at the packing's top while its songs closed
+    // into a column beneath it.
+    const gather = gatherFraction(
+      cameraScale,
+      nativeFitScale(p, recut, fitScaleShared),
+    );
     const worldX = flight.from.x + (flight.to.x - flight.from.x) * p;
-    const worldY = flight.fromTop + (flight.toTop - flight.fromTop) * p;
+    const fromTop =
+      flight.fromTop + (flight.fromTopGathered - flight.fromTop) * gather;
+    const toTop = flight.toTop + (flight.toTopGathered - flight.toTop) * gather;
+    const worldY = fromTop + (toTop - fromTop) * p;
     return [
       {
         translateX: (worldX - cameraX) * cameraScale + viewport.width / 2,
@@ -1138,8 +1465,15 @@ function NativeShelfLabel({
       },
     ];
   });
+  const opacity = useDerivedValue(() => {
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    return shelfLabelAlpha(
+      nativeCameraScale(p, recut, cameraShared),
+      nativeFitScale(p, recut, fitScaleShared),
+    );
+  });
   return (
-    <SkiaGroup transform={transform}>
+    <SkiaGroup transform={transform} opacity={opacity}>
       <NativeLabelLine
         from={flight.primaryFrom}
         to={flight.primaryTo}
@@ -1178,28 +1512,14 @@ function NativeLabelLine({
 }) {
   const fromWidth = labelFont.measureText(from).width;
   const toWidth = labelFont.measureText(to).width;
-  const owner = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    let start = 0;
-    let end = 1;
-    if (flight.ownership === 'branch') {
-      start = 0.02;
-      end = 0.18;
-    } else if (flight.ownership === 'fold') {
-      start = 0.55;
-      end = 0.82;
-    } else if (flight.ownership === 'enter') {
-      start = 0.08;
-      end = 0.42;
-    } else if (flight.ownership === 'exit') {
-      start = 0.58;
-      end = 0.9;
-    }
-    const raw = flight.ownership === 'carry' ? p : (p - start) / (end - start);
-    const t = Math.min(Math.max(raw, 0), 1);
-    const amount = t * t * t * (t * (t * 6 - 15) + 10);
-    return flight.fromAlpha + (flight.targetAlpha - flight.fromAlpha) * amount;
-  });
+  const owner = useDerivedValue(() =>
+    flightOwnerAlpha(
+      flight.ownership,
+      flight.fromAlpha,
+      flight.targetAlpha,
+      Math.min(Math.max(clock.value, 0), 1),
+    ),
+  );
   const fromOpacity = useDerivedValue(() => {
     if (from.length === 0) return 0;
     if (from === to) return owner.value;
@@ -1715,11 +2035,19 @@ function drawShelfLabels(
       // centres* into it steps by the difference between the two clusters'
       // heights on the first frame, because a cluster's centre is not where
       // its name sits.
+      // Each end is two seats, and the gather picks between them — the same
+      // blend `NativeShelfLabel` makes, because the two renderers hand over at
+      // 12·FIT where the clusters are long since closed and a label drawn at
+      // the bloomed top by one of them would step on the way past.
+      const fromTop =
+        flight.fromTop + (flight.fromTopGathered - flight.fromTop) * gather;
+      const toTop =
+        flight.toTop + (flight.toTopGathered - flight.toTop) * gather;
       const point = above(
         worldToScreen(
           {
             x: flight.from.x + (flight.to.x - flight.from.x) * travel,
-            y: flight.fromTop + (flight.toTop - flight.fromTop) * travel,
+            y: fromTop + (toTop - fromTop) * travel,
           },
           request.camera,
           request.viewport,
@@ -1817,8 +2145,14 @@ function withinOverscan(
 
 type CapturedShelfFlight = Readonly<{
   point: Point;
-  /** The seat the interrupted flight had reached, in world units. */
+  /**
+   * The seat the interrupted flight had reached, in world units — both poses
+   * of it. A name resumes from where it was *and* from how closed its cluster
+   * was; capturing only the bloomed one would make the resumed flight step by
+   * the gather on its first frame.
+   */
   top: number;
+  topGathered: number;
   primary: CapturedLabelMorph | null;
   secondary: CapturedLabelMorph | null;
   survives: boolean;
@@ -1847,6 +2181,9 @@ function retargetShelfLabelFlights(
         y: flight.from.y + (flight.to.y - flight.from.y) * travel,
       },
       top: flight.fromTop + (flight.toTop - flight.fromTop) * travel,
+      topGathered:
+        flight.fromTopGathered +
+        (flight.toTopGathered - flight.fromTopGathered) * travel,
       primary: captureFlightLine(
         flight.primary,
         flight.primaryTo,
@@ -1878,6 +2215,7 @@ function retargetShelfLabelFlights(
       ...flight,
       from: captured.point,
       fromTop: captured.top,
+      fromTopGathered: captured.topGathered,
       fromAlpha:
         flight.ownership === 'branch' ? flight.fromAlpha : captured.alpha,
       primary:

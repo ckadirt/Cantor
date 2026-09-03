@@ -156,11 +156,13 @@ describe('field canvas re-cut clock', () => {
     const first = recutBetween(1, month, month, false);
     const second = recutBetween(2, month, year, true);
     const cameraShared = { value: cameraFor(month) };
+    const fitScaleShared = { value: month.fitScale };
 
     const canvas = (recut: FieldRecutModel, layout: FieldLayout) => (
       <FieldCanvas
         camera={cameraFor(layout)}
         cameraShared={cameraShared as never}
+        fitScaleShared={fitScaleShared as never}
         layout={layout}
         labelFromGroups={recut.fromGroups}
         palette={palette}
@@ -213,10 +215,12 @@ describe('field canvas re-cut clock', () => {
   it('hands the canvas the same scene while only the camera moves', async () => {
     const recut = recutBetween(1, month, year, true);
     const cameraShared = { value: cameraFor(month) };
+    const fitScaleShared = { value: month.fitScale };
     const canvas = (camera: Camera) => (
       <FieldCanvas
         camera={camera}
         cameraShared={cameraShared as never}
+        fitScaleShared={fitScaleShared as never}
         layout={year}
         labelFromGroups={recut.fromGroups}
         palette={palette}

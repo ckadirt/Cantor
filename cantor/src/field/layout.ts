@@ -78,14 +78,17 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       request.order ?? orderByKey(DEFAULT_ORDER_KEY),
       request.orderSeed ?? 0,
     );
-    // The seat is the top of the cluster once bloomed, which is the pose the
-    // field is drawn in wherever a re-cut can be asked for.
-    const tops = entityKeys.map(
+    // Both seats, because the name hangs from the cluster and the cluster has
+    // two poses: the top of the bloomed packing, and the top of the column it
+    // gathers into. The camera blends them the same way it blends the marks.
+    const columnTops = entityKeys.map(
       (_entityKey, entityIndex) =>
         cy +
         (entityIndex - (entityKeys.length - 1) / 2) *
-          LAYOUT_KNOBS.SONG_GAP_WORLD +
-        bloomOffset(entityIndex, entityKeys.length).y,
+          LAYOUT_KNOBS.SONG_GAP_WORLD,
+    );
+    const tops = columnTops.map(
+      (top, entityIndex) => top + bloomOffset(entityIndex, entityKeys.length).y,
     );
     const group: Group = {
       key: definition.key,
@@ -94,6 +97,7 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       cx,
       cy,
       top: tops.length === 0 ? cy : Math.min(...tops),
+      topGathered: columnTops.length === 0 ? cy : Math.min(...columnTops),
     };
     groups.push(group);
 

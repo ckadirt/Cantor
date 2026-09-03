@@ -6,6 +6,7 @@ import {
   labelFlightAlpha,
   planLabelMorph,
   planShelfLabels,
+  settledShelfLabelFlights,
 } from '../labelMorph';
 
 const NOW = new Date(2026, 7, 30, 12).getTime();
@@ -18,11 +19,44 @@ const font = Skia.Font(undefined, 9);
 const seats = new Map<string, number>();
 const group = (label: string, ...entityKeys: string[]) => {
   if (!seats.has(label)) seats.set(label, (seats.size + 1) * 100);
-  return { key: label, label, entityKeys, cx: seats.get(label)!, cy: 0, top: 0 };
+  return {
+    key: label,
+    label,
+    entityKeys,
+    cx: seats.get(label)!,
+    cy: 0,
+    top: 0,
+    topGathered: 0,
+  };
 };
 const groups = (...labels: string[]) => labels.map(label => group(label, 's1'));
 
 describe('shelf label morphs', () => {
+  /**
+   * A settled field is the ordinary state, and it still has names in it.
+   *
+   * `planShelfLabels` answers null there, and the native renderer draws only
+   * flights — so without a standing-still flight it had nothing to draw and
+   * the canvas fell back to the recorded picture for want of a label, which is
+   * how L0 and L1 ended up on the picture path in the first place.
+   */
+  it('carries a settled field\'s names as flights that go nowhere', () => {
+    const flights = settledShelfLabelFlights(groups('2026-08', '2026-09'), NOW);
+    expect(flights).toHaveLength(2);
+    for (const flight of flights ?? []) {
+      expect(flight.from).toEqual(flight.to);
+      expect(flight.fromTop).toBe(flight.toTop);
+      expect(flight.primaryFrom).toBe(flight.primaryTo);
+      expect(flight.primary).toBeNull();
+      expect(flight.ownership).toBe('carry');
+      expect(flight.fromAlpha).toBe(1);
+      expect(flight.targetAlpha).toBe(1);
+    }
+    // The same reading the picture's settled path draws, uppercased.
+    expect(flights?.[0].primaryTo).toBe(flights?.[0].primaryTo.toUpperCase());
+    expect(settledShelfLabelFlights([], NOW)).toBeNull();
+  });
+
   it('plans nothing when the label did not change', () => {
     expect(planLabelMorph('AUGUST', 'AUGUST', font)).toBeNull();
     expect(

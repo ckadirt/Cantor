@@ -77,6 +77,17 @@ export type Group = Readonly<{
    * even when nothing moved.
    */
   top: number;
+  /**
+   * The same seat once the cluster has closed into its column.
+   *
+   * A name hangs from the cluster, and the cluster has two poses, so the name
+   * has two seats and the gather chooses between them exactly as it does for
+   * the marks. Without this the label stays at the bloomed top while its songs
+   * gather underneath it and the name drifts away from the column it belongs
+   * to — which is what the picture's own settled path always did and its
+   * flight path never did.
+   */
+  topGathered: number;
 }>;
 
 /**
