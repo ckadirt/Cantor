@@ -1,47 +1,47 @@
 import {
-  LEVEL_BOUNDARIES,
   REPRESENTATION_WINDOWS,
-  isMarksOnlyDistance,
+  isNativeDrawnDistance,
   representationAlphas,
 } from '..';
 
 const fit = 0.42;
 
-describe('the marks-only distance', () => {
+describe('the natively drawn distance', () => {
   /**
    * The whole reason this predicate exists. Two renderers draw the field —
-   * `NativeFieldContent`, which knows only a face at mark size, and the
+   * `NativeFieldContent`, which knows a face at mark size and a row, and the
    * recorded picture, which knows all four representations — and swapping
    * between them may only happen where they would draw the same thing.
    */
-  it('is exactly where nothing but the dot band is drawn', () => {
-    for (const ratio of [0.4, 0.9, 1.0, 1.1, 1.19]) {
-      expect(isMarksOnlyDistance(fit * ratio, fit)).toBe(true);
+  it('covers every distance that is only marks and rows', () => {
+    for (const ratio of [0.4, 1.0, 1.19, 2, 3.6, 8, 11.9]) {
+      expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
       const alphas = representationAlphas(fit * ratio, fit);
-      expect(alphas.dot).toBe(1);
-      expect(alphas.row).toBe(0);
       expect(alphas.song).toBe(0);
       expect(alphas.grain).toBe(0);
     }
   });
 
-  it('stops at the row band, not at the field/shelf boundary', () => {
-    expect(isMarksOnlyDistance(fit * REPRESENTATION_WINDOWS.row[0], fit)).toBe(
-      false,
-    );
-    // The boundary it used to be tested at. A row is a quarter drawn here, so
-    // handing over to a renderer that draws no rows would pop that quarter out.
-    const atLevelBoundary = representationAlphas(
-      fit * LEVEL_BOUNDARIES.field,
+  it('stops where the player opens, not where the row band does', () => {
+    expect(
+      isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.song[0], fit),
+    ).toBe(false);
+    // The boundary it used to stop at. Rows run from here to 3.6·FIT, and a
+    // picture can only carry them by scaling a recording — which is what a
+    // zoom made visible, so the native renderer has to own this whole span.
+    const atRowEntry = representationAlphas(
+      fit * REPRESENTATION_WINDOWS.row[0],
       fit,
     );
-    expect(atLevelBoundary.row).toBeGreaterThan(0.2);
-    expect(isMarksOnlyDistance(fit * LEVEL_BOUNDARIES.field, fit)).toBe(false);
+    expect(atRowEntry.song).toBe(0);
+    expect(isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.row[0], fit)).toBe(
+      true,
+    );
   });
 
   it('answers false rather than throwing before a scale exists', () => {
-    expect(isMarksOnlyDistance(1, 0)).toBe(false);
-    expect(isMarksOnlyDistance(0, 1)).toBe(false);
-    expect(isMarksOnlyDistance(Number.NaN, 1)).toBe(false);
+    expect(isNativeDrawnDistance(1, 0)).toBe(false);
+    expect(isNativeDrawnDistance(0, 1)).toBe(false);
+    expect(isNativeDrawnDistance(Number.NaN, 1)).toBe(false);
   });
 });

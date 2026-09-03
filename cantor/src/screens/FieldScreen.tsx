@@ -1041,6 +1041,7 @@ export function FieldScreen({ identity }: Props) {
               <FieldCanvas
                 camera={fieldCamera.camera}
                 cameraShared={fieldCamera.cameraShared}
+                fitScaleShared={fieldCamera.fitScaleShared}
                 layout={layout}
                 labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}

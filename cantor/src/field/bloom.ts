@@ -82,6 +82,11 @@ export function bloomOffset(index: number, count: number): Point {
  * and every one of those is eased mathematically, never sprung.
  */
 export function gatherFraction(scale: number, fitScale: number): number {
+  // A worklet, because the native renderer blends the two poses on the UI
+  // thread. It reaches `smootherstep` in `bands.ts`, which is a worklet for the
+  // same reason and is imported rather than copied: one gather curve, or the
+  // two renderers would disagree about where a cluster has closed to.
+  'worklet';
   if (!Number.isFinite(scale) || !Number.isFinite(fitScale) || fitScale <= 0) {
     return 1;
   }

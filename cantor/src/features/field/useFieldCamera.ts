@@ -19,7 +19,7 @@ import {
   hitTestRowAction,
   interpolateCamera,
   interpolatePositiveScale,
-  isMarksOnlyDistance,
+  isNativeDrawnDistance,
   isShelfDistance,
   levelCameraTarget,
   levelOf,
@@ -495,8 +495,8 @@ export function useFieldCamera({
     // longer moving.
     const nativeDriven =
       nativeRelayout &&
-      isMarksOnlyDistance(fromCamera.scale, fromFitScale) &&
-      isMarksOnlyDistance(toCamera.scale, layout.fitScale);
+      isNativeDrawnDistance(fromCamera.scale, fromFitScale) &&
+      isNativeDrawnDistance(toCamera.scale, layout.fitScale);
     recutModel.current = {
       generation,
       layout,
