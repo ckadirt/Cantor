@@ -1,5 +1,5 @@
-import { bloomOffset, bloomedTargetPoint } from './bloom';
-import { fit, type FitOptions } from './camera';
+import { bloomOffset } from './bloom';
+import { LEVEL_SCALE_RATIOS, fit, type FitOptions } from './camera';
 import { boxCenter, boxFromPoints } from './geometry';
 import { orderByKey, orderMembers, DEFAULT_ORDER_KEY } from './order';
 import type {
@@ -20,7 +20,32 @@ import type {
 export const LAYOUT_KNOBS = {
   SHELF_GAP_WORLD: 300,
   CLUSTER_ROW_GAP_WORLD: 300,
-  SONG_GAP_WORLD: 26,
+  /**
+   * The rank spacing of the *bloomed* pose, in world units: how far apart two
+   * successive members are before the spiral displaces them.
+   *
+   * A world number, and it stays one, because the bloom is a shape on a map —
+   * it is framed by FIT rather than read at a fixed size, and it is what FIT is
+   * measured from. The gathered column is the opposite kind of thing and gets
+   * `shelfRowGapWorld` instead.
+   */
+  BLOOM_GAP_WORLD: 26,
+  /**
+   * The pitch of the gathered column at L1, in **screen pixels**.
+   *
+   * A list is a list: two songs are one row apart because that is how far apart
+   * rows go, not because of how the rest of the library happens to be shaped.
+   * Before this, the column was a world constant and the pitch was whatever
+   * `fitScale × LEVEL_SCALE_RATIOS.shelf` made of it — measured at 92 px for a
+   * month of a small library, 204 px for the same songs cut by year, and 27 px
+   * for a year of work at week resolution. The last of those is *under* the
+   * renderer's own 30 px row box: rows drawn on top of each other.
+   *
+   * 92 is the pitch a small library's week and month shelves already had, which
+   * is the one value in that range that had been read and kept. Three times the
+   * row box, so a title and its metadata sit in the middle of their own air.
+   */
+  SHELF_ROW_PITCH_PX: 92,
   GRID_COLUMN_DENSITY: 0.62,
   HORIZONTAL_SAFE_PADDING_PX: 44,
   VERTICAL_SAFE_PADDING_PX: 150,
@@ -34,14 +59,43 @@ export const LAYOUT_KNOBS = {
 const FIT_OPTIONS: FitOptions = {
   horizontalSafePaddingPx: LAYOUT_KNOBS.HORIZONTAL_SAFE_PADDING_PX,
   verticalSafePaddingPx: LAYOUT_KNOBS.VERTICAL_SAFE_PADDING_PX,
-  minimumContentWidthWorld: LAYOUT_KNOBS.SONG_GAP_WORLD,
-  minimumContentHeightWorld: LAYOUT_KNOBS.SONG_GAP_WORLD,
+  minimumContentWidthWorld: LAYOUT_KNOBS.BLOOM_GAP_WORLD,
+  minimumContentHeightWorld: LAYOUT_KNOBS.BLOOM_GAP_WORLD,
   horizontalContentMarginWorld: LAYOUT_KNOBS.HORIZONTAL_CONTENT_MARGIN_WORLD,
   verticalContentMarginWorld: LAYOUT_KNOBS.VERTICAL_CONTENT_MARGIN_WORLD,
   minScale: LAYOUT_KNOBS.MIN_FIT_SCALE,
   maxScale: LAYOUT_KNOBS.MAX_FIT_SCALE,
   emptyScale: LAYOUT_KNOBS.EMPTY_FIT_SCALE,
 };
+
+/**
+ * The gathered column's pitch, in world units, for a field fitted at `fitScale`.
+ *
+ * The inverse of the reason the pitch used to wander. A column is read at L1,
+ * which is `LEVEL_SCALE_RATIOS.shelf` times FIT, so a world gap `g` puts its
+ * rows `g · fitScale · 5` pixels apart — a number that depended on how many
+ * clusters the axis happened to cut and how wide they spread. Solving that for
+ * the pitch a row actually wants gives the gap the column should have, and the
+ * dependency runs the other way for good: the shelf is a list and reads like
+ * one, whatever the map around it looks like.
+ *
+ * Only the *gathered* pose is measured this way. The bloom stays in world units
+ * — it is a shape FIT has to frame, and a bloom that answered to FIT would be a
+ * definition that consumed itself.
+ */
+export function shelfRowGapWorld(fitScale: number): number {
+  if (!Number.isFinite(fitScale) || fitScale <= 0) {
+    return LAYOUT_KNOBS.BLOOM_GAP_WORLD;
+  }
+  return (
+    LAYOUT_KNOBS.SHELF_ROW_PITCH_PX / (fitScale * LEVEL_SCALE_RATIOS.shelf)
+  );
+}
+
+/** Where one member sits along its cluster's vertical run, at a given pitch. */
+function rankOffset(index: number, count: number, gap: number): number {
+  return (index - (count - 1) / 2) * gap;
+}
 
 /** Lay arrangement membership out without depending on a renderer or runtime. */
 export function layoutField(request: LayoutRequest): FieldLayout {
@@ -55,12 +109,20 @@ export function layoutField(request: LayoutRequest): FieldLayout {
   const rowCount = columns === 0 ? 0 : Math.ceil(definitions.length / columns);
   const verticalMidpoint =
     ((rowCount - 1) * LAYOUT_KNOBS.CLUSTER_ROW_GAP_WORLD) / 2;
-  const groups: Group[] = [];
-  const placements: Placement[] = [];
-  const placementKeys = new Set<string>();
 
-  definitions.forEach((definition, groupIndex) => {
-    if (groups.some(group => group.key === definition.key)) {
+  /*
+   * The bloom first, then FIT, then the column.
+   *
+   * That order is the whole of this function's shape. FIT is measured from the
+   * bloomed pose, and the gathered column is now measured from FIT, so the
+   * three cannot be computed in one pass without the column feeding back into
+   * the frame that sizes it — and that loop diverges rather than settling: a
+   * wider column makes a smaller FIT, which `shelfRowGapWorld` answers with a
+   * wider column. Written in this order there is no loop at all, because the
+   * bloom is made of constants alone.
+   */
+  const seats = definitions.map((definition, groupIndex) => {
+    if (definitions.some((other, index) => index < groupIndex && other.key === definition.key)) {
       throw new Error(`Arrangement group key is duplicated: ${definition.key}`);
     }
     const column = groupIndex % columns;
@@ -78,17 +140,39 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       request.order ?? orderByKey(DEFAULT_ORDER_KEY),
       request.orderSeed ?? 0,
     );
+    // The bloomed seats, absolute: rank spacing plus the spiral that displaces
+    // it. Nothing here reads FIT, which is what makes FIT computable.
+    const blooms = entityKeys.map((_entityKey, entityIndex) => {
+      const spiral = bloomOffset(entityIndex, entityKeys.length);
+      return {
+        x: cx + spiral.x,
+        y:
+          cy +
+          rankOffset(
+            entityIndex,
+            entityKeys.length,
+            LAYOUT_KNOBS.BLOOM_GAP_WORLD,
+          ) +
+          spiral.y,
+      };
+    });
+    return { definition, cx, cy, entityKeys, blooms };
+  });
+
+  const targetBounds = boxFromPoints(seats.flatMap(seat => seat.blooms));
+  const fitScale = fit(targetBounds, request.viewport, FIT_OPTIONS);
+  const songGapWorld = shelfRowGapWorld(fitScale);
+  const groups: Group[] = [];
+  const placements: Placement[] = [];
+  const placementKeys = new Set<string>();
+
+  seats.forEach(({ definition, cx, cy, entityKeys, blooms }) => {
     // Both seats, because the name hangs from the cluster and the cluster has
     // two poses: the top of the bloomed packing, and the top of the column it
     // gathers into. The camera blends them the same way it blends the marks.
     const columnTops = entityKeys.map(
       (_entityKey, entityIndex) =>
-        cy +
-        (entityIndex - (entityKeys.length - 1) / 2) *
-          LAYOUT_KNOBS.SONG_GAP_WORLD,
-    );
-    const tops = columnTops.map(
-      (top, entityIndex) => top + bloomOffset(entityIndex, entityKeys.length).y,
+        cy + rankOffset(entityIndex, entityKeys.length, songGapWorld),
     );
     const group: Group = {
       key: definition.key,
@@ -96,7 +180,7 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       entityKeys,
       cx,
       cy,
-      top: tops.length === 0 ? cy : Math.min(...tops),
+      top: blooms.length === 0 ? cy : Math.min(...blooms.map(seat => seat.y)),
       topGathered: columnTops.length === 0 ? cy : Math.min(...columnTops),
     };
     groups.push(group);
@@ -109,13 +193,15 @@ export function layoutField(request: LayoutRequest): FieldLayout {
         );
       }
       const targetX = cx;
-      const targetY =
-        cy +
-        (entityIndex - (entityKeys.length - 1) / 2) *
-          LAYOUT_KNOBS.SONG_GAP_WORLD;
-      // The other pose. Indexed by the same number as the column, so changing
-      // the order re-forms the packing and the column together.
-      const bloom = bloomOffset(entityIndex, entityKeys.length);
+      const targetY = columnTops[entityIndex];
+      // The other pose, as the offset that carries the column seat to it. It is
+      // stored as a difference rather than as a point because that is what the
+      // gather interpolates: `placementPoint` walks the offset back to zero as
+      // the cluster closes, so the bloom has to be measured *from* the column.
+      const bloom = {
+        x: blooms[entityIndex].x - targetX,
+        y: blooms[entityIndex].y - targetY,
+      };
       const key = placementKey(
         request.arrangement.key,
         definition.key,
@@ -146,11 +232,10 @@ export function layoutField(request: LayoutRequest): FieldLayout {
     });
   });
 
-  const targetBounds = placementBounds(placements);
   return {
     groups,
     placements,
-    fitScale: fit(targetBounds, request.viewport, FIT_OPTIONS),
+    fitScale,
     fieldCenter:
       targetBounds === null ? { x: 0, y: 0 } : boxCenter(targetBounds),
     targetBounds,
@@ -219,16 +304,6 @@ function firstPreviousPlacementByEntity(
     }
   }
   return result;
-}
-
-/**
- * What FIT has to frame: the *bloomed* targets, because that is the pose L0
- * shows. Framing the gathered column instead would reserve room for a stack
- * that only exists once you have zoomed past the point where FIT applies, and
- * leave the whole field small and sparse at the one level it is read from.
- */
-function placementBounds(placements: readonly Placement[]): Box | null {
-  return boxFromPoints(placements.map(bloomedTargetPoint));
 }
 
 function assertViewport(viewport: Viewport): void {

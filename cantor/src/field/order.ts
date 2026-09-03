@@ -9,8 +9,9 @@ import type { FieldEntity } from './types';
 /**
  * Order is position, not a list setting.
  *
- * `layoutField` seats a member at `cy + (index − (n−1)/2) · SONG_GAP_WORLD`, so
- * a song's index *is* where it sits. Re-ordering therefore re-forms the cluster
+ * `layoutField` seats a member at `cy + (index − (n−1)/2) · gap`, so a song's
+ * index *is* where it sits — `BLOOM_GAP_WORLD` in the packing, and the pitch
+ * `shelfRowGapWorld` derives from FIT in the column. Re-ordering therefore re-forms the cluster
  * and the existing from/target tween animates every mark to its new seat — at
  * L0 and L1 both, because the bloom is indexed by the same number as the
  * column. Sorting is something you watch rather than a setting you toggle.

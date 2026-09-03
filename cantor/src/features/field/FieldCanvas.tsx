@@ -5,12 +5,16 @@ import {
   Circle,
   Fill,
   Group as SkiaGroup,
+  LinearGradient,
   PaintStyle,
   Path,
   Picture,
+  Rect,
   Skia,
   Text,
+  vec,
   type SkCanvas,
+  type SkColor,
   type SkPaint,
   type SkPath,
   type SkPicture,
@@ -24,6 +28,7 @@ import {
 } from 'react-native-reanimated';
 import {
   REPRESENTATION_WINDOWS,
+  SHELF_BOX,
   bandAlphaAt,
   gatherFraction,
   isNativeDrawnDistance,
@@ -304,6 +309,102 @@ export function pictureTransformFor(
 }
 
 /**
+ * The paper the shelf is read on, over the chrome's own ground.
+ *
+ * `SHELF_BOX` in `field/shelf.ts` says why the box exists and owns both of its
+ * numbers; this is only the drawing of it. Two plates of paper, one at each
+ * end, each with a short gradient on its inner edge so a row dissolves into the
+ * page instead of being cut in half by it.
+ *
+ * Its opacity is the *row band's* own alpha, read from the live camera on the
+ * UI thread. That is deliberate and it is the whole rule: the box is there for
+ * exactly as long as there are names to read, so it writes itself on as the
+ * rows resolve out of their dots and off again as they hand over to the player.
+ * No level test, nothing to keep in step with the bands, and nothing to pop at
+ * the point where the picture takes the field back from the native renderer —
+ * which happens mid-row-band, with the veil at full strength on both sides.
+ *
+ * Held by identity and fed only shared values, for the reason `scene` gives.
+ */
+const ShelfVeil = React.memo(function ShelfVeilImpl({
+  cameraShared,
+  fitScaleShared,
+  viewport,
+  colour,
+}: {
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
+  viewport: Viewport;
+  colour: string;
+}) {
+  const opacity = useDerivedValue(
+    () =>
+      bandAlphaAt(
+        cameraShared.value.scale,
+        fitScaleShared.value,
+        REPRESENTATION_WINDOWS.row,
+      ),
+    [cameraShared, fitScaleShared],
+  );
+  // The far end of each gradient is the paper with nothing left of it. Built
+  // from the palette's own colour rather than written as a literal: a gradient
+  // that runs to `transparent` runs through grey on the way in a light theme
+  // and through nothing at all in a dark one.
+  const clear = useMemo(() => clearPaper(colour), [colour]);
+  const topFade = SHELF_BOX.TOP_PX + SHELF_BOX.FADE_PX;
+  const foot = viewport.height - SHELF_BOX.FOOT_PX;
+  const footFade = foot - SHELF_BOX.FADE_PX;
+  return (
+    <SkiaGroup opacity={opacity}>
+      <Rect
+        color={colour}
+        height={SHELF_BOX.TOP_PX}
+        width={viewport.width}
+        x={0}
+        y={0}
+      />
+      <Rect
+        height={SHELF_BOX.FADE_PX}
+        width={viewport.width}
+        x={0}
+        y={SHELF_BOX.TOP_PX}
+      >
+        <LinearGradient
+          colors={[colour, clear]}
+          end={vec(0, topFade)}
+          start={vec(0, SHELF_BOX.TOP_PX)}
+        />
+      </Rect>
+      <Rect
+        height={SHELF_BOX.FADE_PX}
+        width={viewport.width}
+        x={0}
+        y={footFade}
+      >
+        <LinearGradient
+          colors={[clear, colour]}
+          end={vec(0, foot)}
+          start={vec(0, footFade)}
+        />
+      </Rect>
+      <Rect
+        color={colour}
+        height={SHELF_BOX.FOOT_PX}
+        width={viewport.width}
+        x={0}
+        y={foot}
+      />
+    </SkiaGroup>
+  );
+});
+
+/** The same paper with nothing left of it: the colour at alpha zero. */
+function clearPaper(colour: string): SkColor {
+  const paper = Skia.Color(colour);
+  return Float32Array.of(paper[0], paper[1], paper[2], 0);
+}
+
+/**
  * The only field canvas. Each React render records one immediate-mode Picture,
  * culls before lens work, then lets Skia replay that picture in one view.
  */
@@ -558,6 +659,22 @@ function FieldCanvasImpl({
   );
 
   /**
+   * The box the shelf is read inside, held by identity like everything else on
+   * this canvas that outlives a camera frame.
+   */
+  const veil = useMemo(
+    () => (
+      <ShelfVeil
+        cameraShared={cameraShared}
+        colour={palette.bg}
+        fitScaleShared={fitScaleShared}
+        viewport={viewport}
+      />
+    ),
+    [cameraShared, fitScaleShared, palette.bg, viewport],
+  );
+
+  /**
    * The scene element, held by identity.
    *
    * Skia's canvas re-renders its children through `root.render(children)` in a
@@ -584,21 +701,28 @@ function FieldCanvasImpl({
     ) {
       return null;
     }
+    // One fragment rather than two children on the canvas: `Canvas` re-renders
+    // on the identity of what it is handed, and a second child would make that
+    // an array built fresh on every render — the flicker the note above
+    // describes, on every commit rather than never.
     return (
-      <NativeFieldContent
-        key={recut.generation}
-        recut={recut}
-        clock={nativeClock}
-        cameraShared={cameraShared}
-        fitScaleShared={fitScaleShared}
-        viewport={viewport}
-        presentations={presentations}
-        playingKey={playingKey}
-        labelFlights={labelFlights}
-        displayFont={displayFont}
-        font={monoFont}
-        palette={palette}
-      />
+      <>
+        <NativeFieldContent
+          key={recut.generation}
+          recut={recut}
+          clock={nativeClock}
+          cameraShared={cameraShared}
+          fitScaleShared={fitScaleShared}
+          viewport={viewport}
+          presentations={presentations}
+          playingKey={playingKey}
+          labelFlights={labelFlights}
+          displayFont={displayFont}
+          font={monoFont}
+          palette={palette}
+        />
+        {veil}
+      </>
     );
   }, [
     cameraShared,
@@ -611,6 +735,7 @@ function FieldCanvasImpl({
     playingKey,
     presentations,
     recut,
+    veil,
     viewport,
   ]);
 
@@ -693,9 +818,10 @@ function FieldCanvasImpl({
           </SkiaGroup>
         )}
         {playhead}
+        {veil}
       </>
     ),
-    [grain, palette.bg, picture, pictureTransform, playhead],
+    [grain, palette.bg, picture, pictureTransform, playhead, veil],
   );
 
   if (nativeField) {
