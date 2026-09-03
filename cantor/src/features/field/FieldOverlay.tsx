@@ -12,7 +12,7 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
-import { easeSmoother } from '../../motion';
+import { MatchingText, WriteText, easeSmoother } from '../../motion';
 import {
   ARRANGEMENTS,
   DATE_RESOLUTIONS,
@@ -101,6 +101,44 @@ const OVERLAY_KNOBS = {
   RESOLUTION_MS: 240,
   /** How far the row rises into its seat, in the engine's entrance spirit. */
   REVEAL_RISE_PX: 6,
+  /*
+   * Reserved heights for the chrome's animated lines.
+   *
+   * The text engine draws on a canvas that fills its container absolutely and
+   * reports no height of its own, so every slot has to be given one — house
+   * rule 2. Fixed rather than measured: a slot that resized as the words
+   * changed would reflow the header in the middle of a morph, which is the one
+   * thing the engine cannot absorb.
+   *
+   * These are the line heights the engine lays out at, which is `fontSize`
+   * times its default 1.35, rounded up: 11 → 15, 26 → 36.
+   */
+  EYEBROW_ROW_PX: 15,
+  TITLE_ROW_PX: 36,
+  /**
+   * The width kept for the shelf's bulk action, at the right end of the meta
+   * row, and the reason it is a constant.
+   *
+   * The action is `DOWNLOAD ALL · 84 MB` at its longest, and its slot has to
+   * keep one width across every string it ever holds — including the empty one
+   * at L0. A slot measured to its text would collapse to zero when the action
+   * goes away, and the engine builds no model for a zero-width slot, so the
+   * outgoing word would simply stay on screen. Fixed width, right-aligned ink.
+   */
+  ACTION_WIDTH_PX: 190,
+} as const;
+
+/*
+ * Char styles for the animated lines, hoisted to module scope — house rule 3.
+ * A fresh style object every render defeats the components' memo and re-records
+ * a ticking canvas.
+ */
+const CHROME_STYLES = {
+  eyebrow: type.eyebrow,
+  title: type.title,
+  /** The action is pinned to the meta row's right end; see `ACTION_WIDTH_PX`. */
+  action: { ...type.eyebrow, textAlign: 'right' } as const,
+  hint: { ...type.eyebrow, textAlign: 'center' } as const,
 } as const;
 
 /** What each level is called. */
@@ -171,50 +209,79 @@ function FieldOverlayImpl({
         // box-none, not none: the count is not touchable but the shelf action
         // beside it is, and it is the only thing in this corner that is.
         <View style={styles.header} pointerEvents="box-none">
-          <Text style={[type.eyebrow, { color: pal.muted }]} pointerEvents="none">
-            L{LEVELS[level].index} · {LEVELS[level].name}
-          </Text>
-          <Text
-            style={[type.title, styles.title, { color: pal.ink }]}
-            pointerEvents="none"
-          >
-            {level === 'shelf' ? groupLabel ?? 'Group' : 'Field'}
-          </Text>
+          {/*
+            The header is one object at every level, not a different header per
+            level. So the depth, the name and the count *change* rather than
+            being replaced: letters that both lines share glide to their new
+            seats and the rest shape-morph, which is the difference between
+            arriving somewhere and being shown somewhere else. `Field` becoming
+            `Last week` is the gesture the whole zoom model rests on being
+            continuous, and it was the one place the chrome cut.
+          */}
+          <MatchingText
+            text={`L${LEVELS[level].index} · ${LEVELS[level].name}`}
+            charStyle={CHROME_STYLES.eyebrow}
+            color={pal.muted}
+            style={styles.eyebrowSlot}
+          />
+          <MatchingText
+            text={level === 'shelf' ? groupLabel ?? 'Group' : 'Field'}
+            charStyle={CHROME_STYLES.title}
+            color={pal.ink}
+            style={styles.titleSlot}
+          />
           <View style={styles.metaRow} pointerEvents="box-none">
-            <Text
-              style={[type.eyebrow, { color: pal.faint }]}
-              pointerEvents="none"
+            <View style={styles.metaCount} pointerEvents="none">
+              <MatchingText
+                text={`${metaLine(
+                  level,
+                  songCount,
+                  groupCount,
+                  onDateAxis,
+                  dateResolution,
+                )}${offline ? ' · OFFLINE' : ''}`}
+                charStyle={CHROME_STYLES.eyebrow}
+                color={pal.faint}
+                style={styles.eyebrowSlot}
+              />
+            </View>
+            {/*
+              Always mounted, and empty at every level that has no bulk action.
+              An action that unmounted could not be taken back off the screen:
+              the engine needs the outgoing ink and a stable slot width to
+              unwrite it, and an unmounted component has neither. The word
+              writes itself on when you enter a shelf and unwrites itself when
+              you leave — one gesture, both directions.
+            */}
+            <Pressable
+              accessibilityElementsHidden={shelfAction === null}
+              accessibilityLabel={shelfAction ?? undefined}
+              accessibilityRole="button"
+              hitSlop={space.md}
+              importantForAccessibility={
+                shelfAction === null ? 'no-hide-descendants' : 'yes'
+              }
+              onPress={onShelfAction}
+              pointerEvents={shelfAction === null ? 'none' : 'auto'}
+              style={styles.actionSlot}
             >
-              {metaLine(
-                level,
-                songCount,
-                groupCount,
-                onDateAxis,
-                dateResolution,
+              {({ pressed }) => (
+                <WriteText
+                  text={level === 'shelf' ? shelfAction ?? '' : ''}
+                  charStyle={CHROME_STYLES.action}
+                  color={pressed ? pal.muted : pal.ink}
+                  style={styles.eyebrowSlot}
+                />
               )}
-              {offline ? ' · OFFLINE' : ''}
-            </Text>
-            {level === 'shelf' && shelfAction !== null ? (
-              <Pressable
-                accessibilityLabel={shelfAction}
-                accessibilityRole="button"
-                hitSlop={space.md}
-                onPress={onShelfAction}
-              >
-                {({ pressed }) => (
-                  <Text
-                    style={[
-                      type.eyebrow,
-                      { color: pressed ? pal.muted : pal.ink },
-                    ]}
-                  >
-                    {shelfAction}
-                  </Text>
-                )}
-              </Pressable>
-            ) : null}
+            </Pressable>
           </View>
-          {level === 'shelf' ? (
+          {/*
+            Always mounted, rising into a seat the header keeps for it. The
+            header stacks downward from the top of the screen, so the seat
+            costs nothing at L0 — it is below everything — and the control
+            arrives by coming up into focus rather than by existing suddenly.
+          */}
+          <Reveal open={level === 'shelf'}>
             <View style={styles.orderRow} pointerEvents="box-none">
               <Text
                 style={[type.eyebrow, styles.orderLabel, { color: pal.line }]}
@@ -235,7 +302,7 @@ function FieldOverlayImpl({
                 tickColour={pal.ink}
               />
             </View>
-          ) : null}
+          </Reveal>
         </View>
       ) : null}
 
@@ -255,7 +322,14 @@ function FieldOverlayImpl({
           you are inside one cluster and re-cutting the whole field from there
           would move the ground you are standing on.
         */}
-          {level === 'field' ? (
+          {/*
+            The dial is a property of the map, so it is drawn on the map — and
+            it leaves the same way it arrives. Always mounted: the foot is
+            anchored to the bottom of the screen and stacks upward, so the hint
+            below it does not move whether the dial is lit or not, and the dial
+            can therefore rise and set instead of blinking in and out.
+          */}
+          <Reveal open={level === 'field'}>
             <>
               <Dial
                 activeKey={arrangementKey}
@@ -298,14 +372,24 @@ function FieldOverlayImpl({
                 />
               </Reveal>
             </>
-          ) : null}
-          <Text style={[type.eyebrow, styles.hint, { color: pal.faint }]}>
-            {level === 'field'
-              ? `${HINTS.field} ${
-                  onDateAxis ? CLUSTER_NOUN[dateResolution] : 'PLAYLIST'
-                }`
-              : HINTS.shelf}
-          </Text>
+          </Reveal>
+          {/*
+            The hint names the one gesture worth naming, and which gesture that
+            is changes with the level and with the axis. It is the same
+            sentence being rewritten, so it morphs like the header does.
+          */}
+          <MatchingText
+            text={
+              level === 'field'
+                ? `${HINTS.field} ${
+                    onDateAxis ? CLUSTER_NOUN[dateResolution] : 'PLAYLIST'
+                  }`
+                : HINTS.shelf
+            }
+            charStyle={CHROME_STYLES.hint}
+            color={pal.faint}
+            style={styles.hintSlot}
+          />
         </View>
       ) : null}
       <EdgeTab
@@ -501,13 +585,20 @@ function Dial({
 }
 
 /**
- * A row that rises into space already kept for it.
+ * A row or a block that rises into space already kept for it.
  *
  * The foot is anchored to the bottom of the screen and stacks upward, so a row
  * that mounts at full height shoves the axis above it up in one frame — which
  * is the jump this replaces. The seat is therefore permanent: the dial above
  * sits at the same height on every axis, and only the row's own ink arrives
  * and leaves.
+ *
+ * `height` is for a row *inside* a stack, where the seat has to be reserved
+ * even when the row is empty. A whole control that comes and goes with the
+ * level passes no height and keeps its natural one: it is always mounted, so
+ * the space is reserved by definition, and only its ink answers to `open`.
+ * That is what a dial arriving looks like — the same rise the resolution row
+ * has always used, rather than a control appearing out of nothing.
  *
  * It does not animate its height to get there. Reanimated drives the view
  * directly on the UI thread, so a layout prop that would reflow the parent
@@ -523,7 +614,7 @@ function Reveal({
   open,
 }: {
   children: React.ReactNode;
-  height: number;
+  height?: number;
   open: boolean;
 }) {
   const reducedMotion = useReducedMotion();
@@ -545,8 +636,18 @@ function Reveal({
   }));
   return (
     <Animated.View
+      // `accessibilityElementsHidden` as well as the pointer guard: a control
+      // that has faded out is gone as far as a finger is concerned, and it has
+      // to be gone for a screen reader too or the dial for a level you are not
+      // on is still in the reading order.
+      accessibilityElementsHidden={!open}
+      importantForAccessibility={open ? 'yes' : 'no-hide-descendants'}
       pointerEvents={open ? 'box-none' : 'none'}
-      style={[styles.reveal, { height }, style]}
+      style={[
+        styles.reveal,
+        height === undefined ? null : { height },
+        style,
+      ]}
     >
       {children}
     </Animated.View>
@@ -560,7 +661,21 @@ const styles = StyleSheet.create({
     right: space.lg,
     top: space.xl,
   },
-  title: { marginTop: space.sm },
+  /*
+   * Seats for the animated lines. Each is exactly the height the engine lays
+   * its line out at, so the header's rhythm is the same as it was with RN text
+   * and nothing reflows while a morph is in the air.
+   */
+  eyebrowSlot: { height: OVERLAY_KNOBS.EYEBROW_ROW_PX },
+  titleSlot: {
+    height: OVERLAY_KNOBS.TITLE_ROW_PX,
+    marginTop: space.sm,
+  },
+  /** The count takes the room the action does not, and morphs inside it. */
+  metaCount: { flex: 1 },
+  /** Fixed, for the reason `ACTION_WIDTH_PX` gives. */
+  actionSlot: { width: OVERLAY_KNOBS.ACTION_WIDTH_PX },
+  hintSlot: { height: OVERLAY_KNOBS.EYEBROW_ROW_PX, marginTop: space.md },
   // `ORDER` names the dial beside it, the way `WEEK · MONTH · YEAR` sits under
   // the axis it belongs to. Drawn in `line` rather than `faint`: it is a label
   // for a control, not a value, and it must not compete with the words it names.
@@ -571,7 +686,6 @@ const styles = StyleSheet.create({
   metaRow: {
     alignItems: 'flex-end',
     flexDirection: 'row',
-    justifyContent: 'space-between',
     marginTop: space.sm,
   },
   // No `gap`: a flex gap is spent even on a zero-height child, so a collapsed
@@ -600,7 +714,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: space.lg,
   },
-  hint: { marginTop: space.md, textAlign: 'center' },
   tab: {
     alignItems: 'center',
     alignSelf: 'center',

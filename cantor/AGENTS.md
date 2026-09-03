@@ -63,7 +63,11 @@ The shared text engine exposes several reusable variants; preserve the choice at
 the call site rather than replacing one behavior globally:
 
 - `write`: Manim-style `DrawBorderThenFill`; exact glyph outlines trace on with
-  controlled letter lag, then resolve into filled real glyphs.
+  controlled letter lag, then resolve into filled real glyphs. It runs both
+  ways: a `write` line whose text becomes empty *erases* — the same models on a
+  reversed clock — so chrome arrives and departs by one gesture. That needs the
+  slot kept mounted with `''` and given a stable width; see
+  `src/motion/README.md`.
 - `transform`: a plain whole-object Manim transform. Glyph families align in
   reading order and all geometry uses one shared alpha—no matching cascade.
 - `matching`: the original hierarchical character-matching gesture. Words glide,
