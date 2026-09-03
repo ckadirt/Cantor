@@ -54,6 +54,76 @@ export const WRITE_STROKE_PX = 1.25;
 
 export type TextMotionVariant = 'transform' | 'matching' | 'crossfade';
 export type TextAppearance = 'write' | 'fade' | 'none';
+/**
+ * What a committed text change actually is.
+ *
+ * `settled` is no motion at all, `write` and `erase` are the two directions of
+ * DrawBorderThenFill, and the rest are the morphing variants.
+ */
+export type TextMotionKind = 'settled' | 'write' | 'erase' | TextMotionVariant;
+
+/**
+ * Whether a committed model has to be rebuilt because the caller changed
+ * `variant` under it.
+ *
+ * The companion to `chooseTextKind`, and it lives beside it because the two
+ * have to agree on one thing: which kinds are a *resting* state. `settled`,
+ * `write` and `erase` are not variants — they are what an appearance produced —
+ * so a model holding one of them is finished and must be left alone. Reading
+ * that list as "everything except write and settled is a variant" is how
+ * `erase` produced an infinite render loop: the model kept failing to equal a
+ * variant it was never going to equal, so every render rebuilt it.
+ */
+export function textVariantChanged(
+  kind: TextMotionKind,
+  variant: TextMotionVariant,
+  reduced: boolean,
+): boolean {
+  'worklet';
+  if (reduced) return false;
+  if (kind === 'settled' || kind === 'write' || kind === 'erase') return false;
+  return kind !== variant;
+}
+
+/**
+ * Which gesture a text change deserves, decided before any geometry is built.
+ *
+ * A planner rather than a branch inside the component, because the answer is a
+ * function of five booleans and one of them — `erase` — is easy to get subtly
+ * wrong: a line that writes itself on has to unwrite itself, but only when
+ * there is ink on screen to take back, and only when the caller asked for
+ * `write` in the first place. A caller that asked to fade still fades.
+ *
+ * `retarget` means the previous model is usable as a source: same width, same
+ * font, so its live positions can be captured. Without it there is nothing to
+ * morph *from*, which is why a first mount either writes, fades, or is settled.
+ */
+export function chooseTextKind(plan: {
+  appearance: TextAppearance;
+  variant: TextMotionVariant;
+  reduced: boolean;
+  /** Whether the outgoing model can be captured as this one's source. */
+  retarget: boolean;
+  /** Glyphs captured from the outgoing model; empty when nothing was drawn. */
+  fromCount: number;
+  /** Glyphs in the incoming layout; zero when the text has gone away. */
+  toCount: number;
+}): TextMotionKind {
+  'worklet';
+  const { appearance, variant, reduced, retarget, fromCount, toCount } = plan;
+  if (reduced) return 'crossfade';
+  if (appearance === 'write') {
+    if (toCount > 0 && (!retarget || fromCount === 0)) return 'write';
+    if (toCount === 0 && retarget && fromCount > 0) return 'erase';
+  }
+  if (!retarget) {
+    if (appearance === 'none') return 'settled';
+    if (appearance === 'fade') return 'crossfade';
+  }
+  if (variant === 'crossfade') return 'crossfade';
+  if (variant === 'transform') return 'transform';
+  return 'matching';
+}
 
 /** A laid-out character: glyph ids + offsets, pen origin at the baseline. */
 export type CharBox = {
@@ -201,7 +271,7 @@ export function layoutText(
   letterSpacing: number,
   maxWidth: number,
   lineHeight: number,
-  align: 'left' | 'center' = 'left',
+  align: 'left' | 'center' | 'right' = 'left',
 ): CharBox[] {
   if (text.length === 0) {
     return [];
@@ -255,9 +325,16 @@ export function layoutText(
       pen += spaceW;
     }
   });
-  if (align === 'center') {
-    // Shift each baseline row so its ink centres inside maxWidth. Every box
-    // carries one trailing letterSpacing; the last one is not visible ink.
+  if (align !== 'left') {
+    // Shift each baseline row so its ink sits centred or flush right inside
+    // maxWidth. Every box carries one trailing letterSpacing; the last one is
+    // not visible ink, so it does not count towards the row's width.
+    //
+    // `right` exists for chrome that is pinned to an edge: a container sized
+    // to its longest possible string keeps a stable width, which is what lets
+    // a line erase itself — a container measured to the text collapses to zero
+    // width when the text goes away, and a zero-width slot builds no model at
+    // all, so the outgoing ink would simply stay on screen.
     const rows = new Map<number, CharBox[]>();
     for (const box of boxes) {
       const row = rows.get(box.y);
@@ -270,7 +347,8 @@ export function layoutText(
     for (const row of rows.values()) {
       const last = row[row.length - 1];
       const rowWidth = last.x + last.w - letterSpacing;
-      const dx = Math.max(0, (maxWidth - rowWidth) / 2);
+      const free = Math.max(0, maxWidth - rowWidth);
+      const dx = align === 'center' ? free / 2 : free;
       for (const box of row) {
         box.x += dx;
       }

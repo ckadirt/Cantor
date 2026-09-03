@@ -11,7 +11,9 @@
  *    find their counterparts and travel independently;
  *  - crossfade: simultaneous old/new exchange, also forced by reduced motion;
  *  - write appearance: Manim Write / DrawBorderThenFill — each exact glyph
- *    outline traces on, then resolves into its fill, with Manim's glyph lag.
+ *    outline traces on, then resolves into its fill, with Manim's glyph lag;
+ *    and its other direction, erase, which is the same models on a reversed
+ *    clock, so a line departs the way it arrived.
  *
  * One Canvas avoids a forest of RN Text views. No completion callback mutates
  * the tree: animated outlines hand ownership to mounted Glyphs on the UI
@@ -49,6 +51,7 @@ import {
   buildCrossfadeFlights,
   buildFlights,
   buildTransformFlights,
+  chooseTextKind,
   DEFAULT_TEXT_TRANSFORM_MS,
   ENTER_RISE,
   ENTER_START,
@@ -66,11 +69,21 @@ import {
   type Flights,
   type MorphPair,
   type TextAppearance,
+  textVariantChanged,
+  type TextMotionKind,
   type TextMotionVariant,
 } from './text';
 
 type Glyph = { id: number; pos: { x: number; y: number } };
-type ModelKind = 'settled' | 'write' | TextMotionVariant;
+/**
+ * `erase` is `write` run backwards: the same DrawBorderThenFill models, built
+ * from the ink that is leaving, on a reversed clock. A line that wrote itself
+ * on has to be able to unwrite itself, or half the chrome arrives by drawing
+ * and departs by fading and the two do not read as the same object.
+ *
+ * Which one a change deserves is `chooseTextKind`'s answer, not this file's.
+ */
+type ModelKind = TextMotionKind;
 
 /** A shape-morphing pair, its outline paths prebuilt once on the JS thread. */
 type MorphModel = MorphPair & {
@@ -182,12 +195,15 @@ function captureModel(model: Model, t: number): CharBox[] {
   if (model.kind === 'settled') {
     return model.layout;
   }
-  if (model.kind !== 'write') {
+  if (model.kind !== 'write' && model.kind !== 'erase') {
     return captureBoxes(model.flights, t, model.kind === 'matching');
   }
   // Retargeting during Write starts from glyphs with a visible traced portion.
+  // An erase is the same clock read backwards, so the same filter answers it —
+  // interrupting an erase halfway retargets from the ink still on screen.
+  const at = model.kind === 'erase' ? 1 - t : t;
   return model.layout.filter((_, i) => {
-    const phase = writePhase(writeSubAlpha(t, i, model.layout.length));
+    const phase = writePhase(writeSubAlpha(at, i, model.layout.length));
     return Math.max(phase.borderEnd * phase.borderAlpha, phase.fillAlpha) > 0.02;
   });
 }
@@ -603,8 +619,10 @@ function MorphTextImpl({
   if (
     font &&
     width > 0 &&
-    (model?.text !== text || model.width !== width || model.font !== font ||
-      (model.kind !== 'write' && model.kind !== 'settled' && model.kind !== variant && !reduced))
+    (model?.text !== text ||
+      model.width !== width ||
+      model.font !== font ||
+      textVariantChanged(model.kind, variant, reduced))
   ) {
     const lineHeight = charStyle.lineHeight ?? (charStyle.fontSize ?? 14) * 1.35;
     const next = layoutText(
@@ -613,44 +631,52 @@ function MorphTextImpl({
       charStyle.letterSpacing ?? 0,
       width,
       lineHeight,
-      charStyle.textAlign === 'center' ? 'center' : 'left',
+      charStyle.textAlign === 'center'
+        ? 'center'
+        : charStyle.textAlign === 'right'
+        ? 'right'
+        : 'left',
     );
     const retarget = model !== null && model.width === width && model.font === font;
     const captureT = progress ? progress.value : model?.clock.value ?? 1;
     const prev = retarget && model ? captureModel(model, captureT) : [];
-    const shouldWrite =
-      !reduced && appearance === 'write' && next.length > 0 && (!retarget || prev.length === 0);
-
-    let kind: ModelKind;
-    let flights: Flights;
-    if (shouldWrite) {
-      kind = 'write';
-      flights = buildCrossfadeFlights([], next);
-    } else if (!retarget && appearance === 'none' && !reduced) {
-      kind = 'settled';
-      flights = buildCrossfadeFlights([], next);
-    } else if (reduced || variant === 'crossfade' || (!retarget && appearance === 'fade')) {
-      kind = 'crossfade';
-      flights = buildCrossfadeFlights(prev, next);
-    } else if (variant === 'transform') {
-      kind = 'transform';
-      flights = buildTransformFlights(prev, next);
-    } else {
-      kind = 'matching';
-      flights = buildFlights(prev, next, width);
-    }
+    const kind = chooseTextKind({
+      appearance,
+      variant,
+      reduced,
+      retarget,
+      fromCount: prev.length,
+      toCount: next.length,
+    });
+    const flights: Flights =
+      kind === 'write' || kind === 'settled'
+        ? buildCrossfadeFlights([], next)
+        : // Built from the capture, so interrupting a write halfway erases
+          // what is actually on screen rather than the whole line.
+          kind === 'erase'
+        ? buildCrossfadeFlights(prev, [])
+        : kind === 'transform'
+        ? buildTransformFlights(prev, next)
+        : kind === 'matching'
+        ? buildFlights(prev, next, width)
+        : buildCrossfadeFlights(prev, next);
 
     const morphModels = buildMorphModels(font, flights);
     const transformLayers = kind === 'transform' ? buildTransformLayers(morphModels) : [];
-    const write = kind === 'write'
-      ? buildWriteModels(font, next)
-      : { models: [], fallback: [] };
+    const write =
+      kind === 'write'
+        ? buildWriteModels(font, next)
+        : kind === 'erase'
+        ? buildWriteModels(font, prev)
+        : { models: [], fallback: [] };
     genRef.current++;
     setModel({
       text,
       width,
       font,
-      layout: next,
+      // `erase` draws the outgoing line, so that is the layout its write
+      // fallback indexes into. Every other kind draws the incoming one.
+      layout: kind === 'erase' ? prev : next,
       kind,
       flights,
       morphModels,
@@ -661,13 +687,27 @@ function MorphTextImpl({
       enterGlyphs: toGlyphs(kind === 'settled' ? next : flights.enters),
       clock: bornClock(kind === 'settled' ? 1 : 0),
       animate: kind !== 'settled',
-      runTime: kind === 'write' ? (writeDuration ?? writeDurationMs(next.length)) : duration,
+      runTime:
+        kind === 'write'
+          ? writeDuration ?? writeDurationMs(next.length)
+          : kind === 'erase'
+          ? writeDuration ?? writeDurationMs(prev.length)
+          : duration,
       gen: genRef.current,
     });
   }
 
   // Safe narrowing: everything downstream only ever reads tt.value.
   const tt = (progress ?? model?.clock ?? idle) as SharedValue<number>;
+  /**
+   * The same clock, backwards, for the erase.
+   *
+   * Built unconditionally — a hook cannot be — and read only by an erasing
+   * model. This is what makes unwriting the *same* gesture as writing rather
+   * than a second one that has to be kept in step with it: one set of
+   * DrawBorderThenFill models, one lag budget, played the other way.
+   */
+  const reversed = useDerivedValue(() => 1 - tt.value);
 
   // No completion commit: all outline→glyph ownership changes stay UI-thread-only.
   useEffect(() => {
@@ -688,13 +728,13 @@ function MorphTextImpl({
       accessibilityLabel={text}>
       {model && font && (
         <Canvas style={StyleSheet.absoluteFill}>
-          {model.kind === 'write' ? (
+          {model.kind === 'write' || model.kind === 'erase' ? (
             <>
               {model.writeModels.map((writeModel, i) => (
                 <WriteGlyph
                   key={`${model.gen}#write${i}`}
                   model={writeModel}
-                  tt={tt}
+                  tt={model.kind === 'erase' ? reversed : tt}
                   font={font}
                   color={color}
                 />
@@ -705,7 +745,7 @@ function MorphTextImpl({
                   box={box}
                   index={model.layout.indexOf(box)}
                   count={model.layout.length}
-                  tt={tt}
+                  tt={model.kind === 'erase' ? reversed : tt}
                   font={font}
                   color={color}
                 />

@@ -107,6 +107,26 @@ exact outline traces on (stroke, first half), then resolves into its fill
 (second half), cascading with Manim's lag ratio. Duration follows ManimGL's
 rule: 1 s under 15 glyphs, 2 s at or above (`writeDurationMs`).
 
+It also runs **backwards**. A `write` line whose text becomes `''` erases
+itself: the same DrawBorderThenFill models, built from the ink that is on
+screen, on a reversed clock. So a line arrives and departs by the same gesture
+instead of drawing itself on and dissolving off. Two consequences at call
+sites:
+
+- **Keep the slot mounted and pass `''`.** An unmounted component has no
+  outgoing ink and no width, so it cannot erase — the word would simply vanish.
+- **Give the slot a stable width.** A container measured to its text collapses
+  to zero when the text goes away, and a zero-width slot builds no model at
+  all. Size it to the longest string it will ever hold; `charStyle.textAlign`
+  takes `'left' | 'center' | 'right'`, so an edge-pinned line still sits where
+  it did.
+
+`chooseTextKind` is the one place that decides which gesture a change gets, and
+`textVariantChanged` is the one place that decides whether a committed model is
+stale. Both are pure and tested; keep them in step — reading "anything that is
+not `write` or `settled` must be a variant" is what made `erase` re-render
+forever.
+
 ---
 
 ## House rules (breaking these causes the bugs this engine was built to kill)
