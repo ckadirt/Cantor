@@ -1,5 +1,6 @@
 import {
   LAYOUT_KNOBS,
+  SHELF_BOX,
   SHELF_KNOBS,
   containToSeat,
   isShelfDistance,
@@ -10,6 +11,8 @@ import {
   rubberBand,
   seatAfterRelease,
   seatCameraBounds,
+  shelfBoxInterior,
+  shelfRowGapWorld,
   shelfSeats,
   type FieldEntity,
 } from '..';
@@ -65,9 +68,9 @@ describe('seats', () => {
       );
       expect(seat.top).toBe(Math.min(...members.map(m => m.targetY)));
       expect(seat.bottom).toBe(Math.max(...members.map(m => m.targetY)));
-      // Four songs, `SONG_GAP_WORLD` apart.
+      // Four songs, one gathered pitch apart.
       expect(seat.bottom - seat.top).toBeCloseTo(
-        3 * LAYOUT_KNOBS.SONG_GAP_WORLD,
+        3 * shelfRowGapWorld(layout.fitScale),
       );
     }
   });
@@ -128,21 +131,34 @@ describe('the rubber band', () => {
 });
 
 describe('camera bounds inside a seat', () => {
-  it('keeps the end rows a margin clear of the edges', () => {
+  it('rests the end rows on the box\u2019s inner edges', () => {
     const layout = threeWeeks();
     const seat = shelfSeats(layout)[0];
     // A tall column: a range only exists when the run is longer than the screen
-    // it is read through, less the margin at each end.
+    // it is read through, less the inset at each end.
     const scale = (viewport.height * 2) / (seat.bottom - seat.top);
     const bounds = seatCameraBounds(seat, viewport, scale);
-    const margin = (viewport.height * SHELF_KNOBS.END_MARGIN_RATIO) / scale;
+    const interior = shelfBoxInterior();
     const half = viewport.height / 2 / scale;
-    expect(bounds.min).toBeCloseTo(seat.top + half - margin);
-    expect(bounds.max).toBeCloseTo(seat.bottom - half + margin);
-    // At the top bound the screen's edge sits exactly one margin above the
-    // first row, and at the bottom bound one margin below the last.
-    expect(bounds.min - half).toBeCloseTo(seat.top - margin);
-    expect(bounds.max + half).toBeCloseTo(seat.bottom + margin);
+    expect(bounds.min).toBeCloseTo(seat.top + half - interior.top / scale);
+    expect(bounds.max).toBeCloseTo(seat.bottom - half + interior.foot / scale);
+    // At the top bound the first row sits exactly the box's top inset below the
+    // screen's edge, and at the bottom bound its foot inset above it.
+    expect((seat.top - (bounds.min - half)) * scale).toBeCloseTo(interior.top);
+    expect((bounds.max + half - seat.bottom) * scale).toBeCloseTo(
+      interior.foot,
+    );
+  });
+
+  it('leaves a rested end row clear of the paper it fades into', () => {
+    // The two numbers the box is made of, said once more from the outside: a
+    // row that has come to rest is a whole row below the dissolve, not inside
+    // it, or the first thing you read on arriving at a shelf is half-drawn.
+    const interior = shelfBoxInterior();
+    expect(interior.top).toBeGreaterThan(SHELF_BOX.TOP_PX + SHELF_BOX.FADE_PX);
+    expect(interior.foot).toBeGreaterThan(
+      SHELF_BOX.FOOT_PX + SHELF_BOX.FADE_PX,
+    );
   });
 
   it('collapses to the middle when the column is shorter than the screen', () => {

@@ -9,7 +9,8 @@ import type { Placement, Point } from './types';
  * - **Bloomed** — a phyllotaxis packing around the cluster centre. This is what
  *   L0 shows: a shelf reads as a body of work rather than as a bulleted list.
  * - **Gathered** — the shared-x column `layoutField` computes, one song per
- *   `SONG_GAP_WORLD`.
+ *   `shelfRowGapWorld(fitScale)`: a world gap chosen so that the column reads
+ *   at one fixed *screen* pitch at L1, whatever FIT the field has.
  *
  * The gather is not decoration, it is a requirement of the row representation.
  * `FieldCanvas` draws a row as a fixed 240×30 *screen* box at the mark's own
@@ -34,9 +35,10 @@ export const BLOOM_KNOBS = {
   /**
    * Radius per √index, in world units. A phyllotaxis packing puts one point in
    * every πc² of area, so neighbours land about c·√π apart — 26.6 at 15, which
-   * is `LAYOUT_KNOBS.SONG_GAP_WORLD`. The bloom therefore reads at the spacing
-   * the column already proved legible, without importing it and closing a
-   * layout → bloom → layout cycle.
+   * is `LAYOUT_KNOBS.BLOOM_GAP_WORLD`, the rank spacing this displaces. Both
+   * are world constants and neither reads FIT: the bloom is what FIT is
+   * measured *from*, so a bloom that answered to FIT would close a
+   * layout → bloom → layout cycle. Only the gathered column answers to it.
    */
   SPACING_WORLD: 15,
   /**

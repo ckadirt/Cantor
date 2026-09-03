@@ -9,8 +9,19 @@ export const REPRESENTATION_WINDOWS = {
   grain: [178, 467, Number.POSITIVE_INFINITY, Number.POSITIVE_INFINITY],
 } as const;
 
-/** Shelf labels stay visible longer than marks; this is not a representation. */
-export const SHELF_LABEL_WINDOW = [0, 0, 5.5, 11] as const;
+/**
+ * The cluster's own name on the canvas. Not a representation: a label is what
+ * the field calls a group, not what a song looks like from here.
+ *
+ * It leaves on the dot band's exit, because it is the same hand-over said
+ * twice. Crossing `LEVEL_BOUNDARIES.field` the dot becomes a row and the
+ * *header* becomes the group's name — it reads the seat the camera is nearest
+ * from that point on — so a label that outlived the boundary was the shelf's
+ * title written twice on one screen, once in mono over the list and once in
+ * the header directly above it. Below the boundary nothing has taken the name
+ * yet, which is why the fade starts there and not before.
+ */
+export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
 
 /**
  * Whether the native renderer knows everything the field shows here.

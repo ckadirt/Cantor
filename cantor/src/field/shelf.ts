@@ -33,12 +33,6 @@ export const SHELF_KNOBS = {
    */
   OVERSCROLL_RATIO: 1 / 3,
   /**
-   * How much screen stays between an end row and the edge it is nearest, as a
-   * fraction of the viewport height. The chrome owns roughly the top 150 px and
-   * the dials the foot, so a fifth keeps the first and last rows clear of both.
-   */
-  END_MARGIN_RATIO: 1 / 5,
-  /**
    * The pull needed to leave a seat sideways, as a fraction of the gap to the
    * neighbour. Below this the camera returns; above it, it is a move.
    *
@@ -48,6 +42,66 @@ export const SHELF_KNOBS = {
    */
   ESCAPE_FRACTION: 1 / 3,
 } as const;
+
+/**
+ * KNOBS — the box the shelf is read inside, in screen pixels from the edges of
+ * the field.
+ *
+ * At L0 a mark passing behind the header is a mark passing behind the header:
+ * the chrome names the whole field, the marks are dots, and the surface reading
+ * as one continuous plane is worth more than the collision. At L1 the field is
+ * a list of *names* and the chrome is a header of *words*, and the two were
+ * being drawn in the same pixels — a song's title crossing the shelf's title,
+ * `DOWNLOADED · 281 KB` crossing `DOWNLOAD ALL · 5 MB`. Text behind text is not
+ * a layer, it is noise.
+ *
+ * So at L1 the shelf gets a box: paper over the chrome's own ground, a short
+ * dissolve below it, and the column's travel stopped at the dissolve's inner
+ * edge. The camera's ends and the paper's edges are the same two numbers, which
+ * is the whole reason they are declared here rather than in the renderer — a
+ * box whose floor and whose scroll stop disagree is a list that rests
+ * half-faded.
+ */
+export const SHELF_BOX = {
+  /**
+   * How deep the chrome's own ground is. The header stacks eyebrow, title,
+   * count and the order dial down from `space.xl`, and its last hairline lands
+   * near 156.
+   */
+  TOP_PX: 158,
+  /** The foot's ground: the hint line and the inset it sits at. */
+  FOOT_PX: 62,
+  /**
+   * How far a row has to dissolve before it reaches that ground.
+   *
+   * A hard edge would cut glyphs in half, which is a different ugliness from
+   * the one this removes. Roughly a row's own height: long enough to read as
+   * the list going under something, short enough that no row is ambiguous for
+   * long.
+   */
+  FADE_PX: 40,
+  /**
+   * Half a row, give or take, kept between a *rested* end row and the fade.
+   *
+   * The bounds below are computed for a placement's point, and a row is drawn
+   * around that point rather than below it. Without this the first row of a
+   * shelf would come to rest with its title inside the dissolve.
+   */
+  ROW_CLEARANCE_PX: 16,
+} as const;
+
+/**
+ * The box's interior, in screen pixels from the top and bottom edges: where an
+ * end row is allowed to come to rest.
+ */
+export function shelfBoxInterior(): {
+  readonly top: number;
+  readonly foot: number;
+} {
+  'worklet';
+  const clear = SHELF_BOX.FADE_PX + SHELF_BOX.ROW_CLEARANCE_PX;
+  return { top: SHELF_BOX.TOP_PX + clear, foot: SHELF_BOX.FOOT_PX + clear };
+}
 
 /** Where one cluster's column stands, in world units. */
 export type ShelfSeat = Readonly<{
@@ -155,10 +209,13 @@ export function rubberBand(offset: number, limit: number): number {
  * The range of camera `y` that keeps the column on the screen, in world units.
  *
  * List semantics rather than a box around the content: at `min` the first row
- * sits an end margin below the top edge, at `max` the last row sits the same
- * margin above the bottom edge. A column shorter than the screen has no range
- * at all — the two bounds cross — and the honest answer there is its middle,
- * which is also where `levelCameraTarget` seats the camera when you descend.
+ * rests on the box's inner top edge, at `max` the last row rests on its inner
+ * foot. A column shorter than the screen has no range at all — the two bounds
+ * cross — and the honest answer there is its middle, which is also where
+ * `levelCameraTarget` seats the camera when you descend.
+ *
+ * The two ends are not the same number because the two ends of the screen are
+ * not the same: the header is four lines deep and the foot is one.
  */
 export function seatCameraBounds(
   seat: ShelfSeat,
@@ -167,12 +224,12 @@ export function seatCameraBounds(
 ): { readonly min: number; readonly max: number } {
   'worklet';
   const halfHeight = viewport.height / 2 / scale;
-  const margin = (viewport.height * SHELF_KNOBS.END_MARGIN_RATIO) / scale;
-  // At `min` the screen's top edge sits one margin above the first row, so the
-  // camera — which is half a screen below whatever is at that edge — is the
-  // first row plus half a screen, less the margin. At `max`, the mirror of it.
-  const min = seat.top + halfHeight - margin;
-  const max = seat.bottom - halfHeight + margin;
+  const interior = shelfBoxInterior();
+  // At `min` the first row sits `interior.top` pixels below the screen's top
+  // edge, so the camera — half a screen below whatever is at that edge — is the
+  // first row plus half a screen, less that inset. At `max`, the mirror of it.
+  const min = seat.top + halfHeight - interior.top / scale;
+  const max = seat.bottom - halfHeight + interior.foot / scale;
   if (min > max) {
     const middle = (seat.top + seat.bottom) / 2;
     return { min: middle, max: middle };

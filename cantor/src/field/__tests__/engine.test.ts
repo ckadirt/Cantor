@@ -4,6 +4,8 @@ import {
   DATE_RESOLUTIONS,
   HIT_TEST_KNOBS,
   LAYOUT_KNOBS,
+  LEVEL_BOUNDARIES,
+  LEVEL_SCALE_RATIOS,
   bloomOffset,
   bloomedTargetPoint,
   boxCenter,
@@ -140,9 +142,13 @@ describe('representation bands', () => {
     },
   );
 
-  it('keeps the shelf-label alpha separate from representation alpha', () => {
-    expect(shelfLabelAlpha(5.5, 1)).toBe(1);
-    expect(shelfLabelAlpha(11, 1)).toBe(0);
+  it('hands the cluster\u2019s name to the header at the shelf boundary', () => {
+    // Full while the field is still a map of dots, gone by the time the rows
+    // are legible: past `LEVEL_BOUNDARIES.field` the header names the seat.
+    expect(shelfLabelAlpha(LEVEL_BOUNDARIES.field, 1)).toBe(1);
+    expect(shelfLabelAlpha(LEVEL_SCALE_RATIOS.shelf, 1)).toBe(0);
+    expect(shelfLabelAlpha(2.9, 1)).toBeGreaterThan(0);
+    expect(shelfLabelAlpha(2.9, 1)).toBeLessThan(1);
   });
 });
 
@@ -396,6 +402,76 @@ describe('bloom and gather', () => {
         count,
       );
     }
+  });
+
+  /**
+   * A shelf is a list, and a list reads the same wherever you enter it.
+   *
+   * The pitch used to be a world constant read at `fitScale × 5`, so it was
+   * really a fact about the *map*: the same eight songs measured 92 px apart
+   * cut by month and 204 px apart cut by year, because cutting by year left one
+   * cluster and one cluster fits the screen at more than twice the scale. A
+   * year of work at week resolution went the other way, to 27 px — under the
+   * 30 px row box, which is rows drawn on top of each other.
+   */
+  it('opens every shelf at the same row pitch, whatever the field is', () => {
+    for (const [count, stepDays] of [
+      [8, 5],
+      [8, 40],
+      [23, 1],
+      [200, 1.7],
+      [200, 0],
+    ] as const) {
+      for (const resolution of DATE_RESOLUTIONS) {
+        const layout = layoutField({
+          entities: entities(count, stepDays),
+          arrangement: byDate(resolution),
+          viewport: VIEWPORT,
+        });
+        const shelf = layout.fitScale * LEVEL_SCALE_RATIOS.shelf;
+        const biggest = layout.groups.reduce(
+          (best, group) =>
+            group.entityKeys.length > best.entityKeys.length ? group : best,
+          layout.groups[0],
+        );
+        const column = layout.placements
+          .filter(member => member.groupKey === biggest.key)
+          .map(member => member.targetY)
+          .sort((left, right) => left - right);
+        for (let index = 1; index < column.length; index += 1) {
+          expect((column[index] - column[index - 1]) * shelf).toBeCloseTo(
+            LAYOUT_KNOBS.SHELF_ROW_PITCH_PX,
+            6,
+          );
+        }
+      }
+    }
+  });
+
+  /**
+   * FIT is measured from the bloom and the column is measured from FIT, so the
+   * bloom may never be measured from the column: that loop does not settle, it
+   * runs away. This is the guard on the direction of that dependency — the
+   * bloomed pose is the same shape at any pitch the shelf happens to want.
+   */
+  it('keeps the bloomed pose out of the column\u2019s reach', () => {
+    const layout = layoutField({
+      entities: entities(23, 1),
+      arrangement: byTime,
+      viewport: VIEWPORT,
+    });
+    const wider = layoutField({
+      entities: entities(23, 1),
+      arrangement: byTime,
+      // A different frame is a different FIT and so a different column pitch.
+      viewport: { width: VIEWPORT.width * 0.6, height: VIEWPORT.height },
+    });
+    expect(wider.fitScale).not.toBeCloseTo(layout.fitScale);
+    const bloomed = (field: typeof layout) =>
+      field.placements
+        .map(bloomedTargetPoint)
+        .map(point => `${point.x.toFixed(6)},${point.y.toFixed(6)}`);
+    expect(bloomed(wider)).toEqual(bloomed(layout));
   });
 
   /**
