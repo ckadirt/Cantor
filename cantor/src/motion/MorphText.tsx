@@ -661,6 +661,8 @@ function MorphTextImpl({
         ? buildFlights(prev, next, width)
         : buildCrossfadeFlights(prev, next);
 
+    // eslint-disable-next-line no-console
+    console.log('[mt]', JSON.stringify({ text, kind, retarget, from: prev.length, to: next.length, width, gen: genRef.current + 1 }));
     const morphModels = buildMorphModels(font, flights);
     const transformLayers = kind === 'transform' ? buildTransformLayers(morphModels) : [];
     const write =

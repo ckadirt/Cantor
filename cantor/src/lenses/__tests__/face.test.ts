@@ -6,6 +6,7 @@ import {
   faceSeed,
   type FaceRecipe,
 } from '../face';
+import { NAME_LENS_KNOBS, nameLensFacePath } from '../nameLens';
 
 const recipe = (over: Partial<FaceRecipe> = {}): FaceRecipe => ({
   seed: 41822,
@@ -19,6 +20,30 @@ const maxRadius = (points: readonly { x: number; y: number }[]): number =>
   Math.max(...points.map(point => Math.hypot(point.x, point.y)));
 
 describe('the face', () => {
+  /**
+   * What the L0 → L1 transition rests on.
+   *
+   * The field draws one face across both levels and *scales* it from the mark's
+   * radius to the row's, rather than crossfading two drawings of the same
+   * silhouette. That is only the same shape if the path is linear in its
+   * radius — no constant inset, no radius-dependent detail. If this ever stops
+   * being true the face will visibly deform on the way into a row, and it will
+   * deform silently, so it is asserted here rather than discovered there.
+   */
+  it('is the same silhouette at any radius, scaled', () => {
+    const mark = nameLensFacePath(recipe(), NAME_LENS_KNOBS.MARK_RADIUS_PX);
+    const row = nameLensFacePath(recipe(), NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX);
+    const growth =
+      NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX / NAME_LENS_KNOBS.MARK_RADIUS_PX;
+    expect(row.countPoints()).toBe(mark.countPoints());
+    for (let index = 0; index < mark.countPoints(); index += 1) {
+      const from = mark.getPoint(index);
+      const to = row.getPoint(index);
+      expect(to.x).toBeCloseTo(from.x * growth, 5);
+      expect(to.y).toBeCloseTo(from.y * growth, 5);
+    }
+  });
+
   it('draws the same shape for the same recipe, every time', () => {
     expect(facePoints(recipe())).toEqual(facePoints(recipe()));
   });

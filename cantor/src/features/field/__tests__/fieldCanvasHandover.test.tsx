@@ -11,7 +11,7 @@
  * paint one frame there before snapping back.
  */
 import React from 'react';
-import { Picture, Skia, Text } from '@shopify/react-native-skia';
+import { Path, Picture, Skia, Text } from '@shopify/react-native-skia';
 import ReactTestRenderer from 'react-test-renderer';
 import {
   REPRESENTATION_WINDOWS,
@@ -229,6 +229,60 @@ describe('field canvas L0 to L1 handover', () => {
     expect(drawn).toContain('Song song-a');
     expect(drawn).toContain('ON STUDIO');
     expect(drawn).toContain('GET');
+  });
+
+  /**
+   * Where the pen cannot be had, the name still arrives.
+   *
+   * `Skia.Path.MakeFromText` is native-only, and CanvasKit — which is what runs
+   * here — answers with a stub rather than refusing. A stub handed to a `Path`
+   * node is a blank title, silently, so this pins the fallback: no traced
+   * outline, and the glyphs still drawn.
+   */
+  it('falls back to plain glyphs where no outline can be had', async () => {
+    const recut: FieldRecutModel = {
+      generation: 1,
+      layout: year,
+      flights: planPlacementFlights(month.placements, year.placements, 1),
+      fromFitScale: month.fitScale,
+      toFitScale: year.fitScale,
+      fromCamera: cameraFor(month),
+      toCamera: cameraFor(year),
+      fromGroups: month.groups,
+      animate: true,
+      nativeDriven: true,
+    };
+    const inRowBand = { ...cameraFor(year), scale: year.fitScale * 3 };
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        <FieldCanvas
+          camera={inRowBand}
+          cameraShared={{ value: inRowBand } as never}
+          fitScaleShared={{ value: year.fitScale } as never}
+          layout={year}
+          labelFromGroups={recut.fromGroups}
+          palette={palette}
+          placements={year.placements}
+          nowMs={Date.UTC(2026, 7, 30)}
+          recut={recut}
+          renderFitScale={year.fitScale}
+          transitionGeneration={recut.generation}
+          presentations={presentations}
+          viewport={viewport}
+        />,
+      );
+    });
+    // The pen's own signature: a round-capped stroke, trimmed rather than
+    // faded. Nothing else on this canvas is drawn that way.
+    expect(
+      renderer.root
+        .findAllByType(Path)
+        .filter(node => node.props.strokeCap === 'round'),
+    ).toHaveLength(0);
+    expect(
+      renderer.root.findAllByType(Text).map(node => node.props.text as string),
+    ).toContain('Song song-a');
   });
 
   it('holds the record camera level with the live one while L0 owns the canvas', async () => {

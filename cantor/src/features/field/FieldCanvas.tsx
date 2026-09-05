@@ -30,9 +30,11 @@ import {
   REPRESENTATION_WINDOWS,
   SHELF_BOX,
   bandAlphaAt,
+  faceArrival,
   gatherFraction,
   isNativeDrawnDistance,
   placementPoint,
+  nameArrival,
   representationAlphas,
   shelfLabelAlpha,
   smootherstep,
@@ -66,6 +68,7 @@ import {
 } from '../../lenses';
 import { bornClock } from '../../motion/clock';
 import { useMorphFont } from '../../motion/fonts';
+import { layoutText, writePhase, writeSubAlpha } from '../../motion/text';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
@@ -167,6 +170,38 @@ const FIELD_CANVAS_KNOBS = {
   // A face is an outline, not a blob: hairline everywhere, per the house rule.
   FACE_STROKE_PX: 1,
 } as const;
+
+/*
+ * The L0 → L1 gesture, as three numbers the name lens already implies.
+ *
+ * Not knobs: they are `NAME_LENS_KNOBS` read once so a worklet does not divide
+ * on every frame, and changing them here would only make the moving face
+ * disagree with the face the picture draws at the same distance.
+ */
+/** KNOBS — how a mark's name is drawn on, where `bands.ts` says when. */
+const ROW_ARRIVAL_KNOBS = {
+  /**
+   * The pen's width for a row's title, in pixels.
+   *
+   * `WRITE_STROKE_PX` is 1.25, which is right for the chrome's 26 px display
+   * title and far too heavy here: a row's title is 15 px, and at that size a
+   * 1.25 px outline closes its counters and the trace reads as bold text
+   * appearing rather than as a line being drawn. This is that stroke at this
+   * type's own scale.
+   */
+  TRACE_STROKE_PX: 0.7,
+} as const;
+
+/** The row's face over the mark's. `nameLensFacePath` is linear in its radius,
+ *  so this is a scale rather than a second path: 9 / 7.5. */
+const FACE_GROWTH =
+  NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX / NAME_LENS_KNOBS.MARK_RADIUS_PX;
+const MARK_RING_RADIUS_PX = nameLensRingRadius(
+  NAME_LENS_KNOBS.MARK_RADIUS_PX,
+);
+const ROW_RING_RADIUS_PX = nameLensRingRadius(
+  NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
+);
 
 type Props = {
   layout: FieldLayout;
@@ -1261,11 +1296,63 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
  * two functions the lens calls, because a row that changed shape when the
  * renderer changed would be a different row.
  */
+/**
+ * A line of text as one exact outline per glyph, at the baseline it is drawn on.
+ *
+ * One path per letter and not one per line, because the pen is per letter:
+ * `Write` is `DrawBorderThenFill` *with a lag ratio*, and a lag needs something
+ * to lag between. It is also what makes the trace affordable — see the pen in
+ * `NativePlacementFlight`.
+ *
+ * `layoutText` walks the string with the same advances `SkFont.measureText`
+ * accumulates, which is what the `Text` node draws with, so the letter traced
+ * at `x` and the letter that replaces it are the same ink in the same place —
+ * the whole reason DrawBorderThenFill can hand over without a seam. Spaces
+ * carry no box and so no pen stroke; Manim counts the same family.
+ *
+ * The answer is *checked* rather than trusted. Only native Skia implements
+ * `Path.MakeFromText`; CanvasKit — which is what Jest runs — neither implements
+ * it nor refuses, it answers with a stub that is not a path at all. Handing
+ * that to a `Path` node is a blank title rather than an error, so anything
+ * without a path's own method is treated as no outline, and the row falls back
+ * to fading its glyphs in the way it did before it could write.
+ */
+function titleTracePaths(
+  text: string,
+  typeface: NonNullable<ReturnType<typeof useMorphFont>>,
+  x: number,
+  baselineY: number,
+): readonly SkPath[] | null {
+  if (text.length === 0) return null;
+  const paths: SkPath[] = [];
+  // One line, always: the title is already cut to its column by `fitText`, so
+  // there is nothing left for a wrap to do.
+  for (const box of layoutText(text, typeface, 0, Infinity, 0)) {
+    let path: SkPath | null;
+    try {
+      path = Skia.Path.MakeFromText(box.ch, x + box.x, baselineY, typeface);
+    } catch {
+      return null;
+    }
+    if (path == null || typeof path.toSVGString !== 'function') return null;
+    paths.push(path);
+  }
+  return paths.length === 0 ? null : paths;
+}
+
 type NativeRowModel = Readonly<{
-  facePath: SkPath;
   action: string | null;
   actionX: number;
   title: string;
+  /**
+   * The title's exact glyph outlines, one per letter, at the baseline and the
+   * x the row draws each of them on.
+   *
+   * What the name is traced from on the way in. Null where Skia cannot give an
+   * outline — CanvasKit has no `MakeFromText` — and the caller falls back to
+   * fading the real glyphs, which is what the row did before it could write.
+   */
+  titleTrace: readonly SkPath[] | null;
   titleAlpha: number;
   meta: string;
 }>;
@@ -1291,11 +1378,17 @@ function nativeRowModel(
       ? rowRight
       : rowRight - actionWidth - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
   const column = titleRight - titleLeft;
+  const title = fitText(presentation.song.title, displayFont, column);
   return {
-    facePath: nameLensFacePath(recipe, NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX),
     action,
     actionX: rowRight - actionWidth,
-    title: fitText(presentation.song.title, displayFont, column),
+    title,
+    titleTrace: titleTracePaths(
+      title,
+      displayFont,
+      titleLeft,
+      NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX,
+    ),
     // A song that is not on the phone says so twice: in the weight of its face
     // and in the weight of its name.
     titleAlpha:
@@ -1318,6 +1411,49 @@ function nativeRowModel(
       column,
     ),
   };
+}
+
+/**
+ * One letter under the pen.
+ *
+ * `start`/`end` on a `Path` is `VMobject.pointwise_become_partial`: the stroke
+ * grows *along* the outline, through the letter's own curves, which is the
+ * whole difference between writing and revealing. The letter's place in the
+ * line is its place in the cascade, and `writeSubAlpha` is the engine's own
+ * `Animation.get_sub_alpha` — the same lag `Write` uses everywhere else.
+ *
+ * One mapper, not four: the stroke's alpha and the hand-off to real glyphs are
+ * the line's business and live on the group above this. See the pen's comment
+ * in `NativePlacementFlight` for why the fill is line-wide.
+ */
+function TracedGlyph({
+  path,
+  index,
+  count,
+  written,
+  color,
+}: {
+  path: SkPath;
+  index: number;
+  count: number;
+  written: SharedValue<number>;
+  color: SkColor | string;
+}) {
+  const end = useDerivedValue(
+    () => writePhase(writeSubAlpha(written.value, index, count)).borderEnd,
+  );
+  return (
+    <Path
+      path={path}
+      color={color}
+      style="stroke"
+      strokeWidth={ROW_ARRIVAL_KNOBS.TRACE_STROKE_PX}
+      strokeCap="round"
+      strokeJoin="round"
+      start={0}
+      end={end}
+    />
+  );
 }
 
 /**
@@ -1414,82 +1550,219 @@ function NativePlacementFlight({
       Math.min(Math.max(clock.value, 0), 1),
     ),
   );
-  const markOpacity = useDerivedValue(() => {
+  /**
+   * How much of a row this song is, this frame: the row band, alone.
+   *
+   * The one number the whole L0 → L1 gesture is written against. It is not the
+   * row's opacity — the parts of a row *arrive* differently — so it is kept
+   * separate from `rowOpacity` rather than being recovered by dividing it back
+   * out by the owner.
+   */
+  const becomingRow = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
-    return (
-      owner.value *
-      bandAlphaAt(
-        nativeCameraScale(p, recut, cameraShared),
-        nativeFitScale(p, recut, fitScaleShared),
-        REPRESENTATION_WINDOWS.dot,
-      )
+    return bandAlphaAt(
+      nativeCameraScale(p, recut, cameraShared),
+      nativeFitScale(p, recut, fitScaleShared),
+      REPRESENTATION_WINDOWS.row,
     );
   });
-  const rowOpacity = useDerivedValue(() => {
+  /**
+   * The two halves of the gesture, from `ROW_ARRIVAL`: how far the face has
+   * walked to its seat, and how much of the name has been written into the room
+   * it left. Both are the camera's own distance rather than a clock, which is
+   * what makes the whole thing reversible — and what makes the pen the pinch.
+   */
+  const walked = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
-    return (
-      owner.value *
-      bandAlphaAt(
-        nativeCameraScale(p, recut, cameraShared),
-        nativeFitScale(p, recut, fitScaleShared),
-        REPRESENTATION_WINDOWS.row,
-      )
+    return faceArrival(
+      nativeCameraScale(p, recut, cameraShared),
+      nativeFitScale(p, recut, fitScaleShared),
     );
   });
+  const written = useDerivedValue(() => {
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    return nameArrival(
+      nativeCameraScale(p, recut, cameraShared),
+      nativeFitScale(p, recut, fitScaleShared),
+    );
+  });
+  /**
+   * The face's alpha — one face, across both bands.
+   *
+   * The dot and the row used to be two drawings of the same silhouette,
+   * crossfaded: the mark faded out under a second face fading in at a larger
+   * radius and a different x. Two objects where a person sees one, and at the
+   * midpoint both were half transparent, so the shape went pale on its way to
+   * becoming a row. `nameLensFacePath` is exactly linear in its radius, which
+   * means the row's face *is* the mark's face at 1.2× — so there is one path,
+   * one alpha, and the transform below carries it to its seat.
+   *
+   * The two bands overlap through the whole crossing, so their sum holds the
+   * face solid; it can only go out where both go out, which is the level where
+   * the picture takes the canvas back.
+   */
+  const faceOpacity = useDerivedValue(() => {
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    const scale = nativeCameraScale(p, recut, cameraShared);
+    const fitted = nativeFitScale(p, recut, fitScaleShared);
+    const dot = bandAlphaAt(scale, fitted, REPRESENTATION_WINDOWS.dot);
+    return owner.value * Math.min(1, dot + becomingRow.value);
+  });
+  /**
+   * Where that one face sits: the mark's own point at L0, the row's preview
+   * seat at L1, and every point between on the way.
+   */
+  const faceTransform = useDerivedValue(() => {
+    const t = walked.value;
+    return [
+      { translateX: -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * t },
+      { scale: 1 + (FACE_GROWTH - 1) * t },
+    ];
+  });
+  /** A hairline is a hairline at any size, so it is drawn back out of it. */
+  const faceStrokeWidth = useDerivedValue(
+    () =>
+      FIELD_CANVAS_KNOBS.FACE_STROKE_PX /
+      (1 + (FACE_GROWTH - 1) * walked.value),
+  );
+  const ringRadius = useDerivedValue(() => {
+    const t = walked.value;
+    return (
+      MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * t
+    );
+  });
+  const ringCentreX = useDerivedValue(
+    () =>
+      -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked.value,
+  );
+  /**
+   * The metadata, which arrives with the name rather than before it.
+   *
+   * On the row band alone it would fade up under a face that is still crossing
+   * the space it occupies, and the two lines of a row would arrive at two
+   * different times for no reason a person could name.
+   */
+  const rowOpacity = useDerivedValue(() => owner.value * written.value);
+  /*
+   * The name, written on.
+   *
+   * `DrawBorderThenFill` from the motion engine, on the camera's own clock:
+   * `writePhase` is the engine's, so the two halves and where they meet are
+   * the engine's too, and `t` is the row band rather than a timer. That is what
+   * makes it reversible — zoom back out and the fill lifts, the outline comes
+   * back and un-traces itself. One gesture, both directions, and it is the
+   * *camera* holding the pen, which is the only clock a person is driving here.
+   *
+   * `writeSubAlpha` is the engine's too: the per-glyph lag that makes `Write`
+   * out of `DrawBorderThenFill`. It is what a person actually reads as writing
+   * — letters arriving one after another under a moving pen — and without it
+   * the line has no cascade at all.
+   *
+   * This was first built as one line-wide outline revealed through a clip box
+   * that widened, to keep the cost at one rectangle per row. It does not read
+   * as writing: the reveal edge is *straight*, so it cuts letters in half down
+   * a vertical line and uncovers ink that is already fully formed. A mask
+   * passing over finished text, which is what it looked like. Ink has to grow
+   * along the letter's own shape, and that is a trim, not a box.
+   *
+   * The trim is affordable because it is per letter rather than per line.
+   * `SkTrimPathEffect` re-measures the path it is given, but Skia skips the
+   * effect entirely for a path whose `end` is 1 — and with a lag ratio only a
+   * couple of letters are mid-stroke on any frame. A whole-line trim measures
+   * all twenty glyphs every frame, which is the version that cost +4 ms across
+   * eight rows; this measures the two or three the pen is inside.
+   *
+   * The fill is line-wide even so. Manim fills each glyph as its own border
+   * closes, which here would be three mappers a letter on a canvas that mounts
+   * a node set for every song in the library. So the letters hold as outlines
+   * until the last one is closed and the line resolves into real glyphs
+   * together — `writeSubAlpha` at the final letter is exactly when that is.
+   * At 15 px the difference is a fraction of a stroke width; the cascade, which
+   * is what carries the gesture, is per letter where it matters.
+   */
+  const traceCount = row.titleTrace?.length ?? 0;
+  const traceOpacity = useDerivedValue(
+    () =>
+      owner.value *
+      row.titleAlpha *
+      writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
+        .borderAlpha,
+  );
+  const titleOpacity = useDerivedValue(
+    () =>
+      owner.value *
+      row.titleAlpha *
+      writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
+        .fillAlpha,
+  );
+  /** The pre-write behaviour, kept for where an outline cannot be had. */
+  const rowTitleFade = useDerivedValue(
+    () => owner.value * row.titleAlpha * written.value,
+  );
   return (
     <SkiaGroup transform={transform}>
-      <SkiaGroup opacity={markOpacity}>
-        {filled ? (
-          <Path path={markPath} color={color} style="fill" opacity={weight} />
-        ) : null}
-        <Path
-          path={markPath}
-          color={color}
-          style="stroke"
-          strokeWidth={FIELD_CANVAS_KNOBS.FACE_STROKE_PX}
-          opacity={weight}
-        />
+      {/*
+        One face, from the dot to the row. It is the same path throughout —
+        `markPath` — because the row's face is this one at `FACE_GROWTH`.
+      */}
+      <SkiaGroup opacity={faceOpacity}>
+        <SkiaGroup transform={faceTransform}>
+          {filled ? (
+            <Path path={markPath} color={color} style="fill" opacity={weight} />
+          ) : null}
+          <Path
+            path={markPath}
+            color={color}
+            style="stroke"
+            strokeWidth={faceStrokeWidth}
+            opacity={weight}
+          />
+        </SkiaGroup>
+        {/*
+          Outside that group rather than inside it: the ring's radius is the
+          face's extent *plus a gap*, so it is not a multiple of the face and a
+          scale would carry the gap along with it.
+        */}
         {playing ? (
           <Circle
-            cx={0}
+            cx={ringCentreX}
             cy={0}
-            r={nameLensRingRadius(NAME_LENS_KNOBS.MARK_RADIUS_PX)}
+            r={ringRadius}
             color={color}
             style="stroke"
             strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
           />
         ) : null}
       </SkiaGroup>
-      <SkiaGroup opacity={rowOpacity}>
-        <SkiaGroup
-          transform={[{ translateX: -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX }]}
-        >
-          {filled ? (
-            <Path
-              path={row.facePath}
+      {/*
+        The name arrives by being written; the facts about it arrive by fading.
+        A row is one name and two pieces of metadata, and writing all three at
+        once would read as a machine typing rather than as a name being put
+        down.
+      */}
+      {row.titleTrace === null ? null : (
+        <SkiaGroup opacity={traceOpacity}>
+          {row.titleTrace.map((glyph, index) => (
+            <TracedGlyph
+              key={index}
+              path={glyph}
+              index={index}
+              count={traceCount}
+              written={written}
               color={color}
-              style="fill"
-              opacity={weight}
             />
-          ) : null}
-          <Path
-            path={row.facePath}
-            color={color}
-            style="stroke"
-            strokeWidth={FIELD_CANVAS_KNOBS.FACE_STROKE_PX}
-            opacity={weight}
-          />
-          {playing ? (
-            <Circle
-              cx={0}
-              cy={0}
-              r={nameLensRingRadius(NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX)}
-              color={color}
-              style="stroke"
-              strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
-            />
-          ) : null}
+          ))}
         </SkiaGroup>
+      )}
+      <Text
+        text={row.title}
+        x={-NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX}
+        y={NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX}
+        font={displayFont}
+        color={color}
+        opacity={row.titleTrace === null ? rowTitleFade : titleOpacity}
+      />
+      <SkiaGroup opacity={rowOpacity}>
         {row.action === null ? null : (
           <Text
             text={row.action}
@@ -1500,14 +1773,6 @@ function NativePlacementFlight({
             opacity={NAME_LENS_KNOBS.ROW_ACTION_ALPHA}
           />
         )}
-        <Text
-          text={row.title}
-          x={-NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX}
-          y={NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX}
-          font={displayFont}
-          color={color}
-          opacity={row.titleAlpha}
-        />
         <Text
           text={row.meta}
           x={-NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX}
