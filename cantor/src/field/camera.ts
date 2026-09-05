@@ -1,4 +1,4 @@
-import { smootherstep } from './bands';
+import { REPRESENTATION_WINDOWS, smootherstep } from './bands';
 import type {
   Box,
   Camera,
@@ -21,6 +21,42 @@ export const LEVEL_BOUNDARIES = {
   field: 2,
   shelf: 13,
   song: 170,
+} as const;
+
+/**
+ * KNOBS — how a mark is taken apart and put back together as a row, in
+ * multiples of FIT.
+ *
+ * Two windows rather than one, because a mark becoming a row is two things and
+ * they must not happen at once. The face steps aside and grows into the seat
+ * beside the row; *then* the name is written into the room it left. Run
+ * together, the face travels straight through the title — it leaves the mark's
+ * point and its seat is `ROW_PREVIEW_OFFSET_PX` to the left, while the title
+ * begins less than half that far left, so partway through its journey the shape
+ * is sitting on the first letters of the name it is introducing.
+ *
+ * Both are written in the boundaries the zoom model already has, so the gesture
+ * is legible as a sentence about levels rather than as two more tuning numbers:
+ * the mark is seated by the moment the field stops being a map, and the name is
+ * finished ink by the moment you are standing in the shelf.
+ */
+export const ROW_ARRIVAL = {
+  /**
+   * The walk. It starts where the row band starts — the first distance at
+   * which a row is any part of what is on screen — and ends at the level
+   * boundary.
+   */
+  FACE_WALK: [REPRESENTATION_WINDOWS.row[0], LEVEL_BOUNDARIES.field],
+  /**
+   * The writing, from that boundary to the seat.
+   *
+   * It deliberately outruns the row band, which holds at 3.6. Ending there
+   * would give the pen the last fifth of a tapped descent — about 170 ms of the
+   * 700 — and a gesture nobody can see is not a gesture. Ending at the seat
+   * gives it most of the flight, and says something truer: the name finishes as
+   * you land.
+   */
+  NAME_WRITE: [LEVEL_BOUNDARIES.field, LEVEL_SCALE_RATIOS.shelf],
 } as const;
 
 export type FitOptions = Readonly<{
@@ -46,6 +82,31 @@ function assertPositive(value: number, label: string): void {
   if (!Number.isFinite(value) || value <= 0) {
     throw new RangeError(`${label} must be a finite positive number.`);
   }
+}
+
+/** Where a distance sits inside a window of FIT multiples, eased. */
+function arrival(
+  scale: number,
+  fitScale: number,
+  window: readonly [number, number],
+): number {
+  'worklet';
+  if (!(fitScale > 0) || !(scale > 0)) return 0;
+  const span = window[1] - window[0];
+  if (!(span > 0)) return scale / fitScale >= window[1] ? 1 : 0;
+  return smootherstep((scale / fitScale - window[0]) / span);
+}
+
+/** How far the face has walked to the seat beside its row. */
+export function faceArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return arrival(scale, fitScale, ROW_ARRIVAL.FACE_WALK);
+}
+
+/** How much of the row's name has been written, and its metadata arrived. */
+export function nameArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return arrival(scale, fitScale, ROW_ARRIVAL.NAME_WRITE);
 }
 
 export function worldToScreen(
