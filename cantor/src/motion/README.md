@@ -103,8 +103,13 @@ const clock = useSharedValue(0);
 - **`crossfade`** — simultaneous exchange. Also the forced reduced-motion path.
 
 `appearance="write"` is Manim's `Write` / `DrawBorderThenFill`: each glyph's
-exact outline traces on (stroke, first half), then resolves into its fill
-(second half), cascading with Manim's lag ratio. Duration follows ManimGL's
+exact outline traces on (stroke, first half), cascading with Manim's lag ratio,
+and the line then resolves into its fill (second half). The cascade is per
+glyph — that is the gesture — but the resolve is line-wide, read off the last
+glyph's phase, so nothing is filled while the pen is still moving. Manim fills
+each glyph as its own border closes; here that would be three more Reanimated
+bindings *per letter*, and a binding has to be installed from the JS thread
+before the node it feeds moves at all. See `WriteGlyph`. Duration follows ManimGL's
 rule: 1 s under 15 glyphs, 2 s at or above (`writeDurationMs`).
 
 It also runs **backwards**. A `write` line whose text becomes `''` erases
@@ -146,7 +151,15 @@ forever.
 5. **Born clocks, generation keys.** Every committed transition owns a fresh
    `bornClock(start)` and remounts its subtree under a `gen` key so an
    outgoing generation can never paint one frame against a newborn clock.
-   Follow the pattern when adding variants.
+   Follow the pattern when adding variants. **A derived clock counts as part
+   of that subtree.** The erase's `1 - clock` lived in `MorphTextImpl` for a
+   while, one binding shared by every generation: on the commit that replaced
+   an erase with a write it recomputed to `1 - 0` — *fully written* — and the
+   outgoing erase's glyphs, still on the canvas because a commit is not a
+   paint, flashed the finished line back for a frame. It belongs in
+   `WriteScene`, keyed with the nodes that read it, so an outgoing generation
+   keeps reading the clock it was mounted with. Any binding a generation's
+   nodes read must be created inside that generation's keyed component.
 6. **Verb identity is the contract.** `interpolatePaths` silently misdraws if
    from/to verbs diverge. Builders guarantee identity by construction and
    assert it in dev (`assertInterpolatable`); keep both sides of any new
