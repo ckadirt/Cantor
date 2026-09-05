@@ -126,6 +126,26 @@ const OVERLAY_KNOBS = {
    * outgoing word would simply stay on screen. Fixed width, right-aligned ink.
    */
   ACTION_WIDTH_PX: 190,
+  /**
+   * How long the header takes to become the header for the level you moved to.
+   *
+   * One number for every line in it, because the header is one object: the
+   * depth, the name, the count and the bulk action are four readings of a
+   * single change, and four readings that finish at four different times read
+   * as four things happening rather than one.
+   *
+   * It has to be said out loud rather than left to the engine's defaults,
+   * which do not agree with each other. A morph runs for
+   * `DEFAULT_TEXT_TRANSFORM_MS`; a `Write` runs for ManimGL's automatic
+   * duration, which is *two seconds* for a line of fifteen glyphs or more —
+   * right for a title writing itself onto an empty screen, and three times
+   * the length of everything beside it here. `DOWNLOAD ALL · 84 MB` was still
+   * being written long after the title it belongs to had settled.
+   *
+   * 700 is the morph default, so raising this slows the whole header together
+   * rather than pulling the action back out of step with the rest.
+   */
+  HEADER_CHANGE_MS: 700,
 } as const;
 
 /*
@@ -222,12 +242,14 @@ function FieldOverlayImpl({
             text={`L${LEVELS[level].index} · ${LEVELS[level].name}`}
             charStyle={CHROME_STYLES.eyebrow}
             color={pal.muted}
+            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
             style={styles.eyebrowSlot}
           />
           <MatchingText
             text={level === 'shelf' ? groupLabel ?? 'Group' : 'Field'}
             charStyle={CHROME_STYLES.title}
             color={pal.ink}
+            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
             style={styles.titleSlot}
           />
           <View style={styles.metaRow} pointerEvents="box-none">
@@ -242,6 +264,7 @@ function FieldOverlayImpl({
                 )}${offline ? ' · OFFLINE' : ''}`}
                 charStyle={CHROME_STYLES.eyebrow}
                 color={pal.faint}
+                duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
                 style={styles.eyebrowSlot}
               />
             </View>
@@ -270,6 +293,11 @@ function FieldOverlayImpl({
                   text={level === 'shelf' ? shelfAction ?? '' : ''}
                   charStyle={CHROME_STYLES.action}
                   color={pressed ? pal.muted : pal.ink}
+                  // Both, because this slot has two gestures: it writes and
+                  // unwrites on the level change, and morphs in place when the
+                  // shelf's size changes under it while you are standing there.
+                  duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+                  writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
                   style={styles.eyebrowSlot}
                 />
               )}
@@ -281,7 +309,10 @@ function FieldOverlayImpl({
             costs nothing at L0 — it is below everything — and the control
             arrives by coming up into focus rather than by existing suddenly.
           */}
-          <Reveal open={level === 'shelf'}>
+          <Reveal
+            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+            open={level === 'shelf'}
+          >
             <View style={styles.orderRow} pointerEvents="box-none">
               <Text
                 style={[type.eyebrow, styles.orderLabel, { color: pal.line }]}
@@ -610,10 +641,18 @@ function Dial({
  */
 function Reveal({
   children,
+  duration = OVERLAY_KNOBS.RESOLUTION_MS,
   height,
   open,
 }: {
   children: React.ReactNode;
+  /**
+   * Left at the resolution row's own length for a row that answers to the
+   * axis, and given the header's when the thing being revealed is part of the
+   * header becoming another header — a control that settles before the words
+   * around it is the same break as one that settles after them.
+   */
+  duration?: number;
   height?: number;
   open: boolean;
 }) {
@@ -623,11 +662,8 @@ function Reveal({
     const to = open ? 1 : 0;
     amount.value = reducedMotion
       ? to
-      : withTiming(to, {
-          duration: OVERLAY_KNOBS.RESOLUTION_MS,
-          easing: easeSmoother,
-        });
-  }, [amount, open, reducedMotion]);
+      : withTiming(to, { duration, easing: easeSmoother });
+  }, [amount, duration, open, reducedMotion]);
   const style = useAnimatedStyle(() => ({
     opacity: amount.value,
     transform: [

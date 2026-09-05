@@ -108,7 +108,6 @@ type TransformLayerModel = {
 
 type WriteModel = {
   path: SkPath;
-  glyphs: Glyph[];
   index: number;
   count: number;
 };
@@ -124,6 +123,10 @@ type Model = {
   transformLayers: TransformLayerModel[];
   writeModels: WriteModel[];
   writeFallback: CharBox[];
+  /** Every traced outline as one path, for the fill the line resolves into. */
+  writeFill: SkPath | null;
+  /** The real glyphs the fill hands over to, as one run. */
+  writeGlyphs: Glyph[];
   exitGlyphs: Glyph[];
   enterGlyphs: Glyph[];
   /** Born at the start value; clocks are never reset across committed models. */
@@ -283,18 +286,38 @@ function buildTransformLayers(models: MorphModel[]): TransformLayerModel[] {
   });
 }
 
+/**
+ * The pen's per-glyph outlines, plus the line those outlines add up to.
+ *
+ * Both, because a Write is per glyph on the way in and one line on the way
+ * out: the trace has to lag glyph by glyph, but what it resolves into is a
+ * settled line. Fusing the fill and the glyph run once here is what lets the
+ * whole second half of the gesture cost three bindings instead of three per
+ * letter — see `WriteScene`.
+ */
 function buildWriteModels(font: SkFont, boxes: CharBox[]) {
   const models: WriteModel[] = [];
   const fallback: CharBox[] = [];
+  const fused = Skia.PathBuilder.Make();
+  const glyphs: Glyph[] = [];
   boxes.forEach((box, index) => {
     const path = placedGlyphPath(font, box);
     if (path) {
-      models.push({ path, glyphs: toGlyphs([box]), index, count: boxes.length });
+      models.push({ path, index, count: boxes.length });
+      fused.addPath(path);
+      glyphs.push(...toGlyphs([box]));
     } else {
       fallback.push(box);
     }
   });
-  return { models, fallback };
+  return {
+    models,
+    fallback,
+    // Only what the pen actually traced: a glyph with no outline is drawn by
+    // the fallback, and would be drawn twice if it were in here as well.
+    fill: models.length === 0 ? null : fused.build(),
+    glyphs,
+  };
 }
 
 /**
@@ -394,52 +417,48 @@ function TransformLayer({
   );
 }
 
+/**
+ * One letter under the pen: one node, one binding.
+ *
+ * The count is the point. A shared value reaches Skia through a mapper, and a
+ * mapper has to be *installed* — scheduled from the JS thread onto the UI
+ * runtime — before the node it feeds moves at all. That install waits behind
+ * whatever else the JS thread is doing, so a line that mounts four bindings
+ * and three nodes per glyph does not begin to write until it has paid for all
+ * of them. Measured on the phone across the L0→L1 descent, where the commit
+ * that changes the header is already the busiest moment in the app: at four
+ * bindings a twenty-glyph line first painted 83% of the way through its own
+ * animation. It was not a slow Write; it was a Write nobody could see the
+ * start of.
+ *
+ * So only what has to be per letter is per letter. `borderEnd` is the lag —
+ * where this glyph's pen has got to, which is the whole gesture — and it is
+ * the only thing here that differs between letters mid-trace. The alphas that
+ * resolve outline into ink are the line's, on `WriteScene`.
+ */
 function WriteGlyph({
   model,
   tt,
-  font,
   color,
 }: {
   model: WriteModel;
   tt: SharedValue<number> | DerivedValue<number>;
-  font: SkFont;
   color: string;
 }) {
   const borderEnd = useDerivedValue(() =>
     writePhase(writeSubAlpha(tt.value, model.index, model.count)).borderEnd,
   );
-  const borderAlpha = useDerivedValue(() =>
-    writePhase(writeSubAlpha(tt.value, model.index, model.count)).borderAlpha,
-  );
-  const fillPathAlpha = useDerivedValue(() => {
-    const phase = writePhase(writeSubAlpha(tt.value, model.index, model.count));
-    return phase.settled ? 0 : phase.fillAlpha;
-  });
-  const glyphAlpha = useDerivedValue(() =>
-    writePhase(writeSubAlpha(tt.value, model.index, model.count)).settled ? 1 : 0,
-  );
   return (
-    <>
-      <Path
-        path={model.path}
-        style="stroke"
-        start={0}
-        end={borderEnd}
-        strokeWidth={WRITE_STROKE_PX}
-        strokeCap="round"
-        strokeJoin="round"
-        color={color}
-        opacity={borderAlpha}
-      />
-      <Path
-        path={model.path}
-        style="fill"
-        fillType="evenOdd"
-        color={color}
-        opacity={fillPathAlpha}
-      />
-      <Glyphs font={font} glyphs={model.glyphs} color={color} opacity={glyphAlpha} />
-    </>
+    <Path
+      path={model.path}
+      style="stroke"
+      start={0}
+      end={borderEnd}
+      strokeWidth={WRITE_STROKE_PX}
+      strokeCap="round"
+      strokeJoin="round"
+      color={color}
+    />
   );
 }
 
@@ -462,6 +481,115 @@ function WriteFallbackGlyph({
     smootherstep(0, 1, writeSubAlpha(tt.value, index, count)),
   );
   return <Glyphs font={font} glyphs={toGlyphs([box])} color={color} opacity={opacity} />;
+}
+
+/**
+ * Everything a Write or an erase paints. One instance per committed generation.
+ *
+ * The reversal lives *here* and not beside the model in `MorphTextImpl`, and
+ * that placement is the whole point of this component rather than a stylistic
+ * one. `1 - tt.value` derived in the parent is a single binding that outlives
+ * every generation: when a model is replaced, `tt` becomes the incoming
+ * generation's newborn clock and the parent's reversal recomputes to `1 - 0`,
+ * which is *fully written*. The outgoing erase's glyph nodes are still on the
+ * canvas at that instant — a React commit is not proof that Skia has painted —
+ * so they repaint themselves settled, and a line that had just finished
+ * unwriting flashes back complete for a frame before the new write starts from
+ * nothing. Exactly the race `bornClock` and the keys elsewhere in this file
+ * exist to prevent, through the one binding that was not keyed with them.
+ *
+ * Keyed by generation, the outgoing instance is never re-rendered: its
+ * reversal keeps reading the clock it was mounted with, which has run to 1, so
+ * a stale paint shows an erased line — what is actually true — and never a
+ * resurrected one.
+ */
+function WriteScene({
+  model,
+  tt,
+  font,
+  color,
+}: {
+  model: Model;
+  tt: SharedValue<number>;
+  font: SkFont;
+  color: string;
+}) {
+  /**
+   * The same clock, backwards, for the erase.
+   *
+   * This is what makes unwriting the *same* gesture as writing rather than a
+   * second one that has to be kept in step with it: one set of
+   * DrawBorderThenFill models, one lag budget, played the other way.
+   */
+  const reversed = useDerivedValue(() => 1 - tt.value);
+  const clock = model.kind === 'erase' ? reversed : tt;
+  /**
+   * The line's own phase: the *last* letter's, which is when the pen is done.
+   *
+   * DrawBorderThenFill's second half — outline out, ink in — is line-wide
+   * rather than per letter, and reading it off the final glyph is what keeps
+   * the halves from overlapping: nothing is filled while the pen is still
+   * moving, and the moment it stops the whole line resolves together.
+   *
+   * Manim fills each glyph as its own border closes. That is three more
+   * bindings a letter, on a canvas where a binding has to be installed before
+   * anything moves at all — see `WriteGlyph` for what that costs and how it
+   * was measured. The cascade, which is what the eye reads as writing, is
+   * still per letter; only the resolve is shared.
+   */
+  const count = model.layout.length;
+  const strokeAlpha = useDerivedValue(
+    () => writePhase(writeSubAlpha(clock.value, count - 1, count)).borderAlpha,
+  );
+  const fillAlpha = useDerivedValue(() => {
+    const phase = writePhase(writeSubAlpha(clock.value, count - 1, count));
+    return phase.settled ? 0 : phase.fillAlpha;
+  });
+  const glyphAlpha = useDerivedValue(() =>
+    writePhase(writeSubAlpha(clock.value, count - 1, count)).settled ? 1 : 0,
+  );
+  return (
+    <>
+      <Group opacity={strokeAlpha}>
+        {model.writeModels.map((writeModel, i) => (
+          <WriteGlyph
+            key={`${model.gen}#write${i}`}
+            model={writeModel}
+            tt={clock}
+            color={color}
+          />
+        ))}
+      </Group>
+      {model.writeFill === null ? null : (
+        <Path
+          path={model.writeFill}
+          style="fill"
+          fillType="evenOdd"
+          color={color}
+          opacity={fillAlpha}
+        />
+      )}
+      {model.writeGlyphs.length === 0 ? null : (
+        <Glyphs
+          font={font}
+          glyphs={model.writeGlyphs}
+          color={color}
+          opacity={glyphAlpha}
+        />
+      )}
+      {model.writeFallback.map((box, i) => (
+        <WriteFallbackGlyph
+          key={`${model.gen}#fallback${i}`}
+          box={box}
+          index={model.layout.indexOf(box)}
+          count={model.layout.length}
+          tt={clock}
+          font={font}
+          color={color}
+        />
+      ))}
+    </>
+  );
 }
 
 /**
@@ -661,8 +789,6 @@ function MorphTextImpl({
         ? buildFlights(prev, next, width)
         : buildCrossfadeFlights(prev, next);
 
-    // eslint-disable-next-line no-console
-    console.log('[mt]', JSON.stringify({ text, kind, retarget, from: prev.length, to: next.length, width, gen: genRef.current + 1 }));
     const morphModels = buildMorphModels(font, flights);
     const transformLayers = kind === 'transform' ? buildTransformLayers(morphModels) : [];
     const write =
@@ -670,7 +796,7 @@ function MorphTextImpl({
         ? buildWriteModels(font, next)
         : kind === 'erase'
         ? buildWriteModels(font, prev)
-        : { models: [], fallback: [] };
+        : { models: [], fallback: [], fill: null, glyphs: [] };
     genRef.current++;
     setModel({
       text,
@@ -685,6 +811,8 @@ function MorphTextImpl({
       transformLayers,
       writeModels: write.models,
       writeFallback: write.fallback,
+      writeFill: write.fill,
+      writeGlyphs: write.glyphs,
       exitGlyphs: toGlyphs(flights.exits),
       enterGlyphs: toGlyphs(kind === 'settled' ? next : flights.enters),
       clock: bornClock(kind === 'settled' ? 1 : 0),
@@ -701,16 +829,6 @@ function MorphTextImpl({
 
   // Safe narrowing: everything downstream only ever reads tt.value.
   const tt = (progress ?? model?.clock ?? idle) as SharedValue<number>;
-  /**
-   * The same clock, backwards, for the erase.
-   *
-   * Built unconditionally — a hook cannot be — and read only by an erasing
-   * model. This is what makes unwriting the *same* gesture as writing rather
-   * than a second one that has to be kept in step with it: one set of
-   * DrawBorderThenFill models, one lag budget, played the other way.
-   */
-  const reversed = useDerivedValue(() => 1 - tt.value);
-
   // No completion commit: all outline→glyph ownership changes stay UI-thread-only.
   useEffect(() => {
     if (!model?.animate || progress) {
@@ -731,28 +849,13 @@ function MorphTextImpl({
       {model && font && (
         <Canvas style={StyleSheet.absoluteFill}>
           {model.kind === 'write' || model.kind === 'erase' ? (
-            <>
-              {model.writeModels.map((writeModel, i) => (
-                <WriteGlyph
-                  key={`${model.gen}#write${i}`}
-                  model={writeModel}
-                  tt={model.kind === 'erase' ? reversed : tt}
-                  font={font}
-                  color={color}
-                />
-              ))}
-              {model.writeFallback.map((box, i) => (
-                <WriteFallbackGlyph
-                  key={`${model.gen}#fallback${i}`}
-                  box={box}
-                  index={model.layout.indexOf(box)}
-                  count={model.layout.length}
-                  tt={model.kind === 'erase' ? reversed : tt}
-                  font={font}
-                  color={color}
-                />
-              ))}
-            </>
+            <WriteScene
+              key={`wr${model.gen}`}
+              model={model}
+              tt={tt}
+              font={font}
+              color={color}
+            />
           ) : model.kind === 'settled' ? (
             <Glyphs
               key={`set${model.gen}`}
@@ -824,6 +927,9 @@ type SequenceScene = {
   items: SequenceItemModel[];
   writeModels: WriteModel[];
   writeFallback: SequenceWriteFallback[];
+  /** The traced outlines as one path, and the glyphs they resolve into. */
+  writeFill: SkPath | null;
+  writeGlyphs: Glyph[];
 };
 
 function offsetBoxes(boxes: CharBox[], x: number, y: number): CharBox[] {
@@ -834,7 +940,10 @@ function offsetBoxes(boxes: CharBox[], x: number, y: number): CharBox[] {
 function buildSequenceWriteModels(
   font: SkFont,
   layouts: CharBox[][],
-): Pick<SequenceScene, 'writeModels' | 'writeFallback'> {
+): Pick<
+  SequenceScene,
+  'writeModels' | 'writeFallback' | 'writeFill' | 'writeGlyphs'
+> {
   const count = layouts.reduce((max, layout) => Math.max(max, layout.length), 0);
   const pathGroups: SkPath[][] = Array.from({ length: count }, () => []);
   const glyphGroups: Glyph[][] = Array.from({ length: count }, () => []);
@@ -850,22 +959,24 @@ function buildSequenceWriteModels(
       }
     });
   }
+  const fused = Skia.PathBuilder.Make();
+  const glyphs: Glyph[] = [];
   const writeModels = pathGroups.flatMap((paths, index) => {
     if (paths.length === 0) {
       return [];
     }
     const builder = Skia.PathBuilder.Make();
     paths.forEach(path => builder.addPath(path));
-    return [{
-      path: builder.build(),
-      glyphs: glyphGroups[index],
-      index,
-      count,
-    }];
+    const path = builder.build();
+    fused.addPath(path);
+    glyphs.push(...glyphGroups[index]);
+    return [{ path, index, count }];
   });
   return {
     writeModels,
     writeFallback: fallback.map(item => ({ ...item, count })),
+    writeFill: writeModels.length === 0 ? null : fused.build(),
+    writeGlyphs: glyphs,
   };
 }
 
@@ -944,7 +1055,13 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
   const centered = charStyle.textAlign === 'center';
   const scene = useMemo<SequenceScene>(() => {
     if (!font) {
-      return { items: [], writeModels: [], writeFallback: [] };
+      return {
+        items: [],
+        writeModels: [],
+        writeFallback: [],
+        writeFill: null,
+        writeGlyphs: [],
+      };
     }
     const sourceLayouts: CharBox[][] = [];
     const itemModels = items.map(item => {
@@ -992,7 +1109,12 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
       items: itemModels,
       // Under reduced motion the initial texts simply exist — no write trace.
       ...(reduced
-        ? { writeModels: [], writeFallback: [] }
+        ? {
+            writeModels: [],
+            writeFallback: [],
+            writeFill: null,
+            writeGlyphs: [],
+          }
         : buildSequenceWriteModels(font, sourceLayouts)),
     };
   }, [centered, font, items, letterSpacing, lineHeight, reduced]);
@@ -1014,6 +1136,25 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
   const transformOwner = useDerivedValue<number>(() =>
     !hasWriteWindow || progress.value >= writeEnd ? 1 : 0,
   );
+  /** The line's resolve, shared across every letter — see `WriteScene`. */
+  const sequenceCount = scene.writeModels.length;
+  const sequenceStrokeAlpha = useDerivedValue(
+    () =>
+      writePhase(writeSubAlpha(writeT.value, sequenceCount - 1, sequenceCount))
+        .borderAlpha,
+  );
+  const sequenceFillAlpha = useDerivedValue(() => {
+    const phase = writePhase(
+      writeSubAlpha(writeT.value, sequenceCount - 1, sequenceCount),
+    );
+    return phase.settled ? 0 : phase.fillAlpha;
+  });
+  const sequenceGlyphAlpha = useDerivedValue(() =>
+    writePhase(writeSubAlpha(writeT.value, sequenceCount - 1, sequenceCount))
+      .settled
+      ? 1
+      : 0,
+  );
 
   return (
     <View
@@ -1025,15 +1166,33 @@ export const MorphTextSequence = React.memo(function MorphTextSequenceComponent(
         {font && (
           <>
             <Group opacity={writeOwner}>
-              {scene.writeModels.map((model, index) => (
-                <WriteGlyph
-                  key={`sequence-write-${index}`}
-                  model={model}
-                  tt={writeT}
-                  font={font}
+              <Group opacity={sequenceStrokeAlpha}>
+                {scene.writeModels.map((model, index) => (
+                  <WriteGlyph
+                    key={`sequence-write-${index}`}
+                    model={model}
+                    tt={writeT}
+                    color={color}
+                  />
+                ))}
+              </Group>
+              {scene.writeFill === null ? null : (
+                <Path
+                  path={scene.writeFill}
+                  style="fill"
+                  fillType="evenOdd"
                   color={color}
+                  opacity={sequenceFillAlpha}
                 />
-              ))}
+              )}
+              {scene.writeGlyphs.length === 0 ? null : (
+                <Glyphs
+                  font={font}
+                  glyphs={scene.writeGlyphs}
+                  color={color}
+                  opacity={sequenceGlyphAlpha}
+                />
+              )}
               {scene.writeFallback.map((fallback, index) => (
                 <WriteFallbackGlyph
                   key={`sequence-write-fallback-${index}`}

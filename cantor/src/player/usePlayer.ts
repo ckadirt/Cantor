@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 import {
   Easing,
@@ -156,18 +156,46 @@ export function usePlayer(player: PlayerPort): PlayerController {
     [snapshot],
   );
 
-  return {
-    snapshot,
-    positionSeconds,
-    interrupted: wasInterrupted(player),
-    isPlaying,
-    play,
-    pause,
-    toggle,
-    seek,
-    open,
-    close,
-  };
+  /**
+   * The controller as one object that only changes when something in it does.
+   *
+   * A fresh literal every render is the same defect as a fresh style object —
+   * it travels. Every member here is already stable, so the literal was the
+   * only thing moving, and it moved through `useCallback` deps into
+   * `FieldScreen`'s row action, into the shelf's bulk action, and from there
+   * into `FieldOverlay`'s props, where it defeated the memo. The overlay then
+   * re-rendered on *every camera frame React was told about* — a header that
+   * cannot change during a flight, rebuilt eight times across one, at ~30 ms of
+   * render and commit each. That is JS the descent is not spending on the
+   * animations it just started; see the note on `WriteGlyph`.
+   */
+  const interrupted = wasInterrupted(player);
+  return useMemo(
+    () => ({
+      snapshot,
+      positionSeconds,
+      interrupted,
+      isPlaying,
+      play,
+      pause,
+      toggle,
+      seek,
+      open,
+      close,
+    }),
+    [
+      close,
+      interrupted,
+      isPlaying,
+      open,
+      pause,
+      play,
+      positionSeconds,
+      seek,
+      snapshot,
+      toggle,
+    ],
+  );
 }
 
 /**
