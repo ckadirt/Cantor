@@ -14,26 +14,30 @@ const fit = 0.42;
 describe('the natively drawn distance', () => {
   /**
    * The whole reason this predicate exists. Two renderers draw the field —
-   * `NativeFieldContent`, which knows a face at mark size and a row, and the
-   * recorded picture, which knows all four representations — and swapping
-   * between them may only happen where they would draw the same thing.
+   * `NativeFieldContent`, which knows a face at mark size, a row and the
+   * player, and the recorded picture, which knows all four representations —
+   * and swapping between them may only happen where they would draw the same
+   * thing.
    */
-  it('covers every distance that is only marks and rows', () => {
-    for (const ratio of [0.4, 1.0, 1.19, 2, 3.6, 8, 11.9]) {
+  it('covers every distance that is marks, rows and the player', () => {
+    for (const ratio of [0.4, 1.0, 1.19, 2, 3.6, 8, 11.9, 27, 90, 177]) {
       expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
-      const alphas = representationAlphas(fit * ratio, fit);
-      expect(alphas.song).toBe(0);
-      expect(alphas.grain).toBe(0);
+      expect(representationAlphas(fit * ratio, fit).grain).toBe(0);
     }
   });
 
-  it('stops where the player opens, not where the row band does', () => {
-    expect(
-      isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.song[0], fit),
-    ).toBe(false);
-    // The boundary it used to stop at. Rows run from here to 3.6·FIT, and a
-    // picture can only carry them by scaling a recording — which is what a
-    // zoom made visible, so the native renderer has to own this whole span.
+  it('stops where the grain opens, not where the player does', () => {
+    // Asked at a fit of exactly 1, because the boundary itself is the claim:
+    // `fit * ratio / fit` is not `ratio` in binary floating point, so at any
+    // other fit this reads a scale a hair either side of the edge and answers
+    // truthfully about a question nobody asked.
+    expect(isNativeDrawnDistance(REPRESENTATION_WINDOWS.grain[0], 1)).toBe(
+      false,
+    );
+    // The boundary it used to stop at. The player runs from here to 178·FIT,
+    // and a picture can only carry it by scaling a recording — which is what a
+    // zoom made visible, so the native renderer has to own this whole span too.
+    expect(isNativeDrawnDistance(REPRESENTATION_WINDOWS.song[0], 1)).toBe(true);
     const atRowEntry = representationAlphas(
       fit * REPRESENTATION_WINDOWS.row[0],
       fit,

@@ -6,22 +6,32 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import type { LocalAudioState } from '../../audio/native';
+import {
+  describeAudio,
+  formatClock,
+  playerWords,
+  transportWord,
+  type PlayerWord,
+} from '../field/NativePlayer';
+import {
+  PLAYER_POSE_KNOBS,
+  playerFootScreenPx,
+  playerLensBottomPx,
+  songTitleColumnPx,
+} from '../field/songPose';
+import { REPRESENTATION_WINDOWS, bandAlphaAt, type Camera } from '../../field';
+import { useMorphFont } from '../../motion/fonts';
 import type { PlayerSnapshot } from '../../player';
-import { space, touch, type, usePalette } from '../../theme/tokens';
+import { font, space, touch, type, usePalette } from '../../theme/tokens';
 
-/** KNOBS — L2 chrome, in real units. */
+/** KNOBS — what is left of L2 in React, in real units. */
 const SONG_SURFACE_KNOBS = {
   SCRUB_STEP_SECONDS: 1, // L2 is the coarse rule; L3 zoom-scrubbing is the precise one (M7)
-  SCRUB_TRACK_HEIGHT_PX: 2, // the hairline the playhead runs along
-  SCRUB_HIT_HEIGHT_PX: 44, // touch target around that hairline
   ELAPSED_SAMPLE_MS: 500, // how often the elapsed label reads the visual clock
-  ORIGIN_MARK_RESERVE_PX: 96, // keep the transport row clear of the persistent origin mark
-  /** The song's name at L2, the largest type in the app after the field's own. */
-  NAME_SIZE_PX: 26,
-  /** Clear of the origin mark, which sits at the same corner. */
-  FOOT_INSET_PX: 96,
   /** Where the elapsed sits: above the ring, which is centred on the view. */
   ELAPSED_TOP_RATIO_PCT: '13%',
+  /** Air around a word, so a five-letter target is still a target. */
+  WORD_HIT_PAD_PX: 12,
 } as const;
 
 export type SongSurfaceSong = Readonly<{
@@ -49,16 +59,49 @@ type Props = {
   onSeek: (seconds: number) => void;
   onOpenDetail: () => void;
   width: number;
-  /** The lens control lives here: one place, every level. */
+  height: number;
+  /** The live camera, for the one thing here that is still drawn. */
+  cameraShared: SharedValue<Camera>;
+  fitScale: number;
+  /**
+   * The lens control: one place, every level.
+   *
+   * A real control rather than a drawn one, and it stays that way on purpose.
+   * The transport words are drawn because they are *part of the player* — they
+   * grow out of a row the way the name does. A lens picker is not the song, it
+   * is a choice about how songs are drawn, so it has no pose at L1 to come from
+   * and nothing is lost by leaving it a button.
+   */
   lens: React.ReactNode;
 };
 
 /**
- * L2: one song filling the view, playing.
+ * L2's touch targets, and the one readout the canvas cannot hold.
  *
- * There is no mini-player anywhere in Cantor — this *is* the player, and it
- * exists only at this distance. It reads position from the shared visual clock
- * rather than from React state, so the playhead moves without re-rendering.
+ * There is no mini-player anywhere in Cantor, and as of the third pose there is
+ * no *player* here either: the song's face, its name, its recipe, its ring and
+ * its transport are all drawn by `NativePlayerParts` inside the field's own
+ * canvas, off the song's own mark, on the camera's own clock. What is left in
+ * React is what React is still better at.
+ *
+ * **The words.** Skia draws them; these press them. A canvas has no
+ * `accessibilityRole`, no `hitSlop` and no focus order, and hit-testing three
+ * words in canvas space would mean re-implementing all of it against the
+ * field's own pan gesture. So the boxes below are invisible, and they are laid
+ * out from `playerWords` — the same measurement the canvas draws from — because
+ * a button a few pixels off from the word it belongs to is worse than no button.
+ *
+ * **The elapsed.** It stays text because it changes twice a second, and a Skia
+ * `Text` node takes a string: feeding it from React state would hand the canvas
+ * a fresh element on every tick, which repaints every node from whatever the JS
+ * thread last held. That is the flicker `FieldCanvas`'s scene note describes,
+ * twice a second, for a number nobody is watching move. It has no pose at L1
+ * either — a row has no clock — so there is nothing for it to morph out of, and
+ * fading it in on the band is the honest gesture. Its opacity reads
+ * `cameraShared` directly so that fade is on the same clock as everything the
+ * canvas draws; the whole reason this component used to look disconnected was
+ * that it read React's copy of the camera instead, which lands a commit late by
+ * design.
  */
 function SongSurfaceImpl({
   song,
@@ -70,27 +113,44 @@ function SongSurfaceImpl({
   onSeek,
   onOpenDetail,
   width,
+  height,
+  cameraShared,
+  fitScale,
   lens,
 }: Props) {
   const pal = usePalette();
   const durationSeconds = song.durationMs / 1000;
+  const metaFont = useMorphFont({
+    fontFamily: font.mono,
+    fontSize: type.eyebrow.fontSize,
+  });
 
-  const playhead = useAnimatedStyle(() => {
-    const fraction =
-      durationSeconds > 0
-        ? Math.min(Math.max(positionSeconds.value / durationSeconds, 0), 1)
-        : 0;
-    return { width: `${fraction * 100}%` };
-  }, [durationSeconds]);
+  const onPhone = song.audioState === 'cached' || song.audioState === 'pinned';
+  // A song that lives on the node is still playable: pressing play fetches it
+  // first. Disabling it here would disable the only path that downloads it.
+  const playable = available;
+  const transportLabel = transportWord(
+    isCurrent,
+    snapshot.state === 'playing',
+    onPhone,
+  );
 
-  const elapsed = useElapsedLabel(
-    positionSeconds,
-    isCurrent && snapshot.state === 'playing',
+  const foot = useMemo(
+    () => playerFootScreenPx({ width, height }),
+    [height, width],
+  );
+  const words = useMemo(
+    () =>
+      metaFont === null
+        ? null
+        : playerWords(metaFont, transportLabel, describeAudio(song.audioState)),
+    [metaFont, song.audioState, transportLabel],
   );
 
   const scrub = useMemo(() => {
+    const column = songTitleColumnPx(width);
     const seekTo = (x: number) => {
-      const fraction = Math.min(Math.max(x / Math.max(width, 1), 0), 1);
+      const fraction = Math.min(Math.max(x / Math.max(column, 1), 0), 1);
       const step = SONG_SURFACE_KNOBS.SCRUB_STEP_SECONDS;
       onSeek(Math.round((fraction * durationSeconds) / step) * step);
     };
@@ -100,155 +160,123 @@ function SongSurfaceImpl({
       .runOnJS(true);
   }, [durationSeconds, onSeek, width]);
 
-  const onPhone = song.audioState === 'cached' || song.audioState === 'pinned';
-  // A song that lives on the node is still playable: pressing play fetches it
-  // first. Disabling it here would disable the only path that downloads it.
-  const playable = available;
-  const transportLabel =
-    isCurrent && snapshot.state === 'playing'
-      ? 'Pause'
-      : onPhone
-        ? 'Play'
-        : 'Fetch';
+  const elapsed = useElapsedLabel(
+    positionSeconds,
+    isCurrent && snapshot.state === 'playing',
+  );
+  // The song band, read from the live camera rather than from React's copy of
+  // it: the same number, on the same frame, as the drawing this sits over.
+  const readout = useAnimatedStyle(
+    () => ({
+      opacity: bandAlphaAt(
+        cameraShared.value.scale,
+        fitScale,
+        REPRESENTATION_WINDOWS.song,
+      ),
+    }),
+    [cameraShared, fitScale],
+  );
 
   return (
     <View style={styles.root} pointerEvents="box-none">
-      {/*
-        The level, in the corner the overlay leaves empty here: at L2 and L3 the
-        player draws its own name and metadata, so the chrome stands aside.
-      */}
-      <Text style={[type.eyebrow, styles.level, { color: pal.muted }]}>
-        L2 · SONG
-      </Text>
-
-      {/*
-        The elapsed time sits just above the ring, because the ring *is* the
-        timeline: the digits say where the head is, and the head is drawn where
-        every ring in Cantor starts.
-      */}
-      <Text style={[type.eyebrow, styles.elapsed, { color: pal.ink }]}>
+      <Animated.Text
+        style={[type.eyebrow, styles.elapsed, { color: pal.ink }, readout]}>
         {formatClock(isCurrent ? elapsed : 0)}
-      </Text>
+      </Animated.Text>
 
-      {/* Everything the ring is not, below it, in reading order. */}
-      <View style={styles.foot}>
-        <Text numberOfLines={2} style={[type.title, styles.name, { color: pal.ink }]}>
-          {song.title}
+      <GestureDetector gesture={scrub}>
+        <View
+          accessibilityLabel={`Scrub ${song.title}`}
+          accessibilityRole="adjustable"
+          style={[
+            styles.scrubHit,
+            {
+              left: foot.x,
+              top: foot.scrubY - PLAYER_POSE_KNOBS.SONG_SCRUB_HIT_PX / 2,
+              width: songTitleColumnPx(width),
+            },
+          ]}
+        />
+      </GestureDetector>
+
+      {words === null
+        ? null
+        : words.map(word => (
+            <WordTarget
+              disabled={word.key === 'transport' && !playable}
+              foot={foot}
+              key={word.key}
+              onPress={
+                word.key === 'transport'
+                  ? onToggle
+                  : word.key === 'detail'
+                    ? onOpenDetail
+                    : null
+              }
+              word={word}
+            />
+          ))}
+
+      <Animated.View style={[styles.lens, readout]}>{lens}</Animated.View>
+
+      {snapshot.error !== null ? (
+        <Text style={[type.mono, styles.error, { color: pal.ink }]}>
+          {snapshot.error}
         </Text>
-        <Text style={[type.eyebrow, { color: pal.faint }]}>
-          {recipeLine(song)}
-        </Text>
-
-        <GestureDetector gesture={scrub}>
-          <View
-            style={styles.scrubHit}
-            accessibilityRole="adjustable"
-            accessibilityLabel={`Scrub ${song.title}`}>
-            <View style={[styles.scrubTrack, { backgroundColor: pal.line }]}>
-              <Animated.View
-                style={[styles.playhead, { backgroundColor: pal.ink }, playhead]}
-              />
-            </View>
-          </View>
-        </GestureDetector>
-
-        {/*
-          Quiet words, not boxes: at this distance the song is the picture and
-          everything else is a line of small capitals under it.
-        */}
-        <View style={styles.words}>
-          <Word
-            disabled={!playable}
-            label={transportLabel.toUpperCase()}
-            onPress={onToggle}
-            strong
-          />
-          <Word label="DETAIL" onPress={onOpenDetail} />
-          <Text style={[type.eyebrow, { color: pal.faint }]}>
-            {describeAudio(song.audioState)}
-          </Text>
-        </View>
-
-        {playlistLine(song.tags) === null ? null : (
-          <Text style={[type.eyebrow, { color: pal.line }]}>
-            {playlistLine(song.tags)}
-          </Text>
-        )}
-
-        {lens}
-
-        {/*
-          The one gesture worth naming here. The overlay draws no hint at L2 —
-          its foot is the player's — so the player says its own: zooming past a
-          song is how L3 is reached, and nothing else on this screen suggests
-          there is anywhere further to go.
-        */}
-        <Text style={[type.eyebrow, { color: pal.line }]}>
-          ZOOM PAST TO ENTER THE AUDIO
-        </Text>
-
-        {snapshot.error !== null ? (
-          <Text style={[type.mono, { color: pal.ink }]}>{snapshot.error}</Text>
-        ) : null}
-      </View>
+      ) : null}
     </View>
   );
 }
 
-/** One quiet word in the foot's row. */
-function Word({
-  label,
+/**
+ * One invisible box over one drawn word.
+ *
+ * The word's own box padded out to something a thumb can find — `hitSlop`
+ * rather than a larger rect, so two adjacent words cannot overlap into each
+ * other's target. The label a screen reader announces is the word the canvas
+ * drew, which is the only reason this is the right place for it: the drawing
+ * carries `importantForAccessibility="no-hide-descendants"` and can announce
+ * nothing at all.
+ */
+function WordTarget({
+  word,
+  foot,
   onPress,
-  disabled = false,
-  strong = false,
+  disabled,
 }: {
-  label: string;
-  onPress: () => void;
-  disabled?: boolean;
-  strong?: boolean;
+  word: PlayerWord;
+  foot: Readonly<{ x: number; y: number }>;
+  onPress: (() => void) | null;
+  disabled: boolean;
 }) {
-  const pal = usePalette();
+  if (onPress === null) return null;
   return (
     <Pressable
-      accessibilityLabel={label}
+      accessibilityLabel={word.text}
       accessibilityRole="button"
       accessibilityState={{ disabled }}
       disabled={disabled}
-      hitSlop={space.sm}
-      onPress={onPress}>
-      <Text
-        style={[
-          type.eyebrow,
-          { color: disabled ? pal.faint : strong ? pal.ink : pal.muted },
-        ]}>
-        {label}
-      </Text>
-    </Pressable>
+      hitSlop={SONG_SURFACE_KNOBS.WORD_HIT_PAD_PX}
+      onPress={onPress}
+      style={[
+        styles.wordHit,
+        {
+          left: foot.x + word.x,
+          // The drawn word sits *on* the baseline; the box is centred over it.
+          top: foot.y - touch.min / 2,
+          width: word.width,
+        },
+      ]}
+    />
   );
-}
-
-/** `ACESTEP:1.5-FAST · SEED 41822 · 3:12` — the recipe, said once. */
-function recipeLine(song: SongSurfaceSong): string {
-  const parts = [song.model.toUpperCase()];
-  if (song.seed !== undefined) parts.push(`SEED ${song.seed}`);
-  parts.push(formatClock(song.durationMs / 1000));
-  return parts.join(' · ');
-}
-
-/** `P/ LATE NIGHT   P/ KEEP`, or nothing at all when it is in none. */
-function playlistLine(tags: readonly string[]): string | null {
-  const names = tags
-    .filter(tag => tag.startsWith('p/'))
-    .map(tag => tag.slice(2).trim().toUpperCase())
-    .filter(name => name.length > 0);
-  return names.length === 0 ? null : names.map(name => `P/ ${name}`).join('   ');
 }
 
 /**
  * Read the visual clock a couple of times a second for the elapsed readout.
  *
- * The playhead itself never comes through React — only these digits do, and a
- * clock that ticks twice a second is honest enough for a number a person reads.
+ * The playhead itself never comes through React — the canvas sweeps it on the
+ * UI thread — only these digits do, and a clock that ticks twice a second is
+ * honest enough for a number a person reads.
  */
 function useElapsedLabel(
   positionSeconds: SharedValue<number>,
@@ -267,26 +295,6 @@ function useElapsedLabel(
   return elapsed;
 }
 
-/** Never claim a song is here when only part of it is. */
-function describeAudio(state: LocalAudioState): string {
-  switch (state) {
-    case 'pinned':
-      return 'PINNED';
-    case 'cached':
-      return 'ON PHONE';
-    case 'partial':
-      return 'PARTIAL';
-    default:
-      return 'ON NODE';
-  }
-}
-
-export function formatClock(seconds: number): string {
-  const whole = Math.max(0, Math.floor(seconds));
-  const minutes = Math.floor(whole / 60);
-  return `${minutes}:${String(whole % 60).padStart(2, '0')}`;
-}
-
 const styles = StyleSheet.create({
   root: {
     position: 'absolute',
@@ -295,7 +303,6 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
   },
-  level: { left: space.lg, position: 'absolute', top: space.xl },
   /**
    * Above the ring, centred: the ring is drawn around the mark's own point,
    * which at this distance is the middle of the view.
@@ -307,38 +314,17 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     top: SONG_SURFACE_KNOBS.ELAPSED_TOP_RATIO_PCT,
   },
-  foot: {
-    bottom: SONG_SURFACE_KNOBS.FOOT_INSET_PX,
-    gap: space.sm,
-    left: space.lg,
-    position: 'absolute',
-    right: space.lg,
-  },
-  name: { fontSize: SONG_SURFACE_KNOBS.NAME_SIZE_PX },
-  words: { flexDirection: 'row', gap: space.lg, minHeight: touch.min },
   scrubHit: {
-    height: SONG_SURFACE_KNOBS.SCRUB_HIT_HEIGHT_PX,
-    justifyContent: 'center',
+    height: PLAYER_POSE_KNOBS.SONG_SCRUB_HIT_PX,
+    position: 'absolute',
   },
-  scrubTrack: {
-    height: SONG_SURFACE_KNOBS.SCRUB_TRACK_HEIGHT_PX,
-    overflow: 'hidden',
+  lens: {
+    bottom: playerLensBottomPx(),
+    left: PLAYER_POSE_KNOBS.SONG_FOOT_SIDE_PX,
+    position: 'absolute',
   },
-  playhead: { height: SONG_SURFACE_KNOBS.SCRUB_TRACK_HEIGHT_PX },
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: space.md,
-    paddingRight: SONG_SURFACE_KNOBS.ORIGIN_MARK_RESERVE_PX,
-  },
-  transport: {
-    minHeight: touch.min,
-    minWidth: 96,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-  },
-  detail: { marginLeft: 'auto', minHeight: touch.min, justifyContent: 'center' },
+  wordHit: { height: touch.min, position: 'absolute' },
+  error: { bottom: space.lg, left: space.lg, position: 'absolute' },
 });
 
 /**

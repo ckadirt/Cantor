@@ -89,6 +89,19 @@ import {
   type LabelFlight,
   type ShelfLabelFlights,
 } from './labelMorph';
+import {
+  NativePlayerParts,
+  PlayerRing,
+  nativeSongModel,
+  type NativeSongModel,
+} from './NativePlayer';
+import {
+  PLAYER_POSE_KNOBS,
+  facePoseAt,
+  lineOwnedByPlayer,
+  playerRadiusPx,
+  playerRisePx,
+} from './songPose';
 import { shelfLabel } from './shelfLabels';
 import type { FieldPresentation, JobPresentation } from './useFieldController';
 import { FIELD_CAMERA_KNOBS, type FieldRecutModel } from './useFieldCamera';
@@ -126,12 +139,12 @@ const FIELD_CANVAS_KNOBS = {
   /**
    * The player's ring, as a fraction of the view's *width*.
    *
-   * Square and width-derived so the ring is the same size on any phone, and
-   * small enough that the song's name, its recipe and its words all clear it:
-   * they live under the ring in React, and a title crossing the waveform is
-   * two things claiming the same pixels.
+   * Read from `songPose`, which owns every measurement the player is built
+   * from now that it is drawn rather than laid out. Kept here so the recorded
+   * picture and the native path cannot drift apart on the one number they both
+   * need.
    */
-  SONG_BOX_RATIO: 0.76,
+  SONG_BOX_RATIO: PLAYER_POSE_KNOBS.SONG_BOX_RATIO,
   /**
    * How far the ring rises above the mark's own point, as a fraction of the
    * view's height, once the player is fully here.
@@ -142,9 +155,9 @@ const FIELD_CANVAS_KNOBS = {
    * risen to its seat by the time the player is the only thing left — the mark
    * rises into its seat rather than jumping to it.
    */
-  SONG_RISE_RATIO: 0.12,
+  SONG_RISE_RATIO: PLAYER_POSE_KNOBS.SONG_RISE_RATIO,
   /** Where the sweeping arc sits, as a fraction of the player's radius. */
-  SONG_ARC_RATIO: 0.5,
+  SONG_ARC_RATIO: PLAYER_POSE_KNOBS.SONG_ARC_RATIO,
   /** The measured audio, drawn outward from that arc. */
   SONG_WAVE_TICKS: 96,
   SONG_WAVE_REACH_RATIO: 0.36,
@@ -242,6 +255,14 @@ type Props = {
    * overlap across the view.
    */
   focusKey?: string | null;
+  /**
+   * What pressing the transport would do, in the player's own words.
+   *
+   * A string rather than the player's state, because the canvas draws a word
+   * and has no business knowing what a snapshot is. It changes only when a
+   * person presses something, so it never wakes the canvas on a frame.
+   */
+  transportLabel?: string;
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
   /** How far through the playing song we are, 0..1. */
@@ -456,6 +477,7 @@ function FieldCanvasImpl({
   positionSeconds = null,
   playingKey = null,
   focusKey = null,
+  transportLabel = 'PLAY',
   analyses,
   playingProgress = null,
   grain = null,
@@ -480,6 +502,22 @@ function FieldCanvasImpl({
   const monoFont = useMorphFont({
     fontFamily: font.mono,
     fontSize: 9,
+  });
+  /**
+   * The player's two faces: the name at `type.title`, and everything said about
+   * it at `type.eyebrow`.
+   *
+   * Separate hooks rather than one font resized on the fly, because the name
+   * *morphs* between the row's 15 px and this 26 px — both ends of that
+   * interpolation have to exist at once, and a font is immutable in its size.
+   */
+  const songTitleFont = useMorphFont({
+    fontFamily: font.display,
+    fontSize: PLAYER_POSE_KNOBS.SONG_TITLE_SIZE_PX,
+  });
+  const songMetaFont = useMorphFont({
+    fontFamily: font.mono,
+    fontSize: textType.eyebrow.fontSize,
   });
   // House rule 5: born clocks, generation keys. A clock shared across
   // generations is advanced by this layout effect while the outgoing
@@ -592,6 +630,8 @@ function FieldCanvasImpl({
     nativeClock !== null &&
     monoFont !== null &&
     displayFont !== null &&
+    songTitleFont !== null &&
+    songMetaFont !== null &&
     labelFlights !== null &&
     recut.flights.every(flight => presentations.has(flight.entityKey));
   const paints = useMemo(() => createPaints(palette), [palette]);
@@ -732,7 +772,9 @@ function FieldCanvasImpl({
       recut === null ||
       nativeClock === null ||
       monoFont === null ||
-      displayFont === null
+      displayFont === null ||
+      songTitleFont === null ||
+      songMetaFont === null
     ) {
       return null;
     }
@@ -751,8 +793,14 @@ function FieldCanvasImpl({
           viewport={viewport}
           presentations={presentations}
           playingKey={playingKey}
+          focusKey={focusKey}
+          transportLabel={transportLabel}
+          positionSeconds={positionSeconds}
+          analyses={analyses}
           labelFlights={labelFlights}
           displayFont={displayFont}
+          songTitleFont={songTitleFont}
+          songMetaFont={songMetaFont}
           font={monoFont}
           palette={palette}
         />
@@ -760,16 +808,22 @@ function FieldCanvasImpl({
       </>
     );
   }, [
+    analyses,
     cameraShared,
     displayFont,
     fitScaleShared,
+    focusKey,
     labelFlights,
     monoFont,
     nativeClock,
     palette,
     playingKey,
+    positionSeconds,
     presentations,
     recut,
+    songMetaFont,
+    songTitleFont,
+    transportLabel,
     veil,
     viewport,
   ]);
@@ -956,6 +1010,15 @@ function useRecordCamera(camera: Camera, viewport: Viewport): Camera {
  * trimming a circle it never rebuilds, the hand by rotating a line it never
  * rebuilds. Nothing here is a function of a React render.
  */
+/**
+ * The measured loudness a song that is not the player carries: none.
+ *
+ * One frozen array rather than a fresh `[]` per render, because this is a prop
+ * on every mark in the field and a new identity would re-render each of them on
+ * every commit.
+ */
+const EMPTY_LEVELS: readonly number[] = Object.freeze([]);
+
 /** The measured loudness as plain numbers; a worklet cannot hold a typed array. */
 function levelsOf(analysis: SongAnalysis | undefined): readonly number[] {
   if (analysis === undefined) return [];
@@ -980,84 +1043,27 @@ function NativePlayhead({
   levels: readonly number[];
   colour: string;
 }) {
-  const knobs = FIELD_CANVAS_KNOBS;
-  const radius = (viewport.width * knobs.SONG_BOX_RATIO) / 2;
-  const centre = {
-    x: viewport.width / 2,
-    y: viewport.height / 2 - viewport.height * knobs.SONG_RISE_RATIO,
-  };
-  const ringRadius = radius * knobs.SONG_ARC_RATIO;
-
-  // Built once. The arc starts at twelve o'clock and runs clockwise, so
-  // trimming it from zero is the same sweep the waveform is drawn along.
-  const ring = useMemo(() => {
-    const builder = Skia.PathBuilder.Make();
-    builder.addArc(
-      Skia.XYWHRect(
-        centre.x - ringRadius,
-        centre.y - ringRadius,
-        ringRadius * 2,
-        ringRadius * 2,
-      ),
-      -90,
-      360,
-    );
-    return builder.detach();
-  }, [centre.x, centre.y, ringRadius]);
-
-  const hand = useMemo(() => {
-    const builder = Skia.PathBuilder.Make();
-    builder.moveTo(centre.x, centre.y - radius * knobs.SONG_HAND_INNER_RATIO);
-    builder.lineTo(centre.x, centre.y - radius * knobs.SONG_HAND_OUTER_RATIO);
-    return builder.detach();
-  }, [centre.x, centre.y, knobs, radius]);
-
   /**
-   * The measurement, rebuilt every frame.
+   * The picture path's anchor: the middle of the view.
    *
-   * Each tick is as long as that moment of the song is loud — that much is the
-   * map, and it never changes. What moves is the *lift*: a bulge that rides the
-   * playhead, as tall as the audio is loud right now and falling away to either
-   * side of it. So the ring reads as the whole song at rest and beats with the
-   * music while it plays, from one array of numbers and no new work per frame
-   * beyond the arithmetic.
+   * The native path hangs the same ring off the song's own mark instead, which
+   * is the truer answer and the one that stays concentric with the face on the
+   * way in. Here there is no mark to hang it off — a recording knows where
+   * things were when it was made, not where they are — so it is drawn where
+   * arriving at a song puts them, and this path only runs where the native one
+   * cannot: a lens other than the name, or a font that has not loaded.
    */
-  const bars = useDerivedValue(() => {
-    const at = durationSeconds > 0 ? positionSeconds.value / durationSeconds : 0;
-    const head = at < 0 ? 0 : at > 1 ? 1 : at;
-    const count = levels.length;
-    const now = count === 0 ? 0 : levels[Math.floor(head * (count - 1))] ?? 0;
-    const builder = Skia.PathBuilder.Make();
-    for (let index = 0; index < knobs.SONG_WAVE_TICKS; index += 1) {
-      const turn = index / knobs.SONG_WAVE_TICKS;
-      const level = count === 0 ? 0 : levels[Math.floor(turn * (count - 1))] ?? 0;
-      // Wrapped distance to the head, so the bulge crosses twelve o'clock
-      // without a seam.
-      const raw = Math.abs(turn - head);
-      const gap = raw > 0.5 ? 1 - raw : raw;
-      const near = 1 - gap / knobs.SONG_PULSE_WINDOW;
-      const lift = near > 0 ? near * near * now * knobs.SONG_PULSE_GAIN : 0;
-      const amp = Math.min(1, level * knobs.SONG_WAVE_GAIN + lift);
-      const angle = turn * Math.PI * 2 - Math.PI / 2;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      const inner = radius * knobs.SONG_ARC_RATIO;
-      const outer = inner + amp * radius * knobs.SONG_WAVE_REACH_RATIO;
-      builder.moveTo(centre.x + cos * inner, centre.y + sin * inner);
-      builder.lineTo(centre.x + cos * outer, centre.y + sin * outer);
-    }
-    return builder.detach();
-  }, [centre.x, centre.y, durationSeconds, levels, radius]);
-
-  const fraction = useDerivedValue(() => {
-    if (durationSeconds <= 0) return 0;
-    const value = positionSeconds.value / durationSeconds;
-    return value < 0 ? 0 : value > 1 ? 1 : value;
-  }, [durationSeconds]);
-
-  const turn = useDerivedValue(() => [
-    { rotate: fraction.value * Math.PI * 2 },
-  ]);
+  const centre = useMemo<Transforms3d>(
+    () => [
+      { translateX: viewport.width / 2 },
+      {
+        translateY:
+          viewport.height / 2 -
+          playerRisePx(viewport.height, 1),
+      },
+    ],
+    [viewport.height, viewport.width],
+  );
 
   // The song band, inlined: `representationAlphas` is not a worklet, and the
   // player's own opacity must not come through React either.
@@ -1072,30 +1078,14 @@ function NativePlayhead({
   }, [fadeIn, fadeOut, fitScale, holdFrom, holdTo]);
 
   return (
-    <SkiaGroup opacity={opacity}>
-      <Path
-        color={colour}
-        opacity={knobs.SONG_WAVE_ALPHA}
-        path={bars}
-        strokeWidth={knobs.SONG_WAVE_WIDTH_PX}
-        style="stroke"
+    <SkiaGroup opacity={opacity} transform={centre}>
+      <PlayerRing
+        colour={colour}
+        durationSeconds={durationSeconds}
+        levels={levels}
+        positionSeconds={positionSeconds}
+        radius={playerRadiusPx(viewport.width)}
       />
-      <Path
-        color={colour}
-        end={fraction}
-        path={ring}
-        start={0}
-        strokeWidth={knobs.SONG_ARC_WIDTH_PX}
-        style="stroke"
-      />
-      <SkiaGroup origin={centre} transform={turn}>
-        <Path
-          color={colour}
-          path={hand}
-          strokeWidth={knobs.SONG_HAND_WIDTH_PX}
-          style="stroke"
-        />
-      </SkiaGroup>
     </SkiaGroup>
   );
 }
@@ -1187,8 +1177,16 @@ type NativeFieldContentProps = Readonly<{
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   playingKey: string | null;
+  /** The song the camera is focused on: the one that is allowed to be a player. */
+  focusKey: string | null;
+  /** What pressing the transport would do, in the player's own words. */
+  transportLabel: string;
+  positionSeconds: SharedValue<number> | null;
+  analyses: ReadonlyMap<string, SongAnalysis> | undefined;
   labelFlights: ShelfLabelFlights | null;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
   font: NonNullable<ReturnType<typeof useMorphFont>>;
   palette: Palette;
 }>;
@@ -1217,8 +1215,14 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   viewport,
   presentations,
   playingKey,
+  focusKey,
+  transportLabel,
+  positionSeconds,
+  analyses,
   labelFlights,
   displayFont,
+  songTitleFont,
+  songMetaFont,
   font: monoFont,
   palette,
 }: NativeFieldContentProps) {
@@ -1255,6 +1259,23 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         // from emptying out on its way to a new seat and filling again when it
         // lands.
         const availability = availabilityOf(presentation.localAudio.state);
+        const row = nativeRowModel(presentation, recipe, displayFont, monoFont);
+        /*
+         * Exactly one song in the field is the player, so exactly one flight
+         * pays for the sampling `nativeSongModel` does. Every other mark is the
+         * two nodes it has always been.
+         *
+         * Matched on the *placement* the flight is landing on, not on the
+         * entity: one song can sit in several groups at once — a date mark and
+         * a playlist membership are two placements of one entity — and only the
+         * one the camera actually arrived at is the player. `focusKey` is a
+         * placement key for the same reason, which is what the picture compares
+         * against too. An outgoing copy carries a null target and so can never
+         * be it, which is right: a mark on its way out of the field is not
+         * somewhere you have arrived.
+         */
+        const focused =
+          focusKey !== null && flight.targetPlacementKey === focusKey;
         return (
           <NativePlacementFlight
             key={flight.key}
@@ -1268,7 +1289,32 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
               recipe,
               NAME_LENS_KNOBS.MARK_RADIUS_PX,
             )}
-            row={nativeRowModel(presentation, recipe, displayFont, monoFont)}
+            row={row}
+            song={
+              focused
+                ? nativeSongModel(
+                    presentation,
+                    viewport,
+                    row.title,
+                    row.meta,
+                    row.action === null
+                      ? 0
+                      : monoFont.measureText(row.action).width,
+                    {
+                      rowTitle: displayFont,
+                      songTitle: songTitleFont,
+                      rowMeta: monoFont,
+                      songMeta: songMetaFont,
+                    },
+                    transportLabel,
+                  )
+                : null
+            }
+            songTitleFont={songTitleFont}
+            songMetaFont={songMetaFont}
+            positionSeconds={focused ? positionSeconds : null}
+            levels={focused ? levelsOf(analyses?.get(flight.entityKey)) : EMPTY_LEVELS}
+            durationSeconds={song.duration_ms / 1000}
             displayFont={displayFont}
             monoFont={monoFont}
             playing={flight.entityKey === playingKey}
@@ -1475,6 +1521,12 @@ function NativePlacementFlight({
   viewport,
   markPath,
   row,
+  song,
+  songTitleFont,
+  songMetaFont,
+  positionSeconds,
+  levels,
+  durationSeconds,
   displayFont,
   monoFont,
   playing,
@@ -1491,6 +1543,22 @@ function NativePlacementFlight({
   viewport: Viewport;
   markPath: SkPath;
   row: NativeRowModel;
+  /**
+   * The player, for the one song the camera is focused on, and null for every
+   * other song in the field.
+   *
+   * Null is what keeps this O(1) in the size of the library: only one song is
+   * ever the player, so only one flight in the field mounts the extra nodes.
+   * Building them for every song would put a ring, a waveform and two morphing
+   * lines on the canvas for each of a hundred thousand marks, which is the one
+   * way this change could have cost anything at scale.
+   */
+  song: NativeSongModel | null;
+  songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  positionSeconds: SharedValue<number> | null;
+  levels: readonly number[];
+  durationSeconds: number;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
   playing: boolean;
@@ -1555,8 +1623,8 @@ function NativePlacementFlight({
    *
    * The one number the whole L0 → L1 gesture is written against. It is not the
    * row's opacity — the parts of a row *arrive* differently — so it is kept
-   * separate from `rowOpacity` rather than being recovered by dividing it back
-   * out by the owner.
+   * separate from the row's own opacities rather than being recovered by
+   * dividing one of them back out by the owner.
    */
   const becomingRow = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
@@ -1566,6 +1634,51 @@ function NativePlacementFlight({
       REPRESENTATION_WINDOWS.row,
     );
   });
+  /**
+   * How much of the player this song is, this frame: the song band, alone.
+   *
+   * The third pose's own number, and the counterpart of `becomingRow`. Every
+   * part of the player is written against it — the face's growth, the ring's
+   * rise, the name's morph — so the whole drawing arrives as one object on one
+   * clock. This is the number the React chrome used to read a commit late from
+   * its own copy of the camera.
+   */
+  const isPlayer = song !== null;
+  const arrived = useDerivedValue(() => {
+    // Zero for every song that is not the one the camera arrived at, and that
+    // guard is the whole of it. The band is a function of the camera alone, so
+    // without it *every* mark in the field grows to player size at L2 and they
+    // pile up on top of each other — eight full-screen contours where a person
+    // expects one. Only the focused song has a third pose; its neighbours have
+    // the two they always had, and their row band takes them out from here.
+    if (!isPlayer) return 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    return bandAlphaAt(
+      nativeCameraScale(p, recut, cameraShared),
+      nativeFitScale(p, recut, fitScaleShared),
+      REPRESENTATION_WINDOWS.song,
+    );
+  });
+  /**
+   * Whether the row's own ink has handed its line to the morph.
+   *
+   * A step rather than a fade, and it has to be: the morph's `t = 0` pose *is*
+   * the row's line, drawn from the same font at the same baseline, so the two
+   * are the same pixels at the instant this flips and nobody can see it happen.
+   * Crossfading them instead would put two copies of one name on the screen at
+   * half weight each through the whole crossing — which is what the player did
+   * before it was drawn here, said one layer deeper.
+   */
+  const titleHandedOver = song?.titleMorph != null;
+  const metaHandedOver = song?.metaMorph != null;
+  const rowTitleInk = useDerivedValue(() =>
+    titleHandedOver ? 1 - lineOwnedByPlayer(arrived.value) : 1,
+  );
+  const rowMetaInk = useDerivedValue(() =>
+    metaHandedOver ? 1 - lineOwnedByPlayer(arrived.value) : 1,
+  );
+  /** Everything a row has that the player does not: it leaves as the player lands. */
+  const rowOnly = useDerivedValue(() => 1 - arrived.value);
   /**
    * The two halves of the gesture, from `ROW_ARRIVAL`: how far the face has
    * walked to its seat, and how much of the name has been written into the room
@@ -1606,25 +1719,58 @@ function NativePlacementFlight({
     const scale = nativeCameraScale(p, recut, cameraShared);
     const fitted = nativeFitScale(p, recut, fitScaleShared);
     const dot = bandAlphaAt(scale, fitted, REPRESENTATION_WINDOWS.dot);
-    return owner.value * Math.min(1, dot + becomingRow.value);
+    return owner.value * Math.min(1, dot + becomingRow.value + arrived.value);
   });
   /**
+   * The face's weight, which is not its opacity.
+   *
+   * Identity recedes as the measurement arrives. A mark is a promise about a
+   * song and the player is what the song turned out to be, so the contour that
+   * carried the whole identity at L0 goes quiet under the waveform at L2 rather
+   * than competing with it — `SONG_FACE_ALPHA`, which is what `nameLens` draws
+   * the player's face at. It is the same face the whole way; only how loudly it
+   * is drawn changes.
+   */
+  const faceWeight = useDerivedValue(
+    () =>
+      weight +
+      (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived.value,
+  );
+  /** Only a downloaded song is filled, and only while it is small enough to be. */
+  const faceFill = useDerivedValue(() => weight * (1 - arrived.value));
+  /**
    * Where that one face sits: the mark's own point at L0, the row's preview
-   * seat at L1, and every point between on the way.
+   * seat at L1, the middle of the view at L2, and every point between on the
+   * way.
    */
   const faceTransform = useDerivedValue(() => {
-    const t = walked.value;
+    const pose = facePoseAt(walked.value, arrived.value, viewport, FACE_GROWTH);
     return [
-      { translateX: -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * t },
-      { scale: 1 + (FACE_GROWTH - 1) * t },
+      { translateX: pose.x },
+      { translateY: pose.y },
+      { scale: pose.scale },
     ];
   });
   /** A hairline is a hairline at any size, so it is drawn back out of it. */
   const faceStrokeWidth = useDerivedValue(
     () =>
       FIELD_CANVAS_KNOBS.FACE_STROKE_PX /
-      (1 + (FACE_GROWTH - 1) * walked.value),
+      facePoseAt(walked.value, arrived.value, viewport, FACE_GROWTH).scale,
   );
+  /**
+   * Where the player hangs: on the face, not on the mark.
+   *
+   * The *same* pose the face is drawn at, so the ring is concentric with the
+   * contour on every frame of the way in and reads as growing out of it. Given
+   * the rise alone it was concentric only at the ends: through the middle of
+   * the flight the face was still out at its row seat while the ring had
+   * already centred itself on the mark, and a ring that leaves its own face
+   * behind is two objects again — which is the thing this was all for.
+   */
+  const playerAnchor = useDerivedValue<Transforms3d>(() => {
+    const pose = facePoseAt(walked.value, arrived.value, viewport, FACE_GROWTH);
+    return [{ translateX: pose.x }, { translateY: pose.y }];
+  });
   const ringRadius = useDerivedValue(() => {
     const t = walked.value;
     return (
@@ -1635,14 +1781,6 @@ function NativePlacementFlight({
     () =>
       -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked.value,
   );
-  /**
-   * The metadata, which arrives with the name rather than before it.
-   *
-   * On the row band alone it would fade up under a face that is still crossing
-   * the space it occupies, and the two lines of a row would arrive at two
-   * different times for no reason a person could name.
-   */
-  const rowOpacity = useDerivedValue(() => owner.value * written.value);
   /*
    * The name, written on.
    *
@@ -1685,6 +1823,7 @@ function NativePlacementFlight({
     () =>
       owner.value *
       row.titleAlpha *
+      rowTitleInk.value *
       writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
         .borderAlpha,
   );
@@ -1692,12 +1831,31 @@ function NativePlacementFlight({
     () =>
       owner.value *
       row.titleAlpha *
+      rowTitleInk.value *
       writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
         .fillAlpha,
   );
   /** The pre-write behaviour, kept for where an outline cannot be had. */
   const rowTitleFade = useDerivedValue(
-    () => owner.value * row.titleAlpha * written.value,
+    () => owner.value * row.titleAlpha * rowTitleInk.value * written.value,
+  );
+  /**
+   * The row's second voice, which arrives with the name rather than before it.
+   *
+   * On the row band alone it would fade up under a face that is still crossing
+   * the space it occupies, and the two lines of a row would arrive at two
+   * different times for no reason a person could name.
+   *
+   * Two values now rather than one, because the two halves of that voice go
+   * different ways at L2. `REMOVE` is a thing to do to a row and the player has
+   * no such word, so it leaves; the availability line *becomes* the recipe, so
+   * it hands over to the morph instead of fading.
+   */
+  const rowActionOpacity = useDerivedValue(
+    () => owner.value * written.value * rowOnly.value,
+  );
+  const rowMetaOpacity = useDerivedValue(
+    () => owner.value * written.value * rowMetaInk.value,
   );
   return (
     <SkiaGroup transform={transform}>
@@ -1708,14 +1866,14 @@ function NativePlacementFlight({
       <SkiaGroup opacity={faceOpacity}>
         <SkiaGroup transform={faceTransform}>
           {filled ? (
-            <Path path={markPath} color={color} style="fill" opacity={weight} />
+            <Path path={markPath} color={color} style="fill" opacity={faceFill} />
           ) : null}
           <Path
             path={markPath}
             color={color}
             style="stroke"
             strokeWidth={faceStrokeWidth}
-            opacity={weight}
+            opacity={faceWeight}
           />
         </SkiaGroup>
         {/*
@@ -1724,14 +1882,16 @@ function NativePlacementFlight({
           scale would carry the gap along with it.
         */}
         {playing ? (
-          <Circle
-            cx={ringCentreX}
-            cy={0}
-            r={ringRadius}
-            color={color}
-            style="stroke"
-            strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
-          />
+          <SkiaGroup opacity={rowOnly}>
+            <Circle
+              cx={ringCentreX}
+              cy={0}
+              r={ringRadius}
+              color={color}
+              style="stroke"
+              strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
+            />
+          </SkiaGroup>
         ) : null}
       </SkiaGroup>
       {/*
@@ -1762,8 +1922,8 @@ function NativePlacementFlight({
         color={color}
         opacity={row.titleTrace === null ? rowTitleFade : titleOpacity}
       />
-      <SkiaGroup opacity={rowOpacity}>
-        {row.action === null ? null : (
+      {row.action === null ? null : (
+        <SkiaGroup opacity={rowActionOpacity}>
           <Text
             text={row.action}
             x={row.actionX}
@@ -1772,7 +1932,9 @@ function NativePlacementFlight({
             color={mutedColor}
             opacity={NAME_LENS_KNOBS.ROW_ACTION_ALPHA}
           />
-        )}
+        </SkiaGroup>
+      )}
+      <SkiaGroup opacity={rowMetaOpacity}>
         <Text
           text={row.meta}
           x={-NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX}
@@ -1781,6 +1943,27 @@ function NativePlacementFlight({
           color={mutedColor}
         />
       </SkiaGroup>
+      {/*
+        The third pose, on the same anchor as the other two. It is inside this
+        group rather than beside it because that is the whole claim: the player
+        is not a screen that opens over the field, it is what this one mark
+        looks like from here.
+      */}
+      {song === null ? null : (
+        <NativePlayerParts
+          arrived={arrived}
+          colour={color}
+          durationSeconds={durationSeconds}
+          levels={levels}
+          model={song}
+          mutedColour={mutedColor}
+          positionSeconds={positionSeconds}
+          anchor={playerAnchor}
+          songMetaFont={songMetaFont}
+          songTitleFont={songTitleFont}
+          viewport={viewport}
+        />
+      )}
     </SkiaGroup>
   );
 }
