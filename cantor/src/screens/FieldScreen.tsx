@@ -36,6 +36,7 @@ import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
+import { transportWord } from '../features/field/NativePlayer';
 import { JobSheet } from '../features/field/JobSheet';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
@@ -536,6 +537,22 @@ export function FieldScreen({ identity }: Props) {
     currentTrack !== null &&
     currentTrack.nodeKey === focused.entity.nodePublicKey &&
     currentTrack.songId === focused.entity.entityId;
+  /**
+   * The transport's word, computed once and drawn twice.
+   *
+   * The canvas draws it inside the player and `SongSurface` lays its touch
+   * target over it, so both read this rather than each deciding for itself.
+   */
+  const focusedTransportLabel = useMemo(
+    () =>
+      transportWord(
+        focusedIsCurrent,
+        transport.snapshot.state === 'playing',
+        focused?.localAudio.state === 'cached' ||
+          focused?.localAudio.state === 'pinned',
+      ),
+    [focused, focusedIsCurrent, transport.snapshot.state],
+  );
 
   /**
    * Play the focused song, fetching it first if the phone does not have it.
@@ -1053,6 +1070,7 @@ export function FieldScreen({ identity }: Props) {
                 focusKey={fieldCamera.focus?.key ?? null}
                 positionSeconds={transport.positionSeconds}
                 playingKey={playingKey}
+                transportLabel={focusedTransportLabel}
                 nowMs={nowMs}
                 playingProgress={playingProgress}
                 relayoutLinear={fieldCamera.relayoutLinear}
@@ -1085,12 +1103,26 @@ export function FieldScreen({ identity }: Props) {
         ) : null}
         {songAlpha > 0.01 && focused !== null && viewport !== null ? (
           <View
-            // Touchable only once it is mostly here: a transport at 4% opacity
-            // is a control nobody can see and everybody can press.
+            /*
+             * Touchable only once it is mostly here: a transport at 4% opacity
+             * is a control nobody can see and everybody can press.
+             *
+             * `songAlpha` decides *whether* — mounting, and whether a finger
+             * lands — and nothing else. It cannot decide *how much*: it is
+             * computed from React's copy of the camera, which lands a commit
+             * late by design, so anything faded by it steps while the canvas
+             * under it moves. That was the whole disconnection. What is left
+             * here fades from `cameraShared` inside `SongSurface`; a commit of
+             * lag on a touch target is invisible, and a commit of lag on a fade
+             * is the seam.
+             */
             pointerEvents={songAlpha > 0.6 ? 'box-none' : 'none'}
-            style={[StyleSheet.absoluteFill, { opacity: songAlpha }]}>
+            style={StyleSheet.absoluteFill}>
             <SongSurface
             available={focused.delivery !== undefined}
+            cameraShared={fieldCamera.cameraShared}
+            fitScale={fieldCamera.renderFitScale}
+            height={viewport.height}
             isCurrent={focusedIsCurrent}
             lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
             onOpenDetail={() => {

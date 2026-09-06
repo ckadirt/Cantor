@@ -26,7 +26,7 @@ This directory has **zero imports from app code**. Treat it as a library.
 
 | Layer | Files | Role |
 | --- | --- | --- |
-| Components | `MorphText.tsx`, `MorphShape.tsx`, `AnimatedSymbol.tsx`, `CanonicalSymbol.tsx` | React shells, one Skia `Canvas` each; detect prop changes, build models, own clocks |
+| Components | `MorphText.tsx`, `MorphShape.tsx`, `AnimatedSymbol.tsx`, `CanonicalSymbol.tsx` | React shells, one Skia `Canvas` each; detect prop changes, build models, own clocks. `MorphText` also exports `useSeededPathInterpolation` for callers that compose glyph morphs inside a canvas of their own — the field's player does. |
 | Builders | `text.ts`, `glyphs.ts`, `silhouette.ts`, `shapes.ts`, `library.ts`, `symbolLibrary.ts`, `transition.ts` | Turn "A → B" into interpolable geometry; all policy (matching, pairing, windows) lives here |
 | Math floor | `geometry.ts`, `clock.ts`, `fonts.ts` | Resampling, correspondence alignment, smootherstep, born clocks, synchronous font metrics |
 
@@ -183,6 +183,11 @@ you've read them all:
 3. **Plan** — run the policy (`buildFlights` / `buildTransformFlights` /
    `buildSilhouetteTransition` / `buildGlyphMorphPaths`) producing
    verb-identical path pairs. Pure math, runs once, never per frame.
+   `buildGlyphMorphPaths` takes an optional `toFont`: correspondence is sampled
+   after both outlines are placed in absolute pixels, so one interpolation can
+   carry a change of *size* as well as of shape. That is how the field's name
+   grows from a row's 15 px into the player's 26 px as one object rather than
+   two crossfaded ones.
 4. **Commit** — `setModel({ …, clock: bornClock(0), gen: ++genRef.current })`.
 5. **Run** — one `withTiming(1, { easing: Easing.linear })` in an effect;
    cleanup cancels. If an external `progress` is present, skip this step.

@@ -27,11 +27,12 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
  * Whether the native renderer knows everything the field shows here.
  *
  * The handover between the two renderers has to be invisible, and it can only
- * be invisible where they draw the same thing. `NativeFieldContent` knows two
- * representations — a face at mark size and a row — which is L0 and L1, so it
- * may own the field right up to the point where the *player* opens. That is
- * `song`'s own entry rather than a level boundary: at `song[0]` the player is
- * still drawing nothing, and one step further it is a fifth of the screen.
+ * be invisible where they draw the same thing. `NativeFieldContent` knows three
+ * representations — a face at mark size, a row, and the player — which is L0
+ * through L2, so it may own the field right up to the point where the *grain*
+ * opens. That is `grain`'s own entry rather than a level boundary: at
+ * `grain[0]` the waveform is still drawing nothing, and past it the field gives
+ * way to one song's samples entirely.
  *
  * Why the native path has to reach this far rather than stopping at the row
  * band: a recorded picture moves by being *scaled*, and everything a row is
@@ -43,6 +44,13 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
  * and snaps back. Only the UI thread can redraw a row at the size it is
  * supposed to be on the frame it is supposed to be that size.
  *
+ * The player was the last thing outside that argument, and it was outside it
+ * for no better reason than that the native path had never been taught the
+ * third representation. It was drawn twice instead — a ring in the picture and
+ * its chrome in React — on two clocks that could not agree, because React's
+ * copy of the camera lands a commit late by design. One renderer, three
+ * distances, one clock.
+ *
  * One predicate, used by the renderer to choose a path and by the camera to
  * decide whether a re-cut may skip React. If those two ever disagree, a re-cut
  * animates on the UI thread while the picture is recorded from React state that
@@ -52,7 +60,7 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
 export function isNativeDrawnDistance(scale: number, fitScale: number): boolean {
   'worklet';
   if (!(fitScale > 0) || !(scale > 0)) return false;
-  return scale / fitScale < REPRESENTATION_WINDOWS.song[0];
+  return scale / fitScale < REPRESENTATION_WINDOWS.grain[0];
 }
 
 export type RepresentationAlphas = Readonly<{

@@ -328,7 +328,7 @@ function buildWriteModels(font: SkFont, boxes: CharBox[]) {
  * The reaction (with notifyChange) is kept as-is: it invalidates the canvas
  * on every tick, which a plain derived value of immutable paths does not.
  */
-function useSeededPathInterpolation(
+export function useSeededPathInterpolation(
   amount: SharedValue<number> | DerivedValue<number>,
   fromPath: SkPath,
   toPath: SkPath,

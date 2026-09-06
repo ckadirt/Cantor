@@ -78,6 +78,33 @@ All variants share font layout, clocks, glyph geometry, interruption handling,
 and flicker-free UI-thread hand-offs. Keep the matching variant available even
 when the product UI chooses the calmer whole-object transform.
 
+### Semantic zoom: one drawing, three poses
+
+The field's levels are not three screens that hand over to each other. A mark
+(L0), a row (L1) and the player (L2) are **one drawing** at three distances, and
+the camera moves continuously between them:
+
+- One face path per song, from `nameLensFacePath`, which is exactly linear in
+  its radius — so the row's face *is* the mark's at 1.2× and the player's is the
+  same path again at about 12×. There is never a second contour to crossfade to.
+- The name is one object across L1 and L2, morphed between the row's 15 px cut
+  and the player's 26 px, because a row truncates a long title and the player
+  has room for it. Two strings, one interpolation.
+- `NativeFieldContent` owns the canvas for all three, up to where the grain
+  opens (`isNativeDrawnDistance`). Everything is written against the live camera
+  on the UI thread.
+
+**Nothing that moves with the camera may be laid out in React.** React's copy of
+the camera lands a commit late by design (`mirrorCamera`, `mirrorBusy`), so
+chrome faded by React state steps while the canvas under it moves — two clocks
+on one gesture. This is the Flicker Law's first rule at the level of a whole
+representation, and the player violated it until it was drawn here.
+
+What stays in React at L2 is what has no pose at L1 and no reason to be
+geometry: the elapsed readout (a string that changes twice a second would hand
+the canvas a fresh element on every tick), the lens picker, and an invisible
+layer of touch targets laid out from the same measurement the canvas draws from.
+
 ### The Flicker Law
 
 React commits and Skia canvas-mapper ticks are separate scheduling domains. A

@@ -116,14 +116,24 @@ const placed = (o: Outline, x: number, y: number): Outline =>
  * travel included (the outlines are placed at their boxes before sampling
  * correspondence, so one interpolation carries both). Null when either glyph
  * has no outline.
+ *
+ * `toFont` defaults to `font`, which is every caller that morphs a line into
+ * another line of the same size. Passing a different face is how one object
+ * changes *size* as well as shape: the field's name grows from the row's 15 px
+ * into the player's 26 px, and it has to be one interpolation or it is two
+ * drawings crossfaded — which is exactly what having a separate player used to
+ * be. Correspondence is sampled after both outlines are placed, and placement
+ * is in absolute pixels, so the two sides may come from different faces without
+ * anything downstream knowing.
  */
 export function buildGlyphMorphPaths(
   font: SkFont,
   from: CharBox,
   to: CharBox,
+  toFont: SkFont = font,
 ): { from: SkPath; to: SkPath } | null {
   const a = glyphOutline(font, from.ch);
-  const b = glyphOutline(font, to.ch);
+  const b = glyphOutline(toFont, to.ch);
   if (!a || !b) {
     return null;
   }

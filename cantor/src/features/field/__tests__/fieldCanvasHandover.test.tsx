@@ -131,6 +131,42 @@ const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
   ]),
 );
 
+/** Every string the canvas drew, for a camera and a focused placement. */
+async function drawnTextAt(
+  recut: FieldRecutModel,
+  camera: Camera,
+  focusKey: string,
+): Promise<string[]> {
+  const cameraShared = { value: camera };
+  const fitScaleShared = { value: recut.toFitScale };
+  const positionSeconds = { value: 0 };
+  let renderer!: ReactTestRenderer.ReactTestRenderer;
+  await ReactTestRenderer.act(async () => {
+    renderer = ReactTestRenderer.create(
+      <FieldCanvas
+        camera={camera}
+        cameraShared={cameraShared as never}
+        fitScaleShared={fitScaleShared as never}
+        focusKey={focusKey}
+        layout={recut.layout}
+        labelFromGroups={recut.fromGroups}
+        nowMs={Date.UTC(2026, 7, 30)}
+        palette={palette}
+        placements={recut.layout.placements}
+        positionSeconds={positionSeconds as never}
+        presentations={presentations}
+        recut={recut}
+        renderFitScale={recut.toFitScale}
+        transitionGeneration={recut.generation}
+        viewport={viewport}
+      />,
+    );
+  });
+  return renderer.root
+    .findAllByType(Text)
+    .map(node => node.props.text as string);
+}
+
 function cameraFor(layout: FieldLayout): Camera {
   return {
     x: layout.fieldCenter.x,
@@ -156,24 +192,29 @@ describe('field canvas L0 to L1 handover', () => {
   });
 
   /**
-   * The reason the native renderer had to learn the row.
+   * The reason the native renderer had to learn the row, and then the player.
    *
    * A recorded picture moves by being scaled, and a row is measured in screen
-   * pixels from end to end. So the picture may only take over once there is
-   * nothing left on screen whose size the scale would falsify — which is where
-   * the player opens, not where the row band does.
+   * pixels from end to end — as is every part of the player. So the picture may
+   * only take over once there is nothing left on screen whose size the scale
+   * would falsify, which is where the grain opens: the waveform is drawn from
+   * the viewport rather than from the camera, so it is the one representation a
+   * recording cannot lie about.
    */
-  it('keeps the picture out of the whole span where rows are drawn', () => {
+  it('keeps the picture out of the whole span where rows and the player are drawn', () => {
     const fit = month.fitScale;
     for (const ratio of [1.2, 2, 3.6, 11.9]) {
       const alphas = representationAlphas(fit * ratio, fit);
       expect(alphas.row + alphas.dot).toBeGreaterThan(0);
       expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
     }
-    // And it does take over for the player, which the native path does not
-    // know how to draw.
+    for (const ratio of [REPRESENTATION_WINDOWS.song[0], 27, 90, 177]) {
+      expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
+    }
+    // And it does take over for the grain, which the native path does not know
+    // how to draw.
     expect(
-      isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.song[0], fit),
+      isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.grain[0], fit),
     ).toBe(false);
   });
 
@@ -229,6 +270,77 @@ describe('field canvas L0 to L1 handover', () => {
     expect(drawn).toContain('Song song-a');
     expect(drawn).toContain('ON STUDIO');
     expect(drawn).toContain('GET');
+  });
+
+  /**
+   * The third pose, on the native path: the player is drawn, not laid out.
+   *
+   * At L2 the picture is still out of the canvas — the ceiling now reaches the
+   * grain — and the song's name, its recipe and its transport are Skia nodes
+   * hanging off the same mark the row hung off. Nothing here is React chrome
+   * over a canvas any more, which is what made the two disagree.
+   */
+  it('draws the player on the native path at the song band', async () => {
+    const recut: FieldRecutModel = {
+      generation: 1,
+      layout: year,
+      flights: planPlacementFlights(month.placements, year.placements, 1),
+      fromFitScale: month.fitScale,
+      toFitScale: year.fitScale,
+      fromCamera: cameraFor(month),
+      toCamera: cameraFor(year),
+      fromGroups: month.groups,
+      animate: true,
+      nativeDriven: true,
+    };
+    const held = year.placements[0];
+    const atSong = { ...cameraFor(year), scale: year.fitScale * 30 };
+    expect(isNativeDrawnDistance(atSong.scale, year.fitScale)).toBe(true);
+    const drawn = await drawnTextAt(recut, atSong, held.key);
+    // The player's own words, which no row has.
+    expect(drawn).toContain('PLAY');
+    expect(drawn).toContain('ON NODE');
+    /*
+     * And exactly one player, with two songs in the field.
+     *
+     * The song band is a function of the camera alone, so anything written
+     * against it without asking *which* song this is applies to every mark at
+     * once. The words were gated on the model from the start; the face was not,
+     * and on the device every song in the field grew to full size at L2 and
+     * stacked up. One `DETAIL` is the cheapest way to keep asking.
+     */
+    expect(drawn.filter(text => text === 'DETAIL')).toHaveLength(1);
+    // And the recipe the availability line becomes.
+    expect(drawn.some(text => text.startsWith('LIGHT · '))).toBe(true);
+  });
+
+  /**
+   * The player answers to a *placement*, not to a song.
+   *
+   * One song can sit in several groups at once — a date mark and a playlist
+   * membership are two placements of one entity — and only the one the camera
+   * arrived at is the player. Matching on the entity instead drew the player
+   * for none of them, because a placement key and an entity key are never the
+   * same string.
+   */
+  it('draws no player for a key that names the entity rather than the seat', async () => {
+    const recut: FieldRecutModel = {
+      generation: 1,
+      layout: year,
+      flights: planPlacementFlights(month.placements, year.placements, 1),
+      fromFitScale: month.fitScale,
+      toFitScale: year.fitScale,
+      fromCamera: cameraFor(month),
+      toCamera: cameraFor(year),
+      fromGroups: month.groups,
+      animate: true,
+      nativeDriven: true,
+    };
+    const held = year.placements[0];
+    expect(held.entityKey).not.toBe(held.key);
+    const atSong = { ...cameraFor(year), scale: year.fitScale * 30 };
+    const drawn = await drawnTextAt(recut, atSong, held.entityKey);
+    expect(drawn).not.toContain('DETAIL');
   });
 
   /**
