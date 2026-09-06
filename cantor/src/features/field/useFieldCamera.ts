@@ -21,6 +21,7 @@ import {
   interpolatePositiveScale,
   isNativeDrawnDistance,
   isShelfDistance,
+  isSongDistance,
   levelCameraTarget,
   levelOf,
   nearestSeat,
@@ -666,7 +667,15 @@ export function useFieldCamera({
     // Below L1 the camera is inside one song, and the shelf it belongs to is
     // the one that song was seated in — a nearest-seat answer would name
     // whichever column the camera happens to be over.
-    if (level !== 'shelf') return focus?.groupKey ?? null;
+    //
+    // Unless there is no focus left to ask. Leaving a song clears it before the
+    // flight back to the shelf has finished, so for the first part of that
+    // climb this is the only question still worth asking — and at this distance
+    // it answers well, because a camera standing inside a song is standing over
+    // that song's own column. Without the fallback the header empties for a
+    // few frames and fills again, which is the flicker `nearestSeat` was
+    // brought in to remove one level up.
+    if (level !== 'shelf' && focus !== null) return focus.groupKey;
     const index = nearestSeat(seats, renderedCamera);
     return index < 0 ? null : seats[index].key;
   }, [focus, level, renderedCamera, seats]);
@@ -720,6 +729,17 @@ export function useFieldCamera({
         : null;
       if (shelf) {
         flyTo(shelf);
+        // The focus goes with it. `focusKey` is what the canvas mounts the
+        // player on, and the player's pose is a function of the camera's scale
+        // alone — so a song you have *left* stays the player, and its face
+        // grows again on the way down to whichever song you open next. That is
+        // the wrong shape flying: you tap the second row and watch the first
+        // one swell out of the list. It is visible at rest too, any time the
+        // camera settles above the shelf seat.
+        //
+        // After the target is computed, because that is the one thing the
+        // placement is still needed for.
+        commitFocus(null);
         return true;
       }
     }
@@ -869,9 +889,28 @@ export function useFieldCamera({
         'worklet';
         runOnJS(cancelCameraFlight)();
         pinching.value = true;
+        const startCamera = cameraShared.value;
+        // Zoom is still the navigation, so a pinch is how you leave a song —
+        // but inside one it pulls against the middle of the view rather than
+        // against the fingers. Anchored to the fingers it translates as well as
+        // scales, which is the same complaint the pan answers: the player is
+        // not a map and must not slide out from under itself.
+        //
+        // Decided once, from the camera the pinch began on, rather than read
+        // live: a gesture that swapped its anchor halfway through would jump by
+        // the distance between the fingers and the centre, exactly as it
+        // crossed back out into the shelf.
+        const centred = isSongDistance(
+          startCamera.scale,
+          layoutFitShared.value,
+        );
+        const size = viewport;
         pinchStart.value = {
-          focal: { x: event.focalX, y: event.focalY },
-          camera: cameraShared.value,
+          focal:
+            centred && size !== null
+              ? { x: size.width / 2, y: size.height / 2 }
+              : { x: event.focalX, y: event.focalY },
+          camera: startCamera,
         };
       })
       .onUpdate(event => {
@@ -962,6 +1001,19 @@ export function useFieldCamera({
           return;
         }
         if (start.pull !== null) return;
+        // A song is a page, not a map. Once the camera is standing in one there
+        // is nothing beside it to pan to — the whole field is one song wide at
+        // this distance — so a drag that moved the camera only slid the player
+        // off the screen and left the person holding an empty white frame.
+        //
+        // Read from the *live* camera rather than from the camera the drag
+        // began on, so the lock takes effect the moment a pinch or a flight
+        // crosses into the song and lifts the moment one leaves it.
+        //
+        // After the edge pulls, deliberately: the composer and the engines are
+        // reachable from everywhere, and neither of them moves the camera.
+        if (isSongDistance(cameraShared.value.scale, layoutFitShared.value))
+          return;
         const moved = {
           scale: start.camera.scale,
           x: start.camera.x - event.translationX / start.camera.scale,

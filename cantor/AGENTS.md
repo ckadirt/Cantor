@@ -112,6 +112,23 @@ are measured in log scale with no easing of their own, so a local pose advances
 in lockstep with the camera carrying it and the two motions sum to a straight
 line.
 
+**A song is a page, not a map.** The pan is locked at `isSongDistance` and a
+pinch inside a song pulls against the middle of the view rather than the
+fingers, so the player cannot slide out from under itself. Zoom is still the
+navigation — a pinch is how you leave — and the edge pulls still open the
+composer and the engines, because neither of those moves the camera.
+
+**The player belongs to the song you are in, not the one you were in.** The
+canvas mounts it on `focusKey`, and its pose answers to the camera's *scale*
+alone: `SONG_ARRIVAL.SHAPE_GROW` opens at the shelf seat, so any focused song
+grows its face whenever the camera is closer than L1 — whether or not the camera
+is going anywhere near it. So `ascend` drops the focus on the way out. Left set,
+the song you just closed keeps swelling out of the list: at rest whenever a
+flight is interrupted above the seat, and on the descent into whichever row you
+tap next. What outlives the focus is only the *fade*, held one placement deep in
+`FieldScreen` so the words still leave on the song band rather than popping at
+full opacity.
+
 **Nothing that moves with the camera may be laid out in React.** React's copy of
 the camera lands a commit late by design (`mirrorCamera`, `mirrorBusy`), so
 chrome faded by React state steps while the canvas under it moves — two clocks

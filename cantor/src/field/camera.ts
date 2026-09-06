@@ -24,6 +24,20 @@ export const LEVEL_BOUNDARIES = {
 } as const;
 
 /**
+ * Is the camera standing in a song — L2 or closer?
+ *
+ * The counterpart of `isShelfDistance`, and it exists for the same reason: the
+ * gesture has to answer this on the UI thread, where `levelOf` cannot go
+ * because it throws. A song is somewhere you *are*, not somewhere you look
+ * across, so the pan reads this and declines to move the camera.
+ */
+export function isSongDistance(scale: number, fitScale: number): boolean {
+  'worklet';
+  if (!(fitScale > 0) || !(scale > 0)) return false;
+  return scale / fitScale >= LEVEL_BOUNDARIES.shelf;
+}
+
+/**
  * KNOBS — how a mark is taken apart and put back together as a row, in
  * multiples of FIT.
  *
