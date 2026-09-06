@@ -35,6 +35,8 @@ import {
   isNativeDrawnDistance,
   placementPoint,
   nameArrival,
+  songNameArrival,
+  songShapeArrival,
   representationAlphas,
   shelfLabelAlpha,
   smootherstep,
@@ -1644,6 +1646,36 @@ function NativePlacementFlight({
    * its own copy of the camera.
    */
   const isPlayer = song !== null;
+  /**
+   * The player's two beats, and the band that is neither of them.
+   *
+   * `arrived` is the crossfade band: *how present* the player is, which is what
+   * fades the ring up and takes the row's own second voice away. The two
+   * arrivals below are *where things are* — the pose — and they are deliberately
+   * not the same number. A band is built to hand one drawing over to another;
+   * it makes a poor clock for a journey, because it is measured in linear ratio
+   * and eased a second time on top of the camera's own easing. Written against
+   * it, every part of the player stood still for the first half of a descent
+   * and then crossed the screen at once.
+   *
+   * Shape first, then the name. See `SONG_ARRIVAL`.
+   */
+  const shapeArrived = useDerivedValue(() => {
+    if (!isPlayer) return 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    return songShapeArrival(
+      nativeCameraScale(p, recut, cameraShared),
+      nativeFitScale(p, recut, fitScaleShared),
+    );
+  });
+  const nameArrived = useDerivedValue(() => {
+    if (!isPlayer) return 0;
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    return songNameArrival(
+      nativeCameraScale(p, recut, cameraShared),
+      nativeFitScale(p, recut, fitScaleShared),
+    );
+  });
   const arrived = useDerivedValue(() => {
     // Zero for every song that is not the one the camera arrived at, and that
     // guard is the whole of it. The band is a function of the camera alone, so
@@ -1672,10 +1704,10 @@ function NativePlacementFlight({
   const titleHandedOver = song?.titleMorph != null;
   const metaHandedOver = song?.metaMorph != null;
   const rowTitleInk = useDerivedValue(() =>
-    titleHandedOver ? 1 - lineOwnedByPlayer(arrived.value) : 1,
+    titleHandedOver ? 1 - lineOwnedByPlayer(nameArrived.value) : 1,
   );
   const rowMetaInk = useDerivedValue(() =>
-    metaHandedOver ? 1 - lineOwnedByPlayer(arrived.value) : 1,
+    metaHandedOver ? 1 - lineOwnedByPlayer(nameArrived.value) : 1,
   );
   /** Everything a row has that the player does not: it leaves as the player lands. */
   const rowOnly = useDerivedValue(() => 1 - arrived.value);
@@ -1730,21 +1762,33 @@ function NativePlacementFlight({
    * than competing with it — `SONG_FACE_ALPHA`, which is what `nameLens` draws
    * the player's face at. It is the same face the whole way; only how loudly it
    * is drawn changes.
+   *
+   * On the shape's own beat rather than on the band, so it recedes *as* it
+   * grows. Fading on the band instead, it reached most of its full size while
+   * still carrying a downloaded song's solid fill — a hand-sized block of black
+   * in the middle of the screen for a third of the descent, which then emptied
+   * out after it had arrived. A promise should get quieter on its way to
+   * becoming a measurement, not once it is already one.
    */
   const faceWeight = useDerivedValue(
     () =>
       weight +
-      (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived.value,
+      (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * shapeArrived.value,
   );
   /** Only a downloaded song is filled, and only while it is small enough to be. */
-  const faceFill = useDerivedValue(() => weight * (1 - arrived.value));
+  const faceFill = useDerivedValue(() => weight * (1 - shapeArrived.value));
   /**
    * Where that one face sits: the mark's own point at L0, the row's preview
    * seat at L1, the middle of the view at L2, and every point between on the
    * way.
    */
   const faceTransform = useDerivedValue(() => {
-    const pose = facePoseAt(walked.value, arrived.value, viewport, FACE_GROWTH);
+    const pose = facePoseAt(
+      walked.value,
+      shapeArrived.value,
+      viewport,
+      FACE_GROWTH,
+    );
     return [
       { translateX: pose.x },
       { translateY: pose.y },
@@ -1755,7 +1799,7 @@ function NativePlacementFlight({
   const faceStrokeWidth = useDerivedValue(
     () =>
       FIELD_CANVAS_KNOBS.FACE_STROKE_PX /
-      facePoseAt(walked.value, arrived.value, viewport, FACE_GROWTH).scale,
+      facePoseAt(walked.value, shapeArrived.value, viewport, FACE_GROWTH).scale,
   );
   /**
    * Where the player hangs: on the face, not on the mark.
@@ -1768,7 +1812,12 @@ function NativePlacementFlight({
    * behind is two objects again — which is the thing this was all for.
    */
   const playerAnchor = useDerivedValue<Transforms3d>(() => {
-    const pose = facePoseAt(walked.value, arrived.value, viewport, FACE_GROWTH);
+    const pose = facePoseAt(
+      walked.value,
+      shapeArrived.value,
+      viewport,
+      FACE_GROWTH,
+    );
     return [{ translateX: pose.x }, { translateY: pose.y }];
   });
   const ringRadius = useDerivedValue(() => {
@@ -1952,6 +2001,7 @@ function NativePlacementFlight({
       {song === null ? null : (
         <NativePlayerParts
           arrived={arrived}
+          named={nameArrived}
           colour={color}
           durationSeconds={durationSeconds}
           levels={levels}

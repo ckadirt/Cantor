@@ -467,6 +467,7 @@ function MorphGlyph({
 export function NativePlayerParts({
   model,
   arrived,
+  named,
   anchor,
   viewport,
   levels,
@@ -478,7 +479,14 @@ export function NativePlayerParts({
   songMetaFont,
 }: {
   model: NativeSongModel;
+  /**
+   * How present the player is: the crossfade band. Opacity, and nothing else —
+   * where a thing *is* comes from the two arrivals, which move on the camera's
+   * own clock rather than on a band's.
+   */
   arrived: DerivedValue<number>;
+  /** How far the name and the recipe have travelled to the foot. */
+  named: DerivedValue<number>;
   /**
    * The player's centre: the face's own pose, so the ring grows out of the
    * contour rather than merely arriving at the same place it does.
@@ -503,13 +511,11 @@ export function NativePlayerParts({
    * the way open so they land on a player that is already there.
    */
   const chrome = useDerivedValue(() => {
-    const t = (arrived.value - 0.6) / 0.4;
+    const t = (named.value - 0.6) / 0.4;
     return t <= 0 ? 0 : t >= 1 ? 1 : t;
   });
   /** The step the row's own ink is the complement of; see `MorphLine`. */
-  const owned = useDerivedValue<number>(() =>
-    lineOwnedByPlayer(arrived.value),
-  );
+  const owned = useDerivedValue<number>(() => lineOwnedByPlayer(named.value));
   const foot = useMemo(() => songWordsOriginPx(viewport), [viewport]);
   const scrub = useMemo(() => songScrubOriginPx(viewport), [viewport]);
   const column = songTitleColumnPx(viewport.width);
@@ -532,7 +538,7 @@ export function NativePlayerParts({
         )}
       </SkiaGroup>
       {model.titleMorph === null ? (
-        <SkiaGroup opacity={arrived}>
+        <SkiaGroup opacity={named}>
           <Text
             color={colour}
             font={songTitleFont}
@@ -546,11 +552,11 @@ export function NativePlayerParts({
           colour={colour}
           morphs={model.titleMorph}
           own={owned}
-          progress={arrived}
+          progress={named}
         />
       )}
       {model.metaMorph === null ? (
-        <SkiaGroup opacity={arrived}>
+        <SkiaGroup opacity={named}>
           <Text
             color={mutedColour}
             font={songMetaFont}
@@ -564,7 +570,7 @@ export function NativePlayerParts({
           colour={mutedColour}
           morphs={model.metaMorph}
           own={owned}
-          progress={arrived}
+          progress={named}
         />
       )}
       <SkiaGroup opacity={chrome}>

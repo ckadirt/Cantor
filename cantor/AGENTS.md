@@ -94,6 +94,24 @@ the camera moves continuously between them:
   opens (`isNativeDrawnDistance`). Everything is written against the live camera
   on the UI thread.
 
+Each crossing is **two beats, not one**: `ROW_ARRIVAL` for L0→L1 and
+`SONG_ARRIVAL` for L1→L2. The shape moves first and the words follow it. Putting
+a whole crossing on one number makes everything in the frame move at the same
+instant, which reads as a lurch rather than as a sentence — that is what
+`ROW_ARRIVAL`'s own note means by "two things that must not happen at once."
+
+**A pose is not a band.** Crossfade bands (`REPRESENTATION_WINDOWS`) say how
+*present* something is; arrivals say where it *is*. Never drive a position or a
+size from a band: bands are measured in linear ratio and eased in their own
+right, while `interpolateCamera` eases once and then walks the scale
+exponentially. Drive a pose from a band and you get a second smootherstep on top
+of the camera's, over a window that covers a fraction of the flight — the player
+was built that way first, and its name stood still through half of every descent
+and then hooked across the screen at six times its own average speed. Arrivals
+are measured in log scale with no easing of their own, so a local pose advances
+in lockstep with the camera carrying it and the two motions sum to a straight
+line.
+
 **Nothing that moves with the camera may be laid out in React.** React's copy of
 the camera lands a commit late by design (`mirrorCamera`, `mirrorBusy`), so
 chrome faded by React state steps while the canvas under it moves — two clocks
