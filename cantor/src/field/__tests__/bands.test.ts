@@ -2,10 +2,13 @@ import {
   LEVEL_BOUNDARIES,
   LEVEL_SCALE_RATIOS,
   REPRESENTATION_WINDOWS,
+  SONG_ARRIVAL,
   faceArrival,
   isNativeDrawnDistance,
   nameArrival,
   representationAlphas,
+  songNameArrival,
+  songShapeArrival,
 } from '..';
 import { writePhase } from '../../motion/text';
 
@@ -110,5 +113,66 @@ describe('a mark becoming a row', () => {
   it('answers nothing rather than throwing before a scale exists', () => {
     expect(faceArrival(0, 0)).toBe(0);
     expect(nameArrival(Number.NaN, 1)).toBe(0);
+  });
+});
+
+describe('a row becoming the player', () => {
+  const at = (ratio: number) => fit * ratio;
+
+  it('is the row until the camera leaves the shelf seat', () => {
+    expect(songShapeArrival(at(LEVEL_SCALE_RATIOS.shelf), fit)).toBe(0);
+    expect(songNameArrival(at(LEVEL_SCALE_RATIOS.shelf), fit)).toBe(0);
+  });
+
+  it('is the player by the time the camera lands on the song', () => {
+    expect(songShapeArrival(at(LEVEL_SCALE_RATIOS.song), fit)).toBe(1);
+    expect(songNameArrival(at(LEVEL_SCALE_RATIOS.song), fit)).toBe(1);
+  });
+
+  /**
+   * The shape leads and the name follows, and they overlap by one unit of FIT.
+   *
+   * Run on one number they all moved at once, which is the lurch. Run strictly
+   * end-to-end the hand-over reads as a stutter. The name starts where the
+   * player first becomes visible at all, just before the shape settles.
+   */
+  it('seats the picture before it moves the name', () => {
+    expect(songShapeArrival(at(LEVEL_BOUNDARIES.shelf), fit)).toBe(1);
+    // The name has begun by then, but only just.
+    const begun = songNameArrival(at(LEVEL_BOUNDARIES.shelf), fit);
+    expect(begun).toBeGreaterThan(0);
+    expect(begun).toBeLessThan(0.15);
+    // And it had not begun one unit earlier, where the shape still owns the frame.
+    expect(songNameArrival(at(REPRESENTATION_WINDOWS.song[0]), fit)).toBe(0);
+  });
+
+  /**
+   * The whole of the curve fix, as one property.
+   *
+   * `interpolateCamera` eases once and then walks the scale exponentially, so a
+   * pose that advances *linearly in log scale* advances in lockstep with the
+   * camera carrying it, and the two motions sum to a straight line. Easing here
+   * as well — a smootherstep on a smootherstep — is what made the name stand
+   * still through half the descent and then hook across the screen. Halfway in
+   * log space must therefore be halfway through the pose, exactly.
+   */
+  it('advances evenly in log scale rather than easing a second time', () => {
+    for (const [opens, lands, arrival] of [
+      [...SONG_ARRIVAL.SHAPE_GROW, songShapeArrival],
+      [...SONG_ARRIVAL.NAME_TRAVEL, songNameArrival],
+    ] as const) {
+      // The geometric mean is what halfway means in log scale.
+      expect(arrival(at(Math.sqrt(opens * lands)), fit)).toBeCloseTo(0.5, 6);
+      const quarter = Math.exp(
+        Math.log(opens) + (Math.log(lands) - Math.log(opens)) / 4,
+      );
+      expect(arrival(at(quarter), fit)).toBeCloseTo(0.25, 6);
+    }
+  });
+
+  it('answers nothing rather than throwing before a scale exists', () => {
+    expect(songShapeArrival(1, 0)).toBe(0);
+    expect(songNameArrival(0, 1)).toBe(0);
+    expect(songShapeArrival(Number.NaN, 1)).toBe(0);
   });
 });

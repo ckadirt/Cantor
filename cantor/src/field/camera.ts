@@ -59,6 +59,79 @@ export const ROW_ARRIVAL = {
   NAME_WRITE: [LEVEL_BOUNDARIES.field, LEVEL_SCALE_RATIOS.shelf],
 } as const;
 
+/**
+ * KNOBS — how a row becomes the player, in multiples of FIT.
+ *
+ * Two windows, for the reason `ROW_ARRIVAL` gives one level down: a row
+ * becoming the player is two things and they must not happen at once. The
+ * picture arrives first — the face grows out of its row seat into the middle of
+ * the view and the ring blooms around it — and *then* the name travels to the
+ * foot and the availability line becomes the recipe. Run together on one
+ * number, as they were first built, everything in the frame moves at the same
+ * instant and the crossing reads as a lurch rather than as a sentence.
+ *
+ * The overlap is deliberate and it is one unit wide. The name starts where the
+ * player first becomes visible at all — `REPRESENTATION_WINDOWS.song[0]` —
+ * which is just before the shape finishes settling at the shelf boundary, so
+ * the two beats are legible as two without the hand-off reading as a stutter.
+ *
+ * Both are written in boundaries the zoom model already has: the song is a
+ * picture by the moment you stop standing in the shelf, and its name is under
+ * it by the moment you have arrived at the song.
+ */
+export const SONG_ARRIVAL = {
+  /** The face out of its row seat and into the view; the ring around it. */
+  SHAPE_GROW: [LEVEL_SCALE_RATIOS.shelf, LEVEL_BOUNDARIES.shelf],
+  /** The name and the recipe down into the foot. */
+  NAME_TRAVEL: [REPRESENTATION_WINDOWS.song[0], LEVEL_SCALE_RATIOS.song],
+} as const;
+
+/**
+ * A pose's progress across a window, measured the way the camera actually
+ * moves.
+ *
+ * In *log* scale, and with no easing of its own — and both halves of that are
+ * load-bearing.
+ *
+ * `interpolateCamera` eases progress once, with `smootherstep`, and then walks
+ * the scale exponentially between the two ends. So a window measured in linear
+ * ratio covers wildly different amounts of the flight at either end of it, and
+ * an easing applied here is a second smootherstep on top of the camera's own.
+ * Together those made the player's parts stand still for the first half of a
+ * descent and then cross the screen in under two hundred milliseconds — the
+ * name travelled 29% further than the straight line between its two poses,
+ * hooking through a dog-leg on the way, at six times its own average speed.
+ * Measured like this the local pose advances in lockstep with the camera that
+ * is carrying it, and the two motions sum to a straight line at an even pace.
+ *
+ * The camera's easing is still there. It is simply applied once.
+ */
+function logArrival(
+  scale: number,
+  fitScale: number,
+  window: readonly [number, number],
+): number {
+  'worklet';
+  if (!(fitScale > 0) || !(scale > 0)) return 0;
+  const [from, to] = window;
+  if (!(from > 0) || !(to > from)) return 0;
+  const span = Math.log(to) - Math.log(from);
+  const walked = (Math.log(scale / fitScale) - Math.log(from)) / span;
+  return walked <= 0 ? 0 : walked >= 1 ? 1 : walked;
+}
+
+/** How far the song has grown out of its row and into the middle of the view. */
+export function songShapeArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return logArrival(scale, fitScale, SONG_ARRIVAL.SHAPE_GROW);
+}
+
+/** How far the song's name and recipe have travelled to the foot. */
+export function songNameArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return logArrival(scale, fitScale, SONG_ARRIVAL.NAME_TRAVEL);
+}
+
 export type FitOptions = Readonly<{
   horizontalSafePaddingPx: number;
   verticalSafePaddingPx: number;
