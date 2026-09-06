@@ -1,4 +1,4 @@
-import React, { useLayoutEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
@@ -522,7 +522,7 @@ function FieldCanvasImpl({
     fontSize: textType.eyebrow.fontSize,
   });
   // House rule 5: born clocks, generation keys. A clock shared across
-  // generations is advanced by this layout effect while the outgoing
+  // generations could advance while the outgoing
   // generation's mappers are still installed — `useDerivedValue` restarts them
   // from a *passive* effect, one scheduling step later — so the outgoing tree
   // reads the newborn clock for a frame and paints its own source pose. Tap
@@ -541,13 +541,6 @@ function FieldCanvasImpl({
     };
   }
   const nativeClock = clockPlan.current?.clock ?? null;
-  useLayoutEffect(() => {
-    if (recut === null || nativeClock === null || !recut.animate) return;
-    nativeClock.value = withTiming(1, {
-      duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS,
-      easing: nativeSmootherstep,
-    });
-  }, [nativeClock, recut]);
   /**
    * The label transition, planned once per re-cut.
    *
@@ -1228,6 +1221,17 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   font: monoFont,
   palette,
 }: NativeFieldContentProps) {
+  // Canvas reconciles its children in a separate React root. Starting this
+  // clock in FieldCanvas's layout effect spends the flight while that root is
+  // still building glyphs and installing mappers. Start after this generation's
+  // child effects instead, when the drawing can follow the entire clock.
+  useEffect(() => {
+    if (!recut.animate || clock.value >= 1) return;
+    clock.value = withTiming(1, {
+      duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+      easing: nativeSmootherstep,
+    });
+  }, [clock, recut]);
   return (
     <>
       <Fill color={palette.bg} />

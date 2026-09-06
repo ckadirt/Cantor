@@ -152,6 +152,42 @@ describe('field canvas re-cut clock', () => {
     mockBornClocks.length = 0;
   });
 
+  it('keeps the clock at its source until the native scene mounts', async () => {
+    const recut = recutBetween(1, month, year, true);
+    const cameraShared = { value: cameraFor(year) };
+    const fitScaleShared = { value: year.fitScale };
+    const canvas = (ready: boolean) => (
+      <FieldCanvas
+        camera={cameraFor(year)}
+        cameraShared={cameraShared as never}
+        fitScaleShared={fitScaleShared as never}
+        layout={year}
+        labelFromGroups={recut.fromGroups}
+        palette={palette}
+        placements={year.placements}
+        nowMs={Date.UTC(2026, 7, 30)}
+        recut={recut}
+        renderFitScale={year.fitScale}
+        transitionGeneration={recut.generation}
+        presentations={ready ? presentations : new Map()}
+        viewport={viewport}
+      />
+    );
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(canvas(false));
+    });
+    const clock = mockBornClocks[0].clock;
+    expect(clock.value).toBe(0);
+    await ReactTestRenderer.act(async () => {
+      renderer.update(canvas(true));
+    });
+    // The timing mock completes immediately; only the mounted drawing starts it.
+    expect(clock.value).toBe(1);
+    expect(mockBornClocks).toHaveLength(1);
+    await ReactTestRenderer.act(async () => renderer.unmount());
+  });
+
   it('gives every generation its own clock and never advances the last one', async () => {
     const first = recutBetween(1, month, month, false);
     const second = recutBetween(2, month, year, true);
