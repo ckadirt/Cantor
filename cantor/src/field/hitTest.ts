@@ -62,45 +62,6 @@ export function hitTestRowAction(
 }
 
 /**
- * The placement the camera is standing over, or null when there is nothing to
- * stand over.
- *
- * `nearestSeat`'s question one level down, and asked for the same reason. A tap
- * says which song it means; a pinch says nothing at all, so the only thing that
- * can name the song a zoom is arriving at is where the camera has got to. It
- * measures from the *gathered* pose through `placementPoint`, so it agrees with
- * `levelCameraTarget`, which seats a song by the same coordinates.
- *
- * No radius: at this distance the camera is inside one cluster and one of its
- * songs is always the closest. Callers decide *when* the question is worth
- * asking — it is meaningless above the shelf seat, where no song is being
- * arrived at yet.
- */
-export function nearestPlacement(
-  placements: readonly Placement[],
-  camera: Camera,
-  fitScale: number,
-): Placement | null {
-  if (!(fitScale > 0)) return null;
-  const gather = gatherFraction(camera.scale, fitScale);
-  const centre = { x: camera.x, y: camera.y };
-  let winner: { placement: Placement; distance: number } | null = null;
-  for (const placement of placements) {
-    const away = pointDistance(placementPoint(placement, gather), centre);
-    if (
-      winner === null ||
-      away < winner.distance ||
-      // Placement-key order, as everywhere else here, so the answer does not
-      // depend on the order the field happened to be built in.
-      (away === winner.distance && placement.key < winner.placement.key)
-    ) {
-      winner = { placement, distance: away };
-    }
-  }
-  return winner?.placement ?? null;
-}
-
-/**
  * Return the nearest tap target. L1 accepts the full row band as well as the
  * mark; placement-key tie-breaking keeps results independent of input order.
  *

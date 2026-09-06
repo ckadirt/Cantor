@@ -1,12 +1,8 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import {
-  LEVEL_SCALE_RATIOS,
-  gatherFraction,
   layoutField,
-  placementPoint,
   screenToWorld,
-  worldToScreen,
   type Camera,
   type FieldEntity,
   type FieldLayout,
@@ -97,19 +93,11 @@ function Probe({
   return null;
 }
 
-/** Three songs of one week, so the shelf has a column to pinch into. */
-const shelfEntities: FieldEntity[] = [0, 1, 2].map(index => ({
-  ...entities[0],
-  key: `node-a:song-${index}`,
-  entityId: `song-${index}`,
-  createdAtMs: Date.UTC(2026, 7, 8) + index * 3_600_000,
-}));
-
-async function renderCamera(field: FieldEntity[] = entities) {
+async function renderCamera() {
   const onOpenComposer = jest.fn();
   const onOpenEngines = jest.fn();
   const onHoldPlacement = jest.fn();
-  const layout = layoutField({ entities: field, arrangement: byTime, viewport });
+  const layout = layoutField({ entities, arrangement: byTime, viewport });
   await ReactTestRenderer.act(async () => {
     ReactTestRenderer.create(
       <Probe
@@ -233,79 +221,6 @@ describe('useFieldCamera', () => {
     // The song stayed where it was: only the scale changed.
     expect(latest.camera.x).toBeCloseTo(before.x, 10);
     expect(latest.camera.y).toBeCloseTo(before.y, 10);
-  });
-
-  /**
-   * Zoom is the navigation, so a pinch has to arrive somewhere.
-   *
-   * On its own a pinch only changes a number. It named no song, so the canvas
-   * had nothing to mount the player on and you could zoom the whole way to L2
-   * and arrive at a mark that never became a player; and it seated nothing, so
-   * the camera stopped wherever the fingers left it — off to one side, at a
-   * distance where the face has finished growing and the name has not finished
-   * travelling. A tap has never had either problem because `descend` flies to a
-   * seat.
-   */
-  it('opens and seats the song a pinch arrives at', async () => {
-    const { layout } = await renderCamera(shelfEntities);
-    const [, , tap] = gestures();
-
-    // Into the shelf by tap, which leaves the first row focused — so the pinch
-    // below has a stale answer to overrule as well as an empty one to fill.
-    await ReactTestRenderer.act(async () => {
-      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
-    });
-    expect(latest.level).toBe('shelf');
-    const seated = latest.focus;
-    expect(seated).not.toBeNull();
-
-    // A different row of the same column, and the fingers land on it.
-    const wanted = layout.placements.find(
-      placement =>
-        placement.groupKey === seated?.groupKey && placement.key !== seated?.key,
-    );
-    expect(wanted).toBeDefined();
-    const focal = worldToScreen(
-      placementPoint(
-        wanted!,
-        gatherFraction(camera().scale, layout.fitScale),
-      ),
-      camera(),
-      viewport,
-    );
-
-    const [pinch] = gestures();
-    await ReactTestRenderer.act(async () => {
-      pinch.onStart({ focalX: focal.x, focalY: focal.y });
-      pinch.onUpdate({ scale: LEVEL_SCALE_RATIOS.song / LEVEL_SCALE_RATIOS.shelf });
-      pinch.onEnd({});
-    });
-
-    expect(latest.focus?.key).toBe(wanted!.key);
-    expect(latest.level).toBe('song');
-    // Seated, not left where the fingers stopped: the song's own camera.
-    expect(camera().scale).toBeCloseTo(
-      layout.fitScale * LEVEL_SCALE_RATIOS.song,
-      10,
-    );
-    expect(camera().x).toBeCloseTo(wanted!.x, 10);
-    expect(camera().y).toBeCloseTo(wanted!.y, 10);
-  });
-
-  it('seats nothing for a pinch that ends out in the map', async () => {
-    await renderCamera(shelfEntities);
-    const [pinch] = gestures();
-    const before = camera();
-
-    await ReactTestRenderer.act(async () => {
-      pinch.onStart({ focalX: viewport.width / 2, focalY: viewport.height / 2 });
-      pinch.onUpdate({ scale: 1.2 });
-      pinch.onEnd({});
-    });
-
-    expect(latest.level).toBe('field');
-    expect(latest.focus).toBeNull();
-    expect(camera().scale).toBeCloseTo(before.scale * 1.2, 10);
   });
 
   it('gives top and bottom edge pulls priority over panning', async () => {
