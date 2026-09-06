@@ -4,6 +4,7 @@ import {
   SHELF_KNOBS,
   containToSeat,
   isShelfDistance,
+  isSongDistance,
   layoutField,
   nearestSeat,
   orderByKey,
@@ -110,6 +111,29 @@ describe('the shelf distance', () => {
     expect(isShelfDistance(1, 0)).toBe(false);
     expect(isShelfDistance(0, 1)).toBe(false);
     expect(isShelfDistance(Number.NaN, 1)).toBe(false);
+  });
+});
+
+describe('the song distance', () => {
+  /**
+   * Where the shelf stops, and with no far edge.
+   *
+   * The pan asks this to decide whether it may move the camera at all, so it
+   * has to keep saying yes past L2 — a grain is inside a song, and standing
+   * closer than the player is not a reason to be able to drag the field again.
+   */
+  it('begins exactly where the shelf ends and does not end', () => {
+    const fit = 0.5;
+    expect(isSongDistance(fit * 12.9, fit)).toBe(false);
+    expect(isSongDistance(fit * 13, fit)).toBe(true);
+    expect(isSongDistance(fit * 30, fit)).toBe(true);
+    expect(isSongDistance(fit * 670, fit)).toBe(true);
+  });
+
+  it('answers false for a scale that has not settled yet', () => {
+    expect(isSongDistance(1, 0)).toBe(false);
+    expect(isSongDistance(0, 1)).toBe(false);
+    expect(isSongDistance(Number.NaN, 1)).toBe(false);
   });
 });
 

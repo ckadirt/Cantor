@@ -408,11 +408,30 @@ export function FieldScreen({ identity }: Props) {
     cancelGesture();
     openEngines();
   }, [cancelGesture, openEngines]);
+  /**
+   * The placement the player is showing — which outlives the focus by a flight.
+   *
+   * Leaving a song clears the camera's focus at once, because the canvas mounts
+   * the player on it and a song you have left must stop being the player the
+   * moment you turn around. But this surface is the player's *words*, and they
+   * fade out on the song band over the whole climb back to the shelf. Read
+   * straight from the focus they would not fade at all: they would vanish on
+   * the first commit after the back press, at full opacity, with the ring they
+   * belong to still filling the screen.
+   *
+   * So the last placement is held, and `songAlpha` below decides how long it
+   * matters — which it already did. The band closes at `12·FIT` and takes this
+   * with it; a descent into a different song replaces the held placement long
+   * before the band reopens.
+   */
+  const heldFocus = useRef<Placement | null>(null);
+  if (fieldCamera.focus !== null) heldFocus.current = fieldCamera.focus;
+  const playerPlacement = fieldCamera.focus ?? heldFocus.current;
   // The song the camera is focused on, if the field still knows about it.
   const focused = useMemo(() => {
-    const key = fieldCamera.focus?.entityKey;
+    const key = playerPlacement?.entityKey;
     return key === undefined ? null : controller.presentations.get(key) ?? null;
-  }, [controller.presentations, fieldCamera.focus]);
+  }, [controller.presentations, playerPlacement]);
 
   /**
    * How present the player is, 0..1, from the same band the canvas draws from.
@@ -1129,7 +1148,9 @@ export function FieldScreen({ identity }: Props) {
               setPlaybackError(null);
               setSheetTarget({
                 entityKey: focused.entity.key,
-                groupKey: fieldCamera.focus?.groupKey ?? null,
+                // The placement the words belong to, which is the same thing
+                // `focused` was read from.
+                groupKey: playerPlacement?.groupKey ?? null,
               });
             }}
             onSeek={transport.seek}

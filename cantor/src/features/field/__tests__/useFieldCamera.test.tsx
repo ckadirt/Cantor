@@ -147,6 +147,82 @@ describe('useFieldCamera', () => {
     expect(latest.level).toBe('grain');
   });
 
+  /**
+   * A song is a page, not a map.
+   *
+   * There is nothing beside a song at this distance, so a drag that moved the
+   * camera only slid the player off the screen and left an empty white frame
+   * behind it — with no way back but the system's own back button.
+   */
+  it('will not pan the camera once it is standing in a song', async () => {
+    const { layout } = await renderCamera();
+    const [, , tap] = gestures();
+
+    // Down to L2 the way a person gets there: a tap into the shelf, a tap into
+    // the song.
+    await ReactTestRenderer.act(async () => {
+      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+    });
+    await ReactTestRenderer.act(async () => {
+      gestures()[2].onEnd(
+        { x: viewport.width / 2, y: viewport.height / 2 },
+        true,
+      );
+    });
+    expect(latest.level).toBe('song');
+    const still = latest.camera;
+
+    const [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 160, translationY: -90 });
+      pan.onEnd({});
+    });
+
+    expect(latest.camera).toEqual(still);
+    // And the scale was never the thing at risk: a pan does not zoom, so the
+    // lock has to be read as "the camera did not move at all".
+    expect(latest.level).toBe('song');
+    expect(latest.camera.scale).toBeCloseTo(layout.fitScale * 30, 10);
+  });
+
+  /**
+   * The way out is still the way in. Zoom is the navigation, so a pinch has to
+   * keep working inside a song — it is the gesture that leaves. It simply pulls
+   * against the middle of the view rather than against the fingers, because
+   * anchored to the fingers it translates as well as scales, which is the same
+   * drift the pan lock exists to prevent.
+   */
+  it('lets a pinch leave a song without dragging it sideways', async () => {
+    const { layout } = await renderCamera();
+    const [, , tap] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+    });
+    await ReactTestRenderer.act(async () => {
+      gestures()[2].onEnd(
+        { x: viewport.width / 2, y: viewport.height / 2 },
+        true,
+      );
+    });
+    expect(latest.level).toBe('song');
+    const before = latest.camera;
+
+    // Well off centre, and hard enough to climb back out to the shelf.
+    const [pinch] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pinch.onStart({ focalX: 20, focalY: 60 });
+      pinch.onUpdate({ scale: 0.1 });
+      pinch.onEnd({});
+    });
+
+    expect(latest.camera.scale).toBeLessThan(layout.fitScale * 13);
+    // The song stayed where it was: only the scale changed.
+    expect(latest.camera.x).toBeCloseTo(before.x, 10);
+    expect(latest.camera.y).toBeCloseTo(before.y, 10);
+  });
+
   it('gives top and bottom edge pulls priority over panning', async () => {
     const { onOpenComposer, onOpenEngines } = await renderCamera();
     let [, pan] = gestures();
@@ -213,11 +289,16 @@ describe('useFieldCamera', () => {
 
     // Leaving a song returns to its shelf, not all the way home: the level you
     // came from is the only thing that says where you are.
+    //
+    // And the focus is dropped on the way out. It is what the canvas mounts the
+    // player on, and the player's pose answers to the camera's scale alone, so
+    // a song you have left would stay the player and swell out of the list
+    // again on the descent to the next one.
     await ReactTestRenderer.act(async () => {
       expect(latest.ascend()).toBe(true);
     });
     expect(latest.level).toBe('shelf');
-    expect(latest.focus?.key).toBe(placement.key);
+    expect(latest.focus).toBeNull();
 
     await ReactTestRenderer.act(async () => {
       expect(latest.ascend()).toBe(true);
