@@ -118,6 +118,17 @@ fingers, so the player cannot slide out from under itself. Zoom is still the
 navigation — a pinch is how you leave — and the edge pulls still open the
 composer and the engines, because neither of those moves the camera.
 
+**A pinch has to arrive somewhere.** Zoom is the navigation, so the gesture
+that changes a number has to end at a *place*. A tap has never had this problem
+because `descend` names a song and flies to its seat; a pinch names nothing and
+stops wherever the fingers left it. So while one is running the focus is read
+from geometry — `nearestPlacement`, the same question `nearestSeat` asks one
+level up — and letting go seats the camera on what it arrived at, exactly as
+letting go of a pan seats a shelf column. Geometry answers *only* while
+pinching: during a tapped flight the committed focus is already true, and a
+nearest-placement answer would hand the player to each row the camera passes on
+its way.
+
 **The player belongs to the song you are in, not the one you were in.** The
 canvas mounts it on `focusKey`, and its pose answers to the camera's *scale*
 alone: `SONG_ARRIVAL.SHAPE_GROW` opens at the shelf seat, so any focused song
