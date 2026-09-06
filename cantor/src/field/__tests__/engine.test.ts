@@ -17,6 +17,7 @@ import {
   distance,
   gatherFraction,
   hitTestPlacement,
+  nearestPlacement,
   hitTestRowAction,
   interpolateCamera,
   isoWeekKey,
@@ -301,6 +302,54 @@ describe('placement hit testing', () => {
         GATHERED_FIT,
       ),
     ).toBe(bloomed);
+  });
+});
+
+describe('the song the camera is standing over', () => {
+  const GATHERED_FIT = 1 / BLOOM_KNOBS.GATHER_END_FIT;
+  const first = placement('a', 0, -50);
+  const second = placement('b', 0, 50);
+
+  it('names the nearer of the two, from the camera and nothing else', () => {
+    expect(
+      nearestPlacement([first, second], { x: 0, y: -30, scale: 1 }, GATHERED_FIT),
+    ).toBe(first);
+    expect(
+      nearestPlacement([first, second], { x: 0, y: 30, scale: 1 }, GATHERED_FIT),
+    ).toBe(second);
+  });
+
+  it('breaks a tie by placement key, as every other answer here does', () => {
+    expect(
+      nearestPlacement([second, first], { x: 0, y: 0, scale: 1 }, GATHERED_FIT),
+    ).toBe(first);
+  });
+
+  /**
+   * The same trap `hitTestPlacement` has: a bloomed mark is nowhere near its
+   * column seat, so an answer that ignored the gather would name the song whose
+   * seat the camera happens to sit over rather than the one it is looking at.
+   */
+  it('follows the marks into the bloom', () => {
+    // Two songs whose column seats and bloomed poses are on opposite sides of
+    // the camera, so the two distances cannot be confused for one another.
+    const seatedLeft = placement('a', -100, 0, { x: 200, y: 0 });
+    const seatedRight = placement('b', 100, 0, { x: -200, y: 0 });
+    const camera = { x: 90, y: 0, scale: 1 };
+
+    // Bloomed, `a` is the one at +100 and so the one being looked at.
+    expect(nearestPlacement([seatedLeft, seatedRight], camera, 1)).toBe(
+      seatedLeft,
+    );
+    // Gathered, the poses swap and so does the answer.
+    expect(
+      nearestPlacement([seatedLeft, seatedRight], camera, GATHERED_FIT),
+    ).toBe(seatedRight);
+  });
+
+  it('has no answer without a field or a scale', () => {
+    expect(nearestPlacement([], { x: 0, y: 0, scale: 1 }, GATHERED_FIT)).toBeNull();
+    expect(nearestPlacement([first], { x: 0, y: 0, scale: 1 }, 0)).toBeNull();
   });
 });
 

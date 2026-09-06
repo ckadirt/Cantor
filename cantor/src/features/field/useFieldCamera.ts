@@ -22,8 +22,10 @@ import {
   isNativeDrawnDistance,
   isShelfDistance,
   isSongDistance,
+  LEVEL_SCALE_RATIOS,
   levelCameraTarget,
   levelOf,
+  nearestPlacement,
   nearestSeat,
   placementFlightAt,
   planPlacementFlights,
@@ -197,6 +199,15 @@ export function useFieldCamera({
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  /**
+   * Whether a pinch is live, in React rather than only on the UI thread.
+   *
+   * Two commits per gesture, which buys the focus below its only geometric
+   * answer. A tap names the song it means; a pinch names nothing, so while one
+   * is running the song being arrived at has to be read from where the camera
+   * has got to.
+   */
+  const [pinchLive, setPinchLive] = useState(false);
   const [recutClock, setRecutClock] = useState<RecutClock>({
     generation: 0,
     linear: 1,
@@ -638,10 +649,64 @@ export function useFieldCamera({
     [cancelCameraFlight, cancelRelayout],
   );
 
+  /**
+   * The song a live pinch is arriving at, which is a question only geometry can
+   * answer.
+   *
+   * `descend` commits a focus because a tap says which song it means. A pinch
+   * says nothing: it moves the camera and no more, so without this a zoom into
+   * a song opened nothing — the canvas had no song to mount the player on, and
+   * you could pinch all the way to L2 and arrive at a mark that never became a
+   * player. The header solved the same problem one level up by asking where the
+   * camera *is* rather than what was last tapped; this is that question again,
+   * one level down.
+   *
+   * Only while pinching, and deliberately. During a tapped flight the committed
+   * focus is already the true answer and geometry is briefly a worse one: the
+   * camera crosses the rows between the shelf centre and its target, so a
+   * nearest-placement answer would hand the player to each row it passes.
+   *
+   * Only from the shelf seat inward, too. Further out no song is being arrived
+   * at, `SONG_ARRIVAL.SHAPE_GROW` has not opened, and there is nothing to name.
+   */
+  const pinchGroupKey = useMemo(() => {
+    if (!pinchLive || seats.length === 0) return null;
+    if (renderedCamera.scale < renderFitScale * LEVEL_SCALE_RATIOS.shelf) {
+      return null;
+    }
+    const index = nearestSeat(seats, renderedCamera);
+    return index < 0 ? null : seats[index].key;
+  }, [pinchLive, renderFitScale, renderedCamera, seats]);
+  /**
+   * Narrowed to the cluster first, because this runs on every camera frame a
+   * pinch produces and the field is allowed to hold a hundred thousand marks.
+   * A song you are standing over is in the column you are standing in, so the
+   * scan that matters is over one shelf and the O(n) pass that finds it happens
+   * only when the shelf itself changes.
+   */
+  const pinchGroupPlacements = useMemo(
+    () =>
+      pinchGroupKey === null
+        ? []
+        : renderedPlacements.filter(
+            placement => placement.groupKey === pinchGroupKey,
+          ),
+    [pinchGroupKey, renderedPlacements],
+  );
+  const pinchedInto = useMemo(
+    () =>
+      pinchGroupPlacements.length === 0
+        ? null
+        : nearestPlacement(pinchGroupPlacements, renderedCamera, renderFitScale),
+    [pinchGroupPlacements, renderFitScale, renderedCamera],
+  );
+
   const focus = useMemo(
     () =>
-      renderedPlacements.find(placement => placement.key === focusKey) ?? null,
-    [focusKey, renderedPlacements],
+      pinchedInto ??
+      renderedPlacements.find(placement => placement.key === focusKey) ??
+      null,
+    [focusKey, pinchedInto, renderedPlacements],
   );
   const focusRef = useRef<Placement | null>(null);
   useEffect(() => {
@@ -850,6 +915,56 @@ export function useFieldCamera({
     [flyTo, seats, viewport],
   );
 
+  /**
+   * Where a pinch lands.
+   *
+   * A pinch is navigation — it is the gesture the whole zoom model is written
+   * on — but on its own it only changes a number, and a level is a *place*. Let
+   * go halfway into a song and the camera stayed halfway: off to one side of
+   * the song it was arriving at, at a distance where the face has finished
+   * growing but the name is still somewhere on its way to the foot, so the
+   * player was assembled from parts. A tap has never had that problem because
+   * `descend` flies to a seat.
+   *
+   * So a release seats what the pinch was arriving at, exactly as letting go of
+   * a pan seats a shelf column. The two cases are the two things a pinch can be
+   * arriving at, and nothing else is snapped: a pinch that ends out in the map
+   * has not arrived anywhere.
+   */
+  const settleAfterPinch = useCallback(
+    (landed: Camera) => {
+      const field = layoutRef.current;
+      if (field === null) return;
+      const fit = lastRenderFitScale.current ?? field.fitScale;
+      if (isSongDistance(landed.scale, fit)) {
+        // The whole field, not one cluster: a pinch is free to cross out of the
+        // column it started in, and this runs once per gesture.
+        const song = nearestPlacement(renderedPlacements, landed, fit);
+        if (song === null) return;
+        // The same two lines `descend` ends on. Arriving by zoom and arriving by
+        // tap have to leave the field in the same state or the player is a
+        // different object depending on how you reached it.
+        commitFocus(song.key);
+        const target = levelCameraTarget('song', field, song);
+        if (target) flyTo(target);
+        return;
+      }
+      if (isShelfDistance(landed.scale, fit)) {
+        settleIntoSeat(nearestSeat(seats, landed));
+      }
+    },
+    [commitFocus, flyTo, renderedPlacements, seats, settleIntoSeat],
+  );
+
+  /** A pinch is over: React stops asking geometry, and the camera seats. */
+  const endPinch = useCallback(
+    (landed: Camera) => {
+      setPinchLive(false);
+      settleAfterPinch(landed);
+    },
+    [settleAfterPinch],
+  );
+
   /** Leaving the field by an edge pull, which is a JS-side navigation. */
   const completePull = useCallback(
     (pull: PullDirection) => {
@@ -889,6 +1004,7 @@ export function useFieldCamera({
         'worklet';
         runOnJS(cancelCameraFlight)();
         pinching.value = true;
+        runOnJS(setPinchLive)(true);
         const startCamera = cameraShared.value;
         // Zoom is still the navigation, so a pinch is how you leave a song —
         // but inside one it pulls against the middle of the view rather than
@@ -940,6 +1056,10 @@ export function useFieldCamera({
         pinching.value = false;
         pinchStart.value = null;
         settle();
+        // The landed camera by value, not by reading React's copy of it a hop
+        // later: `settle` only *asks* React for a commit, and the seat this
+        // chooses has to be the one the fingers actually left.
+        runOnJS(endPinch)(cameraShared.value);
       });
     const pan = Gesture.Pan()
       .maxPointers(1)
@@ -1121,6 +1241,7 @@ export function useFieldCamera({
     cameraShared,
     cancelCameraFlight,
     completePull,
+    endPinch,
     layoutFitShared,
     mirrorBusy,
     mirrorCamera,
