@@ -16,6 +16,22 @@ export const LEVEL_SCALE_RATIOS = {
   grain: 670,
 } as const;
 
+/**
+ * KNOB — is L3 reachable?
+ *
+ * The grain is built and it works, but the alpha stops at the player: L2 is
+ * where the product is being tuned, and a level past it that nobody is looking
+ * at is a level that drifts. Flip this to `true` and the descent, the camera's
+ * ceiling and the decode that feeds the axis all open again together — every
+ * one of them reads this rather than deciding for itself, so there is no state
+ * where half of L3 is on.
+ *
+ * Typed `boolean` rather than left as the literal `false` on purpose: a literal
+ * narrows every `GRAIN_ENABLED ? … : …` below it to one branch, and the other
+ * branch stops being type-checked the moment it stops being reachable.
+ */
+export const GRAIN_ENABLED: boolean = false;
+
 /** The exclusive upper bound for each semantic zoom level, relative to FIT. */
 export const LEVEL_BOUNDARIES = {
   field: 2,

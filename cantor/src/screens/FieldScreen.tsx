@@ -30,7 +30,13 @@ import {
 } from '../features/composer';
 import { FIELD_CAMERA_KNOBS } from '../features/field/useFieldCamera';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
-import { useSharedValue } from 'react-native-reanimated';
+import {
+  Easing,
+  cancelAnimation,
+  useReducedMotion,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
 import {
   grainBarsOf,
   type GrainBars,
@@ -41,11 +47,12 @@ import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
-import { transportWord } from '../features/field/NativePlayer';
+import { PLAYER_TRANSPORT_KNOBS } from '../features/field/NativePlayer';
 import { JobSheet } from '../features/field/JobSheet';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
   DEFAULT_ORDER_KEY,
+  GRAIN_ENABLED,
   arrangementByKey,
   byDate,
   byPlaylist,
@@ -572,21 +579,37 @@ export function FieldScreen({ identity }: Props) {
     currentTrack.nodeKey === focused.entity.nodePublicKey &&
     currentTrack.songId === focused.entity.entityId;
   /**
-   * The transport's word, computed once and drawn twice.
+   * The transport's morph, on the UI thread: 0 is play, 1 is pause.
    *
-   * The canvas draws it inside the player and `SongSurface` lays its touch
-   * target over it, so both read this rather than each deciding for itself.
+   * A shared value rather than a prop, because the canvas draws the transport
+   * and a prop is a React commit — which re-records the whole canvas from
+   * whatever the JS thread last held. The word this replaced did exactly that
+   * on every press. Here the press moves one number and the geometry follows
+   * it on the UI thread, and a second press mid-morph retargets from wherever
+   * the shape had got to rather than snapping back.
+   *
+   * Only the song the port actually holds is ever the pause pose. Opening a
+   * different song leaves this at play, which is what its transport means.
    */
-  const focusedTransportLabel = useMemo(
-    () =>
-      transportWord(
-        focusedIsCurrent,
-        transport.snapshot.state === 'playing',
-        focused?.localAudio.state === 'cached' ||
-          focused?.localAudio.state === 'pinned',
-      ),
-    [focused, focusedIsCurrent, transport.snapshot.state],
-  );
+  const transportPlaying = useSharedValue(0);
+  const reducedMotion = useReducedMotion();
+  useEffect(() => {
+    const target =
+      focusedIsCurrent && transport.snapshot.state === 'playing' ? 1 : 0;
+    if (transportPlaying.value === target) return;
+    cancelAnimation(transportPlaying);
+    transportPlaying.value = reducedMotion
+      ? target
+      : withTiming(target, {
+          duration: PLAYER_TRANSPORT_KNOBS.MORPH_MS,
+          easing: Easing.inOut(Easing.cubic),
+        });
+  }, [
+    focusedIsCurrent,
+    reducedMotion,
+    transport.snapshot.state,
+    transportPlaying,
+  ]);
 
   /**
    * Play the focused song, fetching it first if the phone does not have it.
@@ -860,6 +883,7 @@ export function FieldScreen({ identity }: Props) {
      * the axis has room for it.
      */
     if (
+      !GRAIN_ENABLED ||
       (fieldCamera.level !== 'song' && fieldCamera.level !== 'grain') ||
       focused === null ||
       viewport === null
@@ -1129,7 +1153,7 @@ export function FieldScreen({ identity }: Props) {
                 focusKey={fieldCamera.playerFocus?.key ?? null}
                 positionSeconds={transport.positionSeconds}
                 playingKey={playingKey}
-                transportLabel={focusedTransportLabel}
+                transportPlaying={transportPlaying}
                 nowMs={nowMs}
                 playingProgress={playingProgress}
                 relayoutLinear={fieldCamera.relayoutLinear}

@@ -1,6 +1,10 @@
 import { Skia } from '@shopify/react-native-skia';
 import { NAME_LENS_KNOBS } from '../../../lenses';
-import { playerWords } from '../NativePlayer';
+import {
+  playPauseSilhouettes,
+  playerWords,
+  stepSilhouette,
+} from '../NativePlayer';
 import {
   PLAYER_POSE_KNOBS,
   facePoseAt,
@@ -11,7 +15,10 @@ import {
   lineOwnedByPlayer,
   songScrubOriginPx,
   songTitleColumnPx,
+  songTitleOriginPx,
   songWordsOriginPx,
+  transportScreenPx,
+  transportSeatsPx,
 } from '../songPose';
 
 const viewport = { width: 412, height: 892 };
@@ -125,22 +132,20 @@ describe('the foot the touch layer lays itself over', () => {
   });
 });
 
-describe('the transport words', () => {
+describe('the foot\u2019s words', () => {
   const font = Skia.Font(undefined, 11);
 
-  it('lays the same three words out for the canvas and for the fingers', () => {
-    const drawn = playerWords(font, 'PLAY', 'ON PHONE');
-    const pressed = playerWords(font, 'PLAY', 'ON PHONE');
+  it('lays the same two words out for the canvas and for the fingers', () => {
+    const drawn = playerWords(font, 'ON PHONE');
+    const pressed = playerWords(font, 'ON PHONE');
     expect(pressed).toEqual(drawn);
-    expect(drawn.map(word => word.key)).toEqual([
-      'transport',
-      'detail',
-      'audio',
-    ]);
+    // The transport is not among them any more: it is a silhouette on a shared
+    // value, so that a press moves geometry rather than re-recording a canvas.
+    expect(drawn.map(word => word.key)).toEqual(['detail', 'audio']);
   });
 
   it('reads left to right without a word overlapping the next', () => {
-    const words = playerWords(font, 'PAUSE', 'PINNED');
+    const words = playerWords(font, 'PINNED');
     expect(words[0].x).toBe(0);
     // Never NaN, whatever the runtime's font can measure: one unmeasurable word
     // would put every word after it, and every button over them, nowhere at all.
@@ -154,14 +159,91 @@ describe('the transport words', () => {
       );
     }
   });
+});
 
-  it('moves the words along when the transport says a longer word', () => {
-    const short = playerWords(font, 'PLAY', 'ON NODE');
-    const long = playerWords(font, 'FETCH', 'ON NODE');
-    // Only meaningful with a real typeface; CanvasKit measures nothing without
-    // one, and a test that silently asserts 0 === 0 is not a test.
-    if (short[0].width === 0) return;
-    expect(long[1].x).toBeGreaterThan(short[1].x);
+describe('the transport', () => {
+  it('seats the three buttons in reading order about the mark', () => {
+    const seats = transportSeatsPx(viewport);
+    expect(seats.map(seat => seat.key)).toEqual([
+      'previous',
+      'playPause',
+      'next',
+    ]);
+    // Centred on the mark, which at L2 is the middle of the view — so the verb
+    // sits on the axis and the two steps are a mirror pair either side of it.
+    expect(seats[1].x).toBe(0);
+    expect(seats[0].x).toBeCloseTo(-seats[2].x);
+    // One row: three seats at three heights would not read as one control.
+    expect(seats[0].y).toBe(seats[1].y);
+    expect(seats[1].y).toBe(seats[2].y);
+  });
+
+  /**
+   * Clear of the name below it and of the ring above it.
+   *
+   * Both are the reason it sits where it does, and both move with the viewport,
+   * so a phone shaped differently from this one must not put the transport
+   * through either of them.
+   */
+  it('sits between the ring and the name it belongs to', () => {
+    const seats = transportSeatsPx(viewport);
+    const ringFoot =
+      -playerRisePx(viewport.height, 1) + playerRadiusPx(viewport.width);
+    for (const seat of seats) {
+      expect(seat.y - seat.size / 2).toBeGreaterThan(ringFoot);
+      expect(seat.y + seat.size / 2).toBeLessThan(
+        songTitleOriginPx(viewport).y,
+      );
+    }
+  });
+
+  /**
+   * The drawn seat and the pressed one, held to the same equality the foot is:
+   * the camera is centred on the mark at L2, so the mark's point *is* the
+   * middle of the view. A button a few pixels off from the shape it belongs to
+   * is worse than no button.
+   */
+  it('agrees with the drawn seat when the camera is centred on the mark', () => {
+    const drawn = transportSeatsPx(viewport);
+    const pressed = transportScreenPx(viewport);
+    for (let index = 0; index < drawn.length; index += 1) {
+      expect(pressed[index].key).toBe(drawn[index].key);
+      expect(pressed[index].x).toBeCloseTo(viewport.width / 2 + drawn[index].x);
+      expect(pressed[index].y).toBeCloseTo(
+        viewport.height / 2 + drawn[index].y,
+      );
+    }
+  });
+
+  /**
+   * The whole claim of the morph: one drawing at two poses.
+   *
+   * `interpolate` answers null for two paths that are not point-for-point
+   * compatible, and a null path is a transport that vanishes the instant it is
+   * pressed. The triangle is written as two quads with its apex emitted twice
+   * for exactly this reason, so the pairing is what has to be pinned.
+   */
+  it('morphs play into pause rather than crossfading them', () => {
+    const seat = transportSeatsPx(viewport)[1];
+    const { play, pause } = playPauseSilhouettes(seat.x, seat.y, seat.size);
+    expect(play.isInterpolatable(pause)).toBe(true);
+    expect(play.interpolate(pause, 0.5)).not.toBeNull();
+    // Two contours on both sides: the halves of the triangle are the bars.
+    expect(play.countPoints()).toBe(8);
+    expect(pause.countPoints()).toBe(8);
+  });
+
+  it('draws a step as one glyph facing two ways', () => {
+    const seats = transportSeatsPx(viewport);
+    const next = stepSilhouette(0, 0, seats[2].size, 1);
+    const previous = stepSilhouette(0, 0, seats[0].size, -1);
+    expect(next.countPoints()).toBe(previous.countPoints());
+    const forward = next.getBounds();
+    const back = previous.getBounds();
+    expect(forward.width).toBeCloseTo(back.width);
+    expect(forward.height).toBeCloseTo(back.height);
+    // A mirror about the seat's own centre, not a shape moved sideways.
+    expect(forward.x).toBeCloseTo(-(back.x + back.width));
   });
 });
 

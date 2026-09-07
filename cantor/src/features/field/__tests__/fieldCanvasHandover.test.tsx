@@ -321,9 +321,12 @@ describe('field canvas L0 to L1 handover', () => {
     const atSong = { ...cameraFor(year), scale: year.fitScale * 30 };
     expect(isNativeDrawnDistance(atSong.scale, year.fitScale)).toBe(true);
     const drawn = await drawnTextAt(recut, atSong, held.key);
-    // The player's own words, which no row has.
-    expect(drawn).toContain('PLAY');
+    // The player's own words, which no row has. The transport is not among
+    // them: it is a silhouette on a shared value, so that pressing it moves
+    // geometry instead of re-recording this canvas. See `playerWords`.
+    expect(drawn).toContain('DETAIL');
     expect(drawn).toContain('ON NODE');
+    expect(drawn).not.toContain('PLAY');
     /*
      * And exactly one player, with two songs in the field.
      *
