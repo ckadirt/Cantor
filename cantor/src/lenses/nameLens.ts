@@ -289,7 +289,7 @@ const fitTextCache = new Map<string, string>();
 const TEXT_CACHE_LIMIT = 512;
 
 /** `measureText` is not free, and a row is measured on every recorded frame. */
-function textWidth(value: string, font: MeasuredFont): number {
+export function textWidth(value: string, font: MeasuredFont): number {
   const key = `${font.getSize()}:${value}`;
   const cached = textWidthCache.get(key);
   if (cached !== undefined) return cached;

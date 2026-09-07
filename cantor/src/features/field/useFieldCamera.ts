@@ -22,9 +22,11 @@ import {
   isNativeDrawnDistance,
   isShelfDistance,
   isSongDistance,
+  LEVEL_SCALE_RATIOS,
   levelCameraTarget,
   levelOf,
   nearestSeat,
+  rubberBand,
   placementFlightAt,
   planPlacementFlights,
   seatAfterRelease,
@@ -66,10 +68,31 @@ export const FIELD_CAMERA_KNOBS = {
   MIN_SCALE_RATIO: 0.5,
   // L3 is reachable now. The ceiling is the scale that shows the closest look
   // the grain view offers, derived from the grain knobs so the two cannot drift
-  // apart: zooming further would resolve nothing new.
+  // apart: zooming further would resolve nothing new. It bounds a *camera*,
+  // not a pinch — see `PINCH_CEILING_RATIO`.
   MAX_SCALE_RATIO:
     GRAIN_KNOBS.ENTRY_RATIO *
     (GRAIN_KNOBS.ENTRY_SECONDS / GRAIN_KNOBS.MIN_SECONDS),
+  /**
+   * How close a pinch may take you: the shelf's own seat, and no further.
+   *
+   * Zoom carries you between the map and a shelf, in both directions. It does
+   * not open a song — a song is opened by touching it, and the zoom you see
+   * afterwards is `descend`'s flight. So the gesture stops where L1 does, and
+   * `PINCH_RUBBER_LOG` makes that stop something you can feel rather than a
+   * wall you hit.
+   */
+  PINCH_CEILING_RATIO: LEVEL_SCALE_RATIOS.shelf,
+  /**
+   * How far past either end the elastic stretches, in natural-log units of
+   * scale — because zoom is exponential and a limit written in ratio would
+   * feel tight at one end and loose at the other.
+   *
+   * `rubberBand` never actually reaches its limit, so this is an asymptote:
+   * ln 2 of headroom means the hardest possible pinch is a shade under twice
+   * the ceiling, and the first fraction of an octave past it is still free.
+   */
+  PINCH_RUBBER_LOG: Math.LN2,
 } as const;
 
 type PullDirection = 'compose' | 'engines';

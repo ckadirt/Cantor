@@ -64,14 +64,15 @@ import {
   nameLensFacePath,
   nameLensRingRadius,
   neutralAnalysis,
+  textWidth,
   type LensFonts,
   type LensPaints,
   type SongAnalysis,
 } from '../../lenses';
 import { bornClock } from '../../motion/clock';
 import { useMorphFont } from '../../motion/fonts';
-import { layoutText, writePhase, writeSubAlpha } from '../../motion/text';
-import { traceTitlePath } from './titleTrace';
+import { writePhase, writeSubAlpha } from '../../motion/text';
+import { titleTracePaths, traceTitlePath } from './titleTrace';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
@@ -1177,6 +1178,7 @@ function useNativeCameraMotion(
   recut: NativeRecut,
   cameraShared: SharedValue<Camera>,
   fitScaleShared: SharedValue<number>,
+  viewport: Viewport,
 ) {
   const zero = useSharedValue(0);
   const one = useSharedValue(1);
@@ -1204,9 +1206,76 @@ function useNativeCameraMotion(
   const rowOnly = useDerivedValue(() => 1 - arrived.value);
   const walked = useDerivedValue(() => faceArrival(scale.value, fit.value));
   const written = useDerivedValue(() => nameArrival(scale.value, fit.value));
+  /*
+   * The face's pose, and the two things hung on it.
+   *
+   * A song's *availability* decides how loudly its face is drawn, but where
+   * that face sits and how big it is are the camera's answer alone —
+   * `facePoseAt` reads the walk, the arrival and the viewport and nothing that
+   * distinguishes one song from another. So these belong here with the rest of
+   * the camera, for the reason at the head of this function: as three mappers
+   * per placement they were the largest block of setup left in a re-cut, and
+   * every one of them was computing the same number as its neighbour.
+   *
+   * Written out three times rather than derived from a shared pose, which
+   * would be cheaper still and wrong: a fourth hop puts these three Skia
+   * properties one mapper further from the camera than the transform they sit
+   * under, and `NativeShelfLabel` documents what a hop of skew between
+   * properties of one node looks like. Same depth as before, one instance
+   * instead of one per song.
+   */
+  const faceTransform = useDerivedValue(() => {
+    const pose = facePoseAt(
+      walked.value,
+      shapeArrived.value,
+      viewport,
+      FACE_GROWTH,
+    );
+    return [
+      { translateX: pose.x },
+      { translateY: pose.y },
+      { scale: pose.scale },
+    ];
+  });
+  /** A hairline is a hairline at any size, so it is drawn back out of it. */
+  const faceStrokeWidth = useDerivedValue(
+    () =>
+      FIELD_CANVAS_KNOBS.FACE_STROKE_PX /
+      facePoseAt(walked.value, shapeArrived.value, viewport, FACE_GROWTH).scale,
+  );
+  /**
+   * Where the player hangs: on the face, not on the mark.
+   *
+   * The *same* pose the face is drawn at, so the ring is concentric with the
+   * contour on every frame of the way in and reads as growing out of it. Given
+   * the rise alone it was concentric only at the ends: through the middle of
+   * the flight the face was still out at its row seat while the ring had
+   * already centred itself on the mark, and a ring that leaves its own face
+   * behind is two objects again — which is the thing this was all for.
+   */
+  const playerAnchor = useDerivedValue<Transforms3d>(() => {
+    const pose = facePoseAt(
+      walked.value,
+      shapeArrived.value,
+      viewport,
+      FACE_GROWTH,
+    );
+    return [{ translateX: pose.x }, { translateY: pose.y }];
+  });
+  const ringRadius = useDerivedValue(() => {
+    const t = walked.value;
+    return (
+      MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * t
+    );
+  });
+  const ringCentreX = useDerivedValue(
+    () =>
+      -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked.value,
+  );
   return {
     zero, one, becomingRow, shapeArrived, nameArrived, arrived,
     playerLineInk, rowOnly, walked, written,
+    faceTransform, faceStrokeWidth, playerAnchor, ringRadius, ringCentreX,
   };
 }
 
@@ -1288,7 +1357,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     toFitScale: recut.toFitScale,
   }), [recut]);
   const motion = useNativeCameraMotion(
-    clock, nativeRecut, cameraShared, fitScaleShared,
+    clock, nativeRecut, cameraShared, fitScaleShared, viewport,
   );
   return (
     <>
@@ -1364,7 +1433,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
                     row.meta,
                     row.action === null
                       ? 0
-                      : monoFont.measureText(row.action).width,
+                      : textWidth(row.action, monoFont),
                     {
                       rowTitle: displayFont,
                       songTitle: songTitleFont,
@@ -1398,59 +1467,16 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
  * Everything about a row that does not answer to the camera.
  *
  * The strings, the cut and the widths are a function of the song and the fonts
- * alone, so they are settled once per re-cut on the JS thread and the UI thread
- * only moves and fades what comes out of here. The measuring is the reason:
- * `fitText` searches the proportional display face for the longest prefix that
- * fits, which is not something to do on a frame.
+ * alone, so they are settled on the JS thread and the UI thread only moves and
+ * fades what comes out of here. The measuring is the reason: `fitText` searches
+ * the proportional display face for the longest prefix that fits, which is not
+ * something to do on a frame — and every piece of it is memoised on that same
+ * recipe, so a re-cut that changes only where a song sits rebuilds none of it.
  *
  * The offsets are `nameLens`'s own knobs, and the strings come from the same
  * two functions the lens calls, because a row that changed shape when the
  * renderer changed would be a different row.
  */
-/**
- * A line of text as one exact outline per glyph, at the baseline it is drawn on.
- *
- * One path per letter and not one per line, because the pen is per letter:
- * `Write` is `DrawBorderThenFill` *with a lag ratio*, and a lag needs something
- * to lag between. It is also what makes the trace affordable — see the pen in
- * `NativePlacementFlight`.
- *
- * `layoutText` walks the string with the same advances `SkFont.measureText`
- * accumulates, which is what the `Text` node draws with, so the letter traced
- * at `x` and the letter that replaces it are the same ink in the same place —
- * the whole reason DrawBorderThenFill can hand over without a seam. Spaces
- * carry no box and so no pen stroke; Manim counts the same family.
- *
- * The answer is *checked* rather than trusted. Only native Skia implements
- * `Path.MakeFromText`; CanvasKit — which is what Jest runs — neither implements
- * it nor refuses, it answers with a stub that is not a path at all. Handing
- * that to a `Path` node is a blank title rather than an error, so anything
- * without a path's own method is treated as no outline, and the row falls back
- * to fading its glyphs in the way it did before it could write.
- */
-function titleTracePaths(
-  text: string,
-  typeface: NonNullable<ReturnType<typeof useMorphFont>>,
-  x: number,
-  baselineY: number,
-): readonly SkPath[] | null {
-  if (text.length === 0) return null;
-  const paths: SkPath[] = [];
-  // One line, always: the title is already cut to its column by `fitText`, so
-  // there is nothing left for a wrap to do.
-  for (const box of layoutText(text, typeface, 0, Infinity, 0)) {
-    let path: SkPath | null;
-    try {
-      path = Skia.Path.MakeFromText(box.ch, x + box.x, baselineY, typeface);
-    } catch {
-      return null;
-    }
-    if (path == null || typeof path.toSVGString !== 'function') return null;
-    paths.push(path);
-  }
-  return paths.length === 0 ? null : paths;
-}
-
 type NativeRowModel = Readonly<{
   action: string | null;
   actionX: number;
@@ -1482,8 +1508,7 @@ function nativeRowModel(
   const action = availabilityAction(availability);
   const titleLeft = -NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
   const rowRight = NAME_LENS_KNOBS.ROW_RIGHT_PX;
-  const actionWidth =
-    action === null ? 0 : monoFont.measureText(action).width;
+  const actionWidth = action === null ? 0 : textWidth(action, monoFont);
   const titleRight =
     action === null
       ? rowRight
@@ -1675,6 +1700,14 @@ function NativePlacementFlight({
    * dividing one of them back out by the owner.
    */
   const becomingRow = motion.becomingRow;
+  // Where the face sits, the hairline it keeps, and the ring hung on it: the
+  // camera's answer, shared by every mark in the field. See the note in
+  // `useNativeCameraMotion` for why they live there and not here.
+  const faceTransform = motion.faceTransform;
+  const faceStrokeWidth = motion.faceStrokeWidth;
+  const playerAnchor = motion.playerAnchor;
+  const ringRadius = motion.ringRadius;
+  const ringCentreX = motion.ringCentreX;
   /**
    * How much of the player this song is, this frame: the song band, alone.
    *
@@ -1717,7 +1750,6 @@ function NativePlacementFlight({
   const rowTitleInk = titleHandedOver ? motion.playerLineInk : motion.one;
   const rowMetaInk = metaHandedOver ? motion.playerLineInk : motion.one;
   const rowOnly = isPlayer ? motion.rowOnly : motion.one;
-  const walked = motion.walked;
   const written = motion.written;
   /**
    * The face's alpha — one face, across both bands.
@@ -1765,59 +1797,6 @@ function NativePlacementFlight({
   );
   /** Only a downloaded song is filled, and only while it is small enough to be. */
   const faceFill = useDerivedValue(() => weight * (1 - shapeArrived.value));
-  /**
-   * Where that one face sits: the mark's own point at L0, the row's preview
-   * seat at L1, the middle of the view at L2, and every point between on the
-   * way.
-   */
-  const faceTransform = useDerivedValue(() => {
-    const pose = facePoseAt(
-      walked.value,
-      shapeArrived.value,
-      viewport,
-      FACE_GROWTH,
-    );
-    return [
-      { translateX: pose.x },
-      { translateY: pose.y },
-      { scale: pose.scale },
-    ];
-  });
-  /** A hairline is a hairline at any size, so it is drawn back out of it. */
-  const faceStrokeWidth = useDerivedValue(
-    () =>
-      FIELD_CANVAS_KNOBS.FACE_STROKE_PX /
-      facePoseAt(walked.value, shapeArrived.value, viewport, FACE_GROWTH).scale,
-  );
-  /**
-   * Where the player hangs: on the face, not on the mark.
-   *
-   * The *same* pose the face is drawn at, so the ring is concentric with the
-   * contour on every frame of the way in and reads as growing out of it. Given
-   * the rise alone it was concentric only at the ends: through the middle of
-   * the flight the face was still out at its row seat while the ring had
-   * already centred itself on the mark, and a ring that leaves its own face
-   * behind is two objects again — which is the thing this was all for.
-   */
-  const playerAnchor = useDerivedValue<Transforms3d>(() => {
-    const pose = facePoseAt(
-      walked.value,
-      shapeArrived.value,
-      viewport,
-      FACE_GROWTH,
-    );
-    return [{ translateX: pose.x }, { translateY: pose.y }];
-  });
-  const ringRadius = useDerivedValue(() => {
-    const t = walked.value;
-    return (
-      MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * t
-    );
-  });
-  const ringCentreX = useDerivedValue(
-    () =>
-      -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked.value,
-  );
   /*
    * The name, written on.
    *
