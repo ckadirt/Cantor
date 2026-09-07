@@ -2,8 +2,8 @@ import React, { useEffect, useMemo, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
-  Circle,
   Fill,
+  createPicture,
   Group as SkiaGroup,
   LinearGradient,
   PaintStyle,
@@ -1206,43 +1206,6 @@ function useNativeCameraMotion(
   const rowOnly = useDerivedValue(() => 1 - arrived.value);
   const walked = useDerivedValue(() => faceArrival(scale.value, fit.value));
   const written = useDerivedValue(() => nameArrival(scale.value, fit.value));
-  /*
-   * The face's pose, and the two things hung on it.
-   *
-   * A song's *availability* decides how loudly its face is drawn, but where
-   * that face sits and how big it is are the camera's answer alone —
-   * `facePoseAt` reads the walk, the arrival and the viewport and nothing that
-   * distinguishes one song from another. So these belong here with the rest of
-   * the camera, for the reason at the head of this function: as three mappers
-   * per placement they were the largest block of setup left in a re-cut, and
-   * every one of them was computing the same number as its neighbour.
-   *
-   * Written out three times rather than derived from a shared pose, which
-   * would be cheaper still and wrong: a fourth hop puts these three Skia
-   * properties one mapper further from the camera than the transform they sit
-   * under, and `NativeShelfLabel` documents what a hop of skew between
-   * properties of one node looks like. Same depth as before, one instance
-   * instead of one per song.
-   */
-  const faceTransform = useDerivedValue(() => {
-    const pose = facePoseAt(
-      walked.value,
-      shapeArrived.value,
-      viewport,
-      FACE_GROWTH,
-    );
-    return [
-      { translateX: pose.x },
-      { translateY: pose.y },
-      { scale: pose.scale },
-    ];
-  });
-  /** A hairline is a hairline at any size, so it is drawn back out of it. */
-  const faceStrokeWidth = useDerivedValue(
-    () =>
-      FIELD_CANVAS_KNOBS.FACE_STROKE_PX /
-      facePoseAt(walked.value, shapeArrived.value, viewport, FACE_GROWTH).scale,
-  );
   /**
    * Where the player hangs: on the face, not on the mark.
    *
@@ -1262,20 +1225,9 @@ function useNativeCameraMotion(
     );
     return [{ translateX: pose.x }, { translateY: pose.y }];
   });
-  const ringRadius = useDerivedValue(() => {
-    const t = walked.value;
-    return (
-      MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * t
-    );
-  });
-  const ringCentreX = useDerivedValue(
-    () =>
-      -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked.value,
-  );
   return {
     zero, one, becomingRow, shapeArrived, nameArrived, arrived,
-    playerLineInk, rowOnly, walked, written,
-    faceTransform, faceStrokeWidth, playerAnchor, ringRadius, ringCentreX,
+    playerLineInk, rowOnly, walked, written, playerAnchor,
   };
 }
 
@@ -1319,6 +1271,245 @@ type NativeFieldContentProps = Readonly<{
  * frame they are drawn on, so a row is the size it is meant to be on every
  * frame rather than only on the ones React kept up with.
  */
+/**
+ * SPIKE — every face in the field as one picture, recorded on the UI thread.
+ *
+ * The renderer this canvas has is retained-mode: one React component per
+ * placement, each carrying its own Skia nodes and its own Reanimated mappers.
+ * That is the right shape for a screen and the wrong shape for a field, where
+ * the same drawing is repeated once per song and a re-cut rebuilds all of it.
+ * The face is the most multiplied thing on the canvas — every placement has
+ * one, at every level, always mounted — so it is what this moves first.
+ *
+ * The bargain: the per-placement work stops being *components* and becomes
+ * *rows of data*. One array, serialised to the UI thread once per re-cut, and
+ * one mapper that walks it. Nothing here is per song except the numbers.
+ *
+ * What this deliberately does not move yet: the row's text and the player's
+ * chrome. Those stay as nodes until this proves the frame budget on hardware,
+ * which is the whole point of doing it in this order — see the note on
+ * `NativePlacementFlight`.
+ */
+export type FaceFlight = Readonly<{
+  markPath: SkPath;
+  fromX: number;
+  fromY: number;
+  targetX: number;
+  targetY: number;
+  fromBloomX: number;
+  fromBloomY: number;
+  targetBloomX: number;
+  targetBloomY: number;
+  ownership: FlightOwnership;
+  fromAlpha: number;
+  targetAlpha: number;
+  /** The availability alpha this face is drawn at; see `FACE_STROKE_ALPHA`. */
+  weight: number;
+  /** A downloaded song is filled rather than outlined. */
+  filled: boolean;
+  /** The one placement the camera has arrived at, which grows into the player. */
+  isPlayer: boolean;
+  /** The one song making sound, which wears the ring. */
+  playing: boolean;
+}>;
+
+/**
+ * The field's faces as plain rows, built once per re-cut on the JS thread.
+ *
+ * Every field here is a number, a boolean, or an `SkPath` — which is a host
+ * object and so crosses to the UI thread by reference. There is nothing in it
+ * that has to be rebuilt when the camera moves, which is what lets one mapper
+ * own the whole field.
+ */
+export function faceFlightsOf(
+  flights: readonly PlacementFlight[],
+  presentations: ReadonlyMap<string, FieldPresentation>,
+  focusKey: string | null,
+  playingKey: string | null,
+): readonly FaceFlight[] {
+  const result: FaceFlight[] = [];
+  for (const flight of flights) {
+    const presentation = presentations.get(flight.entityKey);
+    if (presentation === undefined) continue;
+    const song = presentation.song;
+    const availability = availabilityOf(presentation.localAudio.state);
+    result.push({
+      markPath: nameLensFacePath(
+        {
+          seed: song.seed,
+          id: presentation.entity.entityId,
+          model: song.model,
+          durationMs: song.duration_ms,
+        },
+        NAME_LENS_KNOBS.MARK_RADIUS_PX,
+      ),
+      fromX: flight.fromX,
+      fromY: flight.fromY,
+      targetX: flight.targetX,
+      targetY: flight.targetY,
+      fromBloomX: flight.fromBloomX,
+      fromBloomY: flight.fromBloomY,
+      targetBloomX: flight.targetBloomX,
+      targetBloomY: flight.targetBloomY,
+      ownership: flight.ownership,
+      fromAlpha: flight.fromAlpha,
+      targetAlpha: flight.targetAlpha,
+      weight: FACE_STROKE_ALPHA[availability],
+      filled: FACE_FILL_ALPHA[availability] > 0,
+      // The same two questions `NativePlacementFlight` asks, asked here so the
+      // gate travels with the row rather than being chosen beside it. A pose
+      // shared across the field is how every mark once grew into the player.
+      isPlayer: focusKey !== null && flight.targetPlacementKey === focusKey,
+      playing: flight.entityKey === playingKey,
+    });
+  }
+  return result;
+}
+
+/** The three paints a field of faces needs, built once per palette. */
+type FacePaints = Readonly<{ fill: SkPaint; stroke: SkPaint; ring: SkPaint }>;
+
+function createFacePaints(palette: Palette): FacePaints {
+  const stroke = paint(palette.ink);
+  stroke.setStyle(PaintStyle.Stroke);
+  const ring = paint(palette.ink);
+  ring.setStyle(PaintStyle.Stroke);
+  ring.setStrokeWidth(NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX);
+  return { fill: paint(palette.ink), stroke, ring };
+}
+
+/**
+ * Draw every face in the field, at this frame's camera.
+ *
+ * The camera's answers are read once and then reused down the loop, which is
+ * the structural win over a mapper per placement: there, every song recomputed
+ * the same band alphas and the same walk because a worklet cannot see its
+ * neighbour's work. Here the only per-row arithmetic is the seat it is flying
+ * between and the alpha it owns.
+ *
+ * The paints are mutated rather than rebuilt: `drawPath` copies paint state
+ * into the display list at the call, so one paint can carry a different alpha
+ * for every face without allocating one each.
+ */
+export function drawFieldFaces(
+  canvas: SkCanvas,
+  faces: readonly FaceFlight[],
+  paints: FacePaints,
+  progress: number,
+  recut: NativeRecut,
+  cameraShared: SharedValue<Camera>,
+  fitScaleShared: SharedValue<number>,
+  viewport: Viewport,
+): void {
+  'worklet';
+  const p = Math.min(Math.max(progress, 0), 1);
+  const live = p >= 1 ? cameraShared.value : null;
+  const cameraX =
+    live === null
+      ? recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p
+      : live.x;
+  const cameraY =
+    live === null
+      ? recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p
+      : live.y;
+  const cameraScale = nativeCameraScale(p, recut, cameraShared);
+  const fitted = nativeFitScale(p, recut, fitScaleShared);
+  const bloom = 1 - gatherFraction(cameraScale, fitted);
+  // Every band and every arrival the field shares, answered once.
+  const dot = bandAlphaAt(cameraScale, fitted, REPRESENTATION_WINDOWS.dot);
+  const becomingRow = bandAlphaAt(
+    cameraScale,
+    fitted,
+    REPRESENTATION_WINDOWS.row,
+  );
+  const walked = faceArrival(cameraScale, fitted);
+  const rowOnly =
+    1 - bandAlphaAt(cameraScale, fitted, REPRESENTATION_WINDOWS.song);
+  // The player's two answers, which exactly one row in the field may use. Held
+  // beside the mark's rather than chosen into a shared value, so that no
+  // hoisting can widen them to the whole field.
+  const playerShapeArrived = songShapeArrival(cameraScale, fitted);
+  const playerArrived = bandAlphaAt(
+    cameraScale,
+    fitted,
+    REPRESENTATION_WINDOWS.song,
+  );
+  const markPose = facePoseAt(walked, 0, viewport, FACE_GROWTH);
+  const playerPose = facePoseAt(
+    walked,
+    playerShapeArrived,
+    viewport,
+    FACE_GROWTH,
+  );
+  const ringCentreX = -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked;
+  const ringRadius =
+    MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * walked;
+
+  for (let index = 0; index < faces.length; index++) {
+    const face = faces[index];
+    const owner = flightOwnerAlpha(
+      face.ownership,
+      face.fromAlpha,
+      face.targetAlpha,
+      p,
+    );
+    if (owner <= 0) continue;
+    const shapeArrived = face.isPlayer ? playerShapeArrived : 0;
+    const arrived = face.isPlayer ? playerArrived : 0;
+    const opacity = owner * Math.min(1, dot + becomingRow + arrived);
+    if (opacity <= 0) continue;
+
+    const seatX = face.fromX + (face.targetX - face.fromX) * p;
+    const seatY = face.fromY + (face.targetY - face.fromY) * p;
+    const bloomX = face.fromBloomX + (face.targetBloomX - face.fromBloomX) * p;
+    const bloomY = face.fromBloomY + (face.targetBloomY - face.fromBloomY) * p;
+    const x =
+      (seatX + bloomX * bloom - cameraX) * cameraScale + viewport.width / 2;
+    const y =
+      (seatY + bloomY * bloom - cameraY) * cameraScale + viewport.height / 2;
+    // Culling, at the live camera and on the frame it is true — which is the
+    // thing the node renderer could not do, because its answer would have had
+    // to come back through React to unmount anything.
+    const pose = face.isPlayer ? playerPose : markPose;
+    if (
+      x + pose.x < -FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
+      x + pose.x > viewport.width + FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
+      y + pose.y < -FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
+      y + pose.y > viewport.height + FIELD_CANVAS_KNOBS.OVERSCAN_PX
+    ) {
+      continue;
+    }
+
+    canvas.save();
+    canvas.translate(x + pose.x, y + pose.y);
+    canvas.scale(pose.scale, pose.scale);
+    if (face.filled) {
+      paints.fill.setAlphaf(opacity * face.weight * (1 - shapeArrived));
+      canvas.drawPath(face.markPath, paints.fill);
+    }
+    paints.stroke.setAlphaf(
+      opacity *
+        (face.weight +
+          (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived),
+    );
+    // A hairline is a hairline at any size, so it is drawn back out of the
+    // scale the face is standing at.
+    paints.stroke.setStrokeWidth(
+      FIELD_CANVAS_KNOBS.FACE_STROKE_PX / pose.scale,
+    );
+    canvas.drawPath(face.markPath, paints.stroke);
+    canvas.restore();
+
+    // Outside the face's own scale, for the reason the node tree gave: the
+    // ring's radius is the face's extent *plus a gap*, so it is not a multiple
+    // of the face and scaling it would carry the gap along.
+    if (face.playing) {
+      paints.ring.setAlphaf(opacity * rowOnly);
+      canvas.drawCircle(x + ringCentreX, y, ringRadius, paints.ring);
+    }
+  }
+}
+
 const NativeFieldContent = React.memo(function NativeFieldContent({
   recut,
   clock,
@@ -1359,9 +1550,40 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   const motion = useNativeCameraMotion(
     clock, nativeRecut, cameraShared, fitScaleShared, viewport,
   );
+  /*
+   * The whole field's faces, as one node and one mapper. See `drawFieldFaces`.
+   *
+   * Both memos are keyed on the re-cut and the palette alone: nothing here
+   * reads the camera from React, so the picture's *recipe* is rebuilt once per
+   * re-cut while the picture itself is re-recorded on the UI thread every
+   * frame. That is the same discipline the scene element keeps, one level
+   * down.
+   */
+  const facePaints = useMemo(() => createFacePaints(palette), [palette]);
+  const faceFlights = useMemo(
+    () => faceFlightsOf(recut.flights, presentations, focusKey, playingKey),
+    [recut, presentations, focusKey, playingKey],
+  );
+  const facePicture = useDerivedValue(() =>
+    createPicture(
+      canvas =>
+        drawFieldFaces(
+          canvas,
+          faceFlights,
+          facePaints,
+          clock.value,
+          nativeRecut,
+          cameraShared,
+          fitScaleShared,
+          viewport,
+        ),
+      { width: viewport.width, height: viewport.height },
+    ),
+  );
   return (
     <>
       <Fill color={palette.bg} />
+      <Picture picture={facePicture} />
       {(labelFlights ?? []).map((flight, index) => (
         <NativeShelfLabel
           key={`${flight.fromGroupKey ?? 'new'}:${
@@ -1387,11 +1609,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           model: song.model,
           durationMs: song.duration_ms,
         };
-        // A face keeps what it promises while it flies. Weighting the flight
-        // the way the picture weights the mark is what stops a downloaded song
-        // from emptying out on its way to a new seat and filling again when it
-        // lands.
-        const availability = availabilityOf(presentation.localAudio.state);
         const row = nativeRowModel(presentation, recipe, displayFont, monoFont);
         /*
          * Exactly one song in the field is the player, so exactly one flight
@@ -1419,10 +1636,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             fitScaleShared={fitScaleShared}
             recut={nativeRecut}
             viewport={viewport}
-            markPath={nameLensFacePath(
-              recipe,
-              NAME_LENS_KNOBS.MARK_RADIUS_PX,
-            )}
             row={row}
             song={
               focused
@@ -1451,11 +1664,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             durationSeconds={song.duration_ms / 1000}
             displayFont={displayFont}
             monoFont={monoFont}
-            playing={flight.entityKey === playingKey}
             color={palette.ink}
             mutedColor={palette.muted}
-            weight={FACE_STROKE_ALPHA[availability]}
-            filled={FACE_FILL_ALPHA[availability] > 0}
           />
         );
       })}
@@ -1590,7 +1800,6 @@ function NativePlacementFlight({
   fitScaleShared,
   recut,
   viewport,
-  markPath,
   row,
   song,
   songTitleFont,
@@ -1600,11 +1809,8 @@ function NativePlacementFlight({
   durationSeconds,
   displayFont,
   monoFont,
-  playing,
   color,
   mutedColor,
-  weight,
-  filled,
 }: {
   motion: NativeCameraMotion;
   flight: PlacementFlight;
@@ -1613,7 +1819,6 @@ function NativePlacementFlight({
   fitScaleShared: SharedValue<number>;
   recut: NativeRecut;
   viewport: Viewport;
-  markPath: SkPath;
   row: NativeRowModel;
   /**
    * The player, for the one song the camera is focused on, and null for every
@@ -1633,13 +1838,8 @@ function NativePlacementFlight({
   durationSeconds: number;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
-  playing: boolean;
   color: string;
   mutedColor: string;
-  /** The availability alpha the picture would draw this face at. */
-  weight: number;
-  /** True for a downloaded song, whose face is filled rather than outlined. */
-  filled: boolean;
 }) {
   const titleAlpha = row.titleAlpha;
   /**
@@ -1691,23 +1891,7 @@ function NativePlacementFlight({
       Math.min(Math.max(clock.value, 0), 1),
     ),
   );
-  /**
-   * How much of a row this song is, this frame: the row band, alone.
-   *
-   * The one number the whole L0 → L1 gesture is written against. It is not the
-   * row's opacity — the parts of a row *arrive* differently — so it is kept
-   * separate from the row's own opacities rather than being recovered by
-   * dividing one of them back out by the owner.
-   */
-  const becomingRow = motion.becomingRow;
-  // Where the face sits, the hairline it keeps, and the ring hung on it: the
-  // camera's answer, shared by every mark in the field. See the note in
-  // `useNativeCameraMotion` for why they live there and not here.
-  const faceTransform = motion.faceTransform;
-  const faceStrokeWidth = motion.faceStrokeWidth;
   const playerAnchor = motion.playerAnchor;
-  const ringRadius = motion.ringRadius;
-  const ringCentreX = motion.ringCentreX;
   /**
    * How much of the player this song is, this frame: the song band, alone.
    *
@@ -1730,9 +1914,9 @@ function NativePlacementFlight({
    * it, every part of the player stood still for the first half of a descent
    * and then crossed the screen at once.
    *
-   * Shape first, then the name. See `SONG_ARRIVAL`.
+   * Shape first, then the name. See `SONG_ARRIVAL`. The shape's own beat is
+   * read by `drawFieldFaces` now, which is where the face is drawn.
    */
-  const shapeArrived = isPlayer ? motion.shapeArrived : motion.zero;
   const nameArrived = isPlayer ? motion.nameArrived : motion.zero;
   const arrived = isPlayer ? motion.arrived : motion.zero;
   /**
@@ -1751,52 +1935,6 @@ function NativePlacementFlight({
   const rowMetaInk = metaHandedOver ? motion.playerLineInk : motion.one;
   const rowOnly = isPlayer ? motion.rowOnly : motion.one;
   const written = motion.written;
-  /**
-   * The face's alpha — one face, across both bands.
-   *
-   * The dot and the row used to be two drawings of the same silhouette,
-   * crossfaded: the mark faded out under a second face fading in at a larger
-   * radius and a different x. Two objects where a person sees one, and at the
-   * midpoint both were half transparent, so the shape went pale on its way to
-   * becoming a row. `nameLensFacePath` is exactly linear in its radius, which
-   * means the row's face *is* the mark's face at 1.2× — so there is one path,
-   * one alpha, and the transform below carries it to its seat.
-   *
-   * The two bands overlap through the whole crossing, so their sum holds the
-   * face solid; it can only go out where both go out, which is the level where
-   * the picture takes the canvas back.
-   */
-  const faceOpacity = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    const scale = nativeCameraScale(p, recut, cameraShared);
-    const fitted = nativeFitScale(p, recut, fitScaleShared);
-    const dot = bandAlphaAt(scale, fitted, REPRESENTATION_WINDOWS.dot);
-    return owner.value * Math.min(1, dot + becomingRow.value + arrived.value);
-  });
-  /**
-   * The face's weight, which is not its opacity.
-   *
-   * Identity recedes as the measurement arrives. A mark is a promise about a
-   * song and the player is what the song turned out to be, so the contour that
-   * carried the whole identity at L0 goes quiet under the waveform at L2 rather
-   * than competing with it — `SONG_FACE_ALPHA`, which is what `nameLens` draws
-   * the player's face at. It is the same face the whole way; only how loudly it
-   * is drawn changes.
-   *
-   * On the shape's own beat rather than on the band, so it recedes *as* it
-   * grows. Fading on the band instead, it reached most of its full size while
-   * still carrying a downloaded song's solid fill — a hand-sized block of black
-   * in the middle of the screen for a third of the descent, which then emptied
-   * out after it had arrived. A promise should get quieter on its way to
-   * becoming a measurement, not once it is already one.
-   */
-  const faceWeight = useDerivedValue(
-    () =>
-      weight +
-      (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * shapeArrived.value,
-  );
-  /** Only a downloaded song is filled, and only while it is small enough to be. */
-  const faceFill = useDerivedValue(() => weight * (1 - shapeArrived.value));
   /*
    * The name, written on.
    *
@@ -1874,41 +2012,6 @@ function NativePlacementFlight({
   );
   return (
     <SkiaGroup transform={transform}>
-      {/*
-        One face, from the dot to the row. It is the same path throughout —
-        `markPath` — because the row's face is this one at `FACE_GROWTH`.
-      */}
-      <SkiaGroup opacity={faceOpacity}>
-        <SkiaGroup transform={faceTransform}>
-          {filled ? (
-            <Path path={markPath} color={color} style="fill" opacity={faceFill} />
-          ) : null}
-          <Path
-            path={markPath}
-            color={color}
-            style="stroke"
-            strokeWidth={faceStrokeWidth}
-            opacity={faceWeight}
-          />
-        </SkiaGroup>
-        {/*
-          Outside that group rather than inside it: the ring's radius is the
-          face's extent *plus a gap*, so it is not a multiple of the face and a
-          scale would carry the gap along with it.
-        */}
-        {playing ? (
-          <SkiaGroup opacity={rowOnly}>
-            <Circle
-              cx={ringCentreX}
-              cy={0}
-              r={ringRadius}
-              color={color}
-              style="stroke"
-              strokeWidth={NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX}
-            />
-          </SkiaGroup>
-        ) : null}
-      </SkiaGroup>
       {/*
         The name arrives by being written; the facts about it arrive by fading.
         A row is one name and two pieces of metadata, and writing all three at

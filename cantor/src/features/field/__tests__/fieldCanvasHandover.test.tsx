@@ -167,6 +167,30 @@ async function drawnTextAt(
     .map(node => node.props.text as string);
 }
 
+/**
+ * The pictures on this canvas that were recorded on the *JS* thread.
+ *
+ * `Picture` is no longer proof that the fallback renderer has taken over: the
+ * native path draws the field's faces into a picture of its own, recorded on
+ * the UI thread inside a mapper. The two are told apart by what they are
+ * handed — a bare `SkPicture` is a recording React made and has to remake,
+ * while a shared value is one the UI thread re-records for itself every frame.
+ * It is only ever the first kind that means the picture owns the field.
+ */
+function recordedPictures(
+  renderer: ReactTestRenderer.ReactTestRenderer,
+): unknown[] {
+  return renderer.root
+    .findAllByType(Picture)
+    .map(node => node.props.picture as unknown)
+    .filter(
+      picture =>
+        picture === null ||
+        typeof picture !== 'object' ||
+        !('value' in (picture as Record<string, unknown>)),
+    );
+}
+
 function cameraFor(layout: FieldLayout): Camera {
   return {
     x: layout.fieldCenter.x,
@@ -259,7 +283,7 @@ describe('field canvas L0 to L1 handover', () => {
         />,
       );
     });
-    expect(renderer.root.findAllByType(Picture)).toHaveLength(0);
+    expect(recordedPictures(renderer)).toHaveLength(0);
     // The row's own text, as Skia nodes the UI thread can move and fade —
     // never baked into a recording that a scale would stretch.
     const drawn = renderer.root
@@ -439,7 +463,7 @@ describe('field canvas L0 to L1 handover', () => {
     });
     // The native path is the premise: at FIT there is no picture at all, which
     // is what leaves its camera free to go stale.
-    expect(renderer.root.findAllByType(Picture)).toHaveLength(0);
+    expect(recordedPictures(renderer)).toHaveLength(0);
     const cameraValues = sharedValues.filter(shared =>
       typeof shared.value === 'object' && shared.value !== null &&
       'scale' in shared.value,
@@ -457,7 +481,7 @@ describe('field canvas L0 to L1 handover', () => {
     await ReactTestRenderer.act(async () => {
       renderer.update(canvas(panned));
     });
-    expect(renderer.root.findAllByType(Picture)).toHaveLength(0);
+    expect(recordedPictures(renderer)).toHaveLength(0);
 
     // Whatever the crossing paints its first frame with is this transform, and
     // at the moment the picture appears it has to be identity.
