@@ -1086,7 +1086,9 @@ export function FieldScreen({ identity }: Props) {
                 analyses={analyses}
                 grain={grain}
                 jobs={controller.jobs}
-                focusKey={fieldCamera.focus?.key ?? null}
+                // The player's focus, not the tap's: entering a shelf must
+                // not re-record this canvas. See `commitFocus`.
+                focusKey={fieldCamera.playerFocus?.key ?? null}
                 positionSeconds={transport.positionSeconds}
                 playingKey={playingKey}
                 transportLabel={focusedTransportLabel}

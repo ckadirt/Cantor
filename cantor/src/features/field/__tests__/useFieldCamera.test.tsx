@@ -308,6 +308,51 @@ describe('useFieldCamera', () => {
     expect(latest.ascend()).toBe(false);
   });
 
+  /**
+   * The player's focus lags the tap's by a level, and has to.
+   *
+   * `focusKey` reaches the canvas as React state, and the canvas is a Skia
+   * scene held by identity: changing it stops the animation mapper,
+   * re-records the whole tree from whatever the JS thread last held, paints
+   * that frame, and only then restarts. So a focus written at the *start* of
+   * the L0 → L1 flight spends the descent on one stale frame — which is why
+   * tapping a group flickered and pinching into one never did.
+   *
+   * Entering a shelf has no player in it: that flight ends at
+   * `LEVEL_SCALE_RATIOS.shelf` and the song band does not open until 12. The
+   * tap's own focus still lands immediately, because the shelf's accessibility
+   * list reads it to know which songs it is listing.
+   */
+  it('does not move the player focus when a tap only enters a shelf', async () => {
+    const { layout } = await renderCamera();
+    const placement = layout.placements[0];
+    const [, , tap] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+    });
+    // The tap landed, and the shelf knows what it is listing.
+    expect(latest.level).toBe('shelf');
+    expect(latest.focus?.key).toBe(placement.key);
+    // And the canvas has been handed nothing new to re-record.
+    expect(latest.playerFocus).toBeNull();
+
+    // One more level, and now there is a player, so now it moves.
+    const [, , shelfTap] = gestures();
+    await ReactTestRenderer.act(async () => {
+      shelfTap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+    });
+    expect(latest.level).toBe('song');
+    expect(latest.playerFocus?.key).toBe(placement.key);
+
+    // Leaving the song takes the player with it, whatever level it lands on.
+    await ReactTestRenderer.act(async () => {
+      expect(latest.ascend()).toBe(true);
+    });
+    expect(latest.level).toBe('shelf');
+    expect(latest.playerFocus).toBeNull();
+  });
+
   // The full-motion flight is a shared value driven on the UI thread, so under
   // Jest's reanimated mock the per-frame reaction never runs. What must survive
   // that is arrival: the timing callback commits the target, so a tap descends
