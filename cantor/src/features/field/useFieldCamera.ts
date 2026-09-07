@@ -128,6 +128,11 @@ type Options = {
 type CameraState = {
   camera: Camera;
   focus: Placement | null;
+  /**
+   * The placement whose player the canvas should draw, which lags `focus` by a
+   * level: entering a shelf does not set it. See `commitFocus`.
+   */
+  playerFocus: Placement | null;
   level: Level;
   /**
    * The cluster the camera is standing in, or null when it is not standing in
@@ -220,6 +225,8 @@ export function useFieldCamera({
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
   const [focusKey, setFocusKey] = useState<string | null>(null);
+  /** The focus the canvas draws a player for; see `commitFocus`. */
+  const [playerKey, setPlayerKey] = useState<string | null>(null);
   const [recutClock, setRecutClock] = useState<RecutClock>({
     generation: 0,
     linear: 1,
@@ -339,11 +346,31 @@ export function useFieldCamera({
   useEffect(() => {
     layoutFitShared.value = layout?.fitScale ?? 0;
   }, [layout, layoutFitShared]);
+  /**
+   * Record what the tap landed on.
+   *
+   * Two states rather than one, because "the placement you descended through"
+   * and "the placement whose player is drawn" are different questions with
+   * different costs. The first is read by the shelf's accessibility list and
+   * by the climb back out, and it is true the moment you tap. The second is
+   * what the canvas mounts the player's chrome from — and the canvas is a
+   * Skia scene held by identity, so changing it re-records the whole tree from
+   * whatever the JS thread last held. See the Flicker Law note in
+   * `FieldCanvas`.
+   *
+   * Entering a *shelf* has no player in it: the flight ends at
+   * `LEVEL_SCALE_RATIOS.shelf` and the song band does not open until 12. So
+   * writing the player's focus there bought nothing and cost the whole L0 → L1
+   * descent one re-recorded frame — a flicker on the tap, and none on the
+   * pinch, which never touches this.
+   */
   const commitFocus = useCallback(
-    (next: string | null) => {
+    (next: string | null, drawsPlayer: boolean) => {
       focusKeyRef.current = next;
       focusKeyShared.value = next;
       setFocusKey(next);
+      // Clearing always lands: a player left mounted is a song you have gone.
+      if (drawsPlayer || next === null) setPlayerKey(next);
     },
     [focusKeyShared],
   );
@@ -666,6 +693,18 @@ export function useFieldCamera({
       renderedPlacements.find(placement => placement.key === focusKey) ?? null,
     [focusKey, renderedPlacements],
   );
+  /**
+   * The placement the canvas draws a player for, which is not always the focus.
+   *
+   * Held apart for the reason `commitFocus` gives: this one changing is a
+   * re-recorded Skia scene, so it may only change when a player is genuinely
+   * on its way. Entering a shelf leaves it exactly where it was.
+   */
+  const playerFocus = useMemo(
+    () =>
+      renderedPlacements.find(placement => placement.key === playerKey) ?? null,
+    [playerKey, renderedPlacements],
+  );
   const focusRef = useRef<Placement | null>(null);
   useEffect(() => {
     focusRef.current = focus;
@@ -714,7 +753,6 @@ export function useFieldCamera({
     (placement: Placement) => {
       const field = layoutRef.current;
       if (field === null) return;
-      commitFocus(placement.key);
       const current = levelOf(
         cameraRef.current.scale,
         lastRenderFitScale.current ?? field.fitScale,
@@ -729,6 +767,7 @@ export function useFieldCamera({
           ? 'grain'
           : null;
       if (next === null) return;
+      commitFocus(placement.key, next === 'song' || next === 'grain');
       const target = levelCameraTarget(next, field, placement);
       if (target) flyTo(target);
     },
@@ -762,11 +801,11 @@ export function useFieldCamera({
         //
         // After the target is computed, because that is the one thing the
         // placement is still needed for.
-        commitFocus(null);
+        commitFocus(null, true);
         return true;
       }
     }
-    commitFocus(null);
+    commitFocus(null, true);
     const target = levelCameraTarget('field', field);
     if (target) flyTo(target);
     return true;
@@ -774,7 +813,7 @@ export function useFieldCamera({
   const home = useCallback(() => {
     const field = layoutRef.current;
     if (field === null) return;
-    commitFocus(null);
+    commitFocus(null, true);
     const target = levelCameraTarget('field', field);
     if (target) flyTo(target);
   }, [commitFocus, flyTo]);
@@ -1161,6 +1200,7 @@ export function useFieldCamera({
   return {
     camera: renderedCamera,
     focus,
+    playerFocus,
     groupKey,
     level,
     renderedPlacements,
