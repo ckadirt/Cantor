@@ -170,6 +170,14 @@ const FIELD_CANVAS_KNOBS = {
   SONG_ARC_RATIO: PLAYER_POSE_KNOBS.SONG_ARC_RATIO,
   /** The measured audio, drawn outward from that arc. */
   SONG_WAVE_TICKS: 96,
+  /**
+   * The ceiling on that count once the axis opens; see `drawSongDetail`.
+   *
+   * Reached at a spread of about twelve, which is where L3 begins — by then
+   * the decoded detail owns the drawing and more ticks would be an upsample of
+   * thirty-two numbers, paid for on every frame.
+   */
+  SONG_WAVE_MAX_TICKS: 1200,
   SONG_WAVE_REACH_RATIO: 0.36,
   SONG_WAVE_WIDTH_PX: 1.5,
   SONG_WAVE_ALPHA: 0.55,
@@ -1720,46 +1728,134 @@ export function drawSongDetail(
       : positionSeconds.value / duration;
   const head = at < 0 ? 0 : at > 1 ? 1 : at;
   // The window the axis is showing, opening from the whole song to L3's own.
+  /*
+   * The window the axis is showing, opening from the whole song to L3's own.
+   *
+   * The far end is the *decoded* window's span rather than `ENTRY_SECONDS`,
+   * because the two part company as soon as you are past L3's entry:
+   * `visibleSecondsAt` keeps halving the span for every doubling of scale, so
+   * at the grain seat it asks for about three seconds, not twelve. Held at
+   * twelve the axis drew a three-second window across a quarter of the screen
+   * and left the rest empty. Following it, the detail fills the width at every
+   * distance, and going further in is the axis closing rather than the drawing
+   * shrinking.
+   */
+  const shownSpan =
+    grain === null
+      ? GRAIN_KNOBS.ENTRY_SECONDS
+      : Math.max(GRAIN_KNOBS.MIN_SECONDS, grain.endSeconds - grain.startSeconds);
   const span =
     duration <= 0
-      ? GRAIN_KNOBS.ENTRY_SECONDS
+      ? shownSpan
       : Math.exp(
           Math.log(duration) +
-            (Math.log(GRAIN_KNOBS.ENTRY_SECONDS) - Math.log(duration)) *
-              unrolled,
+            (Math.log(shownSpan) - Math.log(duration)) * unrolled,
         );
   const perTurn = span > 0 ? (duration / span) * viewport.width : 0;
+  /*
+   * The second the axis is centred on, which is the playhead until it cannot be.
+   *
+   * `grainWindow` slides its window to stay inside the song rather than
+   * letting it hang off an end, so at the very start the playhead is the
+   * window's left edge and not its middle. Centring the drawing on the
+   * playhead there put twelve seconds of audio in the right half of the screen
+   * and nothing in the left — and a song opened and not yet played is at
+   * exactly that position, which makes it the common case rather than an edge
+   * one.
+   *
+   * So the axis follows the window's own centre. Away from the ends the two
+   * are the same second and this changes nothing; at them, the detail fills
+   * the screen and the playhead sits where it honestly falls. The ticks read
+   * the same centre, so the coarse measurement and the fine one stay over each
+   * other either way.
+   */
+  const axisSeconds =
+    grain === null
+      ? head * duration
+      : (grain.startSeconds + grain.endSeconds) / 2;
+  const axis = duration > 0 ? axisSeconds / duration : 0;
 
-  const count = model.levels.length;
-  const now =
-    count === 0 ? 0 : model.levels[Math.floor(head * (count - 1))] ?? 0;
-  const coarse = 1 - resolved;
+  const levels = model.levels;
+  const levelCount = levels.length;
+  /*
+   * The coarse measurement between its own samples.
+   *
+   * `levels` is one value per Cantor interval — thirty-two of them for the
+   * whole song — and the axis below opens until a screen holds twelve seconds
+   * of it. Read nearest-neighbour that is a staircase of two or three steps;
+   * read between them it is an envelope, which is the honest drawing of a
+   * measurement this coarse and the only one that survives the zoom.
+   */
+  const levelAt = (turn: number): number => {
+    if (levelCount === 0) return 0;
+    if (levelCount === 1) return levels[0] ?? 0;
+    const at = Math.min(Math.max(turn, 0), 1) * (levelCount - 1);
+    const lower = Math.floor(at);
+    const upper = Math.min(levelCount - 1, lower + 1);
+    const t = at - lower;
+    return (levels[lower] ?? 0) * (1 - t) + (levels[upper] ?? 0) * t;
+  };
+  const now = levelAt(head);
+
+  /*
+   * How many ticks the measurement is drawn with, which grows as it opens.
+   *
+   * Fixed at ninety-six the ring was right and the axis was empty: the ticks
+   * span the whole song, so once a screen holds a twelfth of it only eight
+   * were left on screen. Growing the count with the spread holds the *screen*
+   * spacing still instead — `width / SONG_WAVE_TICKS`, whatever the camera is
+   * doing — so the measurement fills the axis it is opening onto.
+   *
+   * It is an upsample, not new information, and it is capped to say so: past
+   * `SONG_WAVE_MAX_TICKS` the detail below has long since taken the drawing
+   * over, and more ticks would only cost the frame.
+   */
+  const spread = span > 0 && duration > 0 ? duration / span : 1;
+  const ticks = Math.max(
+    knobs.SONG_WAVE_TICKS,
+    Math.min(
+      knobs.SONG_WAVE_MAX_TICKS,
+      Math.round(knobs.SONG_WAVE_TICKS * spread),
+    ),
+  );
+
+  // The detail arrives *as* the axis opens: it is a dense sliver at the
+  // playhead while the ring is still a ring, and there is no room for it there.
+  const detail = resolved * unrolled;
+  const coarse = 1 - detail;
   if (coarse > 0) {
     paints.stroke.setAlphaf(knobs.SONG_WAVE_ALPHA * coarse);
     paints.stroke.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
-    for (let index = 0; index < knobs.SONG_WAVE_TICKS; index += 1) {
-      const drew = writeSubAlpha(drawn, index, knobs.SONG_WAVE_TICKS);
+    for (let index = 0; index < ticks; index += 1) {
+      const drew = writeSubAlpha(drawn, index, ticks);
       if (drew <= 0) continue;
-      const turn = index / knobs.SONG_WAVE_TICKS;
-      const level =
-        count === 0 ? 0 : model.levels[Math.floor(turn * (count - 1))] ?? 0;
-      // The beat: a bulge that rides the playhead, wrapped so it crosses
-      // twelve o'clock without a seam.
-      const raw = Math.abs(turn - head);
-      const gap = raw > 0.5 ? 1 - raw : raw;
+      const turn = index / ticks;
+      // Wrapped to the shortest way round, so the ticks behind the playhead
+      // open to the left rather than racing the long way across the screen.
+      const offset = turn - axis;
+      const shortest =
+        offset > 0.5 ? offset - 1 : offset < -0.5 ? offset + 1 : offset;
+      // Off the end of the opened axis. Bounded before the trig rather than
+      // after it, because the count grows with the zoom and most of the song
+      // is off screen by the time it has: a tick is drawn between a circle no
+      // wider than the player and a line this far out, so past a screen's
+      // travel it cannot be on screen at all.
+      if (unrolled * Math.abs(shortest) * perTurn > viewport.width) continue;
+
+      const level = levelAt(turn);
+      // The beat: a bulge that rides the playhead, which is not always the
+      // second the axis is centred on. Wrapped, so it crosses twelve o'clock
+      // on the ring without a seam.
+      const toHead = Math.abs(turn - head);
+      const gap = toHead > 0.5 ? 1 - toHead : toHead;
       const near = 1 - gap / knobs.SONG_PULSE_WINDOW;
       const lift = near > 0 ? near * near * now * knobs.SONG_PULSE_GAIN : 0;
-      const amp =
-        Math.min(1, level * knobs.SONG_WAVE_GAIN + lift) * drew;
+      const amp = Math.min(1, level * knobs.SONG_WAVE_GAIN + lift) * drew;
 
       const angle = turn * Math.PI * 2 - Math.PI / 2;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
       const outer = inner + amp * radius * knobs.SONG_WAVE_REACH_RATIO;
-      // Wrapped to the shortest way round, so the ticks behind the playhead
-      // open to the left rather than racing the long way across the screen.
-      const offset = turn - head;
-      const shortest = offset > 0.5 ? offset - 1 : offset < -0.5 ? offset + 1 : offset;
       const lineX = viewport.width / 2 + shortest * perTurn;
       const x0 = cx + cos * inner + (lineX - (cx + cos * inner)) * unrolled;
       const y0 =
@@ -1771,23 +1867,49 @@ export function drawSongDetail(
     }
   }
 
-  if (grain === null || resolved <= 0) return;
-  // The detail, on the axis the ticks have already opened onto.
+  if (grain === null || detail <= 0 || duration <= 0) return;
   const buckets = grain.min.length;
   const windowSpan = grain.endSeconds - grain.startSeconds;
   if (buckets <= 0 || windowSpan <= 0) return;
-  paints.fill.setAlphaf(resolved);
-  const step = viewport.width / buckets;
+  /*
+   * The detail, on the same axis and by the same clock.
+   *
+   * Placed by the second it was decoded from rather than by its index, which
+   * is what makes it grow. The window is `ENTRY_SECONDS` wide whatever the
+   * camera is doing, so while the axis still holds the whole song it is a
+   * narrow dense band at the playhead, and it widens to fill the screen as the
+   * axis closes on it. Same mapping as the ticks above, so the coarse
+   * measurement and the fine one are over each other the whole way — the
+   * crossfade has nowhere to slip.
+   */
+  paints.fill.setAlphaf(detail);
+  const bucketSeconds = windowSpan / buckets;
+  const columnWidth = (bucketSeconds / span) * viewport.width;
   for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const seconds = grain.startSeconds + (bucket + 0.5) * bucketSeconds;
+    const offset = seconds / duration - axis;
+    const shortest =
+      offset > 0.5 ? offset - 1 : offset < -0.5 ? offset + 1 : offset;
+    const lineX = viewport.width / 2 + shortest * perTurn;
+    // Blended out of the ring like the ticks are, and it has to be: the ring's
+    // centre is a `playerRisePx` above the middle of the screen, so a column
+    // drawn straight onto the axis sat below the ticks it is replacing for the
+    // whole crossing, and the crossfade swapped one drawing for another a
+    // finger's width away. Both ends of the same blend now, so they are over
+    // each other at every frame of it.
+    const centreX = cx + (lineX - cx) * unrolled;
+    if (centreX < -columnWidth || centreX > viewport.width + columnWidth) {
+      continue;
+    }
     const low = grain.min[bucket] ?? 0;
     const high = grain.max[bucket] ?? 0;
-    const top = midY - high * half;
-    const bottom = midY - low * half;
+    const top = cy + (midY - high * half - cy) * unrolled;
+    const bottom = cy + (midY - low * half - cy) * unrolled;
     canvas.drawRect(
       {
-        x: bucket * step,
+        x: centreX - columnWidth / 2,
         y: Math.min(top, bottom),
-        width: Math.max(0.7, step * 0.85),
+        width: Math.max(0.7, columnWidth * 0.85),
         height: Math.max(0.7, Math.abs(bottom - top)),
       },
       paints.fill,

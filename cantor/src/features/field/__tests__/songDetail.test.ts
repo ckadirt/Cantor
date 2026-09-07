@@ -74,6 +74,7 @@ function drawAt(options: {
   drawn: number;
   grain?: GrainBars | null;
   resolved?: number;
+  positionSeconds?: number;
 }) {
   const target = recordingCanvas();
   drawSongDetail(
@@ -84,7 +85,7 @@ function drawAt(options: {
     recut,
     { value: { x: 0, y: 0, scale: fitScale * options.ratio } } as never,
     { value: fitScale } as never,
-    { value: 0 } as never,
+    { value: options.positionSeconds ?? 0 } as never,
     options.grain ?? null,
     options.resolved ?? 0,
     options.drawn,
@@ -94,6 +95,15 @@ function drawAt(options: {
 }
 
 const ticks = PLAYER_RING_KNOBS.SONG_WAVE_TICKS;
+/** The window the screen actually asks for: `ENTRY_SECONDS` about the head. */
+const middle = model.durationSeconds / 2;
+const centredBars: GrainBars = {
+  min: Array.from({ length: 32 }, () => -0.4),
+  max: Array.from({ length: 32 }, () => 0.4),
+  startSeconds: middle - GRAIN_KNOBS.ENTRY_SECONDS / 2,
+  endSeconds: middle + GRAIN_KNOBS.ENTRY_SECONDS / 2,
+  label: '12.00s VISIBLE',
+};
 const atRing = LEVEL_SCALE_RATIOS.song;
 const atGrain = GRAIN_KNOBS.ENTRY_RATIO;
 
@@ -135,12 +145,41 @@ describe('the measurement from the ring to the grain', () => {
    */
   it('opens them onto one time axis at the grain', () => {
     const lines = drawAt({ ratio: atGrain, drawn: 1 }).lines;
-    expect(lines).toHaveLength(ticks);
+    expect(lines.length).toBeGreaterThan(0);
     for (const line of lines) {
       expect(Math.abs(line.x1 - line.x0)).toBeLessThan(0.01);
       const midpoint = (line.y0 + line.y1) / 2;
       expect(Math.abs(midpoint - viewport.height / 2)).toBeLessThan(0.01);
     }
+  });
+
+  /**
+   * And there are more of them by the time it gets there.
+   *
+   * The ticks span the whole song, so an axis closing on twelve seconds of a
+   * two-minute one would keep about eight of them on screen. The count grows
+   * with the spread instead, which holds the *screen* spacing still: the
+   * measurement fills the axis it is opening onto rather than thinning across
+   * it.
+   */
+  it('gains ticks as the axis closes, at a held screen spacing', () => {
+    const spacingOf = (lines: Line[]) => {
+      const xs = lines.map(line => line.x0).sort((a, b) => a - b);
+      const gaps = xs.slice(1).map((x, i) => x - xs[i]).sort((a, b) => a - b);
+      return gaps[Math.floor(gaps.length / 2)];
+    };
+    const ring = drawAt({ ratio: atRing, drawn: 1 }).lines;
+    const grain = drawAt({
+      ratio: atGrain,
+      drawn: 1,
+      positionSeconds: middle,
+    }).lines;
+
+    expect(ring).toHaveLength(ticks);
+    // Denser on screen, not merely spread further apart.
+    expect(grain.length).toBeGreaterThan(ticks / 2);
+    // The spacing the ring was drawn at is the spacing the axis keeps.
+    expect(spacingOf(grain)).toBeCloseTo(viewport.width / ticks, 1);
   });
 
   /** And it is a crossing, not a cut: halfway is neither of the two poses. */
@@ -161,18 +200,12 @@ describe('the measurement from the ring to the grain', () => {
    * it is arriving both are drawn, and once it has the coarse pass is gone.
    */
   it('hands the ticks over to the decoded detail', () => {
-    const bars: GrainBars = {
-      min: Array.from({ length: 32 }, () => -0.4),
-      max: Array.from({ length: 32 }, () => 0.4),
-      startSeconds: 0,
-      endSeconds: GRAIN_KNOBS.ENTRY_SECONDS,
-      label: '12.00s VISIBLE · 0.00s',
-    };
     const arriving = drawAt({
       ratio: atGrain,
       drawn: 1,
-      grain: bars,
+      grain: centredBars,
       resolved: 0.5,
+      positionSeconds: middle,
     });
     expect(arriving.lines.length).toBeGreaterThan(0);
     expect(arriving.rects).toHaveLength(32);
@@ -180,11 +213,61 @@ describe('the measurement from the ring to the grain', () => {
     const settled = drawAt({
       ratio: atGrain,
       drawn: 1,
-      grain: bars,
+      grain: centredBars,
       resolved: 1,
+      positionSeconds: middle,
     });
     expect(settled.lines).toHaveLength(0);
     expect(settled.rects).toHaveLength(32);
+  });
+
+  /**
+   * The detail is placed by the second it was decoded from, not by its index.
+   *
+   * That is what makes it *grow*. The decoded window is `ENTRY_SECONDS` wide
+   * whatever the camera is doing, so while the axis still holds most of the
+   * song it is a narrow dense band at the playhead, and it widens to fill the
+   * screen as the axis closes on it. Placed by index it would have covered the
+   * whole width from the first frame it existed, at the wrong scale, over
+   * ticks that disagreed with it.
+   */
+  it('grows the detail out of the playhead as the axis closes', () => {
+    const spanOf = (rects: Array<{ x: number; width: number }>) => {
+      const lo = Math.min(...rects.map(r => r.x));
+      const hi = Math.max(...rects.map(r => r.x + r.width));
+      return hi - lo;
+    };
+    const crossing = drawAt({
+      ratio: (atRing + atGrain) / 2,
+      drawn: 1,
+      grain: centredBars,
+      resolved: 1,
+      positionSeconds: middle,
+    }).rects;
+    const opened = drawAt({
+      ratio: atGrain,
+      drawn: 1,
+      grain: centredBars,
+      resolved: 1,
+      positionSeconds: middle,
+    }).rects;
+
+    expect(crossing.length).toBeGreaterThan(0);
+    // Narrow partway through, the full screen once the axis has closed.
+    expect(spanOf(crossing)).toBeLessThan(spanOf(opened));
+    // Within one column of the full width: each is drawn at 85% of its slot,
+    // so the last gap is missing from the span.
+    expect(spanOf(opened)).toBeGreaterThan(viewport.width - 32 / 2);
+    expect(spanOf(opened)).toBeLessThanOrEqual(viewport.width);
+    // And centred on the playhead at both, because that is the second the
+    // camera is standing on.
+    for (const rects of [crossing, opened]) {
+      const lo = Math.min(...rects.map(r => r.x));
+      const hi = Math.max(...rects.map(r => r.x + r.width));
+      // Within a column of centre. Each is drawn at 85% of its slot, so the
+      // right edge of the last one falls a fraction short of the extent.
+      expect(Math.abs((lo + hi) / 2 - viewport.width / 2)).toBeLessThan(2);
+    }
   });
 
   /**
