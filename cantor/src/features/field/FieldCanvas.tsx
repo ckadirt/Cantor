@@ -1215,6 +1215,26 @@ function useNativeCameraMotion(
   const walked = useDerivedValue(() => faceArrival(scale.value, fit.value));
   const written = useDerivedValue(() => nameArrival(scale.value, fit.value));
   /**
+   * How much of the field is left, once the grain has opened.
+   *
+   * "At L3 the field gives way to one song's samples entirely" — which the
+   * recorded picture said by returning early after drawing the grain, and
+   * which nothing said on the native path until it owned that distance too.
+   *
+   * It is needed because the row and the player are written against arrivals
+   * rather than bands, and an arrival does not come back down: `written` holds
+   * at 1 above `NAME_WRITE`, `named` above `NAME_TRAVEL`, and `rowOnly` climbs
+   * back to 1 as the song band closes — so at the grain seat the row's action
+   * word and the player's name were still at full ink, over the waveform.
+   *
+   * A fade on the grain's own band rather than an early return, because the
+   * two renderers are one now and a cut is a thing you can see.
+   */
+  const fieldFade = useDerivedValue(
+    () =>
+      1 - bandAlphaAt(scale.value, fit.value, REPRESENTATION_WINDOWS.grain),
+  );
+  /**
    * Where the player hangs: on the face, not on the mark.
    *
    * The *same* pose the face is drawn at, so the ring is concentric with the
@@ -1235,7 +1255,7 @@ function useNativeCameraMotion(
   });
   return {
     zero, one, becomingRow, shapeArrived, nameArrived, arrived,
-    playerLineInk, rowOnly, walked, written, playerAnchor,
+    playerLineInk, rowOnly, walked, written, playerAnchor, fieldFade,
   };
 }
 
@@ -1806,13 +1826,27 @@ function NativeSongDetail({
   viewport: Viewport;
 }) {
   const paints = useMemo(() => createFacePaints(palette), [palette]);
-  const arrived = useDerivedValue(() =>
-    bandAlphaAt(
-      nativeCameraScale(clock.value, recut, cameraShared),
-      nativeFitScale(clock.value, recut, fitScaleShared),
-      REPRESENTATION_WINDOWS.song,
-    ),
-  );
+  /**
+   * Whether the player has arrived and you have not gone back out.
+   *
+   * The ratio rather than the song band, and the difference is the whole of
+   * L3. A band closes at both ends — this one at 378 — but going *further in*
+   * is not leaving: the grain sits at `LEVEL_SCALE_RATIOS.grain`, far past
+   * that, and reading arrival off the band reset the draw-on at exactly the
+   * moment the measurement was needed most. The ticks vanished on arrival at
+   * L3 and took the decoded detail with them, because it is drawn after them.
+   *
+   * `song[1]` is where the band finishes opening, which is a shade before the
+   * L2 seat at `LEVEL_SCALE_RATIOS.song` — so this is true by the time the
+   * descent lands and stays true until you climb back out through it.
+   */
+  const arrived = useDerivedValue(() => {
+    const fitted = nativeFitScale(clock.value, recut, fitScaleShared);
+    if (!(fitted > 0)) return 0;
+    const ratio =
+      nativeCameraScale(clock.value, recut, cameraShared) / fitted;
+    return ratio >= REPRESENTATION_WINDOWS.song[1] ? 1 : 0;
+  });
   /**
    * The measurement's own clock, started when the descent is over.
    *
@@ -2424,7 +2458,7 @@ function NativePlacementFlight({
     () => owner.value * written.value * rowMetaInk.value,
   );
   return (
-    <SkiaGroup transform={transform}>
+    <SkiaGroup opacity={motion.fieldFade} transform={transform}>
       {/*
         The name arrives by being written; the facts about it arrive by fading.
         A row is one name and two pieces of metadata, and writing all three at
