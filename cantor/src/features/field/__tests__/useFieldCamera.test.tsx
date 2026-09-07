@@ -353,6 +353,43 @@ describe('useFieldCamera', () => {
     expect(latest.playerFocus).toBeNull();
   });
 
+  /**
+   * A descent that mounts a player is held for its commit, and still lands.
+   *
+   * The hold is what keeps Skia's re-record — which reads the JS thread's copy
+   * of the camera — from landing a frame or two into the flight, where that
+   * copy is stale. What it must not do is lose the flight.
+   *
+   * Song to grain is the case a naive hold loses: the placement does not
+   * change, so anything keyed on the focus would never fire and the camera
+   * would sit still. The ticket is a counter for exactly this.
+   */
+  it('lands a held descent, including one that does not change the focus', async () => {
+    const { layout } = await renderCamera();
+    const placement = layout.placements[0];
+
+    await ReactTestRenderer.act(async () => {
+      latest.descend(placement);
+    });
+    expect(latest.level).toBe('shelf');
+    const atShelf = camera().scale;
+
+    await ReactTestRenderer.act(async () => {
+      latest.descend(placement);
+    });
+    expect(latest.level).toBe('song');
+    expect(camera().scale).toBeGreaterThan(atShelf);
+    const atSong = camera().scale;
+    expect(latest.playerFocus?.key).toBe(placement.key);
+
+    // The same placement again. The focus does not move; the camera must.
+    await ReactTestRenderer.act(async () => {
+      latest.descend(placement);
+    });
+    expect(latest.playerFocus?.key).toBe(placement.key);
+    expect(camera().scale).toBeGreaterThan(atSong);
+  });
+
   // The full-motion flight is a shared value driven on the UI thread, so under
   // Jest's reanimated mock the per-frame reaction never runs. What must survive
   // that is arrival: the timing callback commits the target, so a tap descends
