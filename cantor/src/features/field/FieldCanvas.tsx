@@ -1074,10 +1074,15 @@ function NativePlayhead({
     return 1;
   }, [fadeIn, fadeOut, fitScale, holdFrom, holdTo]);
 
+  // Drawn, not drawing. The cascade is the last beat of a descent, and this
+  // path is not reached by one — it stands in where the native player cannot
+  // be built at all, so its measurement is simply already there.
+  const drawn = useSharedValue(1);
   return (
     <SkiaGroup opacity={opacity} transform={centre}>
       <PlayerRing
         colour={colour}
+        drawn={drawn}
         durationSeconds={durationSeconds}
         levels={levels}
         positionSeconds={positionSeconds}
