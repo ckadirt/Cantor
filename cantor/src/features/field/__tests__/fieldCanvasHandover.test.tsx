@@ -235,11 +235,11 @@ describe('field canvas L0 to L1 handover', () => {
     for (const ratio of [REPRESENTATION_WINDOWS.song[0], 27, 90, 177]) {
       expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
     }
-    // And it does take over for the grain, which the native path does not know
-    // how to draw.
+    // And the grain too, now that `drawSongDetail` opens the ring's ticks onto
+    // the grain's own axis. There is no distance left that the picture owns.
     expect(
       isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.grain[0], fit),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('draws a row on the native path rather than handing over to the picture', async () => {

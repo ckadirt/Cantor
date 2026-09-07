@@ -26,13 +26,19 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
 /**
  * Whether the native renderer knows everything the field shows here.
  *
- * The handover between the two renderers has to be invisible, and it can only
- * be invisible where they draw the same thing. `NativeFieldContent` knows three
- * representations — a face at mark size, a row, and the player — which is L0
- * through L2, so it may own the field right up to the point where the *grain*
- * opens. That is `grain`'s own entry rather than a level boundary: at
- * `grain[0]` the waveform is still drawing nothing, and past it the field gives
- * way to one song's samples entirely.
+ * It does, now, at every distance the camera can reach — which is why this
+ * answers yes rather than being deleted: the canvas still chooses a path with
+ * it, and the camera still asks it whether a re-cut may skip React, and those
+ * two must never disagree. If they did, a re-cut would animate on the UI
+ * thread while the picture was recorded from React state that is no longer
+ * being updated.
+ *
+ * It used to stop where the grain opened, because `NativeFieldContent` knew
+ * three representations — a face at mark size, a row, and the player — and L3
+ * was one song's samples, which it could not draw. `drawSongDetail` is the
+ * fourth, and it does not so much add a drawing as finish one: the ring's
+ * ticks and the grain's columns are the same measurement at two resolutions,
+ * so what was a hand-over between two renderers is now a pose.
  *
  * Why the native path has to reach this far rather than stopping at the row
  * band: a recorded picture moves by being *scaled*, and everything a row is
@@ -44,23 +50,13 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
  * and snaps back. Only the UI thread can redraw a row at the size it is
  * supposed to be on the frame it is supposed to be that size.
  *
- * The player was the last thing outside that argument, and it was outside it
- * for no better reason than that the native path had never been taught the
- * third representation. It was drawn twice instead — a ring in the picture and
- * its chrome in React — on two clocks that could not agree, because React's
- * copy of the camera lands a commit late by design. One renderer, three
- * distances, one clock.
- *
- * One predicate, used by the renderer to choose a path and by the camera to
- * decide whether a re-cut may skip React. If those two ever disagree, a re-cut
- * animates on the UI thread while the picture is recorded from React state that
- * is no longer being updated — so they share this rather than each testing a
- * level of their own.
+ * The picture is not gone: it still draws every lens that is not the name, and
+ * stands in before the fonts have loaded. It is no longer the thing that owns
+ * a *distance*.
  */
 export function isNativeDrawnDistance(scale: number, fitScale: number): boolean {
   'worklet';
-  if (!(fitScale > 0) || !(scale > 0)) return false;
-  return scale / fitScale < REPRESENTATION_WINDOWS.grain[0];
+  return fitScale > 0 && scale > 0;
 }
 
 export type RepresentationAlphas = Readonly<{
