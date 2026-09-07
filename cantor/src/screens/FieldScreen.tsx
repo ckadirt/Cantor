@@ -845,8 +845,22 @@ export function FieldScreen({ identity }: Props) {
    * than for the whole song.
    */
   useEffect(() => {
+    /*
+     * Asked for from the song, not from the grain.
+     *
+     * The window is decoded off the disk and it is not instant — measured at
+     * several seconds for a two-minute song, behind the whole-song analysis
+     * queued in front of it. Asked for only once L3 had opened, it landed long
+     * after the crossing that wanted it, and the ring unrolled onto an axis
+     * with nothing on it.
+     *
+     * `visibleSecondsAt` clamps to `ENTRY_SECONDS` below L3, so standing in
+     * the song asks for exactly the window L3 opens with: one request, made
+     * while you are watching the measurement draw itself on, ready by the time
+     * the axis has room for it.
+     */
     if (
-      fieldCamera.level !== 'grain' ||
+      (fieldCamera.level !== 'song' && fieldCamera.level !== 'grain') ||
       focused === null ||
       viewport === null
     ) {

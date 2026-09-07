@@ -38,6 +38,16 @@ const SCRUB_TRACK_ALPHA = 0.35;
 /** KNOBS — the ring, in fractions of the player's own radius. */
 export const PLAYER_RING_KNOBS = {
   SONG_WAVE_TICKS: 96,
+  /**
+   * The ceiling on that count once the axis opens; see `drawSongDetail`.
+   *
+   * The tick count grows with the zoom so the *screen* spacing holds still
+   * while the axis closes on the playhead. This bounds it: reached at a spread
+   * of about twelve, which is where L3 begins and where the decoded detail has
+   * taken the drawing over. Past it more ticks would be an upsample of
+   * thirty-two numbers, paid for on every frame.
+   */
+  SONG_WAVE_MAX_TICKS: 1200,
   SONG_WAVE_REACH_RATIO: 0.36,
   SONG_WAVE_WIDTH_PX: 1.5,
   SONG_WAVE_ALPHA: 0.55,
