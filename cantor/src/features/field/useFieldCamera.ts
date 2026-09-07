@@ -227,6 +227,9 @@ export function useFieldCamera({
   const [focusKey, setFocusKey] = useState<string | null>(null);
   /** The focus the canvas draws a player for; see `commitFocus`. */
   const [playerKey, setPlayerKey] = useState<string | null>(null);
+  /** A descent held until the commit that mounts its player has landed. */
+  const pendingDescent = useRef<Camera | null>(null);
+  const [descentTicket, setDescentTicket] = useState(0);
   const [recutClock, setRecutClock] = useState<RecutClock>({
     generation: 0,
     linear: 1,
@@ -375,6 +378,10 @@ export function useFieldCamera({
     [focusKeyShared],
   );
   const cancelCameraFlight = useCallback(() => {
+    // A descent still waiting for its commit is a flight like any other, so
+    // anything that takes the camera somewhere else drops it. The newest
+    // flight wins, which is what every other caller here already assumes.
+    pendingDescent.current = null;
     cancelAnimation(flightProgress);
   }, [flightProgress]);
   const cancelRelayout = useCallback(() => {
@@ -767,12 +774,51 @@ export function useFieldCamera({
           ? 'grain'
           : null;
       if (next === null) return;
-      commitFocus(placement.key, next === 'song' || next === 'grain');
       const target = levelCameraTarget(next, field, placement);
-      if (target) flyTo(target);
+      if (!target) return;
+      const drawsPlayer = next === 'song' || next === 'grain';
+      commitFocus(placement.key, drawsPlayer);
+      if (!drawsPlayer) {
+        flyTo(target);
+        return;
+      }
+      /*
+       * A descent that mounts a player waits for the commit that mounts it.
+       *
+       * The player's words are measured and cut on the JS thread, so putting
+       * one on the canvas is a React commit however it is written — and a
+       * commit hands `Canvas` a fresh element, which makes Skia stop the
+       * animation mapper, re-record the whole root from the values the JS
+       * thread holds, paint that frame, and only then restart. Those values
+       * are stale exactly when the camera is moving.
+       *
+       * So the flight is what moves, not the commit. Started here it would
+       * already be running by the time React committed — `setState` in an
+       * event handler is batched — and the re-record would land a frame or two
+       * into the descent and paint the field where it no longer is. Held for
+       * the effect below, the re-record happens against a camera that has not
+       * moved yet, where a stale value and a live one are the same value.
+       *
+       * The same trick, and for the same reason, as the re-cut clock that
+       * starts in `NativeFieldContent`'s effect rather than in the canvas's
+       * layout effect.
+       */
+      pendingDescent.current = target;
+      setDescentTicket(ticket => ticket + 1);
     },
     [commitFocus, flyTo],
   );
+  /*
+   * Ticket rather than the focus itself: descending from a song into its grain
+   * keeps the same placement, so a key would not change and the flight would
+   * never leave. A counter always does.
+   */
+  useEffect(() => {
+    const target = pendingDescent.current;
+    if (target === null) return;
+    pendingDescent.current = null;
+    flyTo(target);
+  }, [descentTicket, flyTo]);
   const ascend = useCallback((): boolean => {
     const field = layoutRef.current;
     if (field === null) return false;
