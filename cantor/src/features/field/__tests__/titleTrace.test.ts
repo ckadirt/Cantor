@@ -1,5 +1,5 @@
 import { Skia } from '@shopify/react-native-skia';
-import { traceTitlePath } from '../titleTrace';
+import { titleTracePaths, traceTitlePath } from '../titleTrace';
 import { writePhase, writeSubAlpha } from '../../../motion/text';
 
 describe('batched title strokes', () => {
@@ -23,5 +23,48 @@ describe('batched title strokes', () => {
       actual.dispose();
       expected.dispose();
     }
+  });
+});
+
+describe('title outline cache', () => {
+  const font = Skia.Font(undefined, 20);
+
+  /*
+   * `MakeFromText` is native-only — CanvasKit answers with a stub that is not a
+   * path — so the outlines are stood in for by real empty paths. What is under
+   * test is how often the builder is asked, not what it returns.
+   */
+  function countingBuilder() {
+    return jest
+      .spyOn(Skia.Path, 'MakeFromText')
+      .mockImplementation(() => Skia.Path.Make());
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('builds one title once and hands the same outlines back', () => {
+    const build = countingBuilder();
+    const first = titleTracePaths('Ashes', font, -110, 4);
+    const afterFirst = build.mock.calls.length;
+    const second = titleTracePaths('Ashes', font, -110, 4);
+
+    expect(afterFirst).toBe(5);
+    // Identity, not equality: a re-cut remounts `TracedTitle`, and the mapper
+    // it installs closes over this array. Rebuilding it would be the cost the
+    // cache exists to remove.
+    expect(second).toBe(first);
+    expect(build).toHaveBeenCalledTimes(afterFirst);
+  });
+
+  it('keeps titles drawn at another size or baseline apart', () => {
+    countingBuilder();
+    const row = titleTracePaths('Ashes', font, -110, 4);
+    const lower = titleTracePaths('Ashes', font, -110, 40);
+    const bigger = titleTracePaths('Ashes', Skia.Font(undefined, 26), -110, 4);
+
+    expect(lower).not.toBe(row);
+    expect(bigger).not.toBe(row);
   });
 });

@@ -12,7 +12,7 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
-import { MatchingText, WriteText, easeSmoother } from '../../motion';
+import { TransformText, WriteText, easeSmoother } from '../../motion';
 import {
   ARRANGEMENTS,
   DATE_RESOLUTIONS,
@@ -232,20 +232,29 @@ function FieldOverlayImpl({
           {/*
             The header is one object at every level, not a different header per
             level. So the depth, the name and the count *change* rather than
-            being replaced: letters that both lines share glide to their new
-            seats and the rest shape-morph, which is the difference between
-            arriving somewhere and being shown somewhere else. `Field` becoming
-            `Last week` is the gesture the whole zoom model rests on being
-            continuous, and it was the one place the chrome cut.
+            being replaced. `Field` becoming `Last week` is the gesture the
+            whole zoom model rests on being continuous, and it was the one
+            place the chrome cut.
+
+            A plain Transform rather than the matching variant, which is what
+            this used to be. Matching finds the letters two lines share and
+            flies each one to its new seat on an arc, with a cascade — right
+            for a title, and wrong for a line like `8 SONGS · 3 GROUPS`, whose
+            every reading shares most of its letters with the last one. The
+            S's and the O's swam past each other on separate arcs and the line
+            read as a shuffle rather than as a number changing. `Transform`
+            aligns by reading order and interpolates every outline on one
+            shared alpha, so the count re-forms in place: one object, one
+            gesture, which is what the paragraph above is claiming.
           */}
-          <MatchingText
+          <TransformText
             text={`L${LEVELS[level].index} · ${LEVELS[level].name}`}
             charStyle={CHROME_STYLES.eyebrow}
             color={pal.muted}
             duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
             style={styles.eyebrowSlot}
           />
-          <MatchingText
+          <TransformText
             text={level === 'shelf' ? groupLabel ?? 'Group' : 'Field'}
             charStyle={CHROME_STYLES.title}
             color={pal.ink}
@@ -254,7 +263,7 @@ function FieldOverlayImpl({
           />
           <View style={styles.metaRow} pointerEvents="box-none">
             <View style={styles.metaCount} pointerEvents="none">
-              <MatchingText
+              <TransformText
                 text={`${metaLine(
                   level,
                   songCount,
@@ -298,6 +307,10 @@ function FieldOverlayImpl({
                   // shelf's size changes under it while you are standing there.
                   duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
                   writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+                  // The second of those gestures is the header's, so it is the
+                  // header's variant. `write` and `erase` are chosen ahead of
+                  // the variant and so are untouched by this.
+                  variant="transform"
                   style={styles.eyebrowSlot}
                 />
               )}
@@ -409,7 +422,7 @@ function FieldOverlayImpl({
             is changes with the level and with the axis. It is the same
             sentence being rewritten, so it morphs like the header does.
           */}
-          <MatchingText
+          <TransformText
             text={
               level === 'field'
                 ? `${HINTS.field} ${
@@ -443,7 +456,12 @@ function metaLine(
 ): string {
   const songs = `${songCount} ${songCount === 1 ? 'SONG' : 'SONGS'}`;
   if (level === 'shelf') return songs;
-  const noun = onDateAxis ? CLUSTER_NOUN[resolution] : 'PLAYLIST';
+  // `GROUP` rather than `PLAYLIST`, which is the truer word and did not fit:
+  // this line shares its row with `ACTION_WIDTH_PX` of reserved slot, so
+  // `8 SONGS · 3 PLAYLISTS` ran off the end and was read as `8 SONGS · 3` —
+  // a count with nothing to count. The hint below still says `PLAYLIST`,
+  // where there is room for it and where naming the gesture is the point.
+  const noun = onDateAxis ? CLUSTER_NOUN[resolution] : 'GROUP';
   return `${songs} · ${groupCount} ${noun}${groupCount === 1 ? '' : 'S'}`;
 }
 
