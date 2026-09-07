@@ -727,8 +727,20 @@ const styles = StyleSheet.create({
   },
   /** The count takes the room the action does not, and morphs inside it. */
   metaCount: { flex: 1 },
-  /** Fixed, for the reason `ACTION_WIDTH_PX` gives. */
-  actionSlot: { width: OVERLAY_KNOBS.ACTION_WIDTH_PX },
+  /*
+   * Overlaid, not flexed: at L0 the action is empty but still mounted (so the
+   * shelf's word can unwrite on exit), and a flexed 190 px slot steals that
+   * width from the count — `8 SONGS · 3 GROUPS` clipped to `8 SONGS · 3` on
+   * device. Absolute keeps the erase seat while the count gets the full row.
+   * Overlap is safe: at L1 the count is just `N SONGS`, short and
+   * left-aligned, while the action is right-aligned ink in its own 190 px.
+   */
+  actionSlot: {
+    bottom: 0,
+    position: 'absolute',
+    right: 0,
+    width: OVERLAY_KNOBS.ACTION_WIDTH_PX,
+  },
   hintSlot: { height: OVERLAY_KNOBS.EYEBROW_ROW_PX, marginTop: space.md },
   // `ORDER` names the dial beside it, the way `WEEK · MONTH · YEAR` sits under
   // the axis it belongs to. Drawn in `line` rather than `faint`: it is a label
@@ -741,6 +753,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
     flexDirection: 'row',
     marginTop: space.sm,
+    position: 'relative',
   },
   // No `gap`: a flex gap is spent even on a zero-height child, so a collapsed
   // resolution row would still push the dial up by 8. Children carry their own.
