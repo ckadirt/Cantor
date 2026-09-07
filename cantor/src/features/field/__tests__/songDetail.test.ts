@@ -8,7 +8,12 @@
  * time axis at the other.
  */
 import { Skia, type SkCanvas } from '@shopify/react-native-skia';
-import { GRAIN_KNOBS, LEVEL_SCALE_RATIOS } from '../../../field';
+import {
+  GRAIN_KNOBS,
+  LEVEL_SCALE_RATIOS,
+  REPRESENTATION_WINDOWS,
+  bandAlphaAt,
+} from '../../../field';
 import { PLAYER_RING_KNOBS } from '../NativePlayer';
 import {
   drawSongDetail,
@@ -180,5 +185,46 @@ describe('the measurement from the ring to the grain', () => {
     });
     expect(settled.lines).toHaveLength(0);
     expect(settled.rects).toHaveLength(32);
+  });
+
+  /**
+   * The measurement stays drawn at the grain, where the song band has closed.
+   *
+   * Found on the phone: the draw-on clock was started by asking whether the
+   * song band had finished opening, and a band closes at *both* ends. The
+   * grain seat is far past its exit, so arriving at L3 reset the clock — the
+   * ticks vanished at the moment they were needed, and took the decoded detail
+   * with them, because it is drawn behind them.
+   *
+   * Reading the ratio instead is what fixes it, and these are the numbers that
+   * make that reading correct: the latch closes before the L2 seat and nothing
+   * further in reopens it.
+   */
+  it('latches past the song band, which the grain seat is beyond', () => {
+    expect(
+      bandAlphaAt(LEVEL_SCALE_RATIOS.grain, 1, REPRESENTATION_WINDOWS.song),
+    ).toBe(0);
+    const latch = REPRESENTATION_WINDOWS.song[1];
+    expect(LEVEL_SCALE_RATIOS.song).toBeGreaterThanOrEqual(latch);
+    expect(LEVEL_SCALE_RATIOS.grain).toBeGreaterThanOrEqual(latch);
+    expect(GRAIN_KNOBS.ENTRY_RATIO).toBeGreaterThanOrEqual(latch);
+  });
+
+  /**
+   * And the field gives way to the samples entirely once it opens.
+   *
+   * Also found on the phone. The row and the player are written against
+   * arrivals rather than bands, and an arrival does not come back down — so at
+   * the grain seat the row's action word and the player's name were still at
+   * full ink over the waveform. The recorded picture had hidden that by
+   * returning early after drawing the grain; the native path had to say it.
+   */
+  it('leaves nothing of the field standing at the grain seat', () => {
+    const fieldFadeAt = (ratio: number) =>
+      1 - bandAlphaAt(ratio, 1, REPRESENTATION_WINDOWS.grain);
+    expect(fieldFadeAt(LEVEL_SCALE_RATIOS.grain)).toBe(0);
+    // And nothing of the crossing is taken away before it begins.
+    expect(fieldFadeAt(LEVEL_SCALE_RATIOS.song)).toBe(1);
+    expect(fieldFadeAt(LEVEL_SCALE_RATIOS.shelf)).toBe(1);
   });
 });
