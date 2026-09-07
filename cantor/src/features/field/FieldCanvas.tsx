@@ -71,6 +71,7 @@ import {
 import { bornClock } from '../../motion/clock';
 import { useMorphFont } from '../../motion/fonts';
 import { layoutText, writePhase, writeSubAlpha } from '../../motion/text';
+import { traceTitlePath } from './titleTrace';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
@@ -1093,9 +1094,14 @@ function NativePlayhead({
  * one written below arrives as `undefined`. The same rule the band maths in
  * `bands.ts` is ordered by.
  */
+type NativeRecut = Pick<
+  FieldRecutModel,
+  'fromCamera' | 'toCamera' | 'fromFitScale' | 'toFitScale'
+>;
+
 function nativeCameraScale(
   progress: number,
-  recut: FieldRecutModel,
+  recut: NativeRecut,
   cameraShared: SharedValue<Camera>,
 ): number {
   'worklet';
@@ -1117,7 +1123,7 @@ function nativeCameraScale(
  */
 function nativeFitScale(
   progress: number,
-  recut: FieldRecutModel,
+  recut: NativeRecut,
   fitScaleShared: SharedValue<number>,
 ): number {
   'worklet';
@@ -1163,6 +1169,48 @@ function flightOwnerAlpha(
   const amount = t * t * t * (t * (t * 6 - 15) + 10);
   return fromAlpha + (targetAlpha - fromAlpha) * amount;
 }
+
+// These camera-only values are identical for every song. Install their
+// mappers once per generation, rather than once per placement.
+function useNativeCameraMotion(
+  clock: SharedValue<number>,
+  recut: NativeRecut,
+  cameraShared: SharedValue<Camera>,
+  fitScaleShared: SharedValue<number>,
+) {
+  const zero = useSharedValue(0);
+  const one = useSharedValue(1);
+  const scale = useDerivedValue(() =>
+    nativeCameraScale(clock.value, recut, cameraShared),
+  );
+  const fit = useDerivedValue(() =>
+    nativeFitScale(clock.value, recut, fitScaleShared),
+  );
+  const becomingRow = useDerivedValue(() =>
+    bandAlphaAt(scale.value, fit.value, REPRESENTATION_WINDOWS.row),
+  );
+  const shapeArrived = useDerivedValue(() =>
+    songShapeArrival(scale.value, fit.value),
+  );
+  const nameArrived = useDerivedValue(() =>
+    songNameArrival(scale.value, fit.value),
+  );
+  const arrived = useDerivedValue(() =>
+    bandAlphaAt(scale.value, fit.value, REPRESENTATION_WINDOWS.song),
+  );
+  const playerLineInk = useDerivedValue(() =>
+    1 - lineOwnedByPlayer(nameArrived.value),
+  );
+  const rowOnly = useDerivedValue(() => 1 - arrived.value);
+  const walked = useDerivedValue(() => faceArrival(scale.value, fit.value));
+  const written = useDerivedValue(() => nameArrival(scale.value, fit.value));
+  return {
+    zero, one, becomingRow, shapeArrived, nameArrived, arrived,
+    playerLineInk, rowOnly, walked, written,
+  };
+}
+
+type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 
 type NativeFieldContentProps = Readonly<{
   recut: FieldRecutModel;
@@ -1232,6 +1280,16 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       easing: nativeSmootherstep,
     });
   }, [clock, recut]);
+  // Worklets need camera endpoints, not the entire layout and flight family.
+  const nativeRecut = useMemo<NativeRecut>(() => ({
+    fromCamera: recut.fromCamera,
+    toCamera: recut.toCamera,
+    fromFitScale: recut.fromFitScale,
+    toFitScale: recut.toFitScale,
+  }), [recut]);
+  const motion = useNativeCameraMotion(
+    clock, nativeRecut, cameraShared, fitScaleShared,
+  );
   return (
     <>
       <Fill color={palette.bg} />
@@ -1244,7 +1302,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           clock={clock}
           cameraShared={cameraShared}
           fitScaleShared={fitScaleShared}
-          recut={recut}
+          recut={nativeRecut}
           viewport={viewport}
           font={monoFont}
           palette={palette}
@@ -1285,11 +1343,12 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         return (
           <NativePlacementFlight
             key={flight.key}
+            motion={motion}
             flight={flight}
             clock={clock}
             cameraShared={cameraShared}
             fitScaleShared={fitScaleShared}
-            recut={recut}
+            recut={nativeRecut}
             viewport={viewport}
             markPath={nameLensFacePath(
               recipe,
@@ -1465,35 +1524,17 @@ function nativeRowModel(
   };
 }
 
-/**
- * One letter under the pen.
- *
- * `start`/`end` on a `Path` is `VMobject.pointwise_become_partial`: the stroke
- * grows *along* the outline, through the letter's own curves, which is the
- * whole difference between writing and revealing. The letter's place in the
- * line is its place in the cascade, and `writeSubAlpha` is the engine's own
- * `Animation.get_sub_alpha` — the same lag `Write` uses everywhere else.
- *
- * One mapper, not four: the stroke's alpha and the hand-off to real glyphs are
- * the line's business and live on the group above this. See the pen's comment
- * in `NativePlacementFlight` for why the fill is line-wide.
- */
-function TracedGlyph({
-  path,
-  index,
-  count,
+/** One mapper and draw node per title, retaining the per-letter pen lag. */
+function TracedTitle({
+  paths,
   written,
   color,
 }: {
-  path: SkPath;
-  index: number;
-  count: number;
+  paths: readonly SkPath[];
   written: SharedValue<number>;
   color: SkColor | string;
 }) {
-  const end = useDerivedValue(
-    () => writePhase(writeSubAlpha(written.value, index, count)).borderEnd,
-  );
+  const path = useDerivedValue(() => traceTitlePath(paths, written.value));
   return (
     <Path
       path={path}
@@ -1502,8 +1543,6 @@ function TracedGlyph({
       strokeWidth={ROW_ARRIVAL_KNOBS.TRACE_STROKE_PX}
       strokeCap="round"
       strokeJoin="round"
-      start={0}
-      end={end}
     />
   );
 }
@@ -1519,6 +1558,7 @@ function TracedGlyph({
  * this renderer exists to end.
  */
 function NativePlacementFlight({
+  motion,
   flight,
   clock,
   cameraShared,
@@ -1541,11 +1581,12 @@ function NativePlacementFlight({
   weight,
   filled,
 }: {
+  motion: NativeCameraMotion;
   flight: PlacementFlight;
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
-  recut: FieldRecutModel;
+  recut: NativeRecut;
   viewport: Viewport;
   markPath: SkPath;
   row: NativeRowModel;
@@ -1575,6 +1616,7 @@ function NativePlacementFlight({
   /** True for a downloaded song, whose face is filled rather than outlined. */
   filled: boolean;
 }) {
+  const titleAlpha = row.titleAlpha;
   /**
    * Where this song is, this frame.
    *
@@ -1632,14 +1674,7 @@ function NativePlacementFlight({
    * separate from the row's own opacities rather than being recovered by
    * dividing one of them back out by the owner.
    */
-  const becomingRow = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    return bandAlphaAt(
-      nativeCameraScale(p, recut, cameraShared),
-      nativeFitScale(p, recut, fitScaleShared),
-      REPRESENTATION_WINDOWS.row,
-    );
-  });
+  const becomingRow = motion.becomingRow;
   /**
    * How much of the player this song is, this frame: the song band, alone.
    *
@@ -1664,37 +1699,9 @@ function NativePlacementFlight({
    *
    * Shape first, then the name. See `SONG_ARRIVAL`.
    */
-  const shapeArrived = useDerivedValue(() => {
-    if (!isPlayer) return 0;
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    return songShapeArrival(
-      nativeCameraScale(p, recut, cameraShared),
-      nativeFitScale(p, recut, fitScaleShared),
-    );
-  });
-  const nameArrived = useDerivedValue(() => {
-    if (!isPlayer) return 0;
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    return songNameArrival(
-      nativeCameraScale(p, recut, cameraShared),
-      nativeFitScale(p, recut, fitScaleShared),
-    );
-  });
-  const arrived = useDerivedValue(() => {
-    // Zero for every song that is not the one the camera arrived at, and that
-    // guard is the whole of it. The band is a function of the camera alone, so
-    // without it *every* mark in the field grows to player size at L2 and they
-    // pile up on top of each other — eight full-screen contours where a person
-    // expects one. Only the focused song has a third pose; its neighbours have
-    // the two they always had, and their row band takes them out from here.
-    if (!isPlayer) return 0;
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    return bandAlphaAt(
-      nativeCameraScale(p, recut, cameraShared),
-      nativeFitScale(p, recut, fitScaleShared),
-      REPRESENTATION_WINDOWS.song,
-    );
-  });
+  const shapeArrived = isPlayer ? motion.shapeArrived : motion.zero;
+  const nameArrived = isPlayer ? motion.nameArrived : motion.zero;
+  const arrived = isPlayer ? motion.arrived : motion.zero;
   /**
    * Whether the row's own ink has handed its line to the morph.
    *
@@ -1707,34 +1714,11 @@ function NativePlacementFlight({
    */
   const titleHandedOver = song?.titleMorph != null;
   const metaHandedOver = song?.metaMorph != null;
-  const rowTitleInk = useDerivedValue(() =>
-    titleHandedOver ? 1 - lineOwnedByPlayer(nameArrived.value) : 1,
-  );
-  const rowMetaInk = useDerivedValue(() =>
-    metaHandedOver ? 1 - lineOwnedByPlayer(nameArrived.value) : 1,
-  );
-  /** Everything a row has that the player does not: it leaves as the player lands. */
-  const rowOnly = useDerivedValue(() => 1 - arrived.value);
-  /**
-   * The two halves of the gesture, from `ROW_ARRIVAL`: how far the face has
-   * walked to its seat, and how much of the name has been written into the room
-   * it left. Both are the camera's own distance rather than a clock, which is
-   * what makes the whole thing reversible — and what makes the pen the pinch.
-   */
-  const walked = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    return faceArrival(
-      nativeCameraScale(p, recut, cameraShared),
-      nativeFitScale(p, recut, fitScaleShared),
-    );
-  });
-  const written = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    return nameArrival(
-      nativeCameraScale(p, recut, cameraShared),
-      nativeFitScale(p, recut, fitScaleShared),
-    );
-  });
+  const rowTitleInk = titleHandedOver ? motion.playerLineInk : motion.one;
+  const rowMetaInk = metaHandedOver ? motion.playerLineInk : motion.one;
+  const rowOnly = isPlayer ? motion.rowOnly : motion.one;
+  const walked = motion.walked;
+  const written = motion.written;
   /**
    * The face's alpha — one face, across both bands.
    *
@@ -1856,12 +1840,11 @@ function NativePlacementFlight({
    * passing over finished text, which is what it looked like. Ink has to grow
    * along the letter's own shape, and that is a trim, not a box.
    *
-   * The trim is affordable because it is per letter rather than per line.
-   * `SkTrimPathEffect` re-measures the path it is given, but Skia skips the
-   * effect entirely for a path whose `end` is 1 — and with a lag ratio only a
-   * couple of letters are mid-stroke on any frame. A whole-line trim measures
-   * all twenty glyphs every frame, which is the version that cost +4 ms across
-   * eight rows; this measures the two or three the pen is inside.
+   * The trim stays per letter, but one mapper assembles the visible strokes
+   * into one path per title. Finished glyphs are appended without measuring;
+   * only the letters under the pen are trimmed. Mounting a mapper and Skia
+   * node for every letter used to stall even L0 regrouping, where all these
+   * titles are invisible.
    *
    * The fill is line-wide even so. Manim fills each glyph as its own border
    * closes, which here would be three mappers a letter on a canvas that mounts
@@ -1875,7 +1858,7 @@ function NativePlacementFlight({
   const traceOpacity = useDerivedValue(
     () =>
       owner.value *
-      row.titleAlpha *
+      titleAlpha *
       rowTitleInk.value *
       writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
         .borderAlpha,
@@ -1883,14 +1866,14 @@ function NativePlacementFlight({
   const titleOpacity = useDerivedValue(
     () =>
       owner.value *
-      row.titleAlpha *
+      titleAlpha *
       rowTitleInk.value *
       writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
         .fillAlpha,
   );
   /** The pre-write behaviour, kept for where an outline cannot be had. */
   const rowTitleFade = useDerivedValue(
-    () => owner.value * row.titleAlpha * rowTitleInk.value * written.value,
+    () => owner.value * titleAlpha * rowTitleInk.value * written.value,
   );
   /**
    * The row's second voice, which arrives with the name rather than before it.
@@ -1955,16 +1938,11 @@ function NativePlacementFlight({
       */}
       {row.titleTrace === null ? null : (
         <SkiaGroup opacity={traceOpacity}>
-          {row.titleTrace.map((glyph, index) => (
-            <TracedGlyph
-              key={index}
-              path={glyph}
-              index={index}
-              count={traceCount}
-              written={written}
-              color={color}
-            />
-          ))}
+          <TracedTitle
+            paths={row.titleTrace}
+            written={written}
+            color={color}
+          />
         </SkiaGroup>
       )}
       <Text
@@ -2047,7 +2025,7 @@ function NativeShelfLabel({
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
-  recut: FieldRecutModel;
+  recut: NativeRecut;
   viewport: Viewport;
   font: NonNullable<ReturnType<typeof useMorphFont>>;
   palette: Palette;
