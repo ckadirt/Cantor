@@ -1,6 +1,7 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import {
+  GRAIN_ENABLED,
   layoutField,
   screenToWorld,
   type Camera,
@@ -142,9 +143,15 @@ describe('useFieldCamera', () => {
         y: expect.closeTo(before.y, 10),
       }),
     );
-    // Pinching as hard as possible now reaches L3 and stops at the scale that
-    // shows the closest look the grain view offers.
-    expect(latest.level).toBe('grain');
+    /*
+     * Pinching as hard as possible stops at the player.
+     *
+     * `GRAIN_ENABLED` is off for the alpha, so the ceiling is the song's own
+     * seat: there is nowhere past L2 that is being drawn, and a camera that
+     * could be pinched into one would be looking at a level nobody is tuning.
+     * Turn the knob on and this is `grain` again, at the grain's own ceiling.
+     */
+    expect(latest.level).toBe(GRAIN_ENABLED ? 'grain' : 'song');
   });
 
   /**
@@ -362,7 +369,9 @@ describe('useFieldCamera', () => {
    *
    * Song to grain is the case a naive hold loses: the placement does not
    * change, so anything keyed on the focus would never fire and the camera
-   * would sit still. The ticket is a counter for exactly this.
+   * would sit still. The ticket is a counter for exactly this — and it stays
+   * a counter with L3 closed, because the crossing it was written for is the
+   * one `GRAIN_ENABLED` re-opens.
    */
   it('lands a held descent, including one that does not change the focus', async () => {
     const { layout } = await renderCamera();
@@ -382,12 +391,18 @@ describe('useFieldCamera', () => {
     const atSong = camera().scale;
     expect(latest.playerFocus?.key).toBe(placement.key);
 
-    // The same placement again. The focus does not move; the camera must.
+    /*
+     * The same placement again. The focus does not move; the camera goes as far
+     * as the levels that are open — which with L3 closed is nowhere, because a
+     * song is the end of the descent. Either way the focus survives the second
+     * tap rather than being dropped by it.
+     */
     await ReactTestRenderer.act(async () => {
       latest.descend(placement);
     });
     expect(latest.playerFocus?.key).toBe(placement.key);
-    expect(camera().scale).toBeGreaterThan(atSong);
+    if (GRAIN_ENABLED) expect(camera().scale).toBeGreaterThan(atSong);
+    else expect(camera().scale).toBeCloseTo(atSong, 10);
   });
 
   // The full-motion flight is a shared value driven on the UI thread, so under

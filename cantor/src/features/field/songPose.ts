@@ -77,6 +77,33 @@ export const PLAYER_POSE_KNOBS = {
   SONG_WORDS_GAP_PX: 78,
   /** Air between one transport word and the next. */
   SONG_WORD_GAP_PX: 24,
+  /**
+   * KNOBS — the transport itself, which is buttons rather than words.
+   *
+   * It sits in the gap the drawing leaves for it: the ring's own foot is about
+   * `SONG_RISE_RATIO` of the height above the middle plus its radius, and the
+   * name's baseline is `SONG_FOOT_INSET_PX` off the bottom, so on a phone there
+   * is most of a thumb's reach of nothing between them. That is where a hand
+   * goes anyway, and it is the one part of the player a person presses
+   * repeatedly, so it gets the room rather than the foot's crowded left edge.
+   */
+  /** How far the transport sits above the name's own baseline. */
+  SONG_TRANSPORT_RISE_PX: 120,
+  /** Centre to centre, from one button to the next. */
+  SONG_TRANSPORT_GAP_PX: 64,
+  /** The play/pause silhouette's box — the one you look for, so the largest. */
+  SONG_TRANSPORT_PLAY_PX: 28,
+  /** The step silhouettes' box, quieter than the verb between them. */
+  SONG_TRANSPORT_STEP_PX: 19,
+  /**
+   * The finger's target around any of the three.
+   *
+   * Larger than the gap would allow if the boxes were square-packed, which is
+   * why they are laid out from centres and not from edges: `touch.min` is 44
+   * and the gap is 64, so three targets of this size sit side by side with air
+   * between them.
+   */
+  SONG_TRANSPORT_HIT_PX: 56,
 } as const;
 
 export type PoseViewport = Readonly<{ width: number; height: number }>;
@@ -194,6 +221,75 @@ export function songWordsOriginPx(
   'worklet';
   const title = songTitleOriginPx(viewport);
   return { x: title.x, y: title.y + PLAYER_POSE_KNOBS.SONG_WORDS_GAP_PX };
+}
+
+/**
+ * One transport button: where its silhouette is centred, and how big it is.
+ *
+ * The same shape of answer `playerWords` gives for the foot, and for the same
+ * reason: the canvas draws these and an invisible React Native layer catches
+ * them, so both sides have to come from one measurement or the glyph and its
+ * button drift apart. This is the only place either side computes an x.
+ *
+ * Mark-relative, like everything else in this file — see `transportScreenPx`
+ * for the translation the touch layer makes.
+ */
+export type TransportSeat = Readonly<{
+  key: 'previous' | 'playPause' | 'next';
+  /** The centre of the silhouette, not a corner: the boxes differ in size. */
+  x: number;
+  y: number;
+  size: number;
+}>;
+
+/**
+ * The three seats, in reading order, centred on the song's own mark point.
+ *
+ * Centred rather than laid out left to right because the transport is one
+ * object with a middle: the verb is in the middle, the two steps are either
+ * side of it, and a person's thumb finds the middle of the screen without
+ * looking. Written as a row of boxes it would have to be re-centred by hand
+ * every time one of the three changed size.
+ */
+export function transportSeatsPx(
+  viewport: PoseViewport,
+): readonly TransportSeat[] {
+  'worklet';
+  const knobs = PLAYER_POSE_KNOBS;
+  const y = songTitleOriginPx(viewport).y - knobs.SONG_TRANSPORT_RISE_PX;
+  return [
+    {
+      key: 'previous',
+      x: -knobs.SONG_TRANSPORT_GAP_PX,
+      y,
+      size: knobs.SONG_TRANSPORT_STEP_PX,
+    },
+    { key: 'playPause', x: 0, y, size: knobs.SONG_TRANSPORT_PLAY_PX },
+    {
+      key: 'next',
+      x: knobs.SONG_TRANSPORT_GAP_PX,
+      y,
+      size: knobs.SONG_TRANSPORT_STEP_PX,
+    },
+  ];
+}
+
+/**
+ * The same three seats in *screen* pixels, for the layer that catches fingers.
+ *
+ * The same translation `playerFootScreenPx` makes, and it holds for the same
+ * reason: the camera is centred on the mark at L2, so the mark's point *is* the
+ * middle of the view, which is the only distance at which any of this is
+ * pressable anyway.
+ */
+export function transportScreenPx(
+  viewport: PoseViewport,
+): readonly TransportSeat[] {
+  return transportSeatsPx(viewport).map(seat => ({
+    ...seat,
+    x: viewport.width / 2 + seat.x,
+    y: viewport.height / 2 + seat.y,
+  }));
 }
 
 /** The elapsed readout, centred above the ring. */

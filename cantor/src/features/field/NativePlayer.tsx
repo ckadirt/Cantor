@@ -11,6 +11,7 @@ import {
 } from '@shopify/react-native-skia';
 import {
   useDerivedValue,
+  useSharedValue,
   type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
@@ -28,7 +29,9 @@ import {
   songTitleColumnPx,
   songTitleOriginPx,
   songWordsOriginPx,
+  transportSeatsPx,
   type PoseViewport,
+  type TransportSeat,
 } from './songPose';
 import type { FieldPresentation } from './useFieldController';
 
@@ -82,6 +85,145 @@ export const PLAYER_RING_KNOBS = {
    */
   SONG_WAVE_DRAW_MS: 900,
 } as const;
+
+/**
+ * KNOBS — the transport's silhouettes, in fractions of each button's own box.
+ *
+ * Proportions rather than pixels, because `songPose` owns the sizes and this
+ * owns the shapes: change `SONG_TRANSPORT_PLAY_PX` and everything below scales
+ * with it, which is what makes one drawing work at any box.
+ */
+export const PLAYER_TRANSPORT_KNOBS = {
+  /** The play triangle's width, as a fraction of its height. */
+  PLAY_ASPECT: 0.88,
+  /** One pause bar's width, and the air between the two, over the box. */
+  PAUSE_BAR_RATIO: 0.3,
+  PAUSE_GAP_RATIO: 0.26,
+  /** The step glyph: its triangle, then the bar it runs into. */
+  STEP_TRIANGLE_RATIO: 0.62,
+  STEP_BAR_RATIO: 0.16,
+  /**
+   * How long play takes to become pause.
+   *
+   * Short, and it has to be: this is the one control a person presses over and
+   * over, and a morph they can outrun reads as lag rather than as motion. Long
+   * enough to see the triangle open, and no longer.
+   */
+  MORPH_MS: 240,
+  /** How quietly a step is drawn while there is no queue for it to step through. */
+  INERT_ALPHA: 0.4,
+} as const;
+
+/**
+ * Play and pause as one drawing at two poses.
+ *
+ * The triangle is cut down its own middle into two quads, and each quad is a
+ * bar. That is the whole morph: four points travel to four points on each side,
+ * in the same order, so the slanted edges straighten and the halves part. No
+ * crossfade, no second symbol appearing over the first — the house rule for
+ * compound silhouettes, applied to the smallest one in the app.
+ *
+ * Both paths are emitted with exactly the same verbs — two contours of
+ * `moveTo` and three `lineTo`, each closed — because `interpolatePaths` walks
+ * points pairwise and answers null for anything else. The apex is emitted
+ * *twice* in the play pose for that reason: it is the one point that has to
+ * become two, and a triangle written as three points could not be interpolated
+ * with a rectangle written as four.
+ *
+ * Both are centred on `cx, cy` rather than on the origin, so the caller needs
+ * no transform node per button and the two poses cannot be centred differently.
+ */
+export function playPauseSilhouettes(
+  cx: number,
+  cy: number,
+  size: number,
+): Readonly<{ play: SkPath; pause: SkPath }> {
+  const knobs = PLAYER_TRANSPORT_KNOBS;
+  const half = size / 2;
+  const playHalfWidth = (size * knobs.PLAY_ASPECT) / 2;
+  const bar = size * knobs.PAUSE_BAR_RATIO;
+  const gap = size * knobs.PAUSE_GAP_RATIO;
+
+  const play = Skia.PathBuilder.Make();
+  // The left half: top-left, the cut's top, the cut's foot, bottom-left.
+  quad(play, [
+    [cx - playHalfWidth, cy - half],
+    [cx, cy - half / 2],
+    [cx, cy + half / 2],
+    [cx - playHalfWidth, cy + half],
+  ]);
+  // The right half, read in the same order: the apex stands in for both of the
+  // bar's right-hand corners.
+  quad(play, [
+    [cx, cy - half / 2],
+    [cx + playHalfWidth, cy],
+    [cx + playHalfWidth, cy],
+    [cx, cy + half / 2],
+  ]);
+
+  const pause = Skia.PathBuilder.Make();
+  quad(pause, [
+    [cx - gap / 2 - bar, cy - half],
+    [cx - gap / 2, cy - half],
+    [cx - gap / 2, cy + half],
+    [cx - gap / 2 - bar, cy + half],
+  ]);
+  quad(pause, [
+    [cx + gap / 2, cy - half],
+    [cx + gap / 2 + bar, cy - half],
+    [cx + gap / 2 + bar, cy + half],
+    [cx + gap / 2, cy + half],
+  ]);
+
+  return { play: play.detach(), pause: pause.detach() };
+}
+
+/**
+ * A step: the triangle, and the bar it runs into.
+ *
+ * `direction` is +1 for the next song and −1 for the one before it — a mirror
+ * rather than a second drawing, because they are the same glyph facing two
+ * ways and writing them twice is how the two drift apart.
+ */
+export function stepSilhouette(
+  cx: number,
+  cy: number,
+  size: number,
+  direction: 1 | -1,
+): SkPath {
+  const knobs = PLAYER_TRANSPORT_KNOBS;
+  const half = size / 2;
+  const triangle = size * knobs.STEP_TRIANGLE_RATIO;
+  const bar = size * knobs.STEP_BAR_RATIO;
+  const left = (-(triangle + bar) / 2) * direction;
+  const apex = left + triangle * direction;
+  const edge = apex + bar * direction;
+
+  const builder = Skia.PathBuilder.Make();
+  builder.moveTo(cx + left, cy - half);
+  builder.lineTo(cx + apex, cy);
+  builder.lineTo(cx + left, cy + half);
+  builder.close();
+  quad(builder, [
+    [cx + apex, cy - half],
+    [cx + edge, cy - half],
+    [cx + edge, cy + half],
+    [cx + apex, cy + half],
+  ]);
+  return builder.detach();
+}
+
+/** One closed four-point contour, appended to a builder. */
+function quad(
+  builder: ReturnType<typeof Skia.PathBuilder.Make>,
+  points: readonly (readonly [number, number])[],
+): void {
+  builder.moveTo(points[0][0], points[0][1]);
+  for (let index = 1; index < points.length; index += 1) {
+    builder.lineTo(points[index][0], points[index][1]);
+  }
+  builder.close();
+}
 
 /**
  * The player's ring, drawn about its own origin.
@@ -188,8 +330,19 @@ export type NativeSongModel = Readonly<{
   /** The recipe, which is what the row's availability line becomes. */
   metaMorph: readonly GlyphMorph[] | null;
   songMeta: string;
-  /** The transport, as words in the foot: where each sits and what it says. */
+  /** What is left in the foot as words: where each sits and what it says. */
   words: readonly PlayerWord[];
+  /**
+   * Whether the audio is already here.
+   *
+   * The transport is a silhouette rather than a word now, so it cannot say
+   * `FETCH`; it says the same thing the field says about a song it does not
+   * have, which is how firmly it is drawn. Firm ink is a song that will sound
+   * the instant you press it, quiet ink is a press that starts a download —
+   * the design's own three states, applied to the one control that acts on
+   * them.
+   */
+  onPhone: boolean;
 }>;
 
 /**
@@ -203,21 +356,31 @@ export type NativeSongModel = Readonly<{
  * place either side computes an x.
  */
 export type PlayerWord = Readonly<{
-  key: 'transport' | 'detail' | 'audio';
+  key: 'detail' | 'audio';
   text: string;
   x: number;
   width: number;
 }>;
 
+/**
+ * The foot's words — which no longer include the transport.
+ *
+ * `PLAY` and `PAUSE` were words here, and the trouble with a word is that a
+ * word is a *string*: pressing play changed it, a changed string rebuilt the
+ * song's model, and a rebuilt model handed `Canvas` a fresh element, which
+ * makes Skia stop the mapper and re-record the whole root from whatever the JS
+ * thread happens to hold. A full re-record on every press of the most-pressed
+ * control in the app. The transport is geometry on a shared value now — see
+ * `TransportControls` — and what is left here is two labels that change only
+ * when the song does.
+ */
 export function playerWords(
   font: SkFont,
-  transportLabel: string,
   audioLabel: string,
 ): readonly PlayerWord[] {
   const words: PlayerWord[] = [];
   let x = 0;
   for (const [key, text] of [
-    ['transport', transportLabel],
     ['detail', 'DETAIL'],
     ['audio', audioLabel],
   ] as const) {
@@ -344,7 +507,6 @@ export function nativeSongModel(
     rowMeta: SkFont;
     songMeta: SkFont;
   }>,
-  transportLabel: string,
 ): NativeSongModel {
   const song = presentation.song;
   const songTitle = fitText(
@@ -376,9 +538,11 @@ export function nativeSongModel(
     songMeta,
     words: playerWords(
       fonts.songMeta,
-      transportLabel,
       describeAudio(presentation.localAudio.state),
     ),
+    onPhone:
+      presentation.localAudio.state === 'cached' ||
+      presentation.localAudio.state === 'pinned',
   };
 }
 
@@ -437,6 +601,113 @@ function MorphGlyph({
 }
 
 /**
+ * The transport: three silhouettes, and the one of them that is a verb.
+ *
+ * Drawn here rather than laid out in React for the reason the whole player is —
+ * "Nothing that moves with the camera may be laid out in React". It arrives on
+ * the chrome band with the words, and the play/pause morph runs on a shared
+ * value, so pressing it moves geometry on the UI thread and never touches a
+ * React commit. That is what makes the gesture survive being pressed twice in
+ * a row: a retarget is `withTiming` picking up wherever the last one had got
+ * to, which is the mid-morph interrupt the motion rules ask for, for free.
+ *
+ * The steps are drawn quiet and are not pressable. There is no queue in Cantor
+ * — the shelf's order *is* the order, and nothing auto-advances — so there is
+ * nothing for a step to step to yet. Drawing them anyway is the honest half of
+ * that: the transport's shape is settled, and the day the shelf can hand the
+ * player a neighbour these light up without moving.
+ */
+export function TransportControls({
+  viewport,
+  playing,
+  onPhone,
+  colour,
+  mutedColour,
+}: {
+  viewport: PoseViewport;
+  /**
+   * How far through the play-to-pause morph the verb is, 0..1.
+   *
+   * A shared value rather than a boolean prop: a boolean is a React commit, and
+   * a React commit re-records this canvas. See `playerWords`.
+   */
+  playing: SharedValue<number> | null;
+  onPhone: boolean;
+  colour: string;
+  mutedColour: string;
+}) {
+  const seats = useMemo(() => transportSeatsPx(viewport), [viewport]);
+  const steps = useMemo(
+    () =>
+      seats
+        .filter(seat => seat.key !== 'playPause')
+        .map(seat => ({
+          key: seat.key,
+          path: stepSilhouette(
+            seat.x,
+            seat.y,
+            seat.size,
+            seat.key === 'next' ? 1 : -1,
+          ),
+        })),
+    [seats],
+  );
+  const verb = seats.find(seat => seat.key === 'playPause');
+  return (
+    <>
+      {steps.map(step => (
+        <Path
+          color={mutedColour}
+          fillType="evenOdd"
+          key={step.key}
+          opacity={PLAYER_TRANSPORT_KNOBS.INERT_ALPHA}
+          path={step.path}
+          style="fill"
+        />
+      ))}
+      {verb === undefined ? null : (
+        <TransportVerb
+          colour={onPhone ? colour : mutedColour}
+          playing={playing}
+          seat={verb}
+        />
+      )}
+    </>
+  );
+}
+
+/** The one button that changes shape, and the only thing that knows it does. */
+function TransportVerb({
+  seat,
+  playing,
+  colour,
+}: {
+  seat: TransportSeat;
+  playing: SharedValue<number> | null;
+  colour: string;
+}) {
+  const shapes = useMemo(
+    () => playPauseSilhouettes(seat.x, seat.y, seat.size),
+    [seat.size, seat.x, seat.y],
+  );
+  /*
+   * A held zero where there is no clock to read.
+   *
+   * The player draws for whichever song the camera arrived at, and only the one
+   * the *port* holds has a transport state at all. Without a value of its own
+   * the hook below would have nothing to seed from — and a hook cannot be
+   * called conditionally, so the fallback is a value rather than a branch.
+   */
+  const idle = useSharedValue(0);
+  const path = useSeededPathInterpolation(
+    playing ?? idle,
+    shapes.play,
+    shapes.pause,
+  );
+  return <Path color={colour} fillType="evenOdd" path={path} style="fill" />;
+}
+
+/**
  * The player, hung off the song's own mark.
  *
  * `arrived` is the song band read from the live camera — the same number the
@@ -454,6 +725,7 @@ export function NativePlayerParts({
   viewport,
   durationSeconds,
   positionSeconds,
+  transportPlaying,
   colour,
   mutedColour,
   songTitleFont,
@@ -476,6 +748,8 @@ export function NativePlayerParts({
   viewport: PoseViewport;
   durationSeconds: number;
   positionSeconds: SharedValue<number> | null;
+  /** The play-to-pause morph, 0..1, or null when this song is not the current one. */
+  transportPlaying: SharedValue<number> | null;
   colour: string;
   mutedColour: string;
   songTitleFont: SkFont;
@@ -574,7 +848,7 @@ export function NativePlayerParts({
         />
         {model.words.map(word => (
           <Text
-            color={word.key === 'transport' ? colour : mutedColour}
+            color={mutedColour}
             font={songMetaFont}
             key={word.key}
             text={word.text}
@@ -582,6 +856,13 @@ export function NativePlayerParts({
             y={foot.y}
           />
         ))}
+        <TransportControls
+          colour={colour}
+          mutedColour={mutedColour}
+          onPhone={model.onPhone}
+          playing={transportPlaying}
+          viewport={viewport}
+        />
       </SkiaGroup>
     </>
   );

@@ -12,6 +12,7 @@ import {
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
 import {
+  GRAIN_ENABLED,
   GRAIN_KNOBS,
   LAYOUT_KNOBS,
   containToSeat,
@@ -66,13 +67,20 @@ export const FIELD_CAMERA_KNOBS = {
   /** How long the camera takes to fall back into a seat it was pulled out of. */
   SEAT_SETTLE_MS: 340,
   MIN_SCALE_RATIO: 0.5,
-  // L3 is reachable now. The ceiling is the scale that shows the closest look
-  // the grain view offers, derived from the grain knobs so the two cannot drift
-  // apart: zooming further would resolve nothing new. It bounds a *camera*,
-  // not a pinch — see `PINCH_CEILING_RATIO`.
-  MAX_SCALE_RATIO:
-    GRAIN_KNOBS.ENTRY_RATIO *
-    (GRAIN_KNOBS.ENTRY_SECONDS / GRAIN_KNOBS.MIN_SECONDS),
+  /**
+   * The camera's ceiling. It bounds a *camera*, not a pinch — see
+   * `PINCH_CEILING_RATIO`.
+   *
+   * With L3 open it is the scale that shows the closest look the grain offers,
+   * derived from the grain knobs so the two cannot drift apart: zooming further
+   * would resolve nothing new. With L3 closed it is the song's own seat, so the
+   * player is the end of the road and nothing can be flown, pinched or
+   * rubber-banded past it into a level that is not being drawn.
+   */
+  MAX_SCALE_RATIO: GRAIN_ENABLED
+    ? GRAIN_KNOBS.ENTRY_RATIO *
+      (GRAIN_KNOBS.ENTRY_SECONDS / GRAIN_KNOBS.MIN_SECONDS)
+    : LEVEL_SCALE_RATIOS.song,
   /**
    * How close a pinch may take you: the shelf's own seat, and no further.
    *
@@ -764,13 +772,15 @@ export function useFieldCamera({
         cameraRef.current.scale,
         lastRenderFitScale.current ?? field.fitScale,
       );
-      // L3 stays clamped until M7, so a song is the end of the descent.
+      // Where the descent stops is `GRAIN_ENABLED`'s to say: with L3 closed a
+      // song is the end of it, and tapping the player again does nothing rather
+      // than flying to a distance nothing is drawn at.
       const next =
         current === 'field'
           ? 'shelf'
           : current === 'shelf'
           ? 'song'
-          : current === 'song'
+          : current === 'song' && GRAIN_ENABLED
           ? 'grain'
           : null;
       if (next === null) return;

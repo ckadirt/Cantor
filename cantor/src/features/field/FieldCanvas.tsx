@@ -274,13 +274,15 @@ type Props = {
    */
   focusKey?: string | null;
   /**
-   * What pressing the transport would do, in the player's own words.
+   * The play-to-pause morph, 0..1, for the song the player holds.
    *
-   * A string rather than the player's state, because the canvas draws a word
-   * and has no business knowing what a snapshot is. It changes only when a
-   * person presses something, so it never wakes the canvas on a frame.
+   * A shared value rather than the player's state, because the canvas draws a
+   * *shape* and has no business knowing what a snapshot is — and because the
+   * word this replaced was a string, so every press of it rebuilt the song's
+   * model and re-recorded the whole canvas. Geometry on the UI thread costs a
+   * press nothing. See `playerWords`.
    */
-  transportLabel?: string;
+  transportPlaying?: SharedValue<number> | null;
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
   /** How far through the playing song we are, 0..1. */
@@ -504,7 +506,7 @@ function FieldCanvasImpl({
   positionSeconds = null,
   playingKey = null,
   focusKey = null,
-  transportLabel = 'PLAY',
+  transportPlaying = null,
   analyses,
   playingProgress = null,
   grain = null,
@@ -820,7 +822,7 @@ function FieldCanvasImpl({
           playingKey={playingKey}
           focusKey={focusKey}
           grainShared={grainValue}
-          transportLabel={transportLabel}
+          transportPlaying={transportPlaying}
           positionSeconds={positionSeconds}
           analyses={analyses}
           labelFlights={labelFlights}
@@ -850,7 +852,7 @@ function FieldCanvasImpl({
     recut,
     songMetaFont,
     songTitleFont,
-    transportLabel,
+    transportPlaying,
     veil,
     viewport,
   ]);
@@ -1279,8 +1281,8 @@ type NativeFieldContentProps = Readonly<{
   playingKey: string | null;
   /** The song the camera is focused on: the one that is allowed to be a player. */
   focusKey: string | null;
-  /** What pressing the transport would do, in the player's own words. */
-  transportLabel: string;
+  /** The play-to-pause morph, 0..1, for the song the player holds. */
+  transportPlaying: SharedValue<number> | null;
   positionSeconds: SharedValue<number> | null;
   analyses: ReadonlyMap<string, SongAnalysis> | undefined;
   /**
@@ -2070,7 +2072,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   presentations,
   playingKey,
   focusKey,
-  transportLabel,
+  transportPlaying,
   positionSeconds,
   analyses,
   grainShared,
@@ -2225,13 +2227,13 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
                       rowMeta: monoFont,
                       songMeta: songMetaFont,
                     },
-                    transportLabel,
                   )
                 : null
             }
             songTitleFont={songTitleFont}
             songMetaFont={songMetaFont}
             positionSeconds={focused ? positionSeconds : null}
+            transportPlaying={focused ? transportPlaying : null}
             durationSeconds={song.duration_ms / 1000}
             displayFont={displayFont}
             monoFont={monoFont}
@@ -2376,6 +2378,7 @@ function NativePlacementFlight({
   songTitleFont,
   songMetaFont,
   positionSeconds,
+  transportPlaying,
   durationSeconds,
   displayFont,
   monoFont,
@@ -2404,6 +2407,7 @@ function NativePlacementFlight({
   songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
   songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
   positionSeconds: SharedValue<number> | null;
+  transportPlaying: SharedValue<number> | null;
   durationSeconds: number;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -2640,6 +2644,7 @@ function NativePlacementFlight({
           model={song}
           mutedColour={mutedColor}
           positionSeconds={positionSeconds}
+          transportPlaying={transportPlaying}
           anchor={playerAnchor}
           songMetaFont={songMetaFont}
           songTitleFont={songTitleFont}

@@ -18,6 +18,8 @@ import {
   playerFootScreenPx,
   playerLensBottomPx,
   songTitleColumnPx,
+  transportScreenPx,
+  type TransportSeat,
 } from '../field/songPose';
 import { REPRESENTATION_WINDOWS, bandAlphaAt, type Camera } from '../../field';
 import { useMorphFont } from '../../motion/fonts';
@@ -67,10 +69,10 @@ type Props = {
    * The lens control: one place, every level.
    *
    * A real control rather than a drawn one, and it stays that way on purpose.
-   * The transport words are drawn because they are *part of the player* — they
-   * grow out of a row the way the name does. A lens picker is not the song, it
-   * is a choice about how songs are drawn, so it has no pose at L1 to come from
-   * and nothing is lost by leaving it a button.
+   * The transport and the foot's words are drawn because they are *part of the
+   * player*. A lens picker is not the song, it is a choice about how songs are
+   * drawn, so it has no pose at L1 to come from and nothing is lost by leaving
+   * it a button.
    */
   lens: React.ReactNode;
 };
@@ -84,12 +86,17 @@ type Props = {
  * canvas, off the song's own mark, on the camera's own clock. What is left in
  * React is what React is still better at.
  *
- * **The words.** Skia draws them; these press them. A canvas has no
- * `accessibilityRole`, no `hitSlop` and no focus order, and hit-testing three
- * words in canvas space would mean re-implementing all of it against the
- * field's own pan gesture. So the boxes below are invisible, and they are laid
- * out from `playerWords` — the same measurement the canvas draws from — because
- * a button a few pixels off from the word it belongs to is worse than no button.
+ * **The words and the transport.** Skia draws them; these press them. A canvas
+ * has no `accessibilityRole`, no `hitSlop` and no focus order, and hit-testing
+ * a word or a silhouette in canvas space would mean re-implementing all of it
+ * against the field's own pan gesture. So the boxes below are invisible, and
+ * they are laid out from `playerWords` and `transportScreenPx` — the same two
+ * measurements the canvas draws from — because a button a few pixels off from
+ * the shape it belongs to is worse than no button.
+ *
+ * What a press *says* stays here too: the transport is a silhouette on the
+ * canvas and a silhouette announces nothing, so `transportWord` gives the same
+ * screen reader the word the drawing no longer spells out.
  *
  * **The elapsed.** It stays text because it changes twice a second, and a Skia
  * `Text` node takes a string: feeding it from React state would hand the canvas
@@ -143,8 +150,12 @@ function SongSurfaceImpl({
     () =>
       metaFont === null
         ? null
-        : playerWords(metaFont, transportLabel, describeAudio(song.audioState)),
-    [metaFont, song.audioState, transportLabel],
+        : playerWords(metaFont, describeAudio(song.audioState)),
+    [metaFont, song.audioState],
+  );
+  const transport = useMemo(
+    () => transportScreenPx({ width, height }),
+    [height, width],
   );
 
   const scrub = useMemo(() => {
@@ -203,19 +214,28 @@ function SongSurfaceImpl({
         ? null
         : words.map(word => (
             <WordTarget
-              disabled={word.key === 'transport' && !playable}
               foot={foot}
               key={word.key}
-              onPress={
-                word.key === 'transport'
-                  ? onToggle
-                  : word.key === 'detail'
-                    ? onOpenDetail
-                    : null
-              }
+              onPress={word.key === 'detail' ? onOpenDetail : null}
               word={word}
             />
           ))}
+
+      {transport.map(seat => (
+        <TransportTarget
+          disabled={seat.key === 'playPause' && !playable}
+          key={seat.key}
+          label={
+            seat.key === 'playPause'
+              ? transportLabel
+              : seat.key === 'next'
+              ? 'NEXT'
+              : 'PREVIOUS'
+          }
+          onPress={seat.key === 'playPause' ? onToggle : null}
+          seat={seat}
+        />
+      ))}
 
       <Animated.View style={[styles.lens, readout]}>{lens}</Animated.View>
 
@@ -242,20 +262,16 @@ function WordTarget({
   word,
   foot,
   onPress,
-  disabled,
 }: {
   word: PlayerWord;
   foot: Readonly<{ x: number; y: number }>;
   onPress: (() => void) | null;
-  disabled: boolean;
 }) {
   if (onPress === null) return null;
   return (
     <Pressable
       accessibilityLabel={word.text}
       accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
       hitSlop={SONG_SURFACE_KNOBS.WORD_HIT_PAD_PX}
       onPress={onPress}
       style={[
@@ -265,6 +281,52 @@ function WordTarget({
           // The drawn word sits *on* the baseline; the box is centred over it.
           top: foot.y - touch.min / 2,
           width: word.width,
+        },
+      ]}
+    />
+  );
+}
+
+/**
+ * One invisible box over one drawn silhouette.
+ *
+ * Square and centred on the seat, because a transport button is a shape with a
+ * middle rather than a word with a left edge — `transportScreenPx` is the same
+ * measurement the canvas draws the silhouette from, for the reason `WordTarget`
+ * gives.
+ *
+ * A step with nothing to step to gets no box at all rather than a disabled one.
+ * There is no queue yet, so the honest state is "not a control", and a disabled
+ * button announces itself to a screen reader as a thing that could work and
+ * does not.
+ */
+function TransportTarget({
+  seat,
+  label,
+  onPress,
+  disabled,
+}: {
+  seat: TransportSeat;
+  label: string;
+  onPress: (() => void) | null;
+  disabled: boolean;
+}) {
+  if (onPress === null) return null;
+  const size = PLAYER_POSE_KNOBS.SONG_TRANSPORT_HIT_PX;
+  return (
+    <Pressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled }}
+      disabled={disabled}
+      onPress={onPress}
+      style={[
+        styles.transportHit,
+        {
+          height: size,
+          left: seat.x - size / 2,
+          top: seat.y - size / 2,
+          width: size,
         },
       ]}
     />
@@ -324,6 +386,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
   },
   wordHit: { height: touch.min, position: 'absolute' },
+  transportHit: { position: 'absolute' },
   error: { bottom: space.lg, left: space.lg, position: 'absolute' },
 });
 
