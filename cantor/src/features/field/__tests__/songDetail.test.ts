@@ -1,0 +1,184 @@
+/**
+ * The measurement, from the ring it is drawn on to the grain it becomes.
+ *
+ * One loop draws both poses now, so this reads them out of the draw calls the
+ * way `fieldFaces.test.ts` does. Two things are under test and they are
+ * different: *when* the ticks arrive — they wait for the descent, then sweep —
+ * and *where* they are, which is a circle at one end of the crossing and one
+ * time axis at the other.
+ */
+import { Skia, type SkCanvas } from '@shopify/react-native-skia';
+import { GRAIN_KNOBS, LEVEL_SCALE_RATIOS } from '../../../field';
+import { PLAYER_RING_KNOBS } from '../NativePlayer';
+import {
+  drawSongDetail,
+  type GrainBars,
+  type SongDetailModel,
+} from '../FieldCanvas';
+
+const viewport = { width: 380, height: 800 };
+const fitScale = 0.5;
+
+const model: SongDetailModel = {
+  fromX: 0,
+  fromY: 0,
+  targetX: 0,
+  targetY: 0,
+  fromBloomX: 0,
+  fromBloomY: 0,
+  targetBloomX: 0,
+  targetBloomY: 0,
+  levels: Array.from({ length: 64 }, (_, index) => 0.3 + 0.2 * Math.sin(index)),
+  durationSeconds: 120,
+};
+
+/** The camera standing still, centred on the song, at a given closeness. */
+const recut = {
+  fromCamera: { x: 0, y: 0, scale: fitScale },
+  toCamera: { x: 0, y: 0, scale: fitScale },
+  fromFitScale: fitScale,
+  toFitScale: fitScale,
+};
+
+type Line = { x0: number; y0: number; x1: number; y1: number };
+
+function recordingCanvas() {
+  const lines: Line[] = [];
+  const rects: Array<{ x: number; width: number }> = [];
+  const canvas = {
+    save: () => {},
+    restore: () => {},
+    translate: () => {},
+    scale: () => {},
+    drawLine: (x0: number, y0: number, x1: number, y1: number) =>
+      lines.push({ x0, y0, x1, y1 }),
+    drawRect: (rect: { x: number; width: number }) => rects.push(rect),
+    drawPath: () => {},
+    drawCircle: () => {},
+  };
+  return { canvas: canvas as unknown as SkCanvas, lines, rects };
+}
+
+function paints() {
+  const make = () => Skia.Paint();
+  return { fill: make(), stroke: make(), ring: make() };
+}
+
+function drawAt(options: {
+  ratio: number;
+  drawn: number;
+  grain?: GrainBars | null;
+  resolved?: number;
+}) {
+  const target = recordingCanvas();
+  drawSongDetail(
+    target.canvas,
+    model,
+    paints(),
+    1,
+    recut,
+    { value: { x: 0, y: 0, scale: fitScale * options.ratio } } as never,
+    { value: fitScale } as never,
+    { value: 0 } as never,
+    options.grain ?? null,
+    options.resolved ?? 0,
+    options.drawn,
+    viewport,
+  );
+  return target;
+}
+
+const ticks = PLAYER_RING_KNOBS.SONG_WAVE_TICKS;
+const atRing = LEVEL_SCALE_RATIOS.song;
+const atGrain = GRAIN_KNOBS.ENTRY_RATIO;
+
+describe('the measurement from the ring to the grain', () => {
+  it('draws nothing before the descent has settled', () => {
+    expect(drawAt({ ratio: atRing, drawn: 0 }).lines).toHaveLength(0);
+  });
+
+  it('sweeps rather than appearing all at once', () => {
+    const half = drawAt({ ratio: atRing, drawn: 0.5 }).lines.length;
+    expect(half).toBeGreaterThan(0);
+    expect(half).toBeLessThan(ticks);
+    expect(drawAt({ ratio: atRing, drawn: 1 }).lines).toHaveLength(ticks);
+  });
+
+  /**
+   * At the ring the ticks are spokes: each points away from one centre, so
+   * they take many directions and none of them is the same column.
+   */
+  it('stands the ticks around a circle at the player', () => {
+    const lines = drawAt({ ratio: atRing, drawn: 1 }).lines;
+    expect(lines).toHaveLength(ticks);
+    // Every spoke starts on one circle: the same distance from the centre they
+    // share, which for a full turn of them is their own centroid.
+    const cx = lines.reduce((sum, line) => sum + line.x0, 0) / lines.length;
+    const cy = lines.reduce((sum, line) => sum + line.y0, 0) / lines.length;
+    const radii = lines.map(line => Math.hypot(line.x0 - cx, line.y0 - cy));
+    expect(Math.max(...radii) - Math.min(...radii)).toBeLessThan(0.01);
+    expect(Math.min(...radii)).toBeGreaterThan(1);
+    // A spoke is not a column. At the ring, next to none of them are.
+    const vertical = lines.filter(line => Math.abs(line.x1 - line.x0) < 0.01);
+    expect(vertical.length).toBeLessThan(4);
+  });
+
+  /**
+   * At the grain every tick is a column on one axis, symmetric about the
+   * middle of the screen — which is what `drawGrain` has always drawn, and is
+   * why the two can hand over without a seam.
+   */
+  it('opens them onto one time axis at the grain', () => {
+    const lines = drawAt({ ratio: atGrain, drawn: 1 }).lines;
+    expect(lines).toHaveLength(ticks);
+    for (const line of lines) {
+      expect(Math.abs(line.x1 - line.x0)).toBeLessThan(0.01);
+      const midpoint = (line.y0 + line.y1) / 2;
+      expect(Math.abs(midpoint - viewport.height / 2)).toBeLessThan(0.01);
+    }
+  });
+
+  /** And it is a crossing, not a cut: halfway is neither of the two poses. */
+  it('is somewhere between the two at the middle of the crossing', () => {
+    const between = drawAt({ ratio: (atRing + atGrain) / 2, drawn: 1 }).lines;
+    const ring = drawAt({ ratio: atRing, drawn: 1 }).lines;
+    const grain = drawAt({ ratio: atGrain, drawn: 1 }).lines;
+    // Three o'clock rather than twelve: the tick at the top of the ring sits
+    // on the centre line in both poses, so it is the one place the crossing
+    // moves nothing and would prove nothing.
+    const east = Math.floor(ticks / 4);
+    expect(between[east].x0).not.toBeCloseTo(ring[east].x0, 1);
+    expect(between[east].x0).not.toBeCloseTo(grain[east].x0, 1);
+  });
+
+  /**
+   * The decoded detail resolves into the ticks rather than beside them: while
+   * it is arriving both are drawn, and once it has the coarse pass is gone.
+   */
+  it('hands the ticks over to the decoded detail', () => {
+    const bars: GrainBars = {
+      min: Array.from({ length: 32 }, () => -0.4),
+      max: Array.from({ length: 32 }, () => 0.4),
+      startSeconds: 0,
+      endSeconds: GRAIN_KNOBS.ENTRY_SECONDS,
+      label: '12.00s VISIBLE · 0.00s',
+    };
+    const arriving = drawAt({
+      ratio: atGrain,
+      drawn: 1,
+      grain: bars,
+      resolved: 0.5,
+    });
+    expect(arriving.lines.length).toBeGreaterThan(0);
+    expect(arriving.rects).toHaveLength(32);
+
+    const settled = drawAt({
+      ratio: atGrain,
+      drawn: 1,
+      grain: bars,
+      resolved: 1,
+    });
+    expect(settled.lines).toHaveLength(0);
+    expect(settled.rects).toHaveLength(32);
+  });
+});

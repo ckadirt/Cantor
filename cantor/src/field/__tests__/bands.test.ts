@@ -9,6 +9,7 @@ import {
   representationAlphas,
   songNameArrival,
   songShapeArrival,
+  GRAIN_KNOBS,
 } from '..';
 import { writePhase } from '../../motion/text';
 
@@ -29,17 +30,22 @@ describe('the natively drawn distance', () => {
     }
   });
 
-  it('stops where the grain opens, not where the player does', () => {
+  /**
+   * And it no longer stops at the grain, because nothing stops there any more.
+   *
+   * `drawSongDetail` draws the ring's ticks and the grain's columns as one
+   * measurement in two poses, so the last distance the picture owned alone is
+   * the native path's too. What used to be a hand-over between two renderers
+   * is a crossing inside one.
+   */
+  it('covers the grain as well, which it once handed away', () => {
     // Asked at a fit of exactly 1, because the boundary itself is the claim:
     // `fit * ratio / fit` is not `ratio` in binary floating point, so at any
-    // other fit this reads a scale a hair either side of the edge and answers
-    // truthfully about a question nobody asked.
-    expect(isNativeDrawnDistance(REPRESENTATION_WINDOWS.grain[0], 1)).toBe(
-      false,
-    );
-    // The boundary it used to stop at. The player runs from here to 178·FIT,
-    // and a picture can only carry it by scaling a recording — which is what a
-    // zoom made visible, so the native renderer has to own this whole span too.
+    // other fit this reads a scale a hair either side of the edge.
+    expect(isNativeDrawnDistance(REPRESENTATION_WINDOWS.grain[0], 1)).toBe(true);
+    expect(isNativeDrawnDistance(GRAIN_KNOBS.ENTRY_RATIO, 1)).toBe(true);
+    // Far past it, where the grain is all there is.
+    expect(isNativeDrawnDistance(100_000, 1)).toBe(true);
     expect(isNativeDrawnDistance(REPRESENTATION_WINDOWS.song[0], 1)).toBe(true);
     const atRowEntry = representationAlphas(
       fit * REPRESENTATION_WINDOWS.row[0],

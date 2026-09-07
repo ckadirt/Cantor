@@ -30,7 +30,12 @@ import {
 } from '../features/composer';
 import { FIELD_CAMERA_KNOBS } from '../features/field/useFieldCamera';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
-import type { GrainRender } from '../features/field/FieldCanvas';
+import { useSharedValue } from 'react-native-reanimated';
+import {
+  grainBarsOf,
+  type GrainBars,
+  type GrainRender,
+} from '../features/field/FieldCanvas';
 import type { FieldPresentation } from '../features/field/useFieldController';
 import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
@@ -177,6 +182,16 @@ export function FieldScreen({ identity }: Props) {
   }, []);
   const [dateResolution, setDateResolution] = useState<DateResolution>('week');
   const [grain, setGrain] = useState<GrainRender | null>(null);
+  /**
+   * The same window, on the UI thread.
+   *
+   * The native path may not take this through React: a decode lands while the
+   * camera is moving, and a prop change there hands `Canvas` a fresh element
+   * and re-records the whole root. The React copy above is still what the
+   * recorded picture draws from, which is the path every lens but the name
+   * still takes.
+   */
+  const grainShared = useSharedValue<GrainBars | null>(null);
   /** Rows whose audio command is in flight, so a second tap cannot double it. */
   const audioBusy = useRef(new Set<string>());
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -836,6 +851,7 @@ export function FieldScreen({ identity }: Props) {
       viewport === null
     ) {
       setGrain(null);
+      grainShared.value = null;
       return;
     }
     const artifact = focused.delivery;
@@ -844,6 +860,7 @@ export function FieldScreen({ identity }: Props) {
       focused.localAudio.state === 'pinned';
     if (artifact === undefined || !onPhone) {
       setGrain(null);
+      grainShared.value = null;
       return;
     }
 
@@ -875,14 +892,19 @@ export function FieldScreen({ identity }: Props) {
           buckets: columnsFor(viewport.width),
         });
         if (!active) return;
-        setGrain({
+        const rendered: GrainRender = {
           window: samples,
           label: `${window.visibleSeconds.toFixed(
             2,
           )}s VISIBLE · ${window.centerSeconds.toFixed(2)}s`,
-        });
+        };
+        setGrain(rendered);
+        grainShared.value = grainBarsOf(rendered);
       } catch (error) {
-        if (active) setGrain(null);
+        if (active) {
+          setGrain(null);
+          grainShared.value = null;
+        }
         console.warn('grain window failed', readError(error));
       }
     })();
@@ -895,6 +917,7 @@ export function FieldScreen({ identity }: Props) {
     fieldCamera.level,
     fieldCamera.renderFitScale,
     focused,
+    grainShared,
     player,
     transport.snapshot.positionSeconds,
     viewport,
@@ -1085,6 +1108,7 @@ export function FieldScreen({ identity }: Props) {
                 activeLensKey={lensKey}
                 analyses={analyses}
                 grain={grain}
+                grainShared={grainShared}
                 jobs={controller.jobs}
                 // The player's focus, not the tap's: entering a shelf must
                 // not re-record this canvas. See `commitFocus`.

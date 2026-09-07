@@ -21,12 +21,16 @@ import {
   type Transforms3d,
 } from '@shopify/react-native-skia';
 import {
+  cancelAnimation,
+  useAnimatedReaction,
   useDerivedValue,
   useSharedValue,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
 import {
+  GRAIN_KNOBS,
+  LEVEL_SCALE_RATIOS,
   REPRESENTATION_WINDOWS,
   SHELF_BOX,
   bandAlphaAt,
@@ -69,6 +73,7 @@ import {
   type LensPaints,
   type SongAnalysis,
 } from '../../lenses';
+import { easeSmoother } from '../../motion';
 import { bornClock } from '../../motion/clock';
 import { useMorphFont } from '../../motion/fonts';
 import { writePhase, writeSubAlpha } from '../../motion/text';
@@ -95,6 +100,7 @@ import {
 } from './labelMorph';
 import {
   NativePlayerParts,
+  PLAYER_RING_KNOBS,
   PlayerRing,
   nativeSongModel,
   type NativeSongModel,
@@ -272,6 +278,15 @@ type Props = {
   /** How far through the playing song we are, 0..1. */
   playingProgress?: number | null;
   /** The resolved audio window at L3, or null at every other distance. */
+  /**
+   * The decoded L3 window on the UI thread. Separate from `grain` because the
+   * native path may not take it through React: see `NativeFieldContentProps`.
+   *
+   * Optional, and empty when absent: a canvas nobody is feeding samples to has
+   * no detail to resolve, which is the honest answer and the one every test
+   * that is not about L3 wants.
+   */
+  grainShared?: SharedValue<GrainBars | null>;
   grain?: GrainRender | null;
   activeLensKey?: string;
   /**
@@ -485,6 +500,7 @@ function FieldCanvasImpl({
   analyses,
   playingProgress = null,
   grain = null,
+  grainShared = undefined,
   activeLensKey = 'name',
   nowMs,
   labelFromGroups = [],
@@ -632,6 +648,10 @@ function FieldCanvasImpl({
     labelFlights !== null &&
     recut.flights.every(flight => presentations.has(flight.entityKey));
   const paints = useMemo(() => createPaints(palette), [palette]);
+  // Native shared values are stable; the Jest mock is not, so the fallback is
+  // held by ref the way `useFieldCamera` holds its own candidates.
+  const grainFallback = useSharedValue<GrainBars | null>(null);
+  const grainValue = useRef(grainShared ?? grainFallback).current;
   /**
    * The camera the next picture will be recorded at.
    *
@@ -791,6 +811,7 @@ function FieldCanvasImpl({
           presentations={presentations}
           playingKey={playingKey}
           focusKey={focusKey}
+          grainShared={grainValue}
           transportLabel={transportLabel}
           positionSeconds={positionSeconds}
           analyses={analyses}
@@ -810,6 +831,7 @@ function FieldCanvasImpl({
     displayFont,
     fitScaleShared,
     focusKey,
+    grainValue,
     labelFlights,
     monoFont,
     nativeClock,
@@ -852,13 +874,11 @@ function FieldCanvasImpl({
         colour={palette.ink}
         durationSeconds={presentation.song.duration_ms / 1000}
         fitScale={renderFitScale}
-        levels={levelsOf(analyses?.get(held.entityKey))}
         positionSeconds={positionSeconds}
         viewport={viewport}
       />
     );
   }, [
-    analyses,
     cameraShared,
     focusKey,
     palette.ink,
@@ -1007,14 +1027,6 @@ function useRecordCamera(camera: Camera, viewport: Viewport): Camera {
  * trimming a circle it never rebuilds, the hand by rotating a line it never
  * rebuilds. Nothing here is a function of a React render.
  */
-/**
- * The measured loudness a song that is not the player carries: none.
- *
- * One frozen array rather than a fresh `[]` per render, because this is a prop
- * on every mark in the field and a new identity would re-render each of them on
- * every commit.
- */
-const EMPTY_LEVELS: readonly number[] = Object.freeze([]);
 
 /** The measured loudness as plain numbers; a worklet cannot hold a typed array. */
 function levelsOf(analysis: SongAnalysis | undefined): readonly number[] {
@@ -1028,7 +1040,6 @@ function NativePlayhead({
   viewport,
   fitScale,
   durationSeconds,
-  levels,
   colour,
 }: {
   cameraShared: SharedValue<Camera>;
@@ -1036,8 +1047,6 @@ function NativePlayhead({
   viewport: Viewport;
   fitScale: number;
   durationSeconds: number;
-  /** The song's measured loudness, as plain numbers a worklet can hold. */
-  levels: readonly number[];
   colour: string;
 }) {
   /**
@@ -1074,17 +1083,11 @@ function NativePlayhead({
     return 1;
   }, [fadeIn, fadeOut, fitScale, holdFrom, holdTo]);
 
-  // Drawn, not drawing. The cascade is the last beat of a descent, and this
-  // path is not reached by one — it stands in where the native player cannot
-  // be built at all, so its measurement is simply already there.
-  const drawn = useSharedValue(1);
   return (
     <SkiaGroup opacity={opacity} transform={centre}>
       <PlayerRing
         colour={colour}
-        drawn={drawn}
         durationSeconds={durationSeconds}
-        levels={levels}
         positionSeconds={positionSeconds}
         radius={playerRadiusPx(viewport.width)}
       />
@@ -1252,6 +1255,15 @@ type NativeFieldContentProps = Readonly<{
   transportLabel: string;
   positionSeconds: SharedValue<number> | null;
   analyses: ReadonlyMap<string, SongAnalysis> | undefined;
+  /**
+   * The decoded window L3 draws, as a shared value rather than a prop.
+   *
+   * It changes every time the camera resolves a new span, and this element is
+   * held by identity — a decode landing as a prop would hand `Canvas` a fresh
+   * element mid-zoom and re-record the whole root. See the Flicker Law note on
+   * `scene`.
+   */
+  grainShared: SharedValue<GrainBars | null>;
   labelFlights: ShelfLabelFlights | null;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -1515,6 +1527,384 @@ export function drawFieldFaces(
   }
 }
 
+/**
+ * The easing every clock on this canvas runs on.
+ *
+ * Written above its callers, and it has to be: the worklets plugin captures a
+ * `'worklet'` helper into the closure of whoever calls it, at the point the
+ * *caller* is defined — so a helper below its caller arrives as `undefined` on
+ * the UI thread. `bands.ts` states the same rule over its own worklet section.
+ */
+function nativeSmootherstep(value: number): number {
+  'worklet';
+  const t = Math.min(Math.max(value, 0), 1);
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+
+/**
+ * KNOBS — how the ring becomes the grain.
+ *
+ * The unroll spans the two levels it joins: it begins where the player is
+ * fully arrived and ends where L3 opens, both taken from the zoom model rather
+ * than tuned separately, so the gesture cannot drift away from the levels it
+ * is a crossing between.
+ */
+const UNROLL_KNOBS = {
+  /** Where the ring starts to open, in multiples of FIT. */
+  FROM_RATIO: LEVEL_SCALE_RATIOS.song,
+  /** Where it is a straight line, which is where the grain begins. */
+  TO_RATIO: GRAIN_KNOBS.ENTRY_RATIO,
+  /** How long the decoded detail takes to resolve into the coarse ticks. */
+  RESOLVE_MS: 320,
+} as const;
+
+/**
+ * The song's own measurement, as plain rows the UI thread can hold.
+ *
+ * `Float32Array` cannot cross into a worklet, which is the same reason
+ * `levelsOf` exists one level up.
+ */
+export type GrainBars = Readonly<{
+  min: readonly number[];
+  max: readonly number[];
+  startSeconds: number;
+  endSeconds: number;
+  label: string;
+}>;
+
+/** Flatten a decoded window into something a worklet can read. */
+export function grainBarsOf(grain: GrainRender | null): GrainBars | null {
+  if (grain === null) return null;
+  const channel = grain.window.channels[0];
+  if (channel === undefined || grain.window.buckets <= 0) return null;
+  return {
+    min: Array.from(channel.min),
+    max: Array.from(channel.max),
+    startSeconds: grain.window.startSeconds,
+    endSeconds: grain.window.endSeconds,
+    label: grain.label,
+  };
+}
+
+/**
+ * Where the song being looked at sits, and how loud it is.
+ *
+ * The seat rather than a screen point, because the ring has to stay concentric
+ * with the face on every frame of the crossing and the face is drawn from the
+ * seat. Everything else here is a function of the song alone.
+ */
+export type SongDetailModel = Readonly<{
+  fromX: number;
+  fromY: number;
+  targetX: number;
+  targetY: number;
+  fromBloomX: number;
+  fromBloomY: number;
+  targetBloomX: number;
+  targetBloomY: number;
+  levels: readonly number[];
+  durationSeconds: number;
+}>;
+
+/**
+ * The measurement, from the ring it is drawn on to the grain it becomes.
+ *
+ * One drawing and two poses, which is the same claim the face makes across
+ * three. A tick at `turn` through the song is a spoke about the player's
+ * centre at one end of the crossing and a column on the grain's own time axis
+ * at the other, and it is drawn between them the whole way — so the ring does
+ * not hand over to the waveform, it *is* the waveform, opened out.
+ *
+ * The axis opens as it straightens. At the ring the whole song is the circle;
+ * at L3 only `ENTRY_SECONDS` are on screen. Interpolating the visible span
+ * geometrically rather than linearly is what makes that read as one continuous
+ * zoom into the playhead rather than as a stretch — the same reason the camera
+ * carries scale in logs.
+ *
+ * The decoded detail resolves *into* the ticks rather than replacing them:
+ * they are the same measurement at two resolutions, and the coarse one is
+ * already in the right place by the time the fine one has been read off the
+ * disk.
+ */
+export function drawSongDetail(
+  canvas: SkCanvas,
+  model: SongDetailModel,
+  paints: FacePaints,
+  progress: number,
+  recut: NativeRecut,
+  cameraShared: SharedValue<Camera>,
+  fitScaleShared: SharedValue<number>,
+  positionSeconds: SharedValue<number> | null,
+  grain: GrainBars | null,
+  resolved: number,
+  drawn: number,
+  viewport: Viewport,
+): void {
+  'worklet';
+  if (drawn <= 0) return;
+  const p = Math.min(Math.max(progress, 0), 1);
+  const cameraScale = nativeCameraScale(p, recut, cameraShared);
+  const fitted = nativeFitScale(p, recut, fitScaleShared);
+  if (!(fitted > 0)) return;
+  const ratio = cameraScale / fitted;
+  const opening =
+    (ratio - UNROLL_KNOBS.FROM_RATIO) /
+    (UNROLL_KNOBS.TO_RATIO - UNROLL_KNOBS.FROM_RATIO);
+  const unrolled = nativeSmootherstep(
+    opening < 0 ? 0 : opening > 1 ? 1 : opening,
+  );
+
+  // The ring's own centre: the face's seat under this frame's camera, plus the
+  // pose the face is standing at. Computed rather than assumed, so a re-cut or
+  // a flight still in the air keeps the spokes on the contour they grew from.
+  const live = p >= 1 ? cameraShared.value : null;
+  const cameraX =
+    live === null
+      ? recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p
+      : live.x;
+  const cameraY =
+    live === null
+      ? recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p
+      : live.y;
+  const bloom = 1 - gatherFraction(cameraScale, fitted);
+  const seatX = model.fromX + (model.targetX - model.fromX) * p;
+  const seatY = model.fromY + (model.targetY - model.fromY) * p;
+  const bloomX =
+    model.fromBloomX + (model.targetBloomX - model.fromBloomX) * p;
+  const bloomY =
+    model.fromBloomY + (model.targetBloomY - model.fromBloomY) * p;
+  const pose = facePoseAt(
+    faceArrival(cameraScale, fitted),
+    songShapeArrival(cameraScale, fitted),
+    viewport,
+    FACE_GROWTH,
+  );
+  const cx =
+    (seatX + bloomX * bloom - cameraX) * cameraScale +
+    viewport.width / 2 +
+    pose.x;
+  const cy =
+    (seatY + bloomY * bloom - cameraY) * cameraScale +
+    viewport.height / 2 +
+    pose.y;
+
+  const knobs = PLAYER_RING_KNOBS;
+  const radius = playerRadiusPx(viewport.width);
+  const inner = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
+  const midY = viewport.height / 2;
+  const half = viewport.height * FIELD_CANVAS_KNOBS.GRAIN_HEIGHT_RATIO;
+  const duration = model.durationSeconds;
+  const at =
+    positionSeconds === null || duration <= 0
+      ? 0
+      : positionSeconds.value / duration;
+  const head = at < 0 ? 0 : at > 1 ? 1 : at;
+  // The window the axis is showing, opening from the whole song to L3's own.
+  const span =
+    duration <= 0
+      ? GRAIN_KNOBS.ENTRY_SECONDS
+      : Math.exp(
+          Math.log(duration) +
+            (Math.log(GRAIN_KNOBS.ENTRY_SECONDS) - Math.log(duration)) *
+              unrolled,
+        );
+  const perTurn = span > 0 ? (duration / span) * viewport.width : 0;
+
+  const count = model.levels.length;
+  const now =
+    count === 0 ? 0 : model.levels[Math.floor(head * (count - 1))] ?? 0;
+  const coarse = 1 - resolved;
+  if (coarse > 0) {
+    paints.stroke.setAlphaf(knobs.SONG_WAVE_ALPHA * coarse);
+    paints.stroke.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
+    for (let index = 0; index < knobs.SONG_WAVE_TICKS; index += 1) {
+      const drew = writeSubAlpha(drawn, index, knobs.SONG_WAVE_TICKS);
+      if (drew <= 0) continue;
+      const turn = index / knobs.SONG_WAVE_TICKS;
+      const level =
+        count === 0 ? 0 : model.levels[Math.floor(turn * (count - 1))] ?? 0;
+      // The beat: a bulge that rides the playhead, wrapped so it crosses
+      // twelve o'clock without a seam.
+      const raw = Math.abs(turn - head);
+      const gap = raw > 0.5 ? 1 - raw : raw;
+      const near = 1 - gap / knobs.SONG_PULSE_WINDOW;
+      const lift = near > 0 ? near * near * now * knobs.SONG_PULSE_GAIN : 0;
+      const amp =
+        Math.min(1, level * knobs.SONG_WAVE_GAIN + lift) * drew;
+
+      const angle = turn * Math.PI * 2 - Math.PI / 2;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const outer = inner + amp * radius * knobs.SONG_WAVE_REACH_RATIO;
+      // Wrapped to the shortest way round, so the ticks behind the playhead
+      // open to the left rather than racing the long way across the screen.
+      const offset = turn - head;
+      const shortest = offset > 0.5 ? offset - 1 : offset < -0.5 ? offset + 1 : offset;
+      const lineX = viewport.width / 2 + shortest * perTurn;
+      const x0 = cx + cos * inner + (lineX - (cx + cos * inner)) * unrolled;
+      const y0 =
+        cy + sin * inner + (midY - amp * half - (cy + sin * inner)) * unrolled;
+      const x1 = cx + cos * outer + (lineX - (cx + cos * outer)) * unrolled;
+      const y1 =
+        cy + sin * outer + (midY + amp * half - (cy + sin * outer)) * unrolled;
+      canvas.drawLine(x0, y0, x1, y1, paints.stroke);
+    }
+  }
+
+  if (grain === null || resolved <= 0) return;
+  // The detail, on the axis the ticks have already opened onto.
+  const buckets = grain.min.length;
+  const windowSpan = grain.endSeconds - grain.startSeconds;
+  if (buckets <= 0 || windowSpan <= 0) return;
+  paints.fill.setAlphaf(resolved);
+  const step = viewport.width / buckets;
+  for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const low = grain.min[bucket] ?? 0;
+    const high = grain.max[bucket] ?? 0;
+    const top = midY - high * half;
+    const bottom = midY - low * half;
+    canvas.drawRect(
+      {
+        x: bucket * step,
+        y: Math.min(top, bottom),
+        width: Math.max(0.7, step * 0.85),
+        height: Math.max(0.7, Math.abs(bottom - top)),
+      },
+      paints.fill,
+    );
+  }
+}
+
+/**
+ * The measurement's own element: one picture, two clocks, no React per frame.
+ *
+ * Held apart from the placement nodes because it outlives them — the song band
+ * closes at 178 and the grain runs to the camera's ceiling — and because it is
+ * viewport work rather than field work. Everything it needs that changes as
+ * you move arrives through a shared value, so a decode landing mid-zoom does
+ * not hand `Canvas` a fresh element.
+ */
+function NativeSongDetail({
+  model,
+  clock,
+  recut,
+  cameraShared,
+  fitScaleShared,
+  positionSeconds,
+  grainShared,
+  palette,
+  viewport,
+}: {
+  model: SongDetailModel | null;
+  clock: SharedValue<number>;
+  recut: NativeRecut;
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
+  positionSeconds: SharedValue<number> | null;
+  grainShared: SharedValue<GrainBars | null>;
+  palette: Palette;
+  viewport: Viewport;
+}) {
+  const paints = useMemo(() => createFacePaints(palette), [palette]);
+  const arrived = useDerivedValue(() =>
+    bandAlphaAt(
+      nativeCameraScale(clock.value, recut, cameraShared),
+      nativeFitScale(clock.value, recut, fitScaleShared),
+      REPRESENTATION_WINDOWS.song,
+    ),
+  );
+  /**
+   * The measurement's own clock, started when the descent is over.
+   *
+   * `arrived` reaches 1 while the camera is still closing the last of the
+   * flight, so this watches for that and then runs a clock of its own — which
+   * is what keeps the draw-on out of a frame that already has the face
+   * growing, the ring blooming and two lines morphing in it.
+   *
+   * Reset on the way out rather than left at 1: leaving the song and coming
+   * back is arriving again, and a measurement already drawn would simply be
+   * there, which is the one thing this is for.
+   */
+  const drawn = useSharedValue(0);
+  useAnimatedReaction(
+    () => arrived.value >= 1,
+    (settled, before) => {
+      if (settled === before) return;
+      cancelAnimation(drawn);
+      drawn.value = settled
+        ? withTiming(1, {
+            duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
+            easing: easeSmoother,
+          })
+        : 0;
+    },
+  );
+  /** How much of the decoded detail has resolved into the coarse ticks. */
+  const resolved = useSharedValue(0);
+  useAnimatedReaction(
+    () => grainShared.value !== null,
+    (has, before) => {
+      if (has === before) return;
+      cancelAnimation(resolved);
+      resolved.value = withTiming(has ? 1 : 0, {
+        duration: UNROLL_KNOBS.RESOLVE_MS,
+        easing: easeSmoother,
+      });
+    },
+  );
+  const picture = useDerivedValue(() =>
+    createPicture(
+      canvas => {
+        if (model === null) return;
+        drawSongDetail(
+          canvas,
+          model,
+          paints,
+          clock.value,
+          recut,
+          cameraShared,
+          fitScaleShared,
+          positionSeconds,
+          grainShared.value,
+          resolved.value,
+          drawn.value,
+          viewport,
+        );
+      },
+      { width: viewport.width, height: viewport.height },
+    ),
+  );
+  return <Picture picture={picture} />;
+}
+
+/** The song the camera has arrived at, as the detail loop needs it. */
+function songDetailOf(
+  flights: readonly PlacementFlight[],
+  presentations: ReadonlyMap<string, FieldPresentation>,
+  analyses: ReadonlyMap<string, SongAnalysis> | undefined,
+  focusKey: string | null,
+): SongDetailModel | null {
+  if (focusKey === null) return null;
+  const flight = flights.find(
+    candidate => candidate.targetPlacementKey === focusKey,
+  );
+  if (flight === undefined) return null;
+  const presentation = presentations.get(flight.entityKey);
+  if (presentation === undefined) return null;
+  return {
+    fromX: flight.fromX,
+    fromY: flight.fromY,
+    targetX: flight.targetX,
+    targetY: flight.targetY,
+    fromBloomX: flight.fromBloomX,
+    fromBloomY: flight.fromBloomY,
+    targetBloomX: flight.targetBloomX,
+    targetBloomY: flight.targetBloomY,
+    levels: levelsOf(analyses?.get(flight.entityKey)),
+    durationSeconds: presentation.song.duration_ms / 1000,
+  };
+}
+
 const NativeFieldContent = React.memo(function NativeFieldContent({
   recut,
   clock,
@@ -1527,6 +1917,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   transportLabel,
   positionSeconds,
   analyses,
+  grainShared,
   labelFlights,
   displayFont,
   songTitleFont,
@@ -1585,10 +1976,30 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       { width: viewport.width, height: viewport.height },
     ),
   );
+  const songDetail = useMemo(
+    () => songDetailOf(recut.flights, presentations, analyses, focusKey),
+    [recut, presentations, analyses, focusKey],
+  );
   return (
     <>
       <Fill color={palette.bg} />
       <Picture picture={facePicture} />
+      {/*
+        Under the arc and the hand, which is where the ring's ticks were drawn
+        when they were the ring's — the measurement is what the timeline is
+        drawn over, at either end of the crossing.
+      */}
+      <NativeSongDetail
+        cameraShared={cameraShared}
+        clock={clock}
+        fitScaleShared={fitScaleShared}
+        grainShared={grainShared}
+        model={songDetail}
+        palette={palette}
+        positionSeconds={positionSeconds}
+        recut={nativeRecut}
+        viewport={viewport}
+      />
       {(labelFlights ?? []).map((flight, index) => (
         <NativeShelfLabel
           key={`${flight.fromGroupKey ?? 'new'}:${
@@ -1665,7 +2076,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             songTitleFont={songTitleFont}
             songMetaFont={songMetaFont}
             positionSeconds={focused ? positionSeconds : null}
-            levels={focused ? levelsOf(analyses?.get(flight.entityKey)) : EMPTY_LEVELS}
             durationSeconds={song.duration_ms / 1000}
             displayFont={displayFont}
             monoFont={monoFont}
@@ -1810,7 +2220,6 @@ function NativePlacementFlight({
   songTitleFont,
   songMetaFont,
   positionSeconds,
-  levels,
   durationSeconds,
   displayFont,
   monoFont,
@@ -1839,7 +2248,6 @@ function NativePlacementFlight({
   songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
   songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
   positionSeconds: SharedValue<number> | null;
-  levels: readonly number[];
   durationSeconds: number;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -2073,7 +2481,6 @@ function NativePlacementFlight({
           named={nameArrived}
           colour={color}
           durationSeconds={durationSeconds}
-          levels={levels}
           model={song}
           mutedColour={mutedColor}
           positionSeconds={positionSeconds}
@@ -2254,12 +2661,6 @@ function NativeLabelLine({
       ) : null}
     </>
   );
-}
-
-function nativeSmootherstep(value: number): number {
-  'worklet';
-  const t = Math.min(Math.max(value, 0), 1);
-  return t * t * t * (t * (t * 6 - 15) + 10);
 }
 
 /** What L3 needs to draw: the resolved samples and what to call the span. */

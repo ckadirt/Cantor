@@ -10,19 +10,14 @@ import {
   type Transforms3d,
 } from '@shopify/react-native-skia';
 import {
-  cancelAnimation,
-  useAnimatedReaction,
   useDerivedValue,
-  useSharedValue,
-  withTiming,
   type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
 import { NAME_LENS_KNOBS, fitText } from '../../lenses';
 import { buildGlyphMorphPaths } from '../../motion/glyphs';
 import { useSeededPathInterpolation } from '../../motion/MorphText';
-import { easeSmoother } from '../../motion';
-import { layoutText, writeSubAlpha } from '../../motion/text';
+import { layoutText } from '../../motion/text';
 import {
   PLAYER_POSE_KNOBS,
   lineOwnedByPlayer,
@@ -94,26 +89,14 @@ export const PLAYER_RING_KNOBS = {
  */
 export function PlayerRing({
   radius,
-  levels,
   durationSeconds,
   positionSeconds,
   colour,
-  drawn,
 }: {
   radius: number;
-  /** The song's measured loudness, as plain numbers a worklet can hold. */
-  levels: readonly number[];
   durationSeconds: number;
   positionSeconds: SharedValue<number>;
   colour: string;
-  /**
-   * How much of the measurement has been drawn on, 0..1.
-   *
-   * A clock, not a band — `SONG_WAVE_DRAW_MS` — because this is a journey
-   * rather than a hand-over, and the note on `shapeArrived` in `FieldCanvas`
-   * says why a band makes a poor clock for one.
-   */
-  drawn: SharedValue<number>;
 }) {
   const knobs = PLAYER_RING_KNOBS;
   const arcRadius = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
@@ -135,57 +118,6 @@ export function PlayerRing({
     return builder.detach();
   }, [knobs, radius]);
 
-  /**
-   * The measurement, rebuilt every frame.
-   *
-   * Each tick is as long as that moment of the song is loud — that much is the
-   * map, and it never changes. What moves is the *lift*: a bulge that rides the
-   * playhead, as tall as the audio is loud right now and falling away to either
-   * side of it.
-   */
-  const bars = useDerivedValue(() => {
-    const at = durationSeconds > 0 ? positionSeconds.value / durationSeconds : 0;
-    const head = at < 0 ? 0 : at > 1 ? 1 : at;
-    const count = levels.length;
-    const now = count === 0 ? 0 : levels[Math.floor(head * (count - 1))] ?? 0;
-    const builder = Skia.PathBuilder.Make();
-    for (let index = 0; index < knobs.SONG_WAVE_TICKS; index += 1) {
-      const turn = index / knobs.SONG_WAVE_TICKS;
-      const level = count === 0 ? 0 : levels[Math.floor(turn * (count - 1))] ?? 0;
-      // Wrapped distance to the head, so the bulge crosses twelve o'clock
-      // without a seam.
-      const raw = Math.abs(turn - head);
-      const gap = raw > 0.5 ? 1 - raw : raw;
-      const near = 1 - gap / knobs.SONG_PULSE_WINDOW;
-      const lift = near > 0 ? near * near * now * knobs.SONG_PULSE_GAIN : 0;
-      const amp = Math.min(1, level * knobs.SONG_WAVE_GAIN + lift);
-      /*
-       * The pen, one tick at a time.
-       *
-       * `writeSubAlpha` is the motion engine's own per-glyph lag — what makes
-       * `Write` out of `DrawBorderThenFill` — and a ring of ticks is the same
-       * shape of problem as a line of letters: one clock, and each mark given
-       * its own slice of it in reading order. Reading order here is clockwise
-       * from twelve, which is where the hand starts and where the song does.
-       *
-       * It grows out of the arc rather than fading in, because the arc is what
-       * it is a measurement *of*. A tick that faded would arrive as ink on top
-       * of the ring; one that grows arrives as part of it.
-       */
-      const drew = writeSubAlpha(drawn.value, index, knobs.SONG_WAVE_TICKS);
-      if (drew <= 0) continue;
-      const angle = turn * Math.PI * 2 - Math.PI / 2;
-      const cos = Math.cos(angle);
-      const sin = Math.sin(angle);
-      const inner = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
-      const outer =
-        inner + amp * radius * knobs.SONG_WAVE_REACH_RATIO * drew;
-      builder.moveTo(cos * inner, sin * inner);
-      builder.lineTo(cos * outer, sin * outer);
-    }
-    return builder.detach();
-  }, [drawn, durationSeconds, levels, radius]);
-
   const fraction = useDerivedValue(() => {
     if (durationSeconds <= 0) return 0;
     const value = positionSeconds.value / durationSeconds;
@@ -198,13 +130,6 @@ export function PlayerRing({
 
   return (
     <>
-      <Path
-        color={colour}
-        opacity={knobs.SONG_WAVE_ALPHA}
-        path={bars}
-        strokeWidth={knobs.SONG_WAVE_WIDTH_PX}
-        style="stroke"
-      />
       <Path
         color={colour}
         end={fraction}
@@ -517,7 +442,6 @@ export function NativePlayerParts({
   named,
   anchor,
   viewport,
-  levels,
   durationSeconds,
   positionSeconds,
   colour,
@@ -540,7 +464,6 @@ export function NativePlayerParts({
    */
   anchor: DerivedValue<Transforms3d>;
   viewport: PoseViewport;
-  levels: readonly number[];
   durationSeconds: number;
   positionSeconds: SharedValue<number> | null;
   colour: string;
@@ -561,34 +484,6 @@ export function NativePlayerParts({
     const t = (named.value - 0.6) / 0.4;
     return t <= 0 ? 0 : t >= 1 ? 1 : t;
   });
-  /**
-   * The measurement's own clock, started when the descent is over.
-   *
-   * `arrived` is the song band, and it reaches 1 while the camera is still
-   * closing the last of the flight — so this watches for that and then runs a
-   * clock of its own, which is what keeps the draw-on out of a frame that
-   * already has the whole player moving in it.
-   *
-   * Reset on the way out rather than left at 1: leaving the song and coming
-   * back is arriving again, and a measurement already drawn would simply be
-   * there, which is the one thing this is for. `cancelAnimation` first,
-   * because a clock still running when the band closes would otherwise finish
-   * against a ring nobody is looking at and be found at 1 on the way back in.
-   */
-  const drawn = useSharedValue(0);
-  useAnimatedReaction(
-    () => arrived.value >= 1,
-    (settled, before) => {
-      if (settled === before) return;
-      cancelAnimation(drawn);
-      drawn.value = settled
-        ? withTiming(1, {
-            duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
-            easing: easeSmoother,
-          })
-        : 0;
-    },
-  );
   /** The step the row's own ink is the complement of; see `MorphLine`. */
   const owned = useDerivedValue<number>(() => lineOwnedByPlayer(named.value));
   const foot = useMemo(() => songWordsOriginPx(viewport), [viewport]);
@@ -605,9 +500,7 @@ export function NativePlayerParts({
         {positionSeconds === null ? null : (
           <PlayerRing
             colour={colour}
-            drawn={drawn}
             durationSeconds={durationSeconds}
-            levels={levels}
             positionSeconds={positionSeconds}
             radius={radius}
           />
