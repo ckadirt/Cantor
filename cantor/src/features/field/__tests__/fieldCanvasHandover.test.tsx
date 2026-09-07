@@ -440,8 +440,12 @@ describe('field canvas L0 to L1 handover', () => {
     // The native path is the premise: at FIT there is no picture at all, which
     // is what leaves its camera free to go stale.
     expect(renderer.root.findAllByType(Picture)).toHaveLength(0);
-    expect(sharedValues).toHaveLength(1);
-    const pictureCamera = sharedValues[0];
+    const cameraValues = sharedValues.filter(shared =>
+      typeof shared.value === 'object' && shared.value !== null &&
+      'scale' in shared.value,
+    );
+    expect(cameraValues).toHaveLength(1);
+    const pictureCamera = cameraValues[0];
 
     // A pan well past the re-record threshold, mirrored into React the way the
     // camera hook mirrors one.
