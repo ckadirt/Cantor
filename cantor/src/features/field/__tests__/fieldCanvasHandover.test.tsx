@@ -337,8 +337,14 @@ describe('field canvas L0 to L1 handover', () => {
      * stacked up. One `DETAIL` is the cheapest way to keep asking.
      */
     expect(drawn.filter(text => text === 'DETAIL')).toHaveLength(1);
-    // And the recipe the availability line becomes.
-    expect(drawn.some(text => text.startsWith('LIGHT · '))).toBe(true);
+    /*
+     * And the recipe the availability line becomes — the model, and the seed
+     * where there is one. The song's length is not part of it: a duration is a
+     * fact about playing the song rather than about the recipe that made it,
+     * and it is written once, in the clock above the ring.
+     */
+    expect(drawn).toContain('LIGHT');
+    expect(drawn.some(text => text.includes(':'))).toBe(false);
   });
 
   /**

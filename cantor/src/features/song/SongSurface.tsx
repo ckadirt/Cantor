@@ -17,7 +17,8 @@ import {
   PLAYER_POSE_KNOBS,
   playerFootScreenPx,
   playerLensBottomPx,
-  songTitleColumnPx,
+  playerSeekScreenPx,
+  seekFractionAt,
   transportScreenPx,
   type TransportSeat,
 } from '../field/songPose';
@@ -28,9 +29,10 @@ import { font, space, touch, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — what is left of L2 in React, in real units. */
 const SONG_SURFACE_KNOBS = {
-  SCRUB_STEP_SECONDS: 1, // L2 is the coarse rule; L3 zoom-scrubbing is the precise one (M7)
-  ELAPSED_SAMPLE_MS: 500, // how often the elapsed label reads the visual clock
-  /** Where the elapsed sits: above the ring, which is centred on the view. */
+  /** How finely a drag around the ring seeks. */
+  SEEK_STEP_SECONDS: 1,
+  ELAPSED_SAMPLE_MS: 500, // how often the clock label reads the visual clock
+  /** Where the clock sits: above the ring, which is centred on the view. */
   ELAPSED_TOP_RATIO_PCT: '13%',
   /** Air around a word, so a five-letter target is still a target. */
   WORD_HIT_PAD_PX: 12,
@@ -157,19 +159,22 @@ function SongSurfaceImpl({
     () => transportScreenPx({ width, height }),
     [height, width],
   );
+  /*
+   * How wide the whole quiet line is, so the touch layer can centre it on the
+   * axis exactly as the canvas does. Both sides step back half of this from
+   * `axisX`; measured on one side only, the boxes would sit half a line to the
+   * right of the words they belong to.
+   */
+  const run = useMemo(() => {
+    const last = words?.[words.length - 1];
+    return last === undefined ? 0 : last.x + last.width;
+  }, [words]);
 
-  const scrub = useMemo(() => {
-    const column = songTitleColumnPx(width);
-    const seekTo = (x: number) => {
-      const fraction = Math.min(Math.max(x / Math.max(column, 1), 0), 1);
-      const step = SONG_SURFACE_KNOBS.SCRUB_STEP_SECONDS;
-      onSeek(Math.round((fraction * durationSeconds) / step) * step);
-    };
-    return Gesture.Pan()
-      .onBegin(event => seekTo(event.x))
-      .onUpdate(event => seekTo(event.x))
-      .runOnJS(true);
-  }, [durationSeconds, onSeek, width]);
+  const seekBox = useMemo(() => seekBoxPx({ width, height }), [height, width]);
+  const scrub = useMemo(
+    () => seekGesture({ width, height }, durationSeconds, onSeek),
+    [durationSeconds, height, onSeek, width],
+  );
 
   const elapsed = useElapsedLabel(
     positionSeconds,
@@ -190,9 +195,19 @@ function SongSurfaceImpl({
 
   return (
     <View style={styles.root} pointerEvents="box-none">
+      {/*
+        The clock, and the only place the song's length is written.
+
+        It used to say the elapsed alone, and the duration padded out the end of
+        the recipe line — the same number twice on one screen, once where a
+        person looks for it and once where it said nothing about the recipe. One
+        readout now, above the ring the position is being drawn on.
+      */}
       <Animated.Text
         style={[type.eyebrow, styles.elapsed, { color: pal.ink }, readout]}>
-        {formatClock(isCurrent ? elapsed : 0)}
+        {`${formatClock(isCurrent ? elapsed : 0)}  ·  ${formatClock(
+          durationSeconds,
+        )}`}
       </Animated.Text>
 
       <GestureDetector gesture={scrub}>
@@ -200,11 +215,12 @@ function SongSurfaceImpl({
           accessibilityLabel={`Scrub ${song.title}`}
           accessibilityRole="adjustable"
           style={[
-            styles.scrubHit,
+            styles.seekHit,
             {
-              left: foot.x,
-              top: foot.scrubY - PLAYER_POSE_KNOBS.SONG_SCRUB_HIT_PX / 2,
-              width: songTitleColumnPx(width),
+              height: seekBox.size,
+              left: seekBox.left,
+              top: seekBox.top,
+              width: seekBox.size,
             },
           ]}
         />
@@ -214,7 +230,7 @@ function SongSurfaceImpl({
         ? null
         : words.map(word => (
             <WordTarget
-              foot={foot}
+              foot={{ x: foot.axisX - run / 2, y: foot.y }}
               key={word.key}
               onPress={word.key === 'detail' ? onOpenDetail : null}
               word={word}
@@ -245,6 +261,77 @@ function SongSurfaceImpl({
         </Text>
       ) : null}
     </View>
+  );
+}
+
+/**
+ * The square the seek gesture listens over: the ring's own reach, squared off.
+ *
+ * Exported with the gesture below because the two are one measurement — the
+ * gesture receives coordinates in this box's space and has to put them back
+ * into the viewport's before `seekFractionAt` can read an angle from them.
+ */
+export function seekBoxPx(
+  viewport: Readonly<{ width: number; height: number }>,
+): Readonly<{ left: number; top: number; size: number }> {
+  const ring = playerSeekScreenPx(viewport);
+  return {
+    left: ring.cx - ring.outer,
+    top: ring.cy - ring.outer,
+    size: ring.outer * 2,
+  };
+}
+
+/**
+ * Seeking, as an angle about the ring.
+ *
+ * The ring is the timeline, so a drag around it is the scrub — one control for
+ * one fact, instead of a circle that shows the position and a bar underneath
+ * that sets it.
+ *
+ * A pure builder rather than a hook body, because the one thing about it that
+ * has to be guaranteed is a piece of *configuration*, and configuration is only
+ * testable if it can be built without a renderer, a font and a gesture root.
+ * See `__tests__/SongSurface.test.tsx`.
+ */
+export function seekGesture(
+  viewport: Readonly<{ width: number; height: number }>,
+  durationSeconds: number,
+  onSeek: (seconds: number) => void,
+) {
+  const box = seekBoxPx(viewport);
+  /*
+   * The gesture's coordinates are the box's and `seekFractionAt` wants the
+   * viewport's, so the box's origin goes back on here. Laying the box out at
+   * the ring's own bounds instead would put that offset in two places, agreeing
+   * only until one of them changed.
+   *
+   * A touch in the dead centre or past the ring answers null and is ignored
+   * rather than clamped: at the centre one pixel of travel sweeps half the
+   * song, so an angle there is noise wearing the shape of an intention.
+   */
+  const seekTo = (x: number, y: number) => {
+    const fraction = seekFractionAt(viewport, box.left + x, box.top + y);
+    if (fraction === null) return;
+    const step = SONG_SURFACE_KNOBS.SEEK_STEP_SECONDS;
+    onSeek(Math.round((fraction * durationSeconds) / step) * step);
+  };
+  return (
+    Gesture.Pan()
+      /*
+       * One finger, and this is load-bearing.
+       *
+       * The box covers the middle of the screen, and a pinch is how you *leave*
+       * a song — zoom is the navigation. Left at the default a `Pan` takes one
+       * to ten pointers, so it began on the first of the two fingers and
+       * swallowed the pinch, and the only way out of the player was the
+       * system's own back button. A pan is locked at this distance anyway, so
+       * one finger over the circle can mean nothing but a seek.
+       */
+      .maxPointers(1)
+      .onBegin(event => seekTo(event.x, event.y))
+      .onUpdate(event => seekTo(event.x, event.y))
+      .runOnJS(true)
   );
 }
 
@@ -376,14 +463,18 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     top: SONG_SURFACE_KNOBS.ELAPSED_TOP_RATIO_PCT,
   },
-  scrubHit: {
-    height: PLAYER_POSE_KNOBS.SONG_SCRUB_HIT_PX,
-    position: 'absolute',
-  },
+  seekHit: { position: 'absolute' },
+  /**
+   * The picker on the axis too: a row centred in a full-width strip, rather
+   * than a row pinned to the left margin. It is the last thing that was still
+   * laid out against the margin the name used to start at.
+   */
   lens: {
+    alignItems: 'center',
     bottom: playerLensBottomPx(),
-    left: PLAYER_POSE_KNOBS.SONG_FOOT_SIDE_PX,
+    left: 0,
     position: 'absolute',
+    right: 0,
   },
   wordHit: { height: touch.min, position: 'absolute' },
   transportHit: { position: 'absolute' },

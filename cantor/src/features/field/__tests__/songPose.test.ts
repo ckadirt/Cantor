@@ -13,9 +13,12 @@ import {
   playerRadiusPx,
   playerRisePx,
   lineOwnedByPlayer,
-  songScrubOriginPx,
+  songAxisPx,
+  songMetaOriginPx,
   songTitleColumnPx,
   songTitleOriginPx,
+  playerSeekScreenPx,
+  seekFractionAt,
   songWordsOriginPx,
   transportScreenPx,
   transportSeatsPx,
@@ -111,18 +114,60 @@ describe('the foot the touch layer lays itself over', () => {
   it('agrees with the drawn foot when the camera is centred on the mark', () => {
     const drawn = songWordsOriginPx(viewport);
     const pressed = playerFootScreenPx(viewport);
-    expect(viewport.width / 2 + drawn.x).toBeCloseTo(pressed.x);
+    expect(viewport.width / 2 + drawn.x).toBeCloseTo(pressed.axisX);
     expect(viewport.height / 2 + drawn.y).toBeCloseTo(pressed.y);
-    // The rule and the strip that scrubs it, held to the same equality.
-    const rule = songScrubOriginPx(viewport);
-    expect(viewport.width / 2 + rule.x).toBeCloseTo(pressed.x);
-    expect(viewport.height / 2 + rule.y).toBeCloseTo(pressed.scrubY);
+  });
+
+  /**
+   * One axis, not two.
+   *
+   * The player used to be two layouts on one screen — the clock, the circle and
+   * the transport centred, everything else against the left margin — and the
+   * seam was the loudest thing on it. Every drawn row stands on the same line
+   * now, and the line is the mark's own point.
+   */
+  it('stands every drawn row on the song\u2019s own axis', () => {
+    expect(songAxisPx()).toBe(0);
+    for (const origin of [
+      songTitleOriginPx(viewport),
+      songMetaOriginPx(viewport),
+      songWordsOriginPx(viewport),
+    ]) {
+      expect(origin.x).toBe(songAxisPx());
+    }
+    for (const seat of transportSeatsPx(viewport)) {
+      expect(seat.x + seat.x * 0).toBe(seat.x); // the seats mirror about it
+    }
+    const seats = transportSeatsPx(viewport);
+    expect(seats[0].x + seats[2].x).toBeCloseTo(2 * songAxisPx());
+  });
+
+  /**
+   * The foot reads downward: name, recipe, transport, lens, the quiet line.
+   *
+   * Written as five distances off the bottom edge rather than as a chain of
+   * gaps, so this is the one place the order is asserted — and moving any row
+   * cannot silently push another through the one below it.
+   */
+  it('keeps the foot in reading order with room between the rows', () => {
+    const rows = [
+      songTitleOriginPx(viewport).y,
+      songMetaOriginPx(viewport).y,
+      transportSeatsPx(viewport)[1].y,
+      viewport.height / 2 - PLAYER_POSE_KNOBS.SONG_LENS_BOTTOM_PX,
+      songWordsOriginPx(viewport).y,
+    ];
+    for (let index = 1; index < rows.length; index += 1) {
+      expect(rows[index]).toBeGreaterThan(rows[index - 1]);
+    }
+    // And the last of them is still clear of the bottom edge.
+    expect(rows[rows.length - 1]).toBeLessThan(viewport.height / 2);
   });
 
   it('keeps the foot clear of the origin mark in the same corner', () => {
     const pressed = playerFootScreenPx(viewport);
     expect(viewport.height - pressed.y).toBeGreaterThan(0);
-    expect(pressed.x).toBe(PLAYER_POSE_KNOBS.SONG_FOOT_SIDE_PX);
+    expect(pressed.axisX).toBeCloseTo(viewport.width / 2);
   });
 
   it('gives the name both margins and no more', () => {
@@ -179,20 +224,22 @@ describe('the transport', () => {
   });
 
   /**
-   * Clear of the name below it and of the ring above it.
+   * Under the name, and clear of the ring.
    *
-   * Both are the reason it sits where it does, and both move with the viewport,
-   * so a phone shaped differently from this one must not put the transport
-   * through either of them.
+   * The order is the sentence the screen reads as — what it looks like, what it
+   * is called, what you can do to it — and it puts the controls lowest, where a
+   * thumb already is. Between the circle and the name they sat mid-screen with
+   * the name below them, so the only pressable thing was the furthest from your
+   * hand.
    */
-  it('sits between the ring and the name it belongs to', () => {
+  it('sits under the name it belongs to, clear of the ring', () => {
     const seats = transportSeatsPx(viewport);
     const ringFoot =
       -playerRisePx(viewport.height, 1) + playerRadiusPx(viewport.width);
     for (const seat of seats) {
       expect(seat.y - seat.size / 2).toBeGreaterThan(ringFoot);
-      expect(seat.y + seat.size / 2).toBeLessThan(
-        songTitleOriginPx(viewport).y,
+      expect(seat.y - seat.size / 2).toBeGreaterThan(
+        songMetaOriginPx(viewport).y,
       );
     }
   });
@@ -268,5 +315,71 @@ describe('who owns a line', () => {
     // is the row's line, so there is nothing to fade between.
     expect(lineOwnedByPlayer(Number.EPSILON)).toBe(1);
     expect(lineOwnedByPlayer(1)).toBe(1);
+  });
+});
+
+/**
+ * Seeking is an angle now, not a distance along a bar.
+ *
+ * The ring is the timeline — the design settles that — so what has to hold is
+ * that the gesture and the drawing agree on where twelve o'clock is and which
+ * way round the song runs. `PlayerRing` builds its arc at -90 degrees over 360
+ * and turns its hand by `fraction · 2π`, so these are that same convention read
+ * backwards.
+ */
+describe('seeking on the ring', () => {
+  const ring = playerSeekScreenPx(viewport);
+
+  it('reads the top of the ring as the start of the song', () => {
+    const top = seekFractionAt(viewport, ring.cx, ring.cy - ring.outer * 0.6);
+    expect(top).not.toBeNull();
+    expect(top as number).toBeCloseTo(0, 5);
+  });
+
+  it('runs clockwise, the way the hand turns', () => {
+    const quarter = seekFractionAt(
+      viewport,
+      ring.cx + ring.outer * 0.6,
+      ring.cy,
+    );
+    const half = seekFractionAt(viewport, ring.cx, ring.cy + ring.outer * 0.6);
+    const threeQuarters = seekFractionAt(
+      viewport,
+      ring.cx - ring.outer * 0.6,
+      ring.cy,
+    );
+    expect(quarter as number).toBeCloseTo(0.25, 5);
+    expect(half as number).toBeCloseTo(0.5, 5);
+    expect(threeQuarters as number).toBeCloseTo(0.75, 5);
+  });
+
+  /**
+   * A touch that means nothing answers null rather than a clamped number.
+   *
+   * At the very centre one pixel of travel sweeps half the song, so an angle
+   * there is noise wearing the shape of an intention.
+   */
+  it('ignores a touch in the dead centre or past the ring', () => {
+    expect(seekFractionAt(viewport, ring.cx, ring.cy)).toBeNull();
+    expect(
+      seekFractionAt(viewport, ring.cx, ring.cy - ring.inner * 0.5),
+    ).toBeNull();
+    expect(
+      seekFractionAt(viewport, ring.cx, ring.cy - ring.outer * 1.2),
+    ).toBeNull();
+  });
+
+  it('always answers inside one turn', () => {
+    for (let degrees = 0; degrees < 360; degrees += 17) {
+      const radians = (degrees * Math.PI) / 180;
+      const at = seekFractionAt(
+        viewport,
+        ring.cx + Math.cos(radians) * ring.outer * 0.7,
+        ring.cy + Math.sin(radians) * ring.outer * 0.7,
+      );
+      expect(at).not.toBeNull();
+      expect(at as number).toBeGreaterThanOrEqual(0);
+      expect(at as number).toBeLessThan(1);
+    }
   });
 });

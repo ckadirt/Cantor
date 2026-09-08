@@ -2,7 +2,6 @@ import React, { useMemo } from 'react';
 import {
   Group as SkiaGroup,
   Path,
-  Rect,
   Skia,
   Text,
   type SkFont,
@@ -25,7 +24,6 @@ import {
   playerRadiusPx,
   rowTitleOriginPx,
   songMetaOriginPx,
-  songScrubOriginPx,
   songTitleColumnPx,
   songTitleOriginPx,
   songWordsOriginPx,
@@ -34,9 +32,6 @@ import {
   type TransportSeat,
 } from './songPose';
 import type { FieldPresentation } from './useFieldController';
-
-/** How quietly the unplayed part of the rule is drawn. */
-const SCRUB_TRACK_ALPHA = 0.35;
 
 /** KNOBS — the ring, in fractions of the player's own radius. */
 export const PLAYER_RING_KNOBS = {
@@ -327,9 +322,19 @@ export type NativeSongModel = Readonly<{
   titleMorph: readonly GlyphMorph[] | null;
   /** The name at the player's pose, for the fallback and for accessibility. */
   songTitle: string;
+  /**
+   * Where that name sits once it is here: the axis, less half its own width.
+   *
+   * Kept on the model rather than recomputed at the draw site because the morph
+   * already ends here — measuring it twice is two chances for the fallback
+   * glyphs and the morph's last frame to land in different places, which is
+   * exactly the hand-off the Flicker Law is about.
+   */
+  titleSeat: Readonly<{ x: number; y: number }>;
   /** The recipe, which is what the row's availability line becomes. */
   metaMorph: readonly GlyphMorph[] | null;
   songMeta: string;
+  metaSeat: Readonly<{ x: number; y: number }>;
   /** What is left in the foot as words: where each sits and what it says. */
   words: readonly PlayerWord[];
   /**
@@ -397,15 +402,18 @@ export function playerWords(
   return words;
 }
 
-/** `ACESTEP:1.5-FAST · SEED 41822 · 3:12` — the recipe, said once. */
-export function recipeLine(
-  model: string,
-  seed: number | undefined,
-  durationMs: number,
-): string {
+/**
+ * `ACESTEP:1.5-FAST · SEED 41822` — the recipe, said once.
+ *
+ * The song's length used to end this line and it does not any more: a duration
+ * is a fact about *playing* the song, not about the recipe that made it, and
+ * the clock above the ring now says `0:14 · 1:49` where a person is already
+ * looking for it. Written in both places it was the same number twice on one
+ * screen, once where it belonged and once where it padded a line out.
+ */
+export function recipeLine(model: string, seed: number | undefined): string {
   const parts = [model.toUpperCase()];
   if (seed !== undefined) parts.push(`SEED ${seed}`);
-  parts.push(formatClock(durationMs / 1000));
   return parts.join(' · ');
 }
 
@@ -514,7 +522,26 @@ export function nativeSongModel(
     fonts.songTitle,
     songTitleColumnPx(viewport.width),
   );
-  const songMeta = recipeLine(song.model, song.seed, song.duration_ms);
+  const songMeta = recipeLine(song.model, song.seed);
+  /*
+   * Both lines arrive centred, so both morphs *end* centred.
+   *
+   * That is the whole of what makes the new layout a gesture rather than a
+   * different screen: a row's name starts at a fixed offset because a face sits
+   * beside it, and the player has no face beside its name — so the letters
+   * gather to the middle as you arrive, on the same clock they were already
+   * growing on. Nothing here fades; the destination moved.
+   */
+  const titleSeat = centredOnAxis(
+    songTitle,
+    fonts.songTitle,
+    songTitleOriginPx(viewport),
+  );
+  const metaSeat = centredOnAxis(
+    songMeta,
+    fonts.songMeta,
+    songMetaOriginPx(viewport),
+  );
   return {
     titleMorph: buildLineMorph(
       rowTitle,
@@ -522,20 +549,22 @@ export function nativeSongModel(
       fonts.rowTitle,
       fonts.songTitle,
       rowTitleOriginPx(),
-      songTitleOriginPx(viewport),
+      titleSeat,
       songTitleColumnPx(viewport.width),
     ),
     songTitle,
+    titleSeat,
     metaMorph: buildLineMorph(
       rowMeta,
       songMeta,
       fonts.rowMeta,
       fonts.songMeta,
       { x: rowTitleOriginPx().x, y: NAME_LENS_KNOBS.ROW_META_BASELINE_PX },
-      songMetaOriginPx(viewport),
+      metaSeat,
       songTitleColumnPx(viewport.width),
     ),
     songMeta,
+    metaSeat,
     words: playerWords(
       fonts.songMeta,
       describeAudio(presentation.localAudio.state),
@@ -544,6 +573,28 @@ export function nativeSongModel(
       presentation.localAudio.state === 'cached' ||
       presentation.localAudio.state === 'pinned',
   };
+}
+
+/**
+ * A line's own origin: the axis, stepped back by half of what it measures.
+ *
+ * The one place the player turns a width into a position. `songPose` says
+ * where the axis is and refuses to measure — it is numbers a worklet can hold,
+ * and measuring needs a font — so this is the seam between the two, and every
+ * centred line goes through it rather than doing the arithmetic itself.
+ */
+function centredOnAxis(
+  text: string,
+  font: SkFont,
+  origin: Readonly<{ x: number; y: number }>,
+): Readonly<{ x: number; y: number }> {
+  // A font with no typeface measures `NaN` rather than refusing, and a NaN x
+  // draws the line nowhere at all. The axis is the honest fallback: a line
+  // that cannot be measured is at least still on the page. `playerWords`
+  // guards the same way and for the same reason.
+  const measured = font.measureText(text)?.width;
+  const width = Number.isFinite(measured) ? measured : 0;
+  return { x: origin.x - width / 2, y: origin.y };
 }
 
 /** One morphing line, as paths the UI thread interpolates and nothing else. */
@@ -770,14 +821,17 @@ export function NativePlayerParts({
   });
   /** The step the row's own ink is the complement of; see `MorphLine`. */
   const owned = useDerivedValue<number>(() => lineOwnedByPlayer(named.value));
-  const foot = useMemo(() => songWordsOriginPx(viewport), [viewport]);
-  const scrub = useMemo(() => songScrubOriginPx(viewport), [viewport]);
-  const column = songTitleColumnPx(viewport.width);
-  const playhead = useDerivedValue(() => {
-    if (durationSeconds <= 0 || positionSeconds === null) return 0;
-    const at = positionSeconds.value / durationSeconds;
-    return column * (at < 0 ? 0 : at > 1 ? 1 : at);
-  }, [column, durationSeconds]);
+  /*
+   * The quiet line's own left edge: the axis, less half the width of the whole
+   * run. `playerWords` lays the words out from zero, so the run is as wide as
+   * its last word's right edge — measured once here rather than by every word.
+   */
+  const foot = useMemo(() => {
+    const origin = songWordsOriginPx(viewport);
+    const last = model.words[model.words.length - 1];
+    const run = last === undefined ? 0 : last.x + last.width;
+    return { x: origin.x - run / 2, y: origin.y };
+  }, [model.words, viewport]);
   return (
     <>
       <SkiaGroup opacity={arrived} transform={anchor}>
@@ -796,8 +850,8 @@ export function NativePlayerParts({
             color={colour}
             font={songTitleFont}
             text={model.songTitle}
-            x={songTitleOriginPx(viewport).x}
-            y={songTitleOriginPx(viewport).y}
+            x={model.titleSeat.x}
+            y={model.titleSeat.y}
           />
         </SkiaGroup>
       ) : (
@@ -814,8 +868,8 @@ export function NativePlayerParts({
             color={mutedColour}
             font={songMetaFont}
             text={model.songMeta}
-            x={songMetaOriginPx(viewport).x}
-            y={songMetaOriginPx(viewport).y}
+            x={model.metaSeat.x}
+            y={model.metaSeat.y}
           />
         </SkiaGroup>
       ) : (
@@ -826,26 +880,17 @@ export function NativePlayerParts({
           progress={named}
         />
       )}
+      {/*
+        No rule under the recipe.
+
+        There was one, and it was the same fact the ring already tells: the
+        design settles that "progress *is* the ring, so the timeline is already
+        a circle". Drawn again as a straight bar the width of the view, under a
+        line of small capitals, it did not read as a timeline at all — it read
+        as a divider between the recipe and the words. Seeking is a drag around
+        the circle now; see `seekFractionAt`.
+      */}
       <SkiaGroup opacity={chrome}>
-        {/*
-          The coarse rule. The ring is the timeline and this is the ruler under
-          it: `SCRUB_STEP_SECONDS` at L2, and the sample-exact scrub at L3.
-        */}
-        <Rect
-          color={mutedColour}
-          height={PLAYER_POSE_KNOBS.SONG_SCRUB_HEIGHT_PX}
-          opacity={SCRUB_TRACK_ALPHA}
-          width={songTitleColumnPx(viewport.width)}
-          x={scrub.x}
-          y={scrub.y}
-        />
-        <Rect
-          color={colour}
-          height={PLAYER_POSE_KNOBS.SONG_SCRUB_HEIGHT_PX}
-          width={playhead}
-          x={scrub.x}
-          y={scrub.y}
-        />
         {model.words.map(word => (
           <Text
             color={mutedColour}

@@ -131,7 +131,16 @@ export function nameLensRingRadius(radius: number): number {
 
 export const nameLens: Lens = {
   key: 'name',
-  label: 'Name',
+  /*
+   * `Circle`, not `Name`.
+   *
+   * The picker names *what is drawn*, and the other entry beside it says
+   * `Cantor wave` — so a lens called `Name` read as a choice about titles when
+   * it is the choice of the circle: the song's own contour, its ring, and the
+   * measurement written around it. The key stays `name`, because it is what the
+   * chosen lens is remembered as and a stored key is not a label.
+   */
+  label: 'Circle',
   draw(canvas, box, song, options) {
     const { alpha, fonts, paints } = options;
     if (alpha <= 0) return;
