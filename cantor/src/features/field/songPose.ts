@@ -35,7 +35,7 @@ export const PLAYER_POSE_KNOBS = {
    * they live under the ring, and a title crossing the waveform is two things
    * claiming the same pixels.
    */
-  SONG_BOX_RATIO: 0.76,
+  SONG_BOX_RATIO: 0.8,
   /**
    * How far the ring rises above the mark's own point, as a fraction of the
    * view's height, once the player is fully here.
@@ -46,49 +46,68 @@ export const PLAYER_POSE_KNOBS = {
    * risen to its seat by the time the player is the only thing left — the mark
    * rises into its seat rather than jumping to it.
    */
-  SONG_RISE_RATIO: 0.12,
+  SONG_RISE_RATIO: 0.09,
   /** Where the sweeping arc sits, as a fraction of the player's radius. */
   SONG_ARC_RATIO: 0.5,
   /** The song's name at L2 — `type.title`, the largest type after the field's own. */
   SONG_TITLE_SIZE_PX: 26,
   /**
-   * The foot's inset from the bottom edge, clear of the origin mark that sits
-   * at the same corner.
-   */
-  SONG_FOOT_INSET_PX: 120,
-  /** The foot's inset from the left edge — `space.lg`, the app's own margin. */
-  SONG_FOOT_SIDE_PX: 24,
-  /**
-   * The recipe line, one line under the name.
+   * KNOBS — the foot, measured up from the bottom edge.
    *
-   * Measured from the name's *baseline*, so it has to clear the name's
-   * descenders as well as the recipe's own cap — at 24 the two lines touched
-   * and the recipe read as an underline.
+   * One stack on one axis, in the order a person reads it: what the song looks
+   * like, what it is called, what it was made from, what you can do to it, and
+   * how it is being drawn. Every one of these is a distance off the bottom
+   * rather than a gap from the line above, so changing any single row cannot
+   * push the others around — the rhythm is legible as five numbers instead of
+   * as a chain of offsets.
    */
-  SONG_META_GAP_PX: 30,
-  /** Where the elapsed sits: above the ring, as a fraction of the view's height. */
+  /** The name's baseline. */
+  SONG_TITLE_BOTTOM_PX: 245,
+  /** The recipe, one line under the name and clear of its descenders. */
+  SONG_META_BOTTOM_PX: 215,
+  /** The transport's own centre line. */
+  SONG_TRANSPORT_BOTTOM_PX: 150,
+  /**
+   * The lens picker's baseline: how the song is being drawn, not what it is.
+   *
+   * Paired with the quiet line under it rather than hung off the transport. The
+   * foot reads as three groups — the name and its recipe, the transport, then
+   * the two lines of small capitals — and a picker sitting closer to the
+   * buttons than to the line it belongs with made the transport look like a
+   * four-row control.
+   */
+  SONG_LENS_BOTTOM_PX: 66,
+  /**
+   * The last quiet line — `DETAIL`, and what the phone has of the audio.
+   *
+   * Close under the picker, because the two are a pair: both are lines of small
+   * capitals about the song rather than parts of it, and the eye should take
+   * them as one block. Spaced evenly between the transport and the edge they
+   * read as two more rows of the control, which made the transport look four
+   * rows tall.
+   */
+  SONG_WORDS_BOTTOM_PX: 38,
+  /**
+   * The side margin — `space.lg`, the app's own.
+   *
+   * Nothing in the player is laid out *from* it any more; it is the column the
+   * name is cut to, so a long title stops where every other margin does.
+   */
+  SONG_FOOT_SIDE_PX: 24,
+  /** Where the clock sits: above the ring, as a fraction of the view's height. */
   SONG_ELAPSED_TOP_RATIO: 0.13,
-  /** The hairline the playhead runs along, between the recipe and the words. */
-  SONG_SCRUB_GAP_PX: 52,
-  SONG_SCRUB_HEIGHT_PX: 2,
-  /** Touch target around that hairline, for the layer that catches fingers. */
-  SONG_SCRUB_HIT_PX: 44,
-  /** The transport words, under the recipe line. */
-  SONG_WORDS_GAP_PX: 78,
-  /** Air between one transport word and the next. */
+  /** Air between one quiet word and the next. */
   SONG_WORD_GAP_PX: 24,
   /**
-   * KNOBS — the transport itself, which is buttons rather than words.
+   * KNOBS — the transport, which is buttons rather than words.
    *
-   * It sits in the gap the drawing leaves for it: the ring's own foot is about
-   * `SONG_RISE_RATIO` of the height above the middle plus its radius, and the
-   * name's baseline is `SONG_FOOT_INSET_PX` off the bottom, so on a phone there
-   * is most of a thumb's reach of nothing between them. That is where a hand
-   * goes anyway, and it is the one part of the player a person presses
-   * repeatedly, so it gets the room rather than the foot's crowded left edge.
+   * Under the name rather than under the picture. The screen reads as one
+   * sentence that way — this is what it looks like, this is what it is called,
+   * this is what you can do to it — and the controls end up lowest, which is
+   * where a thumb already is. Between the circle and the name they sat in the
+   * middle of the screen with the name below them, so the only thing you could
+   * press was the furthest thing from your hand.
    */
-  /** How far the transport sits above the name's own baseline. */
-  SONG_TRANSPORT_RISE_PX: 120,
   /** Centre to centre, from one button to the next. */
   SONG_TRANSPORT_GAP_PX: 64,
   /** The play/pause silhouette's box — the one you look for, so the largest. */
@@ -104,6 +123,26 @@ export const PLAYER_POSE_KNOBS = {
    * between them.
    */
   SONG_TRANSPORT_HIT_PX: 56,
+  /**
+   * KNOBS — seeking, which happens on the ring.
+   *
+   * There is no rule under the recipe any more. The ring *is* the timeline —
+   * the design says so outright — and a straight bar drawn under it was the
+   * same fact told twice, in a place where it read as a divider rather than as
+   * a control. So the circle is what you drag.
+   */
+  /** How near the centre a finger stops meaning an angle at all. */
+  SONG_SEEK_DEAD_ZONE_RATIO: 0.18,
+  /**
+   * How far out a drag still counts, as a fraction of the player's radius.
+   *
+   * One, which is exactly the measurement's own reach: the ticks stand on the
+   * arc at `SONG_ARC_RATIO` and grow by `SONG_WAVE_REACH_RATIO` of the radius,
+   * so at full amplitude the drawing ends a shade inside this. A target that
+   * stopped short of the ticks would leave the loudest part of the circle
+   * unpressable, and one much past them is a control in blank space.
+   */
+  SONG_SEEK_REACH_RATIO: 1,
 } as const;
 
 export type PoseViewport = Readonly<{ width: number; height: number }>;
@@ -174,11 +213,10 @@ export function facePoseAt(
 }
 
 /**
- * Where the name's first letter sits at each of its two poses.
+ * Where the name's first letter sits at the row's pose.
  *
- * The row's is `nameLens`'s own offset, so the name the native renderer writes
- * and the name the picture draws are in the same place. The player's is the
- * foot: left margin, up from the bottom edge, clear of the origin mark.
+ * `nameLens`'s own offset, so the name the native renderer writes and the name
+ * the picture draws are in the same place.
  */
 export function rowTitleOriginPx(): Readonly<{ x: number; y: number }> {
   'worklet';
@@ -188,39 +226,68 @@ export function rowTitleOriginPx(): Readonly<{ x: number; y: number }> {
   };
 }
 
+/**
+ * The player's own axis: the one vertical line every part of it hangs off.
+ *
+ * Zero, because the mark *is* the axis — the camera is centred on it at L2, so
+ * the song's point and the middle of the view are the same x. Written as a
+ * function rather than as the literal it returns because it is the claim the
+ * whole layout rests on, and a reader who finds a bare `0` in six places has
+ * to rediscover why six times.
+ *
+ * The player used to be two layouts on one screen: the clock, the circle and
+ * the transport centred, and the name, the recipe and the words hard against
+ * the left margin. Nothing named the seam and there was no reason for it — the
+ * left column was inherited from the row, where a name has to start at a fixed
+ * offset because a face sits beside it. The player has no face beside its name.
+ *
+ * Anything centred on this takes its own measured width and steps back half of
+ * it. `songPose` deliberately does not do the stepping: measuring a line needs
+ * a font, a font needs a runtime that has one, and this file is numbers a
+ * worklet can hold. So it says where the axis is, and the drawing says how
+ * wide the thing standing on it is.
+ */
+export function songAxisPx(): number {
+  'worklet';
+  return 0;
+}
+
+/** The baseline of one foot row, measured up from the bottom edge. */
+function footRowPx(viewport: PoseViewport, bottomPx: number): number {
+  'worklet';
+  return viewport.height / 2 - bottomPx;
+}
+
 export function songTitleOriginPx(
   viewport: PoseViewport,
 ): Readonly<{ x: number; y: number }> {
   'worklet';
   return {
-    x: -viewport.width / 2 + PLAYER_POSE_KNOBS.SONG_FOOT_SIDE_PX,
-    y: viewport.height / 2 - PLAYER_POSE_KNOBS.SONG_FOOT_INSET_PX,
+    x: songAxisPx(),
+    y: footRowPx(viewport, PLAYER_POSE_KNOBS.SONG_TITLE_BOTTOM_PX),
   };
 }
 
-/** The recipe line, and then the transport words, each under the last. */
+/** The recipe, one line under the name. */
 export function songMetaOriginPx(
   viewport: PoseViewport,
 ): Readonly<{ x: number; y: number }> {
   'worklet';
-  const title = songTitleOriginPx(viewport);
-  return { x: title.x, y: title.y + PLAYER_POSE_KNOBS.SONG_META_GAP_PX };
+  return {
+    x: songAxisPx(),
+    y: footRowPx(viewport, PLAYER_POSE_KNOBS.SONG_META_BOTTOM_PX),
+  };
 }
 
-export function songScrubOriginPx(
-  viewport: PoseViewport,
-): Readonly<{ x: number; y: number }> {
-  'worklet';
-  const title = songTitleOriginPx(viewport);
-  return { x: title.x, y: title.y + PLAYER_POSE_KNOBS.SONG_SCRUB_GAP_PX };
-}
-
+/** The last quiet line, under the lens picker. */
 export function songWordsOriginPx(
   viewport: PoseViewport,
 ): Readonly<{ x: number; y: number }> {
   'worklet';
-  const title = songTitleOriginPx(viewport);
-  return { x: title.x, y: title.y + PLAYER_POSE_KNOBS.SONG_WORDS_GAP_PX };
+  return {
+    x: songAxisPx(),
+    y: footRowPx(viewport, PLAYER_POSE_KNOBS.SONG_WORDS_BOTTOM_PX),
+  };
 }
 
 /**
@@ -243,7 +310,7 @@ export type TransportSeat = Readonly<{
 }>;
 
 /**
- * The three seats, in reading order, centred on the song's own mark point.
+ * The three seats, in reading order, centred on the song's own axis.
  *
  * Centred rather than laid out left to right because the transport is one
  * object with a middle: the verb is in the middle, the two steps are either
@@ -256,7 +323,7 @@ export function transportSeatsPx(
 ): readonly TransportSeat[] {
   'worklet';
   const knobs = PLAYER_POSE_KNOBS;
-  const y = songTitleOriginPx(viewport).y - knobs.SONG_TRANSPORT_RISE_PX;
+  const y = footRowPx(viewport, knobs.SONG_TRANSPORT_BOTTOM_PX);
   return [
     {
       key: 'previous',
@@ -342,18 +409,62 @@ export function songTitleColumnPx(viewportWidth: number): number {
  */
 export function playerFootScreenPx(
   viewport: PoseViewport,
-): Readonly<{ x: number; y: number; scrubY: number }> {
+): Readonly<{ axisX: number; y: number }> {
   return {
-    x: PLAYER_POSE_KNOBS.SONG_FOOT_SIDE_PX,
-    y:
-      viewport.height -
-      PLAYER_POSE_KNOBS.SONG_FOOT_INSET_PX +
-      PLAYER_POSE_KNOBS.SONG_WORDS_GAP_PX,
-    scrubY:
-      viewport.height -
-      PLAYER_POSE_KNOBS.SONG_FOOT_INSET_PX +
-      PLAYER_POSE_KNOBS.SONG_SCRUB_GAP_PX,
+    axisX: viewport.width / 2 + songAxisPx(),
+    y: viewport.height / 2 + songWordsOriginPx(viewport).y,
   };
+}
+
+/**
+ * The ring's own centre and reach in *screen* pixels, for the seek gesture.
+ *
+ * The ring is the timeline, so seeking is an angle about this point rather than
+ * a distance along a bar. Both numbers come from the same two knobs the drawing
+ * uses — `playerRisePx` at full arrival and `playerRadiusPx` — because a finger
+ * that means one angle to the gesture and another to the drawing is a scrub
+ * that jumps the moment you touch it.
+ *
+ * `inner` and `outer` bound where a drag counts at all. Inside `inner` an angle
+ * is meaningless — a millimetre of travel across the centre sweeps half the
+ * song — and outside `outer` the finger has left the control.
+ */
+export function playerSeekScreenPx(
+  viewport: PoseViewport,
+): Readonly<{ cx: number; cy: number; inner: number; outer: number }> {
+  'worklet';
+  const radius = playerRadiusPx(viewport.width);
+  return {
+    cx: viewport.width / 2 + songAxisPx(),
+    cy: viewport.height / 2 - playerRisePx(viewport.height, 1),
+    inner: radius * PLAYER_POSE_KNOBS.SONG_SEEK_DEAD_ZONE_RATIO,
+    outer: radius * PLAYER_POSE_KNOBS.SONG_SEEK_REACH_RATIO,
+  };
+}
+
+/**
+ * Where a finger on the ring falls through the song, 0..1 — or null for a
+ * touch that is not on it.
+ *
+ * Measured from twelve o'clock, clockwise, because that is where the arc is
+ * drawn from and the direction the hand turns: `PlayerRing` builds its arc at
+ * `-90` degrees over `360`, and the same quarter-turn is subtracted here. Two
+ * definitions of "the top" would put the playhead a quarter of a song away from
+ * the finger that placed it.
+ */
+export function seekFractionAt(
+  viewport: PoseViewport,
+  x: number,
+  y: number,
+): number | null {
+  'worklet';
+  const ring = playerSeekScreenPx(viewport);
+  const dx = x - ring.cx;
+  const dy = y - ring.cy;
+  const reach = Math.sqrt(dx * dx + dy * dy);
+  if (reach < ring.inner || reach > ring.outer) return null;
+  const turn = (Math.atan2(dy, dx) + Math.PI / 2) / (Math.PI * 2);
+  return turn - Math.floor(turn);
 }
 
 /**
@@ -379,16 +490,12 @@ export function lineOwnedByPlayer(arrived: number): number {
 /**
  * How far off the bottom edge the lens picker sits.
  *
- * Derived rather than chosen: it has to clear the name, and the name's height
- * is the name's own size above its baseline. Written as a number instead, it
- * was `space.xxl` — which put the picker straight through the title and the
- * recipe, because the picker was laid out when the foot was React's and nobody
- * moved it when the foot became the canvas's.
+ * Its own row in the foot's rhythm rather than a sum of the name's height and
+ * two margins. It was derived that way because the picker was laid out when the
+ * foot was React's and the name was the only thing it had to clear; now that
+ * every row in the foot is a distance off the bottom edge, being one of them is
+ * both simpler and the only way the spacing stays even when a row moves.
  */
 export function playerLensBottomPx(): number {
-  return (
-    PLAYER_POSE_KNOBS.SONG_FOOT_INSET_PX +
-    PLAYER_POSE_KNOBS.SONG_TITLE_SIZE_PX +
-    PLAYER_POSE_KNOBS.SONG_FOOT_SIDE_PX
-  );
+  return PLAYER_POSE_KNOBS.SONG_LENS_BOTTOM_PX;
 }
