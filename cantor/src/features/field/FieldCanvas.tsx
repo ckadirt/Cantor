@@ -103,6 +103,7 @@ import {
   PLAYER_RING_KNOBS,
   PlayerRing,
   nativeSongModel,
+  playerChromeModel,
   type NativeSongModel,
 } from './NativePlayer';
 import {
@@ -900,6 +901,73 @@ function FieldCanvasImpl({
   ]);
 
   /**
+   * The player's words, for the lenses the native field does not draw.
+   *
+   * `NativePlayerParts` lives inside `NativePlacementFlight`, which is inside
+   * the native tree, which is gated on the *name* lens — because that is the
+   * lens whose faces and rows the native path draws. The player's name, its
+   * recipe, its transport and its quiet line are not that lens's business:
+   * they are laid out from `songPose` and the viewport, and a lens draws a
+   * song's picture, not the chrome around it. They went missing anyway. On
+   * `cantor-wave` you could start a song on `circle`, switch lens, and be left
+   * looking at a waveform with no name, no recipe and no way to pause it.
+   *
+   * So it is mounted here, on the picture path, which is exactly the complement
+   * of the native one — `scene` is only ever rendered when `nativeField` is
+   * false. One owner draws these glyphs at any instant, which is the Flicker
+   * Law's first rule and the reason this is a complement rather than a second
+   * copy with a condition of its own.
+   *
+   * No morphs and no ring. A morph interpolates the row's line into the
+   * player's and there is no native row to come from here; the ring is
+   * `playhead`, mounted beside this and already lens-independent, so
+   * `positionSeconds` is passed null to keep `NativePlayerParts` from drawing
+   * a second one over the lens's own drawing.
+   */
+  const playerChrome = useMemo(() => {
+    if (
+      focusKey === null ||
+      viewport === null ||
+      songTitleFont === null ||
+      songMetaFont === null
+    ) {
+      return null;
+    }
+    const held = placements.find(placement => placement.key === focusKey);
+    if (held === undefined) return null;
+    const presentation = presentations.get(held.entityKey);
+    if (presentation === undefined) return null;
+    return (
+      <PlayerChrome
+        cameraShared={cameraShared}
+        colour={palette.ink}
+        fitScaleShared={fitScaleShared}
+        model={playerChromeModel(presentation, viewport, {
+          songMeta: songMetaFont,
+          songTitle: songTitleFont,
+        })}
+        mutedColour={palette.muted}
+        songMetaFont={songMetaFont}
+        songTitleFont={songTitleFont}
+        transportPlaying={transportPlaying}
+        viewport={viewport}
+      />
+    );
+  }, [
+    cameraShared,
+    fitScaleShared,
+    focusKey,
+    palette.ink,
+    palette.muted,
+    placements,
+    presentations,
+    songMetaFont,
+    songTitleFont,
+    transportPlaying,
+    viewport,
+  ]);
+
+  /**
    * The picture, its paper and its playhead as one element held by identity.
    *
    * This is the whole point of the transform above. Skia re-renders its
@@ -934,10 +1002,19 @@ function FieldCanvasImpl({
           </SkiaGroup>
         )}
         {playhead}
+        {playerChrome}
         {veil}
       </>
     ),
-    [grain, palette.bg, picture, pictureTransform, playhead, veil],
+    [
+      grain,
+      palette.bg,
+      picture,
+      pictureTransform,
+      playerChrome,
+      playhead,
+      veil,
+    ],
   );
 
   if (nativeField) {
@@ -1100,6 +1177,105 @@ function NativePlayhead({
         durationSeconds={durationSeconds}
         positionSeconds={positionSeconds}
         radius={playerRadiusPx(viewport.width)}
+      />
+    </SkiaGroup>
+  );
+}
+
+/**
+ * The player's name, recipe, transport and quiet line, on the picture path.
+ *
+ * The same `NativePlayerParts` the native path mounts, given the two numbers it
+ * asks for and nothing else. Those numbers are pure functions of the camera —
+ * `useNativeCameraMotion` derives them the same way, from a scale that a re-cut
+ * clock may be carrying — so here, where there is no native re-cut, they come
+ * straight off `cameraShared`. That is what keeps this chrome on the camera's
+ * own clock rather than on React's copy of it, which is the whole reason the
+ * player was drawn on the canvas in the first place.
+ *
+ * `arrived` is the song band, `named` the name's arrival. The band says how
+ * *present* the player is and the arrival says where its words *are* — never
+ * the other way round; see `SONG_ARRIVAL`.
+ */
+function PlayerChrome({
+  cameraShared,
+  fitScaleShared,
+  model,
+  transportPlaying,
+  viewport,
+  colour,
+  mutedColour,
+  songTitleFont,
+  songMetaFont,
+}: {
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
+  model: NativeSongModel;
+  transportPlaying: SharedValue<number> | null;
+  viewport: Viewport;
+  colour: string;
+  mutedColour: string;
+  songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
+}) {
+  const arrived = useDerivedValue(() =>
+    bandAlphaAt(
+      cameraShared.value.scale,
+      fitScaleShared.value,
+      REPRESENTATION_WINDOWS.song,
+    ),
+  );
+  const named = useDerivedValue(() =>
+    songNameArrival(cameraShared.value.scale, fitScaleShared.value),
+  );
+  /**
+   * Nowhere, because nothing hangs off it here.
+   *
+   * `anchor` places the ring, and the ring is `playhead` on this path — see
+   * `positionSeconds` below, which is null for exactly that reason. Passed as a
+   * held identity rather than left undefined because it is a required prop and
+   * a fresh array every render would repaint the group it transforms.
+   */
+  const anchor = useDerivedValue<Transforms3d>(() => [
+    { translateX: 0 },
+    { translateY: 0 },
+  ]);
+  /**
+   * The mark's own point, which at L2 is the middle of the view.
+   *
+   * Everything `songPose` returns is measured from the mark — `footRowPx` is
+   * `viewport.height / 2 - bottomPx` — because on the native path the whole
+   * player rides the flight transform that carries its mark. There is no such
+   * transform on a recording, so the translation is made here, and it is the
+   * one `playerFootScreenPx` and `transportScreenPx` already make for the touch
+   * layer: half the viewport in each axis. Without it the foot lays itself out
+   * from the top-left corner and the name runs off the left edge.
+   *
+   * `NativePlayhead` states the same translation for the ring, and states it
+   * separately: the ring is lifted by `playerRisePx` and these rows are not.
+   */
+  const centre = useMemo<Transforms3d>(
+    () => [
+      { translateX: viewport.width / 2 },
+      { translateY: viewport.height / 2 },
+    ],
+    [viewport.height, viewport.width],
+  );
+  return (
+    <SkiaGroup transform={centre}>
+      <NativePlayerParts
+        anchor={anchor}
+        arrived={arrived}
+        colour={colour}
+        durationSeconds={0}
+        model={model}
+        mutedColour={mutedColour}
+        named={named}
+        positionSeconds={null}
+        songMetaFont={songMetaFont}
+        songTitleFont={songTitleFont}
+        transportPlaying={transportPlaying}
+        viewport={viewport}
       />
     </SkiaGroup>
   );
