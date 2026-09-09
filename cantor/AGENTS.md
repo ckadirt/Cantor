@@ -118,16 +118,21 @@ fingers, so the player cannot slide out from under itself. Zoom is still the
 navigation — a pinch is how you leave — and the edge pulls still open the
 composer and the engines, because neither of those moves the camera.
 
-**The player belongs to the song you are in, not the one you were in.** The
-canvas mounts it on `focusKey`, and its pose answers to the camera's *scale*
-alone: `SONG_ARRIVAL.SHAPE_GROW` opens at the shelf seat, so any focused song
-grows its face whenever the camera is closer than L1 — whether or not the camera
-is going anywhere near it. So `ascend` drops the focus on the way out. Left set,
-the song you just closed keeps swelling out of the list: at rest whenever a
-flight is interrupted above the seat, and on the descent into whichever row you
-tap next. What outlives the focus is only the *fade*, held one placement deep in
-`FieldScreen` so the words still leave on the song band rather than popping at
-full opacity.
+**The player belongs to the song you are in.** Navigation focus and the canvas
+owner have different lifetimes. `ascend` clears navigation focus immediately,
+but retains the outgoing `playerKey` until the live camera reaches the shelf
+seat. The drawing shrinks back into its row on the UI thread before React
+releases it. A new descent replaces that owner before starting its flight.
+Never clear the visible player at the start of an ascent: that removes its
+geometry at full size and produces a flash.
+
+**Lenses share the renderer.** Circle and Cantor wave use `NativeFieldContent`
+and the same row/player text. A retained shared clock interpolates the face
+wedges into bars; switching lenses does not replace the scene. Middle-thirds
+positions and bar sizes live in `lenses/cantorWaveGeometry.ts`; the canvas morph
+lives in `features/field/waveGeometry.ts`. Reduced motion crossfades the two
+shapes. Keep the lens clock outside the keyed re-cut generation so regrouping
+during a lens change preserves its current progress.
 
 **Nothing that moves with the camera may be laid out in React.** React's copy of
 the camera lands a commit late by design (`mirrorCamera`, `mirrorBusy`), so
