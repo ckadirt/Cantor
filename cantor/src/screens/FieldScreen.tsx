@@ -1213,7 +1213,8 @@ export function FieldScreen({ identity }: Props) {
                 groupKey: playerPlacement?.groupKey ?? null,
               });
             }}
-            onSeek={transport.seek}
+            onSeek={focusedIsCurrent ? transport.scrub : () => {}}
+            onSeekEnd={transport.finishScrub}
             onToggle={() => void playFocused()}
             positionSeconds={transport.positionSeconds}
             snapshot={
