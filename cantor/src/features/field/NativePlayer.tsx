@@ -503,6 +503,64 @@ function buildLineMorph(
   return morphs;
 }
 
+/**
+ * The player with nothing to have come from: every seat, no morph.
+ *
+ * A morph interpolates the *row's* line into the player's, so it needs a row —
+ * and there is only a row where the name lens is drawing one natively. Every
+ * other lens draws its own song at every distance and has no such line, so the
+ * honest gesture there is the fallback `NativeSongModel` already carries for a
+ * runtime with no glyph outlines: two strings, faded on the same arrival.
+ *
+ * Split out rather than built by passing the same string twice, because
+ * `buildLineMorph` would still sample two fonts and interpolate a path per
+ * letter to arrive at a morph from a line to itself.
+ */
+export function playerChromeModel(
+  presentation: FieldPresentation,
+  viewport: PoseViewport,
+  fonts: Readonly<{ songTitle: SkFont; songMeta: SkFont }>,
+): NativeSongModel {
+  const seats = playerSeats(presentation, viewport, fonts);
+  return { ...seats, titleMorph: null, metaMorph: null };
+}
+
+/** What both models share: the strings, where they sit, and what is in the foot. */
+function playerSeats(
+  presentation: FieldPresentation,
+  viewport: PoseViewport,
+  fonts: Readonly<{ songTitle: SkFont; songMeta: SkFont }>,
+): Omit<NativeSongModel, 'titleMorph' | 'metaMorph'> {
+  const song = presentation.song;
+  const songTitle = fitText(
+    song.title,
+    fonts.songTitle,
+    songTitleColumnPx(viewport.width),
+  );
+  const songMeta = recipeLine(song.model, song.seed);
+  return {
+    songTitle,
+    titleSeat: centredOnAxis(
+      songTitle,
+      fonts.songTitle,
+      songTitleOriginPx(viewport),
+    ),
+    songMeta,
+    metaSeat: centredOnAxis(
+      songMeta,
+      fonts.songMeta,
+      songMetaOriginPx(viewport),
+    ),
+    words: playerWords(
+      fonts.songMeta,
+      describeAudio(presentation.localAudio.state),
+    ),
+    onPhone:
+      presentation.localAudio.state === 'cached' ||
+      presentation.localAudio.state === 'pinned',
+  };
+}
+
 export function nativeSongModel(
   presentation: FieldPresentation,
   viewport: PoseViewport,
@@ -516,13 +574,6 @@ export function nativeSongModel(
     songMeta: SkFont;
   }>,
 ): NativeSongModel {
-  const song = presentation.song;
-  const songTitle = fitText(
-    song.title,
-    fonts.songTitle,
-    songTitleColumnPx(viewport.width),
-  );
-  const songMeta = recipeLine(song.model, song.seed);
   /*
    * Both lines arrive centred, so both morphs *end* centred.
    *
@@ -531,48 +582,63 @@ export function nativeSongModel(
    * beside it, and the player has no face beside its name — so the letters
    * gather to the middle as you arrive, on the same clock they were already
    * growing on. Nothing here fades; the destination moved.
+   *
+   * The morphs end at `seats`' own seats rather than at seats measured again
+   * here. Measuring twice is two chances for the morph's last frame and the
+   * fallback glyphs to land in different places, which is the hand-off the
+   * Flicker Law is about — and it is the reason the seats are on the model in
+   * the first place.
    */
-  const titleSeat = centredOnAxis(
-    songTitle,
-    fonts.songTitle,
-    songTitleOriginPx(viewport),
-  );
-  const metaSeat = centredOnAxis(
-    songMeta,
-    fonts.songMeta,
-    songMetaOriginPx(viewport),
-  );
+  const seats = playerSeats(presentation, viewport, fonts);
   return {
+    ...seats,
     titleMorph: buildLineMorph(
       rowTitle,
-      songTitle,
+      seats.songTitle,
       fonts.rowTitle,
       fonts.songTitle,
       rowTitleOriginPx(),
-      titleSeat,
+      seats.titleSeat,
       songTitleColumnPx(viewport.width),
     ),
-    songTitle,
-    titleSeat,
     metaMorph: buildLineMorph(
       rowMeta,
-      songMeta,
+      seats.songMeta,
       fonts.rowMeta,
       fonts.songMeta,
       { x: rowTitleOriginPx().x, y: NAME_LENS_KNOBS.ROW_META_BASELINE_PX },
-      metaSeat,
+      seats.metaSeat,
       songTitleColumnPx(viewport.width),
     ),
-    songMeta,
-    metaSeat,
-    words: playerWords(
-      fonts.songMeta,
-      describeAudio(presentation.localAudio.state),
-    ),
-    onPhone:
-      presentation.localAudio.state === 'cached' ||
-      presentation.localAudio.state === 'pinned',
   };
+}
+
+/**
+ * Where real glyphs have to be drawn to land where their morph does.
+ *
+ * A seat is a *layout box top*, not a baseline, because that is what the morph
+ * reads it as: `buildLineMorph` lays the destination out with `layoutText`,
+ * whose boxes carry `y = ascent` for a single line, and adds the seat to that.
+ * Skia's `Text` takes a baseline. So the same seat drawn both ways lands one
+ * ascent apart — 25 px for the name in CMU Serif at 26, 11 px for the recipe in
+ * mono at 11 — and the two renderings of one line are not the same line.
+ *
+ * That mattered nowhere until the player's chrome was mounted on the picture
+ * path, which has no row to morph from and so is always the `Text` branch: the
+ * name and the recipe jumped an ascent the moment you changed the lens. It was
+ * always a hazard on the native path too, between a morph and the fallback it
+ * turns into when the runtime cannot give an outline — the seats are on the
+ * model precisely so that the two land in the same place, and they did not.
+ *
+ * The morph's placement is the one that ships and the one the foot was tuned
+ * against, so the glyphs come to it rather than the other way round.
+ */
+function baselineOf(
+  seat: Readonly<{ x: number; y: number }>,
+  font: SkFont,
+): number {
+  // `layoutText`'s own line: metrics report the ascent as a negative rise.
+  return seat.y - font.getMetrics().ascent;
 }
 
 /**
@@ -851,7 +917,7 @@ export function NativePlayerParts({
             font={songTitleFont}
             text={model.songTitle}
             x={model.titleSeat.x}
-            y={model.titleSeat.y}
+            y={baselineOf(model.titleSeat, songTitleFont)}
           />
         </SkiaGroup>
       ) : (
@@ -869,7 +935,7 @@ export function NativePlayerParts({
             font={songMetaFont}
             text={model.songMeta}
             x={model.metaSeat.x}
-            y={model.metaSeat.y}
+            y={baselineOf(model.metaSeat, songMetaFont)}
           />
         </SkiaGroup>
       ) : (
