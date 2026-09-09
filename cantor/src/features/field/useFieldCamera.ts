@@ -363,6 +363,13 @@ export function useFieldCamera({
         return;
       }
       cameraRef.current = next;
+      const fit = lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
+      if (
+        focusKeyRef.current === null &&
+        next.scale <= fit * LEVEL_SCALE_RATIOS.shelf
+      ) {
+        setPlayerKey(null);
+      }
       setCameraState(next);
     },
     [mirrorBusy],
@@ -396,10 +403,15 @@ export function useFieldCamera({
       focusKeyRef.current = next;
       focusKeyShared.value = next;
       setFocusKey(next);
-      // Clearing always lands: a player left mounted is a song you have gone.
-      if (drawsPlayer || next === null) setPlayerKey(next);
+      // Logical focus leaves immediately; the outgoing drawing keeps its
+      // owner until the camera has returned it to the row pose.
+      const fit = lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
+      if (next !== null && drawsPlayer) setPlayerKey(next);
+      else if (cameraShared.value.scale <= fit * LEVEL_SCALE_RATIOS.shelf) {
+        setPlayerKey(null);
+      }
     },
-    [focusKeyShared],
+    [cameraShared, focusKeyShared],
   );
   const cancelCameraFlight = useCallback(() => {
     // A descent still waiting for its commit is a flight like any other, so
@@ -863,16 +875,8 @@ export function useFieldCamera({
         : null;
       if (shelf) {
         flyTo(shelf);
-        // The focus goes with it. `focusKey` is what the canvas mounts the
-        // player on, and the player's pose is a function of the camera's scale
-        // alone — so a song you have *left* stays the player, and its face
-        // grows again on the way down to whichever song you open next. That is
-        // the wrong shape flying: you tap the second row and watch the first
-        // one swell out of the list. It is visible at rest too, any time the
-        // camera settles above the shelf seat.
-        //
-        // After the target is computed, because that is the one thing the
-        // placement is still needed for.
+        // Drop navigation focus now, retaining the outgoing canvas owner
+        // until mirrorCamera observes the fully collapsed row pose.
         commitFocus(null, true);
         return true;
       }

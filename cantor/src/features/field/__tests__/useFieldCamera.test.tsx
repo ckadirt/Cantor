@@ -591,6 +591,29 @@ describe('useFieldCamera', () => {
   // Jest's reanimated mock the per-frame reaction never runs. What must survive
   // that is arrival: the timing callback commits the target, so a tap descends
   // whether or not a single frame of the flight was ever drawn.
+  it('keeps the outgoing player mounted until its camera reaches the shelf', async () => {
+    mockReducedMotion = false;
+    const { layout } = await renderCamera();
+    const placement = layout.placements[0];
+    await ReactTestRenderer.act(async () => { latest.descend(placement); });
+    await ReactTestRenderer.act(async () => { latest.descend(placement); });
+    expect(latest.playerFocus?.key).toBe(placement.key);
+    const reanimated = require('react-native-reanimated');
+    let land!: (finished: boolean) => void;
+    jest.spyOn(reanimated, 'withTiming').mockImplementation(
+      (...args: unknown[]) => {
+        land = args[2] as (finished: boolean) => void;
+        return 0;
+      },
+    );
+    await ReactTestRenderer.act(async () => { latest.ascend(); });
+    expect(latest.focus).toBeNull();
+    expect(latest.playerFocus?.key).toBe(placement.key);
+    await ReactTestRenderer.act(async () => { land(true); });
+    expect(latest.playerFocus).toBeNull();
+    expect(latest.level).toBe('shelf');
+  });
+
   it('lands a full-motion flight on its target, not short of it', async () => {
     mockReducedMotion = false;
     const { layout } = await renderCamera();
