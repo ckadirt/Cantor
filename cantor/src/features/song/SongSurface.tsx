@@ -34,7 +34,16 @@ const SONG_SURFACE_KNOBS = {
   ELAPSED_SAMPLE_MS: 500, // how often the clock label reads the visual clock
   /** Where the clock sits: above the ring, which is centred on the view. */
   ELAPSED_TOP_RATIO_PCT: '13%',
-  /** Air around a word, so a five-letter target is still a target. */
+  /**
+   * Air *beside* a word, so a five-letter target is still a target.
+   *
+   * Sideways only. The box is already `touch.min` tall — taller than a finger
+   * needs — and the vertical pad was pure encroachment: it pushed the quiet
+   * line's target down to 34 px off the bottom edge, into the rolled engines
+   * blind sitting there, which is drawn on top. So the bottom third of
+   * `DETAIL` opened the engines instead. `songFoot.test.ts` holds the gap the
+   * two now keep.
+   */
   WORD_HIT_PAD_PX: 12,
 } as const;
 
@@ -359,7 +368,12 @@ function WordTarget({
     <Pressable
       accessibilityLabel={word.text}
       accessibilityRole="button"
-      hitSlop={SONG_SURFACE_KNOBS.WORD_HIT_PAD_PX}
+      hitSlop={{
+        left: SONG_SURFACE_KNOBS.WORD_HIT_PAD_PX,
+        right: SONG_SURFACE_KNOBS.WORD_HIT_PAD_PX,
+        top: 0,
+        bottom: 0,
+      }}
       onPress={onPress}
       style={[
         styles.wordHit,
