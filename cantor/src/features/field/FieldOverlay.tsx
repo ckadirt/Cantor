@@ -21,7 +21,7 @@ import {
   type DateResolution,
   type Level,
 } from '../../field';
-import { space, touch, type, usePalette } from '../../theme/tokens';
+import { space, type, usePalette } from '../../theme/tokens';
 
 type Props = {
   level: Level;
@@ -61,27 +61,82 @@ type Props = {
 /**
  * KNOBS — the chrome.
  *
- * The two tabs are 48 px because that is `touch.min`: the mark for a gesture is
- * exactly as wide as the smallest thing a finger is expected to find.
+ * The edge tabs keep their drawing and their target in separate numbers.
+ * `TAB_SLAT_*` and `TAB_LABEL_*` say how big the mark is; `TAB_HIT_*` says how
+ * big the door is. They were one number once — the widest slat was `touch.min`,
+ * so the drawing was sized by what a finger needs — and the mark grew to the
+ * size of a target while the target stayed the size of a mark.
  */
-const OVERLAY_KNOBS = {
-  TAB_WIDTH_PX: touch.min,
-  TAB_TICK_WIDTH_PX: 8,
-  TAB_TICK_GAP_PX: 4,
+export const OVERLAY_KNOBS = {
+  /**
+   * The rolled blind, drawn as slats, outermost first.
+   *
+   * A stack of hairlines rather than the single rule and tick this used to be:
+   * a stack says *blind*, and a taper says which way it comes down. One line
+   * at the edge of the screen said neither, which is why the two doors out of
+   * the field were the two things nobody found.
+   *
+   * Drawn at about two thirds of the size it was first cut at. The widest slat
+   * used to be `touch.min` — the mark for a gesture made exactly as wide as the
+   * smallest thing a finger is expected to find, which conflated a *drawing*
+   * with a *target*. At 48 px, over a 160 px word in the header's own type
+   * size, the door read as a second header at the top of the screen and as a
+   * fourth row of the transport at the foot. The target did not shrink with it;
+   * it moved into `TAB_HIT_*`, where it belongs.
+   */
+  TAB_SLAT_WIDTHS_PX: [28, 18, 10],
+  TAB_SLAT_GAP_PX: 3,
+  /** The column the slats are centred in: exactly the widest of them. */
+  TAB_WIDTH_PX: 28,
   TAB_EDGE_INSET_PX: space.sm,
-  /** Clear of the origin mark, which sits `space.lg` up from the same edge. */
-  FOOT_INSET_PX: 40,
+  /** Between the slats and the word naming what is rolled up behind them. */
+  TAB_LABEL_GAP_PX: 6,
+  /** Wide enough for `NEW SONG` at the tab's own size, centred on the screen. */
+  TAB_LABEL_WIDTH_PX: 120,
+  /**
+   * The tab's own type: the eyebrow, one step quieter.
+   *
+   * The same step down `resolution` takes under the axis dial, and for the same
+   * reason — this is a label for a door, not a reading about the field, and at
+   * the header's own 11 px it competed with `L1 · GROUP` a few pixels to its
+   * left. Smaller *and* tighter: dropping the size alone leaves the 2 px
+   * tracking, and a small word spaced like a large one reads as a wider object
+   * rather than a quieter one.
+   */
+  TAB_LABEL_SIZE_PX: 9,
+  TAB_LABEL_TRACKING_PX: 1.4,
+  /** Clear of the tab, which now reaches `TAB_REACH_PX` up from the same edge. */
+  FOOT_INSET_PX: 72,
   /** High enough to clear the dial at L0 and the player's transport at L2. */
   ALERT_INSET_PX: 150,
-  /** How far a tab's body reaches back into the screen from its edge. */
+  /**
+   * How far a tab's body reaches back into the screen from its edge: three
+   * hairlines, two gaps, the label's own gap, and one line of the tab's type.
+   */
   TAB_REACH_PX: 28,
   /**
-   * Added to that body in every direction to make a finger's target.
+   * Added to that body *outward and sideways* to make a finger's target.
    *
-   * `touch.min` is 48: a 28 px body plus 20 either side clears it with room,
-   * and it costs the drawing nothing because slop is not layout.
+   * Outward is free: it runs into the screen edge, where a thumb overshoots
+   * anyway and there is nothing else to hit.
    */
   TAB_HIT_SLOP_PX: 20,
+  /**
+   * Added *inward*, toward the middle of the screen — and deliberately much
+   * smaller, because inward is not free.
+   *
+   * The slop used to be one number applied on all four sides, which put 20 px
+   * of invisible tab on top of whatever the level below had at the foot. At L2
+   * that is the player's own quiet line: `DETAIL` and `PINNED` are drawn on the
+   * canvas and caught by boxes `touch.min` tall centred on their baseline, so
+   * their targets reach down to `SONG_WORDS_BOTTOM_PX - touch.min / 2` = 46 px,
+   * and the tab's reached up to 64. The overlap was invisible and the tab was
+   * on top of it, so the bottom third of `DETAIL` opened the engines.
+   *
+   * `TAB_EDGE_INSET_PX + TAB_REACH_PX + this` is the whole inward reach: 42 px,
+   * four clear of the player's words. `songFoot.test.ts` holds that gap.
+   */
+  TAB_HIT_INWARD_PX: 6,
   /**
    * The mark under the selected word on a dial.
    *
@@ -221,8 +276,9 @@ function FieldOverlayImpl({
     <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
       <EdgeTab
         accessibilityLabel="Open the composer"
-        colour={pal.line}
+        colour={pal.faint}
         edge="top"
+        label="NEW SONG"
         onPress={onOpenComposer}
       />
       {showHeader ? (
@@ -438,8 +494,9 @@ function FieldOverlayImpl({
       ) : null}
       <EdgeTab
         accessibilityLabel="Open engines"
-        colour={pal.line}
+        colour={pal.faint}
         edge="bottom"
+        label="ENGINES"
         onPress={onOpenEngines}
       />
     </View>
@@ -466,58 +523,93 @@ function metaLine(
 }
 
 /**
- * The mark for a pull.
+ * The mark for a pull: the rolled blind, and the name of what it opens.
  *
- * A gesture nobody can see is a gesture nobody uses, so each pull gets a
- * hairline and a tick on the edge it belongs to — the same object at both
- * edges, because it is the same gesture. It is also a button: a screen reader
- * and a finger that misses the drag both still have a door.
+ * A gesture nobody can see is a gesture nobody uses. This was one hairline and
+ * a tick — true to the drawing and completely mute about what it was for. Now
+ * each edge shows its blind rolled up against it: slats tapering the way it
+ * will unroll, with the word it opens beside them. Still hairlines, still the
+ * same object at both edges, because it is the same gesture — pull the top
+ * down for a new song, pull the bottom up for the engines.
+ *
+ * It is also a button: a screen reader and a finger that misses the drag both
+ * still have a door.
  *
  * The body is `TAB_REACH_PX` tall and grows *inward* from the edge, with the
- * hairline pinned to the outer end. `hitSlop` cannot do this job: on Android
- * it does not reliably enlarge an absolutely positioned view, so the real
- * target would be the hairline itself — which at the bottom sits inside the
- * system's own gesture strip, where a tap opens the launcher instead.
+ * widest slat pinned to the outer end. `hitSlop` cannot do this job: on
+ * Android it does not reliably enlarge an absolutely positioned view, so the
+ * real target would be the hairlines themselves — which at the bottom sit
+ * inside the system's own gesture strip, where a tap opens the launcher
+ * instead.
  */
 function EdgeTab({
   accessibilityLabel,
   colour,
   edge,
+  label,
   onPress,
 }: {
   accessibilityLabel: string;
   colour: string;
   edge: 'top' | 'bottom';
+  /** The word beside the slats: what pulling this edge actually opens. */
+  label: string;
   onPress: () => void;
 }) {
-  const line = (
-    <View
-      key="line"
-      pointerEvents="none"
-      style={[styles.tabLine, { backgroundColor: colour }]}
-    />
+  // Widest slat outermost, so the taper always points the way the blind
+  // travels — reversed at the bottom, where it travels the other way.
+  const widths =
+    edge === 'top'
+      ? OVERLAY_KNOBS.TAB_SLAT_WIDTHS_PX
+      : [...OVERLAY_KNOBS.TAB_SLAT_WIDTHS_PX].reverse();
+  const slats = (
+    <View key="slats" pointerEvents="none" style={styles.tabSlats}>
+      {widths.map((width, index) => (
+        <View
+          key={`${index}-${width}`}
+          style={[styles.tabSlat, { backgroundColor: colour, width }]}
+        />
+      ))}
+    </View>
   );
-  const tick = (
-    <View
-      key="tick"
-      pointerEvents="none"
-      style={[styles.tabTick, { backgroundColor: colour }]}
-    />
+  const word = (
+    <Text key="word" style={[styles.tabLabel, { color: colour }]}>
+      {label}
+    </Text>
   );
   return (
     <Pressable
       accessibilityLabel={accessibilityLabel}
       accessibilityRole="button"
-      // The mark is a hairline and a tick; the *target* has to be a finger's
+      // The mark is hairlines and a word; the *target* has to be a finger's
       // worth of screen. The bottom tab measured three device-independent
       // pixels tall — which is why nothing could ever be made to press it —
       // while the identical top one measured twenty-eight. Slop rather than
       // height, so the drawn mark stays exactly where the design puts it.
-      hitSlop={OVERLAY_KNOBS.TAB_HIT_SLOP_PX}
+      //
+      // Directional, though, and not the square it used to be: generous
+      // outward into the edge, sideways for a short word, and barely anything
+      // inward, where the level underneath has its own foot. See
+      // `TAB_HIT_INWARD_PX`.
+      hitSlop={
+        edge === 'top'
+          ? {
+              top: OVERLAY_KNOBS.TAB_HIT_SLOP_PX,
+              bottom: OVERLAY_KNOBS.TAB_HIT_INWARD_PX,
+              left: OVERLAY_KNOBS.TAB_HIT_SLOP_PX,
+              right: OVERLAY_KNOBS.TAB_HIT_SLOP_PX,
+            }
+          : {
+              top: OVERLAY_KNOBS.TAB_HIT_INWARD_PX,
+              bottom: OVERLAY_KNOBS.TAB_HIT_SLOP_PX,
+              left: OVERLAY_KNOBS.TAB_HIT_SLOP_PX,
+              right: OVERLAY_KNOBS.TAB_HIT_SLOP_PX,
+            }
+      }
       onPress={onPress}
       style={[styles.tab, edge === 'top' ? styles.tabTop : styles.tabBottom]}
     >
-      {edge === 'top' ? [line, tick] : [tick, line]}
+      {edge === 'top' ? [slats, word] : [word, slats]}
     </Pressable>
   );
 }
@@ -784,10 +876,11 @@ const styles = StyleSheet.create({
   tab: {
     alignItems: 'center',
     alignSelf: 'center',
-    gap: OVERLAY_KNOBS.TAB_TICK_GAP_PX,
+    gap: OVERLAY_KNOBS.TAB_LABEL_GAP_PX,
     height: OVERLAY_KNOBS.TAB_REACH_PX,
     position: 'absolute',
-    width: OVERLAY_KNOBS.TAB_WIDTH_PX,
+    // The word sets the width now; the slats keep their own inside it.
+    width: OVERLAY_KNOBS.TAB_LABEL_WIDTH_PX,
   },
   tabTop: {
     justifyContent: 'flex-start',
@@ -797,13 +890,17 @@ const styles = StyleSheet.create({
     bottom: OVERLAY_KNOBS.TAB_EDGE_INSET_PX,
     justifyContent: 'flex-end',
   },
-  tabLine: {
-    height: StyleSheet.hairlineWidth,
+  tabSlats: {
+    alignItems: 'center',
+    gap: OVERLAY_KNOBS.TAB_SLAT_GAP_PX,
     width: OVERLAY_KNOBS.TAB_WIDTH_PX,
   },
-  tabTick: {
-    height: StyleSheet.hairlineWidth,
-    width: OVERLAY_KNOBS.TAB_TICK_WIDTH_PX,
+  tabSlat: { height: StyleSheet.hairlineWidth },
+  tabLabel: {
+    ...type.eyebrow,
+    fontSize: OVERLAY_KNOBS.TAB_LABEL_SIZE_PX,
+    letterSpacing: OVERLAY_KNOBS.TAB_LABEL_TRACKING_PX,
+    textAlign: 'center',
   },
 });
 

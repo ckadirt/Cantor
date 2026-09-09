@@ -68,25 +68,35 @@ export const PLAYER_POSE_KNOBS = {
   /** The transport's own centre line. */
   SONG_TRANSPORT_BOTTOM_PX: 150,
   /**
-   * The lens picker's baseline: how the song is being drawn, not what it is.
+   * The lens picker's seat: how the song is being drawn, not what it is.
    *
    * Paired with the quiet line under it rather than hung off the transport. The
    * foot reads as three groups — the name and its recipe, the transport, then
    * the two lines of small capitals — and a picker sitting closer to the
    * buttons than to the line it belongs with made the transport look like a
    * four-row control.
+   *
+   * The bottom of a row that is exactly `LENS_ROW_PX` tall, which is the only
+   * reason this number can be compared with the ones around it. It used to seat
+   * a box `touch.min` tall with the words centred in it, so the seat and the
+   * ink were 19 px apart: 98 put the *box* where the rhythm wanted it and the
+   * *ink* eleven pixels under the transport, and moving the seat to fix the
+   * spacing moved the box into the play button's target. The picker draws a row
+   * and reaches for a finger with slop now — see `LENS_PICKER_KNOBS` — so the
+   * seat means what every other seat in this file means.
    */
-  SONG_LENS_BOTTOM_PX: 66,
+  SONG_LENS_BOTTOM_PX: 97,
   /**
    * The last quiet line — `DETAIL`, and what the phone has of the audio.
    *
    * Close under the picker, because the two are a pair: both are lines of small
    * capitals about the song rather than parts of it, and the eye should take
-   * them as one block. Spaced evenly between the transport and the edge they
-   * read as two more rows of the control, which made the transport look four
-   * rows tall.
+   * them as one block. At 70 px it clears the bottom edge tab by the same 32 px
+   * added to the field and shelf foot when that tab gained its label. Spaced
+   * evenly between the transport and the edge they read as two more rows of the
+   * control, which made the transport look four rows tall.
    */
-  SONG_WORDS_BOTTOM_PX: 38,
+  SONG_WORDS_BOTTOM_PX: 70,
   /**
    * The side margin — `space.lg`, the app's own.
    *
@@ -118,11 +128,17 @@ export const PLAYER_POSE_KNOBS = {
    * The finger's target around any of the three.
    *
    * Larger than the gap would allow if the boxes were square-packed, which is
-   * why they are laid out from centres and not from edges: `touch.min` is 44
+   * why they are laid out from centres and not from edges: `touch.min` is 48
    * and the gap is 64, so three targets of this size sit side by side with air
    * between them.
+   *
+   * Exactly `touch.min`, and no more. At 56 the box reached 28 px below the
+   * transport's own centre line, into the row under it — and the picker, drawn
+   * last, took that band back with a box of its own. A tap on the lower third
+   * of the play triangle changed the lens. Neither of them was drawing anything
+   * there; they were both padding into the other's row.
    */
-  SONG_TRANSPORT_HIT_PX: 56,
+  SONG_TRANSPORT_HIT_PX: 48,
   /**
    * KNOBS — seeking, which happens on the ring.
    *
