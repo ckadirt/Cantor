@@ -248,13 +248,14 @@ describe('field canvas re-cut clock', () => {
    * render therefore paints a stale frame of the whole scene between two live
    * ones — which is what a pan looked like.
    */
-  it('hands the canvas the same scene while only the camera moves', async () => {
+  it.each(['name', 'cantor-wave'])('keeps the %s scene while the camera moves or the lens changes', async lens => {
     const recut = recutBetween(1, month, year, true);
     const cameraShared = { value: cameraFor(month) };
     const fitScaleShared = { value: month.fitScale };
-    const canvas = (camera: Camera) => (
+    const canvas = (camera: Camera, activeLensKey = lens) => (
       <FieldCanvas
         camera={camera}
+        activeLensKey={activeLensKey}
         cameraShared={cameraShared as never}
         fitScaleShared={fitScaleShared as never}
         layout={year}
@@ -282,6 +283,10 @@ describe('field canvas re-cut clock', () => {
     const panned = { ...cameraFor(year), x: cameraFor(year).x + 240 };
     await ReactTestRenderer.act(async () => {
       renderer.update(canvas(panned));
+    });
+    expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
+    await ReactTestRenderer.act(async () => {
+      renderer.update(canvas(panned, lens === 'name' ? 'cantor-wave' : 'name'));
     });
     expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
   });
