@@ -1,5 +1,4 @@
 export { ComposerSheet } from './ComposerSheet';
-export { ComposerCurtain, CURTAIN_KNOBS } from './ComposerCurtain';
 export {
   EMPTY_DRAFT,
   canSubmit,

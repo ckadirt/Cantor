@@ -1,6 +1,5 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -27,7 +26,6 @@ export type BackendFootprint = Readonly<{
 }>;
 
 type Props = {
-  visible: boolean;
   backends: readonly BackendRecord[] | null;
   snapshots: Readonly<Record<string, ConnectionSnapshot>>;
   refreshing: boolean;
@@ -52,9 +50,13 @@ type Props = {
  * Conventional management belongs in a sheet rather than in the zoom hierarchy:
  * this is list-and-form work, and giving it a distance in the field would make
  * the zoom model mean two different things.
+ *
+ * The sheet is only its contents. Presence, the surface it is drawn on and the
+ * way it arrives belong to the `Curtain` it hangs in — the same blind the
+ * composer hangs in, pulled from the other edge — so this is a fragment, and
+ * for the same reason `ComposerSheet` is one.
  */
 function EnginesSheetImpl({
-  visible,
   backends,
   snapshots,
   refreshing,
@@ -102,208 +104,196 @@ function EnginesSheetImpl({
   );
 
   return (
-    <Modal
-      transparent
-      animationType="slide"
-      visible={visible}
-      onRequestClose={onClose}>
-      <View style={styles.scrim}>
-        <View
-          style={[
-            styles.sheet,
-            { backgroundColor: pal.bg, borderColor: pal.line },
-          ]}>
-          <View style={styles.header}>
-            <Text style={[type.eyebrow, { color: pal.muted }]}>
-              {settingsOpen
-                ? 'SETTINGS'
-                : target === null
-                  ? 'ENGINES'
-                  : `FORGET ${nameOf(targetBackend)}`}
-            </Text>
-            <Pressable
-              accessibilityLabel={
-                settingsOpen
-                  ? 'Back to engines'
-                  : target === null
-                    ? 'Close engines'
-                    : 'Keep it'
-              }
-              accessibilityRole="button"
-              hitSlop={space.md}
-              onPress={() => {
-                if (settingsOpen) setSettingsOpen(false);
-                else if (target === null) onClose();
-                else setForgetting(null);
-              }}>
-              <Text style={[type.eyebrow, { color: pal.muted }]}>
-                {settingsOpen ? 'ENGINES' : target === null ? 'CLOSE' : 'KEEP IT'}
-              </Text>
-            </Pressable>
-          </View>
-
-          {settingsOpen ? (
-            <SettingsSheet
-              budgetBytes={budgetBytes}
-              library={library}
-              onChangeBudget={onChangeBudget}
-              publicKey={publicKey}
-              storage={storage}
-              visible
-            />
-          ) : target !== null && targetBackend !== undefined ? (
-            <Forget
-              backend={targetBackend}
-              footprint={footprints[target]}
-              onConfirm={() => {
-                setForgetting(null);
-                onForget(target);
-              }}
-            />
-          ) : (
-            <ScrollView contentContainerStyle={styles.body}>
-              {backends === null ? (
-                <Text style={[type.body, { color: pal.muted }]}>
-                  Loading paired nodes…
-                </Text>
-              ) : backends.length === 0 ? (
-                <Text style={[type.body, { color: pal.muted }]}>
-                  No engine is paired yet.
-                </Text>
-              ) : (
-                backends.map(backend => {
-                  const snapshot = snapshots[backend.nodePubkey];
-                  const footprint = footprints[backend.nodePubkey];
-                  const installed = backend.lastNodeInfo?.models ?? [];
-                  const missing = known.filter(
-                    model =>
-                      !installed.some(
-                        entry => entry.selector === model.selector,
-                      ),
-                  );
-                  return (
-                    <View key={backend.nodePubkey} style={styles.backend}>
-                      {renaming === backend.nodePubkey ? (
-                        <TextInput
-                          accessibilityLabel={`Rename ${nameOf(backend)}`}
-                          autoFocus
-                          onBlur={() => setRenaming(null)}
-                          onChangeText={setDraftName}
-                          onSubmitEditing={() => {
-                            onRename(backend.nodePubkey, draftName);
-                            setRenaming(null);
-                          }}
-                          returnKeyType="done"
-                          style={[
-                            styles.rename,
-                            type.heading,
-                            { borderColor: pal.line, color: pal.ink },
-                          ]}
-                          value={draftName}
-                        />
-                      ) : (
-                        <Pressable
-                          accessibilityLabel={`Rename ${nameOf(backend)}`}
-                          accessibilityRole="button"
-                          onPress={() => {
-                            setDraftName(nameOf(backend));
-                            setRenaming(backend.nodePubkey);
-                          }}>
-                          <Text style={[type.heading, { color: pal.ink }]}>
-                            {nameOf(backend)}
-                          </Text>
-                        </Pressable>
-                      )}
-                      <Text style={[type.eyebrow, { color: pal.faint }]}>
-                        {stateLine(snapshot, footprint)}
-                      </Text>
-
-                      <View
-                        style={[styles.hairline, { backgroundColor: pal.line }]}
-                      />
-
-                      {installed.map(model => (
-                        <View key={model.selector} style={styles.model}>
-                          <Text style={[type.body, { color: pal.ink }]}>
-                            {model.selector}
-                          </Text>
-                          <Text
-                            style={[type.eyebrow, { color: pal.faint }]}>
-                            {installedLine(model)}
-                          </Text>
-                        </View>
-                      ))}
-                      {missing.map(model => (
-                        <View key={model.selector} style={styles.model}>
-                          <Text style={[type.body, { color: pal.faint }]}>
-                            {model.selector}
-                          </Text>
-                          <Text style={[type.eyebrow, { color: pal.muted }]}>
-                            NOT INSTALLED
-                          </Text>
-                          {/* The command that fixes it, in full, to be copied. */}
-                          <Text
-                            selectable
-                            style={[
-                              styles.command,
-                              type.mono,
-                              { backgroundColor: pal.line, color: pal.ink },
-                            ]}>
-                            cantor pull {model.selector}
-                          </Text>
-                        </View>
-                      ))}
-
-                      {snapshot?.error ? (
-                        <Text
-                          accessibilityRole="alert"
-                          style={[type.mono, { color: pal.ink }]}>
-                          {snapshot.error}
-                        </Text>
-                      ) : null}
-
-                      <Pressable
-                        accessibilityLabel={`Forget ${nameOf(backend)}`}
-                        accessibilityRole="button"
-                        hitSlop={space.sm}
-                        onPress={() => setForgetting(backend.nodePubkey)}>
-                        <Text style={[type.eyebrow, { color: pal.faint }]}>
-                          FORGET THIS ENGINE
-                        </Text>
-                      </Pressable>
-                    </View>
-                  );
-                })
-              )}
-
-              <View style={[styles.hairline, { backgroundColor: pal.line }]} />
-              <Action label="Add a backend" onPress={onPair} />
-              <Action
-                label={refreshing ? 'Refreshing…' : 'Refresh libraries'}
-                onPress={onRefresh}
-                disabled={refreshing}
-              />
-
-              {/*
-                The app itself is the least interesting thing in the room, so
-                it sits at the very foot, behind an ink rule.
-              */}
-              <View style={[styles.rule, { backgroundColor: pal.ink }]} />
-              <Pressable
-                accessibilityLabel="Settings"
-                accessibilityRole="button"
-                onPress={() => setSettingsOpen(true)}
-                style={styles.action}>
-                <Text style={[type.body, { color: pal.ink }]}>Settings</Text>
-              </Pressable>
-              <Text style={[type.eyebrow, { color: pal.faint }]}>
-                IDENTITY · STORAGE · ABOUT
-              </Text>
-            </ScrollView>
-          )}
-        </View>
+    <>
+      <View style={styles.header}>
+        <Text style={[type.eyebrow, { color: pal.muted }]}>
+          {settingsOpen
+            ? 'SETTINGS'
+            : target === null
+              ? 'ENGINES'
+              : `FORGET ${nameOf(targetBackend)}`}
+        </Text>
+        <Pressable
+          accessibilityLabel={
+            settingsOpen
+              ? 'Back to engines'
+              : target === null
+                ? 'Close engines'
+                : 'Keep it'
+          }
+          accessibilityRole="button"
+          hitSlop={space.md}
+          onPress={() => {
+            if (settingsOpen) setSettingsOpen(false);
+            else if (target === null) onClose();
+            else setForgetting(null);
+          }}>
+          <Text style={[type.eyebrow, { color: pal.muted }]}>
+            {settingsOpen ? 'ENGINES' : target === null ? 'CLOSE' : 'KEEP IT'}
+          </Text>
+        </Pressable>
       </View>
-    </Modal>
+
+      {settingsOpen ? (
+        <SettingsSheet
+          budgetBytes={budgetBytes}
+          library={library}
+          onChangeBudget={onChangeBudget}
+          publicKey={publicKey}
+          storage={storage}
+          visible
+        />
+      ) : target !== null && targetBackend !== undefined ? (
+        <Forget
+          backend={targetBackend}
+          footprint={footprints[target]}
+          onConfirm={() => {
+            setForgetting(null);
+            onForget(target);
+          }}
+        />
+      ) : (
+        <ScrollView contentContainerStyle={styles.body}>
+          {backends === null ? (
+            <Text style={[type.body, { color: pal.muted }]}>
+              Loading paired nodes…
+            </Text>
+          ) : backends.length === 0 ? (
+            <Text style={[type.body, { color: pal.muted }]}>
+              No engine is paired yet.
+            </Text>
+          ) : (
+            backends.map(backend => {
+              const snapshot = snapshots[backend.nodePubkey];
+              const footprint = footprints[backend.nodePubkey];
+              const installed = backend.lastNodeInfo?.models ?? [];
+              const missing = known.filter(
+                model =>
+                  !installed.some(
+                    entry => entry.selector === model.selector,
+                  ),
+              );
+              return (
+                <View key={backend.nodePubkey} style={styles.backend}>
+                  {renaming === backend.nodePubkey ? (
+                    <TextInput
+                      accessibilityLabel={`Rename ${nameOf(backend)}`}
+                      autoFocus
+                      onBlur={() => setRenaming(null)}
+                      onChangeText={setDraftName}
+                      onSubmitEditing={() => {
+                        onRename(backend.nodePubkey, draftName);
+                        setRenaming(null);
+                      }}
+                      returnKeyType="done"
+                      style={[
+                        styles.rename,
+                        type.heading,
+                        { borderColor: pal.line, color: pal.ink },
+                      ]}
+                      value={draftName}
+                    />
+                  ) : (
+                    <Pressable
+                      accessibilityLabel={`Rename ${nameOf(backend)}`}
+                      accessibilityRole="button"
+                      onPress={() => {
+                        setDraftName(nameOf(backend));
+                        setRenaming(backend.nodePubkey);
+                      }}>
+                      <Text style={[type.heading, { color: pal.ink }]}>
+                        {nameOf(backend)}
+                      </Text>
+                    </Pressable>
+                  )}
+                  <Text style={[type.eyebrow, { color: pal.faint }]}>
+                    {stateLine(snapshot, footprint)}
+                  </Text>
+
+                  <View
+                    style={[styles.hairline, { backgroundColor: pal.line }]}
+                  />
+
+                  {installed.map(model => (
+                    <View key={model.selector} style={styles.model}>
+                      <Text style={[type.body, { color: pal.ink }]}>
+                        {model.selector}
+                      </Text>
+                      <Text
+                        style={[type.eyebrow, { color: pal.faint }]}>
+                        {installedLine(model)}
+                      </Text>
+                    </View>
+                  ))}
+                  {missing.map(model => (
+                    <View key={model.selector} style={styles.model}>
+                      <Text style={[type.body, { color: pal.faint }]}>
+                        {model.selector}
+                      </Text>
+                      <Text style={[type.eyebrow, { color: pal.muted }]}>
+                        NOT INSTALLED
+                      </Text>
+                      {/* The command that fixes it, in full, to be copied. */}
+                      <Text
+                        selectable
+                        style={[
+                          styles.command,
+                          type.mono,
+                          { backgroundColor: pal.line, color: pal.ink },
+                        ]}>
+                        cantor pull {model.selector}
+                      </Text>
+                    </View>
+                  ))}
+
+                  {snapshot?.error ? (
+                    <Text
+                      accessibilityRole="alert"
+                      style={[type.mono, { color: pal.ink }]}>
+                      {snapshot.error}
+                    </Text>
+                  ) : null}
+
+                  <Pressable
+                    accessibilityLabel={`Forget ${nameOf(backend)}`}
+                    accessibilityRole="button"
+                    hitSlop={space.sm}
+                    onPress={() => setForgetting(backend.nodePubkey)}>
+                    <Text style={[type.eyebrow, { color: pal.faint }]}>
+                      FORGET THIS ENGINE
+                    </Text>
+                  </Pressable>
+                </View>
+              );
+            })
+          )}
+
+          <View style={[styles.hairline, { backgroundColor: pal.line }]} />
+          <Action label="Add a backend" onPress={onPair} />
+          <Action
+            label={refreshing ? 'Refreshing…' : 'Refresh libraries'}
+            onPress={onRefresh}
+            disabled={refreshing}
+          />
+
+          {/*
+            The app itself is the least interesting thing in the room, so
+            it sits at the very foot, behind an ink rule.
+          */}
+          <View style={[styles.rule, { backgroundColor: pal.ink }]} />
+          <Pressable
+            accessibilityLabel="Settings"
+            accessibilityRole="button"
+            onPress={() => setSettingsOpen(true)}
+            style={styles.action}>
+            <Text style={[type.body, { color: pal.ink }]}>Settings</Text>
+          </Pressable>
+          <Text style={[type.eyebrow, { color: pal.faint }]}>
+            IDENTITY · STORAGE · ABOUT
+          </Text>
+        </ScrollView>
+      )}
+    </>
   );
 }
 
@@ -446,13 +436,6 @@ function Action({
 }
 
 const styles = StyleSheet.create({
-  scrim: { flex: 1, justifyContent: 'flex-end' },
-  sheet: {
-    borderTopWidth: 1,
-    maxHeight: '88%',
-    paddingHorizontal: space.lg,
-    paddingTop: space.lg,
-  },
   header: {
     alignItems: 'center',
     flexDirection: 'row',

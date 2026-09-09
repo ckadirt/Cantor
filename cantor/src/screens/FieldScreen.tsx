@@ -23,12 +23,8 @@ import {
   buildFieldController,
   useFieldCamera,
 } from '../features/field';
-import {
-  ComposerCurtain,
-  ComposerSheet,
-  type ComposerTarget,
-} from '../features/composer';
-import { FIELD_CAMERA_KNOBS } from '../features/field/useFieldCamera';
+import { ComposerSheet, type ComposerTarget } from '../features/composer';
+import { Curtain } from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
@@ -1259,38 +1255,21 @@ export function FieldScreen({ identity }: Props) {
         />
       </View>
 
-      <EnginesSheet
-        backends={backends}
-        onClose={closeEngines}
-        onPair={pairFromEngines}
-        onRefresh={commands.refreshLibraries}
-        refreshing={refreshing}
-        budgetBytes={budgetBytes}
-        footprints={footprints}
-        library={libraryReport}
-        onChangeBudget={changeBudget}
-        publicKey={identity.publicKey}
-        storage={storageReport}
-        onForget={nodePublicKey => {
-          setEnginesOpen(false);
-          void commands.forgetBackend(nodePublicKey);
-        }}
-        onRename={commands.renameBackend}
-        snapshots={snapshots}
-        visible={enginesOpen}
-      />
       {/*
-        The composer is a blind, not a modal: it hangs above the top edge and
-        comes down with the finger that pulls it. `pullShared` is where it is,
-        written by the field's own edge gesture on the UI thread; `composerOpen`
-        is only whether it ends up down or back up.
+        Neither sheet is a modal: each is a blind rolled against the edge it is
+        pulled from, and it comes with the finger that pulls it. `pullShared` is
+        where both of them are — one signed number, written by the field's own
+        edge gesture on the UI thread — and `composerOpen`/`enginesOpen` decide
+        only whether a blind ends up down or back up.
       */}
       {viewport !== null ? (
-        <ComposerCurtain
+        <Curtain
+          edge="top"
           onClose={closeComposer}
           open={composerOpen}
-          openAtPx={FIELD_CAMERA_KNOBS.EDGE_PULL_OPEN_PX}
+          destination={fieldCamera.pullDestinationShared}
           pull={fieldCamera.pullShared}
+          title="NEW SONG"
           viewportHeight={viewport.height}>
           <ComposerSheet
             error={submitError}
@@ -1299,7 +1278,37 @@ export function FieldScreen({ identity }: Props) {
             submitting={submitting}
             targets={composerTargets}
           />
-        </ComposerCurtain>
+        </Curtain>
+      ) : null}
+      {viewport !== null ? (
+        <Curtain
+          edge="bottom"
+          onClose={closeEngines}
+          open={enginesOpen}
+          destination={fieldCamera.pullDestinationShared}
+          pull={fieldCamera.pullShared}
+          title="ENGINES"
+          viewportHeight={viewport.height}>
+          <EnginesSheet
+            backends={backends}
+            onClose={closeEngines}
+            onPair={pairFromEngines}
+            onRefresh={commands.refreshLibraries}
+            refreshing={refreshing}
+            budgetBytes={budgetBytes}
+            footprints={footprints}
+            library={libraryReport}
+            onChangeBudget={changeBudget}
+            publicKey={identity.publicKey}
+            storage={storageReport}
+            onForget={nodePublicKey => {
+              setEnginesOpen(false);
+              void commands.forgetBackend(nodePublicKey);
+            }}
+            onRename={commands.renameBackend}
+            snapshots={snapshots}
+          />
+        </Curtain>
       ) : null}
       <PairBackendModal
         onClose={commands.hidePairing}

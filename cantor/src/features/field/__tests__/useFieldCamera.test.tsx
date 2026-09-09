@@ -10,6 +10,7 @@ import {
   type Viewport,
 } from '../../../field';
 import { byDate, byPlaylist, byTime } from '../../../field/arrangements';
+import { CURTAIN_KNOBS } from '../../curtain';
 import { FIELD_CAMERA_KNOBS, useFieldCamera } from '../useFieldCamera';
 
 let mockReducedMotion = true;
@@ -230,24 +231,205 @@ describe('useFieldCamera', () => {
     expect(latest.camera.y).toBeCloseTo(before.y, 10);
   });
 
-  it('gives top and bottom edge pulls priority over panning', async () => {
+  /** Where a blind ends up when it is fully down, from whichever edge. */
+  const seatPx = viewport.height - CURTAIN_KNOBS.PEEK_PX;
+  /** A throw the release rule will act on, in pixels a second. */
+  const flingPxPerS = CURTAIN_KNOBS.FLING_PX_PER_S * 2;
+
+  it('gives a top edge pull priority over panning, and launches the blind', async () => {
+    const { onOpenComposer } = await renderCamera();
+    const [, pan] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 10 });
+      pan.onUpdate({ translationX: 0, translationY: 100 });
+      pan.onEnd({ translationX: 0, translationY: 100, velocityY: flingPxPerS });
+    });
+
+    expect(onOpenComposer).toHaveBeenCalledTimes(1);
+    // The finger starts the rest of the run itself. React learns a commit
+    // later that the sheet is open and must find the blind already going
+    // where it would have sent it — see `unrollTo`.
+    expect(latest.pullShared.value).toBe(seatPx);
+    expect(latest.pullDestinationShared.value).toBe(seatPx);
+  });
+
+  it('gives a bottom edge pull the same priority, the other way up', async () => {
+    const { onOpenEngines } = await renderCamera();
+    const [, pan] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: viewport.height - 10 });
+      pan.onUpdate({ translationX: 0, translationY: -100 });
+      pan.onEnd({
+        translationX: 0,
+        translationY: -100,
+        velocityY: -flingPxPerS,
+      });
+    });
+
+    expect(onOpenEngines).toHaveBeenCalledTimes(1);
+    // One signed number for both blinds: negative is the bottom one coming up.
+    expect(latest.pullShared.value).toBe(-seatPx);
+    expect(latest.pullDestinationShared.value).toBe(-seatPx);
+  });
+
+  /**
+   * The notification shade's rule, and the reason a blind feels ordinary: what
+   * a release does depends on whether there was a throw in it. These two pairs
+   * are the whole rule — a short throw opens, a long quiet drag opens, and
+   * neither of their opposites does.
+   */
+  it('rolls a pull let go without a throw, short of the halfway mark, back up', async () => {
+    const { onOpenComposer } = await renderCamera();
+    const [, pan] = gestures();
+    const shortOfIt = seatPx * CURTAIN_KNOBS.SETTLE_FRACTION - 10;
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 10 });
+      pan.onUpdate({ translationX: 0, translationY: shortOfIt });
+      pan.onEnd({ translationX: 0, translationY: shortOfIt, velocityY: 0 });
+    });
+
+    expect(onOpenComposer).not.toHaveBeenCalled();
+    expect(latest.pullShared.value).toBe(0);
+    expect(latest.pullDestinationShared.value).toBe(0);
+  });
+
+  it('opens a pull eased past the halfway mark with no throw at all', async () => {
+    const { onOpenComposer } = await renderCamera();
+    const [, pan] = gestures();
+    const pastIt = seatPx * CURTAIN_KNOBS.SETTLE_FRACTION + 10;
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 10 });
+      pan.onUpdate({ translationX: 0, translationY: pastIt });
+      pan.onEnd({ translationX: 0, translationY: pastIt, velocityY: 0 });
+    });
+
+    expect(onOpenComposer).toHaveBeenCalledTimes(1);
+    expect(latest.pullShared.value).toBe(seatPx);
+  });
+
+  it('throws a pull back up from most of the way down', async () => {
+    const { onOpenComposer } = await renderCamera();
+    const [, pan] = gestures();
+    const nearlyThere = seatPx - 50;
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 10 });
+      pan.onUpdate({ translationX: 0, translationY: nearlyThere });
+      pan.onEnd({
+        translationX: 0,
+        translationY: nearlyThere,
+        velocityY: -flingPxPerS,
+      });
+    });
+
+    expect(onOpenComposer).not.toHaveBeenCalled();
+    expect(latest.pullShared.value).toBe(0);
+  });
+
+  /**
+   * A hand that changes its mind mid-pull. The blind used to stop answering
+   * the finger the moment the drag came back above where it started — it hung
+   * at whatever pixel it had reached, because the frame no longer matched the
+   * edge test that had claimed it. The pull is the drag's for as long as the
+   * drag lasts, and it follows the finger all the way home to zero.
+   */
+  it('follows a pull that is taken back, and lets it close at the origin', async () => {
+    const { onOpenComposer } = await renderCamera();
+    const [, pan] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 10 });
+      pan.onUpdate({ translationX: 0, translationY: 400 });
+    });
+    expect(latest.pullShared.value).toBe(400);
+
+    await ReactTestRenderer.act(async () => {
+      pan.onUpdate({ translationX: 0, translationY: 120 });
+    });
+    expect(latest.pullShared.value).toBe(120);
+
+    // Back past where the finger went down, and further: the blind is on its
+    // roller and stays there rather than following the sign of the drag.
+    await ReactTestRenderer.act(async () => {
+      pan.onUpdate({ translationX: 0, translationY: -60 });
+    });
+    expect(latest.pullShared.value).toBe(0);
+
+    await ReactTestRenderer.act(async () => {
+      pan.onEnd({ translationX: 0, translationY: -60, velocityY: 0 });
+    });
+    expect(onOpenComposer).not.toHaveBeenCalled();
+    expect(latest.pullShared.value).toBe(0);
+  });
+
+  /** A blind cannot be dragged past its seat, however far the finger goes. */
+  it('stops a pull at the seat', async () => {
+    await renderCamera();
+    const [, pan] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 10 });
+      pan.onUpdate({ translationX: 0, translationY: seatPx + 500 });
+    });
+
+    expect(latest.pullShared.value).toBe(seatPx);
+  });
+
+  it('will not start the second blind while the first one is down', async () => {
     const { onOpenComposer, onOpenEngines } = await renderCamera();
     let [, pan] = gestures();
 
     await ReactTestRenderer.act(async () => {
       pan.onBegin({ x: 190, y: 10 });
       pan.onUpdate({ translationX: 0, translationY: 100 });
-      pan.onEnd({});
+      pan.onEnd({ translationX: 0, translationY: 100, velocityY: flingPxPerS });
     });
     expect(onOpenComposer).toHaveBeenCalledTimes(1);
 
+    // A sheet leaves a strip of field showing, and that strip contains an edge
+    // zone. Pulling in it must not write the open sheet's position back to the
+    // finger's own twenty pixels.
     [, pan] = gestures();
     await ReactTestRenderer.act(async () => {
       pan.onBegin({ x: 190, y: viewport.height - 10 });
       pan.onUpdate({ translationX: 0, translationY: -100 });
-      pan.onEnd({});
+      pan.onEnd({ translationX: 0, translationY: -100, velocityY: 0 });
     });
-    expect(onOpenEngines).toHaveBeenCalledTimes(1);
+
+    expect(onOpenEngines).not.toHaveBeenCalled();
+    expect(latest.pullShared.value).toBe(seatPx);
+  });
+
+  /**
+   * A view laid over a gesture detector does not stop the detector seeing the
+   * touch. With a blind down, a drag anywhere on it was still panning the map
+   * underneath: nothing visible moved, and the field was simply somewhere else
+   * on the way back.
+   */
+  it('leaves the camera alone while a blind is down', async () => {
+    const { onOpenComposer } = await renderCamera();
+    let [, pan] = gestures();
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 10 });
+      pan.onUpdate({ translationX: 0, translationY: 100 });
+      pan.onEnd({ translationX: 0, translationY: 100, velocityY: flingPxPerS });
+    });
+    expect(onOpenComposer).toHaveBeenCalledTimes(1);
+    const covered = latest.camera;
+
+    [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: viewport.height / 2 });
+      pan.onUpdate({ translationX: 120, translationY: 90 });
+      pan.onEnd({ translationX: 120, translationY: 90, velocityY: 0 });
+    });
+
+    expect(latest.camera).toEqual(covered);
   });
 
   it('answers a hold with the mark under it, and stays where it is', async () => {
