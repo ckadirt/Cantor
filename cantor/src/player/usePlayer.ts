@@ -10,6 +10,7 @@ import {
 } from 'react-native-reanimated';
 import type { AudioRef } from '../audio/localAudioStore';
 import { EMPTY_SNAPSHOT, sameTrack, type PlayerPort, type PlayerSnapshot } from './types';
+import { createScrubSession } from './scrubSession';
 import { planVisualClock } from './visualClock';
 
 export type NowPlayingInfo = { title: string; artist: string };
@@ -32,6 +33,8 @@ export type PlayerController = {
   pause(): void;
   toggle(): void;
   seek(seconds: number): void;
+  scrub(seconds: number): void;
+  finishScrub(): void;
   /** Load and start a track. `localPath` must already be digest-verified. */
   open(ref: AudioRef, localPath: string, info: NowPlayingInfo): Promise<void>;
   close(): Promise<void>;
@@ -54,6 +57,12 @@ export function usePlayer(player: PlayerPort): PlayerController {
   const reducedMotion = useReducedMotion();
   const reconciled = useRef<PlayerSnapshot | null>(null);
   const latest = useRef<PlayerSnapshot>(snapshot);
+
+  const scrubSession = useMemo(() => createScrubSession(player, seconds => {
+    cancelAnimation(positionSeconds);
+    positionSeconds.value = seconds;
+  }), [player, positionSeconds]);
+  useEffect(() => () => scrubSession.cancel(), [scrubSession]);
 
   // One subscription for the life of the hook. Every published snapshot lands
   // in a ref so the clock can reconcile against the newest truth, while React
@@ -78,6 +87,7 @@ export function usePlayer(player: PlayerPort): PlayerController {
   // are what change `snapshot`; position-only ticks are handled by the drift
   // rule at the next reconciliation or by the resync effect below.
   const reconcile = useCallback(() => {
+    if (scrubSession.active) return;
     const next = latest.current;
     const plan = planVisualClock(
       reconciled.current,
@@ -98,7 +108,7 @@ export function usePlayer(player: PlayerPort): PlayerController {
       duration: plan.durationMs,
       easing: Easing.linear,
     });
-  }, [positionSeconds, reducedMotion]);
+  }, [positionSeconds, reducedMotion, scrubSession]);
 
   useEffect(() => {
     reconcile();
@@ -126,10 +136,22 @@ export function usePlayer(player: PlayerPort): PlayerController {
       // answer reads as lag even when the audio is already correct.
       cancelAnimation(positionSeconds);
       positionSeconds.value = seconds;
-      void player.seek(seconds);
+      scrubSession.cancel();
+      void player.seek(seconds).then(() => {
+        reconciled.current = null;
+        reconcile();
+      });
     },
-    [player, positionSeconds],
+    [player, positionSeconds, reconcile, scrubSession],
   );
+
+  const scrub = useCallback((seconds: number) => scrubSession.update(seconds), [scrubSession]);
+  const finishScrub = useCallback(() => {
+    scrubSession.finish().then(() => {
+      reconciled.current = null;
+      reconcile();
+    });
+  }, [reconcile, scrubSession]);
 
   const toggle = useCallback(() => {
     if (latest.current.state === 'playing') void player.pause();
@@ -138,17 +160,19 @@ export function usePlayer(player: PlayerPort): PlayerController {
 
   const open = useCallback(
     async (ref: AudioRef, localPath: string, info: NowPlayingInfo) => {
+      scrubSession.cancel();
       setNowPlaying(player, info);
       await player.load(ref, localPath);
       if (latest.current.state === 'error') return;
       await player.play();
     },
-    [player],
+    [player, scrubSession],
   );
 
   const close = useCallback(async () => {
+    scrubSession.cancel();
     await player.unload();
-  }, [player]);
+  }, [player, scrubSession]);
 
   const isPlaying = useCallback(
     (ref: AudioRef | null) =>
@@ -180,6 +204,8 @@ export function usePlayer(player: PlayerPort): PlayerController {
       pause,
       toggle,
       seek,
+      scrub,
+      finishScrub,
       open,
       close,
     }),
@@ -192,6 +218,8 @@ export function usePlayer(player: PlayerPort): PlayerController {
       play,
       positionSeconds,
       seek,
+      scrub,
+      finishScrub,
       snapshot,
       toggle,
     ],

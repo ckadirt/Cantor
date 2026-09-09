@@ -70,6 +70,7 @@ type Props = {
   available: boolean;
   onToggle: () => void;
   onSeek: (seconds: number) => void;
+  onSeekEnd?: () => void;
   onOpenDetail: () => void;
   width: number;
   height: number;
@@ -129,6 +130,7 @@ function SongSurfaceImpl({
   available,
   onToggle,
   onSeek,
+  onSeekEnd,
   onOpenDetail,
   width,
   height,
@@ -181,9 +183,11 @@ function SongSurfaceImpl({
 
   const seekBox = useMemo(() => seekBoxPx({ width, height }), [height, width]);
   const scrub = useMemo(
-    () => seekGesture({ width, height }, durationSeconds, onSeek),
-    [durationSeconds, height, onSeek, width],
+    () => seekGesture({ width, height }, durationSeconds, onSeek, onSeekEnd),
+    [durationSeconds, height, onSeek, onSeekEnd, width],
   );
+
+  useEffect(() => () => onSeekEnd?.(), [onSeekEnd]);
 
   const elapsed = useElapsedLabel(
     positionSeconds,
@@ -307,6 +311,7 @@ export function seekGesture(
   viewport: Readonly<{ width: number; height: number }>,
   durationSeconds: number,
   onSeek: (seconds: number) => void,
+  onSeekEnd: () => void = () => {},
 ) {
   const box = seekBoxPx(viewport);
   /*
@@ -340,6 +345,7 @@ export function seekGesture(
       .maxPointers(1)
       .onBegin(event => seekTo(event.x, event.y))
       .onUpdate(event => seekTo(event.x, event.y))
+      .onFinalize(() => onSeekEnd())
       .runOnJS(true)
   );
 }
