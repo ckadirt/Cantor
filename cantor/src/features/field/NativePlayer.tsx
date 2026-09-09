@@ -1,3 +1,6 @@
+import { timelineHandPath } from './waveGeometry';
+import { smootherstep } from '../../field/bands';
+import { WAVE_GEOMETRY_KNOBS } from '../../lenses/cantorWaveGeometry';
 import React, { useMemo } from 'react';
 import {
   Group as SkiaGroup,
@@ -10,6 +13,7 @@ import {
 } from '@shopify/react-native-skia';
 import {
   useDerivedValue,
+  useReducedMotion,
   useSharedValue,
   type DerivedValue,
   type SharedValue,
@@ -236,11 +240,15 @@ function quad(
  */
 export function PlayerRing({
   radius,
+  lensMix,
+  viewport,
   durationSeconds,
   positionSeconds,
   colour,
 }: {
   radius: number;
+  lensMix?: SharedValue<number>;
+  viewport?: PoseViewport;
   durationSeconds: number;
   positionSeconds: SharedValue<number>;
   colour: string;
@@ -258,41 +266,54 @@ export function PlayerRing({
     return builder.detach();
   }, [arcRadius]);
 
-  const hand = useMemo(() => {
-    const builder = Skia.PathBuilder.Make();
-    builder.moveTo(0, -radius * knobs.SONG_HAND_INNER_RATIO);
-    builder.lineTo(0, -radius * knobs.SONG_HAND_OUTER_RATIO);
-    return builder.detach();
-  }, [knobs, radius]);
-
   const fraction = useDerivedValue(() => {
     if (durationSeconds <= 0) return 0;
     const value = positionSeconds.value / durationSeconds;
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }, [durationSeconds]);
 
-  const turn = useDerivedValue(() => [
-    { rotate: fraction.value * Math.PI * 2 },
-  ]);
+  const reducedMotion = useReducedMotion();
+  const circleOpacity = useDerivedValue(() => 1 - smootherstep(lensMix?.value ?? 0));
+  const waveOpacity = useDerivedValue(() => smootherstep(lensMix?.value ?? 0));
+  const width = (viewport?.width ?? 0) * WAVE_GEOMETRY_KNOBS.SONG_WIDTH_RATIO;
+  const height = (viewport?.height ?? 0) * WAVE_GEOMETRY_KNOBS.SONG_HEIGHT_RATIO;
+  const hand = useDerivedValue(() => timelineHandPath(
+    radius * knobs.SONG_HAND_INNER_RATIO,
+    radius * knobs.SONG_HAND_OUTER_RATIO,
+    fraction.value, width, height,
+    reducedMotion ? 0 : smootherstep(lensMix?.value ?? 0),
+  ));
+  const waveHand = useDerivedValue(() => timelineHandPath(
+    0, 0, fraction.value, width, height, 1,
+  ));
 
   return (
     <>
       <Path
         color={colour}
         end={fraction}
+        opacity={circleOpacity}
         path={ring}
         start={0}
         strokeWidth={knobs.SONG_ARC_WIDTH_PX}
         style="stroke"
       />
-      <SkiaGroup transform={turn}>
+      <Path
+        color={colour}
+        path={hand}
+        opacity={reducedMotion ? circleOpacity : 1}
+        strokeWidth={knobs.SONG_HAND_WIDTH_PX}
+        style="stroke"
+      />
+      {reducedMotion ? (
         <Path
           color={colour}
-          path={hand}
+          path={waveHand}
+          opacity={waveOpacity}
           strokeWidth={knobs.SONG_HAND_WIDTH_PX}
           style="stroke"
         />
-      </SkiaGroup>
+      ) : null}
     </>
   );
 }
@@ -836,6 +857,7 @@ function TransportVerb({
  */
 export function NativePlayerParts({
   model,
+  lensMix,
   arrived,
   named,
   anchor,
@@ -849,6 +871,7 @@ export function NativePlayerParts({
   songMetaFont,
 }: {
   model: NativeSongModel;
+  lensMix?: SharedValue<number>;
   /**
    * How present the player is: the crossfade band. Opacity, and nothing else —
    * where a thing *is* comes from the two arrivals, which move on the camera's
@@ -903,6 +926,8 @@ export function NativePlayerParts({
       <SkiaGroup opacity={arrived} transform={anchor}>
         {positionSeconds === null ? null : (
           <PlayerRing
+            lensMix={lensMix}
+            viewport={viewport}
             colour={colour}
             durationSeconds={durationSeconds}
             positionSeconds={positionSeconds}

@@ -414,7 +414,6 @@ export function FieldScreen({ identity }: Props) {
     onHoldPlacement,
     onClaimTap,
     nativeRelayout:
-      lensKey === 'name' &&
       layout !== null &&
       layout.placements.every(placement =>
         controller.presentations.has(placement.entityKey),
@@ -587,6 +586,9 @@ export function FieldScreen({ identity }: Props) {
    * Only the song the port actually holds is ever the pause pose. Opening a
    * different song leaves this at play, which is what its transport means.
    */
+  const idlePositionCandidate = useSharedValue(0);
+  const idlePosition = useRef(idlePositionCandidate).current;
+  const focusedPosition = focusedIsCurrent ? transport.positionSeconds : idlePosition;
   const transportPlaying = useSharedValue(0);
   const reducedMotion = useReducedMotion();
   useEffect(() => {
@@ -1147,7 +1149,7 @@ export function FieldScreen({ identity }: Props) {
                 // The player's focus, not the tap's: entering a shelf must
                 // not re-record this canvas. See `commitFocus`.
                 focusKey={fieldCamera.playerFocus?.key ?? null}
-                positionSeconds={transport.positionSeconds}
+                positionSeconds={focusedPosition}
                 playingKey={playingKey}
                 transportPlaying={transportPlaying}
                 nowMs={nowMs}
@@ -1203,6 +1205,7 @@ export function FieldScreen({ identity }: Props) {
             fitScale={fieldCamera.renderFitScale}
             height={viewport.height}
             isCurrent={focusedIsCurrent}
+            lensKey={lensKey}
             lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
             onOpenDetail={() => {
               setPlaybackError(null);
@@ -1216,7 +1219,7 @@ export function FieldScreen({ identity }: Props) {
             onSeek={focusedIsCurrent ? transport.scrub : () => {}}
             onSeekEnd={transport.finishScrub}
             onToggle={() => void playFocused()}
-            positionSeconds={transport.positionSeconds}
+            positionSeconds={focusedPosition}
             snapshot={
               playbackError === null
                 ? transport.snapshot

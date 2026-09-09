@@ -1,5 +1,6 @@
 import { PaintStyle } from '@shopify/react-native-skia';
 import { availabilityOf } from './availability';
+import { waveBar } from './cantorWaveGeometry';
 import { LENS_INTERVALS } from './cantorIntervals';
 import type { Lens } from './types';
 
@@ -75,11 +76,6 @@ export const cantorWaveLens: Lens = {
         : box.x - width / 2;
     const centre = box.y;
 
-    const slot = width / LENS_INTERVALS.length;
-    const barWidth = Math.max(
-      CANTOR_WAVE_KNOBS.MIN_BAR_PX,
-      slot * (1 - CANTOR_WAVE_KNOBS.BAR_GAP_RATIO),
-    );
     const levels = song.analysis.rms;
     const heardUntil = song.progress === null ? -1 : song.progress;
     const availability = availabilityOf(song.audioState);
@@ -91,10 +87,7 @@ export const cantorWaveLens: Lens = {
     for (let index = 0; index < LENS_INTERVALS.length; index += 1) {
       const interval = LENS_INTERVALS[index];
       const level = levels[index] ?? 0;
-      const barHeight = Math.max(
-        CANTOR_WAVE_KNOBS.MIN_BAR_PX,
-        Math.min(1, level * CANTOR_WAVE_KNOBS.LEVEL_GAIN) * height,
-      );
+      const bar = waveBar(index, level, width, height);
       // An interval counts as heard once playback has passed its start.
       const heard = heardUntil >= interval.start;
       paints.ink.setAlphaf(
@@ -108,10 +101,10 @@ export const cantorWaveLens: Lens = {
       );
       canvas.drawRect(
         {
-          x: left + index * slot,
-          y: centre - barHeight / 2,
-          width: barWidth,
-          height: barHeight,
+          x: left + width / 2 + bar.x,
+          y: centre + bar.y,
+          width: bar.width,
+          height: bar.height,
         },
         paints.ink,
       );
@@ -132,6 +125,7 @@ export const cantorWaveLens: Lens = {
     }
 
     if (box.kind === 'row') {
+      paints.ink.setAlphaf(alpha);
       paints.muted.setAlphaf(alpha);
       canvas.drawText(
         truncate(song.title),

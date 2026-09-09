@@ -97,3 +97,22 @@ describe('seeking over the ring', () => {
     expect(box.top + box.size / 2).toBeCloseTo(ring.cy);
   });
 });
+
+
+describe('seeking over a Cantor wave', () => {
+  it('maps left, centre and right to start, halfway and end', () => {
+    const seek = jest.fn();
+    const finish = jest.fn();
+    const gesture = seekGesture(viewport, 120, seek, finish, 'cantor-wave') as unknown as {
+      handlers: Record<string, (event: { x: number; y: number }) => void>;
+    };
+    const box = seekBoxPx(viewport, 'cantor-wave');
+    for (const [x, seconds] of [[0, 0], [box.size / 2, 60], [box.size, 120]]) {
+      gesture.handlers.onUpdate({ x, y: box.size / 2 });
+      expect(seek).toHaveBeenLastCalledWith(seconds);
+    }
+    expect(finish).not.toHaveBeenCalled();
+    gesture.handlers.onFinalize({ x: box.size, y: box.size / 2 });
+    expect(finish).toHaveBeenCalledTimes(1);
+  });
+});

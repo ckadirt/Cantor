@@ -105,6 +105,20 @@ and `FragmentReassembler` own record framing. Add JVM tests before moving any
 of it; the React Native method names, arguments, return shapes, and error text
 are the contract.
 
+## Playback gestures and field lenses
+
+`player/scrubSession.ts` owns a silent seek transaction: pause once, preview on
+the shared position clock, seek on release, and resume only if playback was
+running before the drag. `SongSurface` finalizes on gesture completion and
+unmount. Track replacement cancels ownership so a late release cannot seek the
+next song. Ordinary seeks also reconcile the visual clock after native seek.
+
+Circle and Cantor wave share `NativeFieldContent`. Lens changes drive one
+retained linear clock (`MORPH_MS = 420`); the drawing eases it once. Pure bar
+geometry is shared with the fallback lens in `lenses/cantorWaveGeometry.ts`.
+The field's morph module partitions the exact face polygon into 32 wedges,
+then interpolates those wedges into bars at the measured Cantor intervals.
+
 ## Tests
 
 ```sh

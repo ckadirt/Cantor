@@ -1,3 +1,4 @@
+import { WAVE_GEOMETRY_KNOBS } from '../../lenses/cantorWaveGeometry';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -61,6 +62,7 @@ export type SongSurfaceSong = Readonly<{
 
 type Props = {
   song: SongSurfaceSong;
+  lensKey?: string;
   snapshot: PlayerSnapshot;
   /** Visual position in seconds, on the UI thread. */
   positionSeconds: SharedValue<number>;
@@ -124,6 +126,7 @@ type Props = {
  */
 function SongSurfaceImpl({
   song,
+  lensKey = 'name',
   snapshot,
   positionSeconds,
   isCurrent,
@@ -181,10 +184,10 @@ function SongSurfaceImpl({
     return last === undefined ? 0 : last.x + last.width;
   }, [words]);
 
-  const seekBox = useMemo(() => seekBoxPx({ width, height }), [height, width]);
+  const seekBox = useMemo(() => seekBoxPx({ width, height }, lensKey), [height, width, lensKey]);
   const scrub = useMemo(
-    () => seekGesture({ width, height }, durationSeconds, onSeek, onSeekEnd),
-    [durationSeconds, height, onSeek, onSeekEnd, width],
+    () => seekGesture({ width, height }, durationSeconds, onSeek, onSeekEnd, lensKey),
+    [durationSeconds, height, onSeek, onSeekEnd, width, lensKey],
   );
 
   useEffect(() => () => onSeekEnd?.(), [onSeekEnd]);
@@ -286,12 +289,17 @@ function SongSurfaceImpl({
  */
 export function seekBoxPx(
   viewport: Readonly<{ width: number; height: number }>,
+  lensKey = 'name',
 ): Readonly<{ left: number; top: number; size: number }> {
   const ring = playerSeekScreenPx(viewport);
+  const reach = lensKey === 'cantor-wave'
+    ? Math.max(viewport.width * WAVE_GEOMETRY_KNOBS.SONG_WIDTH_RATIO,
+      viewport.height * WAVE_GEOMETRY_KNOBS.SONG_HEIGHT_RATIO) / 2
+    : ring.outer;
   return {
-    left: ring.cx - ring.outer,
-    top: ring.cy - ring.outer,
-    size: ring.outer * 2,
+    left: ring.cx - reach,
+    top: ring.cy - reach,
+    size: reach * 2,
   };
 }
 
@@ -312,8 +320,9 @@ export function seekGesture(
   durationSeconds: number,
   onSeek: (seconds: number) => void,
   onSeekEnd: () => void = () => {},
+  lensKey = 'name',
 ) {
-  const box = seekBoxPx(viewport);
+  const box = seekBoxPx(viewport, lensKey);
   /*
    * The gesture's coordinates are the box's and `seekFractionAt` wants the
    * viewport's, so the box's origin goes back on here. Laying the box out at
@@ -325,7 +334,11 @@ export function seekGesture(
    * song, so an angle there is noise wearing the shape of an intention.
    */
   const seekTo = (x: number, y: number) => {
-    const fraction = seekFractionAt(viewport, box.left + x, box.top + y);
+    const ring = playerSeekScreenPx(viewport);
+    const waveWidth = viewport.width * WAVE_GEOMETRY_KNOBS.SONG_WIDTH_RATIO;
+    const fraction = lensKey === 'cantor-wave'
+      ? Math.max(0, Math.min(1, (box.left + x - ring.cx) / waveWidth + 0.5))
+      : seekFractionAt(viewport, box.left + x, box.top + y);
     if (fraction === null) return;
     const step = SONG_SURFACE_KNOBS.SEEK_STEP_SECONDS;
     onSeek(Math.round((fraction * durationSeconds) / step) * step);

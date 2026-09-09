@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef } from 'react';
+import { facePoints } from '../../lenses/face';
+import { drawWaveMorph, waveWedges, WAVE_GEOMETRY_KNOBS } from './waveGeometry';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
@@ -22,6 +24,8 @@ import {
 } from '@shopify/react-native-skia';
 import {
   cancelAnimation,
+  Easing,
+  useReducedMotion,
   useAnimatedReaction,
   useDerivedValue,
   useSharedValue,
@@ -645,8 +649,17 @@ function FieldCanvasImpl({
     viewport,
   );
 
+  const lensMixCandidate = useSharedValue(activeLensKey === 'cantor-wave' ? 1 : 0);
+  const lensMix = useRef(lensMixCandidate).current;
+  const reducedMotion = useReducedMotion();
+  useEffect(() => {
+    lensMix.value = withTiming(activeLensKey === 'cantor-wave' ? 1 : 0, {
+      duration: WAVE_GEOMETRY_KNOBS.MORPH_MS,
+      easing: Easing.linear,
+    });
+  }, [activeLensKey, lensMix]);
+
   const nativeField =
-    activeLensKey === 'name' &&
     recut !== null &&
     isNativeDrawnDistance(recut.fromCamera.scale, recut.fromFitScale) &&
     isNativeDrawnDistance(recut.toCamera.scale, recut.toFitScale) &&
@@ -815,6 +828,8 @@ function FieldCanvasImpl({
         <NativeFieldContent
           key={recut.generation}
           recut={recut}
+          lensMix={lensMix}
+          reducedMotion={reducedMotion}
           clock={nativeClock}
           cameraShared={cameraShared}
           fitScaleShared={fitScaleShared}
@@ -846,6 +861,8 @@ function FieldCanvasImpl({
     labelFlights,
     monoFont,
     nativeClock,
+    lensMix,
+    reducedMotion,
     palette,
     playingKey,
     positionSeconds,
@@ -1448,6 +1465,8 @@ function useNativeCameraMotion(
 type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 
 type NativeFieldContentProps = Readonly<{
+  lensMix: SharedValue<number>;
+  reducedMotion: boolean;
   recut: FieldRecutModel;
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
@@ -1515,6 +1534,8 @@ type NativeFieldContentProps = Readonly<{
  */
 export type FaceFlight = Readonly<{
   markPath: SkPath;
+  wedges?: ReturnType<typeof waveWedges>;
+  levels?: readonly number[];
   fromX: number;
   fromY: number;
   targetX: number;
@@ -1549,6 +1570,7 @@ export function faceFlightsOf(
   presentations: ReadonlyMap<string, FieldPresentation>,
   focusKey: string | null,
   playingKey: string | null,
+  analyses?: ReadonlyMap<string, SongAnalysis>,
 ): readonly FaceFlight[] {
   const result: FaceFlight[] = [];
   for (const flight of flights) {
@@ -1557,6 +1579,13 @@ export function faceFlightsOf(
     const song = presentation.song;
     const availability = availabilityOf(presentation.localAudio.state);
     result.push({
+      wedges: waveWedges(facePoints({
+        seed: song.seed,
+        id: presentation.entity.entityId,
+        model: song.model,
+        durationMs: song.duration_ms,
+      })),
+      levels: Array.from((analyses?.get(flight.entityKey) ?? neutralAnalysis()).rms),
       markPath: nameLensFacePath(
         {
           seed: song.seed,
@@ -1623,8 +1652,11 @@ export function drawFieldFaces(
   cameraShared: SharedValue<Camera>,
   fitScaleShared: SharedValue<number>,
   viewport: Viewport,
+  lensProgress = 0,
+  reducedMotion = false,
 ): void {
   'worklet';
+  const mix = smootherstep(lensProgress);
   const p = Math.min(Math.max(progress, 0), 1);
   const live = p >= 1 ? cameraShared.value : null;
   const cameraX =
@@ -1706,12 +1738,14 @@ export function drawFieldFaces(
     canvas.save();
     canvas.translate(x + pose.x, y + pose.y);
     canvas.scale(pose.scale, pose.scale);
-    if (face.filled) {
-      paints.fill.setAlphaf(opacity * face.weight * (1 - shapeArrived));
+    if (face.filled && (mix === 0 || reducedMotion)) {
+      paints.fill.setAlphaf(
+        opacity * face.weight * (1 - shapeArrived) * (1 - mix),
+      );
       canvas.drawPath(face.markPath, paints.fill);
     }
     paints.stroke.setAlphaf(
-      opacity *
+      opacity * (1 - mix) *
         (face.weight +
           (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived),
     );
@@ -1722,6 +1756,25 @@ export function drawFieldFaces(
     );
     canvas.drawPath(face.markPath, paints.stroke);
     canvas.restore();
+    if (mix > 0 && face.wedges !== undefined) {
+      const knobs = WAVE_GEOMETRY_KNOBS;
+      const rowWidth = knobs.MARK_WIDTH_PX +
+        (knobs.ROW_WIDTH_PX - knobs.MARK_WIDTH_PX) * walked;
+      const rowHeight = knobs.MARK_HEIGHT_PX +
+        (knobs.ROW_HEIGHT_PX - knobs.MARK_HEIGHT_PX) * walked;
+      const width = rowWidth + (viewport.width * knobs.SONG_WIDTH_RATIO - rowWidth) * shapeArrived;
+      const height = rowHeight + (viewport.height * knobs.SONG_HEIGHT_RATIO - rowHeight) * shapeArrived;
+      canvas.save();
+      canvas.translate(x + pose.x, y + pose.y);
+      const fillAlpha = reducedMotion || !face.filled
+        ? mix
+        : (1 - shapeArrived) * (1 - mix) + mix;
+      paints.fill.setAlphaf(opacity * face.weight * fillAlpha);
+      drawWaveMorph(canvas, paints.fill, face.wedges, face.levels ?? [],
+        NAME_LENS_KNOBS.MARK_RADIUS_PX * pose.scale, width, height,
+        reducedMotion ? 1 : mix);
+      canvas.restore();
+    }
 
     // Outside the face's own scale, for the reason the node tree gave: the
     // ring's radius is the face's extent *plus a gap*, so it is not a multiple
@@ -1845,6 +1898,7 @@ export function drawSongDetail(
   resolved: number,
   drawn: number,
   viewport: Viewport,
+  lensProgress = 0,
 ): void {
   'worklet';
   if (drawn <= 0) return;
@@ -2000,7 +2054,7 @@ export function drawSongDetail(
   // The detail arrives *as* the axis opens: it is a dense sliver at the
   // playhead while the ring is still a ring, and there is no room for it there.
   const detail = resolved * unrolled;
-  const coarse = 1 - detail;
+  const coarse = (1 - detail) * (1 - smootherstep(lensProgress) * (1 - unrolled));
   if (coarse > 0) {
     paints.stroke.setAlphaf(knobs.SONG_WAVE_ALPHA * coarse);
     paints.stroke.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
@@ -2105,6 +2159,7 @@ export function drawSongDetail(
  * not hand `Canvas` a fresh element.
  */
 function NativeSongDetail({
+  lensMix,
   model,
   clock,
   recut,
@@ -2115,6 +2170,7 @@ function NativeSongDetail({
   palette,
   viewport,
 }: {
+  lensMix: SharedValue<number>;
   model: SongDetailModel | null;
   clock: SharedValue<number>;
   recut: NativeRecut;
@@ -2203,6 +2259,7 @@ function NativeSongDetail({
           resolved.value,
           drawn.value,
           viewport,
+          lensMix.value,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -2240,6 +2297,8 @@ function songDetailOf(
 }
 
 const NativeFieldContent = React.memo(function NativeFieldContent({
+  lensMix,
+  reducedMotion,
   recut,
   clock,
   cameraShared,
@@ -2291,8 +2350,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    */
   const facePaints = useMemo(() => createFacePaints(palette), [palette]);
   const faceFlights = useMemo(
-    () => faceFlightsOf(recut.flights, presentations, focusKey, playingKey),
-    [recut, presentations, focusKey, playingKey],
+    () => faceFlightsOf(recut.flights, presentations, focusKey, playingKey, analyses),
+    [recut, presentations, focusKey, playingKey, analyses],
   );
   const facePicture = useDerivedValue(() =>
     createPicture(
@@ -2306,6 +2365,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           cameraShared,
           fitScaleShared,
           viewport,
+          lensMix.value,
+          reducedMotion,
         ),
       { width: viewport.width, height: viewport.height },
     ),
@@ -2324,6 +2385,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         drawn over, at either end of the crossing.
       */}
       <NativeSongDetail
+        lensMix={lensMix}
         cameraShared={cameraShared}
         clock={clock}
         fitScaleShared={fitScaleShared}
@@ -2378,6 +2440,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           focusKey !== null && flight.targetPlacementKey === focusKey;
         return (
           <NativePlacementFlight
+            lensMix={lensMix}
             key={flight.key}
             motion={motion}
             flight={flight}
@@ -2543,6 +2606,7 @@ function TracedTitle({
  */
 function NativePlacementFlight({
   motion,
+  lensMix,
   flight,
   clock,
   cameraShared,
@@ -2562,6 +2626,7 @@ function NativePlacementFlight({
   mutedColor,
 }: {
   motion: NativeCameraMotion;
+  lensMix: SharedValue<number>;
   flight: PlacementFlight;
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
@@ -2813,6 +2878,7 @@ function NativePlacementFlight({
       */}
       {song === null ? null : (
         <NativePlayerParts
+          lensMix={lensMix}
           arrived={arrived}
           named={nameArrived}
           colour={color}
