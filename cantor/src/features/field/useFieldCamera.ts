@@ -11,6 +11,7 @@ import {
   type SharedValue,
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
+import { CURTAIN_KNOBS, releaseTarget, unrollMs } from '../curtain';
 import {
   GRAIN_ENABLED,
   GRAIN_KNOBS,
@@ -27,7 +28,6 @@ import {
   levelCameraTarget,
   levelOf,
   nearestSeat,
-  rubberBand,
   placementFlightAt,
   planPlacementFlights,
   seatAfterRelease,
@@ -58,12 +58,16 @@ export const FIELD_CAMERA_KNOBS = {
   HOLD_MS: 380,
   HOLD_SLOP_PX: 12,
   PAN_SLOP_PX: 4,
+  /**
+   * How near an edge a drag must start to be a pull on that edge's blind, and
+   * how straight down or up it has to run to stay one.
+   *
+   * Where a released pull ends up is not decided here: that is the blind's own
+   * rule, `releaseTarget`, so a throw and a slow drag are answered the same way
+   * whether the blind is being pulled out or folded away.
+   */
   EDGE_PULL_ZONE_PX: 110,
-  EDGE_PULL_MAX_PX: 140,
-  EDGE_PULL_OPEN_PX: 90,
   EDGE_PULL_HORIZONTAL_TOLERANCE_PX: 50,
-  /** How long a pull released short of the threshold takes to roll back up. */
-  EDGE_PULL_RETRACT_MS: 260,
   /** How long the camera takes to fall back into a seat it was pulled out of. */
   SEAT_SETTLE_MS: 340,
   MIN_SCALE_RATIO: 0.5,
@@ -168,6 +172,8 @@ type CameraState = {
   fitScaleShared: SharedValue<number>;
   /** How far an edge pull has come, in screen pixels; see the shared value. */
   pullShared: SharedValue<number>;
+  /** Where the blind is currently headed, or NaN while a finger owns it. */
+  pullDestinationShared: SharedValue<number>;
   descend: (placement: Placement) => void;
   ascend: () => boolean;
   home: () => void;
@@ -179,7 +185,6 @@ type PanStart = {
   y: number;
   camera: Camera;
   pull: PullDirection | null;
-  pullAmount: number;
   /**
    * The seat the finger went down in, or -1 when it went down anywhere else.
    *
@@ -297,6 +302,16 @@ export function useFieldCamera({
    * React writes it — through a timing curve — when the sheet opens or closes.
    */
   const pullSharedCandidate = useSharedValue(0);
+  /**
+   * Where a released blind is headed, so the release is animated exactly once.
+   *
+   * The gesture starts the run itself, on the UI thread, at the instant the
+   * finger lifts — a blind must not stand still for the commit that tells
+   * React the sheet is open. React then reads this, sees the run is already
+   * going where it wants it to go, and leaves it alone. NaN means a finger has
+   * it: nothing is headed anywhere while it is still being held.
+   */
+  const pullDestinationCandidate = useSharedValue(0);
   const cameraShared = useRef(cameraSharedCandidate).current;
   const focusKeyShared = useRef(focusKeySharedCandidate).current;
   const fitScaleShared = useRef(fitScaleSharedCandidate).current;
@@ -304,6 +319,7 @@ export function useFieldCamera({
   const layoutFitShared = useRef(layoutFitSharedCandidate).current;
   const mirrorBusy = useRef(mirrorBusyCandidate).current;
   const pullShared = useRef(pullSharedCandidate).current;
+  const pullDestination = useRef(pullDestinationCandidate).current;
   const shelfSeatsShared = useRef(shelfSeatsSharedCandidate).current;
   const flightFrom = useRef(flightFromCandidate).current;
   const flightTo = useRef(flightToCandidate).current;
@@ -1071,7 +1087,6 @@ export function useFieldCamera({
           y: event.y,
           camera: startCamera,
           pull: null,
-          pullAmount: 0,
           seat: isShelfDistance(startCamera.scale, layoutFitShared.value)
             ? nearestSeat(shelfSeatsShared.value, startCamera)
             : -1,
@@ -1090,35 +1105,65 @@ export function useFieldCamera({
           return;
         const horizontal = Math.abs(event.translationX);
         const vertical = event.translationY;
-        if (
-          start.y < knobs.EDGE_PULL_ZONE_PX &&
-          vertical > 0 &&
-          horizontal < knobs.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
-        ) {
-          panStart.value = {
-            ...start,
-            pull: 'compose',
-            pullAmount: Math.min(vertical, knobs.EDGE_PULL_MAX_PX),
-          };
-          // The raw distance, not the clamped one: the decision saturates at
-          // EDGE_PULL_MAX_PX but the blind keeps following the finger.
-          pullShared.value = vertical;
+        /*
+         * One blind at a time.
+         *
+         * A sheet leaves a strip of field showing, and that strip contains an
+         * edge zone: with the composer down, a drag in the peek at the top is
+         * still a top-edge pull, and it would write the composer's own
+         * position back to the finger's twenty pixels — the sheet collapsing
+         * to a sliver mid-use. A pull already under way is exempt, so a
+         * gesture the finger owns is never interrupted by its own first frame.
+         */
+        const edgeReady = start.pull !== null || pullDestination.value === 0;
+        /*
+         * Which blind this drag belongs to, decided once and then kept.
+         *
+         * Kept, because the decision is the *drag's*, not the frame's. Asking
+         * again every frame meant a drag that came back above where it started
+         * stopped matching its own edge test, fell through to the pan below,
+         * and left the blind frozen at whatever pixel it had reached — a sheet
+         * hanging in mid-air under a finger still touching the screen, with no
+         * way to put it back but to lift and let it settle. A hand that changes
+         * its mind mid-pull is the ordinary case, so the pull follows it all
+         * the way home to zero and waits there.
+         */
+        const pulling =
+          start.pull !== null
+            ? start.pull
+            : edgeReady &&
+                horizontal < knobs.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
+              ? start.y < knobs.EDGE_PULL_ZONE_PX && vertical > 0
+                ? 'compose'
+                : start.y > size.height - knobs.EDGE_PULL_ZONE_PX &&
+                    vertical < 0
+                  ? 'engines'
+                  : null
+              : null;
+        if (pulling !== null) {
+          const pullSign = pulling === 'compose' ? 1 : -1;
+          const seatPx = Math.max(0, size.height - CURTAIN_KNOBS.PEEK_PX);
+          // Clamped to the blind's own travel at both ends: it cannot be
+          // dragged off its roller, and it cannot be pushed past the seat.
+          const drawn = Math.min(Math.max(vertical * pullSign, 0), seatPx);
+          // Written once, at the frame the drag becomes a pull, rather than
+          // every frame: `panStart` is a shared value and this runs at 120 Hz.
+          if (start.pull === null) panStart.value = { ...start, pull: pulling };
+          // The finger owns the value while it is down, so nothing is headed
+          // anywhere: the destination is wherever it is let go.
+          pullDestination.value = Number.NaN;
+          pullShared.value = pullSign * drawn;
           return;
         }
-        if (
-          start.y > size.height - knobs.EDGE_PULL_ZONE_PX &&
-          vertical < 0 &&
-          horizontal < knobs.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
-        ) {
-          panStart.value = {
-            ...start,
-            pull: 'engines',
-            pullAmount: Math.min(-vertical, knobs.EDGE_PULL_MAX_PX),
-          };
-          pullShared.value = vertical;
-          return;
-        }
-        if (start.pull !== null) return;
+        /*
+         * A blind is down, and the field is not what the finger is on.
+         *
+         * The sheet covers the screen, but a plain view over a gesture
+         * detector does not stop the detector seeing the touch, so a drag on
+         * an open sheet was still panning the map underneath it. Nothing
+         * visible moved; the field was simply somewhere else on the way back.
+         */
+        if (!edgeReady) return;
         // A song is a page, not a map. Once the camera is standing in one there
         // is nothing beside it to pan to — the whole field is one song wide at
         // this distance — so a drag that moved the camera only slid the player
@@ -1164,22 +1209,34 @@ export function useFieldCamera({
         'worklet';
         const start = panStart.value;
         panStart.value = null;
-        if (
-          start?.pull != null &&
-          start.pullAmount >= knobs.EDGE_PULL_OPEN_PX
-        ) {
-          // Hold where the finger left it. The screen opens the sheet, and the
-          // opening animation carries on from exactly here rather than from a
-          // position the finger never visited.
-          runOnJS(completePull)(start.pull);
-          return;
-        }
         if (start?.pull != null) {
-          // Released short: it rolls back up, like letting go of a blind.
-          pullShared.value = withTiming(0, {
-            duration: knobs.EDGE_PULL_RETRACT_MS,
+          // The rest of the way, launched here rather than by the commit that
+          // opens the sheet: it carries on from exactly where the finger left
+          // it, at the speed it was thrown at, and React finds it already
+          // going where it would have sent it.
+          const pullSign = start.pull === 'compose' ? 1 : -1;
+          const seat =
+            viewport === null
+              ? 0
+              : Math.max(0, viewport.height - CURTAIN_KNOBS.PEEK_PX);
+          const drawn = Math.min(
+            Math.max(pullShared.value * pullSign, 0),
+            seat,
+          );
+          // The throw in the blind's own direction: positive is still opening.
+          const thrown = pullSign * event.velocityY;
+          const target = releaseTarget(drawn, seat, thrown);
+          pullDestination.value = pullSign * target;
+          pullShared.value = withTiming(pullSign * target, {
+            duration: unrollMs(drawn, target, thrown),
             easing: easeSmoother,
           });
+          if (target > 0) {
+            runOnJS(completePull)(start.pull);
+            return;
+          }
+          // Rolled back up: the camera it was pulled over is still where the
+          // finger found it, and has its own settle to finish.
           settle();
           return;
         }
@@ -1245,6 +1302,7 @@ export function useFieldCamera({
     panStart,
     pinchStart,
     pinching,
+    pullDestination,
     pullShared,
     holdAt,
     settleIntoSeat,
@@ -1272,6 +1330,7 @@ export function useFieldCamera({
     focusKeyShared,
     fitScaleShared,
     pullShared,
+    pullDestinationShared: pullDestination,
     descend,
     ascend,
     home,
