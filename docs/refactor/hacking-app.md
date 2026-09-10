@@ -165,6 +165,15 @@ cable is replugged.
 - **Storage keys are a compatibility contract.** Existing AsyncStorage keys and
   stored JSON shapes must keep loading; per-store corruption policy is
   deliberate.
+- **`lastVisualPlacements` is a capture *and* a source.** `useFieldCamera`
+  keeps it as the poses on screen, so an interrupted re-cut resumes from where
+  the eye left it — and plans the next re-cut's `before` from it. Anything left
+  in it after its flight has landed gets re-planned forever. A finished exit
+  that stayed there named a song `controller.presentations` no longer had,
+  which held `nativeField` false for the rest of the session: the field fell
+  back to `recordFieldPicture`, losing the wave morph and seaming every level
+  change, until the app restarted. `stillDrawn` is the shed; keep any new
+  ownership that ends at alpha zero behind it.
 
 ## Review checklist
 
