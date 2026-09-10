@@ -506,7 +506,7 @@ function FieldCanvasImpl({
   cameraShared,
   fitScaleShared,
   viewport,
-  presentations,
+  presentations: currentPresentations,
   jobs,
   palette,
   positionSeconds = null,
@@ -525,6 +525,22 @@ function FieldCanvasImpl({
   transitionGeneration = 0,
   recut = null,
 }: Props) {
+  // Removed songs still own ink in the outgoing placement flights. Keep only
+  // that drawing data until the flight family is replaced; it never re-enters
+  // the controller's library or hit targets. Dropping it at the data commit
+  // both erases the exit early and strands this generation on the JS picture.
+  const previousPresentations = useRef(currentPresentations);
+  const presentations = useMemo(() => {
+    const retained = new Map(currentPresentations);
+    for (const flight of recut?.flights ?? []) {
+      if (flight.targetPlacementKey !== null || retained.has(flight.entityKey)) continue;
+      const outgoing = previousPresentations.current.get(flight.entityKey);
+      if (outgoing !== undefined) retained.set(flight.entityKey, outgoing);
+    }
+    return retained;
+  }, [currentPresentations, recut]);
+  previousPresentations.current = presentations;
+
   const displayFont = useMorphFont({
     fontFamily: font.display,
     // L1 has title plus metadata in every row; this leaves each row legible
@@ -671,7 +687,9 @@ function FieldCanvasImpl({
     songTitleFont !== null &&
     songMetaFont !== null &&
     labelFlights !== null &&
-    recut.flights.every(flight => presentations.has(flight.entityKey));
+    recut.flights.every(flight =>
+      flight.targetPlacementKey === null || presentations.has(flight.entityKey),
+    );
   const paints = useMemo(() => createPaints(palette), [palette]);
   // Native shared values are stable; the Jest mock is not, so the fallback is
   // held by ref the way `useFieldCamera` holds its own candidates.

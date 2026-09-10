@@ -83,11 +83,28 @@ export function buildFieldController(
   state: FieldRuntimeState,
 ): FieldController {
   const presentations = new Map<string, FieldPresentation>();
-  for (const backend of state.backends ?? []) {
-    const snapshot = state.snapshots[backend.nodePubkey];
+  const paired = new Map(
+    (state.backends ?? []).map(backend => [backend.nodePubkey, backend]),
+  );
+  for (const [nodeKey, snapshot] of Object.entries(state.snapshots)) {
+    const backend = paired.get(nodeKey) ?? {
+      nodePubkey: nodeKey,
+      petname: 'Offline engine',
+      relayUrl: '',
+      lastNodeInfo: null,
+    };
+
     for (const song of snapshot?.songs ?? []) {
       if (song.trashed) continue;
       const delivery = deliveryArtifact(song);
+      const localAudio =
+        state.localAudio[audioKey(nodeKey, song.id, delivery?.sha256 ?? 'none')] ??
+        REMOTE_AUDIO;
+      if (
+        !paired.has(nodeKey) &&
+        localAudio.state !== 'cached' &&
+        localAudio.state !== 'pinned'
+      ) continue;
       const entity: FieldEntity = {
         key: `${backend.nodePubkey}:${song.id}`,
         nodePublicKey: backend.nodePubkey,
@@ -101,17 +118,14 @@ export function buildFieldController(
         entity,
         song,
         backend,
-        ready: snapshot?.phase === 'ready',
+        ready: paired.has(nodeKey) && snapshot?.phase === 'ready',
         nodeLabels: [
           backend.petname,
           backend.lastNodeInfo?.name ?? '',
           backend.nodePubkey,
         ].filter(Boolean),
         delivery,
-        localAudio:
-          state.localAudio[
-            audioKey(backend.nodePubkey, song.id, delivery?.sha256 ?? 'none')
-          ] ?? REMOTE_AUDIO,
+        localAudio,
       });
     }
   }

@@ -5,7 +5,6 @@ import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { AnimatedSymbol } from '../../motion';
 import { PanelPressable } from './PanelPressable';
-import { formatBytes } from '../../lenses';
 import {
   SettingsSheet,
   type LibraryReport,
@@ -350,13 +349,7 @@ function EnginesSheetImpl({
   );
 }
 
-/**
- * What forgetting takes, counted rather than described.
- *
- * Every song in the field belongs to the node that made it, downloaded or not,
- * so the count is the whole library and not just the part on this phone. The
- * last line is the one that makes it survivable: nothing is deleted over there.
- */
+/** Downloaded songs stay reachable after the connection is forgotten. */
 function Forget({
   backend,
   footprint,
@@ -372,23 +365,20 @@ function Forget({
   return (
     <ScrollView contentContainerStyle={styles.body}>
       <Text style={[type.title, styles.forgetTitle, { color: pal.ink }]}>
-        {songs === 1
-          ? 'Its one song leaves this phone.'
-          : `All ${songs} of its songs leave this phone.`}
+        {songs - downloaded === 1
+          ? '1 song leaves the field.'
+          : `${songs - downloaded} songs leave the field.`}
       </Text>
       <Text style={[type.body, { color: pal.muted }]}>
-        Downloaded or not — every song in the field belongs to the node that
-        made it.
+        Downloaded songs stay on this phone, with their playlist tags.
       </Text>
 
       <View style={[styles.hairline, { backgroundColor: pal.line }]} />
-      <Text style={[styles.meta, { color: pal.muted }]}>WHAT GOES</Text>
+      <Text style={[styles.meta, { color: pal.muted }]}>WHAT CHANGES</Text>
       <Count
         label={`${downloaded} downloaded`}
         note={
-          downloaded === 0
-            ? 'NOTHING TO DELETE'
-            : `${formatBytes(footprint?.bytesHere ?? 0)} DELETED HERE`
+          downloaded === 0 ? 'NONE ON THIS PHONE' : 'KEPT ON THIS PHONE'
         }
       />
       <Count

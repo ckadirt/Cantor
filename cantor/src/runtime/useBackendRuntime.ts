@@ -35,6 +35,7 @@ import { loadJobs, mergeJobs, mergeJobViews } from '../jobs/repository';
 import {
   commitLibrary,
   loadLibrary,
+  loadLibraries,
   mergeSongHeaders,
 } from '../library/repository';
 import type { TransportDescriptor } from '../security/types';
@@ -88,6 +89,7 @@ type RuntimeDependencies = {
   loadJobs: typeof loadJobs;
   mergeJobs: typeof mergeJobs;
   loadLibrary: typeof loadLibrary;
+  loadLibraries: typeof loadLibraries;
   commitLibrary: typeof commitLibrary;
   loadOutbox: typeof loadOutbox;
   putPending: typeof putPending;
@@ -124,16 +126,7 @@ export type BackendRuntimeCommands = {
   pairBackend: (request: PairingRequest) => void;
   /** Change what this phone calls a node. Nothing on the node changes. */
   renameBackend: (nodePublicKey: string, petname: string) => void;
-  /**
-   * Remove a node from this phone, with everything of its that lives here.
-   *
-   * `buildFieldController` sources every entity from
-   * `backends → snapshots[pubkey].songs`, so forgetting a node removes all of
-   * its songs from the field — downloaded ones included. Their files would
-   * otherwise linger as orphans no screen could ever reach, so the audio goes
-   * with the record. Nothing is deleted on the node itself: pair again and
-   * everything returns.
-   */
+  /** Forget the connection; downloaded audio and its metadata stay on this phone. */
   forgetBackend: (nodePublicKey: string) => Promise<void>;
   submit: (
     nodePublicKey: string,
@@ -183,6 +176,7 @@ const defaultDependencies: RuntimeDependencies = {
   loadJobs,
   mergeJobs,
   loadLibrary,
+  loadLibraries,
   commitLibrary,
   loadOutbox,
   putPending,
@@ -211,6 +205,8 @@ export function useBackendRuntime(
     dependencies.mergeJobs ?? defaultDependencies.mergeJobs;
   const loadCachedLibrary =
     dependencies.loadLibrary ?? defaultDependencies.loadLibrary;
+  const loadAllCachedLibraries =
+    dependencies.loadLibraries ?? defaultDependencies.loadLibraries;
   const commitCachedLibrary =
     dependencies.commitLibrary ?? defaultDependencies.commitLibrary;
   const loadPendingOutbox =
@@ -244,14 +240,6 @@ export function useBackendRuntime(
   const [storageError, setStorageError] = useState<string | null>(null);
   const [localAudio, setLocalAudio] = useState<Record<string, LocalAudio>>({});
   const backendsRef = useRef<BackendRecord[]>([]);
-  /**
-   * The snapshots as they are *now*.
-   *
-   * `forgetBackend` walks a node's songs to delete their audio, and a callback
-   * closing over the rendered `snapshots` would walk whatever list existed when
-   * it was created. Mirrored for the same reason `backendsRef` is.
-   */
-  const snapshotsRef = useRef<Record<string, ConnectionSnapshot>>({});
   const connections = useRef(new Map<string, LiveConnection>());
   const pairTokens = useRef(new Map<string, string>());
   const outboxInFlight = useRef(new Set<string>());
@@ -312,6 +300,32 @@ export function useBackendRuntime(
       active = false;
     };
   }, [loadBackendRecords]);
+
+  useEffect(() => {
+    let active = true;
+    loadAllCachedLibraries()
+      .then(libraries => {
+        if (!active) return;
+        setSnapshots(previous => {
+          const next = { ...previous };
+          for (const [nodeKey, library] of Object.entries(libraries)) {
+            if (next[nodeKey] !== undefined) continue;
+            next[nodeKey] = {
+              ...DEFAULT_BACKEND_SNAPSHOT,
+              songs: library.songs,
+              libraryRevision: library.revision,
+            };
+          }
+          return next;
+        });
+      })
+      .catch(error => {
+        if (active) setStorageError(readError(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [loadAllCachedLibraries]);
 
   const rememberNodeInfo = useCallback(
     (nodePublicKey: string, info: NodeInfo) => {
@@ -403,6 +417,9 @@ export function useBackendRuntime(
         pairTokens.current.get(backend.nodePubkey),
         {
           onSnapshot: snapshot => {
+            if (
+              connections.current.get(backend.nodePubkey)?.connection !== connection
+            ) return;
             setSnapshots(previous => ({
               ...previous,
               [backend.nodePubkey]: {
@@ -500,7 +517,6 @@ export function useBackendRuntime(
     [],
   );
 
-  snapshotsRef.current = snapshots;
 
   const pairBackend = useCallback(
     (request: PairingRequest) => {
@@ -549,42 +565,23 @@ export function useBackendRuntime(
       connections.current.delete(nodePublicKey);
       pairTokens.current.delete(nodePublicKey);
 
-      const snapshot = snapshotsRef.current[nodePublicKey];
-      const audioKeys: string[] = [];
-      for (const song of snapshot?.songs ?? []) {
-        const artifact = deliveryArtifact(song);
-        if (artifact === undefined) continue;
-        audioKeys.push(audioKey(nodePublicKey, song.id, artifact.sha256));
-        // One failure must not strand the rest: a file that is already gone,
-        // or that native refuses, still leaves the record to remove.
-        try {
-          await audioStore.remove({
-            nodeKey: nodePublicKey,
-            songId: song.id,
-            digest: artifact.sha256,
-          });
-        } catch (error) {
-          setStorageError(readError(error));
-        }
-      }
-
       replaceBackends(
         backendsRef.current.filter(
           backend => backend.nodePubkey !== nodePublicKey,
         ),
       );
-      setSnapshots(current => {
-        const next = { ...current };
-        delete next[nodePublicKey];
-        return next;
-      });
-      setLocalAudio(current => {
-        const next = { ...current };
-        for (const key of audioKeys) delete next[key];
-        return next;
-      });
+      setSnapshots(current => ({
+        ...current,
+        [nodePublicKey]: {
+          ...(current[nodePublicKey] ?? DEFAULT_BACKEND_SNAPSHOT),
+          phase: 'disconnected',
+          error: null,
+          jobs: [],
+          librarySyncing: false,
+        },
+      }));
     },
-    [audioStore, replaceBackends],
+    [replaceBackends],
   );
 
   const submit = useCallback(
@@ -712,12 +709,12 @@ export function useBackendRuntime(
 
   useEffect(() => {
     let active = true;
-    const entries = (backends ?? []).flatMap(backend =>
-      (snapshots[backend.nodePubkey]?.songs ?? []).flatMap(song => {
+    const entries = Object.entries(snapshots).flatMap(([nodeKey, snapshot]) =>
+      snapshot.songs.flatMap(song => {
         const artifact = deliveryArtifact(song);
         return artifact === undefined
           ? []
-          : ([[backend.nodePubkey, song, artifact]] as const);
+          : ([[nodeKey, song, artifact]] as const);
       }),
     );
     Promise.all(

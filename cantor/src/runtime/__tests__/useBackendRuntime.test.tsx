@@ -1,4 +1,6 @@
 import React from 'react';
+import { buildFieldController } from '../../features/field/useFieldController';
+import { allPlaylists } from '../../playlists';
 import ReactTestRenderer from 'react-test-renderer';
 import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { JobView } from '../../../../protocol/JobView';
@@ -244,6 +246,7 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
       loadJobs: loadJobsMock,
       mergeJobs: mergeJobsMock,
       loadLibrary: loadLibraryMock,
+      loadLibraries: jest.fn().mockResolvedValue({}),
       commitLibrary: commitLibraryMock,
       loadOutbox: loadOutboxMock,
       putPending: putPendingMock,
@@ -304,6 +307,56 @@ async function mount(fixtureValue: Fixture): Promise<{
 }
 
 describe('useBackendRuntime', () => {
+  it('keeps only complete downloads after forgetting, survives restart, and recovers all songs and playlist tags on re-pair', async () => {
+    const f = fixture();
+    const songs = [
+      { ...song(), id: 'cached', tags: ['p/Drive'] },
+      { ...song(), id: 'pinned', tags: ['p/Dusk'] },
+      { ...song(), id: 'remote', tags: ['p/Remote playlist'] },
+      { ...song(), id: 'partial', tags: [] },
+    ];
+    const library = { revision: 22, songs, lastSyncedAt: '2026-09-10T00:00:00Z' };
+    f.loadLibrary.mockResolvedValue(library);
+    f.inspectAudio.mockImplementation(async (_node, id) => ({
+      state: id, bytes: id === 'remote' ? 0 : 10,
+    }));
+    let mounted = await mount(f);
+    expect(buildFieldController(mounted.current().state).presentations.size).toBe(4);
+    await ReactTestRenderer.act(async () => {
+      await mounted.current().commands.forgetBackend('node-a');
+    });
+    expect(f.removeAudio).not.toHaveBeenCalled();
+    expect(f.saveBackends).toHaveBeenLastCalledWith([]);
+    expect(f.connections[0].stop).toHaveBeenCalled();
+    let field = buildFieldController(mounted.current().state);
+    expect([...field.presentations.values()].map(p => p.song.id).sort()).toEqual(['cached', 'pinned']);
+    expect([...field.presentations.values()].every(p => !p.ready)).toBe(true);
+    await expect(mounted.current().commands.audioPath('node-a', songs[0], artifact)).resolves.toContain('fixture.opus');
+    // A stopped connection must not revive remote content or flush an outbox.
+    await ReactTestRenderer.act(async () => {
+      f.callbacks[0].onSnapshot({ phase: 'ready', error: null, jobs: [], songs: [], libraryRevision: 99, librarySyncing: false });
+    });
+    expect(f.commitLibrary).not.toHaveBeenCalled();
+    await ReactTestRenderer.act(async () => mounted.renderer.unmount());
+    f.loadBackends.mockResolvedValue([]);
+    f.dependencies.loadLibraries = jest.fn().mockResolvedValue({ 'node-a': library });
+    mounted = await mount(f);
+    field = buildFieldController(mounted.current().state);
+    expect([...field.presentations.values()].map(p => p.song.id).sort()).toEqual(['cached', 'pinned']);
+    expect(f.connections).toHaveLength(1);
+    await ReactTestRenderer.act(async () => {
+      mounted.current().commands.pairBackend({ backend, pairToken: 'fresh-token' });
+    });
+    await ReactTestRenderer.act(async () => {
+      f.callbacks[1].onSnapshot({ phase: 'ready', error: null, jobs: [], songs, libraryRevision: 22, librarySyncing: false });
+    });
+    field = buildFieldController(mounted.current().state);
+    expect(field.presentations.size).toBe(4);
+    expect(allPlaylists([...field.presentations.values()].map(p => p.song.tags))).toEqual(['Drive', 'Dusk', 'Remote playlist']);
+    expect(f.commitLibrary).toHaveBeenLastCalledWith('node-a', 22, songs);
+    await ReactTestRenderer.act(async () => mounted.renderer.unmount());
+  });
+
   it('hydrates caches, starts one connection, persists snapshots, flushes the owner outbox, and stops on unmount', async () => {
     const f = fixture();
     f.loadOutbox.mockResolvedValue([
