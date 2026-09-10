@@ -153,13 +153,23 @@ export function releaseTarget(
  * later that the sheet is open and would otherwise restart the same trip with
  * a fresh ease — a visible hitch a third of the way down. Whoever gets there
  * first writes the destination, and the other one sees it and leaves it alone.
+ *
+ * `sign` is which blind is asking, and it is what keeps the two of them off
+ * each other's value: both read one signed pull, so a blind that is rolled up
+ * has no business writing to it while the other one is hanging. Without that
+ * test the closed blind rolled the open one away every time the height
+ * changed — open the keyboard under the composer and the soft input shrank the
+ * viewport, both blinds re-ran this with their new height, and the engines,
+ * closed and asking for zero, took the composer down with it.
  */
 export function unrollTo(
   pull: SharedValue<number>,
   destination: SharedValue<number>,
   target: number,
+  sign: number,
 ): void {
   'worklet';
+  if (pull.value * sign < 0) return;
   if (destination.value === target) return;
   destination.value = target;
   pull.value = withTiming(target, {
@@ -273,8 +283,14 @@ function CurtainImpl({
   // React owns only the destination. The finger owns everything before it, and
   // the run starts from wherever the finger stopped — on the UI thread, so the
   // distance it measures is the live one rather than React's copy of it.
+  //
+  // `height` is in the dependencies because a blind that is down has to stay
+  // down over a viewport that changed under it — the soft keyboard resizes the
+  // window, and a sheet still drawn to the old height would hang past the
+  // opening. `sign` is what makes that safe for the blind that is *not* down;
+  // see `unrollTo`.
   useEffect(() => {
-    runOnUI(unrollTo)(pull, destination, open ? sign * height : 0);
+    runOnUI(unrollTo)(pull, destination, open ? sign * height : 0, sign);
   }, [destination, height, open, pull, sign]);
 
   // Height, not transform: a blind that slid as a rigid body would enter hem
