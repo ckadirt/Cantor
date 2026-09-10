@@ -1,5 +1,12 @@
-import React from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect } from 'react';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withTiming,
+} from 'react-native-reanimated';
+import { easeSmoother, TransformText } from '../../motion';
+import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { PanelPressable } from './PanelPressable';
 import { BUDGET_CHOICES } from '../../audio/budget';
 import { formatBytes } from '../../lenses';
 import { space, touch, type, usePalette } from '../../theme/tokens';
@@ -9,7 +16,13 @@ const SETTINGS_KNOBS = {
   /** Enough of the key to compare against a node's screen by eye. */
   FINGERPRINT_CHARS: 4,
   /** The two storage bands, drawn as one bar each. */
-  BAR_HEIGHT_PX: 3,
+  BAR_HEIGHT_PX: 5,
+  BAR_MORPH_MS: 420,
+  META_PX: 12,
+  CHOICE_MIN_PX: 64,
+  /** Stable text slot: changing units never changes the surrounding layout. */
+  BUDGET_HEIGHT_PX: 48,
+  BUDGET_MORPH_MS: 420,
 } as const;
 
 /** What this phone is holding, counted the way the design counts it. */
@@ -67,17 +80,19 @@ export function SettingsSheet({
         3 existed to remove.
       */}
       <Text style={[type.title, { color: pal.ink }]}>Cantor</Text>
-      <Text style={[type.eyebrow, { color: pal.faint }]}>1.0 · ALPHA</Text>
+      <Text style={[styles.meta, { color: pal.muted }]}>1.0 · ALPHA</Text>
 
       <Group label="THIS PHONE" />
       <Row label="Identity" value={fingerprint(publicKey)} />
 
       <Group label="LIBRARY" />
-      <Row label="Songs" value={String(library.songs)} />
-      {/* Placements, not just songs: a song in three playlists is three marks,
+      <View style={[styles.statistics, { borderColor: pal.line }]}>
+        <Stat label="Songs" value={library.songs} />
+        {/* Placements, not just songs: a song in three playlists is three marks,
           and the difference is the whole reason the field has an axis dial. */}
-      <Row label="Placements" value={String(library.placements)} />
-      <Row label="Playlists" value={String(library.playlists)} />
+        <Stat label="Placements" value={library.placements} />
+        <Stat label="Playlists" value={library.playlists} />
+      </View>
 
       <Group label="STORAGE" />
       <Band
@@ -100,27 +115,39 @@ export function SettingsSheet({
       />
 
       <View style={[styles.hairline, { backgroundColor: pal.line }]} />
-      <Text style={[type.eyebrow, { color: pal.faint }]}>BUDGET</Text>
-      <Text style={[type.heading, { color: pal.ink }]}>
-        {formatBytes(budgetBytes)}
-      </Text>
+      <Text style={[styles.meta, { color: pal.muted }]}>BUDGET</Text>
+      <TransformText
+        text={formatBytes(budgetBytes)}
+        charStyle={type.title}
+        color={pal.ink}
+        appearance="none"
+        duration={SETTINGS_KNOBS.BUDGET_MORPH_MS}
+        style={styles.budgetValue}
+      />
       <View style={styles.choices}>
         {BUDGET_CHOICES.map(choice => (
-          <Pressable
+          <PanelPressable
             accessibilityLabel={`Budget ${formatBytes(choice)}`}
             accessibilityRole="button"
             accessibilityState={{ selected: choice === budgetBytes }}
-            hitSlop={space.sm}
+            style={[
+              styles.choice,
+              {
+                borderColor: choice === budgetBytes ? pal.ink : pal.line,
+              },
+            ]}
             key={choice}
-            onPress={() => onChangeBudget(choice)}>
+            onPress={() => onChangeBudget(choice)}
+          >
             <Text
               style={[
-                type.eyebrow,
-                { color: choice === budgetBytes ? pal.ink : pal.faint },
-              ]}>
+                styles.meta,
+                { color: choice === budgetBytes ? pal.ink : pal.muted },
+              ]}
+            >
               {formatBytes(choice)}
             </Text>
-          </Pressable>
+          </PanelPressable>
         ))}
       </View>
       <Text style={[type.body, { color: pal.muted }]}>
@@ -147,7 +174,7 @@ function Group({ label }: { label: string }) {
   const pal = usePalette();
   return (
     <View style={styles.group}>
-      <Text style={[type.eyebrow, { color: pal.faint }]}>{label}</Text>
+      <Text style={[styles.meta, { color: pal.muted }]}>{label}</Text>
       <View style={[styles.hairline, { backgroundColor: pal.line }]} />
     </View>
   );
@@ -159,7 +186,7 @@ function Row({ label, value }: { label: string; value?: string }) {
     <View style={styles.row}>
       <Text style={[type.body, { color: pal.ink }]}>{label}</Text>
       {value === undefined ? null : (
-        <Text style={[type.eyebrow, { color: pal.muted }]}>{value}</Text>
+        <Text style={[styles.meta, { color: pal.muted }]}>{value}</Text>
       )}
     </View>
   );
@@ -180,35 +207,86 @@ function Band({
   note: string;
 }) {
   const pal = usePalette();
-  const width: `${number}%` = `${Math.round(
-    Math.min(Math.max(fraction, 0), 1) * 100,
-  )}%`;
+  const fill = useSharedValue(Math.min(Math.max(fraction, 0), 1));
+  useEffect(() => {
+    fill.value = withTiming(Math.min(Math.max(fraction, 0), 1), {
+      duration: SETTINGS_KNOBS.BAR_MORPH_MS,
+      easing: easeSmoother,
+    });
+  }, [fill, fraction]);
+  const fillStyle = useAnimatedStyle(() => ({
+    width: `${fill.value * 100}%` as `${number}%`,
+  }));
   return (
-    <View style={styles.band}>
+    <View style={[styles.band, { borderColor: pal.line }]}>
       <View style={styles.row}>
-        <Text style={[type.eyebrow, { color: pal.faint }]}>{label}</Text>
-        <Text style={[type.eyebrow, { color: pal.muted }]}>{value}</Text>
+        <Text style={[styles.meta, { color: pal.muted }]}>{label}</Text>
+        <Text style={[styles.meta, { color: pal.muted }]}>{value}</Text>
       </View>
       <View style={[styles.track, { backgroundColor: pal.line }]}>
-        <View style={[styles.fill, { backgroundColor: colour, width }]} />
+        <Animated.View
+          style={[styles.fill, { backgroundColor: colour }, fillStyle]}
+        />
       </View>
       <Text style={[type.body, { color: pal.muted }]}>{note}</Text>
     </View>
   );
 }
 
+function Stat({ label, value }: { label: string; value: number }) {
+  const pal = usePalette();
+  return (
+    <View style={styles.stat}>
+      <Text style={[type.title, { color: pal.ink }]}>{value}</Text>
+      <Text style={[type.small, { color: pal.muted }]}>{label}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
+  budgetValue: { height: SETTINGS_KNOBS.BUDGET_HEIGHT_PX },
+  meta: {
+    ...type.eyebrow,
+    fontSize: SETTINGS_KNOBS.META_PX,
+    letterSpacing: 0.7,
+    lineHeight: 19,
+  },
+  statistics: {
+    flexDirection: 'row',
+    paddingVertical: space.md,
+  },
+  stat: { flex: 1, alignItems: 'center', gap: space.xs },
+  choice: {
+    flexGrow: 1,
+    minWidth: SETTINGS_KNOBS.CHOICE_MIN_PX,
+    minHeight: touch.min,
+    borderBottomWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: space.sm,
+  },
   body: { gap: space.xs, paddingBottom: space.xxl, paddingTop: space.md },
-  group: { marginTop: space.md },
+  group: { marginTop: space.lg, marginBottom: space.sm },
   hairline: { height: 1, marginTop: space.sm },
   row: {
     alignItems: 'baseline',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    minHeight: touch.min / 2,
+    flexWrap: 'wrap',
+    gap: space.sm,
+    minHeight: touch.min,
   },
-  band: { gap: space.xs, marginTop: space.sm },
+  band: {
+    gap: space.sm,
+    marginTop: space.sm,
+    paddingVertical: space.sm,
+  },
   track: { height: SETTINGS_KNOBS.BAR_HEIGHT_PX, width: '100%' },
   fill: { height: SETTINGS_KNOBS.BAR_HEIGHT_PX },
-  choices: { flexDirection: 'row', gap: space.lg, minHeight: touch.min },
+  choices: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: space.sm,
+    marginVertical: space.sm,
+  },
 });
