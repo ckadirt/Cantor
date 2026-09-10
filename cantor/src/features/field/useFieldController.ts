@@ -100,11 +100,12 @@ export function buildFieldController(
       const localAudio =
         state.localAudio[audioKey(nodeKey, song.id, delivery?.sha256 ?? 'none')] ??
         REMOTE_AUDIO;
-      if (
-        !paired.has(nodeKey) &&
-        localAudio.state !== 'cached' &&
-        localAudio.state !== 'pinned'
-      ) continue;
+      // An unpaired node keeps only what you pinned. A cached copy is a loan
+      // `enforceCacheBudget` may call in at any download, and with no node to
+      // fetch it back from a mark standing on one would simply vanish one day.
+      // `forgetBackend` releases them, so this is the field agreeing with what
+      // is actually on disk rather than a second policy.
+      if (!paired.has(nodeKey) && localAudio.state !== 'pinned') continue;
       const entity: FieldEntity = {
         key: `${backend.nodePubkey}:${song.id}`,
         nodePublicKey: backend.nodePubkey,
