@@ -118,6 +118,10 @@ retained linear clock (`MORPH_MS = 420`); the drawing eases it once. Pure bar
 geometry is shared with the fallback lens in `lenses/cantorWaveGeometry.ts`.
 The field's morph module partitions the exact face polygon into 32 wedges,
 then interpolates those wedges into bars at the measured Cantor intervals.
+`features/field/songDetailPhase.ts` separates reveal, hold, and hidden states:
+the outgoing waveform keeps its ink while camera opacity fades it, and resets
+only after it is hidden. Playhead mappers must include the position shared
+value in their dependencies so loading a track replaces the idle clock.
 
 ## Tests
 

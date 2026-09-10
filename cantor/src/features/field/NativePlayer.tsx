@@ -270,7 +270,7 @@ export function PlayerRing({
     if (durationSeconds <= 0) return 0;
     const value = positionSeconds.value / durationSeconds;
     return value < 0 ? 0 : value > 1 ? 1 : value;
-  }, [durationSeconds]);
+  }, [durationSeconds, positionSeconds]);
 
   const reducedMotion = useReducedMotion();
   const circleOpacity = useDerivedValue(() => 1 - smootherstep(lensMix?.value ?? 0));

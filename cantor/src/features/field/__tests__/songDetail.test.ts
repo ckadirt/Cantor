@@ -1,3 +1,4 @@
+import { songDetailOpacity, songDetailPhase } from '../songDetailPhase';
 /**
  * The measurement, from the ring it is drawn on to the grain it becomes.
  *
@@ -310,4 +311,18 @@ describe('the measurement from the ring to the grain', () => {
     expect(fieldFadeAt(LEVEL_SCALE_RATIOS.song)).toBe(1);
     expect(fieldFadeAt(LEVEL_SCALE_RATIOS.shelf)).toBe(1);
   });
+});
+
+
+it('holds outgoing measurement ink until the camera has faded it away', () => {
+  expect(songDetailPhase(30)).toBe('reveal');
+  expect(songDetailPhase(26.99)).toBe('hold');
+  expect(songDetailOpacity(26.99)).toBeGreaterThan(0.99);
+  expect(drawAt({ ratio: 26.99, drawn: 1 }).lines).toHaveLength(ticks);
+  expect(songDetailOpacity(20)).toBeLessThan(1);
+  expect(songDetailOpacity(20)).toBeGreaterThan(0);
+  expect(songDetailPhase(12)).toBe('hidden');
+  expect(drawAt({ ratio: 12, drawn: 1 }).lines).toHaveLength(0);
+  expect(songDetailPhase(atGrain)).toBe('reveal');
+  expect(songDetailOpacity(atGrain)).toBe(1);
 });

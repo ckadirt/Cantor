@@ -1,3 +1,4 @@
+import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import React, { useEffect, useMemo, useRef } from 'react';
 import { facePoints } from '../../lenses/face';
 import { drawWaveMorph, waveWedges, WAVE_GEOMETRY_KNOBS } from './waveGeometry';
@@ -1907,6 +1908,8 @@ export function drawSongDetail(
   const fitted = nativeFitScale(p, recut, fitScaleShared);
   if (!(fitted > 0)) return;
   const ratio = cameraScale / fitted;
+  const opacity = songDetailOpacity(ratio);
+  if (opacity <= 0) return;
   const opening =
     (ratio - UNROLL_KNOBS.FROM_RATIO) /
     (UNROLL_KNOBS.TO_RATIO - UNROLL_KNOBS.FROM_RATIO);
@@ -2056,7 +2059,7 @@ export function drawSongDetail(
   const detail = resolved * unrolled;
   const coarse = (1 - detail) * (1 - smootherstep(lensProgress) * (1 - unrolled));
   if (coarse > 0) {
-    paints.stroke.setAlphaf(knobs.SONG_WAVE_ALPHA * coarse);
+    paints.stroke.setAlphaf(knobs.SONG_WAVE_ALPHA * coarse * opacity);
     paints.stroke.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
     for (let index = 0; index < ticks; index += 1) {
       const drew = writeSubAlpha(drawn, index, ticks);
@@ -2114,7 +2117,7 @@ export function drawSongDetail(
    * measurement and the fine one are over each other the whole way — the
    * crossfade has nowhere to slip.
    */
-  paints.fill.setAlphaf(detail);
+  paints.fill.setAlphaf(detail * opacity);
   const bucketSeconds = windowSpan / buckets;
   const columnWidth = (bucketSeconds / span) * viewport.width;
   for (let bucket = 0; bucket < buckets; bucket += 1) {
@@ -2182,51 +2185,28 @@ function NativeSongDetail({
   viewport: Viewport;
 }) {
   const paints = useMemo(() => createFacePaints(palette), [palette]);
-  /**
-   * Whether the player has arrived and you have not gone back out.
-   *
-   * The ratio rather than the song band, and the difference is the whole of
-   * L3. A band closes at both ends — this one at 378 — but going *further in*
-   * is not leaving: the grain sits at `LEVEL_SCALE_RATIOS.grain`, far past
-   * that, and reading arrival off the band reset the draw-on at exactly the
-   * moment the measurement was needed most. The ticks vanished on arrival at
-   * L3 and took the decoded detail with them, because it is drawn after them.
-   *
-   * `song[1]` is where the band finishes opening, which is a shade before the
-   * L2 seat at `LEVEL_SCALE_RATIOS.song` — so this is true by the time the
-   * descent lands and stays true until you climb back out through it.
-   */
-  const arrived = useDerivedValue(() => {
+  // The entry window has three states: reset only when hidden, reveal
+  // when settled, and preserve the ink while the camera carries it out.
+  const phase = useDerivedValue(() => {
     const fitted = nativeFitScale(clock.value, recut, fitScaleShared);
-    if (!(fitted > 0)) return 0;
-    const ratio =
-      nativeCameraScale(clock.value, recut, cameraShared) / fitted;
-    return ratio >= REPRESENTATION_WINDOWS.song[1] ? 1 : 0;
+    const ratio = fitted > 0
+      ? nativeCameraScale(clock.value, recut, cameraShared) / fitted
+      : 0;
+    return songDetailPhase(ratio);
   });
-  /**
-   * The measurement's own clock, started when the descent is over.
-   *
-   * `arrived` reaches 1 while the camera is still closing the last of the
-   * flight, so this watches for that and then runs a clock of its own — which
-   * is what keeps the draw-on out of a frame that already has the face
-   * growing, the ring blooming and two lines morphing in it.
-   *
-   * Reset on the way out rather than left at 1: leaving the song and coming
-   * back is arriving again, and a measurement already drawn would simply be
-   * there, which is the one thing this is for.
-   */
   const drawn = useSharedValue(0);
   useAnimatedReaction(
-    () => arrived.value >= 1,
-    (settled, before) => {
-      if (settled === before) return;
+    () => phase.value,
+    (next, before) => {
+      if (next === before) return;
       cancelAnimation(drawn);
-      drawn.value = settled
-        ? withTiming(1, {
-            duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
-            easing: easeSmoother,
-          })
-        : 0;
+      if (next === 'hidden') drawn.value = 0;
+      else if (next === 'reveal') {
+        drawn.value = withTiming(1, {
+          duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
+          easing: easeSmoother,
+        });
+      }
     },
   );
   /** How much of the decoded detail has resolved into the coarse ticks. */

@@ -50,8 +50,8 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
  * and snaps back. Only the UI thread can redraw a row at the size it is
  * supposed to be on the frame it is supposed to be that size.
  *
- * The picture is not gone: it still draws every lens that is not the name, and
- * stands in before the fonts have loaded. It is no longer the thing that owns
+ * The picture is not gone: it stands in before the native field is ready.
+ * Circle and Cantor wave both use the live native renderer. It is no longer the thing that owns
  * a *distance*.
  */
 export function isNativeDrawnDistance(scale: number, fitScale: number): boolean {
