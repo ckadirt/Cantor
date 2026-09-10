@@ -79,7 +79,9 @@ describe('the composer collapses the machine into one line', () => {
     const { words } = render([{ ...agentbox, models: [model('acestep:1.5-fast')] }]);
 
     expect(words()).toContain('AGENTBOX · ACESTEP:1.5-FAST · AUTO');
-    expect(words()).toContain('ONE ENGINE, ONE MODEL · TAP TO CHANGE');
+    // Prose, in the app's own serif: what is *said about* the machine is a
+    // sentence, and only the machine's own state is set in the chrome's mono.
+    expect(words()).toContain('One engine, one model — tap to change.');
   });
 
   it('counts what the chosen node has, once the cascade is open', () => {
@@ -88,8 +90,8 @@ describe('the composer collapses the machine into one line', () => {
     press('Change engine, model and length');
     // With two nodes paired nothing is preselected: the first step is a real
     // question, and the second only answers itself once it has been answered.
-    press('agentbox');
-    expect(words()).toContain('THE 2 MODELS AGENTBOX HAS');
+    press('Run it on agentbox');
+    expect(words()).toContain('The 2 models agentbox has.');
     expect(words()).toContain('WHERE IT RUNS');
     expect(words()).toContain('WHAT RUNS IT');
     expect(words()).toContain('HOW LONG');
@@ -107,11 +109,14 @@ describe('a pairing the node cannot run is never offered', () => {
     const { words, press } = render([agentbox, phone]);
     press('Change engine, model and length');
 
-    press('this phone');
+    press('Run it on this phone');
 
-    expect(words()).toContain('THE ONLY MODEL THIS PHONE HAS');
-    // ACE-Step belongs to the other node and must not be on offer here.
+    expect(words()).toContain('The only model this phone has.');
+    // ACE-Step belongs to the other node and must not be on offer here, in
+    // either the dial's chrome casing or the sheet's own.
     expect(words()).not.toContain('acestep:1.5-fast');
+    expect(words()).not.toContain('ACESTEP:1.5-FAST');
+    // One model is not a dial: the step states what it resolved to.
     expect(words()).toContain('levo2:1.0');
   });
 
@@ -119,7 +124,7 @@ describe('a pairing the node cannot run is never offered', () => {
     const { onSubmit, press, type } = render([agentbox, phone]);
     type('Describe the song', 'a slow harbour at dusk');
     press('Change engine, model and length');
-    press('this phone');
+    press('Run it on this phone');
     press('Make it');
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
