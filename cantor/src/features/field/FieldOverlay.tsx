@@ -1,18 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  Pressable,
-  StyleSheet,
-  Text,
-  View,
-  type LayoutChangeEvent,
-} from 'react-native';
-import Animated, {
-  useAnimatedStyle,
-  useReducedMotion,
-  useSharedValue,
-  withTiming,
-} from 'react-native-reanimated';
-import { TransformText, WriteText, easeSmoother } from '../../motion';
+import React from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { TransformText, WriteText } from '../../motion';
+import { Dial, Reveal } from '../controls';
 import {
   ARRANGEMENTS,
   DATE_RESOLUTIONS,
@@ -138,24 +127,14 @@ export const OVERLAY_KNOBS = {
    */
   TAB_HIT_INWARD_PX: 6,
   /**
-   * The mark under the selected word on a dial.
-   *
-   * A tick, not a triangle or a pill: the edge tabs already say "this is the
-   * one" with a short hairline, so the dial says it the same way and the
-   * chrome keeps one vocabulary. It slides rather than jumping because the
-   * dial is a dial — the selection moves along it.
-   */
-  TICK_GAP_PX: 5,
-  DIAL_MOVE_MS: 260,
-  /**
    * The resolution row's height, including the space above it. Fixed rather
    * than measured: it is one line of one type size, and animating a measured
    * height means the first frame of every open is the wrong size.
+   *
+   * The tick and the rise the row arrives on belong to the controls
+   * themselves; see `DIAL_KNOBS` and `REVEAL_KNOBS`.
    */
   RESOLUTION_ROW_PX: 26,
-  RESOLUTION_MS: 240,
-  /** How far the row rises into its seat, in the engine's entrance spirit. */
-  REVEAL_RISE_PX: 6,
   /*
    * Reserved heights for the chrome's animated lines.
    *
@@ -614,192 +593,6 @@ function EdgeTab({
   );
 }
 
-/** One position on a dial. */
-type DialItem = Readonly<{
-  key: string;
-  label: string;
-  accessibilityLabel: string;
-}>;
-
-/**
- * A row of choices with a tick that slides to whichever is chosen.
- *
- * Colour alone already says which word is selected; the tick is what makes the
- * *change* visible. It travels to the new word's own width, so the mark reads
- * as one object moving along the dial rather than as several marks taking
- * turns being lit — which is the difference between a control and a row of
- * buttons.
- *
- * Each word reports its own box through `onLayout`; nothing here measures text.
- */
-function Dial({
-  activeColour,
-  activeKey,
-  items,
-  onSelect,
-  restColour,
-  textStyle,
-  tickColour,
-}: {
-  activeColour: string;
-  activeKey: string;
-  items: readonly DialItem[];
-  onSelect: (key: string) => void;
-  restColour: string;
-  textStyle: object;
-  tickColour: string;
-}) {
-  const reducedMotion = useReducedMotion();
-  const [boxes, setBoxes] = useState<
-    Record<string, { x: number; width: number }>
-  >({});
-  const left = useSharedValue(0);
-  const width = useSharedValue(0);
-  // The first box to arrive has nowhere to travel from, so it is placed.
-  const placed = useRef(false);
-
-  const measure = useCallback((key: string, event: LayoutChangeEvent) => {
-    const { x, width: w } = event.nativeEvent.layout;
-    setBoxes(previous => {
-      const known = previous[key];
-      if (known !== undefined && known.x === x && known.width === w) {
-        return previous;
-      }
-      return { ...previous, [key]: { x, width: w } };
-    });
-  }, []);
-
-  const target = boxes[activeKey];
-  useEffect(() => {
-    if (target === undefined) return;
-    if (!placed.current || reducedMotion) {
-      placed.current = true;
-      left.value = target.x;
-      width.value = target.width;
-      return;
-    }
-    const timing = {
-      duration: OVERLAY_KNOBS.DIAL_MOVE_MS,
-      easing: easeSmoother,
-    };
-    left.value = withTiming(target.x, timing);
-    width.value = withTiming(target.width, timing);
-  }, [left, reducedMotion, target, width]);
-
-  const tick = useAnimatedStyle(() => ({
-    opacity: width.value > 0 ? 1 : 0,
-    transform: [{ translateX: left.value }],
-    width: width.value,
-  }));
-
-  return (
-    <View style={styles.dial} pointerEvents="box-none">
-      <View style={styles.dialRow} pointerEvents="box-none">
-        {items.map(item => (
-          <Pressable
-            accessibilityLabel={item.accessibilityLabel}
-            accessibilityRole="button"
-            accessibilityState={{ selected: item.key === activeKey }}
-            hitSlop={space.sm}
-            key={item.key}
-            onLayout={event => measure(item.key, event)}
-            onPress={() => onSelect(item.key)}
-            style={styles.dialItem}
-          >
-            <Text
-              style={[
-                textStyle,
-                { color: item.key === activeKey ? activeColour : restColour },
-              ]}
-            >
-              {item.label}
-            </Text>
-          </Pressable>
-        ))}
-      </View>
-      <Animated.View
-        pointerEvents="none"
-        style={[styles.tick, tick, { backgroundColor: tickColour }]}
-      />
-    </View>
-  );
-}
-
-/**
- * A row or a block that rises into space already kept for it.
- *
- * The foot is anchored to the bottom of the screen and stacks upward, so a row
- * that mounts at full height shoves the axis above it up in one frame — which
- * is the jump this replaces. The seat is therefore permanent: the dial above
- * sits at the same height on every axis, and only the row's own ink arrives
- * and leaves.
- *
- * `height` is for a row *inside* a stack, where the seat has to be reserved
- * even when the row is empty. A whole control that comes and goes with the
- * level passes no height and keeps its natural one: it is always mounted, so
- * the space is reserved by definition, and only its ink answers to `open`.
- * That is what a dial arriving looks like — the same rise the resolution row
- * has always used, rather than a control appearing out of nothing.
- *
- * It does not animate its height to get there. Reanimated drives the view
- * directly on the UI thread, so a layout prop that would reflow the parent
- * never reaches React Native's layout pass and snaps instead — measured on
- * device. Opacity and transform do not reflow anything, so they behave.
- *
- * The children stay mounted throughout: unmounting them when the fade ends
- * would be a completion callback mutating the tree.
- */
-function Reveal({
-  children,
-  duration = OVERLAY_KNOBS.RESOLUTION_MS,
-  height,
-  open,
-}: {
-  children: React.ReactNode;
-  /**
-   * Left at the resolution row's own length for a row that answers to the
-   * axis, and given the header's when the thing being revealed is part of the
-   * header becoming another header — a control that settles before the words
-   * around it is the same break as one that settles after them.
-   */
-  duration?: number;
-  height?: number;
-  open: boolean;
-}) {
-  const reducedMotion = useReducedMotion();
-  const amount = useSharedValue(open ? 1 : 0);
-  useEffect(() => {
-    const to = open ? 1 : 0;
-    amount.value = reducedMotion
-      ? to
-      : withTiming(to, { duration, easing: easeSmoother });
-  }, [amount, duration, open, reducedMotion]);
-  const style = useAnimatedStyle(() => ({
-    opacity: amount.value,
-    transform: [
-      { translateY: (1 - amount.value) * OVERLAY_KNOBS.REVEAL_RISE_PX },
-    ],
-  }));
-  return (
-    <Animated.View
-      // `accessibilityElementsHidden` as well as the pointer guard: a control
-      // that has faded out is gone as far as a finger is concerned, and it has
-      // to be gone for a screen reader too or the dial for a level you are not
-      // on is still in the reading order.
-      accessibilityElementsHidden={!open}
-      importantForAccessibility={open ? 'yes' : 'no-hide-descendants'}
-      pointerEvents={open ? 'box-none' : 'none'}
-      style={[
-        styles.reveal,
-        height === undefined ? null : { height },
-        style,
-      ]}
-    >
-      {children}
-    </Animated.View>
-  );
-}
-
 const styles = StyleSheet.create({
   header: {
     left: space.lg,
@@ -855,17 +648,6 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: space.lg,
   },
-  // The dial owns the space under its words so the tick has somewhere to sit.
-  dial: { paddingBottom: OVERLAY_KNOBS.TICK_GAP_PX },
-  dialRow: { flexDirection: 'row', gap: space.md },
-  tick: {
-    bottom: 0,
-    height: StyleSheet.hairlineWidth,
-    left: 0,
-    position: 'absolute',
-  },
-  reveal: { overflow: 'hidden' },
-  dialItem: { paddingVertical: space.xs },
   resolution: { ...type.eyebrow, fontSize: 9, letterSpacing: 1.4 },
   alert: {
     bottom: OVERLAY_KNOBS.ALERT_INSET_PX,
