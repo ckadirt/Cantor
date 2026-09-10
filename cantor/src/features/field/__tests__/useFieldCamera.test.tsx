@@ -1060,4 +1060,145 @@ describe('useFieldCamera', () => {
       latest.recut?.flights.map(flight => flight.entityKey),
     ).toEqual(['node-a:song-a']);
   });
+
+  /**
+   * Forgetting an engine takes its songs while you may be standing in one.
+   * The re-cut used to carry the camera's distance ratio through the new fit,
+   * which left it at song scale over a seat nothing was in — a small zoom and
+   * a nudge, with no way out but the system back button.
+   */
+  it('climbs out of a song that left the field, to its shelf or home', async () => {
+    mockReducedMotion = true;
+    const week = Date.UTC(2026, 7, 8);
+    const trio: FieldEntity[] = [
+      entities[0],
+      { ...entities[0], key: 'node-a:song-b', entityId: 'song-b' },
+      {
+        ...entities[0],
+        key: 'node-a:song-c',
+        entityId: 'song-c',
+        createdAtMs: week + 40 * 24 * 3600 * 1000,
+      },
+    ];
+    const all = layoutField({
+      entities: trio,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    // song-b goes; song-a keeps their shelf standing.
+    const shelfSurvives = layoutField({
+      entities: [trio[0], trio[2]],
+      arrangement: byDate('month'),
+      viewport,
+    });
+    // song-a goes too, and with it the only shelf to return to.
+    const shelfGone = layoutField({
+      entities: [trio[2]],
+      arrangement: byDate('month'),
+      viewport,
+    });
+
+    function TransitionProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<TransitionProbe field={all} />);
+    });
+
+    const inside = all.placements.find(
+      placement => placement.entityKey === 'node-a:song-b',
+    )!;
+    await ReactTestRenderer.act(async () => {
+      latest.descend(inside);
+    });
+    await ReactTestRenderer.act(async () => {
+      latest.descend(inside);
+    });
+    expect(latest.level).toBe('song');
+    expect(latest.focus?.key).toBe(inside.key);
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={shelfSurvives} />);
+    });
+    // The shelf song-b was seated in still has song-a in it, so that is where
+    // the climb stops — the context around what was removed, not the whole map.
+    expect(latest.level).toBe('shelf');
+    expect(latest.focus).toBeNull();
+    const group = shelfSurvives.groups.find(
+      candidate => candidate.key === inside.groupKey,
+    )!;
+    expect(latest.camera.x).toBeCloseTo(group.cx, 6);
+    expect(latest.camera.y).toBeCloseTo(group.cy, 6);
+
+    // Standing in song-a now, whose removal empties the shelf as well.
+    const remaining = shelfSurvives.placements.find(
+      placement => placement.entityKey === 'node-a:song-a',
+    )!;
+    await ReactTestRenderer.act(async () => {
+      latest.descend(remaining);
+    });
+    expect(latest.level).toBe('song');
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={shelfGone} />);
+    });
+    expect(latest.level).toBe('field');
+    expect(latest.camera.x).toBeCloseTo(shelfGone.fieldCenter.x, 6);
+    expect(latest.camera.y).toBeCloseTo(shelfGone.fieldCenter.y, 6);
+  });
+
+  /** Re-arranging re-keys every placement without one song leaving the field. */
+  it('does not throw the camera out of a song the field merely re-arranged', async () => {
+    mockReducedMotion = true;
+    const tagged: FieldEntity[] = [
+      { ...entities[0], tags: ['p/Drive'] },
+      { ...entities[0], key: 'node-a:song-b', entityId: 'song-b', tags: ['p/Drive'] },
+    ];
+    const dated = layoutField({
+      entities: tagged,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const listed = layoutField({
+      entities: tagged,
+      arrangement: byPlaylist,
+      viewport,
+    });
+
+    function TransitionProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<TransitionProbe field={dated} />);
+    });
+    const inside = dated.placements[0];
+    await ReactTestRenderer.act(async () => {
+      latest.descend(inside);
+    });
+    await ReactTestRenderer.act(async () => {
+      latest.descend(inside);
+    });
+    expect(latest.level).toBe('song');
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={listed} />);
+    });
+    expect(latest.level).toBe('song');
+  });
 });

@@ -253,6 +253,10 @@ export function useFieldCamera({
   const relayoutFrame = useRef<number | null>(null);
   const recutModel = useRef<FieldRecutModel | null>(null);
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
+  /** See the capture beside `focus`, and the strand it answers in the re-cut. */
+  const standing = useRef<Placement | null>(null);
+  /** The generation whose re-cut climbed out of a removed song, once. */
+  const strandedFocus = useRef<number | null>(null);
   const lastRenderFitScale = useRef<number | null>(null);
   // Gesture state lives on the UI thread, because that is where the gesture
   // now runs. Each write replaces the whole record: mutating a field of an
@@ -558,15 +562,48 @@ export function useFieldCamera({
     const fromCamera = firstLayout
       ? levelCameraTarget('field', layout) ?? EMPTY_CAMERA
       : cameraRef.current;
+    /*
+     * The song you are standing in can leave the field under you: forgetting
+     * an engine takes its songs while you may be reading one.
+     *
+     * Carrying the camera's distance ratio through the new fit — which is all
+     * the correction below does — leaves it at song scale over a seat nothing
+     * is in any more. On the device that read as a small zoom and a nudge,
+     * with no way out but the system's back button.
+     *
+     * So the climb out rides the re-cut's own clock rather than a camera
+     * flight of its own: two tweens both writing `cameraShared` for the same
+     * few hundred milliseconds is the one thing this hook is built not to do.
+     * Its shelf when that shelf survived it and home when it did not, which is
+     * the answer `ascend` gives from a placement it can no longer find.
+     *
+     * Asked of the *entity*, not the placement key: re-arranging re-keys every
+     * placement in the field without one song leaving it, and that must never
+     * throw the camera out of the song you are reading.
+     */
+    const held = standing.current;
+    const stranded =
+      held !== null &&
+      !firstLayout &&
+      isSongDistance(fromCamera.scale, fromFitScale) &&
+      !layout.placements.some(
+        placement => placement.entityKey === held.entityKey,
+      );
+    if (stranded) standing.current = null;
+    const fitCorrected = {
+      ...fromCamera,
+      scale: clampScale(
+        (fromCamera.scale / fromFitScale) * layout.fitScale,
+        layout,
+      ),
+    };
     const toCamera = firstLayout
       ? fromCamera
-      : {
-          ...fromCamera,
-          scale: clampScale(
-            (fromCamera.scale / fromFitScale) * layout.fitScale,
-            layout,
-          ),
-        };
+      : stranded
+      ? levelCameraTarget('shelf', layout, held) ??
+        levelCameraTarget('field', layout) ??
+        fitCorrected
+      : fitCorrected;
     const sources = firstLayout
       ? layout.placements
       : lastVisualPlacements.current.filter(stillDrawn);
@@ -603,6 +640,7 @@ export function useFieldCamera({
       animate,
       nativeDriven,
     };
+    if (stranded) strandedFocus.current = generation;
   }
 
   const activeRecut = recutModel.current;
@@ -752,6 +790,16 @@ export function useFieldCamera({
   useEffect(() => {
     focusRef.current = focus;
   }, [focus]);
+  /*
+   * The placement the camera is standing in, held past its own removal.
+   *
+   * `focus` is a lookup into the placements actually being drawn, so it empties
+   * the instant its song leaves the field — the one moment the climb out needs
+   * it, to name the shelf to climb back to. Captured here rather than written
+   * by `commitFocus` so it follows what is on screen: a placement that survives
+   * a re-arrangement under a new key is still the one you are reading.
+   */
+  standing.current = focus ?? standing.current;
   const level =
     layout === null ? 'field' : levelOf(renderedCamera.scale, renderFitScale);
 
@@ -857,6 +905,20 @@ export function useFieldCamera({
     pendingDescent.current = null;
     flyTo(target);
   }, [descentTicket, flyTo]);
+  /*
+   * Drop the focus the re-cut just climbed out of.
+   *
+   * The camera is already on its way — the re-cut is flying it — so this is
+   * only the bookkeeping: `focusKey` still names a placement that no longer
+   * exists, and `ascend` and the hit tests both read it. Deferred to an effect
+   * because the strand is decided during render, where React state may not be
+   * written.
+   */
+  useEffect(() => {
+    if (strandedFocus.current === null) return;
+    strandedFocus.current = null;
+    commitFocus(null, true);
+  }, [commitFocus, activeRecut?.generation]);
   const ascend = useCallback((): boolean => {
     const field = layoutRef.current;
     if (field === null) return false;
