@@ -4,7 +4,7 @@ import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { AnimatedSymbol } from '../../motion';
-import { PanelPressable } from './PanelPressable';
+import { PanelPressable } from '../controls';
 import { formatBytes } from '../../lenses';
 import {
   SettingsSheet,

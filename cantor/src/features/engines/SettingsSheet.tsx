@@ -6,7 +6,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { easeSmoother, TransformText } from '../../motion';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
-import { PanelPressable } from './PanelPressable';
+import { PanelPressable } from '../controls';
 import { BUDGET_CHOICES } from '../../audio/budget';
 import { formatBytes } from '../../lenses';
 import { space, touch, type, usePalette } from '../../theme/tokens';
