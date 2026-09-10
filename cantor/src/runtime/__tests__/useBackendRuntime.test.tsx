@@ -307,7 +307,16 @@ async function mount(fixtureValue: Fixture): Promise<{
 }
 
 describe('useBackendRuntime', () => {
-  it('keeps only complete downloads after forgetting, survives restart, and recovers all songs and playlist tags on re-pair', async () => {
+  /**
+   * Forgetting keeps what you kept.
+   *
+   * A pin is the only state this phone can still honour with the node gone:
+   * a cached copy is a loan `enforceCacheBudget` may call in at any download,
+   * and a part-transfer cannot resume without the engine that was sending it.
+   * Keeping either would leave marks in the field standing on files that can
+   * disappear with nothing left to fetch them back from.
+   */
+  it('keeps pinned songs after forgetting, releases the loans, and recovers everything on re-pair', async () => {
     const f = fixture();
     const songs = [
       { ...song(), id: 'cached', tags: ['p/Drive'] },
@@ -317,21 +326,35 @@ describe('useBackendRuntime', () => {
     ];
     const library = { revision: 22, songs, lastSyncedAt: '2026-09-10T00:00:00Z' };
     f.loadLibrary.mockResolvedValue(library);
-    f.inspectAudio.mockImplementation(async (_node, id) => ({
-      state: id, bytes: id === 'remote' ? 0 : 10,
-    }));
+    // Deletion has to be visible to the next inspect, or the restart below
+    // would assert against files the fixture pretends are still there.
+    const released = new Set<string>();
+    f.inspectAudio.mockImplementation(async (_node, id) =>
+      released.has(id)
+        ? { state: 'remote', bytes: 0 }
+        : { state: id, bytes: id === 'remote' ? 0 : 10 },
+    );
+    f.removeAudio.mockImplementation(async (_node, id) => {
+      released.add(id);
+      return { state: 'remote', bytes: 0 };
+    });
     let mounted = await mount(f);
     expect(buildFieldController(mounted.current().state).presentations.size).toBe(4);
     await ReactTestRenderer.act(async () => {
       await mounted.current().commands.forgetBackend('node-a');
     });
-    expect(f.removeAudio).not.toHaveBeenCalled();
+    // The loans, and only the loans. A pin is not touched, and a song that was
+    // never here has no file to delete.
+    expect(f.removeAudio.mock.calls.map(call => call[1]).sort()).toEqual([
+      'cached',
+      'partial',
+    ]);
     expect(f.saveBackends).toHaveBeenLastCalledWith([]);
     expect(f.connections[0].stop).toHaveBeenCalled();
     let field = buildFieldController(mounted.current().state);
-    expect([...field.presentations.values()].map(p => p.song.id).sort()).toEqual(['cached', 'pinned']);
+    expect([...field.presentations.values()].map(p => p.song.id)).toEqual(['pinned']);
     expect([...field.presentations.values()].every(p => !p.ready)).toBe(true);
-    await expect(mounted.current().commands.audioPath('node-a', songs[0], artifact)).resolves.toContain('fixture.opus');
+    await expect(mounted.current().commands.audioPath('node-a', songs[1], artifact)).resolves.toContain('fixture.opus');
     // A stopped connection must not revive remote content or flush an outbox.
     await ReactTestRenderer.act(async () => {
       f.callbacks[0].onSnapshot({ phase: 'ready', error: null, jobs: [], songs: [], libraryRevision: 99, librarySyncing: false });
@@ -342,7 +365,7 @@ describe('useBackendRuntime', () => {
     f.dependencies.loadLibraries = jest.fn().mockResolvedValue({ 'node-a': library });
     mounted = await mount(f);
     field = buildFieldController(mounted.current().state);
-    expect([...field.presentations.values()].map(p => p.song.id).sort()).toEqual(['cached', 'pinned']);
+    expect([...field.presentations.values()].map(p => p.song.id)).toEqual(['pinned']);
     expect(f.connections).toHaveLength(1);
     await ReactTestRenderer.act(async () => {
       mounted.current().commands.pairBackend({ backend, pairToken: 'fresh-token' });
@@ -350,6 +373,8 @@ describe('useBackendRuntime', () => {
     await ReactTestRenderer.act(async () => {
       f.callbacks[1].onSnapshot({ phase: 'ready', error: null, jobs: [], songs, libraryRevision: 22, librarySyncing: false });
     });
+    // Pairing again brings the whole library back, released audio included:
+    // nothing was ever deleted on the node.
     field = buildFieldController(mounted.current().state);
     expect(field.presentations.size).toBe(4);
     expect(allPlaylists([...field.presentations.values()].map(p => p.song.tags))).toEqual(['Drive', 'Dusk', 'Remote playlist']);

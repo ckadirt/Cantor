@@ -386,6 +386,33 @@ export function FieldScreen({ identity }: Props) {
     [controller.presentations, runRowAudio],
   );
 
+  /**
+   * Forget an engine, letting go of anything of its the player still holds.
+   *
+   * `forgetBackend` releases every copy of that node's audio that was only
+   * borrowed, and deleting a file out from under an open track is the one thing
+   * `runRowAudio`'s `REMOVE` already refuses to do. A *pinned* song survives the
+   * forget, so playing one is not interrupted by it: unpairing an engine is not
+   * a reason to stop the music you own.
+   *
+   * The camera needs no help here. A song that leaves the field takes its
+   * placement with it, and `useFieldCamera` climbs out of a song it can no
+   * longer find rather than hanging at that distance over nothing.
+   */
+  const forgetEngine = useCallback(
+    async (nodePublicKey: string) => {
+      const track = transport.snapshot.track;
+      if (track?.nodeKey === nodePublicKey) {
+        const playing = controller.presentations.get(
+          `${track.nodeKey}:${track.songId}`,
+        );
+        if (playing?.localAudio.state !== 'pinned') await transport.close();
+      }
+      await commands.forgetBackend(nodePublicKey);
+    },
+    [commands, controller.presentations, transport],
+  );
+
   /** A generating mark opens what it is doing; it has no inside to descend to. */
   const onClaimTap = useCallback(
     (placement: Placement): boolean => {
@@ -1007,7 +1034,14 @@ export function FieldScreen({ identity }: Props) {
   const footprints = useMemo(() => {
     const totals: Record<
       string,
-      { songs: number; downloaded: number; bytesHere: number; playlists: number }
+      {
+        songs: number;
+        downloaded: number;
+        bytesHere: number;
+        borrowed: number;
+        borrowedBytes: number;
+        playlists: number;
+      }
     > = {};
     const playlistsByNode: Record<string, Set<string>> = {};
     for (const presentation of controller.presentations.values()) {
@@ -1016,13 +1050,28 @@ export function FieldScreen({ identity }: Props) {
         songs: 0,
         downloaded: 0,
         bytesHere: 0,
+        borrowed: 0,
+        borrowedBytes: 0,
         playlists: 0,
       });
       entry.songs += 1;
-      const audio = presentation.localAudio.state;
-      if (audio === 'cached' || audio === 'pinned') {
+      // Pinned alone, because this count is what the forget screen promises
+      // will still be here afterwards, and a cached copy is a loan the budget
+      // may call in. Settings counts the two bands apart for the same reason.
+      const bytes = presentation.delivery?.byte_length ?? 0;
+      if (presentation.localAudio.state === 'pinned') {
         entry.downloaded += 1;
-        entry.bytesHere += presentation.delivery?.byte_length ?? 0;
+        entry.bytesHere += bytes;
+      } else if (
+        presentation.localAudio.state === 'cached' ||
+        presentation.localAudio.state === 'partial'
+      ) {
+        entry.borrowed += 1;
+        // A part-transfer holds only what has landed, which is what goes.
+        entry.borrowedBytes +=
+          presentation.localAudio.state === 'partial'
+            ? presentation.localAudio.bytes
+            : bytes;
       }
       const names = (playlistsByNode[key] ??= new Set<string>());
       for (const name of playlistsOf(presentation.song.tags)) names.add(name);
@@ -1307,7 +1356,7 @@ export function FieldScreen({ identity }: Props) {
             storage={storageReport}
             onForget={nodePublicKey => {
               setEnginesOpen(false);
-              void commands.forgetBackend(nodePublicKey);
+              void forgetEngine(nodePublicKey);
             }}
             onRename={commands.renameBackend}
             snapshots={snapshots}

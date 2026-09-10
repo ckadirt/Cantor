@@ -126,7 +126,22 @@ export type BackendRuntimeCommands = {
   pairBackend: (request: PairingRequest) => void;
   /** Change what this phone calls a node. Nothing on the node changes. */
   renameBackend: (nodePublicKey: string, petname: string) => void;
-  /** Forget the connection; downloaded audio and its metadata stay on this phone. */
+  /**
+   * Remove a node from this phone, keeping the songs you asked to keep.
+   *
+   * A song is here either because you tapped `GET`/`KEEP`, which pins it, or
+   * because you played it, which leaves a cached copy the budget is free to
+   * reclaim — the row says so: `CACHED · MAY BE RECLAIMED`. Only the first is a
+   * promise this phone can still honour with the node gone, so only the first
+   * survives. Keeping the loans would make the field depend on files
+   * `enforceCacheBudget` may take at any download, with no node left to fetch
+   * them back from.
+   *
+   * Partial transfers go too: they cannot resume without the node and no screen
+   * can reach them.
+   *
+   * Nothing is deleted on the node itself. Pair again and everything returns.
+   */
   forgetBackend: (nodePublicKey: string) => Promise<void>;
   submit: (
     nodePublicKey: string,
@@ -240,6 +255,15 @@ export function useBackendRuntime(
   const [storageError, setStorageError] = useState<string | null>(null);
   const [localAudio, setLocalAudio] = useState<Record<string, LocalAudio>>({});
   const backendsRef = useRef<BackendRecord[]>([]);
+  /**
+   * The snapshots as they are *now*.
+   *
+   * `forgetBackend` walks a node's songs to release the audio it only borrowed,
+   * and a callback closing over the rendered `snapshots` would walk whatever
+   * list existed when it was created. Mirrored for the same reason
+   * `backendsRef` is.
+   */
+  const snapshotsRef = useRef<Record<string, ConnectionSnapshot>>({});
   const connections = useRef(new Map<string, LiveConnection>());
   const pairTokens = useRef(new Map<string, string>());
   const outboxInFlight = useRef(new Set<string>());
@@ -518,6 +542,8 @@ export function useBackendRuntime(
   );
 
 
+  snapshotsRef.current = snapshots;
+
   const pairBackend = useCallback(
     (request: PairingRequest) => {
       const nodePublicKey = request.backend.nodePubkey;
@@ -565,6 +591,33 @@ export function useBackendRuntime(
       connections.current.delete(nodePublicKey);
       pairTokens.current.delete(nodePublicKey);
 
+      // Released after the socket is down, so a transfer still in flight has
+      // already been cut before its bytes are deleted underneath it.
+      const released: string[] = [];
+      for (const song of snapshotsRef.current[nodePublicKey]?.songs ?? []) {
+        const artifact = deliveryArtifact(song);
+        if (artifact === undefined) continue;
+        const ref = {
+          nodeKey: nodePublicKey,
+          songId: song.id,
+          digest: artifact.sha256,
+        };
+        // `inspect` and not the advisory state: the store's own contract says
+        // the filesystem is what answers this, and a pin is the one answer
+        // worth trusting a deletion to.
+        const held = await audioStore.inspect(ref).catch(() => null);
+        if (held === null || held.state === 'pinned') continue;
+        released.push(audioKey(nodePublicKey, song.id, artifact.sha256));
+        if (held.state === 'remote') continue;
+        // One failure must not strand the rest: a file that is already gone,
+        // or that native refuses, still leaves the record to remove.
+        try {
+          await audioStore.remove(ref);
+        } catch (error) {
+          setStorageError(readError(error));
+        }
+      }
+
       replaceBackends(
         backendsRef.current.filter(
           backend => backend.nodePubkey !== nodePublicKey,
@@ -580,8 +633,13 @@ export function useBackendRuntime(
           librarySyncing: false,
         },
       }));
+      setLocalAudio(current => {
+        const next = { ...current };
+        for (const key of released) delete next[key];
+        return next;
+      });
     },
-    [replaceBackends],
+    [audioStore, replaceBackends],
   );
 
   const submit = useCallback(

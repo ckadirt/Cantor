@@ -5,6 +5,7 @@ import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { AnimatedSymbol } from '../../motion';
 import { PanelPressable } from './PanelPressable';
+import { formatBytes } from '../../lenses';
 import {
   SettingsSheet,
   type LibraryReport,
@@ -15,8 +16,12 @@ import { space, touch, type, usePalette } from '../../theme/tokens';
 /** What one node's songs weigh on this phone, and how many there are. */
 export type BackendFootprint = Readonly<{
   songs: number;
+  /** Pinned only — the songs a forget can still promise will be here. */
   downloaded: number;
   bytesHere: number;
+  /** Cached and part-transferred: the loans a forget gives back. */
+  borrowed: number;
+  borrowedBytes: number;
   playlists: number;
 }>;
 
@@ -349,7 +354,16 @@ function EnginesSheetImpl({
   );
 }
 
-/** Downloaded songs stay reachable after the connection is forgotten. */
+/**
+ * What forgetting keeps, and what it gives back.
+ *
+ * A song is here because you asked — `GET` or `KEEP`, which pins it — or
+ * because you played it, which leaves a copy the cache budget may reclaim at
+ * any download. Only the first is a promise this phone can keep with the node
+ * gone, so the sheet counts the two apart rather than calling both
+ * "downloaded". Saying `NOTHING TO DELETE` over a loan about to be released
+ * would be the sheet's one job done wrong.
+ */
 function Forget({
   backend,
   footprint,
@@ -362,15 +376,19 @@ function Forget({
   const pal = usePalette();
   const songs = footprint?.songs ?? 0;
   const downloaded = footprint?.downloaded ?? 0;
+  const borrowed = footprint?.borrowed ?? 0;
+  const gone = songs - downloaded;
   return (
     <ScrollView contentContainerStyle={styles.body}>
       <Text style={[type.title, styles.forgetTitle, { color: pal.ink }]}>
-        {songs - downloaded === 1
+        {gone === 1
           ? '1 song leaves the field.'
-          : `${songs - downloaded} songs leave the field.`}
+          : `${gone} songs leave the field.`}
       </Text>
       <Text style={[type.body, { color: pal.muted }]}>
-        Downloaded songs stay on this phone, with their playlist tags.
+        Downloaded songs stay on this phone, with their playlist tags. Songs
+        only cached from listening are given back — the budget could reclaim
+        them anyway, and there would be no engine left to ask again.
       </Text>
 
       <View style={[styles.hairline, { backgroundColor: pal.line }]} />
@@ -382,7 +400,15 @@ function Forget({
         }
       />
       <Count
-        label={`${songs - downloaded} not downloaded`}
+        label={`${borrowed} cached`}
+        note={
+          borrowed === 0
+            ? 'NOTHING BORROWED'
+            : `${formatBytes(footprint?.borrowedBytes ?? 0)} GIVEN BACK`
+        }
+      />
+      <Count
+        label={`${songs - downloaded - borrowed} not here`}
         note="NOTHING TO DELETE"
       />
       <Count
