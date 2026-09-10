@@ -569,7 +569,7 @@ export function useFieldCamera({
         };
     const sources = firstLayout
       ? layout.placements
-      : lastVisualPlacements.current;
+      : lastVisualPlacements.current.filter(stillDrawn);
     const flights = planPlacementFlights(
       sources,
       layout.placements,
@@ -1340,6 +1340,23 @@ export function useFieldCamera({
     home,
     cancelGesture,
   };
+}
+
+/**
+ * Whether a captured placement is still worth carrying into the next re-cut.
+ *
+ * The capture is the *visual* field, so an exit that is halfway faded belongs
+ * in it: interrupt a removal and the copy has to keep fading from where it is,
+ * not snap back. But an exit that has reached zero is finished, and the
+ * capture is also what the next re-cut plans its sources from — leaving it
+ * there re-plans the same dead exit for every transition after, one more with
+ * each song forgotten. Those flights name entities the controller no longer
+ * presents, which is how forgetting an engine used to strand the field on the
+ * picture renderer, with no wave morph and a visible seam at every level
+ * change, until the app was restarted.
+ */
+function stillDrawn(placement: Placement): boolean {
+  return placement.targetPlacementKey !== null || (placement.opacity ?? 1) > 0;
 }
 
 /** Ignore data refreshes that rebuild an identical layout object. */

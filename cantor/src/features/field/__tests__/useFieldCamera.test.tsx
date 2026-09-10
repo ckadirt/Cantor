@@ -976,4 +976,88 @@ describe('useFieldCamera', () => {
     ).toBe(true);
     expect(latest.relayoutLinear).toBe(0);
   });
+
+  /**
+   * Forgetting an engine removes songs from a field nobody is looking away
+   * from, so their exit flights are planned from the live capture. That
+   * capture is also the source for the *next* re-cut, and a finished exit
+   * that stays in it re-plans itself for every transition after — a flight
+   * for an entity the controller no longer presents, forever.
+   */
+  it('sheds a removed song from the source capture once its exit has landed', async () => {
+    mockReducedMotion = false;
+    let now = 0;
+    const frames: Array<(timestamp: number) => void> = [];
+    jest.spyOn(Date, 'now').mockImplementation(() => now);
+    jest
+      .spyOn(globalThis, 'requestAnimationFrame')
+      .mockImplementation((callback: (timestamp: number) => void) => {
+        frames.push(callback);
+        return frames.length;
+      });
+    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+
+    const pair: FieldEntity[] = [
+      entities[0],
+      {
+        ...entities[0],
+        key: 'node-a:song-b',
+        entityId: 'song-b',
+        createdAtMs: Date.UTC(2026, 7, 20),
+      },
+    ];
+    const both = layoutField({
+      entities: pair,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const kept = layoutField({
+      entities: [pair[0]],
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const later = layoutField({
+      entities: [pair[0]],
+      arrangement: byDate('year'),
+      viewport,
+    });
+
+    function TransitionProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<TransitionProbe field={both} />);
+    });
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={kept} />);
+    });
+    // The removal itself is an exit: the song is still drawn while it fades.
+    expect(
+      latest.recut?.flights.some(
+        flight => flight.entityKey === 'node-a:song-b',
+      ),
+    ).toBe(true);
+
+    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS;
+    await ReactTestRenderer.act(async () => {
+      while (frames.length > 0) frames.shift()?.(now);
+    });
+    expect(latest.relayoutLinear).toBe(1);
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={later} />);
+    });
+    expect(
+      latest.recut?.flights.map(flight => flight.entityKey),
+    ).toEqual(['node-a:song-a']);
+  });
 });

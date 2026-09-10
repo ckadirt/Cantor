@@ -242,6 +242,59 @@ describe('field canvas L0 to L1 handover', () => {
     ).toBe(true);
   });
 
+  it('keeps removed songs on their exit clock without disabling native rows or waves', async () => {
+    const remaining = layoutField({ entities: [entities[0]], arrangement: byDate('month'), viewport });
+    const before: FieldRecutModel = {
+      generation: 1, layout: month,
+      flights: planPlacementFlights(month.placements, month.placements, 1),
+      fromFitScale: month.fitScale, toFitScale: month.fitScale,
+      fromCamera: cameraFor(month), toCamera: cameraFor(month),
+      fromGroups: month.groups, animate: false, nativeDriven: true,
+    };
+    const removed: FieldRecutModel = {
+      generation: 2, layout: remaining,
+      flights: planPlacementFlights(month.placements, remaining.placements, 2),
+      fromFitScale: month.fitScale, toFitScale: remaining.fitScale,
+      fromCamera: cameraFor(month), toCamera: cameraFor(remaining),
+      fromGroups: month.groups, animate: true, nativeDriven: true,
+    };
+    const cameraShared = { value: cameraFor(month) };
+    const fitScaleShared = { value: month.fitScale };
+    const render = (recut: FieldRecutModel, data: ReadonlyMap<string, FieldPresentation>, ratio: number) => {
+      const camera = { ...cameraFor(recut.layout), scale: recut.toFitScale * ratio };
+      cameraShared.value = camera;
+      fitScaleShared.value = recut.toFitScale;
+      return <FieldCanvas
+        camera={camera} cameraShared={cameraShared as never}
+        fitScaleShared={fitScaleShared as never} layout={recut.layout}
+        labelFromGroups={recut.fromGroups} palette={palette}
+        placements={recut.layout.placements} nowMs={Date.UTC(2026, 7, 30)}
+        recut={recut} renderFitScale={recut.toFitScale}
+        transitionGeneration={recut.generation} presentations={data}
+        focusKey={recut.layout.placements[0].key} viewport={viewport}
+      />;
+    };
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(render(before, presentations, 1));
+    });
+    const data = new Map([[entities[0].key, presentations.get(entities[0].key)!]]);
+    for (const ratio of [3, 1, 30, 3, 30]) {
+      await ReactTestRenderer.act(async () => renderer.update(render(removed, data, ratio)));
+      expect(recordedPictures(renderer)).toHaveLength(0);
+      // Its nodes survive the data removal; only their UI-thread exit opacity
+      // hides them. The surviving song retains the native detail drawing too.
+      expect(renderer.root.findAllByType(Text).map(node => node.props.text)).toContain('Song song-b');
+    }
+    const settled = { ...removed, generation: 3,
+      flights: planPlacementFlights(remaining.placements, remaining.placements, 3),
+      fromGroups: remaining.groups, animate: false };
+    await ReactTestRenderer.act(async () => renderer.update(render(settled, data, 3)));
+    expect(recordedPictures(renderer)).toHaveLength(0);
+    expect(renderer.root.findAllByType(Text).map(node => node.props.text)).not.toContain('Song song-b');
+    await ReactTestRenderer.act(async () => renderer.unmount());
+  });
+
   it('draws a row on the native path rather than handing over to the picture', async () => {
     const recut: FieldRecutModel = {
       generation: 1,

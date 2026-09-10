@@ -64,6 +64,11 @@ export function applyLibraryChanges(
   return mergeSongHeaders([], [...merged.values()]);
 }
 
+/** Cached metadata also locates downloaded songs from forgotten nodes. */
+export async function loadLibraries(): Promise<Record<string, CachedLibrary>> {
+  return libraryStore.load();
+}
+
 export async function loadLibrary(
   nodePublicKey: string,
 ): Promise<CachedLibrary> {

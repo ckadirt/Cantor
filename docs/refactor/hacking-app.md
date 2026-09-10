@@ -105,6 +105,17 @@ and `FragmentReassembler` own record framing. Add JVM tests before moving any
 of it; the React Native method names, arguments, return shapes, and error text
 are the contract.
 
+## Forgetting and recovering engines
+
+Forgetting removes the pairing record and stops its connection; it never deletes
+local audio or the node's durable library. The runtime hydrates cached metadata
+for all nodes, including forgotten ones, and verifies audio against native storage.
+The field shows an unpaired node's songs only when their delivery is fully cached
+or pinned. Partial and remote songs are hidden, including after an app restart.
+Re-pairing with the same app identity restores the full owner-scoped library.
+Playlist membership is stored in song tags (`p/<name>`) on the node and returns
+with library sync; empty playlists have no separate durable record.
+
 ## Playback gestures and field lenses
 
 `player/scrubSession.ts` owns a silent seek transaction: pause once, preview on
