@@ -107,14 +107,29 @@ are the contract.
 
 ## Forgetting and recovering engines
 
-Forgetting removes the pairing record and stops its connection; it never deletes
-local audio or the node's durable library. The runtime hydrates cached metadata
-for all nodes, including forgotten ones, and verifies audio against native storage.
-The field shows an unpaired node's songs only when their delivery is fully cached
-or pinned. Partial and remote songs are hidden, including after an app restart.
-Re-pairing with the same app identity restores the full owner-scoped library.
-Playlist membership is stored in song tags (`p/<name>`) on the node and returns
-with library sync; empty playlists have no separate durable record.
+Forgetting removes the pairing record and stops its connection. It never touches
+the node's durable library, and it keeps every song you **pinned** — `GET` and
+`KEEP` both pin, so a pin means you asked for it. Cached copies and part
+transfers are released: `cached` is a loan under the audio budget, which
+`enforceCacheBudget` reclaims by LRU on every download, and a field that kept
+marks standing on those would watch them vanish with no engine left to ask
+again. `availabilityOf` is where the two promises are written down; keep any new
+policy agreeing with the words the row already shows.
+
+The runtime hydrates cached metadata for all nodes, including forgotten ones,
+and verifies audio against native storage, so the field shows an unpaired node's
+songs only where a pinned file is really on disk — after a restart too.
+Re-pairing with the same app identity restores the full owner-scoped library,
+released audio included. Playlist membership is stored in song tags (`p/<name>`)
+on the node and returns with library sync; empty playlists have no separate
+durable record.
+
+Releasing audio has two orderings that are not optional: the socket is stopped
+before any file is deleted, so a transfer in flight is cut before its bytes go,
+and the screen closes the transport first when the track being played is one of
+the released copies — the rule a row's `REMOVE` already follows. A song that
+leaves the field while the camera is standing in it is handled one layer down;
+see the `lastVisualPlacements` trap below.
 
 ## Playback gestures and field lenses
 
