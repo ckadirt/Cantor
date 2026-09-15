@@ -88,10 +88,9 @@ describe('problemsWith', () => {
   });
 
   it('needs a node and a model', () => {
-    const problems = problemsWith(
-      { ...EMPTY_DRAFT, caption: 'something' },
-      [target()],
-    );
+    const problems = problemsWith({ ...EMPTY_DRAFT, caption: 'something' }, [
+      target(),
+    ]);
 
     expect(problems.map(problem => problem.kind)).toEqual([
       'no-node',
@@ -135,15 +134,17 @@ describe('problemsWith', () => {
   });
 
   it('accepts a caption exactly at the limit', () => {
-    expect(problemsWith(draft({ caption: 'a'.repeat(32) }), [target()])).toEqual(
-      [],
-    );
+    expect(
+      problemsWith(draft({ caption: 'a'.repeat(32) }), [target()]),
+    ).toEqual([]);
   });
 
   it('measures lyrics too, and allows empty lyrics', () => {
     expect(problemsWith(draft({ lyrics: '' }), [target()])).toEqual([]);
     expect(
-      problemsWith(draft({ lyrics: 'x'.repeat(65) }), [target()])[0],
+      problemsWith(draft({ wordsMode: 'mine', lyrics: 'x'.repeat(65) }), [
+        target(),
+      ])[0],
     ).toMatchObject({ kind: 'lyrics-too-long', bytes: 65, maxBytes: 64 });
   });
 
@@ -155,7 +156,9 @@ describe('problemsWith', () => {
   ])('duration %p out of range: %p', (durationSeconds, expected) => {
     const problems = problemsWith(draft({ durationSeconds }), [target()]);
 
-    expect(problems.some(p => p.kind === 'duration-out-of-range')).toBe(expected);
+    expect(problems.some(p => p.kind === 'duration-out-of-range')).toBe(
+      expected,
+    );
   });
 
   it('lets the node choose the length when none is given', () => {
@@ -182,7 +185,9 @@ describe('toGenerationRequest', () => {
 
   it('includes lyrics and duration when present', () => {
     expect(
-      toGenerationRequest(draft({ lyrics: ' la la ', durationSeconds: 60 })),
+      toGenerationRequest(
+        draft({ wordsMode: 'mine', lyrics: ' la la ', durationSeconds: 60 }),
+      ),
     ).toEqual({
       caption: 'a slow piano piece',
       lyrics: 'la la',
@@ -194,5 +199,41 @@ describe('toGenerationRequest', () => {
     expect(toGenerationRequest(draft({ lyrics: '    ' }))).toEqual({
       caption: 'a slow piano piece',
     });
+  });
+});
+
+describe('words intent', () => {
+  const writer = {
+    kind: 'boolean' as const,
+    key: 'write_lyrics',
+    label: 'Write lyrics',
+    default: true,
+  };
+  it('overrides the writer default for none and mine', () => {
+    expect(toGenerationRequest(draft(), [writer]).extensions).toEqual({
+      write_lyrics: false,
+    });
+    expect(
+      toGenerationRequest(draft({ wordsMode: 'mine', lyrics: 'hello' }), [
+        writer,
+      ]),
+    ).toMatchObject({ lyrics: 'hello', extensions: { write_lyrics: false } });
+  });
+  it('never sends retained lyrics in automatic mode', () => {
+    expect(
+      toGenerationRequest(draft({ wordsMode: 'model', lyrics: 'saved' }), [
+        writer,
+      ]),
+    ).toEqual({ caption: 'a slow piano piece' });
+  });
+  it('rejects automatic mode when the selected model has no writer', () => {
+    expect(
+      problemsWith(draft({ wordsMode: 'model' }), [target()]),
+    ).toContainEqual({ kind: 'writer-unavailable' });
+  });
+  it('does not validate unsent lyrics', () => {
+    expect(
+      problemsWith(draft({ lyrics: 'x'.repeat(100) }), [target()]),
+    ).toEqual([]);
   });
 });

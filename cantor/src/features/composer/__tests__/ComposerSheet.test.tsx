@@ -74,27 +74,72 @@ function render(targets: readonly ComposerTarget[]) {
   return { onSubmit, words, press, type: type_ };
 }
 
-describe('the composer collapses the machine into one line', () => {
-  it('resolves the alpha case and says why it needs no attention', () => {
-    const { words } = render([{ ...agentbox, models: [model('acestep:1.5-fast')] }]);
-
-    expect(words()).toContain('AGENTBOX · ACESTEP:1.5-FAST · AUTO');
-    // Prose, in the app's own serif: what is *said about* the machine is a
-    // sentence, and only the machine's own state is set in the chrome's mono.
-    expect(words()).toContain('One engine, one model — tap to change.');
+describe('the composer Ledger', () => {
+  it('shows the resolved machine without opening a drawer', () => {
+    const { words } = render([
+      { ...agentbox, models: [model('acestep:1.5-fast')] },
+    ]);
+    expect(words()).toEqual(
+      expect.arrayContaining([
+        'ENGINE',
+        'MODEL',
+        'LENGTH',
+        'WORDS',
+        'agentbox',
+        'acestep:1.5-fast',
+      ]),
+    );
+  });
+  it('retains typed lyrics across words choices and sends only mine', () => {
+    const { press, type, onSubmit } = render([agentbox]);
+    type('Describe the song', 'harbour');
+    press('Write my lyrics');
+    type('Lyrics', 'the tide goes out');
+    press('No lyrics');
+    press('Write my lyrics');
+    press('Make it');
+    expect(onSubmit.mock.calls[0][2]).toMatchObject({
+      lyrics: 'the tide goes out',
+    });
+  });
+  it('offers automatic lyrics only for the selected declaration', () => {
+    const capable: ComposerTarget = {
+      ...agentbox,
+      models: [
+        {
+          ...model('acestep:1.5-fast'),
+          parameters: [
+            {
+              kind: 'boolean',
+              key: 'write_lyrics',
+              label: 'Write lyrics',
+              default: false,
+            },
+          ],
+        },
+        model('levo2:1.0'),
+      ],
+    };
+    const { press, type, words, onSubmit } = render([capable]);
+    type('Describe the song', 'harbour');
+    press('Generate lyrics automatically');
+    press('Make it');
+    expect(onSubmit.mock.calls[0][2]).toEqual({
+      caption: 'harbour',
+      extensions: { write_lyrics: true },
+    });
+    press('Generate lyrics automatically');
+    press('Run it with levo2:1.0');
+    expect(words()).not.toContain('MODEL’S');
+    expect(words()).toContain('NO LYRICS SUPPLIED');
   });
 
-  it('counts what the chosen node has, once the cascade is open', () => {
-    const { words, press } = render([agentbox, phone]);
-
-    press('Change engine, model and length');
-    // With two nodes paired nothing is preselected: the first step is a real
-    // question, and the second only answers itself once it has been answered.
-    press('Run it on agentbox');
-    expect(words()).toContain('The 2 models agentbox has.');
-    expect(words()).toContain('WHERE IT RUNS');
-    expect(words()).toContain('WHAT RUNS IT');
-    expect(words()).toContain('HOW LONG');
+  it('does not submit an empty mine selection', () => {
+    const { press, type, onSubmit } = render([agentbox]);
+    type('Describe the song', 'harbour');
+    press('Write my lyrics');
+    press('Make it');
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });
 
@@ -107,11 +152,10 @@ describe('the composer collapses the machine into one line', () => {
 describe('a pairing the node cannot run is never offered', () => {
   it('offers only the chosen node’s models', () => {
     const { words, press } = render([agentbox, phone]);
-    press('Change engine, model and length');
 
     press('Run it on this phone');
 
-    expect(words()).toContain('The only model this phone has.');
+    expect(words()).toContain('THE ONLY MODEL THIS PHONE HAS.');
     // ACE-Step belongs to the other node and must not be on offer here, in
     // either the dial's chrome casing or the sheet's own.
     expect(words()).not.toContain('acestep:1.5-fast');
@@ -123,7 +167,6 @@ describe('a pairing the node cannot run is never offered', () => {
   it('sends the model that belongs to the node it sends to', () => {
     const { onSubmit, press, type } = render([agentbox, phone]);
     type('Describe the song', 'a slow harbour at dusk');
-    press('Change engine, model and length');
     press('Run it on this phone');
     press('Make it');
 
