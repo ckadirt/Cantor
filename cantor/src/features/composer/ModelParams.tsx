@@ -1,10 +1,10 @@
 import React from 'react';
-import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { StyleSheet, Text, TextInput } from 'react-native';
 import type { ModelParameter } from '../../../../protocol/ModelParameter';
 import type { ParameterValue } from '../../../../protocol/ParameterValue';
 import { parameterProblem } from '../../core/protocol/parameters';
-import { Dial } from '../controls';
-import { space, touch, type, usePalette } from '../../theme/tokens';
+import { Dial, LEDGER_DIAL_ITEM, Row } from '../controls';
+import { font, space, type, usePalette } from '../../theme/tokens';
 
 type Props = {
   /** What the selected model declared. Empty renders nothing at all. */
@@ -15,7 +15,7 @@ type Props = {
 };
 
 /**
- * Controls for whatever the node declared, rendered from the declaration.
+ * Controls for whatever the node declared, one ledger row each.
  *
  * There is deliberately no engine name, model name or family anywhere in this
  * file. If ACE-Step shows steps and CFG while another engine shows nothing,
@@ -27,21 +27,23 @@ type Props = {
  * Anything typed is a line with a rule under it rather than a box around it:
  * this design has no boxes, and a field that draws one is the tell that some
  * part of the sheet came from somewhere else.
+ *
+ * The label is the row's label, in the label column, so a declared control is
+ * indistinguishable in shape from `Engine` or `Length`. It used to be an
+ * eyebrow stacked over its control, which made every declared knob two rows
+ * tall and the declared block the loudest thing under the caption.
  */
 export function ModelParams({ declared, values, disabled, onChange }: Props) {
   const pal = usePalette();
   if (declared.length === 0) return null;
 
   return (
-    <View style={styles.root}>
+    <>
       {declared.map(parameter => {
         const value = values[parameter.key] ?? parameter.default;
         const problem = parameterProblem(parameter, value);
         return (
-          <View key={parameter.key} style={styles.field}>
-            <Text style={[styles.meta, { color: pal.muted }]}>
-              {parameter.label.toUpperCase()}
-            </Text>
+          <Row key={parameter.key} label={parameter.label}>
             {parameter.kind === 'boolean' ? (
               <Dial
                 activeColour={pal.ink}
@@ -51,12 +53,12 @@ export function ModelParams({ declared, values, disabled, onChange }: Props) {
                   label: state.toUpperCase(),
                   accessibilityLabel: `${parameter.label}: ${state}`,
                 }))}
-                itemStyle={styles.dialItem}
+                itemStyle={LEDGER_DIAL_ITEM}
                 onSelect={key => {
                   if (!disabled) onChange(parameter.key, key === 'on');
                 }}
                 restColour={pal.faint}
-                textStyle={styles.meta}
+                textStyle={styles.word}
                 tickColour={pal.ink}
               />
             ) : parameter.kind === 'choice' ? (
@@ -68,13 +70,13 @@ export function ModelParams({ declared, values, disabled, onChange }: Props) {
                   label: choice.toUpperCase(),
                   accessibilityLabel: `${parameter.label}: ${choice}`,
                 }))}
-                itemStyle={styles.dialItem}
+                itemStyle={LEDGER_DIAL_ITEM}
                 onSelect={key => {
                   if (!disabled) onChange(parameter.key, key);
                 }}
                 restColour={pal.faint}
                 scroll
-                textStyle={styles.meta}
+                textStyle={styles.word}
                 tickColour={pal.ink}
               />
             ) : (
@@ -97,12 +99,14 @@ export function ModelParams({ declared, values, disabled, onChange }: Props) {
               />
             )}
             {problem !== null ? (
-              <Text style={[styles.meta, { color: pal.ink }]}>{problem}</Text>
+              <Text style={[styles.problem, { color: pal.ink }]}>
+                {problem}
+              </Text>
             ) : null}
-          </View>
+          </Row>
         );
       })}
-    </View>
+    </>
   );
 }
 
@@ -124,10 +128,8 @@ function toNumber(text: string): number {
 const FIELD_WIDTH_PX = 120;
 
 const styles = StyleSheet.create({
-  root: { gap: space.md },
-  field: { gap: space.xs },
-  meta: { ...type.eyebrow, fontSize: 12, letterSpacing: 0.7, lineHeight: 19 },
-  dialItem: { justifyContent: 'center', minHeight: touch.min },
+  /** A dial word, at the size every dial in a ledger row is set in. */
+  word: { fontFamily: font.mono, fontSize: 12, letterSpacing: 0.4 },
   /**
    * A rule under the words, not a box around them — and only as wide as the
    * answer it is ruled for. A full-width rule under a two-digit number reads
@@ -143,4 +145,5 @@ const styles = StyleSheet.create({
     // and the rule read as another divider.
     paddingBottom: space.xs,
   },
+  problem: { ...type.small, marginTop: space.xs },
 });

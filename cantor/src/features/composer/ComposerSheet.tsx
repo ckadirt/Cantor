@@ -1,16 +1,27 @@
 import React, { useMemo, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
-import Animated, { FadeIn, LinearTransition } from 'react-native-reanimated';
 import { WriteSymbol } from '../../motion';
 import { STAGE_SYMBOLS } from '../../jobs/marks';
-import { Caret, Dial, PanelPressable, type DialItem } from '../controls';
-import { easeSmoother } from '../../motion';
-import { space, touch, type, usePalette } from '../../theme/tokens';
+import {
+  Dial,
+  PanelPressable,
+  Ledger,
+  Row,
+  LedgerGap,
+  LedgerFoot,
+  LEDGER_DIAL_ITEM,
+  LEDGER_KNOBS,
+  type DialItem,
+} from '../controls';
+import { space, type, usePalette } from '../../theme/tokens';
 import { ModelParams } from './ModelParams';
 import {
   EMPTY_DRAFT,
   canSubmit,
   declaredFor,
+  declaredControlsFor,
+  writeWordsFor,
+  type WordsMode,
   describeProblem,
   modelsFor,
   problemsWith,
@@ -57,7 +68,7 @@ export const COMPOSER_KNOBS = {
    * wearing the shape of information.
    */
   STAGE_GLYPH_PX: 30,
-  STAGE_GLYPH_GAP_PX: space.xl,
+  STAGE_GLYPH_GAP_PX: space.md,
   /**
    * How long a stage glyph takes to trace itself on.
    *
@@ -67,19 +78,11 @@ export const COMPOSER_KNOBS = {
    */
   STAGE_WRITE_MS: 520,
   MARK_WRITE_MS: 420,
-  /**
-   * How long the machine's seat takes to open, and its contents to fade in.
-   *
-   * The dial's own number: the tick sliding to another word and the seat
-   * opening on the cascade behind it are the same kind of event — a control
-   * moving — and the sheet should have one speed for that.
-   */
-  MACHINE_OPEN_MS: 260,
   /** `Make it`: a serif line, not a button in a box. */
   SUBMIT_SIZE_PX: 19,
   /** The quiet mono of every label in this sheet; the engines sheet's own. */
   META_PX: 12,
-  /** A full row for anything a finger chooses. */
+  /** Header and submit row height. */
   ROW_PX: 56,
 } as const;
 
@@ -104,8 +107,7 @@ type Props = {
  *
  * **The caption is the surface.** Display serif at notebook size with no box
  * around it, because writing the song is the only creative act on the screen;
- * every machine choice collapses into one quiet line beneath it and opens only
- * when asked. The order underneath is dependency order — song, then where it
+ * the machine choices remain visible on the Ledger spine. The order underneath is dependency order — song, then where it
  * runs, then what runs it, then how long, then whatever that model declares —
  * so a combination the node cannot run is never offered in the first place.
  *
@@ -126,8 +128,6 @@ function ComposerSheetImpl({
 }: Props) {
   const pal = usePalette();
   const [draft, setDraft] = useState<ComposerDraft>(EMPTY_DRAFT);
-  const [open, setOpen] = useState(false);
-  const [lyricsOpen, setLyricsOpen] = useState(false);
 
   // Default to the only sensible choice rather than making someone pick it.
   const nodePublicKey =
@@ -138,7 +138,7 @@ function ComposerSheetImpl({
   // has. A union across nodes would offer a pairing that cannot exist and then
   // report it as the person's mistake.
   const models = useMemo(() => modelsFor(target), [target]);
-  const resolved: ComposerDraft = {
+  const selection: ComposerDraft = {
     ...draft,
     nodePublicKey,
     modelSelector:
@@ -150,7 +150,13 @@ function ComposerSheetImpl({
         : null,
   };
 
+  const resolved: ComposerDraft =
+    selection.wordsMode === 'model' && !writeWordsFor(targets, selection)
+      ? { ...selection, wordsMode: 'none' }
+      : selection;
   const declared = declaredFor(targets, resolved);
+  const controls = declaredControlsFor(targets, resolved);
+  const writer = writeWordsFor(targets, resolved);
   const problems = problemsWith(resolved, targets);
   const ready = canSubmit(resolved, targets);
   const captionBytes = utf8Bytes(resolved.caption.trim());
@@ -161,8 +167,10 @@ function ComposerSheetImpl({
   const stages = selected?.stages ?? [];
   const lengths = durationChoices(target);
 
-  const update = (patch: Partial<ComposerDraft>) =>
-    setDraft(current => ({ ...current, ...resolved, ...patch }));
+  const update = (patch: Partial<ComposerDraft>) => {
+    if (!submitting)
+      setDraft(current => ({ ...current, ...resolved, ...patch }));
+  };
 
   return (
     <>
@@ -229,290 +237,224 @@ function ComposerSheetImpl({
           </Text>
         ) : null}
 
-        {/* Lyrics are a quiet line, not an empty box demanding to be filled. */}
-        {lyricsOpen ? (
-          <Animated.View
-            entering={FadeIn.duration(COMPOSER_KNOBS.MACHINE_OPEN_MS)}
-            style={styles.field}
+        <Ledger>
+          <Row
+            label="Words"
+            note={
+              resolved.wordsMode === 'none'
+                ? 'No lyrics supplied'
+                : resolved.wordsMode === 'model'
+                ? 'The model writes the lyrics'
+                : undefined
+            }
           >
-            <Text style={[styles.meta, { color: pal.muted }]}>LYRICS</Text>
-            <TextInput
-              accessibilityLabel="Lyrics"
-              editable={!submitting}
-              multiline
-              numberOfLines={COMPOSER_KNOBS.LYRICS_LINES}
-              onChangeText={lyrics => update({ lyrics })}
-              placeholder="leave empty for an instrumental"
-              placeholderTextColor={pal.faint}
-              style={[styles.lyrics, type.body, { color: pal.ink }]}
-              value={resolved.lyrics}
-            />
-          </Animated.View>
-        ) : (
-          <PanelPressable
-            accessibilityLabel="Add lyrics"
-            accessibilityRole="button"
-            onPress={() => setLyricsOpen(true)}
-          >
-            <Text style={[styles.meta, { color: pal.muted }]}>ADD LYRICS</Text>
-          </PanelPressable>
-        )}
-
-        <View style={[styles.hairline, { backgroundColor: pal.line }]} />
-
-        {/*
-          One line, or the cascade behind it, in one seat that opens.
-
-          The seat is a stable view whose *height* changes when the cascade
-          replaces the line, so a layout transition animates its frame while
-          `overflow: hidden` clips what is inside — the cascade is uncovered
-          from the top down, at the rate the seat opens, rather than arriving
-          whole. Nothing measures anything: the content is laid out at its full
-          size by the commit, and only the opening is animated.
-
-          The block below runs the same transition on the same clock, so the
-          rule and `Make it` travel exactly as far as the seat grows. They used
-          to be drawn *over* the incoming cascade for the length of the glide,
-          which is the collision you can see in a burst capture: two objects in
-          one place, moving at the same speed, in opposite roles.
-        */}
-        <Animated.View
-          layout={COMPOSER_MOTION}
-          style={[styles.machine, styles.seat]}
-        >
-          <Animated.View
-            key={open ? 'machine-open' : 'machine-line'}
-            entering={FadeIn.duration(COMPOSER_KNOBS.MACHINE_OPEN_MS)}
-            style={styles.machine}
-          >
-            {open ? (
-              <>
-                <Choice
-                  label="WHERE IT RUNS"
-                  items={targets.map(candidate => ({
-                    key: candidate.nodePublicKey,
-                    label: (candidate.ready
-                      ? candidate.label
-                      : `${candidate.label} · offline`
-                    ).toUpperCase(),
-                    accessibilityLabel: `Run it on ${candidate.label}`,
-                  }))}
-                  activeKey={resolved.nodePublicKey}
-                  empty="nowhere yet — no engine is paired"
-                  onSelect={key =>
-                    // Changing the engine drops the model with it: the next
-                    // node's list is a different list, and carrying a selector
-                    // across is how `model-not-installed` used to happen.
-                    setDraft(current => ({
-                      ...current,
-                      ...resolved,
-                      nodePublicKey: key,
-                      modelSelector: null,
-                      parameters: {},
-                    }))
-                  }
-                  value={target?.label ?? null}
-                />
-
-                <Choice
-                  label="WHAT RUNS IT"
-                  items={models.map(model => ({
-                    key: model.selector,
-                    label: model.selector.toUpperCase(),
-                    accessibilityLabel: `Run it with ${model.selector}`,
-                  }))}
-                  activeKey={resolved.modelSelector}
-                  empty={
-                    target === null
-                      ? 'not until an engine is chosen'
-                      : 'nothing installed'
-                  }
-                  note={modelsNote(target, models.length)}
-                  onSelect={key =>
-                    update({ modelSelector: key, parameters: {} })
-                  }
-                  value={resolved.modelSelector}
-                />
-
-                <Choice
-                  label="HOW LONG"
-                  items={[
-                    {
-                      key: AUTO_LENGTH,
-                      label: 'AUTO',
-                      accessibilityLabel: "The engine's choice of length",
-                    },
-                    ...lengths.map(seconds => ({
-                      key: String(seconds),
-                      label: `${seconds}S`,
-                      accessibilityLabel: `${seconds} seconds`,
-                    })),
-                  ]}
-                  activeKey={
-                    resolved.durationSeconds === null
-                      ? AUTO_LENGTH
-                      : String(resolved.durationSeconds)
-                  }
-                  empty="the engine's choice"
-                  onSelect={key =>
-                    update({
-                      durationSeconds: key === AUTO_LENGTH ? null : Number(key),
-                    })
-                  }
-                  value={
-                    resolved.durationSeconds === null
-                      ? "the engine's choice"
-                      : `${resolved.durationSeconds} seconds`
-                  }
-                />
-
-                {declared.length === 0 ? (
-                  // No paragraph about it. The model is named one step above and
-                  // the row says what it declared, which is nothing; the reason
-                  // there are no greyed-out controls is not the person's problem.
-                  <Text style={[styles.meta, { color: pal.faint }]}>
-                    IT DECLARES NOTHING
-                  </Text>
-                ) : (
-                  <View style={styles.declared}>
-                    <Text style={[styles.meta, { color: pal.muted }]}>
-                      WHAT IT DECLARES
-                    </Text>
-                    <ModelParams
-                      declared={declared}
-                      disabled={submitting}
-                      onChange={(key, value) =>
-                        update({
-                          parameters: { ...resolved.parameters, [key]: value },
-                        })
-                      }
-                      values={resolved.parameters}
-                    />
-                  </View>
-                )}
-
-                {/*
-                A mark rather than a sentence. `TAP TO CHANGE` had to name what
-                was behind it because nothing was showing; folding it away is
-                the same gesture in reverse, over a panel you are looking at,
-                so a chevron pointing back at the line it came from says all of
-                it. Centred, like the grip on the blind this sheet hangs in.
-              */}
-                <PanelPressable
-                  accessibilityLabel="Hide engine, model and length"
-                  accessibilityRole="button"
-                  onPress={() => setOpen(false)}
-                  style={styles.fold}
-                >
-                  <Caret colour={pal.faint} direction="up" />
-                </PanelPressable>
-              </>
-            ) : (
-              // Closed, the whole machine is one line. With one node and one
-              // model — the alpha case — it resolves itself and never needs
-              // opening.
-              <PanelPressable
-                accessibilityLabel="Change engine, model and length"
-                accessibilityRole="button"
-                onPress={() => setOpen(true)}
-                style={styles.machineLine}
-              >
-                <Text style={[styles.meta, { color: pal.muted }]}>
-                  {machineLine(target, resolved)}
-                </Text>
-                <Text style={[type.small, { color: pal.faint }]}>
-                  {changeNote(targets.length, models.length)}
-                </Text>
-              </PanelPressable>
-            )}
-          </Animated.View>
-        </Animated.View>
-
-        {/*
-          Everything below the machine, as one object, so that opening the
-          cascade *moves* it rather than teleporting it.
-
-          The block above cannot animate its own height — a height driven from
-          the UI thread never reaches React Native's layout pass, which is why
-          the field's `Reveal` moves and fades instead of growing — so the
-          change of size is a commit, and what makes it read as one motion is
-          the foot gliding to where that commit put it while the new block
-          fades in over the same 240 ms.
-        */}
-        <Animated.View layout={COMPOSER_MOTION} style={styles.foot}>
-          <StageArc colour={pal.faint} stages={stages} />
-
-          {problems
-            .filter(problem => problem.kind !== 'caption-empty')
-            .map(problem => (
-              <Text
-                key={problem.kind}
-                style={[type.small, { color: pal.muted }]}
-              >
-                {describeProblem(problem)}
-              </Text>
-            ))}
-          {error !== null ? (
-            <Text
-              accessibilityRole="alert"
-              style={[type.small, { color: pal.ink }]}
-            >
-              {error}
-            </Text>
-          ) : null}
-
-          <View style={[styles.rule, { backgroundColor: pal.ink }]} />
-          <PanelPressable
-            accessibilityLabel="Make it"
-            accessibilityRole="button"
-            accessibilityState={{ disabled: !ready || submitting }}
-            disabled={!ready || submitting}
-            onPress={() => {
-              // One guard, here: a second tap while a submission is in flight
-              // would create a second job for one intent.
-              if (!ready || submitting) return;
-              onSubmit(
-                resolved.nodePublicKey as string,
-                resolved.modelSelector as string,
-                toGenerationRequest(resolved, declared),
-              );
-              setDraft(EMPTY_DRAFT);
-              setLyricsOpen(false);
-            }}
-            style={styles.submit}
-          >
-            <Text
-              style={[
-                type.title,
+            <Dial
+              activeColour={pal.ink}
+              activeKey={resolved.wordsMode}
+              items={[
+                { key: 'none', label: 'NONE', accessibilityLabel: 'No lyrics' },
+                ...(writer
+                  ? [
+                      {
+                        key: 'model',
+                        label: 'MODEL’S',
+                        accessibilityLabel: 'Generate lyrics automatically',
+                      },
+                    ]
+                  : []),
                 {
-                  color: ready && !submitting ? pal.ink : pal.faint,
-                  fontSize: COMPOSER_KNOBS.SUBMIT_SIZE_PX,
+                  key: 'mine',
+                  label: 'MINE',
+                  accessibilityLabel: 'Write my lyrics',
                 },
               ]}
-            >
-              {submitting ? 'Sending it…' : 'Make it'}
-            </Text>
-          </PanelPressable>
-        </Animated.View>
+              itemStyle={LEDGER_DIAL_ITEM}
+              onSelect={key => update({ wordsMode: key as WordsMode })}
+              restColour={pal.faint}
+              textStyle={styles.meta}
+              tickColour={pal.ink}
+            />
+            {resolved.wordsMode === 'mine' ? (
+              <TextInput
+                accessibilityLabel="Lyrics"
+                editable={!submitting}
+                multiline
+                numberOfLines={COMPOSER_KNOBS.LYRICS_LINES}
+                onChangeText={lyrics => update({ lyrics })}
+                placeholder="Write the words"
+                placeholderTextColor={pal.faint}
+                style={[styles.lyrics, type.body, { color: pal.ink }]}
+                value={resolved.lyrics}
+              />
+            ) : null}
+          </Row>
+          <Choice
+            label="Engine"
+            items={targets.map(candidate => ({
+              key: candidate.nodePublicKey,
+              label: (candidate.ready
+                ? candidate.label
+                : `${candidate.label} · offline`
+              ).toUpperCase(),
+              accessibilityLabel: `Run it on ${candidate.label}`,
+            }))}
+            activeKey={resolved.nodePublicKey}
+            empty="nowhere yet — no engine is paired"
+            onSelect={key =>
+              // Changing the engine drops the model with it: the next
+              // node's list is a different list, and carrying a selector
+              // across is how `model-not-installed` used to happen.
+              !submitting &&
+              setDraft(current => ({
+                ...current,
+                ...resolved,
+                nodePublicKey: key,
+                modelSelector: null,
+                parameters: {},
+                wordsMode:
+                  current.wordsMode === 'model' ? 'none' : current.wordsMode,
+              }))
+            }
+            value={target?.label ?? null}
+          />
+
+          <Choice
+            label="Model"
+            items={models.map(model => ({
+              key: model.selector,
+              label: model.selector.toUpperCase(),
+              accessibilityLabel: `Run it with ${model.selector}`,
+            }))}
+            activeKey={resolved.modelSelector}
+            empty={
+              target === null
+                ? 'not until an engine is chosen'
+                : 'nothing installed'
+            }
+            note={modelsNote(target, models.length)}
+            onSelect={key =>
+              update({
+                modelSelector: key,
+                parameters: {},
+                wordsMode:
+                  resolved.wordsMode === 'model' ? 'none' : resolved.wordsMode,
+              })
+            }
+            value={resolved.modelSelector}
+          />
+
+          <Choice
+            label="Length"
+            items={[
+              {
+                key: AUTO_LENGTH,
+                label: 'AUTO',
+                accessibilityLabel: "The engine's choice of length",
+              },
+              ...lengths.map(seconds => ({
+                key: String(seconds),
+                label: `${seconds}S`,
+                accessibilityLabel: `${seconds} seconds`,
+              })),
+            ]}
+            activeKey={
+              resolved.durationSeconds === null
+                ? AUTO_LENGTH
+                : String(resolved.durationSeconds)
+            }
+            empty="the engine's choice"
+            onSelect={key =>
+              update({
+                durationSeconds: key === AUTO_LENGTH ? null : Number(key),
+              })
+            }
+            value={
+              resolved.durationSeconds === null
+                ? "the engine's choice"
+                : `${resolved.durationSeconds} seconds`
+            }
+          />
+
+          {controls.length > 0 ? <LedgerGap /> : null}
+          <ModelParams
+            declared={controls}
+            disabled={submitting}
+            onChange={(key, value) =>
+              update({ parameters: { ...resolved.parameters, [key]: value } })
+            }
+            values={resolved.parameters}
+          />
+          {stages.length > 0 ? (
+            <>
+              <LedgerGap />
+              <Row label="It traces">
+                <StageArc colour={pal.faint} stages={stages} />
+              </Row>
+            </>
+          ) : null}
+        </Ledger>
       </ScrollView>
+      <LedgerFoot style={styles.foot}>
+        {problems
+          .filter(problem => problem.kind !== 'caption-empty')
+          .map(problem => (
+            <Text
+              key={
+                problem.kind === 'parameter'
+                  ? `parameter-${problem.key}`
+                  : problem.kind
+              }
+              style={[type.small, { color: pal.muted }]}
+            >
+              {describeProblem(problem)}
+            </Text>
+          ))}
+        {error !== null ? (
+          <Text
+            accessibilityRole="alert"
+            style={[type.small, { color: pal.ink }]}
+          >
+            {error}
+          </Text>
+        ) : null}
+
+        <PanelPressable
+          accessibilityLabel="Make it"
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !ready || submitting }}
+          disabled={!ready || submitting}
+          onPress={() => {
+            // One guard, here: a second tap while a submission is in flight
+            // would create a second job for one intent.
+            if (!ready || submitting) return;
+            onSubmit(
+              resolved.nodePublicKey as string,
+              resolved.modelSelector as string,
+              toGenerationRequest(resolved, declared),
+            );
+            setDraft(EMPTY_DRAFT);
+          }}
+          style={styles.submit}
+        >
+          <Text
+            style={[
+              type.title,
+              {
+                color: ready && !submitting ? pal.ink : pal.faint,
+                fontSize: COMPOSER_KNOBS.SUBMIT_SIZE_PX,
+              },
+            ]}
+          >
+            {submitting ? 'Sending it…' : 'Make it'}
+          </Text>
+        </PanelPressable>
+      </LedgerFoot>
     </>
   );
 }
 
 /** The key `auto` occupies on the length dial; no engine can collide with it. */
 const AUTO_LENGTH = 'auto';
-
-/**
- * The one clock the sheet reshapes itself on.
- *
- * Shared by the seat that opens and the block that is pushed down by it: two
- * views moving the same distance have to be one movement, and two transitions
- * with their own numbers are how a panel ends up arriving before the thing it
- * displaced has finished leaving.
- */
-const COMPOSER_MOTION = LinearTransition.duration(
-  COMPOSER_KNOBS.MACHINE_OPEN_MS,
-).easing(easeSmoother);
 
 /**
  * One step of the cascade: what it decides, and how it is decided.
@@ -543,14 +485,13 @@ function Choice({
 }) {
   const pal = usePalette();
   return (
-    <View style={styles.field}>
-      <Text style={[styles.meta, { color: pal.muted }]}>{label}</Text>
+    <Row label={label} note={note}>
       {items.length > 1 ? (
         <Dial
           activeColour={pal.ink}
           activeKey={activeKey ?? ''}
           items={items}
-          itemStyle={styles.dialItem}
+          itemStyle={LEDGER_DIAL_ITEM}
           onSelect={onSelect}
           restColour={pal.faint}
           // The lengths an engine accepts and the choices a model declares are
@@ -570,10 +511,7 @@ function Choice({
           </Text>
         </View>
       )}
-      {note === undefined ? null : (
-        <Text style={[type.small, { color: pal.faint }]}>{note}</Text>
-      )}
-    </View>
+    </Row>
   );
 }
 
@@ -615,35 +553,6 @@ function StageArc({
       ))}
     </View>
   );
-}
-
-/** `AGENTBOX · ACESTEP:1.5-FAST · AUTO` — every machine choice in one line. */
-function machineLine(
-  target: ComposerTarget | null,
-  draft: ComposerDraft,
-): string {
-  const where = target?.label ?? 'no engine';
-  const what = draft.modelSelector ?? 'no model';
-  const long =
-    draft.durationSeconds === null ? 'auto' : `${draft.durationSeconds}s`;
-  return `${where} · ${what} · ${long}`.toUpperCase();
-}
-
-/**
- * Why that line needs no attention, or that it does.
- *
- * A sentence rather than a fourth line of spaced monospace capitals. The
- * machine's own state is set in the chrome's mono — it is machine state — and
- * everything said *about* it is prose, in the face the rest of the app says
- * things in. Two long mono lines stacked was most of what made this sheet hard
- * to read: at 2 px of tracking a clause becomes a grey band across the page.
- */
-function changeNote(targetCount: number, modelCount: number): string {
-  if (targetCount === 0) return 'No engine is paired yet — tap to see.';
-  if (targetCount === 1 && modelCount <= 1) {
-    return 'One engine, one model — tap to change.';
-  }
-  return 'Tap to change.';
 }
 
 /** What this node has, said as a count rather than as a warning. */
@@ -703,25 +612,11 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     lineHeight: 19,
   },
-  body: { gap: space.md, paddingBottom: space.xxl, paddingTop: space.md },
+  body: { gap: space.md, paddingBottom: space.lg, paddingTop: space.md },
   caption: { padding: 0, textAlignVertical: 'top' },
   lyrics: { padding: 0, textAlignVertical: 'top' },
-  /** A label and the thing it names, kept together against the sheet's rhythm. */
-  field: { gap: space.xs },
-  /** A heading over a block of them, which needs more air than a label does. */
-  declared: { gap: space.sm },
-  /** The fold: the blind's own grip, at the foot of what it folds away. */
-  fold: { alignItems: 'center', minHeight: touch.min },
-  /** Everything under the machine, moved as one when the machine resizes. */
-  foot: { gap: space.md },
-  machine: { gap: space.md },
-  /** What makes the seat's own opening a reveal rather than a squeeze. */
-  seat: { overflow: 'hidden' },
-  machineLine: { gap: 2, justifyContent: 'center' },
-  dialItem: { justifyContent: 'center', minHeight: touch.min },
-  stated: { justifyContent: 'center', minHeight: touch.min },
-  hairline: { height: 1, marginVertical: space.sm },
-  rule: { height: 1, marginTop: space.md },
+  foot: { gap: space.sm },
+  stated: { justifyContent: 'center', minHeight: LEDGER_KNOBS.LINE_PX },
   stages: {
     alignItems: 'center',
     flexDirection: 'row',
