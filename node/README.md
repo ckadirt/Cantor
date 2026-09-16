@@ -130,6 +130,28 @@ never pinned to something unusable.
 Pulling a model also fetches the engine it needs, so a freshly pulled variant
 can run without a second command.
 
+### Model residency
+
+Stop the daemon, edit its `node.toml`, and restart to retain loaded weights:
+
+```toml
+[engine]
+keep_loaded = true
+```
+
+The node caches its last model/backend session between jobs. With the current
+ACE-Step, LeVo2 and MiniMax backends, `keep_loaded = true` also retains loaded
+weights on the selected device: RAM for CPU execution, device buffers for GPU
+execution. Weights load as needed; allow memory for all components plus active
+inference work. Request state is recreated for each generation.
+
+The default is `false`. ACE-Step then uses the installed variant's catalog
+memory budget (or one resident module when the budget is zero). LeVo2 and
+MiniMax instead release stage weights after use; they do not implement byte
+budget eviction. There is no idle-unload timer or CLI toggle. Install updated
+backends with `cantor backends --install` before enabling this on older LeVo2
+or MiniMax installations, whose engines accepted but ignored the option.
+
 ### Tuning
 
 ```toml
