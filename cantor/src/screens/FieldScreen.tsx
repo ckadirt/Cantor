@@ -43,7 +43,10 @@ import { LensPicker } from '../features/song/LensPicker';
 import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
-import { PLAYER_TRANSPORT_KNOBS } from '../features/field/NativePlayer';
+import {
+  PLAYER_TRANSPORT_KNOBS,
+  PLAYER_VERB_POSE,
+} from '../features/field/NativePlayer';
 import { JobSheet } from '../features/field/JobSheet';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
@@ -73,6 +76,7 @@ import {
   AnalysisCache,
   DEFAULT_LENS_KEY,
   analyseWindow,
+  arrivingFraction,
   availabilityAction,
   availabilityOf,
   formatBytes,
@@ -84,6 +88,7 @@ import {
   loadAudioBudget,
   saveAudioBudget,
 } from '../audio/budget';
+import { audioKey } from '../audio/repository';
 import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
 import { useBackendRuntime } from '../runtime';
 import { readError } from '../core/errors';
@@ -103,13 +108,28 @@ const ANALYSIS_BUCKETS = 512; // resolution the Cantor intervals are reduced fro
  * frame rate for a boundary that moves a fraction of a degree.
  */
 const PROGRESS_SAMPLE_MS = 160;
+/**
+ * How long the arriving arc takes to reach each published progress sample.
+ *
+ * Matched to the runtime's publishing interval so the arc is always just
+ * finishing the last step as the next one lands: shorter and it stands still
+ * between samples, longer and it lags the number it is drawing.
+ */
+const ARRIVING_GLIDE_MS = 100;
 
 /** The post-onboarding surface: one field, no parallel console navigation. */
 export function FieldScreen({ identity }: Props) {
   const pal = usePalette();
   const { state, commands } = useBackendRuntime(identity);
-  const { backends, snapshots, localAudio, outbox, pairing, storageError } =
-    state;
+  const {
+    backends,
+    snapshots,
+    localAudio,
+    downloading,
+    outbox,
+    pairing,
+    storageError,
+  } = state;
   const [viewport, setViewport] = useState<Viewport | null>(null);
   // One player for the life of the screen. A second one would be a second
   // element and a second audio session.
@@ -601,7 +621,7 @@ export function FieldScreen({ identity }: Props) {
     currentTrack.nodeKey === focused.entity.nodePublicKey &&
     currentTrack.songId === focused.entity.entityId;
   /**
-   * The transport's morph, on the UI thread: 0 is play, 1 is pause.
+   * The transport's morph, on the UI thread: see `PLAYER_VERB_POSE`.
    *
    * A shared value rather than a prop, because the canvas draws the transport
    * and a prop is a React commit — which re-records the whole canvas from
@@ -616,11 +636,36 @@ export function FieldScreen({ identity }: Props) {
   const idlePositionCandidate = useSharedValue(0);
   const idlePosition = useRef(idlePositionCandidate).current;
   const focusedPosition = focusedIsCurrent ? transport.positionSeconds : idlePosition;
-  const transportPlaying = useSharedValue(0);
+  const transportPlaying = useSharedValue<number>(PLAYER_VERB_POSE.play);
   const reducedMotion = useReducedMotion();
+  /*
+   * A song whose bytes are actually on their way is not offering to start
+   * anything, so the verb closes onto the waiting mark and the arc around the
+   * face carries how far along it is. Only the focused song is drawn here, and
+   * a song that is arriving is never the one making sound, so the three poses
+   * stay mutually exclusive and one ramp can hold all of them.
+   *
+   * Read from the live transfer and not from `partial`: a download interrupted
+   * at 24% leaves bytes on disk for good, and keying the closed verb off those
+   * would leave a dead mark on a song you can still press to resume — which
+   * looks exactly like a hang. The arc still draws from the bytes, because
+   * "you have this much" is true whether or not anything is moving.
+   */
+  const focusedArriving =
+    focused?.delivery !== undefined &&
+    downloading.has(
+      audioKey(
+        focused.entity.nodePublicKey,
+        focused.entity.entityId,
+        focused.delivery.sha256,
+      ),
+    );
   useEffect(() => {
-    const target =
-      focusedIsCurrent && transport.snapshot.state === 'playing' ? 1 : 0;
+    const target = focusedArriving
+      ? PLAYER_VERB_POSE.waiting
+      : focusedIsCurrent && transport.snapshot.state === 'playing'
+      ? PLAYER_VERB_POSE.pause
+      : PLAYER_VERB_POSE.play;
     if (transportPlaying.value === target) return;
     cancelAnimation(transportPlaying);
     transportPlaying.value = reducedMotion
@@ -630,11 +675,45 @@ export function FieldScreen({ identity }: Props) {
           easing: Easing.inOut(Easing.cubic),
         });
   }, [
+    focusedArriving,
     focusedIsCurrent,
     reducedMotion,
     transport.snapshot.state,
     transportPlaying,
   ]);
+
+  /**
+   * How far the focused song has arrived, on the UI thread.
+   *
+   * Runtime publishes progress about ten times a second, which is the right
+   * rate to *rebuild* a field at and far too slow to *draw* an arc at: stepped
+   * ten times a second the ring reads as a stutter, not as a download. So each
+   * sample is a target rather than a position, and the arc glides to it over
+   * the interval the next one is due in — the same split the playhead makes
+   * between the port's resync points and its own clock.
+   */
+  const transportArriving = useSharedValue(0);
+  const focusedArrivingFraction =
+    focused === null || focused.localAudio.state !== 'partial'
+      ? null
+      : arrivingFraction(
+          focused.localAudio.bytes,
+          focused.delivery?.byte_length,
+        );
+  useEffect(() => {
+    if (focusedArrivingFraction === null) {
+      cancelAnimation(transportArriving);
+      transportArriving.value = 0;
+      return;
+    }
+    cancelAnimation(transportArriving);
+    transportArriving.value = reducedMotion
+      ? focusedArrivingFraction
+      : withTiming(focusedArrivingFraction, {
+          duration: ARRIVING_GLIDE_MS,
+          easing: Easing.linear,
+        });
+  }, [focusedArrivingFraction, reducedMotion, transportArriving]);
 
   /**
    * Play the focused song, fetching it first if the phone does not have it.
@@ -1201,6 +1280,9 @@ export function FieldScreen({ identity }: Props) {
                 positionSeconds={focusedPosition}
                 playingKey={playingKey}
                 transportPlaying={transportPlaying}
+                transportArriving={
+                  focusedArrivingFraction === null ? null : transportArriving
+                }
                 nowMs={nowMs}
                 playingProgress={playingProgress}
                 relayoutLinear={fieldCamera.relayoutLinear}
@@ -1282,6 +1364,12 @@ export function FieldScreen({ identity }: Props) {
               durationMs: focused.song.duration_ms,
               nodeLabel: focused.nodeLabels[0] ?? focused.backend.petname,
               audioState: focused.localAudio.state,
+              // The word the touch layer announces has to mean what the drawn
+              // verb means. The verb closes only for a live transfer, so the
+              // word says `ARRIVING` only for a live transfer too — the arc
+              // around the face is the one thing that speaks for bytes merely
+              // sitting on disk.
+              arriving: focusedArriving ? focusedArrivingFraction : null,
               tags: focused.song.tags,
             }}
               width={viewport.width}

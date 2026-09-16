@@ -56,6 +56,11 @@ export type SongSurfaceSong = Readonly<{
   durationMs: number;
   nodeLabel: string;
   audioState: LocalAudioState;
+  /**
+   * How much of the delivery artifact has landed, 0..1, or null when nothing is
+   * on its way. Null is not zero: see `arrivingFraction`.
+   */
+  arriving: number | null;
   /** Every tag; the playlists among them are named at the foot. */
   tags: readonly string[];
 }>;
@@ -156,6 +161,7 @@ function SongSurfaceImpl({
     isCurrent,
     snapshot.state === 'playing',
     onPhone,
+    song.arriving,
   );
 
   const foot = useMemo(

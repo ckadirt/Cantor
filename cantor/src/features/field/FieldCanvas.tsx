@@ -290,6 +290,7 @@ type Props = {
    * press nothing. See `playerWords`.
    */
   transportPlaying?: SharedValue<number> | null;
+  transportArriving?: SharedValue<number> | null;
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
   /** How far through the playing song we are, 0..1. */
@@ -514,6 +515,7 @@ function FieldCanvasImpl({
   playingKey = null,
   focusKey = null,
   transportPlaying = null,
+  transportArriving = null,
   analyses,
   playingProgress = null,
   grain = null,
@@ -885,6 +887,7 @@ function FieldCanvasImpl({
           focusKey={focusKey}
           grainShared={grainValue}
           transportPlaying={transportPlaying}
+          transportArriving={transportArriving}
           positionSeconds={positionSeconds}
           analyses={analyses}
           labelFlights={labelFlights}
@@ -917,6 +920,7 @@ function FieldCanvasImpl({
     songMetaFont,
     songTitleFont,
     transportPlaying,
+    transportArriving,
     veil,
     viewport,
   ]);
@@ -1013,6 +1017,7 @@ function FieldCanvasImpl({
         songMetaFont={songMetaFont}
         songTitleFont={songTitleFont}
         transportPlaying={transportPlaying}
+        transportArriving={transportArriving}
         viewport={viewport}
       />
     );
@@ -1027,6 +1032,7 @@ function FieldCanvasImpl({
     songMetaFont,
     songTitleFont,
     transportPlaying,
+    transportArriving,
     viewport,
   ]);
 
@@ -1427,6 +1433,7 @@ function PlayerChrome({
   fitScaleShared,
   model,
   transportPlaying,
+  transportArriving,
   viewport,
   colour,
   mutedColour,
@@ -1437,6 +1444,7 @@ function PlayerChrome({
   fitScaleShared: SharedValue<number>;
   model: NativeSongModel;
   transportPlaying: SharedValue<number> | null;
+  transportArriving: SharedValue<number> | null;
   viewport: Viewport;
   colour: string;
   mutedColour: string;
@@ -1500,6 +1508,7 @@ function PlayerChrome({
         songMetaFont={songMetaFont}
         songTitleFont={songTitleFont}
         transportPlaying={transportPlaying}
+        arriving={transportArriving}
         viewport={viewport}
       />
     </SkiaGroup>
@@ -1686,6 +1695,7 @@ type NativeFieldContentProps = Readonly<{
   focusKey: string | null;
   /** The play-to-pause morph, 0..1, for the song the player holds. */
   transportPlaying: SharedValue<number> | null;
+  transportArriving: SharedValue<number> | null;
   positionSeconds: SharedValue<number> | null;
   analyses: ReadonlyMap<string, SongAnalysis> | undefined;
   /**
@@ -2495,6 +2505,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   playingKey,
   focusKey,
   transportPlaying,
+  transportArriving,
   positionSeconds,
   analyses,
   grainShared,
@@ -2660,6 +2671,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             songMetaFont={songMetaFont}
             positionSeconds={focused ? positionSeconds : null}
             transportPlaying={focused ? transportPlaying : null}
+            transportArriving={focused ? transportArriving : null}
             durationSeconds={song.duration_ms / 1000}
             displayFont={displayFont}
             monoFont={monoFont}
@@ -2806,6 +2818,7 @@ function NativePlacementFlight({
   songMetaFont,
   positionSeconds,
   transportPlaying,
+  transportArriving,
   durationSeconds,
   displayFont,
   monoFont,
@@ -2836,6 +2849,7 @@ function NativePlacementFlight({
   songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
   positionSeconds: SharedValue<number> | null;
   transportPlaying: SharedValue<number> | null;
+  transportArriving: SharedValue<number> | null;
   durationSeconds: number;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -3074,6 +3088,7 @@ function NativePlacementFlight({
           mutedColour={mutedColor}
           positionSeconds={positionSeconds}
           transportPlaying={transportPlaying}
+          arriving={transportArriving}
           anchor={playerAnchor}
           songMetaFont={songMetaFont}
           songTitleFont={songTitleFont}

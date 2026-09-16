@@ -49,12 +49,14 @@ export const DEFAULT_BACKEND_SNAPSHOT: ConnectionSnapshot = {
   librarySyncing: false,
 };
 
-
 /**
  * Runtime owns getting bytes onto the phone and keeping them there. Making
  * sound is the player's job, reached through `audioPath`.
  */
 export type AudioAction = 'download' | 'pin' | 'unpin' | 'remove';
+
+/** The floor between two published download-progress samples. */
+const ARRIVING_SAMPLE_MS = 100;
 
 export type BackendRuntimeConnection = Pick<
   BackendConnection,
@@ -107,6 +109,15 @@ export type BackendRuntimeState = {
   pairing: boolean;
   storageError: string | null;
   localAudio: Record<string, LocalAudio>;
+  /**
+   * Keys of the artifacts a transfer is running for right now.
+   *
+   * `localAudio` says what is on the phone; this says what is moving. A song
+   * interrupted at 24% stays `partial` forever, so anything that wants to draw
+   * a wait — a verb that closes, an arc that fills — has to ask this instead,
+   * or it promises motion to a song nothing is fetching.
+   */
+  downloading: ReadonlySet<string>;
   /**
    * Persisted submissions, keyed `${nodePublicKey}:${canonicalJobId}`.
    *
@@ -254,6 +265,27 @@ export function useBackendRuntime(
   const [pairing, setPairing] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [localAudio, setLocalAudio] = useState<Record<string, LocalAudio>>({});
+  /**
+   * The artifacts a transfer is running for *right now*.
+   *
+   * Not the same question as `localAudio`, and the difference is the one a
+   * person can see: `partial` means bytes are on the phone, which stays true
+   * forever after a download is interrupted. A song abandoned at 24% is not
+   * arriving — nothing is coming — and anything that draws a wait from the
+   * stored state alone ends up promising motion that will never happen.
+   */
+  const [downloading, setDownloading] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const markDownloading = useCallback((key: string, active: boolean) => {
+    setDownloading(current => {
+      if (current.has(key) === active) return current;
+      const next = new Set(current);
+      if (active) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   const backendsRef = useRef<BackendRecord[]>([]);
   /**
    * The snapshots as they are *now*.
@@ -442,8 +474,10 @@ export function useBackendRuntime(
         {
           onSnapshot: snapshot => {
             if (
-              connections.current.get(backend.nodePubkey)?.connection !== connection
-            ) return;
+              connections.current.get(backend.nodePubkey)?.connection !==
+              connection
+            )
+              return;
             setSnapshots(previous => ({
               ...previous,
               [backend.nodePubkey]: {
@@ -540,7 +574,6 @@ export function useBackendRuntime(
     },
     [],
   );
-
 
   snapshotsRef.current = snapshots;
 
@@ -719,7 +752,11 @@ export function useBackendRuntime(
       song: SongHeader,
       artifact: ArtifactView,
     ): Promise<string> =>
-      audioStore.localPath({ nodeKey, songId: song.id, digest: artifact.sha256 }),
+      audioStore.localPath({
+        nodeKey,
+        songId: song.id,
+        digest: artifact.sha256,
+      }),
     [audioStore],
   );
 
@@ -742,16 +779,38 @@ export function useBackendRuntime(
         const before = await identify();
         if (before.state !== 'cached' && before.state !== 'pinned') {
           const sink: ArtifactSink = audioStore.createSink(ref);
-          await live.connection.downloadArtifact(
-            song.id,
-            artifact,
-            sink,
-            (bytes, total) =>
-              updateLocalAudio(nodeKey, song.id, artifact.sha256, {
-                state: bytes === total ? 'cached' : 'partial',
-                bytes,
-              }),
-          );
+          markDownloading(audioKey(nodeKey, song.id, artifact.sha256), true);
+          try {
+            /*
+             * Progress is sampled, not forwarded.
+             *
+             * The node answers one acknowledgement per 64 KiB, so a song reports
+             * progress sixty-odd times, and each report is a `setState` that
+             * rebuilds every song's presentation and re-renders the field. The
+             * arriving arc does not need sixty samples — it needs a number often
+             * enough to glide between, which `ARRIVING_SAMPLE_MS` gives it. The
+             * last report is never dropped: it is the one that says the song is
+             * here.
+             */
+            let lastSampleMs = 0;
+            await live.connection.downloadArtifact(
+              song.id,
+              artifact,
+              sink,
+              (bytes, total) => {
+                const now = Date.now();
+                const done = bytes === total;
+                if (!done && now - lastSampleMs < ARRIVING_SAMPLE_MS) return;
+                lastSampleMs = now;
+                updateLocalAudio(nodeKey, song.id, artifact.sha256, {
+                  state: done ? 'cached' : 'partial',
+                  bytes,
+                });
+              },
+            );
+          } finally {
+            markDownloading(audioKey(nodeKey, song.id, artifact.sha256), false);
+          }
         }
       } else if (action === 'pin') {
         await audioStore.pin(ref);
@@ -762,7 +821,7 @@ export function useBackendRuntime(
       }
       updateLocalAudio(nodeKey, song.id, artifact.sha256, await identify());
     },
-    [audioStore, updateLocalAudio],
+    [audioStore, markDownloading, updateLocalAudio],
   );
 
   useEffect(() => {
@@ -854,7 +913,15 @@ export function useBackendRuntime(
   );
 
   return {
-    state: { backends, snapshots, pairing, storageError, localAudio, outbox },
+    state: {
+      backends,
+      snapshots,
+      pairing,
+      storageError,
+      localAudio,
+      downloading,
+      outbox,
+    },
     commands,
   };
 }

@@ -4,6 +4,7 @@ import {
   playPauseSilhouettes,
   playerWords,
   stepSilhouette,
+  transportWord,
 } from '../NativePlayer';
 import {
   PLAYER_POSE_KNOBS,
@@ -278,6 +279,49 @@ describe('the transport', () => {
     // Two contours on both sides: the halves of the triangle are the bars.
     expect(play.countPoints()).toBe(8);
     expect(pause.countPoints()).toBe(8);
+  });
+
+  /**
+   * The waiting mark is the third pose on the same ramp, so it has to pair with
+   * both of the others — `interpolatePaths` walks the stops pairwise and answers
+   * null for a mismatch, which would draw the verb as nothing at all rather than
+   * as a shape that is merely wrong.
+   */
+  it('closes the verb onto a waiting mark that pairs with both other poses', () => {
+    const seat = transportSeatsPx(viewport)[1];
+    const { waiting, play, pause } = playPauseSilhouettes(
+      seat.x,
+      seat.y,
+      seat.size,
+    );
+    expect(waiting.countPoints()).toBe(8);
+    expect(waiting.isInterpolatable(play)).toBe(true);
+    expect(waiting.isInterpolatable(pause)).toBe(true);
+    expect(waiting.interpolate(play, 0.5)).not.toBeNull();
+
+    // Quiet: the mark sits inside the triangle it closed out of, centred on the
+    // same seat rather than on the origin.
+    const markBounds = waiting.getBounds();
+    const playBounds = play.getBounds();
+    expect(markBounds.width).toBeLessThan(playBounds.width);
+    expect(markBounds.height).toBeLessThan(playBounds.height);
+    expect(markBounds.x + markBounds.width / 2).toBeCloseTo(seat.x, 5);
+    expect(markBounds.y + markBounds.height / 2).toBeCloseTo(seat.y, 5);
+  });
+
+  /**
+   * The word and the shape are one control read two ways: a screen reader is
+   * given the word and never the silhouette, so a song already downloading has
+   * to announce the wait rather than offer `FETCH` a second time.
+   */
+  it('announces the wait instead of offering to fetch again', () => {
+    expect(transportWord(false, false, true)).toBe('PLAY');
+    expect(transportWord(true, true, true)).toBe('PAUSE');
+    expect(transportWord(false, false, false)).toBe('FETCH');
+    expect(transportWord(false, false, false, 0.42)).toBe('ARRIVING 42%');
+    // Nothing on its way is not the same as nothing arrived yet.
+    expect(transportWord(false, false, false, 0)).toBe('ARRIVING 0%');
+    expect(transportWord(false, false, false, null)).toBe('FETCH');
   });
 
   it('draws a step as one glyph facing two ways', () => {
