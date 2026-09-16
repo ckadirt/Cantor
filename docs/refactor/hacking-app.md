@@ -192,6 +192,19 @@ cable is replugged.
 
 ## Review checklist
 
+### Composer lyrics compatibility
+
+`core/protocol/lyrics.ts` adapts the existing ACE engine contract until nodes
+advertise lyrics capabilities directly. Automatic words are offered only for
+the `acestep` engine with a declared `plan` stage. Automatic mode omits lyrics;
+instrumental mode sends `[Instrumental]`; manual mode sends the supplied words.
+There is no `write_lyrics` extension in that engine ABI. Unknown engines must
+not inherit either this capability or its sentinel. Stage count alone does not
+establish lyric-writing support.
+
+The Ledger uses a compact dial whose tick sits near its text while retaining a
+48 dp touch target. Header titles are centered independently of side controls.
+
 - [ ] Does a component call the connection directly?
 - [ ] Is the new state owned by exactly one hook or repository?
 - [ ] Is every request registered atomically with its timeout?

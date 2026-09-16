@@ -4,6 +4,7 @@ import {
   canSubmit,
   describeProblem,
   modelsFor,
+  writeWordsFor,
   problemsWith,
   toGenerationRequest,
   utf8Bytes,
@@ -203,33 +204,59 @@ describe('toGenerationRequest', () => {
 });
 
 describe('words intent', () => {
-  const writer = {
-    kind: 'boolean' as const,
-    key: 'write_lyrics',
-    label: 'Write lyrics',
-    default: true,
+  const ace = {
+    selector: 'acestep:1.5-fast',
+    family: 'acestep',
+    engine: 'acestep',
+    stages: ['plan', 'codes', 'diffuse', 'decode'] as const,
   };
-  it('overrides the writer default for none and mine', () => {
-    expect(toGenerationRequest(draft(), [writer]).extensions).toEqual({
-      write_lyrics: false,
+  const model = { ...ace, stages: [...ace.stages] };
+  it('requests instrumental ACE audio explicitly, without an invented extension', () => {
+    expect(toGenerationRequest(draft(), [], model)).toEqual({
+      caption: 'a slow piano piece',
+      lyrics: '[Instrumental]',
     });
-    expect(
-      toGenerationRequest(draft({ wordsMode: 'mine', lyrics: 'hello' }), [
-        writer,
-      ]),
-    ).toMatchObject({ lyrics: 'hello', extensions: { write_lyrics: false } });
   });
-  it('never sends retained lyrics in automatic mode', () => {
+  it('preserves supplied lyrics', () => {
     expect(
-      toGenerationRequest(draft({ wordsMode: 'model', lyrics: 'saved' }), [
-        writer,
-      ]),
+      toGenerationRequest(
+        draft({ wordsMode: 'mine', lyrics: ' hello ' }),
+        [],
+        model,
+      ),
+    ).toEqual({ caption: 'a slow piano piece', lyrics: 'hello' });
+  });
+  it('leaves lyrics empty for the native planner, ignoring retained text', () => {
+    expect(
+      toGenerationRequest(
+        draft({ wordsMode: 'model', lyrics: 'saved' }),
+        [],
+        model,
+      ),
     ).toEqual({ caption: 'a slow piano piece' });
+    expect(writeWordsFor([target({ models: [model] })], draft())).toBe(
+      "ACESTEP'S",
+    );
   });
-  it('rejects automatic mode when the selected model has no writer', () => {
+  it('requires the ACE engine and its planner, not a model name or just a plan stage', () => {
+    for (const candidate of [
+      { ...model, engine: 'other' },
+      {
+        ...model,
+        stages: ['codes' as const, 'diffuse' as const, 'decode' as const],
+      },
+    ]) {
+      expect(
+        problemsWith(draft({ wordsMode: 'model' }), [
+          target({ models: [candidate] }),
+        ]),
+      ).toContainEqual({ kind: 'writer-unavailable' });
+    }
+  });
+  it('does not invent instrumental tokens for other engines', () => {
     expect(
-      problemsWith(draft({ wordsMode: 'model' }), [target()]),
-    ).toContainEqual({ kind: 'writer-unavailable' });
+      toGenerationRequest(draft(), [], { ...model, engine: 'levo2' }),
+    ).toEqual({ caption: 'a slow piano piece' });
   });
   it('does not validate unsent lyrics', () => {
     expect(

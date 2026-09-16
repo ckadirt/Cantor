@@ -4,7 +4,7 @@ import type { ModelParameter } from '../../../../protocol/ModelParameter';
 import type { ParameterValue } from '../../../../protocol/ParameterValue';
 import { parameterProblem } from '../../core/protocol/parameters';
 import { Dial, LEDGER_DIAL_ITEM, Row } from '../controls';
-import { font, space, type, usePalette } from '../../theme/tokens';
+import { font, space, touch, type, usePalette } from '../../theme/tokens';
 
 type Props = {
   /** What the selected model declared. Empty renders nothing at all. */
@@ -24,9 +24,7 @@ type Props = {
  *
  * A declared choice is a dial and a declared switch is a two-word dial, so a
  * knob the node invented reads exactly like the ones the composer ships with.
- * Anything typed is a line with a rule under it rather than a box around it:
- * this design has no boxes, and a field that draws one is the tell that some
- * part of the sheet came from somewhere else.
+ * Typed values remain unboxed and unruled, matching the selected HTML.
  *
  * The label is the row's label, in the label column, so a declared control is
  * indistinguishable in shape from `Engine` or `Length`. It used to be an
@@ -43,9 +41,10 @@ export function ModelParams({ declared, values, disabled, onChange }: Props) {
         const value = values[parameter.key] ?? parameter.default;
         const problem = parameterProblem(parameter, value);
         return (
-          <Row key={parameter.key} label={parameter.label}>
+          <Row key={parameter.key} label={parameter.label} control>
             {parameter.kind === 'boolean' ? (
               <Dial
+                compact
                 activeColour={pal.ink}
                 activeKey={value === true ? 'on' : 'off'}
                 items={SWITCH.map(state => ({
@@ -63,6 +62,7 @@ export function ModelParams({ declared, values, disabled, onChange }: Props) {
               />
             ) : parameter.kind === 'choice' ? (
               <Dial
+                compact
                 activeColour={pal.ink}
                 activeKey={String(value)}
                 items={parameter.choices.map(choice => ({
@@ -130,20 +130,13 @@ const FIELD_WIDTH_PX = 120;
 const styles = StyleSheet.create({
   /** A dial word, at the size every dial in a ledger row is set in. */
   word: { fontFamily: font.mono, fontSize: 12, letterSpacing: 0.4 },
-  /**
-   * A rule under the words, not a box around them — and only as wide as the
-   * answer it is ruled for. A full-width rule under a two-digit number reads
-   * as a section divider, which is what it looked like on the phone.
-   */
   input: {
     alignSelf: 'flex-start',
-    borderBottomWidth: 1,
+    minHeight: touch.min,
+    includeFontPadding: false,
     minWidth: FIELD_WIDTH_PX,
     padding: 0,
-    // The rule belongs to the answer, so it sits just under it. Given the
-    // whole of `touch.min` the digits floated in the middle of an empty box
-    // and the rule read as another divider.
-    paddingBottom: space.xs,
+    textAlignVertical: 'center',
   },
   problem: { ...type.small, marginTop: space.xs },
 });

@@ -102,20 +102,13 @@ describe('the composer Ledger', () => {
       lyrics: 'the tide goes out',
     });
   });
-  it('offers automatic lyrics only for the selected declaration', () => {
+  it('offers automatic lyrics for the ACE planner without requiring a boolean', () => {
     const capable: ComposerTarget = {
       ...agentbox,
       models: [
         {
           ...model('acestep:1.5-fast'),
-          parameters: [
-            {
-              kind: 'boolean',
-              key: 'write_lyrics',
-              label: 'Write lyrics',
-              default: false,
-            },
-          ],
+          stages: ['plan', 'codes', 'diffuse', 'decode'],
         },
         model('levo2:1.0'),
       ],
@@ -126,11 +119,10 @@ describe('the composer Ledger', () => {
     press('Make it');
     expect(onSubmit.mock.calls[0][2]).toEqual({
       caption: 'harbour',
-      extensions: { write_lyrics: true },
     });
     press('Generate lyrics automatically');
     press('Run it with levo2:1.0');
-    expect(words()).not.toContain('MODEL’S');
+    expect(words()).not.toContain("ACESTEP'S");
     expect(words()).toContain('NO LYRICS SUPPLIED');
   });
 

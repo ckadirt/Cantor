@@ -133,7 +133,12 @@ function EnginesSheetImpl({
             color={pal.ink}
           />
         </View>
-        <Text style={[styles.meta, { color: pal.muted }]}>{title}</Text>
+        <Text
+          pointerEvents="none"
+          style={[styles.meta, styles.headerTitle, { color: pal.muted }]}
+        >
+          {title}
+        </Text>
         <PanelPressable
           accessibilityLabel={
             isHome
@@ -144,6 +149,7 @@ function EnginesSheetImpl({
           }
           accessibilityRole="button"
           hitSlop={space.md}
+          style={styles.close}
           onPress={isHome ? onClose : home}
         >
           <Text style={[styles.meta, { color: pal.muted }]}>
@@ -208,7 +214,7 @@ function EnginesSheetImpl({
                     const installed = backend.lastNodeInfo?.models;
                     return (
                       <React.Fragment key={backend.nodePubkey}>
-                        <Row label="Engine">
+                        <Row label="Engine" control>
                           <View style={styles.engineHeading}>
                             <View style={styles.engineName}>
                               {renaming === backend.nodePubkey ? (
@@ -287,6 +293,7 @@ function EnginesSheetImpl({
                           </Text>
                         </Row>
                         <Row
+                          control
                           label="Models"
                           note={
                             installed
@@ -344,10 +351,10 @@ function EnginesSheetImpl({
                     );
                   })
                 )}
-                <Row>
+                <Row control>
                   <Action label="Add a backend" onPress={onPair} />
                 </Row>
-                <Row>
+                <Row control>
                   <Action
                     label={refreshing ? 'Refreshing…' : 'Refresh libraries'}
                     onPress={onRefresh}
@@ -498,7 +505,8 @@ function Action({
 
 /** KNOBS — header geometry and the shared symbol transition. */
 const PANEL_KNOBS = {
-  SYMBOL_PX: 40,
+  SYMBOL_PX: 27,
+  HEADER_SIDE_PX: 64,
   /** One retained glyph per node: held, exchanging, then connected. */
   ENGINE_SYMBOL_PX: 24,
   PAGE_FADE_MS: 220,
@@ -517,14 +525,22 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     lineHeight: 19,
   },
-  headingMark: { marginRight: space.sm },
+  headingMark: { width: PANEL_KNOBS.SYMBOL_PX },
+  headerTitle: {
+    position: 'absolute',
+    left: PANEL_KNOBS.HEADER_SIDE_PX,
+    right: PANEL_KNOBS.HEADER_SIDE_PX,
+    textAlign: 'center',
+  },
+  close: { alignItems: 'flex-end' },
   header: {
     alignItems: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
-    borderBottomWidth: 1,
-    paddingBottom: space.sm,
-    minHeight: PANEL_KNOBS.ACTION_PX,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    height: PANEL_KNOBS.ACTION_PX,
+    marginHorizontal: -space.lg,
+    paddingHorizontal: space.lg,
     gap: space.sm,
   },
   body: { gap: space.sm, paddingBottom: space.xxl, paddingTop: space.md },
@@ -535,7 +551,7 @@ const styles = StyleSheet.create({
   forgetTitle: { fontSize: 20, lineHeight: 29 },
   action: {
     justifyContent: 'center',
-    minHeight: PANEL_KNOBS.ACTION_PX,
+    minHeight: touch.min,
   },
   confirm: { justifyContent: 'center', minHeight: touch.min },
   confirmWord: { fontSize: 17 },
