@@ -21,7 +21,6 @@ import {
   canSubmit,
   declaredFor,
   writeWordsFor,
-  type WordsMode,
   describeProblem,
   modelsFor,
   problemsWith,
@@ -246,33 +245,27 @@ function ComposerSheetImpl({
                 : undefined
             }
           >
-            <Dial
-              compact
-              activeColour={pal.ink}
-              activeKey={resolved.wordsMode}
-              items={[
-                { key: 'none', label: 'NONE', accessibilityLabel: 'No lyrics' },
-                ...(writer
-                  ? [
-                      {
-                        key: 'model',
-                        label: writer,
-                        accessibilityLabel: 'Generate lyrics automatically',
-                      },
-                    ]
-                  : []),
-                {
-                  key: 'mine',
-                  label: 'MINE',
-                  accessibilityLabel: 'Write my lyrics',
-                },
-              ]}
-              itemStyle={LEDGER_DIAL_ITEM}
-              onSelect={key => update({ wordsMode: key as WordsMode })}
-              restColour={pal.faint}
-              textStyle={styles.dialWord}
-              tickColour={pal.ink}
-            />
+            <PanelPressable
+              accessibilityLabel={
+                resolved.wordsMode === 'mine' ? 'No lyrics' : 'Write my lyrics'
+              }
+              accessibilityRole="button"
+              disabled={submitting}
+              onPress={() =>
+                update({
+                  wordsMode: resolved.wordsMode === 'mine' ? 'none' : 'mine',
+                })
+              }
+              style={LEDGER_DIAL_ITEM}
+            >
+              <Text style={[type.body, { color: pal.ink }]}>
+                {resolved.wordsMode === 'mine'
+                  ? 'My words'
+                  : resolved.wordsMode === 'model'
+                  ? 'Automatic'
+                  : 'None'}
+              </Text>
+            </PanelPressable>
             {resolved.wordsMode === 'mine' ? (
               <TextInput
                 accessibilityLabel="Lyrics"
@@ -330,11 +323,7 @@ function ComposerSheetImpl({
                 ? 'not until an engine is chosen'
                 : 'nothing installed'
             }
-            note={
-              writer
-                ? 'Writes its own words'
-                : modelsNote(target, models.length)
-            }
+            note={modelsNote(target, models.length)}
             onSelect={key =>
               update({
                 modelSelector: key,
@@ -378,7 +367,42 @@ function ComposerSheetImpl({
             }
           />
 
-          {controls.length > 0 ? <LedgerGap /> : null}
+          {writer || controls.length > 0 ? <LedgerGap /> : null}
+          {writer ? (
+            <Row label="Write words" control>
+              <Dial
+                compact
+                activeColour={pal.ink}
+                activeKey={resolved.wordsMode === 'model' ? 'on' : 'off'}
+                items={[
+                  {
+                    key: 'off',
+                    label: 'OFF',
+                    accessibilityLabel: 'Write words: off',
+                  },
+                  {
+                    key: 'on',
+                    label: 'ON',
+                    accessibilityLabel: 'Generate lyrics automatically',
+                  },
+                ]}
+                itemStyle={LEDGER_DIAL_ITEM}
+                onSelect={key =>
+                  update({
+                    wordsMode:
+                      key === 'on'
+                        ? 'model'
+                        : resolved.lyrics.trim()
+                        ? 'mine'
+                        : 'none',
+                  })
+                }
+                restColour={pal.faint}
+                textStyle={styles.dialWord}
+                tickColour={pal.ink}
+              />
+            </Row>
+          ) : null}
           <ModelParams
             declared={controls}
             disabled={submitting}
