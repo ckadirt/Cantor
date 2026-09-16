@@ -211,3 +211,15 @@ The Ledger uses a compact dial whose tick sits near its text while retaining a
 - [ ] Does offline behavior still work with no socket?
 - [ ] Did a persisted key or stored shape change without a migration story?
 - [ ] Does motion still follow the Flicker Law in `cantor/AGENTS.md`?
+
+### Live jobs on the field
+
+A live job must not force the song field into the JavaScript picture fallback.
+`FieldCanvas` draws job progress in a separate transparent canvas, with camera
+and placement motion driven by the same UI-thread values as the songs. Progress
+may replace the job picture, but must retain the song scene element and its
+presentation map when song data is unchanged. Job flight subtrees are keyed by
+re-cut generation so outgoing mappers never read a newborn clock.
+
+`fieldCanvasClock.test.tsx` checks that a live job preserves the native song
+scene across progress updates, including fresh controller projection objects.

@@ -21,7 +21,7 @@ import {
   type FieldLayout,
 } from '../../../field';
 import { FieldCanvas } from '../FieldCanvas';
-import type { FieldPresentation } from '../useFieldController';
+import type { JobPresentation, FieldPresentation } from '../useFieldController';
 import type { FieldRecutModel } from '../useFieldCamera';
 
 const mockBornClocks: Array<{ born: number; clock: { value: number } }> = [];
@@ -290,4 +290,84 @@ describe('field canvas re-cut clock', () => {
     });
     expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
   });
+  it('keeps songs on the same native scene across live job progress updates', async () => {
+    const recut = recutBetween(1, year, year, false);
+    const cameraShared = { value: cameraFor(year) };
+    const fitScaleShared = { value: year.fitScale };
+    const entity = entities[1];
+    const songs = new Map([
+      [entities[0].key, presentations.get(entities[0].key)!],
+    ]);
+    const pending: JobPresentation = {
+      entity: { ...entity, kind: 'job' },
+      backend,
+      nodeLabels: ['Studio'],
+      caption: 'working',
+      declaredStages: [],
+      job: {
+        id: entity.entityId,
+        revision: 1,
+        state: 'running',
+        model: 'light',
+        created_at: '2026-08-08T00:00:00Z',
+        updated_at: '2026-08-08T00:00:00Z',
+      },
+    };
+    const render = (revision: number) => (
+      <FieldCanvas
+        camera={cameraFor(year)}
+        cameraShared={cameraShared as never}
+        fitScaleShared={fitScaleShared as never}
+        layout={year}
+        placements={year.placements}
+        palette={palette}
+        viewport={viewport}
+        recut={recut}
+        renderFitScale={year.fitScale}
+        transitionGeneration={1}
+        nowMs={0}
+        presentations={
+          new Map(
+            [...songs].map(([key, value]) => [
+              key,
+              { ...value, nodeLabels: [...value.nodeLabels] },
+            ]),
+          )
+        }
+        jobs={
+          new Map([
+            [
+              entity.key,
+              {
+                ...pending,
+                job: {
+                  ...pending.job,
+                  revision,
+                  progress: { completed: revision, total: 8, unit: 'steps' },
+                },
+              },
+            ],
+          ])
+        }
+      />
+    );
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(render(1));
+    });
+    const canvases = renderer.root.findAllByType(Canvas);
+    expect(canvases).toHaveLength(2);
+    const songScene = canvases[0].props.children;
+    const jobScene = canvases[1].props.children;
+    await ReactTestRenderer.act(async () => {
+      renderer.update(render(2));
+    });
+    const updated = renderer.root.findAllByType(Canvas);
+    expect(updated[0].props.children).toBe(songScene);
+    expect(updated[1].props.children).not.toBe(jobScene);
+    await ReactTestRenderer.act(async () => {
+      renderer.unmount();
+    });
+  });
+
 });
