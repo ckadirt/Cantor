@@ -16,7 +16,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
-import { space } from '../../theme/tokens';
+import { space, touch } from '../../theme/tokens';
 
 /** KNOBS — the tick, and how it travels. */
 export const DIAL_KNOBS = {
@@ -30,6 +30,8 @@ export const DIAL_KNOBS = {
    */
   TICK_GAP_PX: 5,
   MOVE_MS: 260,
+  COMPACT_LINE_PX: 22,
+  COMPACT_GAP_PX: 15,
 } as const;
 
 /** One position on a dial. */
@@ -59,6 +61,7 @@ export type DialItem = Readonly<{
 export function Dial({
   activeColour,
   activeKey,
+  compact = false,
   items,
   itemStyle,
   onSelect,
@@ -67,6 +70,8 @@ export function Dial({
   textStyle,
   tickColour,
 }: {
+  /** Full touch height, with the tick just below the text instead of below the target. */
+  compact?: boolean;
   activeColour: string;
   activeKey: string;
   items: readonly DialItem[];
@@ -128,8 +133,14 @@ export function Dial({
   // The tick is measured against the same box the words are laid out in, so it
   // lives inside the row's own parent — under a scroller it travels with them.
   const dial = (
-    <View style={styles.dial} pointerEvents="box-none">
-      <View style={styles.dialRow} pointerEvents="box-none">
+    <View
+      style={[styles.dial, compact && styles.compact]}
+      pointerEvents="box-none"
+    >
+      <View
+        style={[styles.dialRow, compact && styles.compactRow]}
+        pointerEvents="box-none"
+      >
         {items.map(item => (
           <Pressable
             accessibilityLabel={item.accessibilityLabel}
@@ -139,11 +150,12 @@ export function Dial({
             key={item.key}
             onLayout={event => measure(item.key, event)}
             onPress={() => onSelect(item.key)}
-            style={[styles.dialItem, itemStyle]}
+            style={[styles.dialItem, itemStyle, compact && styles.compactItem]}
           >
             <Text
               style={[
                 textStyle,
+                compact && styles.compactText,
                 { color: item.key === activeKey ? activeColour : restColour },
               ]}
             >
@@ -154,7 +166,12 @@ export function Dial({
       </View>
       <Animated.View
         pointerEvents="none"
-        style={[styles.tick, tick, { backgroundColor: tickColour }]}
+        style={[
+          styles.tick,
+          compact && styles.compactTick,
+          tick,
+          { backgroundColor: tickColour },
+        ]}
       />
     </View>
   );
@@ -176,6 +193,21 @@ export function Dial({
 const styles = StyleSheet.create({
   // The dial owns the space under its words so the tick has somewhere to sit.
   dial: { paddingBottom: DIAL_KNOBS.TICK_GAP_PX },
+  compact: { paddingBottom: 0 },
+  compactRow: { gap: DIAL_KNOBS.COMPACT_GAP_PX },
+  compactItem: {
+    minHeight: touch.min,
+    paddingVertical: 0,
+    justifyContent: 'center',
+  },
+  compactText: {
+    lineHeight: DIAL_KNOBS.COMPACT_LINE_PX,
+    includeFontPadding: false,
+  },
+  compactTick: {
+    bottom:
+      (touch.min - DIAL_KNOBS.COMPACT_LINE_PX) / 2 - DIAL_KNOBS.TICK_GAP_PX,
+  },
   dialRow: { flexDirection: 'row', gap: space.md },
   dialItem: { paddingVertical: space.xs },
   tick: {

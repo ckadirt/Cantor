@@ -118,8 +118,9 @@ export function SettingsSheet({
             note="Here because you listened. Reclaimed first."
           />
         </Row>
-        <Row label="Budget">
+        <Row label="Budget" control>
           <Dial
+            compact
             activeColour={pal.ink}
             activeKey={String(budgetBytes)}
             items={BUDGET_CHOICES.map(choice => ({

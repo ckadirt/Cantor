@@ -14,12 +14,12 @@ import {
   type DialItem,
 } from '../controls';
 import { space, type, usePalette } from '../../theme/tokens';
+import { lyricsContractFor } from '../../core/protocol/lyrics';
 import { ModelParams } from './ModelParams';
 import {
   EMPTY_DRAFT,
   canSubmit,
   declaredFor,
-  declaredControlsFor,
   writeWordsFor,
   type WordsMode,
   describeProblem,
@@ -47,28 +47,17 @@ export const COMPOSER_KNOBS = {
    * surface.
    */
   CAPTION_SIZE_PX: 25,
-  CAPTION_LINE_PX: 36,
+  CAPTION_LINE_PX: 34,
+  CAPTION_TOP_PX: 22,
+  CAPTION_BOTTOM_PX: 20,
+  HEADER_SIDE_PX: 64,
   LYRICS_LINES: 4,
   DURATION_STEP_SECONDS: 15, // coarse enough to tap, fine enough to matter
-  /**
-   * The sheet's own mark, drawn as the sheet arrives.
-   *
-   * A step under the engines sheet's 40, because ∇ is a large filled triangle
-   * where ∮ is a hairline: at the same number the composer's head weighed
-   * twice what the other sheet's does, and the mark was the loudest thing on a
-   * surface whose loudest thing is meant to be the caption.
-   */
-  SYMBOL_PX: 32,
-  /**
-   * The declared stage row: the arc this engine will trace, drawn before you
-   * commit.
-   *
-   * 22 px was too small for the glyphs to be themselves — ℵ₀ at that size is a
-   * mark with a smudge under it — and a row of unreadable marks is noise
-   * wearing the shape of information.
-   */
-  STAGE_GLYPH_PX: 30,
-  STAGE_GLYPH_GAP_PX: space.md,
+  /** Header mark at the HTML reference's 27 dp size. */
+  SYMBOL_PX: 27,
+  /** Small reference glyphs: the arc is a quiet annotation beside its label. */
+  STAGE_GLYPH_PX: 16,
+  STAGE_GLYPH_GAP_PX: space.sm,
   /**
    * How long a stage glyph takes to trace itself on.
    *
@@ -155,7 +144,7 @@ function ComposerSheetImpl({
       ? { ...selection, wordsMode: 'none' }
       : selection;
   const declared = declaredFor(targets, resolved);
-  const controls = declaredControlsFor(targets, resolved);
+  const controls = declared;
   const writer = writeWordsFor(targets, resolved);
   const problems = problemsWith(resolved, targets);
   const ready = canSubmit(resolved, targets);
@@ -194,12 +183,18 @@ function ComposerSheetImpl({
             color={pal.ink}
           />
         </View>
-        <Text style={[styles.meta, { color: pal.muted }]}>COMPOSE</Text>
+        <Text
+          pointerEvents="none"
+          style={[styles.meta, styles.headerTitle, { color: pal.muted }]}
+        >
+          COMPOSE
+        </Text>
         <PanelPressable
           accessibilityLabel="Close composer"
           accessibilityRole="button"
           hitSlop={space.md}
           onPress={onClose}
+          style={styles.close}
         >
           <Text style={[styles.meta, { color: pal.muted }]}>CLOSE</Text>
         </PanelPressable>
@@ -240,15 +235,19 @@ function ComposerSheetImpl({
         <Ledger>
           <Row
             label="Words"
+            control
             note={
               resolved.wordsMode === 'none'
-                ? 'No lyrics supplied'
+                ? lyricsContractFor(selected).instrumentalLyrics
+                  ? 'This will be instrumental'
+                  : 'No lyrics supplied'
                 : resolved.wordsMode === 'model'
                 ? 'The model writes the lyrics'
                 : undefined
             }
           >
             <Dial
+              compact
               activeColour={pal.ink}
               activeKey={resolved.wordsMode}
               items={[
@@ -257,7 +256,7 @@ function ComposerSheetImpl({
                   ? [
                       {
                         key: 'model',
-                        label: 'MODEL’S',
+                        label: writer,
                         accessibilityLabel: 'Generate lyrics automatically',
                       },
                     ]
@@ -271,7 +270,7 @@ function ComposerSheetImpl({
               itemStyle={LEDGER_DIAL_ITEM}
               onSelect={key => update({ wordsMode: key as WordsMode })}
               restColour={pal.faint}
-              textStyle={styles.meta}
+              textStyle={styles.dialWord}
               tickColour={pal.ink}
             />
             {resolved.wordsMode === 'mine' ? (
@@ -331,7 +330,11 @@ function ComposerSheetImpl({
                 ? 'not until an engine is chosen'
                 : 'nothing installed'
             }
-            note={modelsNote(target, models.length)}
+            note={
+              writer
+                ? 'Writes its own words'
+                : modelsNote(target, models.length)
+            }
             onSelect={key =>
               update({
                 modelSelector: key,
@@ -430,7 +433,7 @@ function ComposerSheetImpl({
             onSubmit(
               resolved.nodePublicKey as string,
               resolved.modelSelector as string,
-              toGenerationRequest(resolved, declared),
+              toGenerationRequest(resolved, declared, selected),
             );
             setDraft(EMPTY_DRAFT);
           }}
@@ -485,9 +488,10 @@ function Choice({
 }) {
   const pal = usePalette();
   return (
-    <Row label={label} note={note}>
+    <Row label={label} note={note} control={items.length > 1}>
       {items.length > 1 ? (
         <Dial
+          compact
           activeColour={pal.ink}
           activeKey={activeKey ?? ''}
           items={items}
@@ -497,7 +501,7 @@ function Choice({
           // The lengths an engine accepts and the choices a model declares are
           // the node's to decide, so the row may be longer than the sheet.
           scroll
-          textStyle={styles.meta}
+          textStyle={styles.dialWord}
           tickColour={pal.ink}
         />
       ) : (
@@ -589,14 +593,23 @@ const styles = StyleSheet.create({
   /** The engines sheet's head, because it is the same head. */
   header: {
     alignItems: 'center',
-    borderBottomWidth: 1,
+    borderBottomWidth: StyleSheet.hairlineWidth,
     flexDirection: 'row',
     gap: space.sm,
     justifyContent: 'space-between',
-    minHeight: COMPOSER_KNOBS.ROW_PX,
-    paddingBottom: space.sm,
+    height: COMPOSER_KNOBS.ROW_PX,
+    marginHorizontal: -space.lg,
+    paddingHorizontal: space.lg,
   },
-  headingMark: { marginRight: space.sm },
+  headingMark: { width: COMPOSER_KNOBS.SYMBOL_PX },
+  headerTitle: {
+    position: 'absolute',
+    left: COMPOSER_KNOBS.HEADER_SIDE_PX,
+    right: COMPOSER_KNOBS.HEADER_SIDE_PX,
+    textAlign: 'center',
+  },
+  close: { alignItems: 'flex-end' },
+  dialWord: { ...type.eyebrow, fontSize: 12, letterSpacing: 0 },
   /**
    * Every label in this sheet, and every word on its dials.
    *
@@ -612,8 +625,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     lineHeight: 19,
   },
-  body: { gap: space.md, paddingBottom: space.lg, paddingTop: space.md },
-  caption: { padding: 0, textAlignVertical: 'top' },
+  body: { paddingBottom: space.lg, paddingTop: COMPOSER_KNOBS.CAPTION_TOP_PX },
+  caption: {
+    padding: 0,
+    textAlignVertical: 'top',
+    includeFontPadding: false,
+    marginBottom: COMPOSER_KNOBS.CAPTION_BOTTOM_PX,
+  },
   lyrics: { padding: 0, textAlignVertical: 'top' },
   foot: { gap: space.sm },
   stated: { justifyContent: 'center', minHeight: LEDGER_KNOBS.LINE_PX },
@@ -621,7 +639,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     flexDirection: 'row',
     gap: COMPOSER_KNOBS.STAGE_GLYPH_GAP_PX,
-    marginTop: space.sm,
+    minHeight: LEDGER_KNOBS.LINE_PX,
   },
   submit: { justifyContent: 'center', minHeight: COMPOSER_KNOBS.ROW_PX },
 });

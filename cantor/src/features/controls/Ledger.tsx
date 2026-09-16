@@ -97,16 +97,25 @@ export function Row({
   children,
   label,
   note,
+  control = false,
 }: {
   children: React.ReactNode;
   label?: string;
+  /** Align labels with text inside a 48 dp control without adding row padding twice. */
+  control?: boolean;
   /** The quiet mono line under a value: a consequence, or a state. */
   note?: string;
 }) {
   const pal = usePalette();
   return (
-    <View style={styles.row}>
-      <Text style={[styles.label, { color: pal.faint }]}>
+    <View style={[styles.row, control && styles.controlRow]}>
+      <Text
+        style={[
+          styles.label,
+          control && styles.controlLabel,
+          { color: pal.faint },
+        ]}
+      >
         {label === undefined ? '' : label.toUpperCase()}
       </Text>
       <View style={styles.value}>
@@ -126,15 +135,7 @@ export function LedgerGap() {
   return <View style={styles.gap} />;
 }
 
-/**
- * The act, under an ink rule that starts where the hairline stopped.
- *
- * The rule begins at the spine and the word begins at the value column, so the
- * foot is part of the ledger rather than a bar underneath it. The drawing in
- * `composer-engines-variants.html` put both 24 px to the left of that, which is
- * a slip: it applied the page margin twice. The prose in that document — "an
- * ink rule that starts at the spine" — is what is built here.
- */
+/** Footer geometry matches the selected HTML: rule at x106, action at x130. */
 export function LedgerFoot({
   children,
   style,
@@ -164,12 +165,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingVertical: LEDGER_KNOBS.ROW_PAD_PX,
   },
+  controlRow: { paddingVertical: 0 },
+  controlLabel: { paddingTop: (touch.min - LEDGER_KNOBS.LINE_PX) / 2 },
   label: {
     fontFamily: font.mono,
     fontSize: LEDGER_KNOBS.LABEL_SIZE_PX,
     letterSpacing: LEDGER_KNOBS.LABEL_TRACKING,
     lineHeight: LEDGER_KNOBS.LINE_PX,
     textAlign: 'right',
+    includeFontPadding: false,
     width: LEDGER_KNOBS.LABEL_PX,
   },
   value: { flex: 1, minWidth: 0 },
@@ -183,11 +187,11 @@ const styles = StyleSheet.create({
   gap: { height: LEDGER_KNOBS.GAP_PX },
   foot: {
     borderTopWidth: 1,
-    marginLeft: LEDGER_KNOBS.SPINE_PX,
-    paddingBottom: space.lg,
-    // 106 + 14 = 120, which is where the value column starts.
-    paddingLeft: LEDGER_KNOBS.GUTTER_PX - 10,
-    paddingTop: LEDGER_KNOBS.GAP_PX,
+    marginLeft: LEDGER_KNOBS.SPINE_PX - space.lg,
+    marginRight: -space.lg,
+    paddingBottom: 0,
+    paddingLeft: space.lg,
+    paddingTop: 0,
   },
   /** The seat a dial takes inside a row, sized by `DIAL_ITEM_PX`. */
   dialItem: {

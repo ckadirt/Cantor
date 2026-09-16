@@ -5,6 +5,7 @@ import {
   extensionsFor,
   parameterProblem,
 } from '../../core/protocol/parameters';
+import { lyricsContractFor } from '../../core/protocol/lyrics';
 import type { NodeLimits } from '../../../../protocol/NodeLimits';
 
 /**
@@ -36,9 +37,6 @@ export type ComposerTarget = Readonly<{
  * notices the box, and is handed an instrumental they did not ask for.
  */
 export type WordsMode = 'none' | 'model' | 'mine';
-
-/** Optional engine-declared lyric writer. Never infer it from a model name. */
-export const WRITE_WORDS_KEY = 'write_lyrics';
 
 export type ComposerDraft = Readonly<{
   caption: string;
@@ -196,10 +194,7 @@ export function problemsWith(
   // Declared controls are validated against the model that is selected, not
   // against whatever the last model declared.
   for (const parameter of declaredFor(targets, draft)) {
-    const value =
-      parameter.key === WRITE_WORDS_KEY && parameter.kind === 'boolean'
-        ? draft.wordsMode === 'model'
-        : draft.parameters[parameter.key] ?? parameter.default;
+    const value = draft.parameters[parameter.key] ?? parameter.default;
     const message = parameterProblem(parameter, value);
     if (message !== null) {
       problems.push({ kind: 'parameter', key: parameter.key, message });
@@ -209,31 +204,20 @@ export function problemsWith(
   return problems;
 }
 
-/**
- * The declared boolean that means this model writes its own words, if it has
- * one. A model without it loses the middle position on the words dial.
- */
+/** The lyric writer supported by the selected engine's input contract. */
 export function writeWordsFor(
   targets: readonly ComposerTarget[],
   draft: ComposerDraft,
-): ModelParameter | null {
-  const found = declaredFor(targets, draft).find(
-    parameter => parameter.key === WRITE_WORDS_KEY,
-  );
-  return found !== undefined && found.kind === 'boolean' ? found : null;
+): string | null {
+  return lyricsContractFor(modelFor(targets, draft)).writerLabel;
 }
 
-/**
- * Everything declared *except* the words control, which the words dial already
- * carries. Two controls for one decision is the fault the dial removed.
- */
-export function declaredControlsFor(
+export function modelFor(
   targets: readonly ComposerTarget[],
   draft: ComposerDraft,
-): readonly ModelParameter[] {
-  return declaredFor(targets, draft).filter(
-    parameter =>
-      !(parameter.key === WRITE_WORDS_KEY && parameter.kind === 'boolean'),
+): ModelView | undefined {
+  return targetOf(targets, draft.nodePublicKey)?.models.find(
+    model => model.selector === draft.modelSelector,
   );
 }
 
@@ -242,11 +226,7 @@ export function declaredFor(
   targets: readonly ComposerTarget[],
   draft: ComposerDraft,
 ): readonly ModelParameter[] {
-  const target = targetOf(targets, draft.nodePublicKey);
-  const model = target?.models.find(
-    candidate => candidate.selector === draft.modelSelector,
-  );
-  return model?.parameters ?? [];
+  return modelFor(targets, draft)?.parameters ?? [];
 }
 
 export function canSubmit(
@@ -260,25 +240,18 @@ export function canSubmit(
 export function toGenerationRequest(
   draft: ComposerDraft,
   declared: readonly ModelParameter[] = [],
+  model?: ModelView,
 ) {
-  const writeWords = declared.find(
-    parameter =>
-      parameter.key === WRITE_WORDS_KEY && parameter.kind === 'boolean',
-  );
-  // The dial's position is written into the declared value rather than carried
-  // beside it, so the request says one thing about words and `extensionsFor`
-  // drops it again when it matches what the model already defaults to.
-  const parameters =
-    writeWords === undefined
-      ? draft.parameters
-      : { ...draft.parameters, [WRITE_WORDS_KEY]: draft.wordsMode === 'model' };
-  const extensions = extensionsFor(declared, parameters);
-  const words = draft.lyrics.trim();
+  const extensions = extensionsFor(declared, draft.parameters);
+  const words =
+    draft.wordsMode === 'mine'
+      ? draft.lyrics.trim()
+      : draft.wordsMode === 'none'
+      ? lyricsContractFor(model).instrumentalLyrics
+      : undefined;
   return {
     caption: draft.caption.trim(),
-    ...(draft.wordsMode === 'mine' && words.length > 0
-      ? { lyrics: words }
-      : {}),
+    ...(words ? { lyrics: words } : {}),
     ...(draft.durationSeconds !== null
       ? { duration: draft.durationSeconds }
       : {}),
@@ -303,7 +276,7 @@ export function describeProblem(problem: ComposerProblem): string {
     case 'caption-too-long':
       return `Caption is ${problem.bytes} bytes; this engine accepts ${problem.maxBytes}.`;
     case 'writer-unavailable':
-      return 'This model does not declare automatic lyrics. Choose none or mine.';
+      return 'Automatic lyrics are not available for this model. Choose none or mine.';
     case 'words-empty':
       return 'Write the words, or set words to none.';
     case 'lyrics-too-long':
