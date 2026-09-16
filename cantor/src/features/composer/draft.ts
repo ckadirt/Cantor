@@ -24,17 +24,8 @@ export type ComposerTarget = Readonly<{
 }>;
 
 /**
- * What the song does about words, as one decision instead of two.
- *
- * A words box and a *write them for me* switch are the same choice wearing two
- * faces: the switch only means anything while the box is empty, and the moment
- * somebody types it has to hide or start lying. Three states, one at a time,
- * is what the app's one way of picking one of several is for.
- *
- * `none` is the default, and it is a **tick that was made** rather than a box
- * that was missed — which is the whole reason this is a dial. Under a bare
- * rule (an empty box means an instrumental) somebody writes a caption, never
- * notices the box, and is handed an instrumental they did not ask for.
+ * Internal lyrics intent. The Words editor and optional Write words switch
+ * select one mode; switching modes retains the manual draft.
  */
 export type WordsMode = 'none' | 'model' | 'mine';
 
