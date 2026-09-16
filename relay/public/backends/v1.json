@@ -42,23 +42,50 @@
         {
           "backend": "cpu",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/b406beb25d12/levo2-engine-cpu-x86_64.tar.gz",
-          "sha256": "868c6429a4d232139149a038f6ddfb834aadf4b8ffd4152d7f45e6b8ed06afba",
-          "bytes": 6356609
+          "url": "https://cantor-ckpts.ckadirt.xyz/backends/71131091550f/levo2-engine-cpu-x86_64.tar.gz",
+          "sha256": "8addf4acf8b313c52d1077e3162853688390052c5b5511fea9a9cc96e693c99f",
+          "bytes": 6360213
         },
         {
           "backend": "cuda12",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/b406beb25d12/levo2-engine-cuda12-x86_64.tar.gz",
-          "sha256": "5d8f335bcfe6faddb53938fb7e73675323aad2489c79145f52f36f1f316df01d",
-          "bytes": 101755159
+          "url": "https://cantor-ckpts.ckadirt.xyz/backends/71131091550f/levo2-engine-cuda12-x86_64.tar.gz",
+          "sha256": "335b1c5bf16af71cdc4788a41b4af55f365b317fc1a38411665079181a754d33",
+          "bytes": 101794666
         },
         {
           "backend": "vulkan",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/b406beb25d12/levo2-engine-vulkan-x86_64.tar.gz",
-          "sha256": "1d6e5fae44873421e6f4c15270e1826184738eda68b42a357bee148790b9e192",
-          "bytes": 22315403
+          "url": "https://cantor-ckpts.ckadirt.xyz/backends/71131091550f/levo2-engine-vulkan-x86_64.tar.gz",
+          "sha256": "b3f60dce3db829ba93ad88f1ef65c66ec2eb9b95b129f95fd34c50398cdce827",
+          "bytes": 22318418
+        }
+      ]
+    },
+    {
+      "name": "minimax-music3",
+      "abi": 1,
+      "backends": [
+        {
+          "backend": "cpu",
+          "arch": "x86_64",
+          "url": "https://github.com/ckadirt/minimax-music3.cpp/releases/download/v0.1.1-rc.1/minimax-music3-v0.1.1-rc.1-linux-x86_64-cpu.tar.gz",
+          "sha256": "7f2c07f433ad31798e313ae9d77d33bb44885880db7cc37a7ff43059d2e2dae3",
+          "bytes": 7495296
+        },
+        {
+          "backend": "cuda12",
+          "arch": "x86_64",
+          "url": "https://github.com/ckadirt/minimax-music3.cpp/releases/download/v0.1.1-rc.1/minimax-music3-v0.1.1-rc.1-linux-x86_64-cuda12.tar.gz",
+          "sha256": "9703c4f4669777d6476730c6370929a7fc6107d0c178e59398b2e460a5468c43",
+          "bytes": 102754087
+        },
+        {
+          "backend": "vulkan",
+          "arch": "x86_64",
+          "url": "https://github.com/ckadirt/minimax-music3.cpp/releases/download/v0.1.1-rc.1/minimax-music3-v0.1.1-rc.1-linux-x86_64-vulkan.tar.gz",
+          "sha256": "7e02006dcb37dcdf545b76ab8c3a945971aa07119a4180a0dd2791fe8756c7d8",
+          "bytes": 23414841
         }
       ]
     }
