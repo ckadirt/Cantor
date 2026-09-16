@@ -9,6 +9,7 @@ import {
   createPicture,
   Group as SkiaGroup,
   LinearGradient,
+  Paint,
   PaintStyle,
   Path,
   Picture,
@@ -529,14 +530,34 @@ function FieldCanvasImpl({
   // that drawing data until the flight family is replaced; it never re-enters
   // the controller's library or hit targets. Dropping it at the data commit
   // both erases the exit early and strands this generation on the JS picture.
+  // Progress updates rebuild the controller projection without changing songs.
+  // Retain the drawing map so those updates cannot restart Skia's song mapper.
   const previousPresentations = useRef(currentPresentations);
   const presentations = useMemo(() => {
     const retained = new Map(currentPresentations);
     for (const flight of recut?.flights ?? []) {
-      if (flight.targetPlacementKey !== null || retained.has(flight.entityKey)) continue;
+      if (flight.targetPlacementKey !== null || retained.has(flight.entityKey))
+        continue;
       const outgoing = previousPresentations.current.get(flight.entityKey);
       if (outgoing !== undefined) retained.set(flight.entityKey, outgoing);
     }
+    const previous = previousPresentations.current;
+    if (
+      retained.size === previous.size &&
+      [...retained].every(([key, next]) => {
+        const old = previous.get(key);
+        return (
+          old !== undefined &&
+          old.song === next.song &&
+          old.backend === next.backend &&
+          old.ready === next.ready &&
+          old.delivery === next.delivery &&
+          old.localAudio === next.localAudio &&
+          old.nodeLabels.join('\0') === next.nodeLabels.join('\0')
+        );
+      })
+    )
+      return previous;
     return retained;
   }, [currentPresentations, recut]);
   previousPresentations.current = presentations;
@@ -666,7 +687,9 @@ function FieldCanvasImpl({
     viewport,
   );
 
-  const lensMixCandidate = useSharedValue(activeLensKey === 'cantor-wave' ? 1 : 0);
+  const lensMixCandidate = useSharedValue(
+    activeLensKey === 'cantor-wave' ? 1 : 0,
+  );
   const lensMix = useRef(lensMixCandidate).current;
   const reducedMotion = useReducedMotion();
   useEffect(() => {
@@ -687,8 +710,11 @@ function FieldCanvasImpl({
     songTitleFont !== null &&
     songMetaFont !== null &&
     labelFlights !== null &&
-    recut.flights.every(flight =>
-      flight.targetPlacementKey === null || presentations.has(flight.entityKey),
+    recut.flights.every(
+      flight =>
+        flight.targetPlacementKey === null ||
+        presentations.has(flight.entityKey) ||
+        jobs?.has(flight.entityKey),
     );
   const paints = useMemo(() => createPaints(palette), [palette]);
   // Native shared values are stable; the Jest mock is not, so the fallback is
@@ -784,7 +810,8 @@ function FieldCanvasImpl({
    * on `scene` explains what a fresh element would cost here.
    */
   const pictureTransform = useDerivedValue(
-    () => pictureTransformFor(pictureCamera.value, cameraShared.value, viewport),
+    () =>
+      pictureTransformFor(pictureCamera.value, cameraShared.value, viewport),
     // Explicit, and all three stable: the two shared values are refs and the
     // viewport only changes on a rotation. Left implicit, the plugin would
     // infer the same list — but the identity of this value is what holds the
@@ -1053,16 +1080,64 @@ function FieldCanvasImpl({
     ],
   );
 
+  const jobScene = useMemo(() => {
+    if (!jobs || !recut || !nativeClock || !monoFont) return null;
+    return recut.flights.map(flight => {
+      const pending = jobs.get(flight.entityKey);
+      if (!pending || presentations.has(flight.entityKey)) return null;
+      return (
+        <NativeJobFlight
+          key={`${recut.generation}:${flight.key}`}
+          flight={flight}
+          pending={pending}
+          recut={{
+            fromCamera: recut.fromCamera,
+            toCamera: recut.toCamera,
+            fromFitScale: recut.fromFitScale,
+            toFitScale: recut.toFitScale,
+          }}
+          clock={nativeClock}
+          cameraShared={cameraShared}
+          fitScaleShared={fitScaleShared}
+          viewport={viewport}
+          palette={palette}
+          monoFont={monoFont}
+        />
+      );
+    });
+  }, [
+    jobs,
+    recut,
+    nativeClock,
+    monoFont,
+    presentations,
+    cameraShared,
+    fitScaleShared,
+    viewport,
+    palette,
+  ]);
+
   if (nativeField) {
     return (
-      <Canvas
-        importantForAccessibility="no-hide-descendants"
-        opaque
-        pointerEvents="none"
-        style={StyleSheet.absoluteFill}
-      >
-        {nativeScene}
-      </Canvas>
+      <>
+        <Canvas
+          importantForAccessibility="no-hide-descendants"
+          opaque
+          pointerEvents="none"
+          style={StyleSheet.absoluteFill}
+        >
+          {nativeScene}
+        </Canvas>
+        {jobs && jobs.size > 0 && recut && nativeClock && monoFont ? (
+          <Canvas
+            pointerEvents="none"
+            importantForAccessibility="no-hide-descendants"
+            style={StyleSheet.absoluteFill}
+          >
+            {jobScene}
+          </Canvas>
+        ) : null}
+      </>
     );
   }
 
@@ -1075,6 +1150,120 @@ function FieldCanvasImpl({
     >
       {scene}
     </Canvas>
+  );
+}
+
+/** Progress redraws only this transparent canvas; songs keep their native scene. */
+function NativeJobFlight({
+  flight,
+  pending,
+  recut,
+  clock,
+  cameraShared,
+  fitScaleShared,
+  viewport,
+  palette,
+  monoFont,
+}: {
+  flight: PlacementFlight;
+  pending: JobPresentation;
+  recut: NativeRecut;
+  clock: SharedValue<number>;
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
+  viewport: Viewport;
+  palette: Props['palette'];
+  monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
+}) {
+  const pictures = useMemo(() => {
+    const paints = createPaints(palette);
+    const record = (row: boolean) => {
+      const recorder = Skia.PictureRecorder();
+      const canvas = recorder.beginRecording(
+        Skia.XYWHRect(-256, -128, 512, 256),
+      );
+      drawJobMark(
+        canvas,
+        { paints, fonts: { mono: monoFont } },
+        { x: 0, y: 0 },
+        row ? pending : { ...pending, caption: null },
+        { dot: row ? 0 : 1, row: row ? 1 : 0, song: 0, grain: 0 },
+      );
+      return recorder.finishRecordingAsPicture();
+    };
+    return { dot: record(false), row: record(true) };
+  }, [pending, palette, monoFont]);
+  const transform = useDerivedValue(() => {
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    const liveCamera = p >= 1 ? cameraShared.value : null;
+    const cameraX =
+      liveCamera?.x ??
+      recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
+    const cameraY =
+      liveCamera?.y ??
+      recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
+    const cameraScale = nativeCameraScale(p, recut, cameraShared);
+    const bloom =
+      1 - gatherFraction(cameraScale, nativeFitScale(p, recut, fitScaleShared));
+    const seatX = flight.fromX + (flight.targetX - flight.fromX) * p;
+    const seatY = flight.fromY + (flight.targetY - flight.fromY) * p;
+    const bloomX =
+      flight.fromBloomX + (flight.targetBloomX - flight.fromBloomX) * p;
+    const bloomY =
+      flight.fromBloomY + (flight.targetBloomY - flight.fromBloomY) * p;
+    return [
+      {
+        translateX:
+          (seatX + bloomX * bloom - cameraX) * cameraScale + viewport.width / 2,
+      },
+      {
+        translateY:
+          (seatY + bloomY * bloom - cameraY) * cameraScale +
+          viewport.height / 2,
+      },
+    ];
+  });
+  const dot = useDerivedValue(() => {
+    const p = clock.value;
+    return (
+      bandAlphaAt(
+        nativeCameraScale(p, recut, cameraShared),
+        nativeFitScale(p, recut, fitScaleShared),
+        REPRESENTATION_WINDOWS.dot,
+      ) *
+      flightOwnerAlpha(
+        flight.ownership,
+        flight.fromAlpha,
+        flight.targetAlpha,
+        p,
+      )
+    );
+  });
+  const row = useDerivedValue(() => {
+    const p = clock.value;
+    return (
+      bandAlphaAt(
+        nativeCameraScale(p, recut, cameraShared),
+        nativeFitScale(p, recut, fitScaleShared),
+        REPRESENTATION_WINDOWS.row,
+      ) *
+      flightOwnerAlpha(
+        flight.ownership,
+        flight.fromAlpha,
+        flight.targetAlpha,
+        p,
+      )
+    );
+  });
+  return (
+    <SkiaGroup transform={transform}>
+      <SkiaGroup layer={<Paint opacity={dot} />}>
+        <Picture picture={pictures.dot} />
+      </SkiaGroup>
+      <SkiaGroup layer={<Paint opacity={row} />}>
+        <Picture picture={pictures.row} />
+      </SkiaGroup>
+    </SkiaGroup>
   );
 }
 
@@ -3267,7 +3456,7 @@ function paint(color: string): SkPaint {
  */
 function drawJobMark(
   canvas: SkCanvas,
-  request: PictureRequest,
+  request: { paints: LensPaints; fonts: Pick<LensFonts, 'mono'> },
   point: Point,
   pending: JobPresentation,
   alpha: RepresentationAlphas,
