@@ -7,11 +7,14 @@ import {
   Path,
   Skia,
   Text,
+  interpolatePaths,
+  notifyChange,
   type SkFont,
   type SkPath,
   type Transforms3d,
 } from '@shopify/react-native-skia';
 import {
+  useAnimatedReaction,
   useDerivedValue,
   useReducedMotion,
   useSharedValue,
@@ -111,10 +114,20 @@ export const PLAYER_TRANSPORT_KNOBS = {
   MORPH_MS: 240,
   /** How quietly a step is drawn while there is no queue for it to step through. */
   INERT_ALPHA: 0.4,
+  /**
+   * The waiting mark's side, over the box the verb is drawn in.
+   *
+   * Small on purpose. While a song is arriving the determinate thing on screen
+   * is the arc around its face; a second progress reading under the thumb would
+   * be the same fact drawn twice, and the two would disagree by a frame. So the
+   * verb's whole job here is to stop offering to start something — it goes
+   * quiet and lets the ring say how far along the song is.
+   */
+  WAITING_MARK_RATIO: 0.26,
 } as const;
 
 /**
- * Play and pause as one drawing at two poses.
+ * Play, pause and waiting as one drawing at three poses.
  *
  * The triangle is cut down its own middle into two quads, and each quad is a
  * bar. That is the whole morph: four points travel to four points on each side,
@@ -136,12 +149,13 @@ export function playPauseSilhouettes(
   cx: number,
   cy: number,
   size: number,
-): Readonly<{ play: SkPath; pause: SkPath }> {
+): Readonly<{ waiting: SkPath; play: SkPath; pause: SkPath }> {
   const knobs = PLAYER_TRANSPORT_KNOBS;
   const half = size / 2;
   const playHalfWidth = (size * knobs.PLAY_ASPECT) / 2;
   const bar = size * knobs.PAUSE_BAR_RATIO;
   const gap = size * knobs.PAUSE_GAP_RATIO;
+  const mark = (size * knobs.WAITING_MARK_RATIO) / 2;
 
   const play = Skia.PathBuilder.Make();
   // The left half: top-left, the cut's top, the cut's foot, bottom-left.
@@ -174,7 +188,27 @@ export function playPauseSilhouettes(
     [cx + gap / 2, cy + half],
   ]);
 
-  return { play: play.detach(), pause: pause.detach() };
+  // The waiting mark: the same two quads closed onto the centre, so the
+  // triangle draws itself shut rather than being replaced by a second symbol.
+  const waiting = Skia.PathBuilder.Make();
+  quad(waiting, [
+    [cx - mark, cy - mark],
+    [cx, cy - mark],
+    [cx, cy + mark],
+    [cx - mark, cy + mark],
+  ]);
+  quad(waiting, [
+    [cx, cy - mark],
+    [cx + mark, cy - mark],
+    [cx + mark, cy + mark],
+    [cx, cy + mark],
+  ]);
+
+  return {
+    waiting: waiting.detach(),
+    play: play.detach(),
+    pause: pause.detach(),
+  };
 }
 
 /**
@@ -238,6 +272,50 @@ function quad(
  * from one array of numbers — that is the beat riding the playhead — and the
  * arc and the hand are a trim and a rotation of paths that are never rebuilt.
  */
+/**
+ * The wait, drawn on the player's own ring: the arc a row gets, at the pose the
+ * press happened in.
+ *
+ * Deliberately the same geometry as the playhead's arc and deliberately not the
+ * same ink — a download filling in the colour the playhead uses would read as a
+ * song already playing. It is drawn in the muted hand, which is the same hand
+ * the inert transport steps are drawn in: present, and not yet yours.
+ */
+export function ArrivingRing({
+  radius,
+  fraction,
+  colour,
+}: {
+  radius: number;
+  fraction: SharedValue<number>;
+  colour: string;
+}) {
+  const arcRadius = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
+  const ring = useMemo(() => {
+    const builder = Skia.PathBuilder.Make();
+    builder.addArc(
+      Skia.XYWHRect(-arcRadius, -arcRadius, arcRadius * 2, arcRadius * 2),
+      -90,
+      360,
+    );
+    return builder.detach();
+  }, [arcRadius]);
+  const end = useDerivedValue(() => {
+    const value = fraction.value;
+    return value < 0 ? 0 : value > 1 ? 1 : value;
+  });
+  return (
+    <Path
+      color={colour}
+      end={end}
+      path={ring}
+      start={0}
+      strokeWidth={PLAYER_RING_KNOBS.SONG_ARC_WIDTH_PX}
+      style="stroke"
+    />
+  );
+}
+
 export function PlayerRing({
   radius,
   lensMix,
@@ -456,8 +534,16 @@ export function transportWord(
   isCurrent: boolean,
   playing: boolean,
   onPhone: boolean,
+  arriving: number | null = null,
 ): string {
   if (isCurrent && playing) return 'PAUSE';
+  // A download already running is the one thing the button is not offering to
+  // start. The drawn verb says this with a shape; the word has to say it too,
+  // because a screen reader is given the word and never the shape — and
+  // `FETCH` on a song already fetching reads as a button that did nothing.
+  if (!onPhone && arriving !== null) {
+    return `ARRIVING ${Math.round(arriving * 100)}%`;
+  }
   return onPhone ? 'PLAY' : 'FETCH';
 }
 
@@ -829,21 +915,65 @@ function TransportVerb({
     [seat.size, seat.x, seat.y],
   );
   /*
-   * A held zero where there is no clock to read.
+   * A held pose where there is no clock to read.
    *
    * The player draws for whichever song the camera arrived at, and only the one
    * the *port* holds has a transport state at all. Without a value of its own
    * the hook below would have nothing to seed from — and a hook cannot be
    * called conditionally, so the fallback is a value rather than a branch.
+   * `PLAYER_VERB_POSE.play` rather than zero, because zero is now the waiting
+   * mark: a song nobody has pressed would otherwise draw as one.
    */
-  const idle = useSharedValue(0);
-  const path = useSeededPathInterpolation(
-    playing ?? idle,
-    shapes.play,
-    shapes.pause,
-  );
+  const idle = useSharedValue<number>(PLAYER_VERB_POSE.play);
+  const path = useVerbPose(playing ?? idle, shapes);
   return <Path color={colour} fillType="evenOdd" path={path} style="fill" />;
 }
+
+/**
+ * Where the verb sits on its own ramp.
+ *
+ * One number, three poses, rather than a pose plus a flag. Two clocks would let
+ * the button be told it is waiting *and* playing, and the frame that resolved
+ * that disagreement would be a snap; a single ramp cannot hold both, and a press
+ * that lands mid-morph retargets from wherever the shape had got to.
+ */
+export const PLAYER_VERB_POSE = { waiting: 0, play: 1, pause: 2 } as const;
+
+/**
+ * The verb's geometry, interpolated across all three poses on one clock.
+ *
+ * `useSeededPathInterpolation` is the two-pose version of this and is still
+ * what every glyph morph uses; the transport is the one drawing in the app with
+ * a third pose, so it walks the same stops itself rather than widening a
+ * `src/motion` signature that nothing else needs.
+ */
+function useVerbPose(
+  pose: SharedValue<number>,
+  shapes: Readonly<{ waiting: SkPath; play: SkPath; pause: SkPath }>,
+): SharedValue<SkPath> {
+  const stops = useMemo(
+    () => [shapes.waiting, shapes.play, shapes.pause],
+    [shapes],
+  );
+  const path = useSharedValue(
+    interpolatePaths(pose.value, VERB_POSE_STOPS, stops),
+  );
+  useAnimatedReaction(
+    () => pose.value,
+    value => {
+      path.value = interpolatePaths(value, VERB_POSE_STOPS, stops);
+      notifyChange(path);
+    },
+    [stops],
+  );
+  return path;
+}
+
+const VERB_POSE_STOPS = [
+  PLAYER_VERB_POSE.waiting,
+  PLAYER_VERB_POSE.play,
+  PLAYER_VERB_POSE.pause,
+];
 
 /**
  * The player, hung off the song's own mark.
@@ -865,6 +995,7 @@ export function NativePlayerParts({
   durationSeconds,
   positionSeconds,
   transportPlaying,
+  arriving,
   colour,
   mutedColour,
   songTitleFont,
@@ -890,6 +1021,16 @@ export function NativePlayerParts({
   positionSeconds: SharedValue<number> | null;
   /** The play-to-pause morph, 0..1, or null when this song is not the current one. */
   transportPlaying: SharedValue<number> | null;
+  /**
+   * How much of the song has landed, 0..1, or null when nothing is arriving.
+   *
+   * The player is where a person presses play, so it is where the wait has to
+   * be legible; the faint arc a row draws is on the name lens's face and never
+   * reaches this pose. Without it the verb closes onto its waiting mark and
+   * nothing else on screen moves, which reads as a hang rather than as a
+   * download.
+   */
+  arriving: SharedValue<number> | null;
   colour: string;
   mutedColour: string;
   songTitleFont: SkFont;
@@ -931,6 +1072,13 @@ export function NativePlayerParts({
             colour={colour}
             durationSeconds={durationSeconds}
             positionSeconds={positionSeconds}
+            radius={radius}
+          />
+        )}
+        {arriving === null ? null : (
+          <ArrivingRing
+            colour={mutedColour}
+            fraction={arriving}
             radius={radius}
           />
         )}

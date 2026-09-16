@@ -34,6 +34,18 @@ export async function inspectAudio(
   return actual;
 }
 
+/**
+ * Write one chunk of a download, and nothing else.
+ *
+ * This deliberately does not `remember` the new length. The saved index is
+ * advisory — `inspectAudio` asks the native filesystem and writes the answer
+ * back — so recording a partial length here bought nothing and cost a full
+ * read-modify-write of the *entire* index per 64 KiB: a `getItem`, a `JSON.parse`
+ * of every artifact on the phone, a `JSON.stringify` of the same, and a
+ * `setItem`, all inside the download loop. A song that resumes after the app is
+ * killed still resumes correctly, because the offset it resumes from is the
+ * length of the file on disk and never the number written here.
+ */
 export async function appendAudioChunk(
   nodeKey: string,
   songId: string,
@@ -41,18 +53,7 @@ export async function appendAudioChunk(
   offset: number,
   data: string,
 ): Promise<number> {
-  const next = await nativeAudio.appendChunk(
-    nodeKey,
-    songId,
-    digest,
-    offset,
-    data,
-  );
-  await remember(nodeKey, songId, digest, {
-    state: 'partial',
-    bytes: next,
-  });
-  return next;
+  return nativeAudio.appendChunk(nodeKey, songId, digest, offset, data);
 }
 
 export async function finalizeAudio(
