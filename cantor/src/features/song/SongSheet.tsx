@@ -498,7 +498,7 @@ function Front({
           />
         )}
         <Text style={[type.eyebrow, styles.footNote, { color: pal.faint }]}>
-          {pinned ? 'KEPT UNTIL YOU SAY OTHERWISE' : 'NEVER PURGED ONCE KEPT'}
+          {pinned ? 'KEPT UNTIL YOU SAY SO' : 'NEVER PURGED ONCE KEPT'}
         </Text>
       </LedgerFoot>
     </View>
