@@ -22,7 +22,13 @@ import { formatBytes } from '../../lenses';
 import { nameLensFacePath } from '../../lenses/nameLens';
 import { Canvas, Path } from '@shopify/react-native-skia';
 import { TransformText } from '../../motion';
-import { Ledger, LedgerFoot, LedgerGap, Row } from '../controls';
+import {
+  Ledger,
+  LedgerFoot,
+  LedgerGap,
+  LEDGER_VALUE_PX,
+  Row,
+} from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
 import { plainTagsOf, playlistsOf } from '../../playlists/playlists';
 import { space, touch, type, usePalette } from '../../theme/tokens';
@@ -48,6 +54,13 @@ type Props = {
   /** Null until the node answers; undefined nodes stay honest about it. */
   detail: SongDetail | null;
   detailError: string | null;
+  /**
+   * Why the last act did not happen, said where the acts are. Not the same
+   * thing as `detailError`, which is the node's answer about the recipe: a
+   * refused rename is not a fact about how the song was made, and the recipe
+   * lives on a page you may not be looking at.
+   */
+  problem: string | null;
   busy: boolean;
   onClose: () => void;
   onRename: (title: string) => void;
@@ -112,6 +125,7 @@ function SongSheetImpl({
   audioState,
   detail,
   detailError,
+  problem,
   busy,
   onClose,
   onRename,
@@ -230,6 +244,7 @@ function SongSheetImpl({
           <Front
             audioState={audioState}
             busy={busy}
+            problem={problem}
             downloaded={downloaded}
             deliveryBytes={deliveryBytes}
             full={full}
@@ -350,6 +365,7 @@ function Front({
   placeEntries,
   placementCount,
   playlistProblem,
+  problem,
   scopeLabel,
   tagProblem,
   title,
@@ -372,6 +388,7 @@ function Front({
   placeEntries: readonly MembershipEntry[];
   placementCount: number;
   playlistProblem: (name: string) => string | null;
+  problem: string | null;
   scopeLabel: string | null;
   tagProblem: (name: string) => string | null;
   title: string;
@@ -460,6 +477,15 @@ function Front({
         The foot carries what you most often want from a song: whether its
         audio is here, and the one word that changes that.
       */}
+      {/*
+        What is wrong sits above the act rather than in a banner or beside the
+        control that caused it: the eye is already on its way to the foot.
+      */}
+      {problem === null ? null : (
+        <Text style={[type.eyebrow, styles.problem, { color: pal.ink }]}>
+          {problem.toUpperCase()}
+        </Text>
+      )}
       <LedgerFoot>
         {pinned ? (
           <Act busy={busy} display label="Unpin" onPress={onUnpin} />
@@ -831,6 +857,7 @@ const styles = StyleSheet.create({
   act: { justifyContent: 'center', minHeight: touch.min },
   confirm: { alignItems: 'baseline', flexDirection: 'row', gap: space.lg },
   footNote: { marginTop: space.xs },
+  problem: { marginBottom: space.xs, marginLeft: LEDGER_VALUE_PX },
   footHard: { letterSpacing: 1.6, marginTop: 2 },
   hem: {
     alignSelf: 'center',

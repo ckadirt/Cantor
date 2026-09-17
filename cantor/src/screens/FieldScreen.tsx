@@ -172,6 +172,15 @@ export function FieldScreen({ identity }: Props) {
   } | null>(null);
   const [songDetail, setSongDetail] = useState<SongDetail | null>(null);
   const [songDetailError, setSongDetailError] = useState<string | null>(null);
+  /**
+   * Why the last act on this song did not happen.
+   *
+   * Kept apart from `songDetailError`, which is the node's answer about the
+   * recipe: a refused rename is not a fact about the recipe, and since the
+   * recipe moved to the sheet's second page, reporting a refused act through
+   * it meant a toggle could fail on a page you were not looking at.
+   */
+  const [songProblem, setSongProblem] = useState<string | null>(null);
   const [songBusy, setSongBusy] = useState(false);
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
@@ -813,13 +822,11 @@ export function FieldScreen({ identity }: Props) {
    */
   const runSongCommand = useCallback(async (work: () => Promise<void>) => {
     setSongBusy(true);
-    setSongDetailError(null);
+    setSongProblem(null);
     try {
       await work();
     } catch (error) {
-      setSongDetailError(
-        error instanceof Error ? error.message : String(error),
-      );
+      setSongProblem(error instanceof Error ? error.message : String(error));
     } finally {
       setSongBusy(false);
     }
@@ -880,6 +887,7 @@ export function FieldScreen({ identity }: Props) {
     let active = true;
     setSongDetail(null);
     setSongDetailError(null);
+    setSongProblem(null);
     commands
       .getSongDetail(sheetSong.entity.nodePublicKey, sheetSong.entity.entityId)
       .then(detail => {
@@ -1514,6 +1522,7 @@ export function FieldScreen({ identity }: Props) {
             busy={songBusy}
             detail={songDetail}
             detailError={songDetailError}
+            problem={songProblem}
             deliveryBytes={sheetSong.delivery?.byte_length ?? null}
             full={tagsAreFull(sheetSong.song.tags)}
             knownPlaylists={knownPlaylists}
