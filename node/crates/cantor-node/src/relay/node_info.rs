@@ -24,6 +24,7 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             // an ordered list at install time.
             stages: variant.declared_stages(),
             parameters: variant.declared_parameters(),
+            lyrics: variant.lyrics.clone(),
         })
         .collect();
     let has_disk = library

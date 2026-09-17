@@ -141,6 +141,7 @@ mod tests {
             vram_bytes: 0,
             stages: Vec::new(),
             parameters: Vec::new(),
+            lyrics: None,
         }
     }
 
@@ -167,6 +168,7 @@ mod tests {
             },
             stages: variant.stages.clone(),
             parameters: variant.parameters.clone(),
+            lyrics: variant.lyrics.clone(),
         };
         store
             .mark_installed(&model, &catalog_variant)

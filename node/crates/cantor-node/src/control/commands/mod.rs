@@ -44,7 +44,27 @@ pub(in crate::control) async fn stream_long_request<W: tokio::io::AsyncWrite + U
             models::run_pull(&selector, state, events, writer, &id).await
         }
         "generate" => generate::run_generate(&request, state, writer, &id).await,
-        "backends" => {
+        "backends" => async {
+            if let Some(value) = request.get("keep_loaded").filter(|v| !v.is_null()) {
+                let keep = value
+                    .as_bool()
+                    .ok_or_else(|| anyhow::anyhow!("keep_loaded must be boolean"))?;
+                {
+                    let mut locked = state
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+                    let path = locked.config_path.clone();
+                    locked.config.set_keep_loaded(&path, keep)?;
+                }
+                write_line(writer, &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
+                    "msg": format!("keep_loaded={keep}; applies to the next generation (restart to unload an idle session now)")})).await?;
+                if request.get("install").and_then(Value::as_bool) != Some(true)
+                    && request.get("use").and_then(Value::as_str).is_none()
+                {
+                    return write_line(writer, &json!({"v": CONTROL_VERSION, "id": id, "t": "ok"}))
+                        .await;
+                }
+            }
             let install = request
                 .get("install")
                 .and_then(Value::as_bool)
@@ -54,7 +74,7 @@ pub(in crate::control) async fn stream_long_request<W: tokio::io::AsyncWrite + U
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             backends::run_backends(state, writer, &id, install, use_backend).await
-        }
+        }.await,
         _ => models::run_catalog(state, writer, &id).await,
     };
 
