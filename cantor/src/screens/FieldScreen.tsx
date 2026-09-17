@@ -224,6 +224,16 @@ export function FieldScreen({ identity }: Props) {
    * still takes.
    */
   const grainShared = useSharedValue<GrainBars | null>(null);
+  /**
+   * The song sheet's own blind.
+   *
+   * It cannot ride the field's edge pull the way the composer and the engines
+   * do: that value already carries the engines blind at this same edge, and
+   * two bottom blinds reading one number would answer each other's gestures.
+   * Nothing writes these but `Curtain`'s own run and its grip.
+   */
+  const sheetPull = useSharedValue(0);
+  const sheetDestination = useSharedValue(0);
   /** Rows whose audio command is in flight, so a second tap cannot double it. */
   const audioBusy = useRef(new Set<string>());
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -573,16 +583,16 @@ export function FieldScreen({ identity }: Props) {
   }, [arrangementKey, layout, nowMs, sheetSong, sheetTarget]);
 
   /**
- * What the node is holding for this song, which is the master rather than the
- * delivery. Both are in `artifacts`; only this one is the number that says
- * what ending the song frees over there.
- */
-function masterBytesOf(song: SongHeader): number | null {
-  const master = song.artifacts.find(artifact => artifact.kind === 'master');
-  return master?.byte_length ?? null;
-}
+   * What the node is holding for this song, which is the master rather than the
+   * delivery. Both are in `artifacts`; only this one is the number that says
+   * what ending the song frees over there.
+   */
+  function masterBytesOf(song: SongHeader): number | null {
+    const master = song.artifacts.find(artifact => artifact.kind === 'master');
+    return master?.byte_length ?? null;
+  }
 
-/** Every playlist that exists, which is every `p/` tag on every song. */
+  /** Every playlist that exists, which is every `p/` tag on every song. */
   const knownPlaylists = useMemo(
     () => allPlaylists(controller.entities.map(entity => entity.tags)),
     [controller.entities],
@@ -660,7 +670,9 @@ function masterBytesOf(song: SongHeader): number | null {
    */
   const idlePositionCandidate = useSharedValue(0);
   const idlePosition = useRef(idlePositionCandidate).current;
-  const focusedPosition = focusedIsCurrent ? transport.positionSeconds : idlePosition;
+  const focusedPosition = focusedIsCurrent
+    ? transport.positionSeconds
+    : idlePosition;
   const transportPlaying = useSharedValue<number>(PLAYER_VERB_POSE.play);
   const reducedMotion = useReducedMotion();
   /*
@@ -817,7 +829,11 @@ function masterBytesOf(song: SongHeader): number | null {
     (patch: Parameters<typeof commands.patchSong>[2]) => {
       if (sheetSong === null) return;
       void runSongCommand(() =>
-        commands.patchSong(sheetSong.entity.nodePublicKey, sheetSong.song, patch),
+        commands.patchSong(
+          sheetSong.entity.nodePublicKey,
+          sheetSong.song,
+          patch,
+        ),
       );
     },
     [commands, runSongCommand, sheetSong],
@@ -1225,9 +1241,7 @@ function masterBytesOf(song: SongHeader): number | null {
   const shelfGroup = useMemo(() => {
     if (fieldCamera.level !== 'shelf' || layout === null) return null;
     const groupKey = fieldCamera.groupKey;
-    return (
-      layout.groups.find(candidate => candidate.key === groupKey) ?? null
-    );
+    return layout.groups.find(candidate => candidate.key === groupKey) ?? null;
   }, [fieldCamera.groupKey, fieldCamera.level, layout]);
 
   /**
@@ -1252,7 +1266,8 @@ function masterBytesOf(song: SongHeader): number | null {
     });
     if (pending.length === 0) return null;
     const bytes = pending.reduce(
-      (total, presentation) => total + (presentation.delivery?.byte_length ?? 0),
+      (total, presentation) =>
+        total + (presentation.delivery?.byte_length ?? 0),
       0,
     );
     return { pending, label: `DOWNLOAD ALL · ${formatBytes(bytes)}` };
@@ -1354,49 +1369,50 @@ function masterBytesOf(song: SongHeader): number | null {
              * is the seam.
              */
             pointerEvents={songAlpha > 0.6 ? 'box-none' : 'none'}
-            style={StyleSheet.absoluteFill}>
+            style={StyleSheet.absoluteFill}
+          >
             <SongSurface
-            available={focused.delivery !== undefined}
-            cameraShared={fieldCamera.cameraShared}
-            fitScale={fieldCamera.renderFitScale}
-            height={viewport.height}
-            isCurrent={focusedIsCurrent}
-            lensKey={lensKey}
-            lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
-            onOpenDetail={() => {
-              setPlaybackError(null);
-              setSheetTarget({
-                entityKey: focused.entity.key,
-                // The placement the words belong to, which is the same thing
-                // `focused` was read from.
-                groupKey: playerPlacement?.groupKey ?? null,
-              });
-            }}
-            onSeek={focusedIsCurrent ? transport.scrub : () => {}}
-            onSeekEnd={transport.finishScrub}
-            onToggle={() => void playFocused()}
-            positionSeconds={focusedPosition}
-            snapshot={
-              playbackError === null
-                ? transport.snapshot
-                : { ...transport.snapshot, error: playbackError }
-            }
-            song={{
-              key: focused.entity.key,
-              title: focused.song.title,
-              model: focused.song.model,
-              seed: focused.song.seed,
-              durationMs: focused.song.duration_ms,
-              nodeLabel: focused.nodeLabels[0] ?? focused.backend.petname,
-              audioState: focused.localAudio.state,
-              // The word the touch layer announces has to mean what the drawn
-              // verb means. The verb closes only for a live transfer, so the
-              // word says `ARRIVING` only for a live transfer too — the arc
-              // around the face is the one thing that speaks for bytes merely
-              // sitting on disk.
-              arriving: focusedArriving ? focusedArrivingFraction : null,
-              tags: focused.song.tags,
-            }}
+              available={focused.delivery !== undefined}
+              cameraShared={fieldCamera.cameraShared}
+              fitScale={fieldCamera.renderFitScale}
+              height={viewport.height}
+              isCurrent={focusedIsCurrent}
+              lensKey={lensKey}
+              lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
+              onOpenDetail={() => {
+                setPlaybackError(null);
+                setSheetTarget({
+                  entityKey: focused.entity.key,
+                  // The placement the words belong to, which is the same thing
+                  // `focused` was read from.
+                  groupKey: playerPlacement?.groupKey ?? null,
+                });
+              }}
+              onSeek={focusedIsCurrent ? transport.scrub : () => {}}
+              onSeekEnd={transport.finishScrub}
+              onToggle={() => void playFocused()}
+              positionSeconds={focusedPosition}
+              snapshot={
+                playbackError === null
+                  ? transport.snapshot
+                  : { ...transport.snapshot, error: playbackError }
+              }
+              song={{
+                key: focused.entity.key,
+                title: focused.song.title,
+                model: focused.song.model,
+                seed: focused.song.seed,
+                durationMs: focused.song.duration_ms,
+                nodeLabel: focused.nodeLabels[0] ?? focused.backend.petname,
+                audioState: focused.localAudio.state,
+                // The word the touch layer announces has to mean what the drawn
+                // verb means. The verb closes only for a live transfer, so the
+                // word says `ARRIVING` only for a live transfer too — the arc
+                // around the face is the one thing that speaks for bytes merely
+                // sitting on disk.
+                arriving: focusedArriving ? focusedArrivingFraction : null,
+                tags: focused.song.tags,
+              }}
               width={viewport.width}
             />
           </View>
@@ -1436,7 +1452,8 @@ function masterBytesOf(song: SongHeader): number | null {
           destination={fieldCamera.pullDestinationShared}
           pull={fieldCamera.pullShared}
           title="NEW SONG"
-          viewportHeight={viewport.height}>
+          viewportHeight={viewport.height}
+        >
           <ComposerSheet
             error={submitError}
             onClose={closeComposer}
@@ -1454,7 +1471,8 @@ function masterBytesOf(song: SongHeader): number | null {
           destination={fieldCamera.pullDestinationShared}
           pull={fieldCamera.pullShared}
           title="ENGINES"
-          viewportHeight={viewport.height}>
+          viewportHeight={viewport.height}
+        >
           <EnginesSheet
             backends={backends}
             onClose={closeEngines}
@@ -1481,82 +1499,92 @@ function masterBytesOf(song: SongHeader): number | null {
         onPair={commands.pairBackend}
         visible={pairing}
       />
-      {sheetSong !== null ? (
-        <SongSheet
-          audioState={sheetSong.localAudio.state}
-          busy={songBusy}
-          detail={songDetail}
-          detailError={songDetailError}
-          deliveryBytes={sheetSong.delivery?.byte_length ?? null}
-          full={tagsAreFull(sheetSong.song.tags)}
-          knownPlaylists={knownPlaylists}
-          knownTags={knownTags}
-          masterBytes={masterBytesOf(sheetSong.song)}
-          nodeLabel={sheetSong.nodeLabels[0] ?? sheetSong.backend.petname}
+      {sheetSong !== null && viewport !== null ? (
+        <Curtain
+          edge="bottom"
           onClose={closeSongSheet}
-          onDelete={() =>
-            void runSongCommand(async () => {
-              const track = transport.snapshot.track;
-              if (
-                track?.nodeKey === sheetSong.entity.nodePublicKey &&
-                track?.songId === sheetSong.entity.entityId
-              ) {
-                await transport.close();
-              }
-              // The copy here goes first. Trashing while a local file is still
-              // on the phone orphans it: the song leaves the field, the sheet
-              // becomes unreachable, and a pinned orphan is never reclaimed
-              // because the budget only ever walks the cache tree.
-              if (
-                sheetSong.delivery !== undefined &&
-                sheetSong.localAudio.state !== 'remote'
-              ) {
-                if (sheetSong.localAudio.state === 'pinned') {
+          open={sheetSong !== null}
+          destination={sheetDestination}
+          pull={sheetPull}
+          title={sheetSong.song.title.toUpperCase()}
+          viewportHeight={viewport.height}
+        >
+          <SongSheet
+            audioState={sheetSong.localAudio.state}
+            busy={songBusy}
+            detail={songDetail}
+            detailError={songDetailError}
+            deliveryBytes={sheetSong.delivery?.byte_length ?? null}
+            full={tagsAreFull(sheetSong.song.tags)}
+            knownPlaylists={knownPlaylists}
+            knownTags={knownTags}
+            masterBytes={masterBytesOf(sheetSong.song)}
+            nodeLabel={sheetSong.nodeLabels[0] ?? sheetSong.backend.petname}
+            onClose={closeSongSheet}
+            onDelete={() =>
+              void runSongCommand(async () => {
+                const track = transport.snapshot.track;
+                if (
+                  track?.nodeKey === sheetSong.entity.nodePublicKey &&
+                  track?.songId === sheetSong.entity.entityId
+                ) {
+                  await transport.close();
+                }
+                // The copy here goes first. Trashing while a local file is still
+                // on the phone orphans it: the song leaves the field, the sheet
+                // becomes unreachable, and a pinned orphan is never reclaimed
+                // because the budget only ever walks the cache tree.
+                if (
+                  sheetSong.delivery !== undefined &&
+                  sheetSong.localAudio.state !== 'remote'
+                ) {
+                  if (sheetSong.localAudio.state === 'pinned') {
+                    await commands.audio(
+                      sheetSong.entity.nodePublicKey,
+                      sheetSong.song,
+                      sheetSong.delivery,
+                      'unpin',
+                    );
+                  }
                   await commands.audio(
                     sheetSong.entity.nodePublicKey,
                     sheetSong.song,
                     sheetSong.delivery,
-                    'unpin',
+                    'remove',
                   );
                 }
-                await commands.audio(
+                await commands.changeSongPresence(
                   sheetSong.entity.nodePublicKey,
                   sheetSong.song,
-                  sheetSong.delivery,
-                  'remove',
                 );
-              }
-              await commands.changeSongPresence(
-                sheetSong.entity.nodePublicKey,
-                sheetSong.song,
-              );
-              setSheetTarget(null);
-            })
-          }
-          onPin={() => runAudioAction('pin')}
-          onRemoveDownload={() => runAudioAction('remove')}
-          onUnpin={() => runAudioAction('unpin')}
-          onRename={title => patchSheetSong({ title })}
-          onToggleFavourite={() =>
-            patchSheetSong({ favorite: !sheetSong.song.favorite })
-          }
-          onTogglePlaylist={(name, member) =>
-            patchSheetSong({
-              tags: [...toggle(sheetSong.song.tags, name, member)],
-            })
-          }
-          onToggleTag={(name, member) =>
-            patchSheetSong({
-              tags: [...toggleTag(sheetSong.song.tags, name, member)],
-            })
-          }
-          placementCount={sheetScope.placements}
-          playlistProblem={playlistNameProblem}
-          scopeLabel={sheetScope.label}
-          song={sheetSong.song}
-          tagProblem={tagNameProblem}
-          visible={sheetSong !== null}
-        />
+                setSheetTarget(null);
+              })
+            }
+            onPin={() => runAudioAction('pin')}
+            onRemoveDownload={() => runAudioAction('remove')}
+            onUnpin={() => runAudioAction('unpin')}
+            onRename={title => patchSheetSong({ title })}
+            onToggleFavourite={() =>
+              patchSheetSong({ favorite: !sheetSong.song.favorite })
+            }
+            onTogglePlaylist={(name, member) =>
+              patchSheetSong({
+                tags: [...toggle(sheetSong.song.tags, name, member)],
+              })
+            }
+            onToggleTag={(name, member) =>
+              patchSheetSong({
+                tags: [...toggleTag(sheetSong.song.tags, name, member)],
+              })
+            }
+            placementCount={sheetScope.placements}
+            playlistProblem={playlistNameProblem}
+            scopeLabel={sheetScope.label}
+            song={sheetSong.song}
+            tagProblem={tagNameProblem}
+            visible={sheetSong !== null}
+          />
+        </Curtain>
       ) : null}
       <JobSheet
         busy={jobBusy}

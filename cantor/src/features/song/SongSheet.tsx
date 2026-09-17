@@ -1,13 +1,17 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import {
-  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
-  useWindowDimensions,
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
@@ -34,8 +38,6 @@ export const SONG_SHEET_KNOBS = {
   /** The hem's page marks: one short rule per page, the current one inked. */
   MARK_W_PX: 22,
   MARK_GAP_PX: 6,
-  /** How much of the window the sheet takes while it is still a modal. */
-  HEIGHT_FRACTION: 0.92,
 } as const;
 
 type Props = {
@@ -131,11 +133,10 @@ function SongSheetImpl({
   onDelete,
 }: Props) {
   const pal = usePalette();
-  const window = useWindowDimensions();
   const [title, setTitle] = useState(song.title);
   const [page, setPage] = useState(0);
   const [confirming, setConfirming] = useState(false);
-  const [width, setWidth] = useState(window.width);
+  const [width, setWidth] = useState(0);
   const pager = useRef<ScrollView | null>(null);
 
   // Adopt the node's title whenever a different song is shown, or the node
@@ -159,7 +160,10 @@ function SongSheetImpl({
     () => merge(mine, knownPlaylists),
     [mine, knownPlaylists],
   );
-  const wordEntries = useMemo(() => merge(words, knownTags), [words, knownTags]);
+  const wordEntries = useMemo(
+    () => merge(words, knownTags),
+    [words, knownTags],
+  );
 
   const onPagerEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -173,146 +177,129 @@ function SongSheetImpl({
   }, []);
 
   return (
-    <Modal
-      transparent
-      animationType="slide"
-      visible={visible}
-      onRequestClose={onClose}>
-      <View style={styles.scrim}>
-        <View
-          onLayout={onFrame}
-          style={[
-            styles.sheet,
-            {
-              backgroundColor: pal.bg,
-              borderColor: pal.line,
-              height: Math.round(
-                window.height * SONG_SHEET_KNOBS.HEIGHT_FRACTION,
-              ),
-            },
-          ]}>
-          <View style={[styles.header, { borderColor: pal.line }]}>
-            <Pressable
-              accessibilityLabel={
-                song.favorite ? 'Remove from favourites' : 'Make a favourite'
-              }
-              accessibilityRole="button"
-              accessibilityState={{ selected: song.favorite }}
-              disabled={busy}
-              hitSlop={space.sm}
-              onPress={onToggleFavourite}
-              style={styles.seat}>
-              <Face song={song} colour={pal.ink} />
-              <Text
-                style={[
-                  styles.star,
-                  { color: song.favorite ? pal.ink : pal.line },
-                ]}>
-                {song.favorite ? '★' : '☆'}
-              </Text>
-            </Pressable>
-            {/*
+    <View onLayout={onFrame} style={styles.sheet}>
+      <View style={[styles.header, { borderColor: pal.line }]}>
+        <Pressable
+          accessibilityLabel={
+            song.favorite ? 'Remove from favourites' : 'Make a favourite'
+          }
+          accessibilityRole="button"
+          accessibilityState={{ selected: song.favorite }}
+          disabled={busy}
+          hitSlop={space.sm}
+          onPress={onToggleFavourite}
+          style={styles.seat}
+        >
+          <Face song={song} colour={pal.ink} />
+          <Text
+            style={[styles.star, { color: song.favorite ? pal.ink : pal.line }]}
+          >
+            {song.favorite ? '★' : '☆'}
+          </Text>
+        </Pressable>
+        {/*
               One object, two strings: the header does not swap a word for
               another, it becomes it, on the same clock as the page it names.
             */}
-            <TransformText
-              text={page === 0 ? 'SONG' : 'RECORD'}
-              charStyle={type.eyebrow}
-              color={pal.muted}
-              duration={SONG_SHEET_KNOBS.PAGE_NAME_MS}
-              style={styles.nameSlot}
-            />
-            <Pressable
-              accessibilityLabel="Close song"
-              accessibilityRole="button"
-              hitSlop={space.sm}
-              onPress={onClose}>
-              <Text style={[type.eyebrow, { color: pal.muted }]}>CLOSE</Text>
-            </Pressable>
-          </View>
+        <TransformText
+          text={page === 0 ? 'SONG' : 'RECORD'}
+          charStyle={type.eyebrow}
+          color={pal.muted}
+          duration={SONG_SHEET_KNOBS.PAGE_NAME_MS}
+          style={styles.nameSlot}
+        />
+        <Pressable
+          accessibilityLabel="Close song"
+          accessibilityRole="button"
+          hitSlop={space.sm}
+          onPress={onClose}
+        >
+          <Text style={[type.eyebrow, { color: pal.muted }]}>CLOSE</Text>
+        </Pressable>
+      </View>
 
-          <ScrollView
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            onMomentumScrollEnd={onPagerEnd}
-            ref={pager}
-            style={styles.pager}>
-            <View style={{ width }}>
-              <Front
-                audioState={audioState}
-                busy={busy}
-                downloaded={downloaded}
-                deliveryBytes={deliveryBytes}
-                full={full}
-                nodeLabel={nodeLabel}
-                onPin={onPin}
-                onRemoveDownload={onRemoveDownload}
-                onRename={() => {
-                  const next = title.trim();
-                  if (next.length > 0 && next !== song.title) onRename(next);
-                }}
-                onTitle={setTitle}
-                onTogglePlaylist={onTogglePlaylist}
-                onToggleTag={onToggleTag}
-                onUnpin={onUnpin}
-                placeEntries={placeEntries}
-                placementCount={placementCount}
-                playlistProblem={playlistProblem}
-                scopeLabel={scopeLabel}
-                tagProblem={tagProblem}
-                title={title}
-                usedTags={song.tags.length}
-                wordEntries={wordEntries}
-              />
-            </View>
-            <View style={{ width }}>
-              <Back
-                busy={busy}
-                confirming={confirming}
-                detail={detail}
-                detailError={detailError}
-                deliveryBytes={deliveryBytes}
-                masterBytes={masterBytes}
-                nodeLabel={nodeLabel}
-                downloaded={downloaded}
-                onDelete={() => {
-                  setConfirming(false);
-                  onDelete();
-                }}
-                onKeep={() => setConfirming(false)}
-                onAsk={() => setConfirming(true)}
-                placementCount={placementCount}
-                song={song}
-              />
-            </View>
-          </ScrollView>
+      <ScrollView
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onMomentumScrollEnd={onPagerEnd}
+        ref={pager}
+        style={styles.pager}
+      >
+        <View style={{ width }}>
+          <Front
+            audioState={audioState}
+            busy={busy}
+            downloaded={downloaded}
+            deliveryBytes={deliveryBytes}
+            full={full}
+            nodeLabel={nodeLabel}
+            onPin={onPin}
+            onRemoveDownload={onRemoveDownload}
+            onRename={() => {
+              const next = title.trim();
+              if (next.length > 0 && next !== song.title) onRename(next);
+            }}
+            onTitle={setTitle}
+            onTogglePlaylist={onTogglePlaylist}
+            onToggleTag={onToggleTag}
+            onUnpin={onUnpin}
+            placeEntries={placeEntries}
+            placementCount={placementCount}
+            playlistProblem={playlistProblem}
+            scopeLabel={scopeLabel}
+            tagProblem={tagProblem}
+            title={title}
+            usedTags={song.tags.length}
+            wordEntries={wordEntries}
+          />
+        </View>
+        <View style={{ width }}>
+          <Back
+            busy={busy}
+            confirming={confirming}
+            detail={detail}
+            detailError={detailError}
+            deliveryBytes={deliveryBytes}
+            masterBytes={masterBytes}
+            nodeLabel={nodeLabel}
+            downloaded={downloaded}
+            onDelete={() => {
+              setConfirming(false);
+              onDelete();
+            }}
+            onKeep={() => setConfirming(false)}
+            onAsk={() => setConfirming(true)}
+            placementCount={placementCount}
+            song={song}
+          />
+        </View>
+      </ScrollView>
 
-          {/*
+      {/*
             Two short rules at the hem, the current one inked: a page mark, not
             a scrollbar. The same hairline the dial uses, doing the same job.
           */}
-          <View
-            accessibilityElementsHidden
-            importantForAccessibility="no-hide-descendants"
-            pointerEvents="none"
-            style={styles.hem}>
-            <View
-              style={[
-                styles.mark,
-                { backgroundColor: page === 0 ? pal.ink : pal.line },
-              ]}
-            />
-            <View
-              style={[
-                styles.mark,
-                { backgroundColor: page === 1 ? pal.ink : pal.line },
-              ]}
-            />
-          </View>
-        </View>
+      <View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        pointerEvents="none"
+        style={styles.hem}
+      >
+        <View
+          style={[
+            styles.mark,
+            { backgroundColor: page === 0 ? pal.ink : pal.line },
+          ]}
+        />
+        <View
+          style={[
+            styles.mark,
+            { backgroundColor: page === 1 ? pal.ink : pal.line },
+          ]}
+        />
       </View>
-    </Modal>
+    </View>
   );
 }
 
@@ -446,14 +433,24 @@ function Front({
             />
           </Row>
           <LedgerGap />
-          <Row label="Offline" note={weight(deliveryBytes, downloaded, nodeLabel)}>
+          <Row
+            label="Offline"
+            note={weight(deliveryBytes, downloaded, nodeLabel)}
+          >
             <Text style={[type.body, { color: pal.ink }]}>
               {whereItIs(audioState, nodeLabel)}
             </Text>
           </Row>
           {downloaded ? (
-            <Row label={frees ?? 'FREES THE COPY'} note={`STAYS ON ${nodeLabel.toUpperCase()}`}>
-              <Act busy={busy} label="Remove from this phone" onPress={onRemoveDownload} />
+            <Row
+              label={frees ?? 'FREES THE COPY'}
+              note={`STAYS ON ${nodeLabel.toUpperCase()}`}
+            >
+              <Act
+                busy={busy}
+                label="Remove from this phone"
+                onPress={onRemoveDownload}
+              />
             </Row>
           ) : null}
         </Ledger>
@@ -554,7 +551,8 @@ function Back({
                     {
                       color: detail.generation.lyrics ? pal.ink : pal.faint,
                     },
-                  ]}>
+                  ]}
+                >
                   {detail.generation.lyrics ?? 'instrumental'}
                 </Text>
               </Row>
@@ -563,9 +561,11 @@ function Back({
               <Fact label="Model" mono value={song.model} />
               <Fact
                 label="Seed"
-                value={`${song.seed === undefined ? 'unset' : String(song.seed)} · ${
-                  detail.attempts
-                } attempt${detail.attempts === 1 ? '' : 's'}`}
+                value={`${
+                  song.seed === undefined ? 'unset' : String(song.seed)
+                } · ${detail.attempts} attempt${
+                  detail.attempts === 1 ? '' : 's'
+                }`}
               />
               {/*
                 Whatever the chosen model declared. This is the one block whose
@@ -593,7 +593,9 @@ function Back({
               <Fact
                 label={`On ${nodeLabel}`}
                 mono
-                value={masterBytes === null ? 'unknown' : formatBytes(masterBytes)}
+                value={
+                  masterBytes === null ? 'unknown' : formatBytes(masterBytes)
+                }
               />
               {detail.component_digests.map((digest, index) => (
                 <Fact
@@ -625,9 +627,7 @@ function Back({
           {cost(downloaded ? deliveryBytes : null, masterBytes, nodeLabel)}
         </Text>
         <Text style={[type.eyebrow, styles.footHard, { color: pal.ink }]}>
-          {confirming
-            ? 'THERE IS NO UNDO'
-            : noUndo(placementCount)}
+          {confirming ? 'THERE IS NO UNDO' : noUndo(placementCount)}
         </Text>
       </LedgerFoot>
     </View>
@@ -654,12 +654,14 @@ function Act({
       accessibilityState={{ disabled: busy }}
       disabled={busy}
       onPress={onPress}
-      style={styles.act}>
+      style={styles.act}
+    >
       <Text
         style={[
           display ? type.heading : type.body,
           { color: busy ? pal.faint : pal.ink },
-        ]}>
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -692,7 +694,9 @@ function scopeSummary(
   placementCount: number,
 ): string {
   const where =
-    scopeLabel === null ? nodeLabel.toUpperCase() : `FROM ${scopeLabel.toUpperCase()}`;
+    scopeLabel === null
+      ? nodeLabel.toUpperCase()
+      : `FROM ${scopeLabel.toUpperCase()}`;
   const marks = `${placementCount} PLACEMENT${placementCount === 1 ? '' : 'S'}`;
   return `${where} · ${marks}`;
 }
@@ -733,7 +737,8 @@ function cost(
   masterBytes: number | null,
   nodeLabel: string,
 ): string {
-  const here = deliveryBytes === null ? null : `${formatBytes(deliveryBytes)} HERE`;
+  const here =
+    deliveryBytes === null ? null : `${formatBytes(deliveryBytes)} HERE`;
   const there =
     masterBytes === null
       ? `EVERYTHING ON ${nodeLabel.toUpperCase()}`
@@ -796,18 +801,21 @@ function clockOf(made: Date): string | undefined {
 }
 
 const styles = StyleSheet.create({
-  scrim: { flex: 1, justifyContent: 'flex-end' },
-  sheet: { borderTopWidth: 1, paddingBottom: space.lg },
+  /** The Curtain owns the surface; this is only what stands on it. */
+  sheet: { flex: 1, paddingBottom: space.lg },
   header: {
     alignItems: 'center',
     borderBottomWidth: 1,
     flexDirection: 'row',
     height: 56,
     justifyContent: 'space-between',
-    paddingHorizontal: space.lg,
   },
   seat: { alignItems: 'center', flexDirection: 'row', minHeight: touch.min },
-  star: { fontFamily: type.title.fontFamily, fontSize: 13, marginLeft: space.xs },
+  star: {
+    fontFamily: type.title.fontFamily,
+    fontSize: 13,
+    marginLeft: space.xs,
+  },
   nameSlot: { flex: 1, height: 16, marginHorizontal: space.md },
   pager: { flex: 1 },
   /**
@@ -816,7 +824,7 @@ const styles = StyleSheet.create({
    * showing up at the left edge of the record.
    */
   page: { flex: 1, overflow: 'hidden' },
-  body: { paddingBottom: space.lg, paddingHorizontal: space.lg },
+  body: { paddingBottom: space.lg },
   subject: { paddingBottom: space.md, paddingTop: space.md },
   titleField: { padding: 0 },
   scope: { marginTop: space.sm },
