@@ -49,7 +49,57 @@
               "vulkan",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "plan",
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": true,
+            "requires_lyrics": false,
+            "instrumental_text": "[Instrumental]",
+            "writer_label": "ACESTEP'S"
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Steps",
+              "default": 8,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Guidance",
+              "default": 1.0,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "lm_temperature",
+              "label": "Lyric temperature",
+              "default": 0.85,
+              "minimum": 0.05,
+              "maximum": 2,
+              "step": 0.05
+            },
+            {
+              "kind": "number",
+              "key": "lm_cfg_scale",
+              "label": "Lyric guidance",
+              "default": 2,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            }
+          ]
         },
         {
           "tag": "1.5-balanced",
@@ -95,7 +145,57 @@
               "vulkan",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "plan",
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": true,
+            "requires_lyrics": false,
+            "instrumental_text": "[Instrumental]",
+            "writer_label": "ACESTEP'S"
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Steps",
+              "default": 28,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Guidance",
+              "default": 1.0,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "lm_temperature",
+              "label": "Lyric temperature",
+              "default": 0.85,
+              "minimum": 0.05,
+              "maximum": 2,
+              "step": 0.05
+            },
+            {
+              "kind": "number",
+              "key": "lm_cfg_scale",
+              "label": "Lyric guidance",
+              "default": 2,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            }
+          ]
         },
         {
           "tag": "1.5-quality",
@@ -141,13 +241,63 @@
               "vulkan",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "plan",
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": true,
+            "requires_lyrics": false,
+            "instrumental_text": "[Instrumental]",
+            "writer_label": "ACESTEP'S"
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Steps",
+              "default": 28,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Guidance",
+              "default": 1.0,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "lm_temperature",
+              "label": "Lyric temperature",
+              "default": 0.85,
+              "minimum": 0.05,
+              "maximum": 2,
+              "step": 0.05
+            },
+            {
+              "kind": "number",
+              "key": "lm_cfg_scale",
+              "label": "Lyric guidance",
+              "default": 2,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            }
+          ]
         }
       ]
     },
     {
       "name": "levo2",
-      "licence": "Tencent SongGeneration License — academic, research, and education use only; commercial and production use prohibited.",
+      "licence": "Tencent SongGeneration License \u2014 academic, research, and education use only; commercial and production use prohibited.",
       "engine": "levo2",
       "variants": [
         {
@@ -182,7 +332,72 @@
               "vulkan",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": false
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Flow steps",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Flow guidance",
+              "default": 1.5,
+              "minimum": 0.1,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "cfg_scale",
+              "label": "Lyric conditioning",
+              "default": 1.5,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "temperature",
+              "label": "Temperature",
+              "default": 0.9,
+              "minimum": 0.1,
+              "maximum": 2,
+              "step": 0.1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k_mixed",
+              "label": "Mixed top K",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 512,
+              "step": 1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k_detail",
+              "label": "Detail top K",
+              "default": 1,
+              "minimum": 1,
+              "maximum": 128,
+              "step": 1
+            }
+          ]
         },
         {
           "tag": "1.0-balanced",
@@ -216,7 +431,72 @@
               "vulkan",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": false
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Flow steps",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Flow guidance",
+              "default": 1.5,
+              "minimum": 0.1,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "cfg_scale",
+              "label": "Lyric conditioning",
+              "default": 1.5,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "temperature",
+              "label": "Temperature",
+              "default": 0.9,
+              "minimum": 0.1,
+              "maximum": 2,
+              "step": 0.1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k_mixed",
+              "label": "Mixed top K",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 512,
+              "step": 1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k_detail",
+              "label": "Detail top K",
+              "default": 1,
+              "minimum": 1,
+              "maximum": 128,
+              "step": 1
+            }
+          ]
         },
         {
           "tag": "1.0-quality",
@@ -250,7 +530,72 @@
               "vulkan",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": false
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Flow steps",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Flow guidance",
+              "default": 1.5,
+              "minimum": 0.1,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "cfg_scale",
+              "label": "Lyric conditioning",
+              "default": 1.5,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "temperature",
+              "label": "Temperature",
+              "default": 0.9,
+              "minimum": 0.1,
+              "maximum": 2,
+              "step": 0.1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k_mixed",
+              "label": "Mixed top K",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 512,
+              "step": 1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k_detail",
+              "label": "Detail top K",
+              "default": 1,
+              "minimum": 1,
+              "maximum": 128,
+              "step": 1
+            }
+          ]
         }
       ]
     },
@@ -306,7 +651,54 @@
               "metal",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": true
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Flow steps",
+              "default": 30,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Flow guidance",
+              "default": 1.7,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "cfg_scale",
+              "label": "AR guidance",
+              "default": 1.5,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k",
+              "label": "Top K",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 16384,
+              "step": 1
+            }
+          ]
         },
         {
           "tag": "1.0-balanced",
@@ -355,7 +747,54 @@
               "metal",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": true
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Flow steps",
+              "default": 30,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Flow guidance",
+              "default": 1.7,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "cfg_scale",
+              "label": "AR guidance",
+              "default": 1.5,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k",
+              "label": "Top K",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 16384,
+              "step": 1
+            }
+          ]
         },
         {
           "tag": "1.0-quality",
@@ -404,7 +843,54 @@
               "metal",
               "cpu"
             ]
-          }
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": true
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Flow steps",
+              "default": 30,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Flow guidance",
+              "default": 1.7,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "number",
+              "key": "cfg_scale",
+              "label": "AR guidance",
+              "default": 1.5,
+              "minimum": 0,
+              "maximum": 10,
+              "step": 0.1
+            },
+            {
+              "kind": "integer",
+              "key": "top_k",
+              "label": "Top K",
+              "default": 50,
+              "minimum": 1,
+              "maximum": 16384,
+              "step": 1
+            }
+          ]
         }
       ]
     }
