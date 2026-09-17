@@ -40,7 +40,6 @@ import {
 } from '../features/field/FieldCanvas';
 import type { FieldPresentation } from '../features/field/useFieldController';
 import { LensPicker } from '../features/song/LensPicker';
-import { PlaylistChips } from '../features/song/PlaylistChips';
 import { SongSheet } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
@@ -69,8 +68,18 @@ import {
   type Placement,
   type Viewport,
 } from '../field';
-import { allPlaylists, normalise, playlistsOf, toggle } from '../playlists';
-import type { SongDetail } from '../core/protocol';
+import {
+  allPlaylists,
+  allTags,
+  normalise,
+  playlistNameProblem,
+  playlistsOf,
+  tagNameProblem,
+  tagsAreFull,
+  toggle,
+  toggleTag,
+} from '../playlists';
+import type { SongDetail, SongHeader } from '../core/protocol';
 import type { AppIdentity } from '../identity/derive';
 import {
   AnalysisCache,
@@ -563,9 +572,25 @@ export function FieldScreen({ identity }: Props) {
     };
   }, [arrangementKey, layout, nowMs, sheetSong, sheetTarget]);
 
-  /** Every playlist that exists, which is every `p/` tag on every song. */
+  /**
+ * What the node is holding for this song, which is the master rather than the
+ * delivery. Both are in `artifacts`; only this one is the number that says
+ * what ending the song frees over there.
+ */
+function masterBytesOf(song: SongHeader): number | null {
+  const master = song.artifacts.find(artifact => artifact.kind === 'master');
+  return master?.byte_length ?? null;
+}
+
+/** Every playlist that exists, which is every `p/` tag on every song. */
   const knownPlaylists = useMemo(
     () => allPlaylists(controller.entities.map(entity => entity.tags)),
+    [controller.entities],
+  );
+
+  /** Every word anyone has used, so the tag peel opens onto a vocabulary. */
+  const knownTags = useMemo(
+    () => allTags(controller.entities.map(entity => entity.tags)),
     [controller.entities],
   );
 
@@ -1462,48 +1487,14 @@ export function FieldScreen({ identity }: Props) {
           busy={songBusy}
           detail={songDetail}
           detailError={songDetailError}
-          downloadedBytes={sheetSong.delivery?.byte_length ?? null}
+          deliveryBytes={sheetSong.delivery?.byte_length ?? null}
+          full={tagsAreFull(sheetSong.song.tags)}
+          knownPlaylists={knownPlaylists}
+          knownTags={knownTags}
+          masterBytes={masterBytesOf(sheetSong.song)}
           nodeLabel={sheetSong.nodeLabels[0] ?? sheetSong.backend.petname}
-          onAddTag={tag =>
-            patchSheetSong({
-              tags: [...normalise([...sheetSong.song.tags, tag])],
-            })
-          }
           onClose={closeSongSheet}
-          onPin={() => runAudioAction('pin')}
-          onRemoveDownload={() => runAudioAction('remove')}
-          onRemoveFromScope={() => {
-            const playlist = sheetScope.playlist;
-            if (playlist === null) return;
-            patchSheetSong({
-              tags: [...toggle(sheetSong.song.tags, playlist, false)],
-            });
-            setSheetTarget(null);
-          }}
-          onRemoveTag={tag =>
-            patchSheetSong({
-              tags: sheetSong.song.tags.filter(value => value !== tag),
-            })
-          }
-          onRename={title => patchSheetSong({ title })}
-          placementCount={sheetScope.placements}
-          playlistCount={sheetScope.playlists}
-          playlists={
-            <PlaylistChips
-              busy={songBusy}
-              known={knownPlaylists}
-              onToggle={(name, member) =>
-                patchSheetSong({
-                  tags: [...toggle(sheetSong.song.tags, name, member)],
-                })
-              }
-              tags={sheetSong.song.tags}
-            />
-          }
-          onToggleFavourite={() =>
-            patchSheetSong({ favorite: !sheetSong.song.favorite })
-          }
-          onTrash={() =>
+          onDelete={() =>
             void runSongCommand(async () => {
               const track = transport.snapshot.track;
               if (
@@ -1512,6 +1503,29 @@ export function FieldScreen({ identity }: Props) {
               ) {
                 await transport.close();
               }
+              // The copy here goes first. Trashing while a local file is still
+              // on the phone orphans it: the song leaves the field, the sheet
+              // becomes unreachable, and a pinned orphan is never reclaimed
+              // because the budget only ever walks the cache tree.
+              if (
+                sheetSong.delivery !== undefined &&
+                sheetSong.localAudio.state !== 'remote'
+              ) {
+                if (sheetSong.localAudio.state === 'pinned') {
+                  await commands.audio(
+                    sheetSong.entity.nodePublicKey,
+                    sheetSong.song,
+                    sheetSong.delivery,
+                    'unpin',
+                  );
+                }
+                await commands.audio(
+                  sheetSong.entity.nodePublicKey,
+                  sheetSong.song,
+                  sheetSong.delivery,
+                  'remove',
+                );
+              }
               await commands.changeSongPresence(
                 sheetSong.entity.nodePublicKey,
                 sheetSong.song,
@@ -1519,10 +1533,28 @@ export function FieldScreen({ identity }: Props) {
               setSheetTarget(null);
             })
           }
+          onPin={() => runAudioAction('pin')}
+          onRemoveDownload={() => runAudioAction('remove')}
           onUnpin={() => runAudioAction('unpin')}
+          onRename={title => patchSheetSong({ title })}
+          onToggleFavourite={() =>
+            patchSheetSong({ favorite: !sheetSong.song.favorite })
+          }
+          onTogglePlaylist={(name, member) =>
+            patchSheetSong({
+              tags: [...toggle(sheetSong.song.tags, name, member)],
+            })
+          }
+          onToggleTag={(name, member) =>
+            patchSheetSong({
+              tags: [...toggleTag(sheetSong.song.tags, name, member)],
+            })
+          }
+          placementCount={sheetScope.placements}
+          playlistProblem={playlistNameProblem}
           scopeLabel={sheetScope.label}
-          scopePlaylist={sheetScope.playlist}
           song={sheetSong.song}
+          tagProblem={tagNameProblem}
           visible={sheetSong !== null}
         />
       ) : null}

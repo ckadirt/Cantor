@@ -134,6 +134,58 @@ export function toggle(
   return member ? [...without, toTag(name)] : without;
 }
 
+/**
+ * Why a plain tag cannot be used, or null when it can.
+ *
+ * The `p/` refusal is the important one: a tag typed with the reserved prefix
+ * would create a playlist the playlist UI never made and cannot see, which is
+ * the one way this namespace can be corrupted from the outside.
+ */
+export function tagNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return 'A tag needs a name.';
+  if (isPlaylistTag(trimmed)) {
+    return 'Use the playlist list to make a playlist.';
+  }
+  if (CONTROL_CHARACTERS.test(trimmed)) {
+    return 'A tag cannot contain control characters.';
+  }
+  if (tagBytes(trimmed) > PLAYLIST_KNOBS.MAX_TAG_BYTES) {
+    return `A tag is limited to ${PLAYLIST_KNOBS.MAX_TAG_BYTES} bytes.`;
+  }
+  return null;
+}
+
+/** Add or remove one plain tag, returning the full new tag set. */
+export function toggleTag(
+  tags: readonly string[],
+  name: string,
+  member: boolean,
+): readonly string[] {
+  if (tagNameProblem(name) !== null) return normalise(tags);
+  const wanted = fold(name);
+  const without = normalise(tags).filter(
+    tag => isPlaylistTag(tag) || fold(tag) !== wanted,
+  );
+  return member ? [...without, name.trim()] : without;
+}
+
+/** Every plain tag across a library, de-duplicated, in display order. */
+export function allTags(
+  songTags: readonly (readonly string[])[],
+): readonly string[] {
+  const seen = new Map<string, string>();
+  for (const tags of songTags) {
+    for (const name of plainTagsOf(tags)) {
+      const key = fold(name);
+      if (!seen.has(key)) seen.set(key, name);
+    }
+  }
+  return [...seen.values()].sort((left, right) =>
+    fold(left).localeCompare(fold(right)),
+  );
+}
+
 /** Every playlist across a library, de-duplicated, in display order. */
 export function allPlaylists(
   songTags: readonly (readonly string[])[],

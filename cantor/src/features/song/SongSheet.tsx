@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Modal,
   Pressable,
@@ -7,16 +7,35 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
 import type { LocalAudioState } from '../../audio/native';
 import { formatBytes } from '../../lenses';
-import { isPlaylistTag, plainTagsOf } from '../../playlists/playlists';
+import { nameLensFacePath } from '../../lenses/nameLens';
+import { Canvas, Path } from '@shopify/react-native-skia';
+import { TransformText } from '../../motion';
+import { Ledger, LedgerFoot, LedgerGap, Row } from '../controls';
+import { Membership, type MembershipEntry } from './Membership';
+import { plainTagsOf, playlistsOf } from '../../playlists/playlists';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 
-/** KNOBS */
-const SONG_SHEET_KNOBS = {
-  DIGEST_PREFIX_CHARS: 12, // enough to compare by eye, short enough to read
+/** KNOBS — the sheet's two pages, and the mark that identifies it. */
+export const SONG_SHEET_KNOBS = {
+  /** Enough of a digest to compare by eye, short enough to read. */
+  DIGEST_PREFIX_CHARS: 12,
+  /** The face in the header seat, at the size every other panel's glyph takes. */
+  SEAT_PX: 27,
+  /** How long the header's name takes to become the other page's name. */
+  PAGE_NAME_MS: 260,
+  /** The hem's page marks: one short rule per page, the current one inked. */
+  MARK_W_PX: 22,
+  MARK_GAP_PX: 6,
+  /** How much of the window the sheet takes while it is still a modal. */
+  HEIGHT_FRACTION: 0.92,
 } as const;
 
 type Props = {
@@ -31,10 +50,17 @@ type Props = {
   onClose: () => void;
   onRename: (title: string) => void;
   onToggleFavourite: () => void;
-  onAddTag: (tag: string) => void;
-  /** Playlist membership, which is the only writer of the reserved namespace. */
-  playlists: React.ReactNode;
-  onRemoveTag: (tag: string) => void;
+  /** Every playlist that exists anywhere, so the peel has a vocabulary. */
+  knownPlaylists: readonly string[];
+  /** Every plain tag used anywhere, for the same reason. */
+  knownTags: readonly string[];
+  onTogglePlaylist: (name: string, member: boolean) => void;
+  onToggleTag: (name: string, member: boolean) => void;
+  /** True when the song is at the node's tag bound and may hold no more. */
+  full: boolean;
+  /** Why a typed name cannot be used, checked before a patch is sent. */
+  playlistProblem: (name: string) => string | null;
+  tagProblem: (name: string) => string | null;
   /**
    * Where this sheet was opened from, and how much of the song it accounts
    * for. A mark is a placement, not a song: one delete must never silently
@@ -42,24 +68,40 @@ type Props = {
    */
   scopeLabel: string | null;
   placementCount: number;
-  playlistCount: number;
-  /** The playlist this mark sits in, when the scope is one you can leave. */
-  scopePlaylist: string | null;
-  onRemoveFromScope: () => void;
-  /** What the local copy weighs, for the line that says what removing frees. */
-  downloadedBytes: number | null;
-  onTrash: () => void;
+  /**
+   * What the delivery artifact weighs — which is what a copy here weighs, and
+   * what fetching one would cost. Whether there *is* a copy here is
+   * `audioState`, not this: the node's number exists either way.
+   */
+  deliveryBytes: number | null;
+  masterBytes: number | null;
   onPin: () => void;
   onUnpin: () => void;
   onRemoveDownload: () => void;
+  /** Ending the song, on this phone and on the node, with no undo. */
+  onDelete: () => void;
 };
 
 /**
- * Everything about one song that is not the act of listening to it.
+ * Everything about one song that is not the act of listening to it, on two
+ * pages.
  *
- * This is a sheet rather than a zoom level on purpose: renaming, tagging and
- * cache management are conventional list-and-form work, and giving them a
- * distance in the field would make the zoom model mean two different things.
+ * The front page is what you *do* with a song: its name, the places it is
+ * kept, the words it carries, where its audio is and the one act that changes
+ * that. The back page is what a song *is* — when it was made, the prompt it
+ * came from, the machine and the model, every parameter that model declared,
+ * what it weighs on each machine — and, at its foot, the act that ends it.
+ *
+ * Splitting them is what lets the front page be short. Twelve rows of
+ * forensics under the two or three things anybody opens this sheet to do made
+ * the forensics look like the subject; one horizontal gesture, which the sheet
+ * was not using for anything, makes them a place you go rather than a thing
+ * you scroll past.
+ *
+ * Delete is on the back page on purpose. The foot is the loudest object in
+ * every Cantor panel — the composer puts `Make it` there — and a destructive
+ * act drawn that well is an invitation. Reading what a song cost and what it
+ * weighs is the honest preamble to ending it.
  */
 function SongSheetImpl({
   visible,
@@ -72,23 +114,29 @@ function SongSheetImpl({
   onClose,
   onRename,
   onToggleFavourite,
-  onAddTag,
-  playlists,
-  onRemoveTag,
+  knownPlaylists,
+  knownTags,
+  onTogglePlaylist,
+  onToggleTag,
+  full,
+  playlistProblem,
+  tagProblem,
   scopeLabel,
   placementCount,
-  playlistCount,
-  scopePlaylist,
-  onRemoveFromScope,
-  downloadedBytes,
-  onTrash,
+  deliveryBytes,
+  masterBytes,
   onPin,
   onUnpin,
   onRemoveDownload,
+  onDelete,
 }: Props) {
   const pal = usePalette();
+  const window = useWindowDimensions();
   const [title, setTitle] = useState(song.title);
-  const [tag, setTag] = useState('');
+  const [page, setPage] = useState(0);
+  const [confirming, setConfirming] = useState(false);
+  const [width, setWidth] = useState(window.width);
+  const pager = useRef<ScrollView | null>(null);
 
   // Adopt the node's title whenever a different song is shown, or the node
   // renames this one under us.
@@ -96,16 +144,33 @@ function SongSheetImpl({
     setTitle(song.title);
   }, [song.id, song.title]);
 
-  const plainTags = plainTagsOf(song.tags);
-  const [tagProblem, setTagProblem] = useState<string | null>(null);
-  const [confirmingTrash, setConfirmingTrash] = useState(false);
-  const downloaded = audioState === 'cached' || audioState === 'pinned';
-
-  // A sheet that opens on a different song must never open already asking to
-  // destroy it.
+  // A sheet that opens on a different song must never open on the back page
+  // already asking to destroy it.
   useEffect(() => {
-    setConfirmingTrash(false);
+    setConfirming(false);
+    setPage(0);
+    pager.current?.scrollTo({ x: 0, animated: false });
   }, [song.id, visible]);
+
+  const downloaded = audioState === 'cached' || audioState === 'pinned';
+  const mine = useMemo(() => playlistsOf(song.tags), [song.tags]);
+  const words = useMemo(() => plainTagsOf(song.tags), [song.tags]);
+  const placeEntries = useMemo(
+    () => merge(mine, knownPlaylists),
+    [mine, knownPlaylists],
+  );
+  const wordEntries = useMemo(() => merge(words, knownTags), [words, knownTags]);
+
+  const onPagerEnd = useCallback(
+    (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+      const offset = event.nativeEvent.contentOffset.x;
+      setPage(offset > width / 2 ? 1 : 0);
+    },
+    [width],
+  );
+  const onFrame = useCallback((event: LayoutChangeEvent) => {
+    setWidth(event.nativeEvent.layout.width);
+  }, []);
 
   return (
     <Modal
@@ -115,367 +180,659 @@ function SongSheetImpl({
       onRequestClose={onClose}>
       <View style={styles.scrim}>
         <View
+          onLayout={onFrame}
           style={[
             styles.sheet,
-            { backgroundColor: pal.bg, borderColor: pal.line },
+            {
+              backgroundColor: pal.bg,
+              borderColor: pal.line,
+              height: Math.round(
+                window.height * SONG_SHEET_KNOBS.HEIGHT_FRACTION,
+              ),
+            },
           ]}>
-          <View style={styles.header}>
-            <Text numberOfLines={1} style={[type.title, styles.name, { color: pal.ink }]}>
-              {song.title}
-            </Text>
+          <View style={[styles.header, { borderColor: pal.line }]}>
+            <Pressable
+              accessibilityLabel={
+                song.favorite ? 'Remove from favourites' : 'Make a favourite'
+              }
+              accessibilityRole="button"
+              accessibilityState={{ selected: song.favorite }}
+              disabled={busy}
+              hitSlop={space.sm}
+              onPress={onToggleFavourite}
+              style={styles.seat}>
+              <Face song={song} colour={pal.ink} />
+              <Text
+                style={[
+                  styles.star,
+                  { color: song.favorite ? pal.ink : pal.line },
+                ]}>
+                {song.favorite ? '★' : '☆'}
+              </Text>
+            </Pressable>
+            {/*
+              One object, two strings: the header does not swap a word for
+              another, it becomes it, on the same clock as the page it names.
+            */}
+            <TransformText
+              text={page === 0 ? 'SONG' : 'RECORD'}
+              charStyle={type.eyebrow}
+              color={pal.muted}
+              duration={SONG_SHEET_KNOBS.PAGE_NAME_MS}
+              style={styles.nameSlot}
+            />
             <Pressable
               accessibilityLabel="Close song"
               accessibilityRole="button"
+              hitSlop={space.sm}
               onPress={onClose}>
               <Text style={[type.eyebrow, { color: pal.muted }]}>CLOSE</Text>
             </Pressable>
           </View>
 
-          {/*
-            Scope, before anything that acts: which mark you held, and how many
-            others this song has. `design.md` warns that many-to-many membership
-            "silently shows one copy"; this is that warning answered from the
-            other side.
-          */}
-          <Text style={[type.eyebrow, { color: pal.muted }]}>
-            {scopeLabel === null ? nodeLabel.toUpperCase() : `FROM · ${scopeLabel.toUpperCase()}`}
-          </Text>
-          <Text style={[type.eyebrow, styles.scope, { color: pal.faint }]}>
-            {scopeSummary(playlistCount, placementCount)}
-          </Text>
-
-          <ScrollView contentContainerStyle={styles.body}>
-            <Field label="TITLE">
-              <TextInput
-                accessibilityLabel="Song title"
-                editable={!busy}
-                onBlur={() => {
+          <ScrollView
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            onMomentumScrollEnd={onPagerEnd}
+            ref={pager}
+            style={styles.pager}>
+            <View style={{ width }}>
+              <Front
+                audioState={audioState}
+                busy={busy}
+                downloaded={downloaded}
+                deliveryBytes={deliveryBytes}
+                full={full}
+                nodeLabel={nodeLabel}
+                onPin={onPin}
+                onRemoveDownload={onRemoveDownload}
+                onRename={() => {
                   const next = title.trim();
                   if (next.length > 0 && next !== song.title) onRename(next);
                 }}
-                onChangeText={setTitle}
-                style={[styles.input, type.body, { color: pal.ink, borderColor: pal.line }]}
-                value={title}
-              />
-            </Field>
-
-            <View style={styles.row}>
-              <SheetButton
-                label={song.favorite ? 'Favourite ★' : 'Favourite ☆'}
-                onPress={onToggleFavourite}
-                disabled={busy}
+                onTitle={setTitle}
+                onTogglePlaylist={onTogglePlaylist}
+                onToggleTag={onToggleTag}
+                onUnpin={onUnpin}
+                placeEntries={placeEntries}
+                placementCount={placementCount}
+                playlistProblem={playlistProblem}
+                scopeLabel={scopeLabel}
+                tagProblem={tagProblem}
+                title={title}
+                usedTags={song.tags.length}
+                wordEntries={wordEntries}
               />
             </View>
-
-            <Field label="TAGS">
-              <View style={styles.tags}>
-                {plainTags.length === 0 ? (
-                  <Text style={[type.body, { color: pal.muted }]}>No tags.</Text>
-                ) : (
-                  plainTags.map(value => (
-                    <Pressable
-                      accessibilityLabel={`Remove tag ${value}`}
-                      accessibilityRole="button"
-                      disabled={busy}
-                      key={value}
-                      onPress={() => onRemoveTag(value)}
-                      style={[styles.tag, { borderColor: pal.line }]}>
-                      <Text style={[type.mono, { color: pal.ink }]}>
-                        {value} ×
-                      </Text>
-                    </Pressable>
-                  ))
-                )}
-              </View>
-              <TextInput
-                accessibilityLabel="Add a tag"
-                editable={!busy}
-                onChangeText={setTag}
-                onSubmitEditing={() => {
-                  const next = tag.trim();
-                  if (next.length === 0) return;
-                  // `p/` is reserved. Letting it be typed here would create a
-                  // playlist that the playlist UI never made and cannot see.
-                  if (isPlaylistTag(next)) {
-                    setTagProblem('Use the playlist field to make a playlist.');
-                    return;
-                  }
-                  setTagProblem(null);
-                  onAddTag(next);
-                  setTag('');
-                }}
-                placeholder="add a tag"
-                placeholderTextColor={pal.faint}
-                returnKeyType="done"
-                style={[styles.input, type.body, { color: pal.ink, borderColor: pal.line }]}
-                value={tag}
-              />
-              {tagProblem !== null ? (
-                <Text style={[type.mono, { color: pal.muted }]}>
-                  {tagProblem}
-                </Text>
-              ) : null}
-            </Field>
-
-            <Field label="PLAYLISTS">{playlists}</Field>
-
-            <Field label={`OFFLINE · ${audioState.toUpperCase()}`}>
-              <View style={styles.row}>
-                {audioState === 'pinned' ? (
-                  <SheetButton label="Unpin" onPress={onUnpin} disabled={busy} />
-                ) : (
-                  <SheetButton
-                    label="Keep"
-                    onPress={onPin}
-                    disabled={busy || !downloaded}
-                  />
-                )}
-              </View>
-            </Field>
-
-            {/*
-              Three ways to make a song go, in increasing order of how much
-              goes, each saying what it costs. The rules between them are the
-              point: they are not variations of one action.
-            */}
-            <View style={[styles.rule, { backgroundColor: pal.line }]} />
-            <Leaving
-              busy={busy || !downloaded}
-              consequence={`${
-                downloadedBytes === null
-                  ? 'FREES THE LOCAL COPY'
-                  : `FREES ${formatBytes(downloadedBytes)}`
-              } · STAYS ON ${nodeLabel.toUpperCase()}`}
-              label="Remove from this phone"
-              onPress={onRemoveDownload}
-            />
-            {scopePlaylist === null ? null : (
-              <>
-                <View style={[styles.rule, { backgroundColor: pal.line }]} />
-                <Leaving
-                  busy={busy}
-                  consequence={`KEEPS THE SONG · ${marksRemain(placementCount)}`}
-                  label={`Remove from ${scopePlaylist}`}
-                  onPress={onRemoveFromScope}
-                />
-              </>
-            )}
-            <View style={[styles.rule, { backgroundColor: pal.ink }]} />
-            {confirmingTrash ? (
-              <View style={styles.row}>
-                <SheetButton
-                  label="Trash the song"
-                  onPress={() => {
-                    setConfirmingTrash(false);
-                    onTrash();
-                  }}
-                  disabled={busy}
-                />
-                <SheetButton
-                  label="Keep it"
-                  onPress={() => setConfirmingTrash(false)}
-                  disabled={busy}
-                />
-              </View>
-            ) : (
-              <Leaving
+            <View style={{ width }}>
+              <Back
                 busy={busy}
-                consequence={trashConsequence(placementCount)}
-                label="Trash the song"
-                onPress={() => setConfirmingTrash(true)}
+                confirming={confirming}
+                detail={detail}
+                detailError={detailError}
+                deliveryBytes={deliveryBytes}
+                masterBytes={masterBytes}
+                nodeLabel={nodeLabel}
+                downloaded={downloaded}
+                onDelete={() => {
+                  setConfirming(false);
+                  onDelete();
+                }}
+                onKeep={() => setConfirming(false)}
+                onAsk={() => setConfirming(true)}
+                placementCount={placementCount}
+                song={song}
               />
-            )}
-
-            <Field label="RECIPE">
-              {detailError !== null ? (
-                <Text style={[type.body, { color: pal.muted }]}>
-                  {detailError}
-                </Text>
-              ) : detail === null ? (
-                <Text style={[type.body, { color: pal.muted }]}>
-                  Asking {nodeLabel}…
-                </Text>
-              ) : (
-                <>
-                  <Fact label="engine" value={detail.engine} />
-                  <Fact label="model" value={song.model} />
-                  <Fact
-                    label="seed"
-                    value={song.seed === undefined ? 'unset' : String(song.seed)}
-                  />
-                  <Fact label="attempts" value={String(detail.attempts)} />
-                  <Fact label="caption" value={detail.generation.caption} />
-                  {detail.generation.lyrics ? (
-                    <Fact label="lyrics" value={detail.generation.lyrics} />
-                  ) : null}
-                  {detail.component_digests.map(digest => (
-                    <Fact
-                      key={digest}
-                      label="digest"
-                      value={digest.slice(0, SONG_SHEET_KNOBS.DIGEST_PREFIX_CHARS)}
-                    />
-                  ))}
-                </>
-              )}
-            </Field>
+            </View>
           </ScrollView>
+
+          {/*
+            Two short rules at the hem, the current one inked: a page mark, not
+            a scrollbar. The same hairline the dial uses, doing the same job.
+          */}
+          <View
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            pointerEvents="none"
+            style={styles.hem}>
+            <View
+              style={[
+                styles.mark,
+                { backgroundColor: page === 0 ? pal.ink : pal.line },
+              ]}
+            />
+            <View
+              style={[
+                styles.mark,
+                { backgroundColor: page === 1 ? pal.ink : pal.line },
+              ]}
+            />
+          </View>
         </View>
       </View>
     </Modal>
   );
 }
 
-/** `IN 3 PLAYLISTS · 3 PLACEMENTS`, and the honest singulars. */
-function scopeSummary(playlistCount: number, placementCount: number): string {
-  const playlists =
-    playlistCount === 0
-      ? 'IN NO PLAYLIST'
-      : `IN ${playlistCount} PLAYLIST${playlistCount === 1 ? '' : 'S'}`;
-  const placements = `${placementCount} PLACEMENT${
-    placementCount === 1 ? '' : 'S'
-  }`;
-  return `${playlists} · ${placements}`;
+/** The song's own contour, where every other panel keeps a glyph. */
+function Face({ song, colour }: { song: SongHeader; colour: string }) {
+  const size = SONG_SHEET_KNOBS.SEAT_PX;
+  const path = useMemo(
+    () =>
+      nameLensFacePath(
+        {
+          seed: song.seed,
+          id: song.id,
+          model: song.model,
+          durationMs: song.duration_ms,
+        },
+        size / 2.6,
+      ),
+    [song.duration_ms, song.id, song.model, song.seed, size],
+  );
+  return (
+    <Canvas style={{ width: size, height: size }}>
+      <Path
+        color={colour}
+        path={path}
+        style="stroke"
+        strokeWidth={1}
+        transform={[{ translateX: size / 2 }, { translateY: size / 2 }]}
+      />
+    </Canvas>
+  );
 }
 
-function marksRemain(placementCount: number): string {
-  const remaining = Math.max(0, placementCount - 1);
-  return remaining === 1 ? '1 MARK REMAINS' : `${remaining} MARKS REMAIN`;
-}
-
-function trashConsequence(placementCount: number): string {
-  return placementCount <= 1
-    ? 'THE SONG AND ITS AUDIO, EVERYWHERE'
-    : `EVERY PLACEMENT · ${placementCount} MARKS GO AT ONCE`;
-}
-
-/**
- * One way out, and what it costs.
- *
- * The consequence is not a caption on a button — it is the difference between
- * dropping a tag and destroying a song, and it is why these three rows are
- * rows rather than three buttons in a line.
- */
-function Leaving({
-  label,
-  consequence,
-  onPress,
+/** What you do with a song. */
+function Front({
+  audioState,
   busy,
+  downloaded,
+  deliveryBytes,
+  full,
+  nodeLabel,
+  onPin,
+  onRemoveDownload,
+  onRename,
+  onTitle,
+  onTogglePlaylist,
+  onToggleTag,
+  onUnpin,
+  placeEntries,
+  placementCount,
+  playlistProblem,
+  scopeLabel,
+  tagProblem,
+  title,
+  usedTags,
+  wordEntries,
 }: {
-  label: string;
-  consequence: string;
-  onPress: () => void;
+  audioState: LocalAudioState;
   busy: boolean;
+  downloaded: boolean;
+  deliveryBytes: number | null;
+  full: boolean;
+  nodeLabel: string;
+  onPin: () => void;
+  onRemoveDownload: () => void;
+  onRename: () => void;
+  onTitle: (value: string) => void;
+  onTogglePlaylist: (name: string, member: boolean) => void;
+  onToggleTag: (name: string, member: boolean) => void;
+  onUnpin: () => void;
+  placeEntries: readonly MembershipEntry[];
+  placementCount: number;
+  playlistProblem: (name: string) => string | null;
+  scopeLabel: string | null;
+  tagProblem: (name: string) => string | null;
+  title: string;
+  usedTags: number;
+  wordEntries: readonly MembershipEntry[];
 }) {
   const pal = usePalette();
+  const pinned = audioState === 'pinned';
+  const frees =
+    deliveryBytes === null ? null : `FREES ${formatBytes(deliveryBytes)}`;
   return (
-    <Pressable
-      accessibilityLabel={`${label}. ${consequence}`}
-      accessibilityRole="button"
-      accessibilityState={{ disabled: busy }}
-      disabled={busy}
-      onPress={onPress}
-      style={styles.leaving}>
-      <Text style={[type.body, { color: busy ? pal.faint : pal.ink }]}>
-        {label}
-      </Text>
-      <Text style={[type.eyebrow, styles.consequence, { color: pal.faint }]}>
-        {consequence}
-      </Text>
-    </Pressable>
+    <View style={styles.page}>
+      <ScrollView contentContainerStyle={styles.body}>
+        {/*
+          The title is the subject, not a field: a panel with one subject puts
+          it above the spine. Renaming is tapping the word, which is what the
+          composer's caption already does — there was never a box, only a
+          title someone might change.
+        */}
+        <View style={styles.subject}>
+          <TextInput
+            accessibilityLabel="Song title"
+            editable={!busy}
+            multiline
+            onBlur={onRename}
+            onChangeText={onTitle}
+            scrollEnabled={false}
+            style={[type.title, styles.titleField, { color: pal.ink }]}
+            value={title}
+          />
+          <Text style={[type.eyebrow, styles.scope, { color: pal.faint }]}>
+            {scopeSummary(scopeLabel, nodeLabel, placementCount)}
+          </Text>
+        </View>
+
+        <Ledger>
+          <Row label="Playlists">
+            <Membership
+              addPlaceholder="new playlist"
+              busy={busy}
+              entries={placeEntries}
+              flow="column"
+              full={full}
+              note={budget(usedTags)}
+              onToggle={onTogglePlaylist}
+              problemOf={playlistProblem}
+            />
+          </Row>
+          <Row label="Tags">
+            <Membership
+              addPlaceholder="add a tag"
+              busy={busy}
+              entries={wordEntries}
+              flow="inline"
+              full={full}
+              note={budget(usedTags)}
+              onToggle={onToggleTag}
+              problemOf={tagProblem}
+            />
+          </Row>
+          <LedgerGap />
+          <Row label="Offline" note={weight(deliveryBytes, downloaded, nodeLabel)}>
+            <Text style={[type.body, { color: pal.ink }]}>
+              {whereItIs(audioState, nodeLabel)}
+            </Text>
+          </Row>
+          {downloaded ? (
+            <Row label={frees ?? 'FREES THE COPY'} note={`STAYS ON ${nodeLabel.toUpperCase()}`}>
+              <Act busy={busy} label="Remove from this phone" onPress={onRemoveDownload} />
+            </Row>
+          ) : null}
+        </Ledger>
+      </ScrollView>
+
+      {/*
+        The foot carries what you most often want from a song: whether its
+        audio is here, and the one word that changes that.
+      */}
+      <LedgerFoot>
+        {pinned ? (
+          <Act busy={busy} display label="Unpin" onPress={onUnpin} />
+        ) : (
+          <Act
+            busy={busy || !downloaded}
+            display
+            label="Keep it here"
+            onPress={onPin}
+          />
+        )}
+        <Text style={[type.eyebrow, styles.footNote, { color: pal.faint }]}>
+          {pinned ? 'KEPT UNTIL YOU SAY OTHERWISE' : 'NEVER PURGED ONCE KEPT'}
+        </Text>
+      </LedgerFoot>
+    </View>
   );
 }
 
-function Field({
-  label,
-  children,
+/** What a song is, and the act that ends it. */
+function Back({
+  busy,
+  confirming,
+  detail,
+  detailError,
+  deliveryBytes,
+  downloaded,
+  masterBytes,
+  nodeLabel,
+  onAsk,
+  onDelete,
+  onKeep,
+  placementCount,
+  song,
 }: {
-  label: string;
-  children: React.ReactNode;
+  busy: boolean;
+  confirming: boolean;
+  detail: SongDetail | null;
+  detailError: string | null;
+  deliveryBytes: number | null;
+  downloaded: boolean;
+  masterBytes: number | null;
+  nodeLabel: string;
+  onAsk: () => void;
+  onDelete: () => void;
+  onKeep: () => void;
+  placementCount: number;
+  song: SongHeader;
 }) {
   const pal = usePalette();
+  const made = new Date(song.created_at);
   return (
-    <View style={styles.field}>
-      <Text style={[type.eyebrow, { color: pal.muted }]}>{label}</Text>
-      {children}
+    <View style={styles.page}>
+      <ScrollView contentContainerStyle={styles.body}>
+        <LedgerGap />
+        <Ledger>
+          <Row label="Made" note={clockOf(made)}>
+            <Text style={[type.body, { color: pal.ink }]}>{dateOf(made)}</Text>
+          </Row>
+          <Row label="Length">
+            <Text style={[type.body, { color: pal.ink }]}>
+              {duration(song.duration_ms)}
+            </Text>
+          </Row>
+          <LedgerGap />
+          {detailError !== null ? (
+            <Row label="Recipe">
+              <Text style={[type.body, { color: pal.muted }]}>
+                {detailError}
+              </Text>
+            </Row>
+          ) : detail === null ? (
+            <Row label="Recipe">
+              <Text style={[type.body, { color: pal.muted }]}>
+                {`Asking ${nodeLabel}\u2026`}
+              </Text>
+            </Row>
+          ) : (
+            <>
+              <Row label="Prompt">
+                <Text style={[type.body, { color: pal.ink }]}>
+                  {detail.generation.caption}
+                </Text>
+              </Row>
+              <Row label="Words">
+                <Text
+                  style={[
+                    type.body,
+                    {
+                      color: detail.generation.lyrics ? pal.ink : pal.faint,
+                    },
+                  ]}>
+                  {detail.generation.lyrics ?? 'instrumental'}
+                </Text>
+              </Row>
+              <LedgerGap />
+              <Fact label="Engine" value={`${detail.engine} · ${nodeLabel}`} />
+              <Fact label="Model" mono value={song.model} />
+              <Fact
+                label="Seed"
+                value={`${song.seed === undefined ? 'unset' : String(song.seed)} · ${
+                  detail.attempts
+                } attempt${detail.attempts === 1 ? '' : 's'}`}
+              />
+              {/*
+                Whatever the chosen model declared. This is the one block whose
+                length is not known at build time, which is why it sits between
+                two gaps rather than inside a fixed set of rows.
+              */}
+              {declared(detail).length === 0 ? null : (
+                <>
+                  <LedgerGap />
+                  {declared(detail).map(([name, value]) => (
+                    <Fact key={name} label={name} value={value} />
+                  ))}
+                </>
+              )}
+              <LedgerGap />
+              <Fact
+                label="Here"
+                mono
+                value={
+                  downloaded && deliveryBytes !== null
+                    ? formatBytes(deliveryBytes)
+                    : 'nothing'
+                }
+              />
+              <Fact
+                label={`On ${nodeLabel}`}
+                mono
+                value={masterBytes === null ? 'unknown' : formatBytes(masterBytes)}
+              />
+              {detail.component_digests.map((digest, index) => (
+                <Fact
+                  key={digest}
+                  label={index === 0 ? 'Digest' : ''}
+                  mono
+                  value={digest.slice(0, SONG_SHEET_KNOBS.DIGEST_PREFIX_CHARS)}
+                />
+              ))}
+            </>
+          )}
+        </Ledger>
+      </ScrollView>
+
+      {/*
+        The end of the song, where arriving deliberately is worth more than a
+        dialog — and it asks anyway.
+      */}
+      <LedgerFoot>
+        {confirming ? (
+          <View style={styles.confirm}>
+            <Act busy={busy} display label="Delete it" onPress={onDelete} />
+            <Act busy={busy} label="Keep it" onPress={onKeep} />
+          </View>
+        ) : (
+          <Act busy={busy} display label="Delete everywhere" onPress={onAsk} />
+        )}
+        <Text style={[type.eyebrow, styles.footNote, { color: pal.faint }]}>
+          {cost(downloaded ? deliveryBytes : null, masterBytes, nodeLabel)}
+        </Text>
+        <Text style={[type.eyebrow, styles.footHard, { color: pal.ink }]}>
+          {confirming
+            ? 'THERE IS NO UNDO'
+            : noUndo(placementCount)}
+        </Text>
+      </LedgerFoot>
     </View>
   );
 }
 
-function Fact({ label, value }: { label: string; value: string }) {
-  const pal = usePalette();
-  return (
-    <View style={styles.fact}>
-      <Text style={[type.mono, styles.factLabel, { color: pal.faint }]}>
-        {label}
-      </Text>
-      <Text style={[type.mono, styles.factValue, { color: pal.ink }]}>
-        {value}
-      </Text>
-    </View>
-  );
-}
-
-function SheetButton({
+/** An act: a word in the value column, in the panel's voice or the foot's. */
+function Act({
+  busy,
+  display,
   label,
   onPress,
-  disabled,
 }: {
+  busy: boolean;
+  display?: boolean;
   label: string;
   onPress: () => void;
-  disabled: boolean;
 }) {
   const pal = usePalette();
   return (
     <Pressable
       accessibilityLabel={label}
       accessibilityRole="button"
-      accessibilityState={{ disabled }}
-      disabled={disabled}
+      accessibilityState={{ disabled: busy }}
+      disabled={busy}
       onPress={onPress}
-      style={[styles.button, { borderColor: disabled ? pal.faint : pal.ink }]}>
-      <Text style={[type.mono, { color: disabled ? pal.faint : pal.ink }]}>
+      style={styles.act}>
+      <Text
+        style={[
+          display ? type.heading : type.body,
+          { color: busy ? pal.faint : pal.ink },
+        ]}>
         {label}
       </Text>
     </Pressable>
   );
 }
 
+function Fact({
+  label,
+  mono,
+  value,
+}: {
+  label: string;
+  mono?: boolean;
+  value: string;
+}) {
+  const pal = usePalette();
+  return (
+    <Row label={label}>
+      <Text style={[mono ? type.mono : type.body, { color: pal.ink }]}>
+        {value}
+      </Text>
+    </Row>
+  );
+}
+
+/** `FROM DOG WALK · 3 PLACEMENTS`, and the honest singular. */
+function scopeSummary(
+  scopeLabel: string | null,
+  nodeLabel: string,
+  placementCount: number,
+): string {
+  const where =
+    scopeLabel === null ? nodeLabel.toUpperCase() : `FROM ${scopeLabel.toUpperCase()}`;
+  const marks = `${placementCount} PLACEMENT${placementCount === 1 ? '' : 'S'}`;
+  return `${where} · ${marks}`;
+}
+
+/** The shared count, which is only interesting while you are adding. */
+function budget(used: number): string {
+  return `${used} OF 16 SHARED`;
+}
+
+/** What the copy here weighs, or what fetching one would cost. */
+function weight(
+  deliveryBytes: number | null,
+  downloaded: boolean,
+  nodeLabel: string,
+): string {
+  const where = `ON ${nodeLabel.toUpperCase()}`;
+  if (deliveryBytes === null) return where;
+  const size = formatBytes(deliveryBytes);
+  return downloaded ? `${size} HERE · ${where}` : `${size} TO FETCH · ${where}`;
+}
+
+function whereItIs(audioState: LocalAudioState, nodeLabel: string): string {
+  switch (audioState) {
+    case 'pinned':
+      return 'Downloaded on this phone';
+    case 'cached':
+      return 'Cached on this phone';
+    case 'partial':
+      return 'Arriving';
+    default:
+      return `On ${nodeLabel} only`;
+  }
+}
+
+/** Both numbers, which is the one sentence only this act gets to make. */
+function cost(
+  deliveryBytes: number | null,
+  masterBytes: number | null,
+  nodeLabel: string,
+): string {
+  const here = deliveryBytes === null ? null : `${formatBytes(deliveryBytes)} HERE`;
+  const there =
+    masterBytes === null
+      ? `EVERYTHING ON ${nodeLabel.toUpperCase()}`
+      : `${formatBytes(masterBytes)} ON ${nodeLabel.toUpperCase()}`;
+  return here === null ? there : `${here} · ${there}`;
+}
+
+function noUndo(placementCount: number): string {
+  return placementCount <= 1
+    ? 'NO UNDO'
+    : `NO UNDO · ${placementCount} PLACEMENTS GO`;
+}
+
+/** Every parameter the model itself declared, in the order it declared them. */
+function declared(detail: SongDetail): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const { steps, cfg, extensions } = detail.generation;
+  if (steps !== undefined) out.push(['Steps', String(steps)]);
+  if (cfg !== undefined) out.push(['Guidance', String(cfg)]);
+  for (const [name, value] of Object.entries(extensions ?? {})) {
+    out.push([name, String(value)]);
+  }
+  return out;
+}
+
+/** The names the song holds, then every other name that exists. */
+function merge(
+  held: readonly string[],
+  known: readonly string[],
+): MembershipEntry[] {
+  const folded = new Set(held.map(name => name.toLocaleLowerCase()));
+  return [
+    ...held.map(name => ({ name, member: true })),
+    ...known
+      .filter(name => !folded.has(name.toLocaleLowerCase()))
+      .map(name => ({ name, member: false })),
+  ];
+}
+
+function duration(ms: number): string {
+  const whole = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+function dateOf(made: Date): string {
+  return Number.isNaN(made.getTime())
+    ? 'unknown'
+    : made.toLocaleDateString(undefined, {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      });
+}
+
+function clockOf(made: Date): string | undefined {
+  if (Number.isNaN(made.getTime())) return undefined;
+  return made
+    .toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    .toUpperCase();
+}
+
 const styles = StyleSheet.create({
   scrim: { flex: 1, justifyContent: 'flex-end' },
-  name: { flexShrink: 1, marginRight: space.md },
-  // The scope lines are the sheet's header, not the first field: they need to
-  // sit apart from the form under them or they read as its label.
-  scope: { marginBottom: space.md, marginTop: space.xs },
-  rule: { height: 1, marginTop: space.md },
-  leaving: { minHeight: touch.min, paddingTop: space.md },
-  consequence: { marginTop: space.xs },
-  sheet: { borderTopWidth: 1, maxHeight: '85%', padding: space.lg },
+  sheet: { borderTopWidth: 1, paddingBottom: space.lg },
   header: {
     alignItems: 'center',
+    borderBottomWidth: 1,
     flexDirection: 'row',
+    height: 56,
     justifyContent: 'space-between',
-    marginBottom: space.md,
+    paddingHorizontal: space.lg,
   },
-  body: { gap: space.lg, paddingBottom: space.lg },
-  field: { gap: space.xs },
-  input: { borderWidth: 1, minHeight: touch.min, paddingHorizontal: space.sm },
-  row: { flexDirection: 'row', gap: space.sm },
-  button: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    minHeight: touch.min,
+  seat: { alignItems: 'center', flexDirection: 'row', minHeight: touch.min },
+  star: { fontFamily: type.title.fontFamily, fontSize: 13, marginLeft: space.xs },
+  nameSlot: { flex: 1, height: 16, marginHorizontal: space.md },
+  pager: { flex: 1 },
+  /**
+   * Clipped: `LedgerFoot` hangs its rule past the page margin by design, and
+   * in a pager that margin is the next page — the front page's foot rule was
+   * showing up at the left edge of the record.
+   */
+  page: { flex: 1, overflow: 'hidden' },
+  body: { paddingBottom: space.lg, paddingHorizontal: space.lg },
+  subject: { paddingBottom: space.md, paddingTop: space.md },
+  titleField: { padding: 0 },
+  scope: { marginTop: space.sm },
+  act: { justifyContent: 'center', minHeight: touch.min },
+  confirm: { alignItems: 'baseline', flexDirection: 'row', gap: space.lg },
+  footNote: { marginTop: space.xs },
+  footHard: { letterSpacing: 1.6, marginTop: 2 },
+  hem: {
+    alignSelf: 'center',
+    bottom: space.sm,
+    height: StyleSheet.hairlineWidth,
+    flexDirection: 'row',
+    gap: SONG_SHEET_KNOBS.MARK_GAP_PX,
+    position: 'absolute',
   },
-  tags: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
-  tag: {
-    borderWidth: 1,
-    paddingHorizontal: space.sm,
-    paddingVertical: space.xs,
-  },
-  fact: { flexDirection: 'row', gap: space.sm },
-  factLabel: { width: 72 },
-  factValue: { flex: 1 },
+  mark: { height: StyleSheet.hairlineWidth, width: SONG_SHEET_KNOBS.MARK_W_PX },
 });
 
 /**
