@@ -42,6 +42,7 @@ function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
     audioState: 'cached',
     detail: detail(),
     detailError: null,
+    problem: null,
     busy: false,
     onClose: jest.fn(),
     onRename: jest.fn(),
@@ -142,6 +143,11 @@ describe('SongSheet', () => {
     const { words } = render();
     expect(words()).toContain('8');
     expect(words()).toContain('a slow harbour at dusk');
+  });
+
+  it('says a refused act where the acts are, not on the other page', () => {
+    const { words } = render({ problem: 'Backend is not ready.' });
+    expect(words()).toContain('BACKEND IS NOT READY.');
   });
 
   it('stays honest while the node has not answered', () => {
