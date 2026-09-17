@@ -9,10 +9,23 @@
 
 const PLAYLIST_PREFIX = 'p/';
 
-/** KNOBS — bounds the node enforces, checked before a patch is sent. */
+/**
+ * KNOBS — bounds the node enforces, checked before a patch is sent.
+ *
+ * These are `MAX_TAGS` and `MAX_TAG_BYTES` from `node/crates/cantor-proto`,
+ * and they must stay equal to them. They had been 32 and 128 — double the
+ * node's — while the comments beside them claimed they matched, so a
+ * seventeenth tag or a 65-byte name passed the check below and was refused by
+ * `valid_patch` on arrival. That is the exact round trip this module exists to
+ * prevent, and nothing catches the drift: the bounds are not generated.
+ *
+ * The count is shared. A playlist is a `p/` tag in the same array, so sixteen
+ * is the total of a song's tags and its memberships together, not sixteen of
+ * each.
+ */
 const PLAYLIST_KNOBS = {
-  MAX_TAGS_PER_SONG: 32, // the node's tag-count bound
-  MAX_TAG_BYTES: 128, // per tag, UTF-8, matching the node's limit
+  MAX_TAGS_PER_SONG: 16, // cantor-proto MAX_TAGS
+  MAX_TAG_BYTES: 64, // cantor-proto MAX_TAG_BYTES, per tag, UTF-8
 } as const;
 
 // Anything a name must not contain: control characters would make a tag that
