@@ -24,7 +24,7 @@ import {
   useFieldCamera,
 } from '../features/field';
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
-import { Curtain } from '../features/curtain';
+import { Curtain, unrollMs } from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
@@ -349,7 +349,30 @@ export function FieldScreen({ identity }: Props) {
   const openEngines = useCallback(() => setEnginesOpen(true), []);
   const closeEngines = useCallback(() => setEnginesOpen(false), []);
   const closeComposer = useCallback(() => setComposerOpen(false), []);
-  const closeSongSheet = useCallback(() => setSheetTarget(null), []);
+  /**
+   * Whether the song sheet's blind is down, kept apart from which song it
+   * holds.
+   *
+   * Dropping the subject is what used to close it, which meant the whole
+   * Curtain left the tree in the commit that asked it to close and the blind
+   * never ran — the sheet vanished instead of rolling away. The song is
+   * retained for the length of that run, the same way the player retains its
+   * outgoing `playerKey` until the camera reaches the shelf seat.
+   */
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const closeSongSheet = useCallback(() => setSheetOpen(false), []);
+
+  // Let go of the subject when the blind is home, not when it is asked to go:
+  // the run is a `withTiming` of a length this can ask for, so the two agree
+  // by construction rather than by a number typed twice.
+  useEffect(() => {
+    if (sheetOpen || sheetTarget === null || viewport === null) return;
+    const home = setTimeout(
+      () => setSheetTarget(null),
+      unrollMs(viewport.height, 0, 0),
+    );
+    return () => clearTimeout(home);
+  }, [sheetOpen, sheetTarget, viewport]);
   const pairFromEngines = useCallback(() => {
     setEnginesOpen(false);
     commands.showPairing();
@@ -474,6 +497,7 @@ export function FieldScreen({ identity }: Props) {
   /** Hold acts: everything about a song that is not the act of listening. */
   const onHoldPlacement = useCallback((placement: Placement) => {
     setPlaybackError(null);
+    setSheetOpen(true);
     setSheetTarget({
       entityKey: placement.entityKey,
       groupKey: placement.groupKey,
@@ -1115,8 +1139,11 @@ export function FieldScreen({ identity }: Props) {
   ]);
 
   const closeTopmostSheet = useCallback((): boolean => {
-    if (sheetTarget !== null) {
-      setSheetTarget(null);
+    // `sheetOpen`, not `sheetTarget`: the subject outlives the blind by the
+    // length of its run, and a back press in that window belongs to whatever
+    // is behind the sheet rather than to the sheet that is already leaving.
+    if (sheetOpen) {
+      setSheetOpen(false);
       return true;
     }
     if (pairing) {
@@ -1132,7 +1159,7 @@ export function FieldScreen({ identity }: Props) {
       return true;
     }
     return false;
-  }, [commands, composerOpen, enginesOpen, pairing, sheetTarget]);
+  }, [commands, composerOpen, enginesOpen, pairing, sheetOpen]);
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
@@ -1389,6 +1416,7 @@ export function FieldScreen({ identity }: Props) {
               lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
               onOpenDetail={() => {
                 setPlaybackError(null);
+                setSheetOpen(true);
                 setSheetTarget({
                   entityKey: focused.entity.key,
                   // The placement the words belong to, which is the same thing
@@ -1511,7 +1539,7 @@ export function FieldScreen({ identity }: Props) {
         <Curtain
           edge="bottom"
           onClose={closeSongSheet}
-          open={sheetSong !== null}
+          open={sheetOpen}
           destination={sheetDestination}
           pull={sheetPull}
           title={sheetSong.song.title.toUpperCase()}
@@ -1566,7 +1594,7 @@ export function FieldScreen({ identity }: Props) {
                   sheetSong.entity.nodePublicKey,
                   sheetSong.song,
                 );
-                setSheetTarget(null);
+                setSheetOpen(false);
               })
             }
             onPin={() => runAudioAction('pin')}
@@ -1591,7 +1619,7 @@ export function FieldScreen({ identity }: Props) {
             scopeLabel={sheetScope.label}
             song={sheetSong.song}
             tagProblem={tagNameProblem}
-            visible={sheetSong !== null}
+            visible={sheetOpen}
           />
         </Curtain>
       ) : null}

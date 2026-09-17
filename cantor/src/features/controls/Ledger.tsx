@@ -6,6 +6,10 @@ import {
   type StyleProp,
   type ViewStyle,
 } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  type SharedValue,
+} from 'react-native-reanimated';
 import { font, space, touch, usePalette } from '../../theme/tokens';
 
 /**
@@ -64,24 +68,53 @@ export const LEDGER_VALUE_PX = LEDGER_KNOBS.LABEL_PX + LEDGER_KNOBS.GUTTER_PX;
  * than each sheet laying its own rows out.
  */
 export function Ledger({
+  arrival,
   children,
   style,
 }: {
+  /**
+   * 0 to 1 as the panel arrives, for a spine that draws down rather than
+   * appearing whole.
+   *
+   * Optional because most panels are pulled: a blind uncovers its own spine as
+   * it unrolls, so there is nothing to draw. A panel that is *tapped* open
+   * arrives all at once, and the axis existing before the facts land on it is
+   * what makes that read as a sentence rather than a cut.
+   */
+  arrival?: SharedValue<number>;
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
 }) {
   const pal = usePalette();
   return (
     <View style={[styles.ledger, style]}>
-      <View
-        // Decorative: the structure it draws is already carried by the labels.
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
-        pointerEvents="none"
-        style={[styles.spine, { backgroundColor: pal.line }]}
-      />
+      <Spine arrival={arrival} colour={pal.line} />
       {children}
     </View>
+  );
+}
+
+/** The hairline, drawn from the top down when a panel arrives on a tap. */
+function Spine({
+  arrival,
+  colour,
+}: {
+  arrival: SharedValue<number> | undefined;
+  colour: string;
+}) {
+  const drawn = useAnimatedStyle(() =>
+    arrival === undefined
+      ? {}
+      : { transform: [{ scaleY: arrival.value }] },
+  );
+  return (
+    <Animated.View
+      // Decorative: the structure it draws is already carried by the labels.
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      pointerEvents="none"
+      style={[styles.spine, { backgroundColor: colour }, drawn]}
+    />
   );
 }
 
@@ -158,6 +191,7 @@ const styles = StyleSheet.create({
     left: LEDGER_KNOBS.SPINE_PX,
     position: 'absolute',
     top: 0,
+    transformOrigin: 'top',
     width: StyleSheet.hairlineWidth,
   },
   row: {

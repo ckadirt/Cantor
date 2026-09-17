@@ -15,13 +15,23 @@ import {
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
+  type StyleProp,
+  type ViewStyle,
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
 import type { LocalAudioState } from '../../audio/native';
 import { formatBytes } from '../../lenses';
 import { nameLensFacePath } from '../../lenses/nameLens';
 import { Canvas, Path } from '@shopify/react-native-skia';
-import { TransformText } from '../../motion';
+import Animated, {
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+  withDelay,
+  withTiming,
+  type SharedValue,
+} from 'react-native-reanimated';
+import { easeSmoother, TransformText } from '../../motion';
 import {
   Ledger,
   LedgerFoot,
@@ -41,6 +51,22 @@ export const SONG_SHEET_KNOBS = {
   SEAT_PX: 27,
   /** How long the header's name takes to become the other page's name. */
   PAGE_NAME_MS: 260,
+  /**
+   * The second beat, and how long it waits for the first.
+   *
+   * The blind is the first beat and it is the Curtain's, run at its own speed.
+   * The sheet waits for it rather than running underneath it: everything in
+   * the frame moving at one instant is the lurch `ROW_ARRIVAL` warns about,
+   * and the whole point of a beat is that the shape lands before the words do.
+   */
+  ARRIVAL_WAIT_MS: 170,
+  ARRIVAL_MS: 430,
+  /** How far each row is behind the one above it, as a fraction of the beat. */
+  ARRIVAL_LAG: 0.1,
+  /** The stretch one row takes to land, of that same beat. */
+  ARRIVAL_RISE: 0.5,
+  /** The rise itself: `Reveal`'s own measure, so nothing arrives differently. */
+  ARRIVAL_RISE_PX: 6,
   /** The hem's page marks: one short rule per page, the current one inked. */
   MARK_W_PX: 22,
   MARK_GAP_PX: 6,
@@ -152,6 +178,30 @@ function SongSheetImpl({
   const [confirming, setConfirming] = useState(false);
   const [width, setWidth] = useState(0);
   const pager = useRef<ScrollView | null>(null);
+  const reducedMotion = useReducedMotion();
+  /**
+   * The second beat, 0 to 1.
+   *
+   * Driven from `visible` rather than from mount: the sheet is mounted by the
+   * same commit that opens the blind, so a clock started on mount would run
+   * while the surface carrying it was still on its way up.
+   */
+  const arrival = useSharedValue(0);
+  useEffect(() => {
+    if (!visible) {
+      arrival.value = 0;
+      return;
+    }
+    arrival.value = reducedMotion
+      ? 1
+      : withDelay(
+          SONG_SHEET_KNOBS.ARRIVAL_WAIT_MS,
+          withTiming(1, {
+            duration: SONG_SHEET_KNOBS.ARRIVAL_MS,
+            easing: easeSmoother,
+          }),
+        );
+  }, [arrival, reducedMotion, song.id, visible]);
 
   // Adopt the node's title whenever a different song is shown, or the node
   // renames this one under us.
@@ -242,6 +292,7 @@ function SongSheetImpl({
       >
         <View style={{ width }}>
           <Front
+            arrival={arrival}
             audioState={audioState}
             busy={busy}
             problem={problem}
@@ -349,6 +400,7 @@ function Face({ song, colour }: { song: SongHeader; colour: string }) {
 
 /** What you do with a song. */
 function Front({
+  arrival,
   audioState,
   busy,
   downloaded,
@@ -372,6 +424,7 @@ function Front({
   usedTags,
   wordEntries,
 }: {
+  arrival: SharedValue<number>;
   audioState: LocalAudioState;
   busy: boolean;
   downloaded: boolean;
@@ -408,7 +461,7 @@ function Front({
           composer's caption already does — there was never a box, only a
           title someone might change.
         */}
-        <View style={styles.subject}>
+        <Arriving arrival={arrival} index={0} style={styles.subject}>
           <TextInput
             accessibilityLabel="Song title"
             editable={!busy}
@@ -422,53 +475,61 @@ function Front({
           <Text style={[type.eyebrow, styles.scope, { color: pal.faint }]}>
             {scopeSummary(scopeLabel, nodeLabel, placementCount)}
           </Text>
-        </View>
+        </Arriving>
 
-        <Ledger>
-          <Row label="Playlists">
-            <Membership
-              addPlaceholder="new playlist"
-              busy={busy}
-              entries={placeEntries}
-              flow="column"
-              full={full}
-              note={budget(usedTags)}
-              onToggle={onTogglePlaylist}
-              problemOf={playlistProblem}
-            />
-          </Row>
-          <Row label="Tags">
-            <Membership
-              addPlaceholder="add a tag"
-              busy={busy}
-              entries={wordEntries}
-              flow="inline"
-              full={full}
-              note={budget(usedTags)}
-              onToggle={onToggleTag}
-              problemOf={tagProblem}
-            />
-          </Row>
-          <LedgerGap />
-          <Row
-            label="Offline"
-            note={weight(deliveryBytes, downloaded, nodeLabel)}
-          >
-            <Text style={[type.body, { color: pal.ink }]}>
-              {whereItIs(audioState, nodeLabel)}
-            </Text>
-          </Row>
-          {downloaded ? (
-            <Row
-              label={frees ?? 'FREES THE COPY'}
-              note={`STAYS ON ${nodeLabel.toUpperCase()}`}
-            >
-              <Act
+        <Ledger arrival={arrival}>
+          <Arriving arrival={arrival} index={1}>
+            <Row label="Playlists">
+              <Membership
+                addPlaceholder="new playlist"
                 busy={busy}
-                label="Remove from this phone"
-                onPress={onRemoveDownload}
+                entries={placeEntries}
+                flow="column"
+                full={full}
+                note={budget(usedTags)}
+                onToggle={onTogglePlaylist}
+                problemOf={playlistProblem}
               />
             </Row>
+          </Arriving>
+          <Arriving arrival={arrival} index={2}>
+            <Row label="Tags">
+              <Membership
+                addPlaceholder="add a tag"
+                busy={busy}
+                entries={wordEntries}
+                flow="inline"
+                full={full}
+                note={budget(usedTags)}
+                onToggle={onToggleTag}
+                problemOf={tagProblem}
+              />
+            </Row>
+          </Arriving>
+          <LedgerGap />
+          <Arriving arrival={arrival} index={3}>
+            <Row
+              label="Offline"
+              note={weight(deliveryBytes, downloaded, nodeLabel)}
+            >
+              <Text style={[type.body, { color: pal.ink }]}>
+                {whereItIs(audioState, nodeLabel)}
+              </Text>
+            </Row>
+          </Arriving>
+          {downloaded ? (
+            <Arriving arrival={arrival} index={4}>
+              <Row
+                label={frees ?? 'FREES THE COPY'}
+                note={`STAYS ON ${nodeLabel.toUpperCase()}`}
+              >
+                <Act
+                  busy={busy}
+                  label="Remove from this phone"
+                  onPress={onRemoveDownload}
+                />
+              </Row>
+            </Arriving>
           ) : null}
         </Ledger>
       </ScrollView>
@@ -658,6 +719,41 @@ function Back({
       </LedgerFoot>
     </View>
   );
+}
+
+/**
+ * One block of the sheet, landing on the axis after it has been drawn.
+ *
+ * Opacity and a 6 px rise, nothing else: a layout prop driven from the UI
+ * thread never reaches React Native's layout pass and snaps instead, which
+ * `Reveal` documents and this obeys. The seats are permanent either way — the
+ * front page is laid out at rest and only its ink arrives.
+ */
+function Arriving({
+  arrival,
+  children,
+  index,
+  style,
+}: {
+  arrival: SharedValue<number>;
+  children: React.ReactNode;
+  index: number;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const landed = useAnimatedStyle(() => {
+    const from = index * SONG_SHEET_KNOBS.ARRIVAL_LAG;
+    const local = Math.min(
+      Math.max((arrival.value - from) / SONG_SHEET_KNOBS.ARRIVAL_RISE, 0),
+      1,
+    );
+    return {
+      opacity: local,
+      transform: [
+        { translateY: (1 - local) * SONG_SHEET_KNOBS.ARRIVAL_RISE_PX },
+      ],
+    };
+  });
+  return <Animated.View style={[style, landed]}>{children}</Animated.View>;
 }
 
 /** An act: a word in the value column, in the panel's voice or the foot's. */
