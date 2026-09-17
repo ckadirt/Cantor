@@ -58,7 +58,7 @@ impl GenerationDriver for NativeGenerationDriver {
             options,
             request,
         } = plan;
-        run_generation(
+        let result = run_generation(
             &state,
             &events,
             &work,
@@ -68,7 +68,13 @@ impl GenerationDriver for NativeGenerationDriver {
             options,
             &request,
             &mut self.cached,
-        )
+        );
+        // Native engines may retain budgeted stage caches even with this flag
+        // off. End the session on every outcome so no weights survive a job.
+        if options.keep_loaded == 0 {
+            self.cached = None;
+        }
+        result
     }
 }
 

@@ -147,13 +147,16 @@ release an idle retained session immediately. The equivalent `node.toml` setting
 keep_loaded = true
 ```
 
-The node caches its last model/backend session between jobs. With the current
+When retention is enabled, the node caches its last model/backend session
+between jobs. With the current
 ACE-Step, LeVo2 and MiniMax backends, `keep_loaded = true` also retains loaded
 weights on the selected device: RAM for CPU execution, device buffers for GPU
 execution. Weights load as needed; allow memory for all components plus active
 inference work. Request state is recreated for each generation.
 
-The default is `false`. ACE-Step then uses the installed variant's catalog
+The default is `false`: the node closes the session after every job, including
+failures and pauses, releasing its model weights. During a job, ACE-Step uses
+the installed variant's catalog
 memory budget (or one resident module when the budget is zero). LeVo2 and
 MiniMax instead release stage weights after use; they do not implement byte
 budget eviction. There is no idle-unload timer. Install updated
