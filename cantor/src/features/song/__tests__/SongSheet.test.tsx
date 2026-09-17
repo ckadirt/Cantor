@@ -1,7 +1,14 @@
 import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
 import { SongSheet } from '../SongSheet';
-import type { SongHeader } from '../../../core/protocol';
+import type { SongDetail, SongHeader } from '../../../core/protocol';
+
+// CanvasKit's system font manager is empty under Jest, so the header's name
+// morph has no face to lay out. The rest of the sheet is plain React.
+jest.mock('../../../motion/fonts', () => ({
+  __esModule: true,
+  useMorphFont: () => null,
+}));
 
 const song = (over: Partial<SongHeader> = {}): SongHeader =>
   ({
@@ -10,39 +17,50 @@ const song = (over: Partial<SongHeader> = {}): SongHeader =>
     model: 'acestep:1.5-fast',
     seed: 41822,
     duration_ms: 192_000,
-    created_at: '2026-08-10T00:00:00Z',
-    tags: ['p/Late Night', 'p/Keep', 'p/Drive', 'ambient'],
+    created_at: '2026-08-10T21:14:00Z',
+    tags: ['p/Dog walk', 'p/Birthday', 'ambient'],
     favorite: false,
     trashed: false,
     artifacts: [],
     ...over,
   }) as SongHeader;
 
+const detail = (): SongDetail =>
+  ({
+    song: song(),
+    generation: { caption: 'a slow harbour at dusk', steps: 8, cfg: 3 },
+    engine: 'acestep',
+    component_digests: ['bdaf9e292d44aaaa'],
+    attempts: 1,
+  }) as SongDetail;
+
 function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
   const props: React.ComponentProps<typeof SongSheet> = {
     visible: true,
     song: song(),
     nodeLabel: 'agentbox',
-    audioState: 'pinned',
-    detail: null,
+    audioState: 'cached',
+    detail: detail(),
     detailError: null,
     busy: false,
     onClose: jest.fn(),
     onRename: jest.fn(),
     onToggleFavourite: jest.fn(),
-    onAddTag: jest.fn(),
-    playlists: null,
-    onRemoveTag: jest.fn(),
-    scopeLabel: 'Late Night',
+    knownPlaylists: ['Dog walk', 'Birthday', 'Focus'],
+    knownTags: ['ambient', 'loud'],
+    onTogglePlaylist: jest.fn(),
+    onToggleTag: jest.fn(),
+    full: false,
+    playlistProblem: () => null,
+    tagProblem: () => null,
+    scopeLabel: 'Dog walk',
     placementCount: 3,
-    playlistCount: 3,
-    scopePlaylist: 'Late Night',
-    onRemoveFromScope: jest.fn(),
-    downloadedBytes: 34 * 1024 * 1024,
-    onTrash: jest.fn(),
+    deliveryBytes: 3_200_000,
+    masterBytes: 28_600_000,
     onPin: jest.fn(),
     onUnpin: jest.fn(),
     onRemoveDownload: jest.fn(),
+    onDelete: jest.fn(),
     ...over,
   };
   let tree!: ReactTestRenderer.ReactTestRenderer;
@@ -53,69 +71,81 @@ function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
     tree.root
       .findAll(node => typeof node.props.children === 'string')
       .map(node => node.props.children as string);
-  const press = (label: string) => {
-    const target = tree.root.find(
-      node =>
-        typeof node.type !== 'string' &&
-        typeof node.props.onPress === 'function' &&
-        typeof node.props.accessibilityLabel === 'string' &&
-        node.props.accessibilityLabel.startsWith(label),
-    );
-    ReactTestRenderer.act(() => target.props.onPress());
-  };
-  return { props, words, press };
+  const labels = () =>
+    tree.root
+      .findAll(node => typeof node.props.accessibilityLabel === 'string')
+      .map(node => node.props.accessibilityLabel as string);
+  const press = (label: string) =>
+    ReactTestRenderer.act(() => {
+      tree.root
+        .find(
+          node =>
+            typeof node.type !== 'string' &&
+            typeof node.props.onPress === 'function' &&
+            node.props.accessibilityLabel === label,
+        )
+        .props.onPress();
+    });
+  return { tree, props, words, labels, press };
 }
 
-describe('the song sheet names what it is about to act on', () => {
-  it('says which mark was held and how many others the song has', () => {
+describe('SongSheet', () => {
+  it('names the mark it opened on and how many the song has', () => {
     const { words } = render();
-
-    expect(words()).toContain('FROM · LATE NIGHT');
-    expect(words()).toContain('IN 3 PLAYLISTS · 3 PLACEMENTS');
+    expect(words()).toContain('FROM DOG WALK · 3 PLACEMENTS');
   });
 
-  it('counts a song in one place without pluralising it into three', () => {
-    const { words } = render({
-      placementCount: 1,
-      playlistCount: 0,
-      scopePlaylist: null,
-    });
-
-    expect(words()).toContain('IN NO PLAYLIST · 1 PLACEMENT');
+  it('keeps the destructive act off the page you land on', () => {
+    const { words } = render();
+    expect(words()).not.toContain('Delete it');
+    expect(words()).toContain('Keep it here');
   });
 
-  it('keeps leaving a playlist and destroying a song apart, and says what each costs', () => {
-    const { props, words, press } = render();
-
-    expect(words()).toContain('KEEPS THE SONG · 2 MARKS REMAIN');
-    expect(words()).toContain('EVERY PLACEMENT · 3 MARKS GO AT ONCE');
-    expect(words()).toContain('FREES 34 MB · STAYS ON AGENTBOX');
-
-    press('Remove from Late Night');
-    expect(props.onRemoveFromScope).toHaveBeenCalledTimes(1);
-    expect(props.onTrash).not.toHaveBeenCalled();
+  it('asks before it deletes, and says what goes on both machines', () => {
+    const { words, press, props } = render();
+    press('Delete everywhere');
+    expect(props.onDelete).not.toHaveBeenCalled();
+    expect(words()).toContain('THERE IS NO UNDO');
+    press('Delete it');
+    expect(props.onDelete).toHaveBeenCalled();
   });
 
-  it('never trashes on one press', () => {
-    const { props, press, words } = render();
-
-    press('Trash the song');
-    expect(props.onTrash).not.toHaveBeenCalled();
-    // The sheet now asks, and offers the way out first.
-    expect(words()).toContain('Keep it');
-
-    press('Trash the song');
-    expect(props.onTrash).toHaveBeenCalledTimes(1);
+  it('states both sizes, because only this act frees space on both', () => {
+    const { words } = render();
+    expect(words()).toContain('3.1 MB HERE · 27 MB ON AGENTBOX');
   });
 
-  it('forgets a half-pressed confirmation when it opens on another song', () => {
-    const { props, press, words } = render();
-    press('Trash the song');
-    expect(words()).toContain('Keep it');
+  it('never claims a copy here for a song that is only on the node', () => {
+    const { words } = render({ audioState: 'remote' });
+    expect(words()).toContain('3.1 MB TO FETCH · ON AGENTBOX');
+    expect(words()).toContain('27 MB ON AGENTBOX');
+    expect(words()).not.toContain('3.1 MB HERE · 27 MB ON AGENTBOX');
+  });
 
-    ReactTestRenderer.act(() => {});
-    const again = render({ song: song({ id: 'other', title: 'Foxes' }) });
-    expect(again.words()).not.toContain('Keep it');
-    expect(props.onTrash).not.toHaveBeenCalled();
+  it('offers to remove a local copy only when there is one', () => {
+    expect(render({ audioState: 'cached' }).labels()).toContain(
+      'Remove from this phone',
+    );
+    expect(render({ audioState: 'remote' }).labels()).not.toContain(
+      'Remove from this phone',
+    );
+  });
+
+  it('toggles a playlist rather than offering to leave one', () => {
+    const { labels, press, props } = render();
+    expect(labels()).not.toContain('Remove from Dog walk. KEEPS THE SONG');
+    press('Remove from Dog walk');
+    expect(props.onTogglePlaylist).toHaveBeenCalledWith('Dog walk', false);
+  });
+
+  it('carries the model own declared parameters', () => {
+    const { words } = render();
+    expect(words()).toContain('8');
+    expect(words()).toContain('a slow harbour at dusk');
+  });
+
+  it('stays honest while the node has not answered', () => {
+    const { words } = render({ detail: null });
+    expect(words()).toContain('Asking agentbox…');
   });
 });

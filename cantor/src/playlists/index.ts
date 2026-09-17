@@ -1,10 +1,15 @@
 export {
   allPlaylists,
+  allTags,
   isPlaylistTag,
   normalise,
   plainTagsOf,
+  playlistNameProblem,
   playlistsOf,
   rename,
+  tagNameProblem,
+  tagsAreFull,
   toTag,
   toggle,
+  toggleTag,
 } from './playlists';
