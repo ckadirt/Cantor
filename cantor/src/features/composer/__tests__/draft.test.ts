@@ -264,3 +264,60 @@ describe('words intent', () => {
     ).toEqual([]);
   });
 });
+
+describe('advertised lyrics capabilities', () => {
+  const futureModel = {
+    selector: 'future:fast',
+    family: 'future',
+    engine: 'future',
+    lyrics: {
+      can_generate: true,
+      requires_lyrics: false,
+      writer_label: 'FUTURE',
+      instrumental_text: '[No vocals]',
+    },
+  };
+  const selected = draft({ modelSelector: futureModel.selector });
+  it('supports a new lyric writer without engine-name logic', () => {
+    expect(writeWordsFor([target({ models: [futureModel] })], selected)).toBe(
+      'FUTURE',
+    );
+    expect(toGenerationRequest(selected, [], futureModel).lyrics).toBe(
+      '[No vocals]',
+    );
+    expect(
+      toGenerationRequest({ ...selected, wordsMode: 'model' }, [], futureModel)
+        .lyrics,
+    ).toBeUndefined();
+  });
+  it('blocks missing lyrics when the selected model requires them', () => {
+    const required = {
+      ...futureModel,
+      lyrics: { can_generate: false, requires_lyrics: true },
+    };
+    const targets = [target({ models: [required] })];
+    expect(problemsWith(selected, targets)).toContainEqual({
+      kind: 'lyrics-required',
+    });
+    expect(
+      problemsWith(
+        { ...selected, wordsMode: 'mine', lyrics: 'hello' },
+        targets,
+      ),
+    ).toEqual([]);
+    expect(
+      problemsWith({ ...selected, wordsMode: 'model' }, targets),
+    ).toContainEqual({ kind: 'writer-unavailable' });
+  });
+  it('honors explicit capability removal even for ACE', () => {
+    const disabled = {
+      ...futureModel,
+      engine: 'acestep',
+      stages: ['plan' as const],
+      lyrics: { can_generate: false, requires_lyrics: false },
+    };
+    expect(
+      writeWordsFor([target({ models: [disabled] })], selected),
+    ).toBeNull();
+  });
+});

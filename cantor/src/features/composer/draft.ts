@@ -59,6 +59,7 @@ export type ComposerProblem =
   | { kind: 'caption-empty' }
   | { kind: 'caption-too-long'; bytes: number; maxBytes: number }
   | { kind: 'words-empty' }
+  | { kind: 'lyrics-required' }
   | { kind: 'writer-unavailable' }
   | { kind: 'lyrics-too-long'; bytes: number; maxBytes: number }
   | { kind: 'duration-out-of-range'; min: number; max: number }
@@ -152,6 +153,12 @@ export function problemsWith(
     }
   }
 
+  if (
+    draft.wordsMode === 'none' &&
+    lyricsContractFor(modelFor(targets, draft)).requiresLyrics
+  ) {
+    problems.push({ kind: 'lyrics-required' });
+  }
   if (draft.wordsMode === 'model' && writeWordsFor(targets, draft) === null) {
     problems.push({ kind: 'writer-unavailable' });
   }
@@ -268,6 +275,8 @@ export function describeProblem(problem: ComposerProblem): string {
       return `Caption is ${problem.bytes} bytes; this engine accepts ${problem.maxBytes}.`;
     case 'writer-unavailable':
       return 'Automatic lyrics are not available for this model. Choose none or mine.';
+    case 'lyrics-required':
+      return 'This model requires lyrics. Write words to generate.';
     case 'words-empty':
       return 'Write the words, or set words to none.';
     case 'lyrics-too-long':

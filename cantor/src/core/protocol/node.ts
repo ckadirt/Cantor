@@ -1,4 +1,5 @@
 import { parseModelParameters, parseStages } from './parameters';
+import { parseLyricsCapabilities } from './lyrics';
 import type { NodeInfo } from '../../../../protocol/NodeInfo';
 import {
   isNonNegativeInteger,
@@ -28,12 +29,14 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
     // core fields and observed stages.
     const stages = parseStages(model.stages);
     const parameters = parseModelParameters(model.parameters);
+    const lyrics = parseLyricsCapabilities(model.lyrics);
     return {
       selector: model.selector,
       family: model.family,
       engine: model.engine,
       ...(stages === undefined ? {} : { stages }),
       ...(parameters === undefined ? {} : { parameters }),
+      ...(lyrics === undefined ? {} : { lyrics }),
     };
   });
   if (
