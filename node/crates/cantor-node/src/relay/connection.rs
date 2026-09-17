@@ -507,6 +507,7 @@ mod tests {
                 vram_bytes: 0,
                 stages: Vec::new(),
                 parameters: Vec::new(),
+                lyrics: None,
             };
             match locked.library.submit(
                 PrincipalId::from_client_public_key(&client_key_bytes),

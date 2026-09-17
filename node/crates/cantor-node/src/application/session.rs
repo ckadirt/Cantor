@@ -221,6 +221,7 @@ mod tests {
                 engine: "acestep".to_owned(),
                 stages: None,
                 parameters: None,
+                lyrics: None,
             }],
             limits: NodeLimits {
                 max_concurrent_jobs: 0,
@@ -872,6 +873,7 @@ mod tests {
             vram_bytes: 0,
             stages: Vec::new(),
             parameters: Vec::new(),
+            lyrics: None,
         };
         let accepted = match library
             .submit(

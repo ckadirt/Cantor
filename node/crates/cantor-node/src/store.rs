@@ -57,6 +57,8 @@ pub struct InstalledVariant {
     /// Empty means "declares nothing", which is also what an older marker says.
     #[serde(default)]
     pub parameters: Vec<ModelParameter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lyrics: Option<cantor_proto::LyricsCapabilities>,
 }
 
 impl InstalledVariant {
@@ -171,10 +173,6 @@ impl Store {
         installed
     }
 
-    pub fn is_installed(&self, model: &str, tag: &str) -> bool {
-        self.marker_path(model, tag).is_file()
-    }
-
     pub fn mark_installed(&self, model: &Model, variant: &Variant) -> Result<()> {
         let record = InstalledVariant {
             model: model.name.clone(),
@@ -185,6 +183,7 @@ impl Store {
             engine: model.engine().to_owned(),
             vram_bytes: variant.needs.vram_bytes,
             stages: variant.stages.clone(),
+            lyrics: variant.lyrics.clone(),
             // A variant whose declarations collide is stored as declaring
             // nothing: half a control set is worse than none.
             parameters: if variant.declarations_are_sound() {
@@ -459,6 +458,7 @@ mod tests {
             needs: Default::default(),
             stages: Vec::new(),
             parameters: Vec::new(),
+            lyrics: None,
         }
     }
 

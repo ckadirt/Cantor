@@ -405,8 +405,17 @@ impl NodeConfig {
         Ok(())
     }
 
-    /// Persists the chosen backend. `None` clears the pin and returns the node
-    /// to measuring on each load.
+    /// Persists weight retention for the next generation.
+    pub fn set_keep_loaded(&mut self, path: &Path, keep_loaded: bool) -> Result<()> {
+        let previous = std::mem::replace(&mut self.engine.keep_loaded, keep_loaded);
+        if let Err(error) = self.save_atomically(path) {
+            self.engine.keep_loaded = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Persists the chosen backend. `None` returns to measuring on each load.
     pub fn set_backend(&mut self, path: &Path, backend: Option<String>) -> Result<()> {
         let previous = std::mem::replace(&mut self.backend, backend);
         if let Err(error) = self.save_atomically(path) {
@@ -640,6 +649,20 @@ mod tests {
         )
         .expect_err("existing config must reject first-run overrides");
         assert!(override_error.to_string().contains("first-run options"));
+    }
+
+    #[test]
+    fn retention_changes_persist_and_failed_writes_roll_back() {
+        let temporary = tempdir().unwrap();
+        let path = temporary.path().join("node.toml");
+        let (mut config, _) = NodeConfig::load_or_create(&path, ConfigSeed::default()).unwrap();
+        config.set_keep_loaded(&path, true).unwrap();
+        assert!(NodeConfig::load(&path).unwrap().engine.keep_loaded);
+        let missing = temporary.path().join("missing/node.toml");
+        assert!(config.set_keep_loaded(&missing, false).is_err());
+        assert!(config.engine.keep_loaded);
+        config.set_keep_loaded(&path, false).unwrap();
+        assert!(!NodeConfig::load(&path).unwrap().engine.keep_loaded);
     }
 
     #[test]
