@@ -134,6 +134,8 @@ fn run_generation(
         options,
     };
     if cached.as_ref().map(|entry| &entry.key) != Some(&key) {
+        // Free the previous device working set before allocating its replacement.
+        *cached = None;
         let generation =
             Generation::start(Arc::clone(&engine), components, options).map_err(|error| {
                 WorkerFailure::with_source(

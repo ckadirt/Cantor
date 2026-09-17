@@ -130,6 +130,24 @@ pub(crate) async fn resolve(
         disable_flash_attn: i32::from(tuning.disable_flash_attn),
         disable_batch_cfg: i32::from(tuning.disable_batch_cfg),
     };
+    let mut extensions = cantor_proto::extensions::resolve_with_defaults(
+        work.generation
+            .extensions
+            .as_ref()
+            .unwrap_or(&EMPTY_EXTENSIONS),
+        &variant.parameters,
+    );
+    // Legacy callers retain their explicitly supplied values; catalog defaults
+    // must not emit duplicate JSON keys alongside these fields.
+    if work.generation.steps.is_some() {
+        extensions.remove("inference_steps");
+    }
+    if work.generation.cfg.is_some() {
+        extensions.remove("guidance_scale");
+    }
+    if work.generation.seed.is_some() {
+        extensions.remove("seed");
+    }
     let request = Request {
         caption: work.generation.caption.clone(),
         lyrics: work.generation.lyrics.clone(),
@@ -140,13 +158,7 @@ pub(crate) async fn resolve(
         // Declared fields, defaults filled in, flattened alongside the core
         // ones. Validation already happened at admission against this exact
         // installed variant; this only resolves what was left unset.
-        extensions: cantor_proto::extensions::resolve_with_defaults(
-            work.generation
-                .extensions
-                .as_ref()
-                .unwrap_or(&EMPTY_EXTENSIONS),
-            &variant.parameters,
-        ),
+        extensions,
     };
 
     Ok(GenerationPlan {

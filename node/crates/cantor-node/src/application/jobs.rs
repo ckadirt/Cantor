@@ -104,6 +104,17 @@ pub(super) fn create(
     };
     // Against the variant that is actually installed, not the one the client
     // believed was installed.
+    if variant
+        .lyrics
+        .as_ref()
+        .is_some_and(|cap| cap.requires_lyrics)
+        && generation
+            .lyrics
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty())
+    {
+        return Ok(invalid_field(id, "lyrics"));
+    }
     if let Some(field) = invalid_extensions(&generation, &variant.parameters) {
         return Ok(invalid_field(id, &field));
     }
@@ -223,7 +234,7 @@ pub(super) fn control(
     )
 }
 
-fn invalid_submission(
+pub(super) fn invalid_submission(
     client_request_id: &str,
     model: &str,
     generation: &GenerationRequest,
@@ -276,7 +287,7 @@ fn invalid_submission(
 
 /// Check declared-parameter values against the model that is actually
 /// installed, not against whatever the client believed was installed.
-fn invalid_extensions(
+pub(super) fn invalid_extensions(
     generation: &GenerationRequest,
     declared: &[cantor_proto::ModelParameter],
 ) -> Option<String> {
@@ -287,6 +298,9 @@ fn invalid_extensions(
     }
     if generation.cfg.is_some() {
         legacy.push("cfg");
+    }
+    if generation.seed.is_some() {
+        legacy.push("seed");
     }
     match cantor_proto::extensions::validate_extensions(extensions, declared, &legacy) {
         Ok(()) => None,
@@ -333,6 +347,7 @@ mod tests {
             vram_bytes: 0,
             stages: Vec::new(),
             parameters: Vec::new(),
+            lyrics: None,
         };
         let store = Store::new(config.model_root());
         store.prepare().expect("model store");
@@ -353,6 +368,7 @@ mod tests {
                     },
                     stages: Vec::new(),
                     parameters: Vec::new(),
+                    lyrics: None,
                 },
             )
             .expect("installed marker");

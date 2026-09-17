@@ -132,7 +132,15 @@ can run without a second command.
 
 ### Model residency
 
-Stop the daemon, edit its `node.toml`, and restart to retain loaded weights:
+Toggle retention on a running node:
+
+```sh
+cantor backends --keep-loaded on
+cantor backends --keep-loaded off
+```
+
+The setting is saved and applies at the next generation. Restart the node to
+release an idle retained session immediately. The equivalent `node.toml` setting is:
 
 ```toml
 [engine]
@@ -148,7 +156,7 @@ inference work. Request state is recreated for each generation.
 The default is `false`. ACE-Step then uses the installed variant's catalog
 memory budget (or one resident module when the budget is zero). LeVo2 and
 MiniMax instead release stage weights after use; they do not implement byte
-budget eviction. There is no idle-unload timer or CLI toggle. Install updated
+budget eviction. There is no idle-unload timer. Install updated
 backends with `cantor backends --install` before enabling this on older LeVo2
 or MiniMax installations, whose engines accepted but ignored the option.
 
@@ -278,3 +286,23 @@ present.
 restricts to the `adm` and `systemd-journal` groups. The installer does not add
 the operator to those, since that would grant visibility of every service's
 logs; use `sudo cantor logs` instead.
+
+### Testing a GPU installation
+
+```sh
+cantor upgrade
+cantor pull levo2:1.0-fast
+cantor backends --use cuda12
+cantor backends --keep-loaded on
+cantor generate "Upbeat indie rock" --model levo2:1.0-fast --duration 20 --seed 7
+# Repeat generation and inspect nvidia-smi between jobs.
+cantor backends --keep-loaded off
+cantor generate "Upbeat indie rock" --model levo2:1.0-fast --duration 20 --seed 7
+```
+
+Use `cantor list --all` for available selectors. Repeating `cantor pull` refreshes
+installed metadata and the backend without downloading existing weight blobs.
+MiniMax needs `--lyrics "..."`; ACE-Step can generate lyrics when omitted.
+The app receives lyric capabilities and additional controls from each installed
+model. Core request fields remain `caption`, `lyrics`, and `duration`; controls
+such as `inference_steps` and `guidance_scale` are declared by the model.

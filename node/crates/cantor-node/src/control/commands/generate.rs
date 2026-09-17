@@ -59,15 +59,8 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
         let submission = crate::library::Submission {
             client_request_id: uuid::Uuid::new_v4().to_string(),
             model: variant.selector(),
-            generation: cantor_proto::GenerationRequest {
-                caption: caption.clone(),
-                lyrics: None,
-                duration: None,
-                steps: None,
-                cfg: None,
-                seed: None,
-                extensions: None,
-            },
+            generation: serde_json::from_value(request.clone())
+                .context("invalid generation fields")?,
         };
         let result = {
             let state = &mut *locked;
@@ -219,6 +212,7 @@ mod tests {
                         needs: Needs::default(),
                         stages: Vec::new(),
                         parameters: Vec::new(),
+                        lyrics: None,
                     },
                 )
                 .expect("installed marker");

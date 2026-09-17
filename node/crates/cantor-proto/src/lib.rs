@@ -139,6 +139,19 @@ impl ModelParameter {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]
+pub struct LyricsCapabilities {
+    pub can_generate: bool,
+    pub requires_lyrics: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub instrumental_text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub writer_label: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
 pub struct ModelView {
     /// Stable value accepted by `job.create`, for example `acestep:1.5-fast`.
     pub selector: String,
@@ -157,6 +170,9 @@ pub struct ModelView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub parameters: Option<Vec<ModelParameter>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub lyrics: Option<LyricsCapabilities>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -835,6 +851,7 @@ mod tests {
         }
         let node = [
             include_str!("../../../../protocol/fixtures/v2/node-info.json"),
+            include_str!("../../../../protocol/fixtures/v2/node-info-lyrics.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page.json"),
             include_str!("../../../../protocol/fixtures/v2/library-page.json"),
             include_str!("../../../../protocol/fixtures/v2/error.json"),
