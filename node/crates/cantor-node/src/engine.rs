@@ -563,6 +563,17 @@ impl Session {
         self.engine.supports(stage)
     }
 
+    /// Optional ABI-1 extension for engines whose stage state is binary.
+    pub fn duration(&self) -> Option<f64> {
+        unsafe {
+            self.engine
+                .library
+                .get::<unsafe extern "C" fn(*mut c_void) -> f64>(b"cantor_engine_duration\0")
+                .ok()
+                .map(|symbol| symbol(self.raw))
+        }
+    }
+
     pub fn resident_bytes(&self) -> u64 {
         unsafe {
             self.engine

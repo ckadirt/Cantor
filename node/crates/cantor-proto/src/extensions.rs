@@ -76,7 +76,12 @@ pub fn validate_extensions(
         if key.len() > MAX_EXTENSION_KEY_BYTES {
             return Err(ExtensionError::KeyTooLong(key.clone()));
         }
-        if LEGACY_FIELDS.contains(&key.as_str()) && legacy_present.contains(&key.as_str()) {
+        let legacy_key = match key.as_str() {
+            "inference_steps" => "steps",
+            "guidance_scale" => "cfg",
+            value => value,
+        };
+        if legacy_present.contains(&legacy_key) {
             return Err(ExtensionError::LegacyCollision(key.clone()));
         }
         let parameter = declared
@@ -413,6 +418,21 @@ mod tests {
             integer("steps"),
             number("steps")
         ]));
+    }
+
+    #[test]
+    fn shared_names_conflict_with_explicit_legacy_fields() {
+        for (shared, legacy) in [
+            ("inference_steps", "steps"),
+            ("guidance_scale", "cfg"),
+            ("seed", "seed"),
+        ] {
+            let sent = map(&[(shared, ParameterValue::Number(8.0))]);
+            assert_eq!(
+                validate_extensions(&sent, &[integer(shared)], &[legacy]).unwrap_err(),
+                ExtensionError::LegacyCollision(shared.into())
+            );
+        }
     }
 
     #[test]

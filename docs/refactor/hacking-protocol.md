@@ -146,3 +146,14 @@ not, and must bump `versions.relay`.
 - [ ] Do the node, app, relay, Kotlin, and `node/scripts` all still build?
 - [ ] Is the change additive for already-deployed peers, or is the refusal
       deliberate and documented?
+
+## Model lyric capabilities
+
+`ModelView.lyrics` is an optional additive declaration (`can_generate`,
+`requires_lyrics`, optional `instrumental_text` and `writer_label`). Catalog
+variants own the values; pulling saves them with installed metadata, and the
+node advertises them through NodeInfo. The app prefers these declarations and
+uses its legacy ACE adapter only when they are absent. Both old and capability
+bearing NodeInfo fixtures must continue to decode. Extra model controls use
+`parameters` and request `extensions`; caption, lyrics and duration remain
+shared core fields.

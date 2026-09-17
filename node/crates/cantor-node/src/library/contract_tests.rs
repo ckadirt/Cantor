@@ -36,6 +36,7 @@ fn variant() -> InstalledVariant {
         vram_bytes: 0,
         stages: Vec::new(),
         parameters: Vec::new(),
+        lyrics: None,
     }
 }
 

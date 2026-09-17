@@ -166,7 +166,11 @@ impl Generation {
                     reassert_explicit_inputs(&mut output, request)?;
                 }
                 if matches!(stage, Stage::Plan | Stage::Codes) {
-                    enforce_duration_ceiling(&output, request.duration)?;
+                    if let Some(planned) = self.session.duration() {
+                        check_duration_ceiling(planned, request.duration)?;
+                    } else {
+                        enforce_duration_ceiling(&output, request.duration)?;
+                    }
                 }
                 Ok(StageExecution::Done { output })
             }
@@ -276,6 +280,13 @@ fn enforce_duration_ceiling(blob: &[u8], requested: Option<f32>) -> Result<()> {
         .get("duration")
         .and_then(serde_json::Value::as_f64)
         .context("engine planning state dropped the requested duration")?;
+    check_duration_ceiling(planned, Some(requested))
+}
+
+fn check_duration_ceiling(planned: f64, requested: Option<f32>) -> Result<()> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
     if !planned.is_finite() || planned <= 0.0 || planned > f64::from(requested) + 0.5 {
         bail!(
             "engine expanded requested duration from {:.1}s to {planned:.1}s",

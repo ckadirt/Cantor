@@ -123,13 +123,8 @@ pub(super) async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     // Before the first byte, not as the disk fills.
     store.check_space_for(needed)?;
 
-    if missing.is_empty() && store.is_installed(&model.name, &variant.tag) {
-        return write_line(
-            writer,
-            &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "msg": "already installed"}),
-        )
-        .await;
-    }
+    // Re-pulling refreshes capability declarations and backend builds even
+    // when every content-addressed weight is already present.
 
     let client = reqwest::Client::builder()
         .user_agent(concat!("cantor/", env!("CARGO_PKG_VERSION")))

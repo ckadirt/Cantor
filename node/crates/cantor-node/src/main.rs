@@ -52,8 +52,9 @@ Usage:
   cantor pull      <model:tag>
   cantor list      [--all]
   cantor rm        <model:tag>
-  cantor backends  [--install] [--use cpu|cuda12|vulkan]
+  cantor backends  [--install] [--use cpu|cuda12|vulkan] [--keep-loaded on|off]
   cantor generate  <caption> [--model model:tag] [-o out.wav] [--detach]
+                   [--lyrics TEXT] [--duration SECONDS] [--steps N] [--cfg N] [--seed N]
   cantor upgrade   [--check]
 
 Options common to every command:
@@ -98,7 +99,13 @@ struct Cli {
     all: bool,
     install: bool,
     use_backend: Option<String>,
+    keep_loaded: Option<bool>,
     model: Option<String>,
+    lyrics: Option<String>,
+    duration: Option<u32>,
+    steps: Option<u32>,
+    cfg: Option<f32>,
+    seed: Option<u64>,
     output: Option<String>,
     detach: bool,
     positional: Vec<String>,
@@ -149,7 +156,13 @@ impl Cli {
             all: false,
             install: false,
             use_backend: None,
+            keep_loaded: None,
             model: None,
+            lyrics: None,
+            duration: None,
+            steps: None,
+            cfg: None,
+            seed: None,
             output: None,
             detach: false,
             positional: Vec::new(),
@@ -180,6 +193,15 @@ impl Cli {
                 Some("--check") => cli.check_only = true,
                 Some("--all") => cli.all = true,
                 Some("--install") => cli.install = true,
+                Some("--keep-loaded") => {
+                    cli.keep_loaded = Some(
+                        match next_utf8_value(&mut args, "--keep-loaded")?.as_str() {
+                            "on" => true,
+                            "off" => false,
+                            _ => bail!("--keep-loaded expects on or off"),
+                        },
+                    );
+                }
                 Some("--use") => cli.use_backend = Some(next_utf8_value(&mut args, "--use")?),
                 Some("--model") | Some("-m") => {
                     cli.model = Some(next_utf8_value(&mut args, "--model")?);
@@ -187,6 +209,15 @@ impl Cli {
                 Some("--output") | Some("-o") => {
                     cli.output = Some(next_utf8_value(&mut args, "--output")?);
                 }
+                Some("--lyrics") => cli.lyrics = Some(next_utf8_value(&mut args, "--lyrics")?),
+                Some("--duration") => {
+                    cli.duration = Some(next_utf8_value(&mut args, "--duration")?.parse()?)
+                }
+                Some("--steps") => {
+                    cli.steps = Some(next_utf8_value(&mut args, "--steps")?.parse()?)
+                }
+                Some("--cfg") => cli.cfg = Some(next_utf8_value(&mut args, "--cfg")?.parse()?),
+                Some("--seed") => cli.seed = Some(next_utf8_value(&mut args, "--seed")?.parse()?),
                 Some("--detach") => cli.detach = true,
                 Some("--version") | Some("-V") => {
                     println!("cantor {}", update::CURRENT_VERSION);
@@ -385,7 +416,7 @@ async fn streaming_command(cli: Cli) -> Result<()> {
             json!({"v": 1, "id": id, "t": "pull", "selector": selector})
         }
         Command_::Backends => json!({"v": 1, "id": id, "t": "backends",
-                                     "install": cli.install, "use": cli.use_backend}),
+                                     "install": cli.install, "use": cli.use_backend, "keep_loaded": cli.keep_loaded}),
         Command_::Generate => {
             let caption = cli
                 .positional
@@ -400,7 +431,9 @@ async fn streaming_command(cli: Cli) -> Result<()> {
                     .to_string()
             });
             json!({"v": 1, "id": id, "t": "generate", "caption": caption,
-                   "model": cli.model, "output": output, "detach": cli.detach})
+                   "model": cli.model, "output": output, "detach": cli.detach,
+                   "lyrics": cli.lyrics, "duration": cli.duration, "steps": cli.steps,
+                   "cfg": cli.cfg, "seed": cli.seed})
         }
         _ => json!({"v": 1, "id": id, "t": "catalog"}),
     };
