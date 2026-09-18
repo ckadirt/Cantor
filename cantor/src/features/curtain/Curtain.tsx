@@ -146,6 +146,31 @@ export function releaseTarget(
 }
 
 /**
+ * How long this trip takes: the house rate, or a blind's own if it asked.
+ *
+ * `UNROLL_PX_PER_S` is tuned for a *released drag*, where the run only has to
+ * finish what a finger already did. A blind opened by a tap pays for the whole
+ * travel at that rate, and the whole travel of a full-screen sheet is under
+ * the floor — so every tapped sheet arrived at the same 220 ms whatever its
+ * height. `fullMs` is what a full-height trip should take instead, scaled here
+ * by how much of it this particular run covers, so a half-drawn blind released
+ * to the top still moves at the speed the rest of it did.
+ */
+function travelMs(
+  fromPx: number,
+  toPx: number,
+  fullMs: number | undefined,
+  heightPx: number | undefined,
+): number {
+  'worklet';
+  if (fullMs === undefined || heightPx === undefined || heightPx <= 0) {
+    return unrollMs(fromPx, toPx, 0);
+  }
+  const covered = Math.abs(toPx - fromPx) / heightPx;
+  return Math.max(CURTAIN_KNOBS.SETTLE_MIN_MS, fullMs * Math.min(1, covered));
+}
+
+/**
  * Send the blind to `target`, from wherever it is now.
  *
  * `destination` is what stops a release being animated twice. The finger's own
@@ -167,13 +192,15 @@ export function unrollTo(
   destination: SharedValue<number>,
   target: number,
   sign: number,
+  fullMs?: number,
+  heightPx?: number,
 ): void {
   'worklet';
   if (pull.value * sign < 0) return;
   if (destination.value === target) return;
   destination.value = target;
   pull.value = withTiming(target, {
-    duration: unrollMs(pull.value, target, 0),
+    duration: travelMs(pull.value, target, fullMs, heightPx),
     easing: easeSmoother,
   });
 }
@@ -207,6 +234,15 @@ export type CurtainEdge = 'top' | 'bottom';
 type Props = {
   /** Which edge the blind is rolled at, and therefore which way it unrolls. */
   edge: CurtainEdge;
+  /**
+   * How long a full-height trip takes when React opens or closes this blind,
+   * rather than a finger letting go of it.
+   *
+   * Left out by the panels that are pulled: their run is the tail of a gesture
+   * and belongs at the gesture's own speed. Given by the ones that are tapped,
+   * which otherwise arrive at the floor of a rate meant for flicks.
+   */
+  openMs?: number;
   /** What is behind it, named on the hem while a finger is pulling. */
   title: string;
   /**
@@ -247,6 +283,7 @@ type Props = {
  */
 function CurtainImpl({
   edge,
+  openMs,
   title,
   pull,
   destination,
@@ -290,8 +327,15 @@ function CurtainImpl({
   // opening. `sign` is what makes that safe for the blind that is *not* down;
   // see `unrollTo`.
   useEffect(() => {
-    runOnUI(unrollTo)(pull, destination, open ? sign * height : 0, sign);
-  }, [destination, height, open, pull, sign]);
+    runOnUI(unrollTo)(
+      pull,
+      destination,
+      open ? sign * height : 0,
+      sign,
+      openMs,
+      height,
+    );
+  }, [destination, height, open, openMs, pull, sign]);
 
   // Height, not transform: a blind that slid as a rigid body would enter hem
   // first, showing `Make it` before the caption. The inner sheet carries an
