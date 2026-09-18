@@ -1,88 +1,290 @@
-//! Thin wrappers over the service manager.
-//!
-//! systemd already owns the lifecycle; reimplementing any of it here would only
-//! give an operator a second, disagreeing answer.
-
-use std::path::PathBuf;
-use std::process::Command;
-
+//! Host supervisor integration with an unprivileged detached-process fallback.
+use crate::{config::NodePaths, control, process_lock};
 use anyhow::{Context, Result, bail};
+use serde_json::json;
+use std::fs::OpenOptions;
+use std::os::unix::{fs::OpenOptionsExt, process::CommandExt};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
-/// The unit both install paths write.
 pub const UNIT: &str = "cantor.service";
+const LABEL: &str = "xyz.ckadirt.cantor";
 
-/// Which systemd scope actually holds the unit. This cannot be read off the
-/// caller's own privileges: an operator in the `cantor` group is deliberately
-/// not root, and the unit they need is the system one. Prefer a user unit when
-/// one exists, mirroring how the control socket is resolved.
-pub fn use_user_scope() -> bool {
-    let user_unit = std::env::var_os("XDG_CONFIG_HOME")
+fn user_unit() -> Option<PathBuf> {
+    std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|config| config.join("systemd").join("user").join(UNIT));
-    if user_unit.is_some_and(|path| path.exists()) {
-        return true;
-    }
-    !system_unit_exists() && !crate::control::running_as_root()
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .map(|p| p.join("systemd/user").join(UNIT))
 }
-
 pub fn system_unit_exists() -> bool {
-    PathBuf::from("/etc/systemd/system").join(UNIT).exists()
+    Path::new("/etc/systemd/system/cantor.service").exists()
 }
-
-pub fn installed() -> bool {
-    system_unit_exists() || use_user_scope()
+pub fn use_user_scope() -> bool {
+    (!control::running_as_root()
+        && dirs::config_dir().is_some_and(|p| p.join("cantor/installation.toml").exists()))
+        || user_unit().is_some_and(|p| p.exists())
+        || (!system_unit_exists() && !control::running_as_root())
 }
-
-fn systemctl(action: &str) -> Result<std::process::ExitStatus> {
-    let mut command = Command::new("systemctl");
-    if use_user_scope() {
-        command.arg("--user");
+fn systemd_available() -> bool {
+    if !cfg!(target_os = "linux")
+        || !(if use_user_scope() {
+            user_unit().is_some_and(|p| p.exists())
+        } else {
+            system_unit_exists()
+        })
+    {
+        return false;
     }
-    command.args([action, UNIT]);
-    command
+    Command::new("systemctl")
+        .arg(if use_user_scope() {
+            "--user"
+        } else {
+            "--system"
+        })
+        .args(["show", "--property=Version"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
-        .context("failed to run systemctl; is systemd available here?")
+        .is_ok_and(|s| s.success())
 }
-
-pub fn run_action(action: &str) -> Result<()> {
-    if !systemctl(action)?.success() {
+fn launch_agent() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let p = dirs::home_dir()?
+        .join("Library/LaunchAgents")
+        .join(format!("{LABEL}.plist"));
+    p.exists().then_some(p)
+}
+fn launch_domain() -> String {
+    // SAFETY: geteuid has no arguments.
+    format!("gui/{}", unsafe { libc::geteuid() })
+}
+fn launchd_available() -> bool {
+    launch_agent().is_some()
+        && Command::new("launchctl")
+            .args(["print", &launch_domain()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+}
+fn systemctl(action: &str) -> Result<()> {
+    let status = Command::new("systemctl")
+        .arg(if use_user_scope() {
+            "--user"
+        } else {
+            "--system"
+        })
+        .args([action, UNIT])
+        .status()
+        .context("failed to run systemctl")?;
+    if !status.success() {
         bail!("systemctl {action} {UNIT} failed");
     }
     Ok(())
 }
-
-/// Best-effort: an upgrade that swapped the binary correctly should not report
-/// failure because the restart needs privileges the caller does not have. The
-/// caller is told what to run instead.
-pub fn restart_after_upgrade() {
-    if !installed() {
-        println!("No service is installed here; restart the node yourself to pick this up.");
-        return;
+fn launchctl(action: &str) -> Result<()> {
+    let domain = launch_domain();
+    let target = format!("{domain}/{LABEL}");
+    let loaded = Command::new("launchctl")
+        .args(["print", &target])
+        .output()?
+        .status
+        .success();
+    if matches!(action, "stop" | "restart")
+        && loaded
+        && !Command::new("launchctl")
+            .args(["bootout", &target])
+            .status()?
+            .success()
+    {
+        bail!("launchctl bootout failed");
     }
-    match systemctl("restart") {
-        Ok(status) if status.success() => println!("restarted {UNIT}"),
-        _ => {
-            let scope = if use_user_scope() { "--user " } else { "" };
-            println!("Could not restart the service. Run: systemctl {scope}restart {UNIT}");
+    if matches!(action, "start" | "restart") && (!loaded || action == "restart") {
+        let path = launch_agent().context("launch agent is missing")?;
+        if !Command::new("launchctl")
+            .args(["bootstrap", &domain])
+            .arg(path)
+            .status()?
+            .success()
+        {
+            bail!("launchctl bootstrap failed");
         }
     }
+    Ok(())
 }
-
-pub fn logs(lines: &str, follow: bool) -> Result<()> {
-    let mut command = Command::new("journalctl");
-    if use_user_scope() {
-        command.arg("--user");
+async fn ready(socket: &Path) -> bool {
+    tokio::time::timeout(
+        Duration::from_secs(1),
+        control::request(socket, &json!({"v":1,"id":"lifecycle","t":"status"})),
+    )
+    .await
+    .is_ok_and(|r| r.is_ok_and(|v| v.get("t").and_then(|v| v.as_str()) == Some("status")))
+}
+fn paths(config: Option<PathBuf>, socket: Option<PathBuf>) -> Result<(NodePaths, PathBuf)> {
+    let custom = config.is_some();
+    let paths = NodePaths::resolve(config)?;
+    let socket = match socket {
+        Some(p) => p,
+        None if custom => paths.directory.join("control.sock"),
+        None if !control::running_as_root() => paths.directory.join("control.sock"),
+        None => control::default_socket_path()?,
+    };
+    Ok((paths, socket))
+}
+async fn stop(socket: &Path) -> Result<()> {
+    if !ready(socket).await {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            bail!("node socket is reachable but not responding; inspect cantor logs");
+        }
+        println!("node is not running");
+        return Ok(());
     }
-    command.args(["-u", UNIT, "-n", lines]);
-    if follow {
-        command.arg("-f");
+    let response = tokio::time::timeout(
+        Duration::from_secs(5),
+        control::request(socket, &json!({"v":1,"id":"lifecycle","t":"daemon-stop"})),
+    )
+    .await??;
+    if response.get("t").and_then(|v| v.as_str()) != Some("ok") {
+        bail!("node cannot be stopped through this control socket: {response}");
     }
-    let status = command
-        .status()
-        .context("failed to run journalctl; is systemd available here?")?;
-    if !status.success() {
-        bail!("journalctl -u {UNIT} failed");
+    for _ in 0..300 {
+        if !socket.exists() {
+            println!("node stopped");
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("node is still shutting down; no process was forcibly killed")
+}
+pub async fn run_action(
+    action: &str,
+    config: Option<PathBuf>,
+    socket: Option<PathBuf>,
+) -> Result<()> {
+    let managed = config.is_none() && socket.is_none();
+    if managed && systemd_available() {
+        systemctl(action)?;
+        if action == "stop" {
+            return Ok(());
+        }
+        return wait_ready(
+            &control::client_socket_path().or_else(|_| control::default_socket_path())?,
+        )
+        .await;
+    }
+    if managed && launchd_available() {
+        launchctl(action)?;
+        if action == "stop" {
+            return Ok(());
+        }
+        return wait_ready(&NodePaths::resolve(None)?.directory.join("control.sock")).await;
+    }
+    let (paths, socket) = paths(config, socket)?;
+    paths.prepare_directory()?;
+    let _operation = process_lock::acquire(&paths.directory.join("lifecycle.lock"))?;
+    if matches!(action, "stop" | "restart") {
+        stop(&socket).await?;
+    }
+    if action == "stop" {
+        return Ok(());
+    }
+    if ready(&socket).await {
+        println!("node already running");
+        return Ok(());
+    }
+    let log_path = paths.directory.join("node.log");
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(&log_path)?;
+    let mut command = Command::new(std::env::current_exe()?);
+    command
+        .arg("run")
+        .arg("--config-dir")
+        .arg(&paths.directory)
+        .arg("--control-socket")
+        .arg(&socket)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone()?)
+        .stderr(log);
+    // SAFETY: setsid is async-signal-safe; no allocation or locks after fork.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let mut child = command.spawn().context("failed to start background node")?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if let Some(status) = child.try_wait()? {
+            bail!("node exited ({status}); see {}", log_path.display());
+        }
+        if ready(&socket).await {
+            println!("node started; logs: {}", log_path.display());
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!(
+        "node did not become ready; it may still be starting. See {}",
+        log_path.display()
+    )
+}
+async fn wait_ready(socket: &Path) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    while tokio::time::Instant::now() < deadline {
+        if ready(socket).await {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    bail!("service did not become ready; run cantor logs")
+}
+pub async fn restart_after_upgrade() {
+    if control::client_socket_path().is_err() {
+        println!("Node is not running; use cantor start when ready.");
+        return;
+    }
+    if let Err(error) = run_action("restart", None, None).await {
+        println!("Could not restart node: {error:#}. Run: cantor restart");
+    }
+}
+pub fn logs(lines: &str, follow: bool, config: Option<PathBuf>) -> Result<()> {
+    let count: usize = lines
+        .parse()
+        .context("--lines must be a nonnegative integer")?;
+    let mut command;
+    if config.is_none() && systemd_available() {
+        command = Command::new("journalctl");
+        if use_user_scope() {
+            command.arg("--user");
+        }
+        command.args(["-u", UNIT, "-n", &count.to_string()]);
+        if follow {
+            command.arg("-f");
+        }
+    } else {
+        let path = NodePaths::resolve(config)?.directory.join("node.log");
+        if !path.exists() {
+            bail!("no log yet at {}; start the node first", path.display());
+        }
+        command = Command::new("tail");
+        command.args(["-n", &count.to_string()]);
+        if follow {
+            command.arg("-f");
+        }
+        command.arg(path);
+    }
+    if !command.status()?.success() {
+        bail!("log reader failed");
     }
     Ok(())
 }

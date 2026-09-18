@@ -14,6 +14,7 @@ mod jobs;
 mod library;
 mod pairing;
 mod principal;
+mod process_lock;
 mod relay;
 mod runtime;
 mod secure;
@@ -52,7 +53,7 @@ Usage:
   cantor pull      <model:tag>
   cantor list      [--all]
   cantor rm        <model:tag>
-  cantor backends  [--install] [--use cpu|cuda12|vulkan] [--keep-loaded on|off]
+  cantor backends  [--install] [--use cpu|cuda12|metal|vulkan] [--keep-loaded on|off]
   cantor generate  <caption> [--model model:tag] [-o out.wav] [--detach]
                    [--lyrics TEXT] [--duration SECONDS] [--steps N] [--cfg N] [--seed N]
   cantor upgrade   [--check]
@@ -247,6 +248,9 @@ impl Cli {
     fn connect_path(&self) -> Result<PathBuf> {
         match &self.control_socket {
             Some(path) => Ok(path.clone()),
+            None if self.config_dir.is_some() => {
+                Ok(self.config_dir.as_ref().unwrap().join("control.sock"))
+            }
             None => control::client_socket_path(),
         }
     }
@@ -278,7 +282,7 @@ async fn main() -> Result<()> {
         Command_::List if cli.all => streaming_command(cli).await,
         Command_::Backends | Command_::Generate => streaming_command(cli).await,
         Command_::Start | Command_::Stop | Command_::Restart | Command_::Logs => {
-            let result = lifecycle(&cli);
+            let result = lifecycle(&cli).await;
             update::print_notice_if_stale().await;
             result
         }
@@ -294,6 +298,8 @@ async fn run(cli: Cli) -> Result<()> {
     let socket_path = cli.listen_path()?;
     let paths = NodePaths::resolve(cli.config_dir)?;
     paths.prepare_directory()?;
+    let _node_lock = process_lock::acquire(&paths.directory.join("node.lock"))?;
+    let _socket_lock = control::acquire_socket_lock(&socket_path)?;
     let seed = ConfigSeed {
         name: cli.name,
         relay_url: cli.relay_url,
@@ -807,13 +813,24 @@ fn string_field(value: &Value, field: &str) -> String {
         .to_owned()
 }
 
-/// `start`, `stop`, `restart` and `logs` are thin wrappers over systemd.
-fn lifecycle(cli: &Cli) -> Result<()> {
+/// Lifecycle commands delegate to the available manager or detached runtime.
+async fn lifecycle(cli: &Cli) -> Result<()> {
     match cli.command {
-        Command_::Logs => service::logs(&cli.lines, cli.follow),
-        Command_::Start => service::run_action("start"),
-        Command_::Stop => service::run_action("stop"),
-        Command_::Restart => service::run_action("restart"),
+        Command_::Logs => service::logs(&cli.lines, cli.follow, cli.config_dir.clone()),
+        Command_::Start => {
+            service::run_action("start", cli.config_dir.clone(), cli.control_socket.clone()).await
+        }
+        Command_::Stop => {
+            service::run_action("stop", cli.config_dir.clone(), cli.control_socket.clone()).await
+        }
+        Command_::Restart => {
+            service::run_action(
+                "restart",
+                cli.config_dir.clone(),
+                cli.control_socket.clone(),
+            )
+            .await
+        }
         other => bail!("{other:?} is not a lifecycle command"),
     }
 }

@@ -27,6 +27,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The installer requires detached lifecycle support in the binary.
+      - name: installer release is available
+        run: |
+          for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu aarch64-apple-darwin x86_64-apple-darwin; do
+            curl --fail --silent --show-error --location --head \
+              "https://github.com/ckadirt/Cantor/releases/download/v0.1.3/cantor-$target" >/dev/null
+          done
+
       - name: the deploy credential is present
         env:
           TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
