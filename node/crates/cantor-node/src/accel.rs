@@ -15,7 +15,7 @@ use std::path::Path;
 /// Preference order before measurement. CUDA first because when it is present
 /// and working it is decisively fastest; Vulkan second as the AMD/Intel path;
 /// CPU last as the floor that always exists.
-pub const PREFERENCE: [&str; 3] = ["cuda12", "vulkan", "cpu"];
+pub const PREFERENCE: [&str; 4] = ["cuda12", "metal", "vulkan", "cpu"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Accelerator {
@@ -51,6 +51,14 @@ pub fn detect() -> Vec<Accelerator> {
     }
     if let Some(accelerator) = detect_vulkan() {
         found.push(accelerator);
+    }
+
+    if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+        found.push(Accelerator {
+            backend: "metal".into(),
+            evidence: "Apple Silicon".into(),
+            device: None,
+        });
     }
 
     // Always available, and always the fallback the plan asks for.

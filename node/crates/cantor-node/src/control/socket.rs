@@ -17,13 +17,21 @@ pub(super) const SOCKET_MODE_SHARED: u32 = 0o660;
 pub(super) const SOCKET_MODE_PRIVATE: u32 = 0o600;
 pub(super) const CONTROL_GROUP: &str = "cantor";
 /// `sockaddr_un.sun_path` is 108 bytes on Linux, including the terminator.
+#[cfg(not(target_os = "macos"))]
 pub(super) const MAX_SOCKET_PATH_BYTES: usize = 107;
+#[cfg(target_os = "macos")]
+pub(super) const MAX_SOCKET_PATH_BYTES: usize = 103;
 
 const SYSTEM_SOCKET_PATH: &str = "/run/cantor/control.sock";
 
 fn user_socket_path() -> Option<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
         .map(|dir| PathBuf::from(dir).join("cantor").join("control.sock"))
+        .or_else(|| {
+            crate::config::NodePaths::resolve(None)
+                .ok()
+                .map(|paths| paths.directory.join("control.sock"))
+        })
 }
 
 /// Where a daemon started by *this* process should listen: system installs run
@@ -47,6 +55,12 @@ pub fn client_socket_path() -> Result<PathBuf> {
         && path.exists()
     {
         return Ok(path.clone());
+    }
+    if let Ok(paths) = crate::config::NodePaths::resolve(None) {
+        let fallback = paths.directory.join("control.sock");
+        if fallback.exists() {
+            return Ok(fallback);
+        }
     }
     let system = PathBuf::from(SYSTEM_SOCKET_PATH);
     if system.exists() {
@@ -85,14 +99,8 @@ pub fn running_as_root() -> bool {
 }
 
 pub(super) fn is_root() -> bool {
-    // Avoids a libc dependency for the one bit of identity that is needed.
-    fs::metadata("/proc/self")
-        .ok()
-        .map(|metadata| {
-            use std::os::unix::fs::MetadataExt;
-            metadata.uid() == 0
-        })
-        .unwrap_or(false)
+    // SAFETY: geteuid has no arguments and is available on supported Unix hosts.
+    unsafe { libc::geteuid() == 0 }
 }
 
 /// Resolves a group name to a gid by reading `/etc/group`. Enough for the local
@@ -106,6 +114,23 @@ pub(super) fn group_id(name: &str) -> Option<u32> {
         let gid = fields.next()?;
         (group == name).then(|| gid.parse().ok())?
     })
+}
+
+/// Serialize bind/rebind across configurations before inspecting a stale socket.
+pub fn acquire_socket_lock(socket_path: &Path) -> Result<fs::File> {
+    let parent = socket_path
+        .parent()
+        .context("control socket has no parent")?;
+    if !parent.exists() {
+        fs::create_dir_all(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(SOCKET_DIRECTORY_MODE))?;
+        if is_root()
+            && let Some(gid) = group_id(CONTROL_GROUP)
+        {
+            std::os::unix::fs::chown(parent, None, Some(gid))?;
+        }
+    }
+    crate::process_lock::acquire(&socket_path.with_extension("lock"))
 }
 
 /// Binds the control socket with a restrictive parent directory first, so the
@@ -141,6 +166,12 @@ pub fn bind(socket_path: &Path) -> Result<UnixListener> {
                     "refusing to replace symlinked control socket {}",
                     socket_path.display()
                 );
+            }
+            if std::os::unix::net::UnixStream::connect(socket_path).is_ok() {
+                bail!("a node is already listening at {}", socket_path.display());
+            }
+            if !std::os::unix::fs::FileTypeExt::is_socket(&metadata.file_type()) {
+                bail!("refusing to remove non-socket {}", socket_path.display());
             }
             // A socket left behind by a killed daemon would otherwise make bind fail.
             fs::remove_file(socket_path).with_context(|| {

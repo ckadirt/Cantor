@@ -27,7 +27,9 @@ use socket::{
     CONTROL_GROUP, MAX_SOCKET_PATH_BYTES, SOCKET_MODE_PRIVATE, SOCKET_MODE_SHARED, group_id,
     is_root,
 };
-pub use socket::{bind, client_socket_path, default_socket_path, running_as_root};
+pub use socket::{
+    acquire_socket_lock, bind, client_socket_path, default_socket_path, running_as_root,
+};
 #[cfg(test)]
 use wire::MAX_REQUEST_BYTES;
 #[allow(unused_imports)]
