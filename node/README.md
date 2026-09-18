@@ -202,55 +202,77 @@ mean a CPU-only VPS downloading a CUDA build it can never run.
 The `.so` is per *hardware*, not per model: one ACE-Step backend serves every
 variant of that model.
 
-## Linux installer
-
-`install.sh` installs the `cantor` binary, writes an owner-only `node.toml`,
-creates a hardened systemd unit, and offers to pair. What it picks depends on
-the privileges it runs with:
-
-| | root | unprivileged |
-| --- | --- | --- |
-| Binary | `/usr/local/bin/cantor` | `/usr/local/bin` if writable, else `~/.local/bin` |
-| Config | `/etc/cantor` | `~/.config/cantor` |
-| Models | `/var/lib/cantor/models` | `~/.local/share/cantor/models` |
-| Service | `/etc/systemd/system/cantor.service` | user unit + `loginctl enable-linger` |
-
-The published command is:
+## Linux and macOS installer
 
 ```sh
-sh -c "$(curl -fsSL https://cantor.ckadirt.xyz/install.sh)"
+curl -fsSL https://cantor.ckadirt.xyz/install.sh | sh
 ```
 
-**Not** `curl … | sh`. Piping gives the script's stdin to curl's output, so
-every prompt reads EOF and silently takes its default. The relay serves this
-route straight from `node/install.sh`, so it cannot drift from the repository.
+Run as your normal user. The installer places the command in `~/.local/bin`,
+adds that directory to shell startup files when needed, and reads prompts from
+`/dev/tty` so piping remains interactive. It offers to start the node, pair a
+phone, and download a model with its matching compute backend in one terminal.
+The current shell may still need the printed `export PATH=...` command.
 
-Prompts (node name, relay URL, model directory) are skipped entirely when stdin
-is not a terminal, and each is skipped individually when its `CANTOR_*` variable
-is set — so CI and piped installs never hang.
+| | Linux user | Linux root (explicit sudo) | macOS user |
+| --- | --- | --- | --- |
+| Config | `~/.config/cantor` | `/etc/cantor` | `~/Library/Application Support/cantor` |
+| Models/library | `~/.local/share/cantor` | `/var/lib/cantor` | `~/Library/Application Support/cantor` |
+| Process manager | reachable user systemd, otherwise detached | reachable system systemd, otherwise detached | launchd GUI domain, otherwise detached |
 
-Until release assets are published, build locally and exercise the same
-installer path explicitly:
+Linux XDG config/data overrides are honored. Existing `node.toml` files are
+preserved. An owner-only `installation.toml` in the default config directory
+records custom config locations so subsequent commands find the same node.
+Root installs on macOS are intentionally refused: use a normal user account.
 
 ```sh
-cargo build --release -p cantor
-CANTOR_NODE_BINARY="$PWD/target/release/cantor" \
-  CANTOR_NODE_NAME=cesar-desktop \
-  ./install.sh
+cantor start
+cantor pair
+cantor pull acestep:1.5-fast
+cantor status
+cantor logs --follow
+cantor restart
+cantor stop
 ```
 
-Existing `node.toml` files are preserved on reinstall. The installer refuses
-symlinked config/service targets and unmanaged `cantor.service` files, and says
-so plainly when systemd is absent (Docker, WSL1) rather than writing a unit
-nothing will read.
+Detached mode does not require systemd, sudo, a second terminal, or a socket
+argument. Logs live at `node.log` beside the config. The daemon holds kernel
+locks for its config and socket; an exited/crashed owner releases the locks.
+Stop requests go to the live local control socket and use the existing graceful
+shutdown path, never a PID saved in a file. A detached process has no automatic
+crash/reboot recovery, and a hosting platform may terminate it when suspending
+the instance. Use the platform startup mechanism to run `cantor start` on resume.
 
-The interactive installer offers to start the node, pair a phone, show the live
-model catalog, and pull a first model variant. These steps are optional but
-recommended and default to yes; the catalog is shown before the download so the
-operator sees each variant's licence, size, fit and available disk space. The
-default starter is `acestep:1.5-fast`, and `cantor pull` also downloads its
-matching backend. Non-interactive installs skip all service starts, pairing and
-downloads, then print the commands needed to finish later.
+Linux user services use lingering when available. macOS installs a
+`~/Library/LaunchAgents/xyz.ckadirt.cantor.plist` agent for startup at login and
+restart after failure; an SSH session without a GUI domain uses detached mode.
+Stopping an agent unloads it for this session; its plist remains for next login.
+
+The macOS release matrix targets macOS 14+ on Apple Silicon and macOS 15+ on Intel. Native ACE-Step CPU
+builds are packaged for both; Apple Silicon additionally gets a Metal build.
+The Darwin node reads `backends-macos-v1.json` from the matching release channel,
+with OS-tagged artifacts. Older Linux catalog entries default to Linux and
+retain their cache identities. Other engine families remain unavailable on Mac
+until their native artifacts are published. macOS engine packaging load-tests
+relocated dylibs and checks ABI/compute-device discovery, but does not substitute
+for a full generation test with model weights on physical hardware.
+
+For a local development install:
+
+```sh
+cd node
+cargo build -p cantor
+CANTOR_NODE_BINARY="$PWD/target/debug/cantor" ./install.sh
+```
+
+Use `CANTOR_NON_INTERACTIVE=1` to skip terminal setup prompts explicitly.
+Unattended installs never start processes or download models automatically.
+Installer fixtures and a real detached lifecycle test run from the repo root:
+`node --test node/scripts/install.test.mjs node/scripts/lifecycle.test.mjs`.
+
+Release order matters: publish v0.1.3 native node/engine assets before deploying
+this installer (its default download is pinned to v0.1.3; `CANTOR_VERSION` can
+select another tag). The previously released binary lacks the detached lifecycle.
 
 ## Controlling a running node
 
@@ -265,8 +287,8 @@ cantor pairings                    # paired devices, by petname
 cantor rename "Old name" "New"     # rename a paired device
 cantor rename --node studio-rig    # rename this node; connected apps are pushed the change
 cantor revoke "New"                # drops the key *and* any live session using it
-cantor start | stop | restart      # wraps systemctl
-cantor logs [--follow] [--lines N] # wraps journalctl
+cantor start | stop | restart      # host manager or detached process
+cantor logs [--follow] [--lines N] # journal or node.log
 ```
 
 Every command accepts a key or an exact petname where a device is named. An
@@ -274,7 +296,9 @@ ambiguous petname is refused rather than guessed: revoking the wrong device is
 not recoverable without physical access to the one that was cut off.
 
 The socket is `/run/cantor/control.sock` (`root:cantor`, mode `0660`) for a
-system install and `$XDG_RUNTIME_DIR/cantor/control.sock` for a user install.
+system install and `$XDG_RUNTIME_DIR/cantor/control.sock` for a Linux user service. Detached
+processes and macOS agents use `control.sock` beside the config, discovered
+automatically by the CLI.
 The installer creates the `cantor` group and adds the invoking operator to it.
 **Group membership only applies to new logins**, so log out and back in before
 running control commands, or use `sudo`.

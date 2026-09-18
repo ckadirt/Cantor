@@ -15,7 +15,10 @@ use libloading::{Library, Symbol};
 use crate::backends::SUPPORTED_ABI;
 
 /// The engine library inside an extracted backend directory.
+#[cfg(not(target_os = "macos"))]
 const ENGINE_LIBRARY: &str = "libcantor_engine.so";
+#[cfg(target_os = "macos")]
+const ENGINE_LIBRARY: &str = "libcantor_engine.dylib";
 
 /// Loaded first, in this order, with RTLD_GLOBAL. The engine links against
 /// their versioned SONAMEs, and an archive that ships them without the
@@ -23,7 +26,10 @@ const ENGINE_LIBRARY: &str = "libcantor_engine.so";
 /// machine — will not resolve them on its own. Loading them explicitly makes
 /// the node robust to both, which it has to be: it did not build the engine
 /// and cannot assume how it was packaged.
+#[cfg(not(target_os = "macos"))]
 const DEPENDENCIES: [&str; 2] = ["libggml-base.so", "libggml.so"];
+#[cfg(target_os = "macos")]
+const DEPENDENCIES: [&str; 2] = ["libggml-base.dylib", "libggml.dylib"];
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
