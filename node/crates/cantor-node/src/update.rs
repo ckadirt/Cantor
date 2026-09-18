@@ -78,10 +78,12 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 /// The release asset for the architecture this binary was built for. Must match
 /// the names `node/install.sh` downloads and `release.yml` uploads.
 fn asset_name() -> Result<String> {
-    let target = match std::env::consts::ARCH {
-        "x86_64" => "x86_64-unknown-linux-gnu",
-        "aarch64" => "aarch64-unknown-linux-gnu",
-        other => bail!("no release assets are published for {other}"),
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        other => bail!("no release assets are published for {other:?}"),
     };
     Ok(format!("cantor-{target}"))
 }
@@ -244,7 +246,7 @@ pub async fn upgrade(check_only: bool) -> Result<()> {
     println!("installed cantor {latest} at {}", target.display());
     // Replacing the file leaves the running daemon on the old, now-unlinked
     // inode: without this the upgrade appears to work and changes nothing.
-    crate::service::restart_after_upgrade();
+    crate::service::restart_after_upgrade().await;
     Ok(())
 }
 
@@ -291,6 +293,10 @@ mod tests {
     fn the_asset_name_matches_what_the_installer_downloads() {
         let name = asset_name().expect("supported architecture");
         assert!(name.starts_with("cantor-"));
-        assert!(name.ends_with("-unknown-linux-gnu"));
+        assert!(name.ends_with(if cfg!(target_os = "macos") {
+            "-apple-darwin"
+        } else {
+            "-unknown-linux-gnu"
+        }));
     }
 }

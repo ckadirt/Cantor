@@ -42,6 +42,25 @@ pub(super) async fn serve_connection(
         if line.trim().is_empty() {
             continue;
         }
+        // Local lifecycle only: never exposed by the encrypted application router.
+        if let Ok(request) = serde_json::from_str::<serde_json::Value>(&line)
+            && request.get("v").and_then(|v| v.as_u64()) == Some(1)
+            && request.get("t").and_then(|v| v.as_str()) == Some("daemon-stop")
+        {
+            super::wire::write_value_line(
+                &mut writer,
+                &serde_json::json!({
+                    "v": 1, "id": request.get("id"), "t": "ok"
+                }),
+            )
+            .await?;
+            // SAFETY: signal this process, not a PID read from a stale file.
+            // The existing SIGTERM path drains generation and closes the socket.
+            unsafe {
+                libc::kill(libc::getpid(), libc::SIGTERM);
+            }
+            return Ok(());
+        }
         // A pull runs for minutes and reports as it goes, so it writes many
         // lines rather than one. Everything else is request/response.
         if let Some(kind) = frame_kind(&line)
