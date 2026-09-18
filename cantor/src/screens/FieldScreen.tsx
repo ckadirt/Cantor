@@ -24,7 +24,7 @@ import {
   useFieldCamera,
 } from '../features/field';
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
-import { Curtain, unrollMs } from '../features/curtain';
+import { Curtain } from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
@@ -40,7 +40,7 @@ import {
 } from '../features/field/FieldCanvas';
 import type { FieldPresentation } from '../features/field/useFieldController';
 import { LensPicker } from '../features/song/LensPicker';
-import { SongSheet } from '../features/song/SongSheet';
+import { SongSheet, SONG_SHEET_KNOBS } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
   PLAYER_TRANSPORT_KNOBS,
@@ -369,7 +369,7 @@ export function FieldScreen({ identity }: Props) {
     if (sheetOpen || sheetTarget === null || viewport === null) return;
     const home = setTimeout(
       () => setSheetTarget(null),
-      unrollMs(viewport.height, 0, 0),
+      SONG_SHEET_KNOBS.BLIND_MS,
     );
     return () => clearTimeout(home);
   }, [sheetOpen, sheetTarget, viewport]);
@@ -1540,6 +1540,7 @@ export function FieldScreen({ identity }: Props) {
           edge="bottom"
           onClose={closeSongSheet}
           open={sheetOpen}
+          openMs={SONG_SHEET_KNOBS.BLIND_MS}
           destination={sheetDestination}
           pull={sheetPull}
           title={sheetSong.song.title.toUpperCase()}

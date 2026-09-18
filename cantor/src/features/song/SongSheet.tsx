@@ -25,13 +25,14 @@ import { nameLensFacePath } from '../../lenses/nameLens';
 import { Canvas, Path } from '@shopify/react-native-skia';
 import Animated, {
   useAnimatedStyle,
+  useDerivedValue,
   useReducedMotion,
   useSharedValue,
   withDelay,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import { easeSmoother, TransformText } from '../../motion';
+import { easeSmoother, TransformText, WriteText } from '../../motion';
 import {
   Ledger,
   LedgerFoot,
@@ -52,19 +53,38 @@ export const SONG_SHEET_KNOBS = {
   /** How long the header's name takes to become the other page's name. */
   PAGE_NAME_MS: 260,
   /**
+   * How long the blind itself takes, being tapped open rather than pulled.
+   *
+   * A released drag only has to finish what a finger started; this trip is
+   * always the whole screen, and at the house rate that came to the 220 ms
+   * floor — brisk for a surface that covers everything.
+   */
+  BLIND_MS: 460,
+  /**
    * The second beat, and how long it waits for the first.
    *
-   * The blind is the first beat and it is the Curtain's, run at its own speed.
-   * The sheet waits for it rather than running underneath it: everything in
-   * the frame moving at one instant is the lurch `ROW_ARRIVAL` warns about,
-   * and the whole point of a beat is that the shape lands before the words do.
+   * The sheet waits for the blind rather than running underneath it:
+   * everything in the frame moving at one instant is the lurch `ROW_ARRIVAL`
+   * warns about, and the point of a beat is that the shape lands before the
+   * words do. The wait is shorter than the blind on purpose — the axis starts
+   * drawing while the last of the surface is still arriving, so the two read
+   * as one sentence rather than as two events.
    */
-  ARRIVAL_WAIT_MS: 170,
-  ARRIVAL_MS: 430,
+  ARRIVAL_WAIT_MS: 330,
+  ARRIVAL_MS: 900,
+  /**
+   * Windows on that one clock, in the order the eye is given them: the mark
+   * traces itself, the axis draws down out of it, the name writes on, and the
+   * facts land on the axis that is now there to hold them.
+   */
+  FACE_WINDOW: [0, 0.34] as const,
+  SPINE_WINDOW: [0.16, 0.52] as const,
+  WRITE_WINDOW: [0.3, 0.86] as const,
+  ROWS_FROM: 0.42,
   /** How far each row is behind the one above it, as a fraction of the beat. */
-  ARRIVAL_LAG: 0.1,
+  ARRIVAL_LAG: 0.075,
   /** The stretch one row takes to land, of that same beat. */
-  ARRIVAL_RISE: 0.5,
+  ARRIVAL_RISE: 0.34,
   /** The rise itself: `Reveal`'s own measure, so nothing arrives differently. */
   ARRIVAL_RISE_PX: 6,
   /** The hem's page marks: one short rule per page, the current one inked. */
@@ -254,7 +274,7 @@ function SongSheetImpl({
           onPress={onToggleFavourite}
           style={styles.seat}
         >
-          <Face song={song} colour={pal.ink} />
+          <Face arrival={arrival} song={song} colour={pal.ink} />
           <Text
             style={[styles.star, { color: song.favorite ? pal.ink : pal.line }]}
           >
@@ -369,9 +389,119 @@ function SongSheetImpl({
   );
 }
 
-/** The song's own contour, where every other panel keeps a glyph. */
-function Face({ song, colour }: { song: SongHeader; colour: string }) {
+/**
+ * The title, written on and then handed over to the field that edits it.
+ *
+ * `WriteText` traces the exact glyph outlines and resolves them into filled
+ * ones — Manim's `DrawBorderThenFill`, driven here from the sheet's own clock
+ * rather than its internal one, so the name arrives on the beat the axis was
+ * drawn on rather than on a timer of its own.
+ *
+ * The hand-off is the delicate part and it obeys the Flicker Law: the real
+ * `TextInput` is mounted the whole time, holding the layout the canvas is
+ * drawn over, and ownership of the glyphs passes on the *same shared value* in
+ * the same frame — never on a React commit, which is what would let both draw
+ * the word at once or neither draw it for a frame.
+ */
+function Subject({
+  arrival,
+  busy,
+  colour,
+  onBlur,
+  onChangeText,
+  title,
+}: {
+  arrival: SharedValue<number>;
+  busy: boolean;
+  colour: string;
+  onBlur: () => void;
+  onChangeText: (value: string) => void;
+  title: string;
+}) {
+  const written = useDerivedValue(() =>
+    windowed(
+      arrival.value,
+      SONG_SHEET_KNOBS.WRITE_WINDOW[0],
+      SONG_SHEET_KNOBS.WRITE_WINDOW[1],
+    ),
+  );
+  const drawn = useAnimatedStyle(() => ({
+    opacity: written.value >= 1 ? 0 : 1,
+  }));
+  const real = useAnimatedStyle(() => ({
+    opacity: written.value >= 1 ? 1 : 0,
+  }));
+  return (
+    <View>
+      <Animated.View style={real}>
+        <TextInput
+          accessibilityLabel="Song title"
+          editable={!busy}
+          multiline
+          onBlur={onBlur}
+          onChangeText={onChangeText}
+          scrollEnabled={false}
+          style={[type.title, styles.titleField, { color: colour }]}
+          value={title}
+        />
+      </Animated.View>
+      <Animated.View
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        pointerEvents="none"
+        style={[StyleSheet.absoluteFill, drawn]}
+      >
+        {/*
+          The canvas fills its container absolutely, so the slot has to have a
+          size — `motion/README.md` says to reserve one and this is where it
+          comes from: the field underneath, which is already holding exactly
+          the space the written word will occupy.
+        */}
+        <WriteText
+          charStyle={type.title}
+          color={colour}
+          progress={written}
+          style={StyleSheet.absoluteFill}
+          text={title}
+        />
+      </Animated.View>
+    </View>
+  );
+}
+
+/** Where `arrival` has got to inside one window of the beat, as 0..1. */
+function windowed(value: number, from: number, to: number): number {
+  'worklet';
+  return Math.min(Math.max((value - from) / (to - from), 0), 1);
+}
+
+/**
+ * The song's own contour, where every other panel keeps a glyph — and the
+ * first thing the sheet says.
+ *
+ * Trimmed on rather than faded in: the contour is one closed path, so running
+ * `end` from 0 to 1 draws it the way a hand would. That is the same gesture
+ * `WriteText` makes of a word and the one the player's ring already makes of a
+ * measured minute, so the sheet opens in the app's own handwriting and nothing
+ * new is asked of the geometry.
+ */
+function Face({
+  arrival,
+  song,
+  colour,
+}: {
+  arrival: SharedValue<number>;
+  song: SongHeader;
+  colour: string;
+}) {
   const size = SONG_SHEET_KNOBS.SEAT_PX;
+  const traced = useDerivedValue(() =>
+    windowed(
+      arrival.value,
+      SONG_SHEET_KNOBS.FACE_WINDOW[0],
+      SONG_SHEET_KNOBS.FACE_WINDOW[1],
+    ),
+  );
   const path = useMemo(
     () =>
       nameLensFacePath(
@@ -389,7 +519,9 @@ function Face({ song, colour }: { song: SongHeader; colour: string }) {
     <Canvas style={{ width: size, height: size }}>
       <Path
         color={colour}
+        end={traced}
         path={path}
+        start={0}
         style="stroke"
         strokeWidth={1}
         transform={[{ translateX: size / 2 }, { translateY: size / 2 }]}
@@ -450,6 +582,15 @@ function Front({
 }) {
   const pal = usePalette();
   const pinned = audioState === 'pinned';
+  // The axis exists before the facts land on it, and after the mark that
+  // opened the sheet: one clock, read at three different stretches of itself.
+  const spine = useDerivedValue(() =>
+    windowed(
+      arrival.value,
+      SONG_SHEET_KNOBS.SPINE_WINDOW[0],
+      SONG_SHEET_KNOBS.SPINE_WINDOW[1],
+    ),
+  );
   const frees =
     deliveryBytes === null ? null : `FREES ${formatBytes(deliveryBytes)}`;
   return (
@@ -462,22 +603,20 @@ function Front({
           title someone might change.
         */}
         <Arriving arrival={arrival} index={0} style={styles.subject}>
-          <TextInput
-            accessibilityLabel="Song title"
-            editable={!busy}
-            multiline
+          <Subject
+            arrival={arrival}
+            busy={busy}
+            colour={pal.ink}
             onBlur={onRename}
             onChangeText={onTitle}
-            scrollEnabled={false}
-            style={[type.title, styles.titleField, { color: pal.ink }]}
-            value={title}
+            title={title}
           />
           <Text style={[type.eyebrow, styles.scope, { color: pal.faint }]}>
             {scopeSummary(scopeLabel, nodeLabel, placementCount)}
           </Text>
         </Arriving>
 
-        <Ledger arrival={arrival}>
+        <Ledger arrival={spine}>
           <Arriving arrival={arrival} index={1}>
             <Row label="Playlists">
               <Membership
@@ -741,10 +880,12 @@ function Arriving({
   style?: StyleProp<ViewStyle>;
 }) {
   const landed = useAnimatedStyle(() => {
-    const from = index * SONG_SHEET_KNOBS.ARRIVAL_LAG;
-    const local = Math.min(
-      Math.max((arrival.value - from) / SONG_SHEET_KNOBS.ARRIVAL_RISE, 0),
-      1,
+    const from =
+      SONG_SHEET_KNOBS.ROWS_FROM + index * SONG_SHEET_KNOBS.ARRIVAL_LAG;
+    const local = windowed(
+      arrival.value,
+      from,
+      from + SONG_SHEET_KNOBS.ARRIVAL_RISE,
     );
     return {
       opacity: local,
