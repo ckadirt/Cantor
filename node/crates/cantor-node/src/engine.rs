@@ -206,7 +206,11 @@ impl Engine {
             bail!("{} does not contain {ENGINE_LIBRARY}", directory.display());
         }
 
-        let mut dependencies = Vec::new();
+        let mut dependencies = if backend == "cuda12" && cfg!(target_os = "linux") {
+            crate::cuda_runtime::preload(directory)?
+        } else {
+            Vec::new()
+        };
         for name in DEPENDENCIES {
             let dependency = directory.join(name);
             if !dependency.is_file() {
@@ -222,6 +226,20 @@ impl Engine {
                     eprintln!("note: could not preload {}: {error}", dependency.display());
                 }
             }
+        }
+
+        if backend == "cuda12" {
+            // The GGML directory scanner suppresses dlopen errors in release
+            // builds. Load CUDA explicitly first so missing dependencies are
+            // reported instead of accepting the archive's CPU fallback.
+            let module = directory.join("libggml-cuda.so");
+            // SAFETY: this is part of the checksum-verified engine archive.
+            dependencies.push(unsafe { Library::new(&module) }.with_context(|| {
+                format!(
+                    "CUDA module {} could not load; CPU fallback is not CUDA",
+                    module.display()
+                )
+            })?);
         }
 
         // ggml discovers its per-microarchitecture CPU backends by scanning a
@@ -251,6 +269,10 @@ impl Engine {
             if loaded {
                 break;
             }
+        }
+
+        if backend == "cuda12" {
+            validate_cuda(&dependencies)?;
         }
 
         // SAFETY: as above — verified bytes, published symbol names.
@@ -343,6 +365,62 @@ impl Engine {
                 .unwrap_or(-1)
         }
     }
+}
+
+/// Check the compute registry, not the requested archive label. The signatures
+/// below come from the GGML C API used by the published engine builds.
+fn validate_cuda(dependencies: &[Library]) -> Result<()> {
+    for runtime in dependencies {
+        // SAFETY: all handles are verified native engine/runtime libraries; the
+        // GGML function signatures and opaque handle lifetimes match its C API.
+        unsafe {
+            let Ok(find) = runtime.get::<unsafe extern "C" fn(*const c_char) -> *mut c_void>(
+                b"ggml_backend_reg_by_name\0",
+            ) else {
+                continue;
+            };
+            let count = runtime.get::<unsafe extern "C" fn(*mut c_void) -> usize>(
+                b"ggml_backend_reg_dev_count\0",
+            )?;
+            let get = runtime.get::<unsafe extern "C" fn(*mut c_void, usize) -> *mut c_void>(
+                b"ggml_backend_reg_dev_get\0",
+            )?;
+            let init = runtime
+                .get::<unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void>(
+                    b"ggml_backend_dev_init\0",
+                )?;
+            let free = runtime.get::<unsafe extern "C" fn(*mut c_void)>(b"ggml_backend_free\0")?;
+            let name = runtime.get::<unsafe extern "C" fn(*mut c_void) -> *const c_char>(
+                b"ggml_backend_dev_name\0",
+            )?;
+            let registry = find(c"CUDA".as_ptr());
+            if registry.is_null() || count(registry) == 0 {
+                bail!(
+                    "CUDA engine loaded but no CUDA device registered; check the NVIDIA driver and device access (see cantor logs)"
+                );
+            }
+            for index in 0..count(registry) {
+                let device = get(registry, index);
+                if device.is_null() {
+                    continue;
+                }
+                let backend = init(device, std::ptr::null());
+                if !backend.is_null() {
+                    let label = name(device);
+                    if !label.is_null() {
+                        eprintln!(
+                            "engine.cuda_ready device={}",
+                            CStr::from_ptr(label).to_string_lossy()
+                        );
+                    }
+                    free(backend);
+                    return Ok(());
+                }
+            }
+            bail!("CUDA devices were detected but none could initialize; see cantor logs");
+        }
+    }
+    bail!("CUDA engine does not expose the GGML device validation API")
 }
 
 /// # Safety
@@ -672,6 +750,53 @@ fn to_cstring(value: &str) -> Result<CString> {
 #[cfg(test)]
 mod tests {
     use super::{Stage, check_stage_mask, first_stage, select};
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn cuda_validation_requires_a_device_that_initializes() {
+        use std::{fs, process::Command};
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("registry.c");
+        fs::write(&source, r#"
+            #include <stddef.h>
+            void *ggml_backend_reg_by_name(const char *name) { (void)name; return (void*)1; }
+            size_t ggml_backend_reg_dev_count(void *reg) { (void)reg; return DEVICES; }
+            void *ggml_backend_reg_dev_get(void *reg, size_t i) { (void)reg; (void)i; return (void*)2; }
+            void *ggml_backend_dev_init(void *dev, const char *params) { (void)dev; (void)params; return INITIALIZES ? (void*)3 : NULL; }
+            void ggml_backend_free(void *backend) { (void)backend; }
+            const char *ggml_backend_dev_name(void *dev) { (void)dev; return "CUDA-test"; }
+        "#).unwrap();
+        for (devices, initializes, expected) in [
+            (0, 0, "no CUDA device"),
+            (1, 0, "none could initialize"),
+            (1, 1, ""),
+        ] {
+            let path = temp
+                .path()
+                .join(format!("registry-{devices}-{initializes}.so"));
+            assert!(
+                Command::new("cc")
+                    .args(["-shared", "-fPIC"])
+                    .arg(format!("-DDEVICES={devices}"))
+                    .arg(format!("-DINITIALIZES={initializes}"))
+                    .arg(&source)
+                    .arg("-o")
+                    .arg(&path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+            // SAFETY: this test compiled the fixed C fixture immediately above.
+            let library = unsafe { libloading::Library::new(path) }.unwrap();
+            let result = super::validate_cuda(&[library]);
+            if expected.is_empty() {
+                result.unwrap();
+            } else {
+                assert!(result.unwrap_err().to_string().contains(expected));
+            }
+        }
+        assert!(super::validate_cuda(&[]).is_err());
+    }
 
     /// The two masks the published engines actually report.
     const ACESTEP_MASK: u32 = 0b11110;

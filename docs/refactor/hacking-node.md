@@ -194,3 +194,22 @@ release sequencing. `daemon-stop` is a local Unix control request only; it must
 never become an application/relay request. Never replace the kernel locks with
 a PID-file kill scheme. The installer records custom config paths in
 `installation.toml`; existing node config and library layouts remain intact.
+
+## CUDA runtime preparation
+
+`cuda_runtime.rs` owns the pinned NVIDIA runtime dependency set in
+`cuda12-runtime.json` (CUDA redistrib 12.8.1, x86_64 and SBSA ARM64). It reuses
+`EngineStore::install_archive` for verified, serialized, atomic extraction.
+Runtime artifacts have distinct digest-scoped names in the existing engine
+cache and are shared by model families. Do not put driver libraries in this
+cache or mutate process environment variables to resolve runtime dependencies.
+
+Both engine installation and generation preparation call `cuda_runtime::ensure`,
+including when an engine's `.complete` marker already exists. This is the
+migration path for nodes upgraded from releases without managed CUDA runtimes.
+`Engine::load` preloads private runtime libraries by absolute path, exposes CUDA
+module load errors, and validates a CUDA registry device can initialize before
+accepting `cuda12`. Backend switching validates every required engine family.
+The optional `nvidia_archives_download_verify_extract_and_load` test exercises
+the real NVIDIA downloads; it is ignored in normal CI because it downloads
+about 940 MB. GPU validation failure modes use a compiled GGML API fixture.

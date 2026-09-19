@@ -106,6 +106,23 @@ pub(crate) async fn resolve(
                 .is_installed(artifact)
                 .map_err(WorkerFailure::from_internal)?
         {
+            // An upgraded node can have a complete engine archive from before
+            // runtime management existed. Repair its dependencies before load.
+            crate::cuda_runtime::ensure(
+                &engine_store,
+                &reqwest::Client::new(),
+                artifact,
+                |_, _| {},
+            )
+            .await
+            .map_err(|error| {
+                WorkerFailure::with_source(
+                    ErrorCode::TemporarilyUnavailable,
+                    true,
+                    "The node could not prepare its engine runtime dependencies.",
+                    error,
+                )
+            })?;
             attempts.push((
                 backend,
                 engine_store
