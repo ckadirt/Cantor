@@ -37,6 +37,7 @@ An adapter may depend on the core. The core may never depend on an adapter. If
 | `library.rs` + `library/` | one `Library` façade over schema, jobs, songs, artifacts, recovery, sidecars, rows, durable filesystem |
 | `jobs/`, `generation/` | scheduler, stop reasons, planning, the dedicated native worker, runner, failure policy |
 | `delivery/` | delivery repository, bounded worker, Opus encoder |
+| `service.rs`, `process_lock.rs` | systemd/launchd adapters, detached lifecycle, config/socket lifetime locks |
 | `runtime/` | `NodeState`, `SharedState`, and `NodeEvent` |
 | `principal.rs` | `PrincipalId`, the canonical owner identity |
 
@@ -179,3 +180,11 @@ encrypted carrier frames, node authentication, and a `status` round trip.
 - [ ] Is the new query owner-scoped?
 - [ ] Does the failure path leave the database and filesystem consistent?
 - [ ] Do the tests pass without loading a model?
+
+## Portable lifecycle
+
+See [the portability plan](node-portability-plan.md) for lifecycle ownership and
+release sequencing. `daemon-stop` is a local Unix control request only; it must
+never become an application/relay request. Never replace the kernel locks with
+a PID-file kill scheme. The installer records custom config paths in
+`installation.toml`; existing node config and library layouts remain intact.

@@ -3,6 +3,10 @@ name: release
 on:
   push:
     tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'node/scripts/package-macos-engine.py'
 
 permissions:
   contents: write
@@ -20,6 +24,10 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: ubuntu-22.04-arm
             target: aarch64-unknown-linux-gnu
+          - runner: macos-14
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
@@ -36,6 +44,7 @@ jobs:
       # `cantor --version` contradicts the release it came from, and `cantor
       # upgrade` compares exactly those two things.
       - name: tag matches the crate version
+        if: github.event_name == 'push'
         working-directory: node
         run: |
           set -eu
@@ -65,7 +74,11 @@ jobs:
           set -eu
           asset="cantor-${{ matrix.target }}"
           cp target/release/cantor "$asset"
-          sha256sum "$asset" > "$asset.sha256"
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$asset" > "$asset.sha256"
+          else
+            shasum -a 256 "$asset" > "$asset.sha256"
+          fi
           ls -l "$asset" "$asset.sha256"
 
       - uses: actions/upload-artifact@v4
@@ -76,8 +89,56 @@ jobs:
             node/cantor-${{ matrix.target }}.sha256
           if-no-files-found: error
 
+  macos-engines:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            arch: aarch64
+            backend: metal
+            metal: 'ON'
+          - runner: macos-14
+            arch: aarch64
+            backend: cpu
+            metal: 'OFF'
+          - runner: macos-15-intel
+            arch: x86_64
+            backend: cpu
+            metal: 'OFF'
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+        with:
+          repository: ckadirt/acestep.cpp
+          ref: 79994ed1780d676f2676168159d861fddc647ae0
+          submodules: recursive
+          path: engine-source
+      - name: build native engine
+        run: |
+          cmake -S engine-source -B engine-build -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=ON -DGGML_BACKEND_DL=ON -DGGML_NATIVE=OFF \
+            -DGGML_METAL=${{ matrix.metal }} -DGGML_METAL_EMBED_LIBRARY=${{ matrix.metal }} \
+            -DGGML_OPENMP=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0
+          cmake --build engine-build --target cantor-engine ggml-cpu --parallel 3
+          if [ "${{ matrix.metal }}" = ON ]; then
+            cmake --build engine-build --target ggml-metal --parallel 3
+          fi
+      - name: package and load-test relocated engine
+        run: |
+          python3 node/scripts/package-macos-engine.py engine-build engine-assets \
+            '${{ matrix.arch }}' '${{ matrix.backend }}' \
+            'https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: engine-macos-${{ matrix.arch }}-${{ matrix.backend }}
+          path: engine-assets/*
+          if-no-files-found: error
+
   release:
-    needs: build
+    if: github.event_name == 'push'
+    needs: [build, macos-engines]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/download-artifact@v5
@@ -91,6 +152,22 @@ jobs:
           set -eu
           ls -l
           for sum in *.sha256; do sha256sum --check "$sum"; done
+
+      - name: assemble macOS backend manifest
+        working-directory: assets
+        run: |
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          paths = sorted(Path('.').glob('acestep-engine-*.tar.gz.json'))
+          assert len(paths) == 3, paths
+          artifacts = [json.loads(p.read_text()) for p in paths]
+          Path('backends-macos-v1.json').write_text(json.dumps({
+              'schema': 1, 'engines': [{'name': 'acestep', 'abi': 1, 'backends': artifacts}]
+          }, indent=2) + '\n')
+          for path in paths:
+              path.unlink()
+          PYTHON
 
       # The GitHub CLI is preinstalled on the runner, so publishing needs no
       # third-party action with write access to the repository.

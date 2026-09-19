@@ -34,8 +34,12 @@ jobs:
         run: node --check relay/scripts/smoke.mjs
 
   node:
-    name: node (rust)
-    runs-on: ubuntu-22.04
+    name: node (rust, ${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-22.04, macos-14, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
@@ -55,6 +59,14 @@ jobs:
       - name: test
         working-directory: node
         run: cargo test --workspace
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: build CLI for lifecycle tests
+        working-directory: node
+        run: cargo build -p cantor
+      - name: installer and detached lifecycle
+        run: node --test node/scripts/install.test.mjs node/scripts/lifecycle.test.mjs
       - name: protocol bindings are committed
         run: git diff --exit-code -- protocol
 
