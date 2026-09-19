@@ -93,12 +93,17 @@ export const SONG_SHEET_KNOBS = {
   /**
    * How long the foot's act takes to become the other act.
    *
-   * The header's own number: `Unpin` and `Keep it here` are the same object
-   * seen from either side of one state, exactly as `SONG` and `RECORD` are,
-   * and two morphs in one panel running at different speeds would read as two
-   * unrelated events rather than as one sheet answering.
+   * `Unpin` and `Keep it here` are the same object seen from either side of
+   * one state, the way `SONG` and `RECORD` are — but they are not the same
+   * size, and a morph's legibility is a matter of how far the ink has to
+   * travel rather than of which panel it is in. At the header's 260 ms this
+   * word changed between two frames and read as a swap, which is the thing
+   * the morph exists to not be; the eye never caught the glyphs moving. The
+   * foot's word is `type.heading` at 20 px against the header's 11, carries
+   * twice the letters, and is the one act the page is for, so it is given the
+   * time to be seen doing it. Still short of the engine's own 700 ms default.
    */
-  ACT_MS: 260,
+  ACT_MS: 640,
   /**
    * The seats those morphing words take.
    *
@@ -642,8 +647,8 @@ function Front({
               <Membership
                 addPlaceholder="new playlist"
                 busy={busy}
+                empty="In no playlist."
                 entries={placeEntries}
-                flow="column"
                 full={full}
                 note={budget(usedTags)}
                 onToggle={onTogglePlaylist}
@@ -656,8 +661,8 @@ function Front({
               <Membership
                 addPlaceholder="add a tag"
                 busy={busy}
+                empty="No tags."
                 entries={wordEntries}
-                flow="inline"
                 full={full}
                 note={budget(usedTags)}
                 onToggle={onToggleTag}
