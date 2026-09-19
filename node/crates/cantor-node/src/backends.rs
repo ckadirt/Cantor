@@ -216,8 +216,24 @@ impl EngineStore {
         artifact: &BackendArtifact,
         mut on_progress: impl FnMut(u64, u64),
     ) -> Result<PathBuf> {
+        crate::cuda_runtime::ensure(self, client, artifact, &mut on_progress).await?;
+        self.install_archive(client, artifact, on_progress).await
+    }
+
+    /// Shared verified archive cache for engines and their runtime dependencies.
+    pub(crate) async fn install_archive(
+        &self,
+        client: &reqwest::Client,
+        artifact: &BackendArtifact,
+        mut on_progress: impl FnMut(u64, u64),
+    ) -> Result<PathBuf> {
+        // Control requests may overlap generation preparation. Never let two
+        // downloads remove each other's staging directory.
+        static INSTALL_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        let _guard = INSTALL_LOCK.lock().await;
         self.prepare()?;
         let target = self.directory_for(artifact)?;
+        let _file_lock = crate::process_lock::acquire(&target.with_extension("install.lock"))?;
         if self.is_installed(artifact)? {
             on_progress(artifact.bytes, artifact.bytes);
             return Ok(target);
@@ -233,6 +249,7 @@ impl EngineStore {
         // straight download rather than the resumable machinery models use.
         let response = client
             .get(&artifact.url)
+            .timeout(Duration::from_secs(1800))
             .send()
             .await
             .with_context(|| format!("failed to download {}", artifact.url))?
@@ -274,7 +291,7 @@ impl EngineStore {
         let _ = fs::remove_dir_all(&staging);
         fs::create_dir_all(&staging)
             .with_context(|| format!("failed to create {}", staging.display()))?;
-        extract_tar_gz(&archive, &staging)?;
+        extract_archive(&archive, &staging)?;
         let _ = fs::remove_file(&archive);
 
         // The archive contains a single top-level directory; hoist its contents
@@ -309,9 +326,9 @@ fn single_child_directory(root: &Path) -> Result<Option<PathBuf>> {
 /// `-p` and no `-h`: the archive's symlinks carry the versioned SONAMEs
 /// (`libggml.so.0`) that the engine library is linked against. Dereferencing
 /// them produces a tree that cannot be loaded.
-fn extract_tar_gz(archive: &Path, into: &Path) -> Result<()> {
+fn extract_archive(archive: &Path, into: &Path) -> Result<()> {
     let status = std::process::Command::new("tar")
-        .arg("-xzpf")
+        .arg("-xpf")
         .arg(archive)
         .arg("-C")
         .arg(into)
@@ -342,6 +359,110 @@ mod tests {
         ]
       }]
     }"#;
+
+    async fn archive_server(
+        body: Vec<u8>,
+        extra_length: usize,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/runtime.tar.xz", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                request.push(socket.read_u8().await.unwrap());
+                assert!(request.len() < 8192);
+            }
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len() + extra_length
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&body).await.unwrap();
+        });
+        (url, task)
+    }
+
+    #[tokio::test]
+    async fn runtime_archives_are_verified_atomic_and_reused_under_concurrency() {
+        use super::{BackendArtifact, EngineStore};
+        use std::{fs, process::Command};
+        let temp = tempfile::tempdir().unwrap();
+        let package = temp.path().join("package");
+        fs::create_dir(&package).unwrap();
+        fs::write(package.join("runtime.so"), "runtime fixture").unwrap();
+        let archive = temp.path().join("fixture.tar.xz");
+        assert!(
+            Command::new("tar")
+                .arg("-cJf")
+                .arg(&archive)
+                .arg("-C")
+                .arg(temp.path())
+                .arg("package")
+                .status()
+                .unwrap()
+                .success()
+        );
+        let bytes = fs::read(archive).unwrap();
+        let (url, server) = archive_server(bytes.clone(), 0).await;
+        let artifact = BackendArtifact {
+            backend: "runtime-test".into(),
+            arch: "x86_64".into(),
+            os: "linux".into(),
+            url,
+            sha256: super::hex(&<sha2::Sha256 as sha2::Digest>::digest(&bytes)),
+            bytes: bytes.len() as u64,
+        };
+        let store = EngineStore::new(temp.path().join("models"));
+        let client = reqwest::Client::new();
+        let (one, two) = tokio::join!(
+            store.install_archive(&client, &artifact, |_, _| {}),
+            store.install_archive(&client, &artifact, |_, _| {}),
+        );
+        assert_eq!(one.unwrap(), two.unwrap());
+        server.await.unwrap(); // Only one HTTP request, despite two installers.
+        let installed = store.directory_for(&artifact).unwrap();
+        assert_eq!(
+            fs::read_to_string(installed.join("runtime.so")).unwrap(),
+            "runtime fixture"
+        );
+        assert!(store.is_installed(&artifact).unwrap());
+
+        let (url, server) = archive_server(bytes.clone(), 0).await;
+        let bad = BackendArtifact {
+            url,
+            sha256: "00".repeat(32),
+            ..artifact.clone()
+        };
+        assert!(
+            store
+                .install_archive(&client, &bad, |_, _| {})
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("failed verification")
+        );
+        assert!(!store.is_installed(&bad).unwrap());
+        server.await.unwrap();
+
+        let (url, server) = archive_server(bytes, 10).await;
+        let interrupted = BackendArtifact { url, ..artifact };
+        let empty_store = EngineStore::new(temp.path().join("interrupted"));
+        assert!(
+            empty_store
+                .install_archive(&client, &interrupted, |_, _| {})
+                .await
+                .is_err()
+        );
+        assert!(!empty_store.is_installed(&interrupted).unwrap());
+        server.await.unwrap();
+    }
 
     #[test]
     fn a_manifest_resolves_an_artifact_for_this_machine() {

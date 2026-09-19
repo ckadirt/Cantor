@@ -270,8 +270,8 @@ Unattended installs never start processes or download models automatically.
 Installer fixtures and a real detached lifecycle test run from the repo root:
 `node --test node/scripts/install.test.mjs node/scripts/lifecycle.test.mjs`.
 
-Release order matters: publish v0.1.3 native node/engine assets before deploying
-this installer (its default download is pinned to v0.1.3; `CANTOR_VERSION` can
+Release order matters: publish v0.1.5 native node/engine assets before deploying
+this installer (its default download is pinned to v0.1.5; `CANTOR_VERSION` can
 select another tag). The previously released binary lacks the detached lifecycle.
 
 ## Controlling a running node
@@ -333,3 +333,25 @@ MiniMax needs `--lyrics "..."`; ACE-Step can generate lyrics when omitted.
 The app receives lyric capabilities and additional controls from each installed
 model. Core request fields remain `caption`, `lyrics`, and `duration`; controls
 such as `inference_steps` and `guidance_scale` are declared by the model.
+
+### Managed CUDA runtime
+
+On Linux, installing a `cuda12` engine also downloads checksum-pinned NVIDIA
+CUDA 12.8 runtime and cuBLAS archives into the model directory's `engines/`
+cache. They are shared across engine families and preserve NVIDIA's license
+files. This initial download is about 940 MB; model weights are not downloaded
+again. `tar` with xz support is required. The host must provide a compatible
+NVIDIA driver; Cantor does not install a driver or change the system CUDA toolkit.
+CUDA 13 can remain installed alongside Cantor's private CUDA 12 libraries.
+
+`cantor backends --install` prepares dependencies even for existing engine
+archives. `cantor pull` does the same. After `cantor upgrade`, the next generation
+also prepares missing runtime dependencies automatically (progress is recorded
+in `cantor logs`). To download them in advance and explicitly select CUDA, run
+`cantor backends --use cuda12`. That command validates every installed model's
+engine before saving the selection.
+
+A CUDA engine must load its CUDA module and initialize a CUDA device to pass
+validation. Merely loading the CPU fallback inside a CUDA archive is rejected;
+logs report the missing dependency or device failure. Automatic selection may
+choose another backend and reports the rejection; an explicit CUDA pin fails.

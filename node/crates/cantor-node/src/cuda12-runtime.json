@@ -1,0 +1,34 @@
+[
+  {
+    "backend": "cuda12-cuda_cudart",
+    "arch": "x86_64",
+    "os": "linux",
+    "url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-12.8.90-archive.tar.xz",
+    "sha256": "8d566b5fe745c46842dc16945cf36686227536decd2302c372be86da37faca68",
+    "bytes": 1354240
+  },
+  {
+    "backend": "cuda12-cuda_cudart",
+    "arch": "aarch64",
+    "os": "linux",
+    "url": "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/linux-sbsa/cuda_cudart-linux-sbsa-12.8.90-archive.tar.xz",
+    "sha256": "9e54c6686b193efa9642e7f6609ce78b064c5d576946478bcff4c024e1acdea7",
+    "bytes": 1353824
+  },
+  {
+    "backend": "cuda12-libcublas",
+    "arch": "x86_64",
+    "os": "linux",
+    "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/linux-x86_64/libcublas-linux-x86_64-12.8.4.1-archive.tar.xz",
+    "sha256": "21718957c2cf000bacd69d36c95708a2319199e39e056f8b4f0f68e3b9f323bb",
+    "bytes": 938651324
+  },
+  {
+    "backend": "cuda12-libcublas",
+    "arch": "aarch64",
+    "os": "linux",
+    "url": "https://developer.download.nvidia.com/compute/cuda/redist/libcublas/linux-sbsa/libcublas-linux-sbsa-12.8.4.1-archive.tar.xz",
+    "sha256": "429803c0ea8aec1db0050f7bfd807d519e22c9bf223c19000d6018d930741028",
+    "bytes": 937337100
+  }
+]

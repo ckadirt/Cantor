@@ -5,6 +5,7 @@ mod catalog;
 mod checkpoints;
 mod config;
 mod control;
+mod cuda_runtime;
 mod delivery;
 mod engine;
 mod generate;

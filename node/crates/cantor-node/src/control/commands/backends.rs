@@ -117,34 +117,45 @@ pub(super) async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
             .build()
             .context("failed to build an HTTP client")?;
 
-        let mut progress = Vec::new();
-        let installed = install_backend_for_engines(
+        let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+        let fetch = install_backend_for_engines(
             &manifest,
             &store,
             &engines,
             &backend,
             arch,
             &client,
-            |engine, done, total| progress.push((engine.to_owned(), done, total)),
-        )
-        .await?;
-        for (engine, done, total) in progress.iter().rev().take(1) {
-            write_line(
-                writer,
-                &json!({"v": CONTROL_VERSION, "id": id, "t": "progress",
+            |engine, done, total| {
+                let _ = progress_tx.send((engine.to_owned(), done, total));
+            },
+        );
+        tokio::pin!(fetch);
+        let installed = loop {
+            tokio::select! {
+                Some((engine, done, total)) = progress_rx.recv() => {
+                    write_line(writer, &json!({
+                        "v": CONTROL_VERSION, "id": id, "t": "progress",
                         "role": engine, "done": done, "total": total,
-                        "overall_done": done, "overall_total": total}),
-            )
-            .await?;
-        }
+                        "overall_done": done, "overall_total": total,
+                    })).await?;
+                }
+                result = &mut fetch => break result?,
+            }
+        };
 
-        let attempts: Vec<(String, PathBuf)> = installed
-            .iter()
-            .map(|(_, directory)| (backend.clone(), directory.clone()))
-            .collect();
-        let selection = engine::select(&attempts)?;
-        let engine_version = selection.engine.version.clone();
-        drop(selection);
+        let mut versions = Vec::new();
+        for (family, directory) in &installed {
+            let selection = engine::select(&[(backend.clone(), directory.clone())])
+                .with_context(|| format!("{backend} is not usable for {family}"))?;
+            if selection.engine.model != *family {
+                bail!(
+                    "{family} archive contains the {} engine",
+                    selection.engine.model
+                );
+            }
+            versions.push(format!("{family}: {}", selection.engine.version));
+        }
+        let engine_version = versions.join(", ");
 
         {
             let mut locked = state
@@ -270,8 +281,35 @@ pub(super) async fn run_backends<W: tokio::io::AsyncWrite + Unpin>(
         attempts.push((backend.clone(), directory));
     }
 
-    // The measured part: load each in turn, keep the first that works.
-    let selection = engine::select(&attempts)?;
+    // Validate every required family before advertising a backend as usable.
+    let mut rejected = Vec::new();
+    let mut chosen = None;
+    for group in attempts.chunks(engine_names.len()) {
+        let result = (|| -> Result<_> {
+            let mut first = None;
+            for ((backend, directory), family) in group.iter().zip(&engine_names) {
+                let selection = engine::select(&[(backend.clone(), directory.clone())])
+                    .with_context(|| format!("{backend} is not usable for {family}"))?;
+                if selection.engine.model != *family {
+                    bail!(
+                        "{family} archive contains the {} engine",
+                        selection.engine.model
+                    );
+                }
+                first.get_or_insert(selection.engine);
+            }
+            first.context("no engine to validate")
+        })();
+        match result {
+            Ok(engine) => {
+                chosen = Some(engine);
+                break;
+            }
+            Err(error) => rejected.push((group[0].0.clone(), format!("{error:#}"))),
+        }
+    }
+    let engine = chosen.with_context(|| format!("no backend could be validated: {rejected:?}"))?;
+    let selection = engine::Selection { engine, rejected };
     for (backend, why) in &selection.rejected {
         write_line(
             writer,

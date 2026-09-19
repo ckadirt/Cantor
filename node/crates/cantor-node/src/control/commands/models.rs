@@ -182,11 +182,11 @@ pub(super) async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
     if let Some(backend) = wanted {
         match BackendManifest::fetch(&plan.backends_url).await {
             Ok(manifest) => match manifest.find(&engine_name, &backend, arch) {
-                Some(artifact) if !engine_store.is_installed(artifact).unwrap_or(false) => {
+                Some(artifact) => {
                     write_line(
                         writer,
                         &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
-                                "msg": format!("fetching the {backend} engine for {engine_name}")}),
+                                "msg": format!("preparing the {backend} engine and runtime for {engine_name}")}),
                     )
                     .await?;
                     let mut last = 0_u64;
@@ -212,7 +212,6 @@ pub(super) async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
                         }
                     }
                 }
-                Some(_) => {}
                 None => {
                     write_line(
                         writer,
