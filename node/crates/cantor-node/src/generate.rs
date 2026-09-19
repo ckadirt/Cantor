@@ -51,8 +51,10 @@ pub struct Request {
     ///
     /// The engine receives its own field names because the node never
     /// translates a family or selector into one -- the catalog declared them.
+    /// Already encoded by `engine_fields`, so the JSON shape of each value is
+    /// the declared one rather than whatever the protocol scalar carried.
     #[serde(flatten)]
-    pub extensions: BTreeMap<String, cantor_proto::ParameterValue>,
+    pub extensions: BTreeMap<String, serde_json::Value>,
 }
 
 impl Request {
@@ -72,6 +74,46 @@ impl Request {
     fn to_json(&self) -> Result<Vec<u8>> {
         serde_json::to_vec(self).context("failed to encode the generation request")
     }
+}
+
+/// Encode resolved declared values as the JSON fields the engine reads.
+///
+/// The declaration decides the shape, never the value that arrived. A
+/// protocol scalar carries every number as an `f64`, so a declared integer
+/// reaches this point as `30.0`, and an ABI that checks its field kinds --
+/// MiniMax refuses a fractional `inference_steps` -- rejects the request
+/// before the first stage runs. Reading the shape off the runtime value
+/// instead would fail the other way: a guidance of exactly 2.0 would narrow
+/// to `2` for an engine that declared it a number and wants one.
+pub fn engine_fields(
+    resolved: BTreeMap<String, cantor_proto::ParameterValue>,
+    declared: &[cantor_proto::ModelParameter],
+) -> BTreeMap<String, serde_json::Value> {
+    use cantor_proto::{ModelParameter, ParameterValue};
+
+    resolved
+        .into_iter()
+        .map(|(key, value)| {
+            let declaration = declared
+                .iter()
+                .find(|parameter| parameter.key() == key.as_str());
+            let encoded = match (declaration, value) {
+                // Admission already rejected a non-integral value for a
+                // declared integer; a default cannot be one. Anything that
+                // reaches here regardless keeps its own shape rather than
+                // being truncated into a different number.
+                (Some(ModelParameter::Integer { .. }), ParameterValue::Number(number))
+                    if number.is_finite() && number.fract() == 0.0 =>
+                {
+                    serde_json::json!(number as i64)
+                }
+                (_, ParameterValue::Boolean(flag)) => serde_json::json!(flag),
+                (_, ParameterValue::Number(number)) => serde_json::json!(number),
+                (_, ParameterValue::Text(text)) => serde_json::json!(text),
+            };
+            (key, encoded)
+        })
+        .collect()
 }
 
 /// Where a generation currently is, for progress reporting.
@@ -367,7 +409,34 @@ fn to_i16(sample: f32) -> i16 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Audio, Request, enforce_duration_ceiling, reassert_explicit_inputs, to_i16};
+    use std::collections::BTreeMap;
+
+    use cantor_proto::{ModelParameter, ParameterValue};
+
+    use super::{
+        Audio, Request, enforce_duration_ceiling, engine_fields, reassert_explicit_inputs, to_i16,
+    };
+
+    fn minimax_parameters() -> Vec<ModelParameter> {
+        vec![
+            ModelParameter::Integer {
+                key: "inference_steps".into(),
+                label: "Flow steps".into(),
+                default: 30,
+                minimum: 1,
+                maximum: 200,
+                step: Some(1),
+            },
+            ModelParameter::Number {
+                key: "guidance_scale".into(),
+                label: "Flow guidance".into(),
+                default: 2.0,
+                minimum: 0.0,
+                maximum: 10.0,
+                step: Some(0.1),
+            },
+        ]
+    }
 
     #[test]
     fn samples_are_clamped_not_wrapped() {
@@ -398,6 +467,56 @@ mod tests {
         assert!(json.contains("\"guidance_scale\":1.25"), "{json}");
         assert!(!json.contains("\"steps\""), "{json}");
         assert!(!json.contains("\"cfg\""), "{json}");
+    }
+
+    #[test]
+    fn a_declared_integer_reaches_the_engine_as_an_integer() {
+        let declared = minimax_parameters();
+        let resolved = cantor_proto::extensions::resolve_with_defaults(&BTreeMap::new(), &declared);
+        let mut request = Request::new("a quiet song");
+        request.extensions = engine_fields(resolved, &declared);
+
+        let json = String::from_utf8(request.to_json().expect("encode")).expect("utf8");
+        // MiniMax reads `inference_steps` as an unsigned integer and refuses
+        // `30.0`, which is what the protocol's f64 scalar would otherwise emit.
+        assert!(json.contains("\"inference_steps\":30"), "{json}");
+        assert!(!json.contains("\"inference_steps\":30.0"), "{json}");
+        // A declared number keeps its own shape even when the value is whole:
+        // an engine that asked for a float should still receive one.
+        assert!(json.contains("\"guidance_scale\":2.0"), "{json}");
+    }
+
+    #[test]
+    fn a_supplied_integer_is_encoded_from_its_declaration() {
+        let declared = minimax_parameters();
+        let sent = BTreeMap::from([
+            ("inference_steps".to_owned(), ParameterValue::Number(48.0)),
+            ("guidance_scale".to_owned(), ParameterValue::Number(3.0)),
+        ]);
+        let resolved = cantor_proto::extensions::resolve_with_defaults(&sent, &declared);
+        let mut request = Request::new("a quiet song");
+        request.extensions = engine_fields(resolved, &declared);
+
+        let json = String::from_utf8(request.to_json().expect("encode")).expect("utf8");
+        assert!(json.contains("\"inference_steps\":48"), "{json}");
+        assert!(!json.contains("\"inference_steps\":48.0"), "{json}");
+        assert!(json.contains("\"guidance_scale\":3.0"), "{json}");
+    }
+
+    #[test]
+    fn an_undeclared_value_keeps_the_shape_it_arrived_with() {
+        let resolved = BTreeMap::from([
+            ("top_k".to_owned(), ParameterValue::Number(50.0)),
+            ("sampler".to_owned(), ParameterValue::Text("euler".into())),
+            ("karras".to_owned(), ParameterValue::Boolean(true)),
+        ]);
+        let mut request = Request::new("a quiet song");
+        request.extensions = engine_fields(resolved, &[]);
+
+        let json = String::from_utf8(request.to_json().expect("encode")).expect("utf8");
+        assert!(json.contains("\"top_k\":50.0"), "{json}");
+        assert!(json.contains("\"sampler\":\"euler\""), "{json}");
+        assert!(json.contains("\"karras\":true"), "{json}");
     }
 
     #[test]
