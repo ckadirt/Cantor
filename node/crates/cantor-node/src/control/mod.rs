@@ -203,7 +203,11 @@ mod tests {
 
         let error = bind(&socket_path).expect_err("path at bound must be rejected");
 
-        assert!(error.to_string().contains("the kernel limit is 107"));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("the kernel limit is {MAX_SOCKET_PATH_BYTES}"))
+        );
         assert!(!socket_path.exists());
     }
 
@@ -292,11 +296,14 @@ mod tests {
         assert_eq!(first.len() + 1, MAX_REQUEST_BYTES as usize - 8);
         let second = json!({"v": 1, "id": "second", "t": "status"}).to_string();
 
+        // Send exactly the budget: the second frame is truncated by the
+        // connection reader. Writing beyond it races the server closing the
+        // socket and can yield BrokenPipe on macOS before write_all returns.
+        let requests = format!("{first}\n{second}\n");
         writer
-            .write_all(format!("{first}\n{second}\n").as_bytes())
+            .write_all(&requests.as_bytes()[..MAX_REQUEST_BYTES as usize])
             .await
             .expect("write requests");
-        writer.shutdown().await.expect("close request half");
 
         let first_response = next_frame(&mut lines).await;
         assert_eq!(first_response["t"], "status");
