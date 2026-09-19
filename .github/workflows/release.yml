@@ -3,6 +3,10 @@ name: release
 on:
   push:
     tags: ['v*']
+  pull_request:
+    paths:
+      - '.github/workflows/release.yml'
+      - 'node/scripts/package-macos-engine.py'
 
 permissions:
   contents: write
@@ -40,6 +44,7 @@ jobs:
       # `cantor --version` contradicts the release it came from, and `cantor
       # upgrade` compares exactly those two things.
       - name: tag matches the crate version
+        if: github.event_name == 'push'
         working-directory: node
         run: |
           set -eu
@@ -132,6 +137,7 @@ jobs:
           if-no-files-found: error
 
   release:
+    if: github.event_name == 'push'
     needs: [build, macos-engines]
     runs-on: ubuntu-22.04
     steps:
