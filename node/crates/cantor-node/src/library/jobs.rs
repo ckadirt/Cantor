@@ -80,6 +80,19 @@ pub enum JobControl {
     Retry,
 }
 
+/// What happened to a request to forget a job outright.
+///
+/// Forgetting is not a control: it produces no new `JobView` because there is
+/// no job left to view. `Refused` carries the job that is still there, which is
+/// how a caller learns the state it would have had to be in.
+#[derive(Debug)]
+pub enum ForgetResult {
+    Forgotten,
+    Conflict(JobView),
+    NotFound,
+    Refused(JobView),
+}
+
 #[derive(Debug)]
 pub enum ControlResult {
     Updated(JobView),
@@ -191,6 +204,7 @@ impl Library {
             stage: None,
             progress: None,
             model: submission.model.clone(),
+            caption: Some(submission.generation.caption.clone()),
             created_at: now.clone(),
             updated_at: now,
             error: None,
@@ -374,6 +388,66 @@ impl Library {
         )?;
         write_status(&artifact_directory, &updated, attempt)?;
         Ok(ControlResult::Updated(updated))
+    }
+
+    /// Erase a finished job: its row, its artifact rows, and its directory.
+    ///
+    /// Only a job that stopped without producing a song can be forgotten. A
+    /// completed job owns the song's audio under the same directory, so this
+    /// refuses one on both grounds it can check — the state, and the published
+    /// row that shares the job's id — rather than trusting either alone.
+    ///
+    /// The row goes first and the bytes second. A crash in between leaves a
+    /// directory with no row, which is exactly the shape `reconcile_startup`
+    /// already sweeps; the reverse would leave a row pointing at nothing.
+    pub fn forget_job(
+        &mut self,
+        principal: PrincipalId,
+        id: &str,
+        expected_revision: Option<u32>,
+    ) -> Result<ForgetResult> {
+        let principal_hex = principal.to_string();
+        let Some(current) = self.get(principal, id)? else {
+            return Ok(ForgetResult::NotFound);
+        };
+        if expected_revision.is_some_and(|expected| expected != current.revision) {
+            return Ok(ForgetResult::Conflict(current));
+        }
+        if !matches!(current.state, JobState::Failed | JobState::Cancelled) {
+            return Ok(ForgetResult::Refused(current));
+        }
+        let published: bool = self.connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM songs WHERE id=?1)",
+            params![id],
+            |row| row.get(0),
+        )?;
+        if published {
+            return Ok(ForgetResult::Refused(current));
+        }
+
+        let transaction = self.connection.transaction()?;
+        transaction.execute("DELETE FROM artifacts WHERE job_id=?1", params![id])?;
+        let removed = transaction.execute(
+            "DELETE FROM jobs WHERE principal_id=?1 AND id=?2 AND state IN ('failed','cancelled')",
+            params![principal_hex, id],
+        )?;
+        if removed != 1 {
+            transaction.rollback()?;
+            let current = self
+                .get(principal, id)?
+                .context("forgotten job disappeared")?;
+            return Ok(ForgetResult::Conflict(current));
+        }
+        transaction.commit()?;
+
+        let principal_directory = self.root.join("jobs").join(&principal_hex);
+        let job_directory = principal_directory.join(id);
+        if job_directory.exists() {
+            std::fs::remove_dir_all(&job_directory)
+                .with_context(|| format!("failed to remove {}", job_directory.display()))?;
+            File::open(&principal_directory)?.sync_all()?;
+        }
+        Ok(ForgetResult::Forgotten)
     }
 
     pub fn hold_principal_jobs(&mut self, principal: PrincipalId) -> Result<Vec<JobView>> {
@@ -695,8 +769,15 @@ impl Library {
             (Some(enum_text(code)?), Some(message))
         };
         let now = now_rfc3339();
+        // A requeue starts the work over, so its stage goes. A terminal failure
+        // keeps the one it died in: where it stopped is most of what a person
+        // has to go on, and `finish_shutdown` already keeps a stage the same
+        // way. The counts inside that stage still go — they describe work that
+        // is no longer happening.
         let changed = self.connection.execute(
-            "UPDATE jobs SET state=?3,stage=NULL,progress_completed=NULL,
+            "UPDATE jobs SET state=?3,
+             stage=CASE WHEN ?3='failed' THEN stage ELSE NULL END,
+             progress_completed=NULL,
              progress_total=NULL,progress_unit=NULL,error_code=?4,error_message=?5,
              error_retryable=?6,consecutive_failures=?7,
              revision=revision+1,updated_at=?8
