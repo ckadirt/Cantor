@@ -211,4 +211,21 @@ describe('generation as marks', () => {
     expect(build([job('job-1', 'running')]).jobs.get('node-a:job-1')?.caption)
       .toBeNull();
   });
+
+  it('takes the words from the node when it sends them, outbox or not', () => {
+    // A job submitted from another phone, or by an app since reinstalled: the
+    // outbox holds nothing, and the node's copy is the only one there is.
+    const fromNode = { ...job('job-1', 'failed'), caption: 'una cumbia lenta' };
+    expect(build([fromNode]).jobs.get('node-a:job-1')?.caption).toBe(
+      'una cumbia lenta',
+    );
+    // With both, the node wins: it is the same on every device.
+    expect(
+      build(
+        [fromNode],
+        [],
+        outboxEntry('node-a', 'job-1', 'stale local copy'),
+      ).jobs.get('node-a:job-1')?.caption,
+    ).toBe('una cumbia lenta');
+  });
 });

@@ -18,12 +18,16 @@ function paint(color: string) {
 function song(overrides: Partial<LensSong> = {}): LensSong {
   return {
     key: 'node-a:song-a',
+    id: 'song-a',
+    seed: 41822,
     title: 'A song with a fairly long title',
     createdAtMs: Date.parse('2026-08-10T00:00:00Z'),
     durationMs: 141_000,
     model: 'acestep:1.5-fast',
     nodeLabel: 'Studio',
     audioState: 'remote',
+    arriving: null,
+    byteLength: 3_400_000,
     playing: false,
     analysis: neutralAnalysis(),
     progress: null,
@@ -80,6 +84,7 @@ describe('every lens draws', () => {
     ink,
     muted: paint('#666666'),
     faint: paint('#A6A6A6'),
+    outline: paint('#000000'),
   };
   const display = Skia.Font(undefined, 20);
   const fonts = { display, body: display, mono: Skia.Font(undefined, 9) };
@@ -95,6 +100,19 @@ describe('every lens draws', () => {
     ['the playing song', song({ playing: true, progress: 0.42 })],
     ['a song at its very end', song({ playing: true, progress: 1 })],
     ['a silent song', song({ analysis: analyseWindow(silence()) })],
+    // The four availability marks: every lens has to survive all of them, and
+    // the name lens has to tell the last two apart.
+    ['a song still on the node', song({ audioState: 'remote' })],
+    ['a song arriving', song({ audioState: 'partial', arriving: 0.4 })],
+    [
+      'a song arriving with no known total',
+      song({ audioState: 'partial', arriving: null }),
+    ],
+    ['a downloaded song', song({ audioState: 'pinned' })],
+    [
+      'a downloaded song that is playing',
+      song({ audioState: 'pinned', playing: true, progress: 0.2 }),
+    ],
   ];
 
   for (const lens of LENSES) {

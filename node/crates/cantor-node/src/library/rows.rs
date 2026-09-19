@@ -2,10 +2,19 @@
 
 use anyhow::{Result, bail};
 use cantor_proto::{ErrorCode, JobError, JobProgress, JobView};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub(super) const JOB_VIEW_COLUMNS: &str = "id,revision,state,stage,progress_completed,progress_total,progress_unit,\
-     model_selector,created_at,updated_at,error_code,error_message,error_retryable";
+     model_selector,created_at,updated_at,error_code,error_message,error_retryable,request_json";
+
+/// Just the caption out of a stored request.
+///
+/// The immutable request holds lyrics too, and a job list must not carry tens
+/// of kilobytes per row to answer "which one was this?".
+#[derive(Deserialize)]
+struct SubmittedCaption {
+    caption: String,
+}
 
 pub(super) fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<JobView> {
     let state: String = row.get(offset + 2)?;
@@ -28,6 +37,12 @@ pub(super) fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::
             })
         })
         .transpose()?;
+    let request_json: String = row.get(offset + 13)?;
+    // A request that no longer parses is a corrupt row, not a missing caption;
+    // every other column is still worth returning, so the job stays listable.
+    let caption = serde_json::from_str::<SubmittedCaption>(&request_json)
+        .ok()
+        .map(|request| request.caption);
     let error_code: Option<String> = row.get(offset + 10)?;
     let error_message: Option<String> = row.get(offset + 11)?;
     let error_retryable: bool = row.get(offset + 12)?;
@@ -47,6 +62,7 @@ pub(super) fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::
         stage,
         progress,
         model: row.get(offset + 7)?,
+        caption,
         created_at: row.get(offset + 8)?,
         updated_at: row.get(offset + 9)?,
         error,

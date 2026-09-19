@@ -29,6 +29,18 @@ export function jobControls(job: JobView): JobControl[] {
   }
 }
 
+/**
+ * Whether a job can be deleted outright.
+ *
+ * Deletion is not a control: it ends the record rather than the work, so it is
+ * offered only where there is no work left to end and nothing was published.
+ * The node enforces the same two states; this is the app agreeing with it in
+ * advance rather than offering an act that would be refused.
+ */
+export function canForgetJob(job: JobView): boolean {
+  return job.state === 'failed' || job.state === 'cancelled';
+}
+
 export function jobStateLabel(job: JobView): string {
   if (job.state === 'running') {
     switch (job.stage) {

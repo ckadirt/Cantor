@@ -23,6 +23,8 @@ import { identityPanel } from './panels/IdentityPanel';
 import { backupPanel } from './panels/BackupPanel';
 import { thresholdPanel } from './panels/ThresholdPanel';
 import type { PanelDef } from './panels/types';
+import { RestoreSheet } from './RestoreSheet';
+import type { AppIdentity } from '../identity/derive';
 import { space, type, usePalette } from '../theme/tokens';
 
 // Flow order: orient → engines → identity → backup → threshold.
@@ -50,13 +52,22 @@ const TITLE_H = 78;
 
 type Props = {
   onDone: () => void;
+  /**
+   * A phone that has been here before, arriving with its twelve words.
+   *
+   * Onboarding is where restore belongs: first launch after a reinstall is the
+   * only moment the phrase is worth anything, and the flow that mints a new
+   * identity is exactly the flow a returning person must be able to leave.
+   */
+  onRestored: (identity: AppIdentity) => void;
 };
 
 /** Full-screen overlay rendered above MainScreen until the flow completes. */
-export function Onboarding({ onDone }: Props) {
+export function Onboarding({ onDone, onRestored }: Props) {
   const pal = usePalette();
   const { width } = useWindowDimensions();
   const [step, setStep] = useState(-1); // -1 = intro panel
+  const [restoring, setRestoring] = useState(false);
 
   // The body swaps by hand, not with entering/exiting layout animations —
   // those flash the incoming view for a frame on the new architecture. One
@@ -130,7 +141,17 @@ export function Onboarding({ onDone }: Props) {
         <Text style={[type.eyebrow, { color: pal.muted }]}>
           {step + 1} / {PANELS.length}
         </Text>
-        <View style={styles.back} />
+        {/* The door out of this flow for someone who has been here before. */}
+        <Pressable
+          accessibilityLabel="Restore from twelve words"
+          accessibilityRole="button"
+          hitSlop={12}
+          onPress={() => setRestoring(true)}
+          style={styles.back}>
+          <Text style={[type.eyebrow, styles.restore, { color: pal.faint }]}>
+            RESTORE
+          </Text>
+        </Pressable>
       </Animated.View>
 
       <View style={styles.sigilZone}>
@@ -172,6 +193,15 @@ export function Onboarding({ onDone }: Props) {
           onDone={() => shownStep === step && onDone()}
         />
       </Animated.View>
+
+      <RestoreSheet
+        onClose={() => setRestoring(false)}
+        onRestored={identity => {
+          setRestoring(false);
+          onRestored(identity);
+        }}
+        visible={restoring}
+      />
     </View>
   );
 }
@@ -192,7 +222,11 @@ const styles = StyleSheet.create({
     paddingTop: space.xl,
     paddingBottom: space.sm,
   },
-  back: { minWidth: 56 },
+  // Both side slots take equal space so the counter sits at true centre. The
+  // right one used to be an empty spacer of the same width; a word in it is
+  // wider, and the frame must not shift while letters fly between panels.
+  back: { flexBasis: 0, flexGrow: 1, minWidth: 56 },
+  restore: { textAlign: 'right' },
   sigilZone: {
     height: SIGIL_H,
     marginTop: space.md,

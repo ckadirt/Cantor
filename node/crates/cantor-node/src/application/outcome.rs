@@ -56,6 +56,15 @@ pub(super) fn from_response(
             }
             effects.push(ApplicationEffect::RefreshNodeInfo);
         }
+        NodeMessage::JobForgotten { job_id, .. } => {
+            if let Some(principal_id) = principal_id {
+                effects.push(ApplicationEffect::Publish(NodeEvent::JobForgotten {
+                    principal_id,
+                    job_id: job_id.clone(),
+                }));
+            }
+            effects.push(ApplicationEffect::RefreshNodeInfo);
+        }
         NodeMessage::SongUpdated { .. } => {
             if let Some((principal_id, revision)) = principal_id.zip(committed_library_revision) {
                 effects.push(ApplicationEffect::Publish(NodeEvent::LibraryChanged {
@@ -87,6 +96,7 @@ mod tests {
             stage: None,
             progress: None,
             model: "model:variant".into(),
+            caption: Some("a caption".into()),
             created_at: "created".into(),
             updated_at: "updated".into(),
             error: None,

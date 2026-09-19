@@ -1,4 +1,4 @@
-import { smootherstep } from './bands';
+import { REPRESENTATION_WINDOWS, smootherstep } from './bands';
 import type {
   Box,
   Camera,
@@ -16,12 +16,151 @@ export const LEVEL_SCALE_RATIOS = {
   grain: 670,
 } as const;
 
+/**
+ * KNOB — is L3 reachable?
+ *
+ * The grain is built and it works, but the alpha stops at the player: L2 is
+ * where the product is being tuned, and a level past it that nobody is looking
+ * at is a level that drifts. Flip this to `true` and the descent, the camera's
+ * ceiling and the decode that feeds the axis all open again together — every
+ * one of them reads this rather than deciding for itself, so there is no state
+ * where half of L3 is on.
+ *
+ * Typed `boolean` rather than left as the literal `false` on purpose: a literal
+ * narrows every `GRAIN_ENABLED ? … : …` below it to one branch, and the other
+ * branch stops being type-checked the moment it stops being reachable.
+ */
+export const GRAIN_ENABLED: boolean = false;
+
 /** The exclusive upper bound for each semantic zoom level, relative to FIT. */
 export const LEVEL_BOUNDARIES = {
   field: 2,
   shelf: 13,
   song: 170,
 } as const;
+
+/**
+ * Is the camera standing in a song — L2 or closer?
+ *
+ * The counterpart of `isShelfDistance`, and it exists for the same reason: the
+ * gesture has to answer this on the UI thread, where `levelOf` cannot go
+ * because it throws. A song is somewhere you *are*, not somewhere you look
+ * across, so the pan reads this and declines to move the camera.
+ */
+export function isSongDistance(scale: number, fitScale: number): boolean {
+  'worklet';
+  if (!(fitScale > 0) || !(scale > 0)) return false;
+  return scale / fitScale >= LEVEL_BOUNDARIES.shelf;
+}
+
+/**
+ * KNOBS — how a mark is taken apart and put back together as a row, in
+ * multiples of FIT.
+ *
+ * Two windows rather than one, because a mark becoming a row is two things and
+ * they must not happen at once. The face steps aside and grows into the seat
+ * beside the row; *then* the name is written into the room it left. Run
+ * together, the face travels straight through the title — it leaves the mark's
+ * point and its seat is `ROW_PREVIEW_OFFSET_PX` to the left, while the title
+ * begins less than half that far left, so partway through its journey the shape
+ * is sitting on the first letters of the name it is introducing.
+ *
+ * Both are written in the boundaries the zoom model already has, so the gesture
+ * is legible as a sentence about levels rather than as two more tuning numbers:
+ * the mark is seated by the moment the field stops being a map, and the name is
+ * finished ink by the moment you are standing in the shelf.
+ */
+export const ROW_ARRIVAL = {
+  /**
+   * The walk. It starts where the row band starts — the first distance at
+   * which a row is any part of what is on screen — and ends at the level
+   * boundary.
+   */
+  FACE_WALK: [REPRESENTATION_WINDOWS.row[0], LEVEL_BOUNDARIES.field],
+  /**
+   * The writing, from that boundary to the seat.
+   *
+   * It deliberately outruns the row band, which holds at 3.6. Ending there
+   * would give the pen the last fifth of a tapped descent — about 170 ms of the
+   * 700 — and a gesture nobody can see is not a gesture. Ending at the seat
+   * gives it most of the flight, and says something truer: the name finishes as
+   * you land.
+   */
+  NAME_WRITE: [LEVEL_BOUNDARIES.field, LEVEL_SCALE_RATIOS.shelf],
+} as const;
+
+/**
+ * KNOBS — how a row becomes the player, in multiples of FIT.
+ *
+ * Two windows, for the reason `ROW_ARRIVAL` gives one level down: a row
+ * becoming the player is two things and they must not happen at once. The
+ * picture arrives first — the face grows out of its row seat into the middle of
+ * the view and the ring blooms around it — and *then* the name travels to the
+ * foot and the availability line becomes the recipe. Run together on one
+ * number, as they were first built, everything in the frame moves at the same
+ * instant and the crossing reads as a lurch rather than as a sentence.
+ *
+ * The overlap is deliberate and it is one unit wide. The name starts where the
+ * player first becomes visible at all — `REPRESENTATION_WINDOWS.song[0]` —
+ * which is just before the shape finishes settling at the shelf boundary, so
+ * the two beats are legible as two without the hand-off reading as a stutter.
+ *
+ * Both are written in boundaries the zoom model already has: the song is a
+ * picture by the moment you stop standing in the shelf, and its name is under
+ * it by the moment you have arrived at the song.
+ */
+export const SONG_ARRIVAL = {
+  /** The face out of its row seat and into the view; the ring around it. */
+  SHAPE_GROW: [LEVEL_SCALE_RATIOS.shelf, LEVEL_BOUNDARIES.shelf],
+  /** The name and the recipe down into the foot. */
+  NAME_TRAVEL: [REPRESENTATION_WINDOWS.song[0], LEVEL_SCALE_RATIOS.song],
+} as const;
+
+/**
+ * A pose's progress across a window, measured the way the camera actually
+ * moves.
+ *
+ * In *log* scale, and with no easing of its own — and both halves of that are
+ * load-bearing.
+ *
+ * `interpolateCamera` eases progress once, with `smootherstep`, and then walks
+ * the scale exponentially between the two ends. So a window measured in linear
+ * ratio covers wildly different amounts of the flight at either end of it, and
+ * an easing applied here is a second smootherstep on top of the camera's own.
+ * Together those made the player's parts stand still for the first half of a
+ * descent and then cross the screen in under two hundred milliseconds — the
+ * name travelled 29% further than the straight line between its two poses,
+ * hooking through a dog-leg on the way, at six times its own average speed.
+ * Measured like this the local pose advances in lockstep with the camera that
+ * is carrying it, and the two motions sum to a straight line at an even pace.
+ *
+ * The camera's easing is still there. It is simply applied once.
+ */
+function logArrival(
+  scale: number,
+  fitScale: number,
+  window: readonly [number, number],
+): number {
+  'worklet';
+  if (!(fitScale > 0) || !(scale > 0)) return 0;
+  const [from, to] = window;
+  if (!(from > 0) || !(to > from)) return 0;
+  const span = Math.log(to) - Math.log(from);
+  const walked = (Math.log(scale / fitScale) - Math.log(from)) / span;
+  return walked <= 0 ? 0 : walked >= 1 ? 1 : walked;
+}
+
+/** How far the song has grown out of its row and into the middle of the view. */
+export function songShapeArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return logArrival(scale, fitScale, SONG_ARRIVAL.SHAPE_GROW);
+}
+
+/** How far the song's name and recipe have travelled to the foot. */
+export function songNameArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return logArrival(scale, fitScale, SONG_ARRIVAL.NAME_TRAVEL);
+}
 
 export type FitOptions = Readonly<{
   horizontalSafePaddingPx: number;
@@ -34,6 +173,44 @@ export type FitOptions = Readonly<{
   maxScale: number;
   emptyScale: number;
 }>;
+
+/*
+ * Declared before its callers, not after them: the worklets plugin rewrites a
+ * `'worklet'` function declaration into a module-scope `const`, and captures it
+ * into a calling worklet's closure at the point that caller is defined. A
+ * helper defined further down the file is captured as `undefined`.
+ */
+function assertPositive(value: number, label: string): void {
+  'worklet';
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new RangeError(`${label} must be a finite positive number.`);
+  }
+}
+
+/** Where a distance sits inside a window of FIT multiples, eased. */
+function arrival(
+  scale: number,
+  fitScale: number,
+  window: readonly [number, number],
+): number {
+  'worklet';
+  if (!(fitScale > 0) || !(scale > 0)) return 0;
+  const span = window[1] - window[0];
+  if (!(span > 0)) return scale / fitScale >= window[1] ? 1 : 0;
+  return smootherstep((scale / fitScale - window[0]) / span);
+}
+
+/** How far the face has walked to the seat beside its row. */
+export function faceArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return arrival(scale, fitScale, ROW_ARRIVAL.FACE_WALK);
+}
+
+/** How much of the row's name has been written, and its metadata arrived. */
+export function nameArrival(scale: number, fitScale: number): number {
+  'worklet';
+  return arrival(scale, fitScale, ROW_ARRIVAL.NAME_WRITE);
+}
 
 export function worldToScreen(
   point: Point,
@@ -51,6 +228,7 @@ export function screenToWorld(
   camera: Camera,
   viewport: Viewport,
 ): Point {
+  'worklet';
   assertPositive(camera.scale, 'Camera scale');
   return {
     x: (point.x - viewport.width / 2) / camera.scale + camera.x,
@@ -58,13 +236,20 @@ export function screenToWorld(
   };
 }
 
-/** Zoom without letting the world point under the focal point drift. */
+/**
+ * Zoom without letting the world point under the focal point drift.
+ *
+ * A worklet as well as a function: the pinch handler runs on the UI thread, so
+ * the focal-point correction has to be available there rather than a thread
+ * hop away.
+ */
 export function zoomAroundFocalPoint(
   camera: Camera,
   focalPoint: Point,
   scaleMultiplier: number,
   viewport: Viewport,
 ): Camera {
+  'worklet';
   assertPositive(scaleMultiplier, 'Scale multiplier');
   const worldPoint = screenToWorld(focalPoint, camera, viewport);
   const scale = camera.scale * scaleMultiplier;
@@ -173,10 +358,4 @@ function lerp(from: number, to: number, progress: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
-}
-
-function assertPositive(value: number, label: string): void {
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new RangeError(`${label} must be a finite positive number.`);
-  }
 }

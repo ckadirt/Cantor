@@ -103,7 +103,7 @@ describe('local audio repository characterization', () => {
     });
   });
 
-  it('records a durable native append as partial at the returned offset', async () => {
+  it('appends through to native and leaves the advisory index untouched', async () => {
     native.appendChunk.mockResolvedValue(65_537);
 
     await expect(
@@ -117,9 +117,11 @@ describe('local audio repository characterization', () => {
       1,
       'encoded-chunk',
     );
-    expect(await storedIndex()).toMatchObject({
-      [audioKey(NODE, SONG, DIGEST)]: expectedRecord('partial', 65_537),
-    });
+    // Writing the index here would be a full read-modify-write of every
+    // artifact on the phone per 64 KiB, inside the download loop, to record a
+    // number no one reads: the resume offset comes from the file on disk and
+    // `inspectAudio` refreshes the index from native anyway.
+    expect(await storedIndex()).toEqual({});
   });
 
   it('marks finalize as cached and preserves the currently ignored eviction result', async () => {

@@ -3,7 +3,7 @@ export {
   EMPTY_DRAFT,
   canSubmit,
   describeProblem,
-  modelUnion,
+  modelsFor,
   problemsWith,
   targetOf,
   toGenerationRequest,

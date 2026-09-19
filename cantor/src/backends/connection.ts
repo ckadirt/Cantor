@@ -38,6 +38,7 @@ import type { BackendRecord, ConnectionSnapshot } from './types';
 import {
   decodeArtifactInfo,
   decodeArtifactPart,
+  decodeForgottenJob,
   decodeJobResponse,
   decodeJobsPage,
   decodeLibraryChanges,
@@ -57,6 +58,13 @@ import {
 import { RelaySocket } from './relaySocket';
 
 const REQUEST_TIMEOUT_MS = 15_000;
+/**
+ * How many times a download may reopen after the node drops its transfer.
+ *
+ * A reconnect costs one; a handful covers a flaky tunnel across a long song
+ * without letting a session that expires every transfer loop forever.
+ */
+const ARTIFACT_RESUME_ATTEMPTS = 4;
 /** Matches `MAX_PETNAME_BYTES` in the node's `config.rs`. */
 const MAX_PETNAME_BYTES = 64;
 
@@ -65,6 +73,12 @@ type ConnectionCallbacks = {
   onNodeInfo: (nodeInfo: NodeInfo) => void;
   onPairTokenConsumed: () => void;
   onTransportConfirmed: (descriptor: TransportDescriptor) => void;
+  /**
+   * A job is gone from the node, whether this app asked or another of its
+   * sessions did. The snapshot merge is monotone, so anything that persists a
+   * job has to be told to drop it or it would resurrect on the next load.
+   */
+  onJobForgotten: (jobId: string) => void;
 };
 
 export type ArtifactSink = {
@@ -384,6 +398,16 @@ export class BackendConnection {
       this.requests.deliver(payload.id, 'job.controlled', payload);
       return;
     }
+    if (payload.t === 'job.forgotten') {
+      if (typeof payload.id === 'string') {
+        this.requests.deliver(payload.id, 'job.forgotten', payload);
+        return;
+      }
+      // Unsolicited: another session of this same account deleted it.
+      const forgotten = decodeForgottenJob(payload);
+      if (forgotten !== null) this.dropJob(forgotten);
+      return;
+    }
     if (payload.t === 'job.updated') {
       const updated = decodeJobResponse(payload);
       if (updated === null) {
@@ -478,7 +502,8 @@ export class BackendConnection {
           }
         }
         if (
-          registeredExpected === 'job.controlled' &&
+          (registeredExpected === 'job.controlled' ||
+            registeredExpected === 'job.forgotten') &&
           isRecord(payload.details) &&
           ['job_revision_conflict', 'job_state'].includes(
             String(payload.details.kind),
@@ -624,6 +649,63 @@ export class BackendConnection {
     });
   }
 
+  /**
+   * Delete a stopped job on the node, and then here.
+   *
+   * Unlike a control this returns no job: the answer is that there is no job.
+   * The node refuses anything that is still working or that published a song,
+   * so a refusal arrives as a normal request error.
+   */
+  forgetJob(jobId: string, expectedRevision: number): Promise<void> {
+    if (this.snapshot.phase !== 'ready') {
+      return Promise.reject(new Error('Backend is not ready.'));
+    }
+    let id = '';
+    return new Promise((resolve, reject) => {
+      id = this.requests.register(
+        'job-forget',
+        {
+          expected: 'job.forgotten',
+          decode: message => {
+            const forgotten = decodeForgottenJob(message);
+            return forgotten === null
+              ? ignoreResponse()
+              : resolveResponse(forgotten);
+          },
+          timeout: {
+            afterMs: REQUEST_TIMEOUT_MS,
+            error: () =>
+              new Error('Deleting timed out. Refresh before trying again.'),
+          },
+        },
+        {
+          resolve: forgotten => {
+            this.dropJob(forgotten);
+            resolve();
+          },
+          reject,
+        },
+      );
+      this.sendApplication({
+        t: 'job.forget',
+        v: APPLICATION_PROTOCOL_VERSION,
+        id,
+        job_id: jobId,
+        expected_revision: expectedRevision,
+      });
+    });
+  }
+
+  private dropJob(jobId: string): void {
+    if (this.snapshot.jobs.some(job => job.id === jobId)) {
+      this.setSnapshot({
+        ...this.snapshot,
+        jobs: this.snapshot.jobs.filter(job => job.id !== jobId),
+      });
+    }
+    this.callbacks.onJobForgotten(jobId);
+  }
+
   patchSong(
     songId: string,
     expectedRevision: number,
@@ -656,6 +738,21 @@ export class BackendConnection {
     return request.promise;
   }
 
+  /**
+   * Fetch a delivery artifact, resuming across a dropped transfer.
+   *
+   * The node keeps exactly one active transfer per session and drops it on any
+   * re-authentication, so a relay reconnect in the middle of a download leaves
+   * the next acknowledgement talking about a transfer that no longer exists.
+   * The node says so with `transfer_expired` — *"Open the delivery artifact
+   * again to resume"* — and marks it retryable, because the bytes already on
+   * disk are still good and it will accept any resume offset. Taking that
+   * literally is this loop: nothing above needs to hear about a transfer that
+   * can simply be opened again, and a person pressing play certainly does not.
+   *
+   * Only `transfer_expired` is resumed. `artifact_changed` means the partial is
+   * stale and must be discarded, and anything else is a real failure.
+   */
   async downloadArtifact(
     songId: string,
     artifact: ArtifactView,
@@ -665,6 +762,34 @@ export class BackendConnection {
     if (this.snapshot.phase !== 'ready') {
       throw new Error('Backend is not ready.');
     }
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await this.pumpArtifact(songId, artifact, sink, onProgress);
+        return;
+      } catch (error) {
+        // Bounded: a session that expires every transfer is broken in a way
+        // reopening cannot fix, and an unbounded loop would hide that forever.
+        if (
+          attempt >= ARTIFACT_RESUME_ATTEMPTS ||
+          !(error instanceof NodeRequestError) ||
+          error.code !== 'transfer_expired'
+        ) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  /** One transfer session, from `artifact.open` to the last byte or a failure. */
+  private async pumpArtifact(
+    songId: string,
+    artifact: ArtifactView,
+    sink: ArtifactSink,
+    onProgress?: (written: number, total: number) => void,
+  ): Promise<void> {
+    // Read from the file rather than from anything remembered: a resume has to
+    // start where the disk actually got to, not where the last session thought
+    // it had reached.
     let offset = await sink.offset();
     const info = await this.openArtifact(
       songId,
@@ -682,34 +807,88 @@ export class BackendConnection {
       throw new Error('Node opened a different artifact than requested.');
     }
     onProgress?.(offset, artifact.byte_length);
-    while (true) {
-      const part = await this.ackArtifact(info.transferId, offset);
-      if (part.transferId !== info.transferId) {
-        throw new Error('Node switched artifact transfer sessions.');
-      }
-      if (part.kind === 'complete') {
-        if (
-          part.byteLength !== artifact.byte_length ||
-          part.sha256 !== artifact.sha256 ||
-          offset !== artifact.byte_length
-        ) {
-          throw new Error(
-            'Node artifact completion does not match the download.',
-          );
+
+    /*
+     * The write is chained, not awaited.
+     *
+     * The node sends one chunk per acknowledgement and waits (`window_chunks`
+     * is 1), so every 64 KiB costs a full round trip. Awaiting `sink.append`
+     * inside the loop put the whole local write — the bridge hop, the base64
+     * decode, the file write — *in series* with that round trip, and the node
+     * sat idle for the duration of it. Nothing about the next acknowledgement
+     * depends on the write landing: the node's next offset is `offset + length`
+     * whatever the disk does, and `length` is readable from the chunk itself.
+     * So the acknowledgement goes out first and the write runs underneath it,
+     * which makes a chunk cost `max(round trip, write)` instead of their sum.
+     *
+     * The chain is what keeps the writer's contract: native `appendChunk`
+     * refuses anything but a strictly sequential offset, so the appends must
+     * still land in order even though nothing waits for them here.
+     */
+    let written: Promise<number> = Promise.resolve(offset);
+    let writeError: unknown = null;
+    const enqueueWrite = (at: number, data: string, expected: number) => {
+      written = written.then(async previous => {
+        if (previous !== at) {
+          throw new Error('Native artifact writer fell out of step.');
         }
-        await sink.finalize(part.byteLength);
-        onProgress?.(part.byteLength, part.byteLength);
-        return;
+        const next = await sink.append(at, data);
+        if (next !== expected) {
+          throw new Error('Native artifact writer returned an invalid offset.');
+        }
+        return next;
+      });
+      // Claim the rejection here so a failed write is never an unhandled one;
+      // the chain itself still rejects, which is what the loop reads.
+      written.catch(error => {
+        writeError ??= error;
+      });
+    };
+
+    try {
+      while (true) {
+        const part = await this.ackArtifact(info.transferId, offset);
+        // A write that failed while this round trip was in flight invalidates
+        // everything after it, so it is reported before the chunk it raced.
+        if (writeError !== null) throw writeError;
+        if (part.transferId !== info.transferId) {
+          throw new Error('Node switched artifact transfer sessions.');
+        }
+        if (part.kind === 'complete') {
+          const settled = await written;
+          if (
+            part.byteLength !== artifact.byte_length ||
+            part.sha256 !== artifact.sha256 ||
+            settled !== artifact.byte_length ||
+            offset !== artifact.byte_length
+          ) {
+            throw new Error(
+              'Node artifact completion does not match the download.',
+            );
+          }
+          await sink.finalize(part.byteLength);
+          onProgress?.(part.byteLength, part.byteLength);
+          return;
+        }
+        if (part.offset !== offset) {
+          throw new Error('Node artifact chunk is out of order.');
+        }
+        const length = base64ByteLength(part.data);
+        const next = offset + length;
+        if (length <= 0 || next > artifact.byte_length) {
+          throw new Error('Node artifact chunk is outside the artifact.');
+        }
+        enqueueWrite(offset, part.data, next);
+        offset = next;
+        onProgress?.(offset, artifact.byte_length);
       }
-      if (part.offset !== offset) {
-        throw new Error('Node artifact chunk is out of order.');
-      }
-      const next = await sink.append(offset, part.data);
-      if (next <= offset || next > artifact.byte_length) {
-        throw new Error('Native artifact writer returned an invalid offset.');
-      }
-      offset = next;
-      onProgress?.(offset, artifact.byte_length);
+    } catch (error) {
+      // Let the outstanding writes settle before unwinding. Abandoning them
+      // mid-flight would leave native appending to a partial this download has
+      // already given up on, and the next attempt would resume from an offset
+      // that moved under it.
+      await written.catch(() => undefined);
+      throw error;
     }
   }
 
@@ -1051,4 +1230,19 @@ function truncateToBytes(value: string, maxBytes: number): string {
     }
   }
   return '';
+}
+
+/**
+ * How many bytes a padded base64 string carries, without decoding it.
+ *
+ * The download loop needs the chunk's length before the chunk has been written,
+ * so it can acknowledge the next one while this one is still on its way to
+ * disk. Decoding here to measure would reintroduce exactly the work the
+ * acknowledgement is trying to get ahead of. Returns 0 for anything that is not
+ * well-formed padded base64, which the caller treats as a malformed chunk.
+ */
+export function base64ByteLength(data: string): number {
+  if (data.length === 0 || data.length % 4 !== 0) return 0;
+  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+  return (data.length / 4) * 3 - padding;
 }

@@ -16,6 +16,8 @@ import {
   buildTransformFlights,
   graphemes,
   layoutText,
+  chooseTextKind,
+  textVariantChanged,
   writeDurationMs,
   writeLagRatio,
   writePhase,
@@ -85,6 +87,39 @@ describe('layoutText alignment', () => {
       expect(centered[i].x - left[i].x).toBeCloseTo(dx, 5);
       expect(centered[i].y).toBe(left[i].y);
     }
+  });
+
+  /**
+   * Chrome pinned to an edge needs this: a slot sized to its longest possible
+   * string keeps a stable width, and a stable width is what lets a line erase
+   * itself. A slot measured to the text collapses to zero when the text goes
+   * away, and a zero-width slot builds no model at all.
+   */
+  it('pins a line flush right inside maxWidth', () => {
+    // The jest default font has no typeface, so a right shift measured against
+    // it would be the whole container. Use the real bundled face.
+    const bytes = readFileSync(
+      join(__dirname, '../../../assets/fonts/cmu-serif.ttf'),
+    );
+    const typeface = Skia.Typeface.MakeFreeTypeFaceFromData(
+      Skia.Data.fromBytes(new Uint8Array(bytes)),
+    );
+    const font = Skia.Font(typeface ?? undefined, 14);
+    const left = layoutText('REMOVE ALL', font, 0, 400, 20, 'left');
+    const right = layoutText('REMOVE ALL', font, 0, 400, 20, 'right');
+    const last = left[left.length - 1];
+    const inkWidth = last.x + last.w;
+    expect(inkWidth).toBeGreaterThan(0);
+    // Every box moves by the same free space, so the row keeps its shape and
+    // its last glyph lands on the container's right edge.
+    const shift = 400 - inkWidth;
+    for (let i = 0; i < left.length; i += 1) {
+      expect(right[i].x - left[i].x).toBeCloseTo(shift, 4);
+      expect(right[i].y).toBe(left[i].y);
+    }
+    // A line that already fills its container is not pulled off the left edge.
+    const tight = layoutText('REMOVE ALL', font, 0, inkWidth, 20, 'right');
+    expect(tight[0].x).toBeCloseTo(left[0].x, 4);
   });
 });
 
@@ -178,5 +213,82 @@ describe('Manim Write timing', () => {
     expect(writeSubAlpha(0.5, 1, 5)).toBeCloseTo(0.7);
     expect(writeSubAlpha(0.5, 4, 5)).toBeCloseTo(0.1);
     expect(writeSubAlpha(1, 4, 5)).toBe(1);
+  });
+});
+
+describe('choosing a text gesture', () => {
+  const plan = (over: Partial<Parameters<typeof chooseTextKind>[0]> = {}) =>
+    chooseTextKind({
+      appearance: 'write',
+      variant: 'matching',
+      reduced: false,
+      retarget: true,
+      fromCount: 5,
+      toCount: 5,
+      ...over,
+    });
+
+  it('writes ink on and takes the same ink back off', () => {
+    // Nothing drawn yet and something to draw: trace it on.
+    expect(plan({ retarget: false, fromCount: 0 })).toBe('write');
+    expect(plan({ fromCount: 0 })).toBe('write');
+    // Something drawn and nothing left to draw: unwrite it. This is the half
+    // that used to fade, which made a line arrive by drawing and leave by
+    // dissolving — two gestures for one object.
+    expect(plan({ toCount: 0 })).toBe('erase');
+  });
+
+  it('never erases what was never written', () => {
+    // A first mount that starts empty has no ink on screen to take back. What
+    // it settles on does not matter — with nothing at either end there is
+    // nothing to draw — but it must not be an erase, which would build write
+    // models out of an empty capture.
+    expect(plan({ retarget: false, toCount: 0, fromCount: 0 })).not.toBe(
+      'erase',
+    );
+    expect(plan({ toCount: 0, fromCount: 0 })).not.toBe('erase');
+    // And a caller that asked to fade still fades in both directions.
+    expect(plan({ appearance: 'fade', toCount: 0 })).toBe('matching');
+    expect(plan({ appearance: 'fade', retarget: false, fromCount: 0 })).toBe(
+      'crossfade',
+    );
+    expect(plan({ appearance: 'none', retarget: false, fromCount: 0 })).toBe(
+      'settled',
+    );
+  });
+
+  it('keeps a text change between two lines on its chosen variant', () => {
+    expect(plan()).toBe('matching');
+    expect(plan({ variant: 'transform' })).toBe('transform');
+    expect(plan({ variant: 'crossfade' })).toBe('crossfade');
+    // Reduced motion overrides every appearance and every variant.
+    expect(plan({ reduced: true, fromCount: 0 })).toBe('crossfade');
+    expect(plan({ reduced: true, toCount: 0 })).toBe('crossfade');
+  });
+});
+
+describe('when a committed text model is stale', () => {
+  /**
+   * The loop this exists to stop: `erase` is not a variant, so a model holding
+   * it can never equal the caller's `variant`. Read as "anything that is not
+   * write or settled must be a variant", every render decided the model was
+   * stale, rebuilt it, and re-rendered — React's re-render limit, on the first
+   * line of chrome that tried to unwrite itself.
+   */
+  it('leaves a finished appearance alone', () => {
+    for (const kind of ['settled', 'write', 'erase'] as const) {
+      expect(textVariantChanged(kind, 'matching', false)).toBe(false);
+      expect(textVariantChanged(kind, 'transform', false)).toBe(false);
+      expect(textVariantChanged(kind, 'crossfade', false)).toBe(false);
+    }
+  });
+
+  it('rebuilds a morph whose variant changed under it', () => {
+    expect(textVariantChanged('matching', 'transform', false)).toBe(true);
+    expect(textVariantChanged('transform', 'matching', false)).toBe(true);
+    expect(textVariantChanged('matching', 'matching', false)).toBe(false);
+    // Reduced motion pins everything to crossfade, so nothing is ever stale
+    // for having the wrong variant.
+    expect(textVariantChanged('matching', 'transform', true)).toBe(false);
   });
 });

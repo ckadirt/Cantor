@@ -2,7 +2,15 @@ import type { SkCanvas, SkFont, SkPaint } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
 
 export type LensBox = Readonly<{
-  kind: 'mark' | 'row';
+  /**
+   * How much room the lens has, and therefore what it is drawing.
+   *
+   * `song` is the player itself: the same lens at the distance where one song
+   * fills the view. `alpha.song` was computed by `representationAlphas` from
+   * the beginning and read by nothing, which is why the player used to cut in
+   * rather than grow out of its row.
+   */
+  kind: 'mark' | 'row' | 'song';
   x: number;
   y: number;
   width: number;
@@ -12,12 +20,33 @@ export type LensBox = Readonly<{
 /** Renderer-ready facts about a song. Runtime objects are never imported here. */
 export type LensSong = Readonly<{
   key: string;
+  /** The song's own id, so a face survives a node that reports no seed. */
+  id: string;
   title: string;
   createdAtMs: number;
   durationMs: number;
   model: string;
+  /**
+   * `SongHeader.seed` when the node sent one. With the model and the duration
+   * this is the whole recipe, which is what a lens draws the song's face from —
+   * see `face.ts` and `docs/interface/alpha-design.md`.
+   */
+  seed: number | undefined;
   nodeLabel: string;
   audioState: 'remote' | 'partial' | 'cached' | 'pinned';
+  /**
+   * How much of the delivery artifact has landed, 0..1, or null when nothing is
+   * arriving or the total byte length is unknown.
+   *
+   * Only meaningful while `audioState` is `partial`; see `availability.ts`,
+   * which turns both facts into the four marks the field draws.
+   */
+  arriving: number | null;
+  /**
+   * The delivery artifact's size in bytes, or null when the node has not
+   * offered one yet. What a downloaded row weighs, and what a shelf sums.
+   */
+  byteLength: number | null;
   /** True for the song the player currently holds, at every level it appears. */
   playing: boolean;
   /**
@@ -45,6 +74,11 @@ export type LensPaints = Readonly<{
   ink: SkPaint;
   muted: SkPaint;
   faint: SkPaint;
+  /**
+   * Ink, stroked at a hairline. A face is an outline, and creating a stroke
+   * paint per mark would allocate once per song per frame at L0.
+   */
+  outline: SkPaint;
 }>;
 
 export type LensOptions = Readonly<{

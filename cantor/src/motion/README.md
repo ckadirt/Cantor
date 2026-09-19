@@ -26,7 +26,7 @@ This directory has **zero imports from app code**. Treat it as a library.
 
 | Layer | Files | Role |
 | --- | --- | --- |
-| Components | `MorphText.tsx`, `MorphShape.tsx`, `AnimatedSymbol.tsx`, `CanonicalSymbol.tsx` | React shells, one Skia `Canvas` each; detect prop changes, build models, own clocks |
+| Components | `MorphText.tsx`, `MorphShape.tsx`, `AnimatedSymbol.tsx`, `CanonicalSymbol.tsx` | React shells, one Skia `Canvas` each; detect prop changes, build models, own clocks. `MorphText` also exports `useSeededPathInterpolation` for callers that compose glyph morphs inside a canvas of their own — the field's player does. |
 | Builders | `text.ts`, `glyphs.ts`, `silhouette.ts`, `shapes.ts`, `library.ts`, `symbolLibrary.ts`, `transition.ts` | Turn "A → B" into interpolable geometry; all policy (matching, pairing, windows) lives here |
 | Math floor | `geometry.ts`, `clock.ts`, `fonts.ts` | Resampling, correspondence alignment, smootherstep, born clocks, synchronous font metrics |
 
@@ -103,9 +103,34 @@ const clock = useSharedValue(0);
 - **`crossfade`** — simultaneous exchange. Also the forced reduced-motion path.
 
 `appearance="write"` is Manim's `Write` / `DrawBorderThenFill`: each glyph's
-exact outline traces on (stroke, first half), then resolves into its fill
-(second half), cascading with Manim's lag ratio. Duration follows ManimGL's
+exact outline traces on (stroke, first half), cascading with Manim's lag ratio,
+and the line then resolves into its fill (second half). The cascade is per
+glyph — that is the gesture — but the resolve is line-wide, read off the last
+glyph's phase, so nothing is filled while the pen is still moving. Manim fills
+each glyph as its own border closes; here that would be three more Reanimated
+bindings *per letter*, and a binding has to be installed from the JS thread
+before the node it feeds moves at all. See `WriteGlyph`. Duration follows ManimGL's
 rule: 1 s under 15 glyphs, 2 s at or above (`writeDurationMs`).
+
+It also runs **backwards**. A `write` line whose text becomes `''` erases
+itself: the same DrawBorderThenFill models, built from the ink that is on
+screen, on a reversed clock. So a line arrives and departs by the same gesture
+instead of drawing itself on and dissolving off. Two consequences at call
+sites:
+
+- **Keep the slot mounted and pass `''`.** An unmounted component has no
+  outgoing ink and no width, so it cannot erase — the word would simply vanish.
+- **Give the slot a stable width.** A container measured to its text collapses
+  to zero when the text goes away, and a zero-width slot builds no model at
+  all. Size it to the longest string it will ever hold; `charStyle.textAlign`
+  takes `'left' | 'center' | 'right'`, so an edge-pinned line still sits where
+  it did.
+
+`chooseTextKind` is the one place that decides which gesture a change gets, and
+`textVariantChanged` is the one place that decides whether a committed model is
+stale. Both are pure and tested; keep them in step — reading "anything that is
+not `write` or `settled` must be a variant" is what made `erase` re-render
+forever.
 
 ---
 
@@ -126,7 +151,15 @@ rule: 1 s under 15 glyphs, 2 s at or above (`writeDurationMs`).
 5. **Born clocks, generation keys.** Every committed transition owns a fresh
    `bornClock(start)` and remounts its subtree under a `gen` key so an
    outgoing generation can never paint one frame against a newborn clock.
-   Follow the pattern when adding variants.
+   Follow the pattern when adding variants. **A derived clock counts as part
+   of that subtree.** The erase's `1 - clock` lived in `MorphTextImpl` for a
+   while, one binding shared by every generation: on the commit that replaced
+   an erase with a write it recomputed to `1 - 0` — *fully written* — and the
+   outgoing erase's glyphs, still on the canvas because a commit is not a
+   paint, flashed the finished line back for a frame. It belongs in
+   `WriteScene`, keyed with the nodes that read it, so an outgoing generation
+   keeps reading the clock it was mounted with. Any binding a generation's
+   nodes read must be created inside that generation's keyed component.
 6. **Verb identity is the contract.** `interpolatePaths` silently misdraws if
    from/to verbs diverge. Builders guarantee identity by construction and
    assert it in dev (`assertInterpolatable`); keep both sides of any new
@@ -150,6 +183,11 @@ you've read them all:
 3. **Plan** — run the policy (`buildFlights` / `buildTransformFlights` /
    `buildSilhouetteTransition` / `buildGlyphMorphPaths`) producing
    verb-identical path pairs. Pure math, runs once, never per frame.
+   `buildGlyphMorphPaths` takes an optional `toFont`: correspondence is sampled
+   after both outlines are placed in absolute pixels, so one interpolation can
+   carry a change of *size* as well as of shape. That is how the field's name
+   grows from a row's 15 px into the player's 26 px as one object rather than
+   two crossfaded ones.
 4. **Commit** — `setModel({ …, clock: bornClock(0), gen: ++genRef.current })`.
 5. **Run** — one `withTiming(1, { easing: Easing.linear })` in an effect;
    cleanup cancels. If an external `progress` is present, skip this step.

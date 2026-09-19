@@ -10,6 +10,19 @@ import java.security.MessageDigest
 import java.util.UUID
 
 private const val MAX_CHUNK_BYTES = 64 * 1024
+
+/**
+ * How much of a download may be in the page cache before it is forced to disk.
+ *
+ * Syncing every chunk cost an fsync per 64 KiB — sixty-odd of them for one song,
+ * each one a stall on phone flash, and all of it in the critical path between
+ * one chunk and the acknowledgement that asks for the next. A partial file is
+ * disposable: the worst a power cut can now cost is this much re-downloaded
+ * audio, and [finalizeDownload] rejects a torn file by digest before it can ever
+ * be promoted or played.
+ */
+private const val SYNC_INTERVAL_BYTES = 1024 * 1024
+
 private val SHA256 = Regex("^[0-9a-f]{64}$")
 
 internal data class LocalAudioState(
@@ -50,13 +63,60 @@ internal class AudioStorage(
     }
     val path = paths(nodeKey, songId, digest).partial
     path.parentFile?.mkdirs()
-    RandomAccessFile(path, "rw").use { output ->
-      require(output.length() == offset) { "Partial artifact offset changed." }
-      output.seek(offset)
-      output.write(bytes)
+    val output = openPartial(path)
+    require(output.length() == offset) { "Partial artifact offset changed." }
+    output.seek(offset)
+    output.write(bytes)
+    unsyncedBytes += bytes.size
+    if (unsyncedBytes >= SYNC_INTERVAL_BYTES) {
       output.fd.sync()
+      unsyncedBytes = 0
     }
     return (offset + bytes.size).toDouble()
+  }
+
+  /**
+   * The handle the current download is writing through.
+   *
+   * Reopening the file per chunk was an `open`/`close` pair per 64 KiB for no
+   * gain: a download writes one file, sequentially, to the end. Only one
+   * transfer is ever in flight — the node keeps a single active transfer per
+   * session — so one cached handle is the whole of the bookkeeping, and moving
+   * to a different partial closes the previous one.
+   *
+   * Every caller reaches this under `CantorAudioModule`'s lock, so the handle
+   * needs no synchronisation of its own.
+   */
+  private var openPath: File? = null
+  private var openFile: RandomAccessFile? = null
+  private var unsyncedBytes = 0
+
+  private fun openPartial(path: File): RandomAccessFile {
+    val current = openFile
+    if (current != null && openPath == path) return current
+    closePartial()
+    val opened = RandomAccessFile(path, "rw")
+    openPath = path
+    openFile = opened
+    unsyncedBytes = 0
+    return opened
+  }
+
+  /**
+   * Force the download to disk and release the handle.
+   *
+   * Called before anything reads the partial as a whole file or moves it, so a
+   * rename never races bytes still sitting in this handle's buffer.
+   */
+  fun closePartial() {
+    val current = openFile ?: return
+    runCatching {
+      if (unsyncedBytes > 0) current.fd.sync()
+    }
+    runCatching { current.close() }
+    openFile = null
+    openPath = null
+    unsyncedBytes = 0
   }
 
   fun finalizeDownload(
@@ -67,6 +127,9 @@ internal class AudioStorage(
   ): Boolean {
     val length = exactLong(expectedBytes, "artifact length")
     val paths = paths(nodeKey, songId, digest)
+    // The download's own handle still holds unsynced bytes; flush and let it go
+    // before the file is hashed and renamed out from under it.
+    closePartial()
     require(paths.partial.isFile && paths.partial.length() == length) {
       "Partial artifact length does not match the node."
     }
@@ -118,6 +181,9 @@ internal class AudioStorage(
   fun removeCached(nodeKey: String, songId: String, digest: String): Boolean {
     val paths = paths(nodeKey, songId, digest)
     require(!paths.pinned.exists()) { "Unpin this artifact before removing it." }
+    // Release the download's handle first: deleting the file underneath an open
+    // one leaves the next append writing into an unlinked inode.
+    closePartial()
     return (!paths.cached.exists() || paths.cached.delete()) &&
         (!paths.partial.exists() || paths.partial.delete())
   }

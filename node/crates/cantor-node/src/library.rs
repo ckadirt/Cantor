@@ -30,7 +30,9 @@ pub(crate) use self::artifacts::{DELIVERY_CHANNELS, DELIVERY_SAMPLE_RATE, inspec
 use self::durable_fs::{FILE_MODE, prepare_real_directory};
 #[cfg(test)]
 use self::jobs::MAX_ATTEMPTS;
-pub use self::jobs::{ControlResult, FinishResult, JobControl, Submission, SubmitResult, WorkItem};
+pub use self::jobs::{
+    ControlResult, FinishResult, ForgetResult, JobControl, Submission, SubmitResult, WorkItem,
+};
 #[allow(unused_imports)]
 pub use self::songs::{
     ChangePage, ChangePageResult, MutationResult, PresenceMutation, SongPage, SongPageResult,
@@ -705,6 +707,212 @@ mod tests {
         };
         assert_eq!(retried.state, JobState::Queued);
         assert!(retried.error.is_none());
+    }
+
+    #[test]
+    fn a_terminal_failure_keeps_the_stage_it_died_in_and_a_requeue_does_not() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                principal(1),
+                &[2; 32],
+                &submission("where did it stop"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .record_progress(
+                &work,
+                GenerationStage::Diffuse,
+                3,
+                Some(50),
+                ProgressUnit::Steps,
+            )
+            .unwrap();
+        // Retryable and under the attempt bound: the work starts over, so the
+        // stage it reached is no longer true of it.
+        let requeued = library
+            .finish_failure(&work, ErrorCode::TemporarilyUnavailable, "later", true)
+            .unwrap()
+            .unwrap();
+        match requeued {
+            FinishResult::Requeued(job) => assert!(job.stage.is_none()),
+            other => panic!("unexpected requeue: {other:?}"),
+        }
+
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .record_progress(
+                &work,
+                GenerationStage::Diffuse,
+                7,
+                Some(50),
+                ProgressUnit::Steps,
+            )
+            .unwrap();
+        let failed = library
+            .finish_failure(&work, ErrorCode::Internal, "engine died", false)
+            .unwrap()
+            .unwrap();
+        match failed {
+            FinishResult::Failed(job) => {
+                assert_eq!(job.stage, Some(GenerationStage::Diffuse));
+                // The counts inside the stage describe work no longer running.
+                assert!(job.progress.is_none());
+            }
+            other => panic!("unexpected failure: {other:?}"),
+        }
+        assert_eq!(
+            library.list(principal(1), 10).unwrap()[0].stage,
+            Some(GenerationStage::Diffuse)
+        );
+    }
+
+    #[test]
+    fn every_job_view_carries_the_words_that_were_asked_for() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        let accepted = match library
+            .submit(
+                principal(1),
+                &[2; 32],
+                &submission("una cumbia lenta"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap()
+        {
+            SubmitResult::Accepted(job) => job,
+            other => panic!("unexpected admission: {other:?}"),
+        };
+        assert_eq!(accepted.caption.as_deref(), Some("una cumbia lenta"));
+
+        // Every later view of the job reads it back off the immutable request,
+        // including the failure a person has to recognise days afterwards.
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        library
+            .finish_failure(&work, ErrorCode::Internal, "engine died", false)
+            .unwrap();
+        assert_eq!(
+            library.list(principal(1), 10).unwrap()[0]
+                .caption
+                .as_deref(),
+            Some("una cumbia lenta")
+        );
+        let reopened = Library::open(temporary.path()).unwrap();
+        assert_eq!(
+            reopened
+                .get(principal(1), &accepted.id)
+                .unwrap()
+                .unwrap()
+                .caption
+                .as_deref(),
+            Some("una cumbia lenta")
+        );
+    }
+
+    #[test]
+    fn forgetting_erases_a_failed_job_and_refuses_everything_else() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                principal(1),
+                &[2; 32],
+                &submission("forget me"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (work, queued) = library.claim_next().unwrap().unwrap();
+
+        // Running work is not deletable: it has to be stopped first.
+        assert!(matches!(
+            library.forget_job(principal(1), &work.id, None).unwrap(),
+            ForgetResult::Refused(job) if job.id == work.id
+        ));
+
+        let failed = match library
+            .finish_failure(&work, ErrorCode::Internal, "engine died", false)
+            .unwrap()
+            .unwrap()
+        {
+            FinishResult::Failed(job) => job,
+            other => panic!("unexpected failure result: {other:?}"),
+        };
+        let directory = temporary
+            .path()
+            .join("jobs")
+            .join(principal(1).to_string())
+            .join(&failed.id);
+        assert!(directory.exists());
+
+        // Another owner cannot see it, let alone delete it.
+        assert!(matches!(
+            library.forget_job(principal(9), &failed.id, None).unwrap(),
+            ForgetResult::NotFound
+        ));
+        // A stale revision loses to the job as it actually stands.
+        assert!(matches!(
+            library
+                .forget_job(principal(1), &failed.id, Some(queued.revision))
+                .unwrap(),
+            ForgetResult::Conflict(job) if job.revision == failed.revision
+        ));
+
+        assert!(matches!(
+            library
+                .forget_job(principal(1), &failed.id, Some(failed.revision))
+                .unwrap(),
+            ForgetResult::Forgotten
+        ));
+        assert!(!directory.exists());
+        assert!(library.get(principal(1), &failed.id).unwrap().is_none());
+        assert!(library.list(principal(1), 10).unwrap().is_empty());
+        // Gone is gone: a second deletion has nothing to find, and the client
+        // request id it held is free again.
+        assert!(matches!(
+            library.forget_job(principal(1), &failed.id, None).unwrap(),
+            ForgetResult::NotFound
+        ));
+        assert!(
+            Library::open(temporary.path()).is_ok(),
+            "startup reconciliation accepts a library with the job erased"
+        );
+    }
+
+    #[test]
+    fn a_published_song_keeps_its_job_row_and_its_bytes() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                principal(1),
+                &[2; 32],
+                &submission("keep"),
+                &variant(),
+                20,
+                0,
+            )
+            .unwrap();
+        let (work, song) = complete_next(&mut library);
+        assert!(matches!(
+            library.forget_job(principal(1), &work.id, None).unwrap(),
+            ForgetResult::Refused(job) if job.state == JobState::Completed
+        ));
+        assert!(
+            library
+                .song_detail(principal(1), &song.id)
+                .unwrap()
+                .is_some()
+        );
     }
 
     fn complete_next(library: &mut Library) -> (WorkItem, cantor_proto::SongHeader) {

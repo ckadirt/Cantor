@@ -244,6 +244,7 @@ mod tests {
                 artifacts_transfer: false,
                 secure_tunnel: false,
                 job_controls: false,
+                job_forget: false,
             },
         }
     }
