@@ -405,7 +405,10 @@ fn available_bytes(path: &Path) -> Result<u64> {
     };
     // Unprivileged callers get bavail, not bfree: the reserved blocks are not
     // ours to spend.
-    Ok(stats.f_bavail * stats.f_frsize)
+    // statvfs block counts are u32 on macOS and u64 on Linux.
+    #[allow(clippy::useless_conversion)]
+    let blocks = u64::from(stats.f_bavail);
+    Ok(blocks.saturating_mul(stats.f_frsize))
 }
 
 pub fn human_bytes(bytes: u64) -> String {

@@ -840,6 +840,9 @@ impl Library {
         }
         // SAFETY: the successful `statvfs` call initialized every field.
         let stats = unsafe { stats.assume_init() };
-        Ok(stats.f_bavail.saturating_mul(stats.f_frsize))
+        // statvfs block counts are u32 on macOS and u64 on Linux.
+        #[allow(clippy::useless_conversion)]
+        let blocks = u64::from(stats.f_bavail);
+        Ok(blocks.saturating_mul(stats.f_frsize))
     }
 }
