@@ -1,4 +1,6 @@
 import React from 'react';
+import { buildFieldController } from '../../features/field/useFieldController';
+import { allPlaylists } from '../../playlists';
 import ReactTestRenderer from 'react-test-renderer';
 import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { JobView } from '../../../../protocol/JobView';
@@ -46,6 +48,7 @@ const nodeInfo: NodeInfo = {
     artifacts_transfer: true,
     secure_tunnel: true,
     job_controls: true,
+    job_forget: true,
   },
 };
 
@@ -122,6 +125,8 @@ type Fixture = {
   saveBackends: jest.Mock;
   loadJobs: jest.Mock;
   mergeJobs: jest.Mock;
+  forgetJobs: jest.Mock;
+  forgetSubmission: jest.Mock;
   loadLibrary: jest.Mock;
   commitLibrary: jest.Mock;
   loadOutbox: jest.Mock;
@@ -142,6 +147,7 @@ function connection(): FakeConnection {
     stop: jest.fn(),
     createJob: jest.fn().mockResolvedValue(job('canonical-job')),
     controlJob: jest.fn().mockResolvedValue(job('controlled-job', 2)),
+    forgetJob: jest.fn().mockResolvedValue(undefined),
     patchSong: jest.fn().mockResolvedValue(song(2)),
     getSong: jest.fn().mockResolvedValue(detail),
     downloadArtifact: jest.fn().mockResolvedValue(undefined),
@@ -158,6 +164,8 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
   const saveBackendsMock = jest.fn().mockResolvedValue(undefined);
   const loadJobsMock = jest.fn().mockResolvedValue([job('cached-job')]);
   const mergeJobsMock = jest.fn(async (_node, jobs) => jobs);
+  const forgetJobsMock = jest.fn().mockResolvedValue(undefined);
+  const forgetSubmissionMock = jest.fn().mockResolvedValue(undefined);
   const loadLibraryMock = jest.fn().mockResolvedValue({
     revision: 4,
     songs: [song()],
@@ -243,7 +251,10 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
       saveBackends: saveBackendsMock,
       loadJobs: loadJobsMock,
       mergeJobs: mergeJobsMock,
+      forgetJobs: forgetJobsMock,
+      forgetSubmission: forgetSubmissionMock,
       loadLibrary: loadLibraryMock,
+      loadLibraries: jest.fn().mockResolvedValue({}),
       commitLibrary: commitLibraryMock,
       loadOutbox: loadOutboxMock,
       putPending: putPendingMock,
@@ -257,6 +268,8 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
     saveBackends: saveBackendsMock,
     loadJobs: loadJobsMock,
     mergeJobs: mergeJobsMock,
+    forgetJobs: forgetJobsMock,
+    forgetSubmission: forgetSubmissionMock,
     loadLibrary: loadLibraryMock,
     commitLibrary: commitLibraryMock,
     loadOutbox: loadOutboxMock,
@@ -304,6 +317,81 @@ async function mount(fixtureValue: Fixture): Promise<{
 }
 
 describe('useBackendRuntime', () => {
+  /**
+   * Forgetting keeps what you kept.
+   *
+   * A pin is the only state this phone can still honour with the node gone:
+   * a cached copy is a loan `enforceCacheBudget` may call in at any download,
+   * and a part-transfer cannot resume without the engine that was sending it.
+   * Keeping either would leave marks in the field standing on files that can
+   * disappear with nothing left to fetch them back from.
+   */
+  it('keeps pinned songs after forgetting, releases the loans, and recovers everything on re-pair', async () => {
+    const f = fixture();
+    const songs = [
+      { ...song(), id: 'cached', tags: ['p/Drive'] },
+      { ...song(), id: 'pinned', tags: ['p/Dusk'] },
+      { ...song(), id: 'remote', tags: ['p/Remote playlist'] },
+      { ...song(), id: 'partial', tags: [] },
+    ];
+    const library = { revision: 22, songs, lastSyncedAt: '2026-09-10T00:00:00Z' };
+    f.loadLibrary.mockResolvedValue(library);
+    // Deletion has to be visible to the next inspect, or the restart below
+    // would assert against files the fixture pretends are still there.
+    const released = new Set<string>();
+    f.inspectAudio.mockImplementation(async (_node, id) =>
+      released.has(id)
+        ? { state: 'remote', bytes: 0 }
+        : { state: id, bytes: id === 'remote' ? 0 : 10 },
+    );
+    f.removeAudio.mockImplementation(async (_node, id) => {
+      released.add(id);
+      return { state: 'remote', bytes: 0 };
+    });
+    let mounted = await mount(f);
+    expect(buildFieldController(mounted.current().state).presentations.size).toBe(4);
+    await ReactTestRenderer.act(async () => {
+      await mounted.current().commands.forgetBackend('node-a');
+    });
+    // The loans, and only the loans. A pin is not touched, and a song that was
+    // never here has no file to delete.
+    expect(f.removeAudio.mock.calls.map(call => call[1]).sort()).toEqual([
+      'cached',
+      'partial',
+    ]);
+    expect(f.saveBackends).toHaveBeenLastCalledWith([]);
+    expect(f.connections[0].stop).toHaveBeenCalled();
+    let field = buildFieldController(mounted.current().state);
+    expect([...field.presentations.values()].map(p => p.song.id)).toEqual(['pinned']);
+    expect([...field.presentations.values()].every(p => !p.ready)).toBe(true);
+    await expect(mounted.current().commands.audioPath('node-a', songs[1], artifact)).resolves.toContain('fixture.opus');
+    // A stopped connection must not revive remote content or flush an outbox.
+    await ReactTestRenderer.act(async () => {
+      f.callbacks[0].onSnapshot({ phase: 'ready', error: null, jobs: [], songs: [], libraryRevision: 99, librarySyncing: false });
+    });
+    expect(f.commitLibrary).not.toHaveBeenCalled();
+    await ReactTestRenderer.act(async () => mounted.renderer.unmount());
+    f.loadBackends.mockResolvedValue([]);
+    f.dependencies.loadLibraries = jest.fn().mockResolvedValue({ 'node-a': library });
+    mounted = await mount(f);
+    field = buildFieldController(mounted.current().state);
+    expect([...field.presentations.values()].map(p => p.song.id)).toEqual(['pinned']);
+    expect(f.connections).toHaveLength(1);
+    await ReactTestRenderer.act(async () => {
+      mounted.current().commands.pairBackend({ backend, pairToken: 'fresh-token' });
+    });
+    await ReactTestRenderer.act(async () => {
+      f.callbacks[1].onSnapshot({ phase: 'ready', error: null, jobs: [], songs, libraryRevision: 22, librarySyncing: false });
+    });
+    // Pairing again brings the whole library back, released audio included:
+    // nothing was ever deleted on the node.
+    field = buildFieldController(mounted.current().state);
+    expect(field.presentations.size).toBe(4);
+    expect(allPlaylists([...field.presentations.values()].map(p => p.song.tags))).toEqual(['Drive', 'Dusk', 'Remote playlist']);
+    expect(f.commitLibrary).toHaveBeenLastCalledWith('node-a', 22, songs);
+    await ReactTestRenderer.act(async () => mounted.renderer.unmount());
+  });
+
   it('hydrates caches, starts one connection, persists snapshots, flushes the owner outbox, and stops on unmount', async () => {
     const f = fixture();
     f.loadOutbox.mockResolvedValue([
@@ -525,6 +613,83 @@ describe('useBackendRuntime', () => {
       offline.current().commands.getSongDetail('node-a', 'song-a'),
     ).rejects.toThrow('Song node is not connected.');
 
+    await ReactTestRenderer.act(async () => offline.renderer.unmount());
+  });
+
+  it('reads the submitted words back at launch, before anything is submitted', async () => {
+    const f = fixture();
+    // What a phone that submitted a generation in an earlier session has on
+    // disk: nothing in this session ever calls submit, so without hydration at
+    // mount the caption would be missing for exactly the jobs already stopped.
+    f.loadOutbox.mockResolvedValue([
+      {
+        clientRequestId: 'request-a',
+        nodePublicKey: 'node-a',
+        model: 'light',
+        generation: { caption: 'una cumbia lenta' },
+        requestHash: 'hash',
+        state: 'accepted',
+        canonicalJobId: 'cached-job',
+        createdAt: '2026-08-08T00:00:00Z',
+        updatedAt: '2026-08-08T00:00:00Z',
+      },
+    ]);
+    const mounted = await mount(f);
+    await settle();
+
+    expect(mounted.current().state.outbox['node-a:cached-job']).toMatchObject({
+      generation: { caption: 'una cumbia lenta' },
+    });
+    expect(
+      buildFieldController(mounted.current().state).jobs.get(
+        'node-a:cached-job',
+      )?.caption,
+    ).toBe('una cumbia lenta');
+
+    await ReactTestRenderer.act(async () => mounted.renderer.unmount());
+  });
+
+  it('erases a deleted job from the live state, the cache, and the outbox', async () => {
+    const f = fixture();
+    const mounted = await mount(f);
+    await settle();
+    const live = f.connections[0];
+
+    await ReactTestRenderer.act(async () => {
+      f.callbacks[0].onSnapshot({
+        phase: 'ready',
+        error: null,
+        jobs: [job('doomed-job', 4), job('other-job', 1)],
+        songs: [],
+        libraryRevision: null,
+        librarySyncing: false,
+      });
+      await Promise.resolve();
+    });
+    await settle();
+
+    await mounted.current().commands.forgetJob('node-a', job('doomed-job', 4));
+    expect(live.forgetJob).toHaveBeenCalledWith('doomed-job', 4);
+
+    // The connection announces the deletion; only then does anything drop it,
+    // because the node is what decides a job is gone.
+    await ReactTestRenderer.act(async () => {
+      f.callbacks[0].onJobForgotten('doomed-job');
+      await Promise.resolve();
+    });
+    await settle();
+
+    expect(
+      mounted.current().state.snapshots['node-a'].jobs.map(item => item.id),
+    ).toEqual(['other-job', 'cached-job']);
+    expect(f.forgetJobs).toHaveBeenCalledWith('node-a', ['doomed-job']);
+    expect(f.forgetSubmission).toHaveBeenCalledWith('node-a', 'doomed-job');
+
+    await ReactTestRenderer.act(async () => mounted.renderer.unmount());
+    const offline = await mount(fixture([]));
+    await expect(
+      offline.current().commands.forgetJob('node-a', job('job-a')),
+    ).rejects.toThrow('Job node is not connected.');
     await ReactTestRenderer.act(async () => offline.renderer.unmount());
   });
 });

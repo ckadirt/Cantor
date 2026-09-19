@@ -206,6 +206,10 @@ pub struct NodeFeatures {
     pub artifacts_transfer: bool,
     pub secure_tunnel: bool,
     pub job_controls: bool,
+    /// Additive: a node that predates `job.forget` omits the key, and a client
+    /// that reads `false` must not offer the act.
+    #[serde(default)]
+    pub job_forget: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -288,6 +292,15 @@ pub struct JobView {
     #[ts(optional)]
     pub progress: Option<JobProgress>,
     pub model: String,
+    /// The words that were asked for.
+    ///
+    /// Additive: a node that predates it omits the key, and a job cached by an
+    /// older app has none. Without it a stopped job is unrecognisable from any
+    /// device but the one that typed it, since the submission itself never
+    /// leaves that phone. Bounded by `MAX_CAPTION_BYTES` at admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub caption: Option<String>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -559,6 +572,16 @@ pub enum ClientMessage {
         #[ts(optional)]
         expected_revision: Option<u32>,
     },
+    #[serde(rename = "job.forget")]
+    #[ts(rename = "job.forget")]
+    JobForget {
+        v: u8,
+        id: String,
+        job_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        expected_revision: Option<u32>,
+    },
     #[serde(rename = "library.list")]
     #[ts(rename = "library.list")]
     LibraryList {
@@ -673,6 +696,17 @@ pub enum NodeMessage {
     #[serde(rename = "job.controlled")]
     #[ts(rename = "job.controlled")]
     JobControlled { v: u8, id: String, job: JobView },
+    /// The reply carries the request id; the copy pushed to the owner's other
+    /// sessions does not. A forgotten job has no view left to send.
+    #[serde(rename = "job.forgotten")]
+    #[ts(rename = "job.forgotten")]
+    JobForgotten {
+        v: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        id: Option<String>,
+        job_id: String,
+    },
     #[serde(rename = "library.page")]
     #[ts(rename = "library.page")]
     LibraryPage {
@@ -844,6 +878,7 @@ mod tests {
             include_str!("../../../../protocol/fixtures/v2/hello.json"),
             include_str!("../../../../protocol/fixtures/v2/job-create.json"),
             include_str!("../../../../protocol/fixtures/v2/job-pause.json"),
+            include_str!("../../../../protocol/fixtures/v2/job-forget.json"),
             include_str!("../../../../protocol/fixtures/v2/library-list.json"),
         ];
         for fixture in client {
@@ -853,6 +888,7 @@ mod tests {
             include_str!("../../../../protocol/fixtures/v2/node-info.json"),
             include_str!("../../../../protocol/fixtures/v2/node-info-lyrics.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page.json"),
+            include_str!("../../../../protocol/fixtures/v2/job-forgotten.json"),
             include_str!("../../../../protocol/fixtures/v2/library-page.json"),
             include_str!("../../../../protocol/fixtures/v2/error.json"),
             include_str!("../../../../protocol/fixtures/v2/forward/extra-optional-field.json"),

@@ -56,6 +56,7 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             artifacts_transfer: true,
             secure_tunnel: true,
             job_controls: true,
+            job_forget: true,
         },
     }
 }

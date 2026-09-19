@@ -63,7 +63,11 @@ The shared text engine exposes several reusable variants; preserve the choice at
 the call site rather than replacing one behavior globally:
 
 - `write`: Manim-style `DrawBorderThenFill`; exact glyph outlines trace on with
-  controlled letter lag, then resolve into filled real glyphs.
+  controlled letter lag, then resolve into filled real glyphs. It runs both
+  ways: a `write` line whose text becomes empty *erases* — the same models on a
+  reversed clock — so chrome arrives and departs by one gesture. That needs the
+  slot kept mounted with `''` and given a stable width; see
+  `src/motion/README.md`.
 - `transform`: a plain whole-object Manim transform. Glyph families align in
   reading order and all geometry uses one shared alpha—no matching cascade.
 - `matching`: the original hierarchical character-matching gesture. Words glide,
@@ -73,6 +77,73 @@ the call site rather than replacing one behavior globally:
 All variants share font layout, clocks, glyph geometry, interruption handling,
 and flicker-free UI-thread hand-offs. Keep the matching variant available even
 when the product UI chooses the calmer whole-object transform.
+
+### Semantic zoom: one drawing, three poses
+
+The field's levels are not three screens that hand over to each other. A mark
+(L0), a row (L1) and the player (L2) are **one drawing** at three distances, and
+the camera moves continuously between them:
+
+- One face path per song, from `nameLensFacePath`, which is exactly linear in
+  its radius — so the row's face *is* the mark's at 1.2× and the player's is the
+  same path again at about 12×. There is never a second contour to crossfade to.
+- The name is one object across L1 and L2, morphed between the row's 15 px cut
+  and the player's 26 px, because a row truncates a long title and the player
+  has room for it. Two strings, one interpolation.
+- `NativeFieldContent` owns the canvas for all three, up to where the grain
+  opens (`isNativeDrawnDistance`). Everything is written against the live camera
+  on the UI thread.
+
+Each crossing is **two beats, not one**: `ROW_ARRIVAL` for L0→L1 and
+`SONG_ARRIVAL` for L1→L2. The shape moves first and the words follow it. Putting
+a whole crossing on one number makes everything in the frame move at the same
+instant, which reads as a lurch rather than as a sentence — that is what
+`ROW_ARRIVAL`'s own note means by "two things that must not happen at once."
+
+**A pose is not a band.** Crossfade bands (`REPRESENTATION_WINDOWS`) say how
+*present* something is; arrivals say where it *is*. Never drive a position or a
+size from a band: bands are measured in linear ratio and eased in their own
+right, while `interpolateCamera` eases once and then walks the scale
+exponentially. Drive a pose from a band and you get a second smootherstep on top
+of the camera's, over a window that covers a fraction of the flight — the player
+was built that way first, and its name stood still through half of every descent
+and then hooked across the screen at six times its own average speed. Arrivals
+are measured in log scale with no easing of their own, so a local pose advances
+in lockstep with the camera carrying it and the two motions sum to a straight
+line.
+
+**A song is a page, not a map.** The pan is locked at `isSongDistance` and a
+pinch inside a song pulls against the middle of the view rather than the
+fingers, so the player cannot slide out from under itself. Zoom is still the
+navigation — a pinch is how you leave — and the edge pulls still open the
+composer and the engines, because neither of those moves the camera.
+
+**The player belongs to the song you are in.** Navigation focus and the canvas
+owner have different lifetimes. `ascend` clears navigation focus immediately,
+but retains the outgoing `playerKey` until the live camera reaches the shelf
+seat. The drawing shrinks back into its row on the UI thread before React
+releases it. A new descent replaces that owner before starting its flight.
+Never clear the visible player at the start of an ascent: that removes its
+geometry at full size and produces a flash.
+
+**Lenses share the renderer.** Circle and Cantor wave use `NativeFieldContent`
+and the same row/player text. A retained shared clock interpolates the face
+wedges into bars; switching lenses does not replace the scene. Middle-thirds
+positions and bar sizes live in `lenses/cantorWaveGeometry.ts`; the canvas morph
+lives in `features/field/waveGeometry.ts`. Reduced motion crossfades the two
+shapes. Keep the lens clock outside the keyed re-cut generation so regrouping
+during a lens change preserves its current progress.
+
+**Nothing that moves with the camera may be laid out in React.** React's copy of
+the camera lands a commit late by design (`mirrorCamera`, `mirrorBusy`), so
+chrome faded by React state steps while the canvas under it moves — two clocks
+on one gesture. This is the Flicker Law's first rule at the level of a whole
+representation, and the player violated it until it was drawn here.
+
+What stays in React at L2 is what has no pose at L1 and no reason to be
+geometry: the elapsed readout (a string that changes twice a second would hand
+the canvas a fresh element on every tick), the lens picker, and an invisible
+layer of touch targets laid out from the same measurement the canvas draws from.
 
 ### The Flicker Law
 

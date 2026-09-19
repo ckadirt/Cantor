@@ -693,6 +693,7 @@ mod tests {
                         stage: None,
                         progress: None,
                         model: "model:tag".into(),
+                        caption: Some("a caption".into()),
                         created_at: "now".into(),
                         updated_at: "now".into(),
                         error: None,
@@ -709,6 +710,42 @@ mod tests {
             !bytes
                 .windows(b"job.updated".len())
                 .any(|v| v == b"job.updated")
+        );
+    }
+
+    #[test]
+    fn a_forgotten_job_is_announced_only_to_the_owner_principal() {
+        let (state, _config_path, _guard) = fixture();
+        let mut node_info = {
+            let locked = state.lock().expect("state");
+            static_node_info(&locked.config, &locked.library)
+        };
+        let mut sessions = SessionRegistry::default();
+        sessions.insert_for_test(
+            OWNER_SID,
+            secure_authenticated(&state, OWNER_SID, "owner-key", [1; 32]),
+        );
+        sessions.insert_for_test(
+            OTHER_SID,
+            secure_authenticated(&state, OTHER_SID, "other-key", [2; 32]),
+        );
+        let frames = sessions
+            .apply_control_event(
+                NodeEvent::JobForgotten {
+                    principal_id: PrincipalId::from_client_public_key(&[1_u8; 32]),
+                    job_id: "job".into(),
+                },
+                &state,
+                &mut node_info,
+            )
+            .expect("event");
+        assert_eq!(frames.len(), 1);
+        assert_eq!(encrypted_sid(&frames[0]), OWNER_SID);
+        let bytes = encrypted_bytes(&frames[0]);
+        assert!(
+            !bytes
+                .windows(b"job.forgotten".len())
+                .any(|v| v == b"job.forgotten")
         );
     }
 

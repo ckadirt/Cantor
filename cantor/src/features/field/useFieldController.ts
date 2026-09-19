@@ -4,7 +4,9 @@ import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { SongHeader } from '../../core/protocol';
 import type { BackendRecord } from '../../backends/types';
 import { deliveryArtifact, type BackendRuntimeState } from '../../runtime';
+import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import type { JobView } from '../../core/protocol';
+import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import type { FieldEntity } from '../../field';
 
 export type FieldPresentation = Readonly<{
@@ -20,9 +22,11 @@ export type FieldPresentation = Readonly<{
 /**
  * A generation in flight, as the field sees it.
  *
- * The caption comes from the persisted outbox rather than from `JobView`,
- * because the wire model does not carry the words the person typed and M4 must
- * not invent a field for them.
+ * The caption comes from the node when it sends one, and from this phone's
+ * persisted outbox when it does not — a node that predates `JobView.caption`,
+ * or a job cached before this app understood it. The node's copy is preferred
+ * because it is the one that survives a reinstall and is the same on every
+ * device, while the outbox only ever holds what this phone itself submitted.
  */
 export type JobPresentation = Readonly<{
   entity: FieldEntity;
@@ -30,6 +34,20 @@ export type JobPresentation = Readonly<{
   backend: BackendRecord;
   nodeLabels: readonly string[];
   caption: string | null;
+  /**
+   * The whole request as it was submitted, when this phone is the one that
+   * sent it. A failure is only recognisable by what was asked for, and the
+   * wire model carries none of it — the outbox is the only copy.
+   */
+  request: GenerationRequest | null;
+  /**
+   * The stages the model running this job said it runs.
+   *
+   * Read from the node's advertised catalogue rather than from the job, because
+   * the mask is a property of the model: it is how the mark can draw the arc
+   * ahead of the work instead of only the part already watched.
+   */
+  declaredStages: readonly GenerationStage[];
 }>;
 
 export type FieldController = Readonly<{
@@ -74,34 +92,50 @@ export function buildFieldController(
   state: FieldRuntimeState,
 ): FieldController {
   const presentations = new Map<string, FieldPresentation>();
-  for (const backend of state.backends ?? []) {
-    const snapshot = state.snapshots[backend.nodePubkey];
+  const paired = new Map(
+    (state.backends ?? []).map(backend => [backend.nodePubkey, backend]),
+  );
+  for (const [nodeKey, snapshot] of Object.entries(state.snapshots)) {
+    const backend = paired.get(nodeKey) ?? {
+      nodePubkey: nodeKey,
+      petname: 'Offline engine',
+      relayUrl: '',
+      lastNodeInfo: null,
+    };
+
     for (const song of snapshot?.songs ?? []) {
       if (song.trashed) continue;
       const delivery = deliveryArtifact(song);
+      const localAudio =
+        state.localAudio[audioKey(nodeKey, song.id, delivery?.sha256 ?? 'none')] ??
+        REMOTE_AUDIO;
+      // An unpaired node keeps only what you pinned. A cached copy is a loan
+      // `enforceCacheBudget` may call in at any download, and with no node to
+      // fetch it back from a mark standing on one would simply vanish one day.
+      // `forgetBackend` releases them, so this is the field agreeing with what
+      // is actually on disk rather than a second policy.
+      if (!paired.has(nodeKey) && localAudio.state !== 'pinned') continue;
       const entity: FieldEntity = {
         key: `${backend.nodePubkey}:${song.id}`,
         nodePublicKey: backend.nodePubkey,
         entityId: song.id,
         kind: 'song',
         createdAtMs: timestampOrEpoch(song.created_at),
+        durationMs: song.duration_ms,
         tags: song.tags,
       };
       presentations.set(entity.key, {
         entity,
         song,
         backend,
-        ready: snapshot?.phase === 'ready',
+        ready: paired.has(nodeKey) && snapshot?.phase === 'ready',
         nodeLabels: [
           backend.petname,
           backend.lastNodeInfo?.name ?? '',
           backend.nodePubkey,
         ].filter(Boolean),
         delivery,
-        localAudio:
-          state.localAudio[
-            audioKey(backend.nodePubkey, song.id, delivery?.sha256 ?? 'none')
-          ] ?? REMOTE_AUDIO,
+        localAudio,
       });
     }
   }
@@ -121,6 +155,9 @@ export function buildFieldController(
         entityId: job.id,
         kind: 'job',
         createdAtMs: timestampOrEpoch(job.created_at),
+        // A job has no length until it becomes a song; by duration it sorts
+        // to the head, which is where a thing being made belongs anyway.
+        durationMs: 0,
         tags: [],
       };
       jobs.set(key, {
@@ -132,7 +169,13 @@ export function buildFieldController(
           backend.lastNodeInfo?.name ?? '',
           backend.nodePubkey,
         ].filter(Boolean),
-        caption: state.outbox[key]?.generation.caption ?? null,
+        caption:
+          job.caption ?? state.outbox[key]?.generation.caption ?? null,
+        request: state.outbox[key]?.generation ?? null,
+        declaredStages:
+          backend.lastNodeInfo?.models?.find(
+            model => model.selector === job.model,
+          )?.stages ?? [],
       });
     }
   }

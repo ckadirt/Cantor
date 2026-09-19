@@ -108,7 +108,7 @@ function PairBackendModalImpl({ visible, onClose, onPair }: Props) {
         </View>
 
         <Text style={[type.body, styles.intro, { color: pal.muted }]}>
-          Run `cantor-node pair`, then point this camera at its terminal QR.
+          Run `cantor pair`, then point this camera at its terminal QR.
         </Text>
 
         <View

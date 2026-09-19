@@ -105,6 +105,50 @@ and `FragmentReassembler` own record framing. Add JVM tests before moving any
 of it; the React Native method names, arguments, return shapes, and error text
 are the contract.
 
+## Forgetting and recovering engines
+
+Forgetting removes the pairing record and stops its connection. It never touches
+the node's durable library, and it keeps every song you **pinned** — `GET` and
+`KEEP` both pin, so a pin means you asked for it. Cached copies and part
+transfers are released: `cached` is a loan under the audio budget, which
+`enforceCacheBudget` reclaims by LRU on every download, and a field that kept
+marks standing on those would watch them vanish with no engine left to ask
+again. `availabilityOf` is where the two promises are written down; keep any new
+policy agreeing with the words the row already shows.
+
+The runtime hydrates cached metadata for all nodes, including forgotten ones,
+and verifies audio against native storage, so the field shows an unpaired node's
+songs only where a pinned file is really on disk — after a restart too.
+Re-pairing with the same app identity restores the full owner-scoped library,
+released audio included. Playlist membership is stored in song tags (`p/<name>`)
+on the node and returns with library sync; empty playlists have no separate
+durable record.
+
+Releasing audio has two orderings that are not optional: the socket is stopped
+before any file is deleted, so a transfer in flight is cut before its bytes go,
+and the screen closes the transport first when the track being played is one of
+the released copies — the rule a row's `REMOVE` already follows. A song that
+leaves the field while the camera is standing in it is handled one layer down;
+see the `lastVisualPlacements` trap below.
+
+## Playback gestures and field lenses
+
+`player/scrubSession.ts` owns a silent seek transaction: pause once, preview on
+the shared position clock, seek on release, and resume only if playback was
+running before the drag. `SongSurface` finalizes on gesture completion and
+unmount. Track replacement cancels ownership so a late release cannot seek the
+next song. Ordinary seeks also reconcile the visual clock after native seek.
+
+Circle and Cantor wave share `NativeFieldContent`. Lens changes drive one
+retained linear clock (`MORPH_MS = 420`); the drawing eases it once. Pure bar
+geometry is shared with the fallback lens in `lenses/cantorWaveGeometry.ts`.
+The field's morph module partitions the exact face polygon into 32 wedges,
+then interpolates those wedges into bars at the measured Cantor intervals.
+`features/field/songDetailPhase.ts` separates reveal, hold, and hidden states:
+the outgoing waveform keeps its ink while camera opacity fades it, and resets
+only after it is hidden. Playhead mappers must include the position shared
+value in their dependencies so loading a track replaces the idle clock.
+
 ## Tests
 
 ```sh
@@ -136,8 +180,60 @@ cable is replugged.
 - **Storage keys are a compatibility contract.** Existing AsyncStorage keys and
   stored JSON shapes must keep loading; per-store corruption policy is
   deliberate.
+- **The soft keyboard must never resize the window.** The activity asks for
+  `adjustNothing`. `viewportHeight` is a blind's whole travel *and* the number
+  the field's layout is planned on, so a window that shrank under an open sheet
+  re-ran the blind's height animation, the field's re-cut, and every seat
+  measured inside the open panel, all on one frame — which is what made a tap
+  on a text field shove every dropdown on screen. `Curtain` takes
+  `useKeyboardInset` out of the sheet's own height instead, so the band the
+  keyboard covers is paid for by the sheet's content and by nothing else. RN's
+  `Modal` sets `adjustResize` on its own window regardless, so the pairing and
+  restore sheets are unaffected.
+- **The foot's line is narrower than the page.** `LedgerFoot` starts at the
+  spine, so its note holds about 26 mono characters, not a page's worth. Two
+  sheets have already lost a word off the right edge there; count the string.
+- **An arrival stagger has to finish inside its clock.** A block's window is
+  `ROWS_FROM + index * ARRIVAL_LAG` to `+ ARRIVAL_RISE`, and a window that ends
+  past 1 is a row that never reaches full ink — it does not fail, it just sits
+  at a fraction of its opacity forever. Adding a block means lowering the lag.
+- **A job's caption has two sources, and the node's wins.** `JobView.caption`
+  is what every device sees; the submission outbox is what only the phone that
+  typed it has. `useBackendRuntime` hydrates the outbox at mount — without that
+  the map is empty until the next submission, and every mark from an earlier
+  session draws with no words at all.
+- **Job snapshots only ever merge in — except for deletion.** `mergeJobViews`
+  keeps the highest revision and never drops a job, because a job missing from
+  one page is not evidence it is gone. `job.forgotten` is that evidence, and it
+  is the only thing allowed to remove one. It arrives two ways — as the reply to
+  this phone's `forgetJob`, and unsolicited when another session of the same
+  account deleted it — and both land on `onJobForgotten`, which has to prune the
+  live snapshot, `jobs/repository.ts`, and the outbox entry holding the caption.
+  Prune fewer than all three and the job returns on the next launch.
+- **`lastVisualPlacements` is a capture *and* a source.** `useFieldCamera`
+  keeps it as the poses on screen, so an interrupted re-cut resumes from where
+  the eye left it — and plans the next re-cut's `before` from it. Anything left
+  in it after its flight has landed gets re-planned forever. A finished exit
+  that stayed there named a song `controller.presentations` no longer had,
+  which held `nativeField` false for the rest of the session: the field fell
+  back to `recordFieldPicture`, losing the wave morph and seaming every level
+  change, until the app restarted. `stillDrawn` is the shed; keep any new
+  ownership that ends at alpha zero behind it.
 
 ## Review checklist
+
+### Composer lyrics compatibility
+
+`core/protocol/lyrics.ts` adapts the existing ACE engine contract until nodes
+advertise lyrics capabilities directly. Automatic words are offered only for
+the `acestep` engine with a declared `plan` stage. Automatic mode omits lyrics;
+instrumental mode sends `[Instrumental]`; manual mode sends the supplied words.
+There is no `write_lyrics` extension in that engine ABI. Unknown engines must
+not inherit either this capability or its sentinel. Stage count alone does not
+establish lyric-writing support.
+
+The Ledger uses a compact dial whose tick sits near its text while retaining a
+48 dp touch target. Header titles are centered independently of side controls.
 
 - [ ] Does a component call the connection directly?
 - [ ] Is the new state owned by exactly one hook or repository?
@@ -145,3 +241,15 @@ cable is replugged.
 - [ ] Does offline behavior still work with no socket?
 - [ ] Did a persisted key or stored shape change without a migration story?
 - [ ] Does motion still follow the Flicker Law in `cantor/AGENTS.md`?
+
+### Live jobs on the field
+
+A live job must not force the song field into the JavaScript picture fallback.
+`FieldCanvas` draws job progress in a separate transparent canvas, with camera
+and placement motion driven by the same UI-thread values as the songs. Progress
+may replace the job picture, but must retain the song scene element and its
+presentation map when song data is unchanged. Job flight subtrees are keyed by
+re-cut generation so outgoing mappers never read a newborn clock.
+
+`fieldCanvasClock.test.tsx` checks that a live job preserves the native song
+scene across progress updates, including fresh controller projection objects.

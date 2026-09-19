@@ -25,16 +25,23 @@ import type {
 import { readError } from '../core/errors';
 import type { AppIdentity } from '../identity/derive';
 import {
+  forgetSubmission,
   loadOutbox,
   markAccepted,
   markRejected,
   putPending,
   type OutboxEntry,
 } from '../jobs/outbox';
-import { loadJobs, mergeJobs, mergeJobViews } from '../jobs/repository';
+import {
+  forgetJobs,
+  loadJobs,
+  mergeJobs,
+  mergeJobViews,
+} from '../jobs/repository';
 import {
   commitLibrary,
   loadLibrary,
+  loadLibraries,
   mergeSongHeaders,
 } from '../library/repository';
 import type { TransportDescriptor } from '../security/types';
@@ -48,12 +55,14 @@ export const DEFAULT_BACKEND_SNAPSHOT: ConnectionSnapshot = {
   librarySyncing: false,
 };
 
-
 /**
  * Runtime owns getting bytes onto the phone and keeping them there. Making
  * sound is the player's job, reached through `audioPath`.
  */
 export type AudioAction = 'download' | 'pin' | 'unpin' | 'remove';
+
+/** The floor between two published download-progress samples. */
+const ARRIVING_SAMPLE_MS = 100;
 
 export type BackendRuntimeConnection = Pick<
   BackendConnection,
@@ -61,6 +70,7 @@ export type BackendRuntimeConnection = Pick<
   | 'stop'
   | 'createJob'
   | 'controlJob'
+  | 'forgetJob'
   | 'patchSong'
   | 'getSong'
   | 'downloadArtifact'
@@ -74,6 +84,7 @@ export type BackendRuntimeConnectionCallbacks = {
   onNodeInfo: (nodeInfo: NodeInfo) => void;
   onPairTokenConsumed: () => void;
   onTransportConfirmed: (descriptor: TransportDescriptor) => void;
+  onJobForgotten: (jobId: string) => void;
 };
 
 type RuntimeDependencies = {
@@ -87,9 +98,12 @@ type RuntimeDependencies = {
   saveBackends: typeof saveBackends;
   loadJobs: typeof loadJobs;
   mergeJobs: typeof mergeJobs;
+  forgetJobs: typeof forgetJobs;
   loadLibrary: typeof loadLibrary;
+  loadLibraries: typeof loadLibraries;
   commitLibrary: typeof commitLibrary;
   loadOutbox: typeof loadOutbox;
+  forgetSubmission: typeof forgetSubmission;
   putPending: typeof putPending;
   markAccepted: typeof markAccepted;
   markRejected: typeof markRejected;
@@ -105,6 +119,15 @@ export type BackendRuntimeState = {
   pairing: boolean;
   storageError: string | null;
   localAudio: Record<string, LocalAudio>;
+  /**
+   * Keys of the artifacts a transfer is running for right now.
+   *
+   * `localAudio` says what is on the phone; this says what is moving. A song
+   * interrupted at 24% stays `partial` forever, so anything that wants to draw
+   * a wait — a verb that closes, an arc that fills — has to ask this instead,
+   * or it promises motion to a song nothing is fetching.
+   */
+  downloading: ReadonlySet<string>;
   /**
    * Persisted submissions, keyed `${nodePublicKey}:${canonicalJobId}`.
    *
@@ -122,6 +145,25 @@ export type BackendRuntimeCommands = {
   hidePairing: () => void;
   reportError: (error: unknown) => void;
   pairBackend: (request: PairingRequest) => void;
+  /** Change what this phone calls a node. Nothing on the node changes. */
+  renameBackend: (nodePublicKey: string, petname: string) => void;
+  /**
+   * Remove a node from this phone, keeping the songs you asked to keep.
+   *
+   * A song is here either because you tapped `GET`/`KEEP`, which pins it, or
+   * because you played it, which leaves a cached copy the budget is free to
+   * reclaim — the row says so: `CACHED · MAY BE RECLAIMED`. Only the first is a
+   * promise this phone can still honour with the node gone, so only the first
+   * survives. Keeping the loans would make the field depend on files
+   * `enforceCacheBudget` may take at any download, with no node left to fetch
+   * them back from.
+   *
+   * Partial transfers go too: they cannot resume without the node and no screen
+   * can reach them.
+   *
+   * Nothing is deleted on the node itself. Pair again and everything returns.
+   */
+  forgetBackend: (nodePublicKey: string) => Promise<void>;
   submit: (
     nodePublicKey: string,
     model: string,
@@ -132,6 +174,14 @@ export type BackendRuntimeCommands = {
     job: JobView,
     control: JobControl,
   ) => Promise<void>;
+  /**
+   * Delete a stopped generation everywhere: the node's row and bytes, this
+   * phone's cached snapshot, and the submission that held its caption.
+   *
+   * Nothing is kept, because a failure that has been read has no second use —
+   * and the node refuses to erase anything that became a song.
+   */
+  forgetJob: (nodePublicKey: string, job: JobView) => Promise<void>;
   patchSong: (
     nodePublicKey: string,
     song: SongHeader,
@@ -169,9 +219,12 @@ const defaultDependencies: RuntimeDependencies = {
   saveBackends,
   loadJobs,
   mergeJobs,
+  forgetJobs,
   loadLibrary,
+  loadLibraries,
   commitLibrary,
   loadOutbox,
+  forgetSubmission,
   putPending,
   markAccepted,
   markRejected,
@@ -196,12 +249,18 @@ export function useBackendRuntime(
   const loadCachedJobs = dependencies.loadJobs ?? defaultDependencies.loadJobs;
   const mergeCachedJobs =
     dependencies.mergeJobs ?? defaultDependencies.mergeJobs;
+  const forgetCachedJobs =
+    dependencies.forgetJobs ?? defaultDependencies.forgetJobs;
   const loadCachedLibrary =
     dependencies.loadLibrary ?? defaultDependencies.loadLibrary;
+  const loadAllCachedLibraries =
+    dependencies.loadLibraries ?? defaultDependencies.loadLibraries;
   const commitCachedLibrary =
     dependencies.commitLibrary ?? defaultDependencies.commitLibrary;
   const loadPendingOutbox =
     dependencies.loadOutbox ?? defaultDependencies.loadOutbox;
+  const forgetOutboxEntry =
+    dependencies.forgetSubmission ?? defaultDependencies.forgetSubmission;
   const createPendingEntry =
     dependencies.putPending ?? defaultDependencies.putPending;
   const acceptOutboxEntry =
@@ -223,6 +282,17 @@ export function useBackendRuntime(
       ),
     );
   }, [loadPendingOutbox]);
+  /**
+   * Read the submissions back at launch.
+   *
+   * The words a person typed are durable, but this map is not: without this the
+   * outbox is empty until the next submission, so every job from an earlier
+   * session draws with no caption at all — which is exactly when a stopped one
+   * most needs to say what it was.
+   */
+  useEffect(() => {
+    refreshOutbox().catch(error => setStorageError(readError(error)));
+  }, [refreshOutbox]);
   const [backends, setBackends] = useState<BackendRecord[] | null>(null);
   const [snapshots, setSnapshots] = useState<
     Record<string, ConnectionSnapshot>
@@ -230,7 +300,37 @@ export function useBackendRuntime(
   const [pairing, setPairing] = useState(false);
   const [storageError, setStorageError] = useState<string | null>(null);
   const [localAudio, setLocalAudio] = useState<Record<string, LocalAudio>>({});
+  /**
+   * The artifacts a transfer is running for *right now*.
+   *
+   * Not the same question as `localAudio`, and the difference is the one a
+   * person can see: `partial` means bytes are on the phone, which stays true
+   * forever after a download is interrupted. A song abandoned at 24% is not
+   * arriving — nothing is coming — and anything that draws a wait from the
+   * stored state alone ends up promising motion that will never happen.
+   */
+  const [downloading, setDownloading] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const markDownloading = useCallback((key: string, active: boolean) => {
+    setDownloading(current => {
+      if (current.has(key) === active) return current;
+      const next = new Set(current);
+      if (active) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
   const backendsRef = useRef<BackendRecord[]>([]);
+  /**
+   * The snapshots as they are *now*.
+   *
+   * `forgetBackend` walks a node's songs to release the audio it only borrowed,
+   * and a callback closing over the rendered `snapshots` would walk whatever
+   * list existed when it was created. Mirrored for the same reason
+   * `backendsRef` is.
+   */
+  const snapshotsRef = useRef<Record<string, ConnectionSnapshot>>({});
   const connections = useRef(new Map<string, LiveConnection>());
   const pairTokens = useRef(new Map<string, string>());
   const outboxInFlight = useRef(new Set<string>());
@@ -291,6 +391,32 @@ export function useBackendRuntime(
       active = false;
     };
   }, [loadBackendRecords]);
+
+  useEffect(() => {
+    let active = true;
+    loadAllCachedLibraries()
+      .then(libraries => {
+        if (!active) return;
+        setSnapshots(previous => {
+          const next = { ...previous };
+          for (const [nodeKey, library] of Object.entries(libraries)) {
+            if (next[nodeKey] !== undefined) continue;
+            next[nodeKey] = {
+              ...DEFAULT_BACKEND_SNAPSHOT,
+              songs: library.songs,
+              libraryRevision: library.revision,
+            };
+          }
+          return next;
+        });
+      })
+      .catch(error => {
+        if (active) setStorageError(readError(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [loadAllCachedLibraries]);
 
   const rememberNodeInfo = useCallback(
     (nodePublicKey: string, info: NodeInfo) => {
@@ -382,6 +508,11 @@ export function useBackendRuntime(
         pairTokens.current.get(backend.nodePubkey),
         {
           onSnapshot: snapshot => {
+            if (
+              connections.current.get(backend.nodePubkey)?.connection !==
+              connection
+            )
+              return;
             setSnapshots(previous => ({
               ...previous,
               [backend.nodePubkey]: {
@@ -442,6 +573,30 @@ export function useBackendRuntime(
                 .catch(error => setStorageError(readError(error)));
             }
           },
+          /**
+           * The node erased a job — at this phone's request or another
+           * session's. Everything that remembers it has to be told, because
+           * every other path here only ever merges jobs in.
+           */
+          onJobForgotten: jobId => {
+            setSnapshots(previous => {
+              const snapshot = previous[backend.nodePubkey];
+              if (snapshot?.jobs.some(job => job.id === jobId) !== true) {
+                return previous;
+              }
+              return {
+                ...previous,
+                [backend.nodePubkey]: {
+                  ...snapshot,
+                  jobs: snapshot.jobs.filter(job => job.id !== jobId),
+                },
+              };
+            });
+            forgetCachedJobs(backend.nodePubkey, [jobId])
+              .then(() => forgetOutboxEntry(backend.nodePubkey, jobId))
+              .then(refreshOutbox)
+              .catch(error => setStorageError(readError(error)));
+          },
           onNodeInfo: info => rememberNodeInfo(backend.nodePubkey, info),
           onPairTokenConsumed: () =>
             pairTokens.current.delete(backend.nodePubkey),
@@ -466,6 +621,9 @@ export function useBackendRuntime(
     loadCachedLibrary,
     loadPendingOutbox,
     mergeCachedJobs,
+    forgetCachedJobs,
+    forgetOutboxEntry,
+    refreshOutbox,
     sendOutbox,
   ]);
 
@@ -478,6 +636,8 @@ export function useBackendRuntime(
     },
     [],
   );
+
+  snapshotsRef.current = snapshots;
 
   const pairBackend = useCallback(
     (request: PairingRequest) => {
@@ -501,6 +661,80 @@ export function useBackendRuntime(
       setPairing(false);
     },
     [replaceBackends],
+  );
+
+  const renameBackend = useCallback(
+    (nodePublicKey: string, petname: string) => {
+      const trimmed = petname.trim();
+      if (trimmed.length === 0) return;
+      replaceBackends(
+        backendsRef.current.map(backend =>
+          backend.nodePubkey === nodePublicKey
+            ? { ...backend, petname: trimmed }
+            : backend,
+        ),
+      );
+    },
+    [replaceBackends],
+  );
+
+  const forgetBackend = useCallback(
+    async (nodePublicKey: string) => {
+      // Stop talking to it first: a live socket would re-populate the snapshot
+      // the moment the record is gone.
+      connections.current.get(nodePublicKey)?.connection.stop();
+      connections.current.delete(nodePublicKey);
+      pairTokens.current.delete(nodePublicKey);
+
+      // Released after the socket is down, so a transfer still in flight has
+      // already been cut before its bytes are deleted underneath it.
+      const released: string[] = [];
+      for (const song of snapshotsRef.current[nodePublicKey]?.songs ?? []) {
+        const artifact = deliveryArtifact(song);
+        if (artifact === undefined) continue;
+        const ref = {
+          nodeKey: nodePublicKey,
+          songId: song.id,
+          digest: artifact.sha256,
+        };
+        // `inspect` and not the advisory state: the store's own contract says
+        // the filesystem is what answers this, and a pin is the one answer
+        // worth trusting a deletion to.
+        const held = await audioStore.inspect(ref).catch(() => null);
+        if (held === null || held.state === 'pinned') continue;
+        released.push(audioKey(nodePublicKey, song.id, artifact.sha256));
+        if (held.state === 'remote') continue;
+        // One failure must not strand the rest: a file that is already gone,
+        // or that native refuses, still leaves the record to remove.
+        try {
+          await audioStore.remove(ref);
+        } catch (error) {
+          setStorageError(readError(error));
+        }
+      }
+
+      replaceBackends(
+        backendsRef.current.filter(
+          backend => backend.nodePubkey !== nodePublicKey,
+        ),
+      );
+      setSnapshots(current => ({
+        ...current,
+        [nodePublicKey]: {
+          ...(current[nodePublicKey] ?? DEFAULT_BACKEND_SNAPSHOT),
+          phase: 'disconnected',
+          error: null,
+          jobs: [],
+          librarySyncing: false,
+        },
+      }));
+      setLocalAudio(current => {
+        const next = { ...current };
+        for (const key of released) delete next[key];
+        return next;
+      });
+    },
+    [audioStore, replaceBackends],
   );
 
   const submit = useCallback(
@@ -535,6 +769,12 @@ export function useBackendRuntime(
     },
     [],
   );
+
+  const forgetJob = useCallback(async (nodePublicKey: string, job: JobView) => {
+    const live = connections.current.get(nodePublicKey);
+    if (live === undefined) throw new Error('Job node is not connected.');
+    await live.connection.forgetJob(job.id, job.revision);
+  }, []);
 
   const changeSongPresence = useCallback(
     async (nodePublicKey: string, song: SongHeader) => {
@@ -580,7 +820,11 @@ export function useBackendRuntime(
       song: SongHeader,
       artifact: ArtifactView,
     ): Promise<string> =>
-      audioStore.localPath({ nodeKey, songId: song.id, digest: artifact.sha256 }),
+      audioStore.localPath({
+        nodeKey,
+        songId: song.id,
+        digest: artifact.sha256,
+      }),
     [audioStore],
   );
 
@@ -603,16 +847,38 @@ export function useBackendRuntime(
         const before = await identify();
         if (before.state !== 'cached' && before.state !== 'pinned') {
           const sink: ArtifactSink = audioStore.createSink(ref);
-          await live.connection.downloadArtifact(
-            song.id,
-            artifact,
-            sink,
-            (bytes, total) =>
-              updateLocalAudio(nodeKey, song.id, artifact.sha256, {
-                state: bytes === total ? 'cached' : 'partial',
-                bytes,
-              }),
-          );
+          markDownloading(audioKey(nodeKey, song.id, artifact.sha256), true);
+          try {
+            /*
+             * Progress is sampled, not forwarded.
+             *
+             * The node answers one acknowledgement per 64 KiB, so a song reports
+             * progress sixty-odd times, and each report is a `setState` that
+             * rebuilds every song's presentation and re-renders the field. The
+             * arriving arc does not need sixty samples — it needs a number often
+             * enough to glide between, which `ARRIVING_SAMPLE_MS` gives it. The
+             * last report is never dropped: it is the one that says the song is
+             * here.
+             */
+            let lastSampleMs = 0;
+            await live.connection.downloadArtifact(
+              song.id,
+              artifact,
+              sink,
+              (bytes, total) => {
+                const now = Date.now();
+                const done = bytes === total;
+                if (!done && now - lastSampleMs < ARRIVING_SAMPLE_MS) return;
+                lastSampleMs = now;
+                updateLocalAudio(nodeKey, song.id, artifact.sha256, {
+                  state: done ? 'cached' : 'partial',
+                  bytes,
+                });
+              },
+            );
+          } finally {
+            markDownloading(audioKey(nodeKey, song.id, artifact.sha256), false);
+          }
         }
       } else if (action === 'pin') {
         await audioStore.pin(ref);
@@ -623,17 +889,17 @@ export function useBackendRuntime(
       }
       updateLocalAudio(nodeKey, song.id, artifact.sha256, await identify());
     },
-    [audioStore, updateLocalAudio],
+    [audioStore, markDownloading, updateLocalAudio],
   );
 
   useEffect(() => {
     let active = true;
-    const entries = (backends ?? []).flatMap(backend =>
-      (snapshots[backend.nodePubkey]?.songs ?? []).flatMap(song => {
+    const entries = Object.entries(snapshots).flatMap(([nodeKey, snapshot]) =>
+      snapshot.songs.flatMap(song => {
         const artifact = deliveryArtifact(song);
         return artifact === undefined
           ? []
-          : ([[backend.nodePubkey, song, artifact]] as const);
+          : ([[nodeKey, song, artifact]] as const);
       }),
     );
     Promise.all(
@@ -685,8 +951,11 @@ export function useBackendRuntime(
       hidePairing,
       reportError,
       pairBackend,
+      renameBackend,
+      forgetBackend,
       submit,
       controlJob,
+      forgetJob,
       patchSong,
       changeSongPresence,
       getSongDetail,
@@ -699,10 +968,13 @@ export function useBackendRuntime(
       audioPath,
       changeSongPresence,
       controlJob,
+      forgetJob,
       getSongDetail,
       hidePairing,
       patchSong,
       pairBackend,
+      renameBackend,
+      forgetBackend,
       refreshLibraries,
       reportError,
       showPairing,
@@ -711,7 +983,15 @@ export function useBackendRuntime(
   );
 
   return {
-    state: { backends, snapshots, pairing, storageError, localAudio, outbox },
+    state: {
+      backends,
+      snapshots,
+      pairing,
+      storageError,
+      localAudio,
+      downloading,
+      outbox,
+    },
     commands,
   };
 }

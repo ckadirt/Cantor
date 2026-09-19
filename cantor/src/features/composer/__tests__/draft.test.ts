@@ -3,7 +3,8 @@ import {
   EMPTY_DRAFT,
   canSubmit,
   describeProblem,
-  modelUnion,
+  modelsFor,
+  writeWordsFor,
   problemsWith,
   toGenerationRequest,
   utf8Bytes,
@@ -52,27 +53,32 @@ describe('utf8Bytes', () => {
   });
 });
 
-describe('modelUnion', () => {
-  it('is every model any paired node has, de-duplicated', () => {
-    const union = modelUnion([
-      target(),
-      target({
-        nodePublicKey: 'node-b',
-        models: [
-          { selector: 'levo:2', family: 'levo', engine: 'levo' },
-          { selector: 'acestep:1.5-fast', family: 'acestep', engine: 'acestep' },
-        ],
-      }),
-    ]);
+describe('modelsFor', () => {
+  it('offers what one node has, and never a union across nodes', () => {
+    const engine = (selector: string) => ({
+      selector,
+      family: selector.split(':')[0],
+      engine: selector.split(':')[0],
+    });
+    const agentbox = target({
+      nodePublicKey: 'a',
+      models: [engine('levo2:1.0'), engine('acestep:1.5-fast')],
+    });
+    const phone = target({ nodePublicKey: 'b', models: [engine('levo2:1.0')] });
 
-    expect(union.map(model => model.selector)).toEqual([
+    // Sorted, and scoped: picking the phone must not offer ACE-Step just
+    // because another node has it.
+    expect(modelsFor(agentbox).map(entry => entry.selector)).toEqual([
       'acestep:1.5-fast',
-      'levo:2',
+      'levo2:1.0',
+    ]);
+    expect(modelsFor(phone).map(entry => entry.selector)).toEqual([
+      'levo2:1.0',
     ]);
   });
 
-  it('is empty when nothing is paired', () => {
-    expect(modelUnion([])).toEqual([]);
+  it('has nothing to offer before a node is chosen', () => {
+    expect(modelsFor(null)).toEqual([]);
   });
 });
 
@@ -83,10 +89,9 @@ describe('problemsWith', () => {
   });
 
   it('needs a node and a model', () => {
-    const problems = problemsWith(
-      { ...EMPTY_DRAFT, caption: 'something' },
-      [target()],
-    );
+    const problems = problemsWith({ ...EMPTY_DRAFT, caption: 'something' }, [
+      target(),
+    ]);
 
     expect(problems.map(problem => problem.kind)).toEqual([
       'no-node',
@@ -130,15 +135,17 @@ describe('problemsWith', () => {
   });
 
   it('accepts a caption exactly at the limit', () => {
-    expect(problemsWith(draft({ caption: 'a'.repeat(32) }), [target()])).toEqual(
-      [],
-    );
+    expect(
+      problemsWith(draft({ caption: 'a'.repeat(32) }), [target()]),
+    ).toEqual([]);
   });
 
   it('measures lyrics too, and allows empty lyrics', () => {
     expect(problemsWith(draft({ lyrics: '' }), [target()])).toEqual([]);
     expect(
-      problemsWith(draft({ lyrics: 'x'.repeat(65) }), [target()])[0],
+      problemsWith(draft({ wordsMode: 'mine', lyrics: 'x'.repeat(65) }), [
+        target(),
+      ])[0],
     ).toMatchObject({ kind: 'lyrics-too-long', bytes: 65, maxBytes: 64 });
   });
 
@@ -150,7 +157,9 @@ describe('problemsWith', () => {
   ])('duration %p out of range: %p', (durationSeconds, expected) => {
     const problems = problemsWith(draft({ durationSeconds }), [target()]);
 
-    expect(problems.some(p => p.kind === 'duration-out-of-range')).toBe(expected);
+    expect(problems.some(p => p.kind === 'duration-out-of-range')).toBe(
+      expected,
+    );
   });
 
   it('lets the node choose the length when none is given', () => {
@@ -177,7 +186,9 @@ describe('toGenerationRequest', () => {
 
   it('includes lyrics and duration when present', () => {
     expect(
-      toGenerationRequest(draft({ lyrics: ' la la ', durationSeconds: 60 })),
+      toGenerationRequest(
+        draft({ wordsMode: 'mine', lyrics: ' la la ', durationSeconds: 60 }),
+      ),
     ).toEqual({
       caption: 'a slow piano piece',
       lyrics: 'la la',
@@ -189,5 +200,124 @@ describe('toGenerationRequest', () => {
     expect(toGenerationRequest(draft({ lyrics: '    ' }))).toEqual({
       caption: 'a slow piano piece',
     });
+  });
+});
+
+describe('words intent', () => {
+  const ace = {
+    selector: 'acestep:1.5-fast',
+    family: 'acestep',
+    engine: 'acestep',
+    stages: ['plan', 'codes', 'diffuse', 'decode'] as const,
+  };
+  const model = { ...ace, stages: [...ace.stages] };
+  it('requests instrumental ACE audio explicitly, without an invented extension', () => {
+    expect(toGenerationRequest(draft(), [], model)).toEqual({
+      caption: 'a slow piano piece',
+      lyrics: '[Instrumental]',
+    });
+  });
+  it('preserves supplied lyrics', () => {
+    expect(
+      toGenerationRequest(
+        draft({ wordsMode: 'mine', lyrics: ' hello ' }),
+        [],
+        model,
+      ),
+    ).toEqual({ caption: 'a slow piano piece', lyrics: 'hello' });
+  });
+  it('leaves lyrics empty for the native planner, ignoring retained text', () => {
+    expect(
+      toGenerationRequest(
+        draft({ wordsMode: 'model', lyrics: 'saved' }),
+        [],
+        model,
+      ),
+    ).toEqual({ caption: 'a slow piano piece' });
+    expect(writeWordsFor([target({ models: [model] })], draft())).toBe(
+      "ACESTEP'S",
+    );
+  });
+  it('requires the ACE engine and its planner, not a model name or just a plan stage', () => {
+    for (const candidate of [
+      { ...model, engine: 'other' },
+      {
+        ...model,
+        stages: ['codes' as const, 'diffuse' as const, 'decode' as const],
+      },
+    ]) {
+      expect(
+        problemsWith(draft({ wordsMode: 'model' }), [
+          target({ models: [candidate] }),
+        ]),
+      ).toContainEqual({ kind: 'writer-unavailable' });
+    }
+  });
+  it('does not invent instrumental tokens for other engines', () => {
+    expect(
+      toGenerationRequest(draft(), [], { ...model, engine: 'levo2' }),
+    ).toEqual({ caption: 'a slow piano piece' });
+  });
+  it('does not validate unsent lyrics', () => {
+    expect(
+      problemsWith(draft({ lyrics: 'x'.repeat(100) }), [target()]),
+    ).toEqual([]);
+  });
+});
+
+describe('advertised lyrics capabilities', () => {
+  const futureModel = {
+    selector: 'future:fast',
+    family: 'future',
+    engine: 'future',
+    lyrics: {
+      can_generate: true,
+      requires_lyrics: false,
+      writer_label: 'FUTURE',
+      instrumental_text: '[No vocals]',
+    },
+  };
+  const selected = draft({ modelSelector: futureModel.selector });
+  it('supports a new lyric writer without engine-name logic', () => {
+    expect(writeWordsFor([target({ models: [futureModel] })], selected)).toBe(
+      'FUTURE',
+    );
+    expect(toGenerationRequest(selected, [], futureModel).lyrics).toBe(
+      '[No vocals]',
+    );
+    expect(
+      toGenerationRequest({ ...selected, wordsMode: 'model' }, [], futureModel)
+        .lyrics,
+    ).toBeUndefined();
+  });
+  it('blocks missing lyrics when the selected model requires them', () => {
+    const required = {
+      ...futureModel,
+      lyrics: { can_generate: false, requires_lyrics: true },
+    };
+    const targets = [target({ models: [required] })];
+    expect(problemsWith(selected, targets)).toContainEqual({
+      kind: 'lyrics-required',
+    });
+    expect(
+      problemsWith(
+        { ...selected, wordsMode: 'mine', lyrics: 'hello' },
+        targets,
+      ),
+    ).toEqual([]);
+    expect(
+      problemsWith({ ...selected, wordsMode: 'model' }, targets),
+    ).toContainEqual({ kind: 'writer-unavailable' });
+  });
+  it('honors explicit capability removal even for ACE', () => {
+    const disabled = {
+      ...futureModel,
+      engine: 'acestep',
+      stages: ['plan' as const],
+      lyrics: { can_generate: false, requires_lyrics: false },
+    };
+    expect(
+      writeWordsFor([target({ models: [disabled] })], selected),
+    ).toBeNull();
   });
 });

@@ -9,10 +9,23 @@
 
 const PLAYLIST_PREFIX = 'p/';
 
-/** KNOBS — bounds the node enforces, checked before a patch is sent. */
+/**
+ * KNOBS — bounds the node enforces, checked before a patch is sent.
+ *
+ * These are `MAX_TAGS` and `MAX_TAG_BYTES` from `node/crates/cantor-proto`,
+ * and they must stay equal to them. They had been 32 and 128 — double the
+ * node's — while the comments beside them claimed they matched, so a
+ * seventeenth tag or a 65-byte name passed the check below and was refused by
+ * `valid_patch` on arrival. That is the exact round trip this module exists to
+ * prevent, and nothing catches the drift: the bounds are not generated.
+ *
+ * The count is shared. A playlist is a `p/` tag in the same array, so sixteen
+ * is the total of a song's tags and its memberships together, not sixteen of
+ * each.
+ */
 const PLAYLIST_KNOBS = {
-  MAX_TAGS_PER_SONG: 32, // the node's tag-count bound
-  MAX_TAG_BYTES: 128, // per tag, UTF-8, matching the node's limit
+  MAX_TAGS_PER_SONG: 16, // cantor-proto MAX_TAGS
+  MAX_TAG_BYTES: 64, // cantor-proto MAX_TAG_BYTES, per tag, UTF-8
 } as const;
 
 // Anything a name must not contain: control characters would make a tag that
@@ -119,6 +132,58 @@ export function toggle(
     tag => !(isPlaylistTag(tag) && fold(tag.slice(PLAYLIST_PREFIX.length)) === wanted),
   );
   return member ? [...without, toTag(name)] : without;
+}
+
+/**
+ * Why a plain tag cannot be used, or null when it can.
+ *
+ * The `p/` refusal is the important one: a tag typed with the reserved prefix
+ * would create a playlist the playlist UI never made and cannot see, which is
+ * the one way this namespace can be corrupted from the outside.
+ */
+export function tagNameProblem(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) return 'A tag needs a name.';
+  if (isPlaylistTag(trimmed)) {
+    return 'Use the playlist list to make a playlist.';
+  }
+  if (CONTROL_CHARACTERS.test(trimmed)) {
+    return 'A tag cannot contain control characters.';
+  }
+  if (tagBytes(trimmed) > PLAYLIST_KNOBS.MAX_TAG_BYTES) {
+    return `A tag is limited to ${PLAYLIST_KNOBS.MAX_TAG_BYTES} bytes.`;
+  }
+  return null;
+}
+
+/** Add or remove one plain tag, returning the full new tag set. */
+export function toggleTag(
+  tags: readonly string[],
+  name: string,
+  member: boolean,
+): readonly string[] {
+  if (tagNameProblem(name) !== null) return normalise(tags);
+  const wanted = fold(name);
+  const without = normalise(tags).filter(
+    tag => isPlaylistTag(tag) || fold(tag) !== wanted,
+  );
+  return member ? [...without, name.trim()] : without;
+}
+
+/** Every plain tag across a library, de-duplicated, in display order. */
+export function allTags(
+  songTags: readonly (readonly string[])[],
+): readonly string[] {
+  const seen = new Map<string, string>();
+  for (const tags of songTags) {
+    for (const name of plainTagsOf(tags)) {
+      const key = fold(name);
+      if (!seen.has(key)) seen.set(key, name);
+    }
+  }
+  return [...seen.values()].sort((left, right) =>
+    fold(left).localeCompare(fold(right)),
+  );
 }
 
 /** Every playlist across a library, de-duplicated, in display order. */

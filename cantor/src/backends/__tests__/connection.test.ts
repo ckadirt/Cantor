@@ -267,10 +267,12 @@ function connect(): {
   socket: FakeSocket;
   snapshots: ConnectionSnapshot[];
   nodeInfos: NodeInfo[];
+  forgotten: string[];
   connection: BackendConnection;
 } {
   const snapshots: ConnectionSnapshot[] = [];
   const nodeInfos: NodeInfo[] = [];
+  const forgotten: string[] = [];
   const connection = new BackendConnection(
     backend,
     deriveIdentity(PHRASE),
@@ -280,6 +282,7 @@ function connect(): {
       onNodeInfo: nodeInfo => nodeInfos.push(nodeInfo),
       onPairTokenConsumed: () => {},
       onTransportConfirmed: () => {},
+      onJobForgotten: jobId => forgotten.push(jobId),
     },
     () => fakeSecureChannel(),
   );
@@ -289,7 +292,7 @@ function connect(): {
     throw new Error('BackendConnection did not open a socket.');
   }
   socket.open();
-  return { socket, snapshots, nodeInfos, connection };
+  return { socket, snapshots, nodeInfos, forgotten, connection };
 }
 
 describe('BackendConnection', () => {
@@ -858,6 +861,155 @@ describe('BackendConnection', () => {
     });
   });
 
+  it('drops a forgotten job whether this app asked or another session did', async () => {
+    const { socket, connection, snapshots, forgotten } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.updated',
+        job: jobFixture('failed', 2, {
+          error: { code: 'internal', message: 'It stopped.', retryable: false },
+        }),
+      },
+    });
+    expect(snapshots.at(-1)?.jobs).toHaveLength(1);
+
+    const deletion = connection.forgetJob(
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      2,
+    );
+    const request = JSON.parse(socket.sent.at(-1) ?? '{}');
+    expect(request.payload).toMatchObject({
+      t: 'job.forget',
+      job_id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      expected_revision: 2,
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.forgotten',
+        id: request.payload.id,
+        job_id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      },
+    });
+    await expect(deletion).resolves.toBeUndefined();
+    expect(snapshots.at(-1)?.jobs).toEqual([]);
+    expect(forgotten).toEqual(['019c8f7e-5f2b-7a21-9ee0-8efb630bcb17']);
+
+    // The same job, deleted from another of this account's sessions: no
+    // request id, and nothing here asked for it.
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.updated',
+        job: jobFixture('cancelled', 3),
+      },
+    });
+    expect(snapshots.at(-1)?.jobs).toHaveLength(1);
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.forgotten',
+        job_id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      },
+    });
+    expect(snapshots.at(-1)?.jobs).toEqual([]);
+    expect(forgotten).toHaveLength(2);
+  });
+
+  it('adopts the job the node still has when a deletion is refused', async () => {
+    const { socket, connection, snapshots } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+
+    const deletion = connection.forgetJob(
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      2,
+    );
+    const request = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'error',
+        id: request.payload.id,
+        code: 'invalid_transition',
+        message: 'Only a failed or cancelled job can be deleted.',
+        retryable: false,
+        details: {
+          kind: 'job_state',
+          current: jobFixture('running', 5, { stage: 'diffuse' }),
+        },
+      },
+    });
+    await expect(deletion).rejects.toBeInstanceOf(NodeRequestError);
+    // The refusal carries the truth the app was missing; it keeps it.
+    expect(snapshots.at(-1)?.jobs[0]).toMatchObject({
+      state: 'running',
+      revision: 5,
+    });
+  });
+
+  it('refuses to delete before the node is ready', async () => {
+    const { connection } = connect();
+    await expect(connection.forgetJob('job', 1)).rejects.toThrow(
+      'Backend is not ready.',
+    );
+  });
+
   it('rejects a plaintext application frame before the secure handshake', () => {
     const { socket, snapshots } = connect();
     socket.receive({ v: 1, t: 'tunnel', payload: { v: 1, t: 'challenge' } });
@@ -875,7 +1027,7 @@ describe('BackendConnection', () => {
     );
   });
 
-  it('advances an artifact only after the durable sink acknowledges each chunk', async () => {
+  it('writes every artifact chunk through to the durable sink in order', async () => {
     const { socket, connection } = connect();
     socket.receive({ v: 1, t: 'relay.presence', online: true });
     const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
@@ -976,6 +1128,305 @@ describe('BackendConnection', () => {
     });
     await expect(download).resolves.toBeUndefined();
     expect(finalize).toHaveBeenCalledWith(3);
+  });
+
+  /**
+   * The node sends one chunk per acknowledgement and then waits, so a download
+   * costs one round trip per 64 KiB. Anything this loop does before
+   * acknowledging is added to every one of them. The write is therefore started
+   * and not awaited, and this is the test that says so: the acknowledgement for
+   * the second chunk has to be on the wire while the first chunk is still on
+   * its way to disk.
+   */
+  it('acknowledges the next chunk without waiting for the last one to land', async () => {
+    const { socket, connection } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+    const digest = 'd'.repeat(64);
+    const artifact = {
+      kind: 'delivery' as const,
+      profile: 'opus-stereo-160k-v1',
+      media_type: 'audio/ogg; codecs=opus',
+      byte_length: 6,
+      sha256: digest,
+      sample_rate: 48_000,
+      channels: 2,
+    };
+    // The first append never settles during this test, standing in for a slow
+    // phone: nothing downstream of it may block.
+    let releaseFirstAppend = (_offset: number) => {};
+    const appended: number[] = [];
+    const append = jest.fn((offset: number) => {
+      appended.push(offset);
+      return offset === 0
+        ? new Promise<number>(resolve => {
+            releaseFirstAppend = resolve;
+          })
+        : Promise.resolve(offset + 3);
+    });
+    const finalize = jest.fn(async () => undefined);
+    const download = connection.downloadArtifact(
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      artifact,
+      { offset: async () => 0, append, finalize },
+    );
+    await Promise.resolve();
+    const open = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.info',
+        id: open.id,
+        transfer_id: 'transfer-1',
+        song_id: open.song_id,
+        artifact,
+        accepted_offset: 0,
+        chunk_bytes: 65_536,
+        window_chunks: 1,
+      },
+    });
+    await Promise.resolve();
+    const firstAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.chunk',
+        id: firstAck.id,
+        transfer_id: 'transfer-1',
+        offset: 0,
+        data: 'YWJj',
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The disk has not answered, and the next 64 KiB has already been asked for
+    // at the offset the chunk's own length implies.
+    expect(append).toHaveBeenCalledWith(0, 'YWJj');
+    const secondAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(secondAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
+
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.chunk',
+        id: secondAck.id,
+        transfer_id: 'transfer-1',
+        offset: 3,
+        data: 'ZGVm',
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Ordering still holds: native refuses a non-sequential offset, so the
+    // second append waits behind the first however far ahead the wire runs.
+    expect(appended).toEqual([0]);
+    releaseFirstAppend(3);
+    // The queued write is several links down a promise chain; drain the
+    // microtask queue rather than guess at how many turns that is.
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+    expect(appended).toEqual([0, 3]);
+
+    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.complete',
+        id: finalAck.id,
+        transfer_id: 'transfer-1',
+        byte_length: 6,
+        sha256: digest,
+      },
+    });
+    await expect(download).resolves.toBeUndefined();
+    // Finalize still waits for the last byte to be on disk.
+    expect(finalize).toHaveBeenCalledWith(6);
+  });
+
+  /**
+   * The node keeps one transfer per session and drops it on any
+   * re-authentication, so a reconnect mid-download leaves the next
+   * acknowledgement naming a transfer that is gone. The bytes on disk are still
+   * good and the node will take any resume offset, so this must not reach the
+   * person who pressed play.
+   */
+  it('reopens and resumes when the node drops the transfer', async () => {
+    const { socket, connection } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+    const digest = 'd'.repeat(64);
+    const artifact = {
+      kind: 'delivery' as const,
+      profile: 'opus-stereo-160k-v1',
+      media_type: 'audio/ogg; codecs=opus',
+      byte_length: 6,
+      sha256: digest,
+      sample_rate: 48_000,
+      channels: 2,
+    };
+    // The sink is the disk: it keeps the three bytes the first session landed,
+    // and that is where the second session has to pick up.
+    let onDisk = 0;
+    const finalize = jest.fn(async () => undefined);
+    const download = connection.downloadArtifact(
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      artifact,
+      {
+        offset: async () => onDisk,
+        append: async (at: number, data: string) => {
+          onDisk = at + (data === 'YWJj' ? 3 : 3);
+          return onDisk;
+        },
+        finalize,
+      },
+    );
+
+    const openArtifact = async (expectedOffset: number) => {
+      await Promise.resolve();
+      await Promise.resolve();
+      const open = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+      expect(open).toMatchObject({
+        t: 'artifact.open',
+        offset: expectedOffset,
+      });
+      socket.receive({
+        v: 1,
+        t: 'tunnel',
+        payload: {
+          v: 2,
+          t: 'artifact.info',
+          id: open.id,
+          transfer_id: `transfer-${expectedOffset}`,
+          song_id: open.song_id,
+          artifact,
+          accepted_offset: expectedOffset,
+          chunk_bytes: 65_536,
+          window_chunks: 1,
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    };
+
+    await openArtifact(0);
+    const firstAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.chunk',
+        id: firstAck.id,
+        transfer_id: 'transfer-0',
+        offset: 0,
+        data: 'YWJj',
+      },
+    });
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+
+    // The reconnect happens here: the node has forgotten the transfer.
+    const staleAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(staleAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'error',
+        id: staleAck.id,
+        code: 'transfer_expired',
+        message: 'Open the delivery artifact again to resume.',
+        retryable: true,
+      },
+    });
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+
+    // Reopened from the three bytes already on disk rather than from zero.
+    await openArtifact(3);
+    const resumedAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(resumedAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.chunk',
+        id: resumedAck.id,
+        transfer_id: 'transfer-3',
+        offset: 3,
+        data: 'ZGVm',
+      },
+    });
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+
+    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'artifact.complete',
+        id: finalAck.id,
+        transfer_id: 'transfer-3',
+        byte_length: 6,
+        sha256: digest,
+      },
+    });
+    await expect(download).resolves.toBeUndefined();
+    expect(finalize).toHaveBeenCalledWith(6);
   });
 
   // The one case that should still give up: an explicit authorization refusal.

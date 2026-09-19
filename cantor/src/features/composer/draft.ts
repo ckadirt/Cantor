@@ -1,7 +1,11 @@
 import type { ModelParameter } from '../../../../protocol/ModelParameter';
 import type { ModelView } from '../../../../protocol/ModelView';
 import type { ParameterValue } from '../../../../protocol/ParameterValue';
-import { extensionsFor, parameterProblem } from '../../core/protocol/parameters';
+import {
+  extensionsFor,
+  parameterProblem,
+} from '../../core/protocol/parameters';
+import { lyricsContractFor } from '../../core/protocol/lyrics';
 import type { NodeLimits } from '../../../../protocol/NodeLimits';
 
 /**
@@ -19,9 +23,16 @@ export type ComposerTarget = Readonly<{
   limits: NodeLimits | null;
 }>;
 
+/**
+ * Internal lyrics intent. The Words editor and optional Write words switch
+ * select one mode; switching modes retains the manual draft.
+ */
+export type WordsMode = 'none' | 'model' | 'mine';
+
 export type ComposerDraft = Readonly<{
   caption: string;
   lyrics: string;
+  wordsMode: WordsMode;
   /** Seconds, or null to let the node choose. */
   durationSeconds: number | null;
   nodePublicKey: string | null;
@@ -33,6 +44,7 @@ export type ComposerDraft = Readonly<{
 export const EMPTY_DRAFT: ComposerDraft = {
   caption: '',
   lyrics: '',
+  wordsMode: 'none',
   durationSeconds: null,
   nodePublicKey: null,
   modelSelector: null,
@@ -46,6 +58,9 @@ export type ComposerProblem =
   | { kind: 'model-not-installed'; selector: string; label: string }
   | { kind: 'caption-empty' }
   | { kind: 'caption-too-long'; bytes: number; maxBytes: number }
+  | { kind: 'words-empty' }
+  | { kind: 'lyrics-required' }
+  | { kind: 'writer-unavailable' }
   | { kind: 'lyrics-too-long'; bytes: number; maxBytes: number }
   | { kind: 'duration-out-of-range'; min: number; max: number }
   | { kind: 'parameter'; key: string; message: string };
@@ -70,22 +85,18 @@ export function utf8Bytes(value: string): number {
 }
 
 /**
- * Every model any paired node has installed, de-duplicated by selector.
+ * What one node has installed, in a stable order.
  *
- * The union is deliberate: the person picks a model, then a node, and the app
- * tells them whether that pairing can actually run. Listing only one node's
- * models would hide the fact that another node already has the model.
+ * The composer asks in dependency order — where it runs, *then* what runs it —
+ * so the models on offer are always the ones this node actually has. The old
+ * union across every paired node offered a model one node had and another did
+ * not, let you pick the other node, and then reported `model-not-installed` as
+ * though it were the person's mistake. A combination the app knows cannot exist
+ * is not a choice.
  */
-export function modelUnion(
-  targets: readonly ComposerTarget[],
-): readonly ModelView[] {
-  const seen = new Map<string, ModelView>();
-  for (const target of targets) {
-    for (const model of target.models) {
-      if (!seen.has(model.selector)) seen.set(model.selector, model);
-    }
-  }
-  return [...seen.values()].sort((left, right) =>
+export function modelsFor(target: ComposerTarget | null): readonly ModelView[] {
+  if (target === null) return [];
+  return [...target.models].sort((left, right) =>
     left.selector.localeCompare(right.selector),
   );
 }
@@ -142,14 +153,32 @@ export function problemsWith(
     }
   }
 
-  if (target?.limits && draft.lyrics.length > 0) {
-    const bytes = utf8Bytes(draft.lyrics);
-    if (bytes > target.limits.max_lyrics_bytes) {
-      problems.push({
-        kind: 'lyrics-too-long',
-        bytes,
-        maxBytes: target.limits.max_lyrics_bytes,
-      });
+  if (
+    draft.wordsMode === 'none' &&
+    lyricsContractFor(modelFor(targets, draft)).requiresLyrics
+  ) {
+    problems.push({ kind: 'lyrics-required' });
+  }
+  if (draft.wordsMode === 'model' && writeWordsFor(targets, draft) === null) {
+    problems.push({ kind: 'writer-unavailable' });
+  }
+
+  // Only what was actually chosen is measured. Words typed and then abandoned
+  // for `none` are kept in the draft so the dial can be moved back without
+  // losing them, and a draft that is not sending them cannot be too long.
+  if (draft.wordsMode === 'mine') {
+    const words = draft.lyrics.trim();
+    if (words.length === 0) {
+      problems.push({ kind: 'words-empty' });
+    } else if (target?.limits) {
+      const bytes = utf8Bytes(words);
+      if (bytes > target.limits.max_lyrics_bytes) {
+        problems.push({
+          kind: 'lyrics-too-long',
+          bytes,
+          maxBytes: target.limits.max_lyrics_bytes,
+        });
+      }
     }
   }
 
@@ -173,16 +202,29 @@ export function problemsWith(
   return problems;
 }
 
+/** The lyric writer supported by the selected engine's input contract. */
+export function writeWordsFor(
+  targets: readonly ComposerTarget[],
+  draft: ComposerDraft,
+): string | null {
+  return lyricsContractFor(modelFor(targets, draft)).writerLabel;
+}
+
+export function modelFor(
+  targets: readonly ComposerTarget[],
+  draft: ComposerDraft,
+): ModelView | undefined {
+  return targetOf(targets, draft.nodePublicKey)?.models.find(
+    model => model.selector === draft.modelSelector,
+  );
+}
+
 /** What the selected model on the selected node declares, if anything. */
 export function declaredFor(
   targets: readonly ComposerTarget[],
   draft: ComposerDraft,
 ): readonly ModelParameter[] {
-  const target = targetOf(targets, draft.nodePublicKey);
-  const model = target?.models.find(
-    candidate => candidate.selector === draft.modelSelector,
-  );
-  return model?.parameters ?? [];
+  return modelFor(targets, draft)?.parameters ?? [];
 }
 
 export function canSubmit(
@@ -196,11 +238,18 @@ export function canSubmit(
 export function toGenerationRequest(
   draft: ComposerDraft,
   declared: readonly ModelParameter[] = [],
+  model?: ModelView,
 ) {
   const extensions = extensionsFor(declared, draft.parameters);
+  const words =
+    draft.wordsMode === 'mine'
+      ? draft.lyrics.trim()
+      : draft.wordsMode === 'none'
+      ? lyricsContractFor(model).instrumentalLyrics
+      : undefined;
   return {
     caption: draft.caption.trim(),
-    ...(draft.lyrics.trim().length > 0 ? { lyrics: draft.lyrics.trim() } : {}),
+    ...(words ? { lyrics: words } : {}),
     ...(draft.durationSeconds !== null
       ? { duration: draft.durationSeconds }
       : {}),
@@ -224,6 +273,12 @@ export function describeProblem(problem: ComposerProblem): string {
       return 'Describe the song you want.';
     case 'caption-too-long':
       return `Caption is ${problem.bytes} bytes; this engine accepts ${problem.maxBytes}.`;
+    case 'writer-unavailable':
+      return 'Automatic lyrics are not available for this model. Choose none or mine.';
+    case 'lyrics-required':
+      return 'This model requires lyrics. Write words to generate.';
+    case 'words-empty':
+      return 'Write the words, or set words to none.';
     case 'lyrics-too-long':
       return `Lyrics are ${problem.bytes} bytes; this engine accepts ${problem.maxBytes}.`;
     case 'duration-out-of-range':

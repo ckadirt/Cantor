@@ -4,4 +4,13 @@ import type { JobError } from "./JobError";
 import type { JobProgress } from "./JobProgress";
 import type { JobState } from "./JobState";
 
-export type JobView = { id: string, revision: number, state: JobState, stage?: GenerationStage, progress?: JobProgress, model: string, created_at: string, updated_at: string, error?: JobError, };
+export type JobView = { id: string, revision: number, state: JobState, stage?: GenerationStage, progress?: JobProgress, model: string, 
+/**
+ * The words that were asked for.
+ *
+ * Additive: a node that predates it omits the key, and a job cached by an
+ * older app has none. Without it a stopped job is unrecognisable from any
+ * device but the one that typed it, since the submission itself never
+ * leaves that phone. Bounded by `MAX_CAPTION_BYTES` at admission.
+ */
+caption?: string, created_at: string, updated_at: string, error?: JobError, };
