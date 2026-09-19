@@ -64,6 +64,11 @@ export function parseJob(value: unknown): JobView | null {
     typeof value.updated_at !== 'string'
   )
     return null;
+  // Additive since M9. A node that predates it, and every job cached by an
+  // older app, simply has no caption — which is different from an empty one.
+  if (!(value.caption === undefined || typeof value.caption === 'string')) {
+    return null;
+  }
   if (
     !(
       value.stage === undefined ||
@@ -124,6 +129,7 @@ export function parseJob(value: unknown): JobView | null {
       : { stage: value.stage as GenerationStage }),
     ...(progress === undefined ? {} : { progress }),
     model: value.model,
+    ...(value.caption === undefined ? {} : { caption: value.caption }),
     created_at: value.created_at,
     updated_at: value.updated_at,
     ...(error === undefined ? {} : { error }),

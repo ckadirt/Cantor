@@ -180,6 +180,26 @@ cable is replugged.
 - **Storage keys are a compatibility contract.** Existing AsyncStorage keys and
   stored JSON shapes must keep loading; per-store corruption policy is
   deliberate.
+- **The foot's line is narrower than the page.** `LedgerFoot` starts at the
+  spine, so its note holds about 26 mono characters, not a page's worth. Two
+  sheets have already lost a word off the right edge there; count the string.
+- **An arrival stagger has to finish inside its clock.** A block's window is
+  `ROWS_FROM + index * ARRIVAL_LAG` to `+ ARRIVAL_RISE`, and a window that ends
+  past 1 is a row that never reaches full ink — it does not fail, it just sits
+  at a fraction of its opacity forever. Adding a block means lowering the lag.
+- **A job's caption has two sources, and the node's wins.** `JobView.caption`
+  is what every device sees; the submission outbox is what only the phone that
+  typed it has. `useBackendRuntime` hydrates the outbox at mount — without that
+  the map is empty until the next submission, and every mark from an earlier
+  session draws with no words at all.
+- **Job snapshots only ever merge in — except for deletion.** `mergeJobViews`
+  keeps the highest revision and never drops a job, because a job missing from
+  one page is not evidence it is gone. `job.forgotten` is that evidence, and it
+  is the only thing allowed to remove one. It arrives two ways — as the reply to
+  this phone's `forgetJob`, and unsolicited when another session of the same
+  account deleted it — and both land on `onJobForgotten`, which has to prune the
+  live snapshot, `jobs/repository.ts`, and the outbox entry holding the caption.
+  Prune fewer than all three and the job returns on the next launch.
 - **`lastVisualPlacements` is a capture *and* a source.** `useFieldCamera`
   keeps it as the poses on screen, so an interrupted re-cut resumes from where
   the eye left it — and plans the next re-cut's `before` from it. Anything left

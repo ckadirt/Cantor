@@ -71,7 +71,13 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       'artifacts_transfer',
       'secure_tunnel',
       'job_controls',
-    ].every(key => typeof features[key] === 'boolean')
+    ].every(key => typeof features[key] === 'boolean') ||
+    // Additive since M9: a node that predates deletion simply omits it, and
+    // reading it as absent is how the app knows not to offer the act.
+    !(
+      features.job_forget === undefined ||
+      typeof features.job_forget === 'boolean'
+    )
   )
     return null;
   return {
@@ -102,6 +108,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       artifacts_transfer: features.artifacts_transfer as boolean,
       secure_tunnel: features.secure_tunnel as boolean,
       job_controls: features.job_controls as boolean,
+      job_forget: features.job_forget === true,
     },
   };
 }

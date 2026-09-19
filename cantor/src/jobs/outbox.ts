@@ -128,6 +128,28 @@ export async function markRejected(
   }));
 }
 
+/**
+ * Drop the submission behind a job the node has erased.
+ *
+ * The outbox is where the typed caption lives, so leaving the entry would keep
+ * the words of a generation that no longer exists anywhere else.
+ */
+export async function forgetSubmission(
+  nodePublicKey: string,
+  canonicalJobId: string,
+): Promise<void> {
+  await outboxStore.update(entries => ({
+    value: entries.filter(
+      entry =>
+        !(
+          entry.nodePublicKey === nodePublicKey &&
+          entry.canonicalJobId === canonicalJobId
+        ),
+    ),
+    result: undefined,
+  }));
+}
+
 async function update(
   id: string,
   change: (entry: OutboxEntry) => OutboxEntry,

@@ -52,3 +52,5 @@ docs/private-library-milestones/*
 !docs/private-library-milestones/milestone-4-implementation-report.html
 !docs/private-library-milestones/milestone-6-implementation-report.html
 !docs/private-library-milestones/milestone-6-security-adr.md
+
+.env

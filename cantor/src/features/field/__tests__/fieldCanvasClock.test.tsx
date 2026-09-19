@@ -303,6 +303,7 @@ describe('field canvas re-cut clock', () => {
       backend,
       nodeLabels: ['Studio'],
       caption: 'working',
+      request: null,
       declaredStages: [],
       job: {
         id: entity.entityId,

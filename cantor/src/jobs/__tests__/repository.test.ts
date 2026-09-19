@@ -1,6 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { JobView } from '../../../../protocol/JobView';
-import { loadJobs, mergeJobs, mergeJobViews } from '../repository';
+import {
+  forgetJobs,
+  loadJobs,
+  mergeJobs,
+  mergeJobViews,
+} from '../repository';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -109,6 +114,36 @@ describe('job snapshot repository', () => {
     await expect(loadJobs('node')).resolves.toEqual([
       job('done', 7, 'completed'),
     ]);
+  });
+
+  it('forgets only the named job, and only on its own node', async () => {
+    const values = new Map<string, string>();
+    storage.getItem.mockImplementation(async key => values.get(key) ?? null);
+    storage.setItem.mockImplementation(async (key, value) => {
+      values.set(key, value);
+    });
+    await mergeJobs('node-a', [job('gone', 3, 'failed'), job('kept', 1, 'running')]);
+    await mergeJobs('node-b', [job('gone', 2, 'failed')]);
+
+    await forgetJobs('node-a', ['gone']);
+
+    await expect(loadJobs('node-a')).resolves.toEqual([job('kept', 1, 'running')]);
+    await expect(loadJobs('node-b')).resolves.toEqual([job('gone', 2, 'failed')]);
+  });
+
+  it('does not resurrect a forgotten job when the node lists again', async () => {
+    const values = new Map<string, string>();
+    storage.getItem.mockImplementation(async key => values.get(key) ?? null);
+    storage.setItem.mockImplementation(async (key, value) => {
+      values.set(key, value);
+    });
+    await mergeJobs('node', [job('gone', 3, 'failed')]);
+    await forgetJobs('node', ['gone']);
+    // The node no longer sends it, so a later page simply never mentions it.
+    await expect(mergeJobs('node', [job('other', 1, 'queued')])).resolves.toEqual([
+      job('other', 1, 'queued'),
+    ]);
+    await expect(loadJobs('node')).resolves.toEqual([job('other', 1, 'queued')]);
   });
 
   it('preserves the invalid JSON and snapshot validation errors', async () => {

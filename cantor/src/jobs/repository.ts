@@ -53,6 +53,27 @@ export async function mergeJobs(
   });
 }
 
+/**
+ * Drop jobs this node no longer has.
+ *
+ * `mergeJobs` only ever grows, because a job missing from one page is not
+ * evidence it is gone. Deletion is that evidence, and it is the only thing that
+ * may remove a snapshot from this store.
+ */
+export async function forgetJobs(
+  nodePublicKey: string,
+  jobIds: readonly string[],
+): Promise<void> {
+  if (jobIds.length === 0) return;
+  await jobStore.update(stored => {
+    const jobs = stored[nodePublicKey];
+    if (jobs !== undefined) {
+      for (const id of jobIds) delete jobs[id];
+    }
+    return { value: stored, result: undefined };
+  });
+}
+
 function decodeStoredJobs(value: unknown): StoredJobs {
   if (!isRecord(value)) throw new Error('Saved job snapshots are invalid.');
   const result: StoredJobs = {};

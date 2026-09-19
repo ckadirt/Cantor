@@ -267,10 +267,12 @@ function connect(): {
   socket: FakeSocket;
   snapshots: ConnectionSnapshot[];
   nodeInfos: NodeInfo[];
+  forgotten: string[];
   connection: BackendConnection;
 } {
   const snapshots: ConnectionSnapshot[] = [];
   const nodeInfos: NodeInfo[] = [];
+  const forgotten: string[] = [];
   const connection = new BackendConnection(
     backend,
     deriveIdentity(PHRASE),
@@ -280,6 +282,7 @@ function connect(): {
       onNodeInfo: nodeInfo => nodeInfos.push(nodeInfo),
       onPairTokenConsumed: () => {},
       onTransportConfirmed: () => {},
+      onJobForgotten: jobId => forgotten.push(jobId),
     },
     () => fakeSecureChannel(),
   );
@@ -289,7 +292,7 @@ function connect(): {
     throw new Error('BackendConnection did not open a socket.');
   }
   socket.open();
-  return { socket, snapshots, nodeInfos, connection };
+  return { socket, snapshots, nodeInfos, forgotten, connection };
 }
 
 describe('BackendConnection', () => {
@@ -856,6 +859,155 @@ describe('BackendConnection', () => {
       state: 'completed',
       revision: 3,
     });
+  });
+
+  it('drops a forgotten job whether this app asked or another session did', async () => {
+    const { socket, connection, snapshots, forgotten } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.updated',
+        job: jobFixture('failed', 2, {
+          error: { code: 'internal', message: 'It stopped.', retryable: false },
+        }),
+      },
+    });
+    expect(snapshots.at(-1)?.jobs).toHaveLength(1);
+
+    const deletion = connection.forgetJob(
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      2,
+    );
+    const request = JSON.parse(socket.sent.at(-1) ?? '{}');
+    expect(request.payload).toMatchObject({
+      t: 'job.forget',
+      job_id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      expected_revision: 2,
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.forgotten',
+        id: request.payload.id,
+        job_id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      },
+    });
+    await expect(deletion).resolves.toBeUndefined();
+    expect(snapshots.at(-1)?.jobs).toEqual([]);
+    expect(forgotten).toEqual(['019c8f7e-5f2b-7a21-9ee0-8efb630bcb17']);
+
+    // The same job, deleted from another of this account's sessions: no
+    // request id, and nothing here asked for it.
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.updated',
+        job: jobFixture('cancelled', 3),
+      },
+    });
+    expect(snapshots.at(-1)?.jobs).toHaveLength(1);
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'job.forgotten',
+        job_id: '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      },
+    });
+    expect(snapshots.at(-1)?.jobs).toEqual([]);
+    expect(forgotten).toHaveLength(2);
+  });
+
+  it('adopts the job the node still has when a deletion is refused', async () => {
+    const { socket, connection, snapshots } = connect();
+    socket.receive({ v: 1, t: 'relay.presence', online: true });
+    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'challenge',
+        id: hello.payload.id,
+        nonce: 'A'.repeat(43),
+        node_pubkey: NODE_PUBKEY,
+      },
+    });
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'welcome',
+        id: hello.payload.id,
+        node: nodeInfoFixture('node'),
+      },
+    });
+
+    const deletion = connection.forgetJob(
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
+      2,
+    );
+    const request = JSON.parse(socket.sent.at(-1) ?? '{}');
+    socket.receive({
+      v: 1,
+      t: 'tunnel',
+      payload: {
+        v: 2,
+        t: 'error',
+        id: request.payload.id,
+        code: 'invalid_transition',
+        message: 'Only a failed or cancelled job can be deleted.',
+        retryable: false,
+        details: {
+          kind: 'job_state',
+          current: jobFixture('running', 5, { stage: 'diffuse' }),
+        },
+      },
+    });
+    await expect(deletion).rejects.toBeInstanceOf(NodeRequestError);
+    // The refusal carries the truth the app was missing; it keeps it.
+    expect(snapshots.at(-1)?.jobs[0]).toMatchObject({
+      state: 'running',
+      revision: 5,
+    });
+  });
+
+  it('refuses to delete before the node is ready', async () => {
+    const { connection } = connect();
+    await expect(connection.forgetJob('job', 1)).rejects.toThrow(
+      'Backend is not ready.',
+    );
   });
 
   it('rejects a plaintext application frame before the secure handshake', () => {

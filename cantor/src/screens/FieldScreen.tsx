@@ -46,7 +46,8 @@ import {
   PLAYER_TRANSPORT_KNOBS,
   PLAYER_VERB_POSE,
 } from '../features/field/NativePlayer';
-import { JobSheet } from '../features/field/JobSheet';
+import { JobSheet, JOB_SHEET_KNOBS } from '../features/field/JobSheet';
+import { jobStateLabel } from '../jobs/policy';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
   DEFAULT_ORDER_KEY,
@@ -207,10 +208,29 @@ export function FieldScreen({ identity }: Props) {
     saveAudioBudget(bytes).catch(error => setAudioError(readError(error)));
   }, []);
 
-  /** The generation whose detail is open, if any. */
+  /**
+   * The generation whose detail is open, if any, and whether its blind is down.
+   *
+   * Two states for the same reason the song sheet has two: dropping the subject
+   * is not how a blind closes. The mark is retained for the length of the run,
+   * so the sheet rolls away instead of vanishing out of the tree.
+   */
   const [jobKey, setJobKey] = useState<string | null>(null);
+  const [jobOpen, setJobOpen] = useState(false);
   const [jobBusy, setJobBusy] = useState(false);
   const [jobError, setJobError] = useState<string | null>(null);
+  /** Its own blind, for the reason `sheetPull` is its own: one number each. */
+  const jobPull = useSharedValue(0);
+  const jobDestination = useSharedValue(0);
+  const closeJobSheet = useCallback(() => setJobOpen(false), []);
+  useEffect(() => {
+    if (jobOpen || jobKey === null) return;
+    const home = setTimeout(() => {
+      setJobKey(null);
+      setJobError(null);
+    }, JOB_SHEET_KNOBS.BLIND_MS);
+    return () => clearTimeout(home);
+  }, [jobKey, jobOpen]);
   const [orderSeed, setOrderSeed] = useState(() => Date.now());
   const chooseOrder = useCallback((key: string) => {
     setOrderKey(current => {
@@ -488,7 +508,9 @@ export function FieldScreen({ identity }: Props) {
   const onClaimTap = useCallback(
     (placement: Placement): boolean => {
       if (!controller.jobs.has(placement.entityKey)) return false;
+      setJobError(null);
       setJobKey(placement.entityKey);
+      setJobOpen(true);
       return true;
     },
     [controller.jobs],
@@ -564,6 +586,12 @@ export function FieldScreen({ identity }: Props) {
       representationAlphas(fieldCamera.camera.scale, fieldCamera.renderFitScale)
         .song,
     [fieldCamera.camera.scale, fieldCamera.renderFitScale],
+  );
+
+  /** The generation its sheet is open on, if the field still knows about it. */
+  const pendingJob = useMemo(
+    () => (jobKey === null ? null : controller.jobs.get(jobKey) ?? null),
+    [controller.jobs, jobKey],
   );
 
   /** The song the sheet is open on, if the field still knows about it. */
@@ -1624,25 +1652,49 @@ export function FieldScreen({ identity }: Props) {
           />
         </Curtain>
       ) : null}
-      <JobSheet
-        busy={jobBusy}
-        error={jobError}
-        onClose={() => {
-          setJobKey(null);
-          setJobError(null);
-        }}
-        onControl={control => {
-          const pending = jobKey === null ? null : controller.jobs.get(jobKey);
-          if (pending === undefined || pending === null) return;
-          setJobBusy(true);
-          setJobError(null);
-          void commands
-            .controlJob(pending.entity.nodePublicKey, pending.job, control)
-            .catch(problem => setJobError(readError(problem)))
-            .finally(() => setJobBusy(false));
-        }}
-        pending={jobKey === null ? null : controller.jobs.get(jobKey) ?? null}
-      />
+      {pendingJob !== null && viewport !== null ? (
+        <Curtain
+          edge="bottom"
+          onClose={closeJobSheet}
+          open={jobOpen}
+          openMs={JOB_SHEET_KNOBS.BLIND_MS}
+          destination={jobDestination}
+          pull={jobPull}
+          title={(pendingJob.caption ?? jobStateLabel(pendingJob.job)).toUpperCase()}
+          viewportHeight={viewport.height}
+        >
+          <JobSheet
+            busy={jobBusy}
+            error={jobError}
+            onClose={closeJobSheet}
+            onControl={control => {
+              setJobBusy(true);
+              setJobError(null);
+              void commands
+                .controlJob(
+                  pendingJob.entity.nodePublicKey,
+                  pendingJob.job,
+                  control,
+                )
+                .catch(problem => setJobError(readError(problem)))
+                .finally(() => setJobBusy(false));
+            }}
+            onForget={() => {
+              setJobBusy(true);
+              setJobError(null);
+              void commands
+                .forgetJob(pendingJob.entity.nodePublicKey, pendingJob.job)
+                // The sheet is about a job that no longer exists; there is
+                // nothing left to show, so it leaves with it.
+                .then(closeJobSheet)
+                .catch(problem => setJobError(readError(problem)))
+                .finally(() => setJobBusy(false));
+            }}
+            pending={pendingJob}
+            visible={jobOpen}
+          />
+        </Curtain>
+      ) : null}
       {condensing !== null && viewport !== null ? (
         <CondenseOverlay
           caption={condensing.caption}
