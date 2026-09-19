@@ -97,9 +97,20 @@ describe('SongSheet', () => {
   });
 
   it('keeps the destructive act off the page you land on', () => {
-    const { words } = render();
+    const { labels, words } = render();
     expect(words()).not.toContain('Delete it');
-    expect(words()).toContain('Keep it here');
+    // The foot's act is drawn as geometry so it can become its opposite; its
+    // name is on the control rather than in a Text node.
+    expect(labels()).toContain('Keep it here');
+  });
+
+  it('offers one act that turns over, not two that take turns', () => {
+    const { labels, press, props } = render({ audioState: 'pinned' });
+    expect(labels()).toContain('Unpin');
+    expect(labels()).not.toContain('Keep it here');
+    press('Unpin');
+    expect(props.onUnpin).toHaveBeenCalled();
+    expect(props.onPin).not.toHaveBeenCalled();
   });
 
   it('asks before it deletes, and says what goes on both machines', () => {
