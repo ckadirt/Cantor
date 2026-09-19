@@ -90,6 +90,26 @@ export const SONG_SHEET_KNOBS = {
   /** The hem's page marks: one short rule per page, the current one inked. */
   MARK_W_PX: 22,
   MARK_GAP_PX: 6,
+  /**
+   * How long the foot's act takes to become the other act.
+   *
+   * The header's own number: `Unpin` and `Keep it here` are the same object
+   * seen from either side of one state, exactly as `SONG` and `RECORD` are,
+   * and two morphs in one panel running at different speeds would read as two
+   * unrelated events rather than as one sheet answering.
+   */
+  ACT_MS: 260,
+  /**
+   * The seats those morphing words take.
+   *
+   * A morphing line is drawn on a canvas that fills its container, so the slot
+   * has to be reserved rather than measured from the glyphs — `motion/README`
+   * asks for a fixed height and this is where it comes from. The display line
+   * is `type.heading` at 20 px on the engine's default 1.35 leading; the note
+   * under it is `type.eyebrow` at 11, in the 16 px slot every eyebrow uses.
+   */
+  ACT_SLOT_PX: 28,
+  NOTE_SLOT_PX: 16,
 } as const;
 
 type Props = {
@@ -687,19 +707,27 @@ function Front({
         </Text>
       )}
       <LedgerFoot>
-        {pinned ? (
-          <Act busy={busy} display label="Unpin" onPress={onUnpin} />
-        ) : (
-          <Act
-            busy={busy || !downloaded}
-            display
-            label="Keep it here"
-            onPress={onPin}
-          />
-        )}
-        <Text style={[type.eyebrow, styles.footNote, { color: pal.faint }]}>
-          {pinned ? 'KEPT UNTIL YOU SAY SO' : 'NEVER PURGED ONCE KEPT'}
-        </Text>
+        {/*
+          One act, two strings. Keeping a song and letting go of it are the two
+          sides of one switch, so the foot does not swap a word for another —
+          the word becomes the other word, and the promise under it follows on
+          the same clock. Two Acts taking turns is what this used to be, and it
+          read as the foot being rebuilt every time you touched it.
+        */}
+        <Act
+          busy={busy || (!pinned && !downloaded)}
+          display
+          label={pinned ? 'Unpin' : 'Keep it here'}
+          morph
+          onPress={pinned ? onUnpin : onPin}
+        />
+        <TransformText
+          charStyle={type.eyebrow}
+          color={pal.faint}
+          duration={SONG_SHEET_KNOBS.ACT_MS}
+          style={styles.footNoteSlot}
+          text={pinned ? 'KEPT UNTIL YOU SAY SO' : 'NEVER PURGED ONCE KEPT'}
+        />
       </LedgerFoot>
     </View>
   );
@@ -897,19 +925,29 @@ function Arriving({
   return <Animated.View style={[style, landed]}>{children}</Animated.View>;
 }
 
-/** An act: a word in the value column, in the panel's voice or the foot's. */
+/**
+ * An act: a word in the value column, in the panel's voice or the foot's.
+ *
+ * `morph` is for an act whose label is one half of a state rather than a name:
+ * the word is then drawn as geometry and transformed into its opposite when
+ * the state turns over. It costs a reserved slot, which is why it is asked for
+ * rather than assumed — a settled `Text` still measures itself.
+ */
 function Act({
   busy,
   display,
   label,
+  morph = false,
   onPress,
 }: {
   busy: boolean;
   display?: boolean;
   label: string;
+  morph?: boolean;
   onPress: () => void;
 }) {
   const pal = usePalette();
+  const colour = busy ? pal.faint : pal.ink;
   return (
     <Pressable
       accessibilityLabel={label}
@@ -919,14 +957,19 @@ function Act({
       onPress={onPress}
       style={styles.act}
     >
-      <Text
-        style={[
-          display ? type.heading : type.body,
-          { color: busy ? pal.faint : pal.ink },
-        ]}
-      >
-        {label}
-      </Text>
+      {morph ? (
+        <TransformText
+          charStyle={display ? type.heading : type.body}
+          color={colour}
+          duration={SONG_SHEET_KNOBS.ACT_MS}
+          style={styles.actSlot}
+          text={label}
+        />
+      ) : (
+        <Text style={[display ? type.heading : type.body, { color: colour }]}>
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }
@@ -1092,6 +1135,12 @@ const styles = StyleSheet.create({
   titleField: { padding: 0 },
   scope: { marginTop: space.sm },
   act: { justifyContent: 'center', minHeight: touch.min },
+  /** A morphing word needs a slot that does not resize under it. */
+  actSlot: { height: SONG_SHEET_KNOBS.ACT_SLOT_PX },
+  footNoteSlot: {
+    height: SONG_SHEET_KNOBS.NOTE_SLOT_PX,
+    marginTop: space.xs,
+  },
   confirm: { alignItems: 'baseline', flexDirection: 'row', gap: space.lg },
   footNote: { marginTop: space.xs },
   problem: { marginBottom: space.xs, marginLeft: LEDGER_VALUE_PX },
