@@ -1,5 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { loadOutbox, markAccepted, markRejected, putPending } from '../outbox';
+import {
+  forgetSubmission,
+  loadOutbox,
+  markAccepted,
+  markRejected,
+  putPending,
+} from '../outbox';
 
 const storage = AsyncStorage as jest.Mocked<typeof AsyncStorage>;
 const KEY = 'cantor.submission-outbox.v1';
@@ -39,6 +45,23 @@ describe('submission outbox', () => {
       state: 'accepted',
       canonicalJobId: 'job-1',
     });
+  });
+
+  it('drops the submission behind a forgotten job and nothing else', async () => {
+    const forgotten = await putPending('node', 'model', { caption: 'gone' });
+    const kept = await putPending('node', 'model', { caption: 'kept' });
+    const elsewhere = await putPending('other', 'model', { caption: 'shared' });
+    await markAccepted(forgotten.clientRequestId, 'job-1');
+    await markAccepted(kept.clientRequestId, 'job-2');
+    // The same canonical id on another node is a different generation.
+    await markAccepted(elsewhere.clientRequestId, 'job-1');
+
+    await forgetSubmission('node', 'job-1');
+
+    expect((await loadOutbox()).map(entry => entry.generation.caption)).toEqual([
+      'kept',
+      'shared',
+    ]);
   });
 
   it('serializes concurrent updates without dropping another submission', async () => {

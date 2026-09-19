@@ -38,6 +38,7 @@ import type { BackendRecord, ConnectionSnapshot } from './types';
 import {
   decodeArtifactInfo,
   decodeArtifactPart,
+  decodeForgottenJob,
   decodeJobResponse,
   decodeJobsPage,
   decodeLibraryChanges,
@@ -72,6 +73,12 @@ type ConnectionCallbacks = {
   onNodeInfo: (nodeInfo: NodeInfo) => void;
   onPairTokenConsumed: () => void;
   onTransportConfirmed: (descriptor: TransportDescriptor) => void;
+  /**
+   * A job is gone from the node, whether this app asked or another of its
+   * sessions did. The snapshot merge is monotone, so anything that persists a
+   * job has to be told to drop it or it would resurrect on the next load.
+   */
+  onJobForgotten: (jobId: string) => void;
 };
 
 export type ArtifactSink = {
@@ -391,6 +398,16 @@ export class BackendConnection {
       this.requests.deliver(payload.id, 'job.controlled', payload);
       return;
     }
+    if (payload.t === 'job.forgotten') {
+      if (typeof payload.id === 'string') {
+        this.requests.deliver(payload.id, 'job.forgotten', payload);
+        return;
+      }
+      // Unsolicited: another session of this same account deleted it.
+      const forgotten = decodeForgottenJob(payload);
+      if (forgotten !== null) this.dropJob(forgotten);
+      return;
+    }
     if (payload.t === 'job.updated') {
       const updated = decodeJobResponse(payload);
       if (updated === null) {
@@ -485,7 +502,8 @@ export class BackendConnection {
           }
         }
         if (
-          registeredExpected === 'job.controlled' &&
+          (registeredExpected === 'job.controlled' ||
+            registeredExpected === 'job.forgotten') &&
           isRecord(payload.details) &&
           ['job_revision_conflict', 'job_state'].includes(
             String(payload.details.kind),
@@ -629,6 +647,63 @@ export class BackendConnection {
         expected_revision: expectedRevision,
       });
     });
+  }
+
+  /**
+   * Delete a stopped job on the node, and then here.
+   *
+   * Unlike a control this returns no job: the answer is that there is no job.
+   * The node refuses anything that is still working or that published a song,
+   * so a refusal arrives as a normal request error.
+   */
+  forgetJob(jobId: string, expectedRevision: number): Promise<void> {
+    if (this.snapshot.phase !== 'ready') {
+      return Promise.reject(new Error('Backend is not ready.'));
+    }
+    let id = '';
+    return new Promise((resolve, reject) => {
+      id = this.requests.register(
+        'job-forget',
+        {
+          expected: 'job.forgotten',
+          decode: message => {
+            const forgotten = decodeForgottenJob(message);
+            return forgotten === null
+              ? ignoreResponse()
+              : resolveResponse(forgotten);
+          },
+          timeout: {
+            afterMs: REQUEST_TIMEOUT_MS,
+            error: () =>
+              new Error('Deleting timed out. Refresh before trying again.'),
+          },
+        },
+        {
+          resolve: forgotten => {
+            this.dropJob(forgotten);
+            resolve();
+          },
+          reject,
+        },
+      );
+      this.sendApplication({
+        t: 'job.forget',
+        v: APPLICATION_PROTOCOL_VERSION,
+        id,
+        job_id: jobId,
+        expected_revision: expectedRevision,
+      });
+    });
+  }
+
+  private dropJob(jobId: string): void {
+    if (this.snapshot.jobs.some(job => job.id === jobId)) {
+      this.setSnapshot({
+        ...this.snapshot,
+        jobs: this.snapshot.jobs.filter(job => job.id !== jobId),
+      });
+    }
+    this.callbacks.onJobForgotten(jobId);
   }
 
   patchSong(

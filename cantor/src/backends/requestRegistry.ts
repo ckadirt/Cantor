@@ -2,6 +2,7 @@ export type ExpectedResponse =
   | 'jobs.page'
   | 'job.accepted'
   | 'job.controlled'
+  | 'job.forgotten'
   | 'library.page'
   | 'library.changes'
   | 'song.updated'

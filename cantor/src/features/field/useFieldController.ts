@@ -4,6 +4,7 @@ import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { SongHeader } from '../../core/protocol';
 import type { BackendRecord } from '../../backends/types';
 import { deliveryArtifact, type BackendRuntimeState } from '../../runtime';
+import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import type { JobView } from '../../core/protocol';
 import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import type { FieldEntity } from '../../field';
@@ -21,9 +22,11 @@ export type FieldPresentation = Readonly<{
 /**
  * A generation in flight, as the field sees it.
  *
- * The caption comes from the persisted outbox rather than from `JobView`,
- * because the wire model does not carry the words the person typed and M4 must
- * not invent a field for them.
+ * The caption comes from the node when it sends one, and from this phone's
+ * persisted outbox when it does not — a node that predates `JobView.caption`,
+ * or a job cached before this app understood it. The node's copy is preferred
+ * because it is the one that survives a reinstall and is the same on every
+ * device, while the outbox only ever holds what this phone itself submitted.
  */
 export type JobPresentation = Readonly<{
   entity: FieldEntity;
@@ -31,6 +34,12 @@ export type JobPresentation = Readonly<{
   backend: BackendRecord;
   nodeLabels: readonly string[];
   caption: string | null;
+  /**
+   * The whole request as it was submitted, when this phone is the one that
+   * sent it. A failure is only recognisable by what was asked for, and the
+   * wire model carries none of it — the outbox is the only copy.
+   */
+  request: GenerationRequest | null;
   /**
    * The stages the model running this job said it runs.
    *
@@ -160,7 +169,9 @@ export function buildFieldController(
           backend.lastNodeInfo?.name ?? '',
           backend.nodePubkey,
         ].filter(Boolean),
-        caption: state.outbox[key]?.generation.caption ?? null,
+        caption:
+          job.caption ?? state.outbox[key]?.generation.caption ?? null,
+        request: state.outbox[key]?.generation ?? null,
         declaredStages:
           backend.lastNodeInfo?.models?.find(
             model => model.selector === job.model,

@@ -25,13 +25,19 @@ import type {
 import { readError } from '../core/errors';
 import type { AppIdentity } from '../identity/derive';
 import {
+  forgetSubmission,
   loadOutbox,
   markAccepted,
   markRejected,
   putPending,
   type OutboxEntry,
 } from '../jobs/outbox';
-import { loadJobs, mergeJobs, mergeJobViews } from '../jobs/repository';
+import {
+  forgetJobs,
+  loadJobs,
+  mergeJobs,
+  mergeJobViews,
+} from '../jobs/repository';
 import {
   commitLibrary,
   loadLibrary,
@@ -64,6 +70,7 @@ export type BackendRuntimeConnection = Pick<
   | 'stop'
   | 'createJob'
   | 'controlJob'
+  | 'forgetJob'
   | 'patchSong'
   | 'getSong'
   | 'downloadArtifact'
@@ -77,6 +84,7 @@ export type BackendRuntimeConnectionCallbacks = {
   onNodeInfo: (nodeInfo: NodeInfo) => void;
   onPairTokenConsumed: () => void;
   onTransportConfirmed: (descriptor: TransportDescriptor) => void;
+  onJobForgotten: (jobId: string) => void;
 };
 
 type RuntimeDependencies = {
@@ -90,10 +98,12 @@ type RuntimeDependencies = {
   saveBackends: typeof saveBackends;
   loadJobs: typeof loadJobs;
   mergeJobs: typeof mergeJobs;
+  forgetJobs: typeof forgetJobs;
   loadLibrary: typeof loadLibrary;
   loadLibraries: typeof loadLibraries;
   commitLibrary: typeof commitLibrary;
   loadOutbox: typeof loadOutbox;
+  forgetSubmission: typeof forgetSubmission;
   putPending: typeof putPending;
   markAccepted: typeof markAccepted;
   markRejected: typeof markRejected;
@@ -164,6 +174,14 @@ export type BackendRuntimeCommands = {
     job: JobView,
     control: JobControl,
   ) => Promise<void>;
+  /**
+   * Delete a stopped generation everywhere: the node's row and bytes, this
+   * phone's cached snapshot, and the submission that held its caption.
+   *
+   * Nothing is kept, because a failure that has been read has no second use —
+   * and the node refuses to erase anything that became a song.
+   */
+  forgetJob: (nodePublicKey: string, job: JobView) => Promise<void>;
   patchSong: (
     nodePublicKey: string,
     song: SongHeader,
@@ -201,10 +219,12 @@ const defaultDependencies: RuntimeDependencies = {
   saveBackends,
   loadJobs,
   mergeJobs,
+  forgetJobs,
   loadLibrary,
   loadLibraries,
   commitLibrary,
   loadOutbox,
+  forgetSubmission,
   putPending,
   markAccepted,
   markRejected,
@@ -229,6 +249,8 @@ export function useBackendRuntime(
   const loadCachedJobs = dependencies.loadJobs ?? defaultDependencies.loadJobs;
   const mergeCachedJobs =
     dependencies.mergeJobs ?? defaultDependencies.mergeJobs;
+  const forgetCachedJobs =
+    dependencies.forgetJobs ?? defaultDependencies.forgetJobs;
   const loadCachedLibrary =
     dependencies.loadLibrary ?? defaultDependencies.loadLibrary;
   const loadAllCachedLibraries =
@@ -237,6 +259,8 @@ export function useBackendRuntime(
     dependencies.commitLibrary ?? defaultDependencies.commitLibrary;
   const loadPendingOutbox =
     dependencies.loadOutbox ?? defaultDependencies.loadOutbox;
+  const forgetOutboxEntry =
+    dependencies.forgetSubmission ?? defaultDependencies.forgetSubmission;
   const createPendingEntry =
     dependencies.putPending ?? defaultDependencies.putPending;
   const acceptOutboxEntry =
@@ -258,6 +282,17 @@ export function useBackendRuntime(
       ),
     );
   }, [loadPendingOutbox]);
+  /**
+   * Read the submissions back at launch.
+   *
+   * The words a person typed are durable, but this map is not: without this the
+   * outbox is empty until the next submission, so every job from an earlier
+   * session draws with no caption at all — which is exactly when a stopped one
+   * most needs to say what it was.
+   */
+  useEffect(() => {
+    refreshOutbox().catch(error => setStorageError(readError(error)));
+  }, [refreshOutbox]);
   const [backends, setBackends] = useState<BackendRecord[] | null>(null);
   const [snapshots, setSnapshots] = useState<
     Record<string, ConnectionSnapshot>
@@ -538,6 +573,30 @@ export function useBackendRuntime(
                 .catch(error => setStorageError(readError(error)));
             }
           },
+          /**
+           * The node erased a job — at this phone's request or another
+           * session's. Everything that remembers it has to be told, because
+           * every other path here only ever merges jobs in.
+           */
+          onJobForgotten: jobId => {
+            setSnapshots(previous => {
+              const snapshot = previous[backend.nodePubkey];
+              if (snapshot?.jobs.some(job => job.id === jobId) !== true) {
+                return previous;
+              }
+              return {
+                ...previous,
+                [backend.nodePubkey]: {
+                  ...snapshot,
+                  jobs: snapshot.jobs.filter(job => job.id !== jobId),
+                },
+              };
+            });
+            forgetCachedJobs(backend.nodePubkey, [jobId])
+              .then(() => forgetOutboxEntry(backend.nodePubkey, jobId))
+              .then(refreshOutbox)
+              .catch(error => setStorageError(readError(error)));
+          },
           onNodeInfo: info => rememberNodeInfo(backend.nodePubkey, info),
           onPairTokenConsumed: () =>
             pairTokens.current.delete(backend.nodePubkey),
@@ -562,6 +621,9 @@ export function useBackendRuntime(
     loadCachedLibrary,
     loadPendingOutbox,
     mergeCachedJobs,
+    forgetCachedJobs,
+    forgetOutboxEntry,
+    refreshOutbox,
     sendOutbox,
   ]);
 
@@ -707,6 +769,12 @@ export function useBackendRuntime(
     },
     [],
   );
+
+  const forgetJob = useCallback(async (nodePublicKey: string, job: JobView) => {
+    const live = connections.current.get(nodePublicKey);
+    if (live === undefined) throw new Error('Job node is not connected.');
+    await live.connection.forgetJob(job.id, job.revision);
+  }, []);
 
   const changeSongPresence = useCallback(
     async (nodePublicKey: string, song: SongHeader) => {
@@ -887,6 +955,7 @@ export function useBackendRuntime(
       forgetBackend,
       submit,
       controlJob,
+      forgetJob,
       patchSong,
       changeSongPresence,
       getSongDetail,
@@ -899,6 +968,7 @@ export function useBackendRuntime(
       audioPath,
       changeSongPresence,
       controlJob,
+      forgetJob,
       getSongDetail,
       hidePairing,
       patchSong,

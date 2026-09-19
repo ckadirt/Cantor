@@ -53,6 +53,17 @@ export function decodeJobResponse(message: unknown): JobView | null {
   return isRecord(message) ? parseJob(message.job) : null;
 }
 
+/**
+ * The id of the job the node just erased.
+ *
+ * There is no view to decode: the job is gone, and the id is the whole answer.
+ */
+export function decodeForgottenJob(message: unknown): string | null {
+  return isRecord(message) && typeof message.job_id === 'string'
+    ? message.job_id
+    : null;
+}
+
 export function decodeSongResponse(message: unknown): SongHeader | null {
   return isRecord(message) ? parseSong(message.song) : null;
 }
