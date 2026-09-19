@@ -167,6 +167,12 @@ encrypted carrier frames, node authentication, and a `status` round trip.
   owner must fail early rather than reach artifact publication.
 - **A superseded relay socket fails closed.** Only the currently owned socket
   may start keepalive, deliver messages, report closure, or schedule a retry.
+- **Deleting a job deletes bytes, in this order.** `forget_job` removes the row
+  first and the job directory second. A crash between them leaves a directory
+  with no row, which `reconcile_startup` already sweeps; the reverse would leave
+  a row pointing at nothing. It refuses anything but `failed` and `cancelled`,
+  and refuses again if a song row shares the job's id — a completed job owns
+  that song's audio under the very directory this would remove.
 - **The generated transport module allows dead code.** Constants the node does
   not speak still belong there so a future caller reads the same value the app,
   relay, and native module already agree on.

@@ -9,7 +9,7 @@ use cantor_proto::{
 };
 
 use crate::config::NodeConfig;
-use crate::library::{ControlResult, JobControl, Library, Submission, SubmitResult};
+use crate::library::{ControlResult, ForgetResult, JobControl, Library, Submission, SubmitResult};
 use crate::store::Store;
 
 use super::admit_job;
@@ -234,6 +234,57 @@ pub(super) fn control(
     )
 }
 
+/// Delete a stopped job outright, on the node and therefore everywhere.
+///
+/// The node keeps no tombstone: a forgotten job is gone from `jobs.list`, so a
+/// client that was offline for it simply never sees it again.
+pub(super) fn forget(
+    version: u8,
+    id: String,
+    job_id: String,
+    expected_revision: Option<u32>,
+    authentication: Option<&AuthenticatedSession>,
+    library: &mut Library,
+) -> Result<NodeMessage> {
+    if version != PROTOCOL_VERSION {
+        return Ok(NodeMessage::unsupported_version(Some(id)));
+    }
+    let Some(context) = authentication else {
+        return Ok(unauthenticated(id, "jobs"));
+    };
+    Ok(
+        match library.forget_job(context.principal_id, &job_id, expected_revision)? {
+            ForgetResult::Forgotten => NodeMessage::JobForgotten {
+                v: PROTOCOL_VERSION,
+                id: Some(id),
+                job_id,
+            },
+            ForgetResult::Conflict(current) => NodeMessage::Error {
+                v: PROTOCOL_VERSION,
+                id: Some(id),
+                code: ErrorCode::RevisionConflict,
+                message: "The job changed before this deletion reached the node.".into(),
+                retryable: false,
+                details: Some(ErrorDetails::JobRevisionConflict { current }),
+            },
+            ForgetResult::Refused(current) => NodeMessage::Error {
+                v: PROTOCOL_VERSION,
+                id: Some(id),
+                code: ErrorCode::InvalidTransition,
+                message: "Only a failed or cancelled job can be deleted.".into(),
+                retryable: false,
+                details: Some(ErrorDetails::JobState { current }),
+            },
+            ForgetResult::NotFound => NodeMessage::error(
+                Some(id),
+                ErrorCode::NotFound,
+                "That job was not found.",
+                false,
+            ),
+        },
+    )
+}
+
 pub(super) fn invalid_submission(
     client_request_id: &str,
     model: &str,
@@ -323,7 +374,7 @@ mod tests {
     use crate::store::{InstalledVariant, Store};
 
     use super::super::outcome::{ApplicationEffect, from_response};
-    use super::{AuthenticatedSession, control, create, invalid_submission};
+    use super::{AuthenticatedSession, control, create, forget, invalid_submission};
 
     fn fixture(path: &Path) -> (NodeConfig, Library, AuthenticatedSession, String) {
         let paths = NodePaths::resolve(Some(path.join("cantor"))).expect("paths");
@@ -594,6 +645,130 @@ mod tests {
             conflict.response,
             NodeMessage::Error {
                 code: ErrorCode::RevisionConflict,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn forgetting_a_cancelled_job_answers_the_caller_and_tells_its_other_sessions() {
+        let temporary = tempdir().expect("temporary directory");
+        let (config, mut library, authentication, model) = fixture(temporary.path());
+        let accepted = create(
+            PROTOCOL_VERSION,
+            "accepted".into(),
+            uuid::Uuid::new_v4().to_string(),
+            model,
+            generation("forget"),
+            Some(&authentication),
+            &config,
+            &mut library,
+        )
+        .expect("create");
+        let accepted = match accepted {
+            NodeMessage::JobAccepted { job, .. } => job,
+            other => panic!("unexpected response: {other:?}"),
+        };
+
+        // A queued job is still work someone asked for; cancel it first.
+        let refused = forget(
+            PROTOCOL_VERSION,
+            "too-early".into(),
+            accepted.id.clone(),
+            None,
+            Some(&authentication),
+            &mut library,
+        )
+        .expect("early forget");
+        let refused = from_response(refused, Some(authentication.principal_id), None);
+        assert!(refused.effects.is_empty());
+        assert!(matches!(
+            refused.response,
+            NodeMessage::Error {
+                code: ErrorCode::InvalidTransition,
+                ..
+            }
+        ));
+
+        let cancelled = control(
+            PROTOCOL_VERSION,
+            "cancel".into(),
+            accepted.id.clone(),
+            Some(accepted.revision),
+            JobControl::Cancel,
+            Some(&authentication),
+            &mut library,
+        )
+        .expect("cancel");
+        let cancelled = match cancelled {
+            NodeMessage::JobControlled { job, .. } => job,
+            other => panic!("unexpected cancel: {other:?}"),
+        };
+        assert_eq!(cancelled.state, JobState::Cancelled);
+
+        let forgotten = forget(
+            PROTOCOL_VERSION,
+            "forget".into(),
+            cancelled.id.clone(),
+            Some(cancelled.revision),
+            Some(&authentication),
+            &mut library,
+        )
+        .expect("forget");
+        let forgotten = from_response(forgotten, Some(authentication.principal_id), None);
+        match forgotten.effects.as_slice() {
+            [
+                ApplicationEffect::Publish(NodeEvent::JobForgotten {
+                    principal_id,
+                    job_id,
+                }),
+                ApplicationEffect::RefreshNodeInfo,
+            ] => {
+                assert_eq!(*principal_id, authentication.principal_id);
+                assert_eq!(*job_id, cancelled.id);
+            }
+            other => panic!("unexpected effects: {other:?}"),
+        }
+        assert!(matches!(
+            forgotten.response,
+            NodeMessage::JobForgotten { id: Some(id), job_id, .. }
+                if id == "forget" && job_id == cancelled.id
+        ));
+
+        let gone = forget(
+            PROTOCOL_VERSION,
+            "again".into(),
+            cancelled.id,
+            None,
+            Some(&authentication),
+            &mut library,
+        )
+        .expect("second forget");
+        assert!(matches!(
+            gone,
+            NodeMessage::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn an_unauthenticated_session_cannot_forget_anything() {
+        let temporary = tempdir().expect("temporary directory");
+        let (_, mut library, _, _) = fixture(temporary.path());
+        assert!(matches!(
+            forget(
+                PROTOCOL_VERSION,
+                "anonymous".into(),
+                "job".into(),
+                None,
+                None,
+                &mut library,
+            )
+            .expect("unauthenticated forget"),
+            NodeMessage::Error {
+                code: ErrorCode::Unauthenticated,
                 ..
             }
         ));

@@ -15,6 +15,12 @@ pub enum NodeEvent {
         principal_id: PrincipalId,
         job: cantor_proto::JobView,
     },
+    /// The job is gone. Sessions for this principal drop it; nobody else is
+    /// told it ever existed.
+    JobForgotten {
+        principal_id: PrincipalId,
+        job_id: String,
+    },
     /// A private library revision is a sync hint, never a broadcast payload.
     LibraryChanged {
         principal_id: PrincipalId,

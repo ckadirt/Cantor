@@ -147,6 +147,19 @@ pub(super) fn handle(
             session.authenticated(),
             library,
         ),
+        ClientMessage::JobForget {
+            v,
+            id,
+            job_id,
+            expected_revision,
+        } => jobs::forget(
+            v,
+            id,
+            job_id,
+            expected_revision,
+            session.authenticated(),
+            library,
+        ),
         ClientMessage::LibraryList {
             v,
             id,

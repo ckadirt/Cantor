@@ -231,6 +231,29 @@ impl SessionRegistry {
                 }
                 Ok(frames)
             }
+            NodeEvent::JobForgotten {
+                principal_id,
+                job_id,
+            } => {
+                let locked = super::lock(state)?;
+                *node_info = super::static_node_info(&locked.config, &locked.library);
+                drop(locked);
+                let private = NodeMessage::JobForgotten {
+                    v: cantor_proto::PROTOCOL_VERSION,
+                    id: None,
+                    job_id,
+                };
+                let mut frames = Vec::new();
+                for (sid, session) in self.sessions.iter_mut() {
+                    if session
+                        .authenticated()
+                        .is_some_and(|context| context.principal_id == principal_id)
+                    {
+                        frames.extend(encrypted_frames(sid, session, &private)?);
+                    }
+                }
+                Ok(frames)
+            }
             NodeEvent::LibraryChanged {
                 principal_id,
                 revision,
