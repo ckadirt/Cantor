@@ -11,10 +11,10 @@ const entries: MembershipEntry[] = [
 function render(over: Partial<React.ComponentProps<typeof Membership>> = {}) {
   const props: React.ComponentProps<typeof Membership> = {
     entries,
-    flow: 'column',
     busy: false,
     full: false,
     addPlaceholder: 'new playlist',
+    empty: 'In no playlist.',
     onToggle: jest.fn(),
     ...over,
   };

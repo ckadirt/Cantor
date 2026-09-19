@@ -35,8 +35,8 @@ export const MEMBERSHIP_KNOBS = {
    * it is touched while its hairline is still drawing is two marks, not one.
    */
   TICK_MS: 220,
-  /** Between names when they run as a line rather than a column. */
-  INLINE_GAP_PX: space.md,
+  /** Between names along a line, and between the lines they wrap onto. */
+  GAP_PX: space.md,
   /**
    * How long a seat takes to open or close.
    *
@@ -49,30 +49,16 @@ export const MEMBERSHIP_KNOBS = {
 
 export type MembershipEntry = Readonly<{ name: string; member: boolean }>;
 
-/**
- * Whether the names stand in a column or run as a line.
- *
- * The two arrangements are the design, not a style: a playlist answers *where
- * does this live* and a tag answers *what is this like*, so places are a
- * column you scan down and words are a line you read across. Sharing one
- * component is what keeps them the same control; taking two flows is what
- * keeps them from being mistaken for each other.
- *
- * It is also which way a closed seat collapses. A column reclaims its height;
- * a line reclaims its width, because a name of no height in a wrapping row
- * still holds its place along the line.
- */
-export type MembershipFlow = 'column' | 'inline';
-
 type Props = {
   /** Every name that exists, each carrying whether this song holds it. */
   entries: readonly MembershipEntry[];
-  flow: MembershipFlow;
   busy: boolean;
   /** True when the song is at the node's tag bound and may take no more. */
   full: boolean;
   /** What the unopened field says: `new playlist`, or `add a tag`. */
   addPlaceholder: string;
+  /** What the block says when the song holds none: `In no playlist.` */
+  empty: string;
   /** The quiet line under the peeled block; the shared count, when it matters. */
   note?: string;
   /** Why a typed name cannot be used, or null. Checked before it is sent. */
@@ -95,6 +81,15 @@ type Props = {
  * common case is reaching for a word you already use rather than inventing
  * one.
  *
+ * **The names run as a line and wrap.** Playlists stood in a column for a
+ * while, on the argument that a place is something you scan down and a word is
+ * something you read across — but a name is 48 dp of seat whatever is written
+ * in it, so a song in ten playlists spent 480 dp of a sheet saying ten short
+ * words. As a wrapping line the same ten cost two. The block is one control
+ * with one arrangement now, which is also one fewer thing for a seat to have
+ * to know: every name gives back its width when it folds, because a name of no
+ * height in a wrapping line still holds its place along it.
+ *
  * **Every name keeps one seat, and keeps it in one place.** The list used to
  * be cut into the names held and the names not, so choosing a name moved it
  * from the second list to the first: it was unmounted and rebuilt, which threw
@@ -108,10 +103,10 @@ type Props = {
  */
 function MembershipImpl({
   entries,
-  flow,
   busy,
   full,
   addPlaceholder,
+  empty,
   note,
   problemOf,
   onToggle,
@@ -121,6 +116,16 @@ function MembershipImpl({
   const [draft, setDraft] = useState('');
   const field = useRef<TextInput>(null);
   const ordered = useStableOrder(entries);
+  /**
+   * How wide the line is, which is the only thing a name needs to know that it
+   * cannot work out for itself. Measured here rather than in each seat because
+   * it is one number for the whole block and it does not change with what is
+   * in it.
+   */
+  const [room, setRoom] = useState(0);
+  const onLine = useCallback((event: LayoutChangeEvent) => {
+    setRoom(event.nativeEvent.layout.width);
+  }, []);
   const held = entries.some(entry => entry.member);
   const trimmed = draft.trim();
   const problem =
@@ -146,31 +151,30 @@ function MembershipImpl({
   return (
     <View>
       <View style={styles.head}>
-        <View style={flow === 'inline' ? styles.inline : styles.names}>
+        <View onLayout={onLine} style={styles.names}>
           {/*
             The honest empty line, which the vocabulary replaces rather than
             sits above: once every name is showing, `In no playlist.` reads as
             one of them.
           */}
           <Seat
-            axis={flow === 'inline' ? 'width' : 'height'}
+            axis="width"
             open={!held && !(open && ordered.length > 0)}
+            room={room}
           >
             <View style={styles.item}>
-              <Text style={[type.body, { color: pal.faint }]}>
-                {flow === 'column' ? 'In no playlist.' : 'No tags.'}
-              </Text>
+              <Text style={[type.body, { color: pal.faint }]}>{empty}</Text>
             </View>
           </Seat>
           {ordered.map(entry => (
             <Seat
-              axis={flow === 'inline' ? 'width' : 'height'}
+              axis="width"
               key={entry.name}
               open={entry.member || open}
+              room={room}
             >
               <Name
                 busy={busy || (!entry.member && full)}
-                flow={flow}
                 member={entry.member}
                 name={entry.name}
                 onPress={() => onToggle(entry.name, !entry.member)}
@@ -259,24 +263,38 @@ function useStableOrder(
  * own ink is still fading in — two clocks on one gesture.
  *
  * So the child is measured at its natural size and the seat animates to that
- * number. The child never shrinks with the seat (`flexShrink: 0`); it
- * overflows and is clipped, which is what keeps a word from re-wrapping itself
- * on every frame of the close. Before the first measurement the seat is either
- * natural or nothing, never a guess.
+ * number, clipping it on the way.
  */
 function Seat({
   axis,
   children,
   open,
+  room = 0,
 }: {
   /**
-   * Which way it collapses: a column gives back height, a line gives back
-   * width — and its height with it, because a name of no width in a wrapping
-   * row still holds a line open behind it.
+   * Which way it collapses.
+   *
+   * `height` is for a block stacked under another — the typed field and the
+   * count beneath the names. `width` is for a name on a wrapping line, and it
+   * gives back its height along with its width: a name of no width still
+   * holds a line open behind it, which is 48 dp of blank where a folded tag
+   * used to be.
    */
   axis: 'height' | 'width';
   children: React.ReactNode;
   open: boolean;
+  /**
+   * The whole line's width, for a seat that gives back its own.
+   *
+   * A name has to be measured somewhere, and where it is measured decides what
+   * it measures: laid out inside its seat it is offered whatever room the seat
+   * has, which at the end of a line is a few characters — `Rain` measured
+   * itself against 40 px of leftover, broke after `Rai`, reported the width of
+   * that, and kept it. The frame is therefore given the room the line has
+   * rather than the room the seat has, and the name inside takes its own
+   * width in it. Nothing about the seat reaches the measurement.
+   */
+  room?: number;
 }) {
   const reducedMotion = useReducedMotion();
   const amount = useSharedValue(open ? 1 : 0);
@@ -299,16 +317,7 @@ function Seat({
     },
     [across, down],
   );
-  const faded = useAnimatedStyle(() => ({
-    opacity: amount.value,
-    // Pinned to what it measured, once it has. An absolute child is still
-    // offered the room its seat has left, so a name in a closing seat re-wraps
-    // itself onto two lines on the way out — `No tags.` breaking after `No`
-    // is what this is. Height is never pinned: it is the measurement.
-    ...(axis === 'width' && across.value > 0
-      ? { width: across.value }
-      : null),
-  }));
+  const faded = useAnimatedStyle(() => ({ opacity: amount.value }));
   const grown = useAnimatedStyle(() =>
     axis === 'height'
       ? { height: amount.value * down.value }
@@ -327,13 +336,18 @@ function Seat({
       style={[axis === 'height' ? styles.seatColumn : styles.seatRow, grown]}
     >
       <Animated.View
-        onLayout={onLayout}
         style={[
-          axis === 'height' ? styles.naturalColumn : styles.naturalRow,
+          axis === 'height' ? styles.frameColumn : styles.frameRow,
+          axis === 'width' && room > 0 ? { width: room } : null,
           faded,
         ]}
       >
-        {children}
+        <View
+          onLayout={onLayout}
+          style={axis === 'height' ? styles.wide : styles.natural}
+        >
+          {children}
+        </View>
       </Animated.View>
     </Animated.View>
   );
@@ -348,13 +362,11 @@ function Seat({
  */
 function Name({
   name,
-  flow,
   member,
   busy,
   onPress,
 }: {
   name: string;
-  flow: MembershipFlow;
   member: boolean;
   busy: boolean;
   onPress: () => void;
@@ -384,7 +396,7 @@ function Name({
       accessibilityState={{ selected: member, disabled: busy }}
       disabled={busy}
       onPress={onPress}
-      style={flow === 'inline' ? styles.inlineItem : styles.item}>
+      style={styles.item}>
       <View style={styles.word}>
         <Animated.Text style={[type.body, inked]}>{name}</Animated.Text>
         <Animated.View
@@ -398,22 +410,20 @@ function Name({
 const styles = StyleSheet.create({
   head: { flexDirection: 'row', alignItems: 'flex-start' },
   /**
-   * The names take the value column and the caret is pushed off its end, which
-   * is where `marginLeft: auto` was already putting it. Said as a measure
-   * rather than as a leftover because the seats inside hold nothing in flow:
-   * without a width of its own the block would have none to give them.
-   */
-  names: { flex: 1 },
-  /**
+   * The names take the value column and wrap along it; the caret is pushed off
+   * its end, which is where `marginLeft: auto` was already putting it. The
+   * width is said as a measure rather than left as a leftover because the
+   * seats inside hold nothing in flow: without a width of its own the block
+   * would have none to give them.
+   *
    * No `columnGap`: the gap between names is paid inside each seat, so a seat
    * that has closed to no width leaves no gap behind it either.
    */
-  inline: { flex: 1, flexDirection: 'row', flexWrap: 'wrap' },
-  item: { justifyContent: 'center', minHeight: MEMBERSHIP_KNOBS.ITEM_PX },
-  inlineItem: {
+  names: { flex: 1, flexDirection: 'row', flexWrap: 'wrap' },
+  item: {
     justifyContent: 'center',
     minHeight: MEMBERSHIP_KNOBS.ITEM_PX,
-    paddingRight: MEMBERSHIP_KNOBS.INLINE_GAP_PX,
+    paddingRight: MEMBERSHIP_KNOBS.GAP_PX,
   },
   /**
    * The word and its hairline, as wide as the word.
@@ -432,10 +442,14 @@ const styles = StyleSheet.create({
    */
   seatColumn: { overflow: 'hidden' },
   seatRow: { overflow: 'hidden' },
+
   /** Its width is the seat's; its height is its own, which is the measurement. */
-  naturalColumn: { left: 0, position: 'absolute', right: 0, top: 0 },
-  /** Both its own, for a name that gives back width rather than height. */
-  naturalRow: { left: 0, position: 'absolute', top: 0 },
+  frameColumn: { left: 0, position: 'absolute', right: 0, top: 0 },
+  /** Its width is the line's, so the name in it is never measured in a corner. */
+  frameRow: { left: 0, position: 'absolute', top: 0 },
+  /** What is measured: a block across its frame, or a word's own width in it. */
+  wide: { alignSelf: 'stretch' },
+  natural: { alignSelf: 'flex-start' },
   tick: {
     bottom: 3,
     height: StyleSheet.hairlineWidth,
