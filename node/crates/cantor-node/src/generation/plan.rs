@@ -15,7 +15,7 @@ use super::WorkerFailure;
 use crate::accel;
 use crate::backends::{BackendManifest, EngineStore, machine_arch};
 use crate::engine::LoadOptions;
-use crate::generate::{Request, components_for};
+use crate::generate::{Request, components_for, engine_fields};
 use crate::library::WorkItem;
 use crate::runtime::SharedState;
 use crate::store::Store;
@@ -174,8 +174,9 @@ pub(crate) async fn resolve(
         seed: work.generation.seed,
         // Declared fields, defaults filled in, flattened alongside the core
         // ones. Validation already happened at admission against this exact
-        // installed variant; this only resolves what was left unset.
-        extensions,
+        // installed variant; this only resolves what was left unset, and
+        // encodes each value in the shape its declaration gave it.
+        extensions: engine_fields(extensions, &variant.parameters),
     };
 
     Ok(GenerationPlan {
