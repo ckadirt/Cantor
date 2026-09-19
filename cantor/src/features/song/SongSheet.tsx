@@ -618,7 +618,7 @@ function Front({
 
         <Ledger arrival={spine}>
           <Arriving arrival={arrival} index={1}>
-            <Row label="Playlists">
+            <Row control label="Playlists">
               <Membership
                 addPlaceholder="new playlist"
                 busy={busy}
@@ -632,7 +632,7 @@ function Front({
             </Row>
           </Arriving>
           <Arriving arrival={arrival} index={2}>
-            <Row label="Tags">
+            <Row control label="Tags">
               <Membership
                 addPlaceholder="add a tag"
                 busy={busy}
