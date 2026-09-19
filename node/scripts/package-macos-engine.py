@@ -17,11 +17,13 @@ with tempfile.TemporaryDirectory() as temporary:
     package = Path(temporary) / 'engine'
     package.mkdir()
     # Materialize versioned aliases so relocation and signing cover every name.
-    for source in build.rglob('*.dylib'):
+    # CMake MODULE backends retain .so on macOS; shared libraries use .dylib.
+    for source in [*build.rglob('*.dylib'), *build.rglob('*.so')]:
         shutil.copy2(source.resolve(), package / source.name)
     assert (package / 'libcantor_engine.dylib').exists()
-    for library in package.glob('*.dylib'):
-        subprocess.run(['install_name_tool', '-id', '@rpath/' + library.name, str(library)], check=True)
+    for library in package.iterdir():
+        if library.suffix == '.dylib':
+            subprocess.run(['install_name_tool', '-id', '@rpath/' + library.name, str(library)], check=True)
         dependencies = subprocess.check_output(['otool', '-L', str(library)], text=True)
         for line in dependencies.splitlines()[1:]:
             dependency = line.strip().split(' (', 1)[0]
@@ -31,6 +33,9 @@ with tempfile.TemporaryDirectory() as temporary:
             elif not dependency.startswith(('/usr/lib/', '/System/Library/')):
                 raise RuntimeError(f'Unbundled dependency: {library.name}: {dependency}')
         subprocess.run(['codesign', '--force', '--sign', '-', str(library)], check=True)
+    assert (package / 'libggml-cpu.so').exists(), 'CPU module is missing'
+    if backend == 'metal':
+        assert (package / 'libggml-metal.so').exists(), 'Metal module is missing'
     # Smoke-load relocated artifacts, not the build tree.
     for name in ['libggml-base.dylib', 'libggml.dylib']:
         ctypes.CDLL(str(package / name), mode=ctypes.RTLD_GLOBAL)
