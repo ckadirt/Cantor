@@ -265,7 +265,7 @@ else
     Darwin:x86_64) cantor_asset='cantor-x86_64-apple-darwin' ;;
     *) cantor_fail "unsupported architecture: $(uname -m)" ;;
   esac
-  cantor_node_url=${CANTOR_NODE_URL:-"https://github.com/ckadirt/Cantor/releases/download/${CANTOR_VERSION:-v0.1.3}/$cantor_asset"}
+  cantor_node_url=${CANTOR_NODE_URL:-"https://github.com/ckadirt/Cantor/releases/download/${CANTOR_VERSION:-v0.1.4}/$cantor_asset"}
   cantor_reject_control CANTOR_NODE_URL "$cantor_node_url"
   case "$cantor_node_url" in
     https://*) ;;
