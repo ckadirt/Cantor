@@ -180,6 +180,16 @@ cable is replugged.
 - **Storage keys are a compatibility contract.** Existing AsyncStorage keys and
   stored JSON shapes must keep loading; per-store corruption policy is
   deliberate.
+- **The soft keyboard must never resize the window.** The activity asks for
+  `adjustNothing`. `viewportHeight` is a blind's whole travel *and* the number
+  the field's layout is planned on, so a window that shrank under an open sheet
+  re-ran the blind's height animation, the field's re-cut, and every seat
+  measured inside the open panel, all on one frame — which is what made a tap
+  on a text field shove every dropdown on screen. `Curtain` takes
+  `useKeyboardInset` out of the sheet's own height instead, so the band the
+  keyboard covers is paid for by the sheet's content and by nothing else. RN's
+  `Modal` sets `adjustResize` on its own window regardless, so the pairing and
+  restore sheets are unaffected.
 - **The foot's line is narrower than the page.** `LedgerFoot` starts at the
   spine, so its note holds about 26 mono characters, not a page's worth. Two
   sheets have already lost a word off the right edge there; count the string.

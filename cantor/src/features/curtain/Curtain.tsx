@@ -10,6 +10,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
+import { useKeyboardInset } from './keyboard';
 import { space, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — the blind: how it hangs, how far it must come, how fast it runs. */
@@ -183,9 +184,9 @@ function travelMs(
  * each other's value: both read one signed pull, so a blind that is rolled up
  * has no business writing to it while the other one is hanging. Without that
  * test the closed blind rolled the open one away every time the height
- * changed — open the keyboard under the composer and the soft input shrank the
- * viewport, both blinds re-ran this with their new height, and the engines,
- * closed and asking for zero, took the composer down with it.
+ * changed — the engines, closed and asking for zero, took the composer down
+ * with it. The soft keyboard used to be what changed the height; it no longer
+ * is (see `useKeyboardInset`), and a rotation still is.
  */
 export function unrollTo(
   pull: SharedValue<number>,
@@ -309,6 +310,14 @@ function CurtainImpl({
    * crossing rather than one per frame.
    */
   const [live, setLive] = useState(false);
+  /**
+   * What the soft keyboard is standing on, taken out of the sheet and nothing
+   * else. The blind keeps the screen's height — the field behind it, its own
+   * travel, and every seat measured inside it are all drawn from a viewport
+   * that a keyboard must not move — so the band is paid for here, where it is
+   * only the sheet's own content that has less room.
+   */
+  const keyboard = useKeyboardInset();
   useAnimatedReaction(
     () => pull.value * sign > 0.5,
     (drawn, previous) => {
@@ -322,10 +331,11 @@ function CurtainImpl({
   // distance it measures is the live one rather than React's copy of it.
   //
   // `height` is in the dependencies because a blind that is down has to stay
-  // down over a viewport that changed under it — the soft keyboard resizes the
-  // window, and a sheet still drawn to the old height would hang past the
-  // opening. `sign` is what makes that safe for the blind that is *not* down;
-  // see `unrollTo`.
+  // down over a viewport that changed under it, and a sheet still drawn to the
+  // old height would hang past the opening. That is a rotation now, and only a
+  // rotation: the keyboard is drawn over the blind rather than under it, so it
+  // never reaches this. `sign` is what makes the re-run safe for the blind that
+  // is *not* down; see `unrollTo`.
   useEffect(() => {
     runOnUI(unrollTo)(
       pull,
@@ -473,7 +483,15 @@ function CurtainImpl({
           needs a boundary only where it meets the field — which is the rail
           riding its hem, and nowhere else.
         */}
-        <View style={[styles.sheet, { backgroundColor: pal.bg, height }]}>
+        <View
+          style={[
+            styles.sheet,
+            // Inside the height rather than added to it: the sheet still ends
+            // where the blind does, and the grip stays at the leading edge of
+            // what is left rather than being pushed behind the keyboard.
+            { backgroundColor: pal.bg, height, paddingBottom: keyboard },
+          ]}
+        >
           {/*
             The grip is the last thing on the top blind and the first thing on
             the bottom one, because both of those are the leading edge — the
