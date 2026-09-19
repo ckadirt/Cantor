@@ -29,9 +29,26 @@ impl NodePaths {
     pub fn resolve(override_directory: Option<PathBuf>) -> Result<Self> {
         let directory = match override_directory {
             Some(directory) => directory,
-            None => dirs::config_dir()
-                .context("could not determine the platform config directory")?
-                .join("cantor"),
+            None => {
+                let default = dirs::config_dir()
+                    .context("could not determine the platform config directory")?
+                    .join("cantor");
+                let record = default.join("installation.toml");
+                if record.exists() {
+                    #[derive(serde::Deserialize)]
+                    struct Installation {
+                        directory: PathBuf,
+                    }
+                    let installation: Installation = toml::from_str(&fs::read_to_string(&record)?)
+                        .context("invalid installation.toml")?;
+                    if !installation.directory.is_absolute() {
+                        bail!("installation directory must be absolute");
+                    }
+                    installation.directory
+                } else {
+                    default
+                }
+            }
         };
 
         Ok(Self {

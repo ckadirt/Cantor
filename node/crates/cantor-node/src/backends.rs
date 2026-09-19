@@ -19,7 +19,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const SCHEMA_VERSION: u64 = 1;
+#[cfg(not(target_os = "macos"))]
 pub const DEFAULT_BACKENDS_URL: &str = "https://cantor.ckadirt.xyz/backends/v1.json";
+#[cfg(target_os = "macos")]
+pub const DEFAULT_BACKENDS_URL: &str =
+    "https://github.com/ckadirt/Cantor/releases/latest/download/backends-macos-v1.json";
 const MANIFEST_TIMEOUT: Duration = Duration::from_secs(20);
 const ENGINES_DIRECTORY: &str = "engines";
 
@@ -32,12 +36,18 @@ pub const SUPPORTED_ABI: u32 = 1;
 pub struct BackendArtifact {
     pub backend: String,
     pub arch: String,
+    #[serde(default = "linux_os")]
+    pub os: String,
     pub url: String,
     /// Bare 64-hex, no `sha256:` prefix — this manifest's convention differs
     /// from the catalog's, so it is normalised on read rather than assumed.
     pub sha256: String,
     #[serde(default)]
     pub bytes: u64,
+}
+
+fn linux_os() -> String {
+    "linux".to_owned()
 }
 
 impl BackendArtifact {
@@ -139,10 +149,19 @@ impl BackendManifest {
     /// The manifest says `arm64` where Rust says `aarch64`, so both spellings
     /// are accepted rather than requiring the publisher to match Rust's.
     pub fn find(&self, engine: &str, backend: &str, arch: &str) -> Option<&BackendArtifact> {
-        self.engine(engine)?
-            .backends
-            .iter()
-            .find(|artifact| artifact.backend == backend && arch_matches(&artifact.arch, arch))
+        self.find_for_os(engine, backend, arch, std::env::consts::OS)
+    }
+
+    fn find_for_os(
+        &self,
+        engine: &str,
+        backend: &str,
+        arch: &str,
+        os: &str,
+    ) -> Option<&BackendArtifact> {
+        self.engine(engine)?.backends.iter().find(|artifact| {
+            artifact.backend == backend && artifact.os == os && arch_matches(&artifact.arch, arch)
+        })
     }
 }
 
@@ -152,8 +171,8 @@ pub fn arch_matches(manifest_arch: &str, machine_arch: &str) -> bool {
 
 fn normalise_arch(arch: &str) -> &str {
     match arch {
-        "arm64" | "aarch64" => "aarch64",
-        "amd64" | "x86_64" => "x86_64",
+        "arm64" | "aarch64" | "aarch64-apple-darwin" => "aarch64",
+        "amd64" | "x86_64" | "x86_64-apple-darwin" => "x86_64",
         other => other,
     }
 }
@@ -330,9 +349,34 @@ mod tests {
         let engine = manifest.engine("acestep").expect("engine");
         assert_eq!(engine.abi, SUPPORTED_ABI);
 
-        let found = manifest.find("acestep", "cpu", "x86_64").expect("x86_64");
+        let found = manifest
+            .find_for_os("acestep", "cpu", "x86_64", "linux")
+            .expect("x86_64");
         assert!(found.url.ends_with("cpu.tar.gz"));
         assert_eq!(found.digest().expect("digest").len(), 64);
+    }
+
+    #[test]
+    fn linux_and_macos_artifacts_never_cross_match() {
+        let linux = BackendManifest::parse(SAMPLE).unwrap();
+        assert!(
+            linux
+                .find_for_os("acestep", "cpu", "aarch64", "macos")
+                .is_none()
+        );
+        let raw = SAMPLE.replace(
+            "\"arch\":\"arm64\"",
+            "\"os\":\"macos\",\"arch\":\"aarch64-apple-darwin\"",
+        );
+        let mac = BackendManifest::parse(&raw).unwrap();
+        assert!(
+            mac.find_for_os("acestep", "cpu", "aarch64", "linux")
+                .is_none()
+        );
+        assert!(
+            mac.find_for_os("acestep", "cpu", "aarch64", "macos")
+                .is_some()
+        );
     }
 
     /// The manifest says `arm64` where Rust's `std::env::consts::ARCH` says
@@ -345,7 +389,11 @@ mod tests {
         assert!(!arch_matches("arm64", "x86_64"));
 
         let manifest = BackendManifest::parse(SAMPLE).expect("parse");
-        assert!(manifest.find("acestep", "cpu", "aarch64").is_some());
+        assert!(
+            manifest
+                .find_for_os("acestep", "cpu", "aarch64", "linux")
+                .is_some()
+        );
     }
 
     #[test]
@@ -359,7 +407,11 @@ mod tests {
             manifest.engine("acestep").expect("engine").backends.len(),
             1
         );
-        assert!(manifest.find("acestep", "cpu", "x86_64").is_some());
+        assert!(
+            manifest
+                .find_for_os("acestep", "cpu", "x86_64", "linux")
+                .is_some()
+        );
     }
 
     #[test]
@@ -371,7 +423,9 @@ mod tests {
     #[test]
     fn the_extracted_directory_is_stable_and_digest_scoped() {
         let manifest = BackendManifest::parse(SAMPLE).expect("parse");
-        let artifact = manifest.find("acestep", "cpu", "x86_64").expect("artifact");
+        let artifact = manifest
+            .find_for_os("acestep", "cpu", "x86_64", "linux")
+            .expect("artifact");
         let slug = artifact.slug().expect("slug");
         assert_eq!(slug, "cpu-x86_64-009408e6b660");
         // Same bytes must always land in the same place.
