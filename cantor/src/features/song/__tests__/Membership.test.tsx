@@ -37,16 +37,66 @@ function render(over: Partial<React.ComponentProps<typeof Membership>> = {}) {
     tree.root
       .findAll(node => typeof node.props.accessibilityLabel === 'string')
       .map(node => node.props.accessibilityLabel as string);
-  return { tree, props, press, labels, pressable };
+  /**
+   * The labels a finger or a screen reader can actually get to.
+   *
+   * Every name keeps its seat whether or not the peel is open — that is what
+   * lets a chosen one stay where it is — so `labels()` alone can no longer say
+   * what the block is offering. A folded seat hides its contents, and this
+   * walks the tree the way the platform does: past a hidden subtree.
+   */
+  const reachable = () => {
+    const out: string[] = [];
+    const walk = (node: ReactTestRenderer.ReactTestInstance) => {
+      if (node.props?.accessibilityElementsHidden === true) return;
+      const label = node.props?.accessibilityLabel;
+      if (typeof label === 'string') out.push(label);
+      for (const child of node.children) {
+        if (typeof child !== 'string') walk(child);
+      }
+    };
+    walk(tree.root);
+    return out;
+  };
+  return { tree, props, press, labels, pressable, reachable };
 }
 
 describe('Membership', () => {
   it('draws only the names the song holds until it is peeled open', () => {
-    const { labels, press } = render();
-    expect(labels()).toContain('Remove from Dog walk');
-    expect(labels()).not.toContain('Add to Focus');
+    const { reachable, press } = render();
+    expect(reachable()).toContain('Remove from Dog walk');
+    expect(reachable()).not.toContain('Add to Focus');
     press('Show every name');
-    expect(labels()).toContain('Add to Focus');
+    expect(reachable()).toContain('Add to Focus');
+  });
+
+  it('keeps a name in one seat, so choosing it moves nothing', () => {
+    const { labels, press, tree, props } = render();
+    press('Show every name');
+    const once = (prefix: string) => [
+      ...new Set(labels().filter(label => label.startsWith(prefix))),
+    ];
+    const before = once('Add to');
+    expect(before).toEqual(['Add to Focus']);
+    // The song now holds Focus; the list is rebuilt with it at the front.
+    ReactTestRenderer.act(() => {
+      tree.update(
+        <Membership
+          {...props}
+          entries={[
+            { name: 'Focus', member: true },
+            { name: 'Dog walk', member: true },
+            { name: 'Birthday', member: true },
+          ]}
+        />,
+      );
+    });
+    const names = once('Remove from');
+    expect(names).toEqual([
+      'Remove from Dog walk',
+      'Remove from Birthday',
+      'Remove from Focus',
+    ]);
   });
 
   it('toggles a held name off and an unheld name on', () => {
