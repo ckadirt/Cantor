@@ -26,9 +26,11 @@ mod store;
 mod transport;
 mod update;
 
+use std::collections::VecDeque;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use rustls::crypto::CryptoProvider;
@@ -446,6 +448,7 @@ async fn streaming_command(cli: Cli) -> Result<()> {
     };
 
     let mut planned = false;
+    let mut rate = DownloadRate::default();
     let response = control::request_streaming(&socket_path, &request, |frame| {
         match frame.get("t").and_then(Value::as_str) {
             Some("plan") => {
@@ -454,7 +457,7 @@ async fn streaming_command(cli: Cli) -> Result<()> {
             }
             Some("progress") => {
                 planned = true;
-                print_progress(frame);
+                print_progress(frame, &mut rate);
             }
             Some("generating") => print_generating(frame),
             Some("detected") => print_detected(frame),
@@ -603,7 +606,72 @@ fn print_pull_plan(frame: &Value) {
     println!();
 }
 
-fn print_progress(frame: &Value) {
+/// How far back a download's speed is measured. The gap between two progress
+/// frames is far too jumpy to show: one slow chunk on a fast link would read
+/// as minutes of waiting. A few seconds of history rides over that without
+/// making the number feel stale when the link genuinely changes.
+const RATE_WINDOW: Duration = Duration::from_secs(5);
+
+/// Rounder speeds than this are noise, and an ETA computed from them swings
+/// wildly. Until the window holds this much, show bytes only.
+const MIN_RATE_SPREAD: Duration = Duration::from_millis(750);
+
+/// A download's speed, measured over [`RATE_WINDOW`] of progress frames.
+#[derive(Default)]
+struct DownloadRate {
+    samples: VecDeque<(Instant, u64)>,
+}
+
+impl DownloadRate {
+    /// Records where a download is now and returns its speed in bytes per
+    /// second, or `None` while there is too little history to divide by.
+    fn observe(&mut self, done: u64, now: Instant) -> Option<f64> {
+        // A count that went backwards is a different download, not a rewind.
+        if self.samples.back().is_some_and(|&(_, last)| done < last) {
+            self.samples.clear();
+        }
+        self.samples.push_back((now, done));
+        while self.samples.len() > 2
+            && self
+                .samples
+                .front()
+                .is_some_and(|&(at, _)| now.duration_since(at) > RATE_WINDOW)
+        {
+            self.samples.pop_front();
+        }
+
+        let &(first_at, first_done) = self.samples.front()?;
+        let elapsed = now.duration_since(first_at);
+        if elapsed < MIN_RATE_SPREAD {
+            return None;
+        }
+        let moved = done.saturating_sub(first_done);
+        (moved > 0).then(|| moved as f64 / elapsed.as_secs_f64())
+    }
+}
+
+/// What is left at the current speed, or `None` when that is unknowable or so
+/// far out that printing it would be a lie.
+fn eta(done: u64, total: u64, rate: f64) -> Option<Duration> {
+    if rate <= 0.0 || done >= total {
+        return None;
+    }
+    let seconds = (total - done) as f64 / rate;
+    (seconds.is_finite() && seconds < 24.0 * 3600.0).then(|| Duration::from_secs_f64(seconds))
+}
+
+fn human_duration(left: Duration) -> String {
+    let seconds = left.as_secs();
+    if seconds >= 3600 {
+        format!("{}h{:02}m", seconds / 3600, seconds % 3600 / 60)
+    } else if seconds >= 60 {
+        format!("{}m{:02}s", seconds / 60, seconds % 60)
+    } else {
+        format!("{}s", seconds.max(1))
+    }
+}
+
+fn print_progress(frame: &Value, rate: &mut DownloadRate) {
     let done = frame
         .get("overall_done")
         .and_then(Value::as_u64)
@@ -618,15 +686,28 @@ fn print_progress(frame: &Value) {
     // A generation stage counts tokens, steps or tiles; a download counts
     // bytes. Rendering "215 B / 765 B" for a token count reads as nonsense, so
     // the unit follows the source.
-    if matches!(role.as_str(), "plan" | "codes" | "diffuse" | "decode") {
-        eprint!("\r  {percent:>3}%  {role:<8} {done} / {total}        ");
+    let line = if matches!(role.as_str(), "plan" | "codes" | "diffuse" | "decode") {
+        format!("  {percent:>3}%  {role:<8} {done} / {total}")
     } else {
-        eprint!(
-            "\r  {percent:>3}%  {} / {}  ({role})   ",
+        let speed = rate.observe(done, Instant::now());
+        let pace = match speed {
+            Some(speed) => {
+                let left = eta(done, total, speed)
+                    .map(|left| format!("  ETA {}", human_duration(left)))
+                    .unwrap_or_default();
+                format!("  {}/s{left}", store::human_bytes(speed as u64))
+            }
+            None => String::new(),
+        };
+        format!(
+            "  {percent:>3}%  {} / {}  ({role}){pace}",
             store::human_bytes(done),
             store::human_bytes(total),
-        );
-    }
+        )
+    };
+    // Padded, because this line is redrawn in place and a shorter one would
+    // otherwise leave the tail of its predecessor on screen.
+    eprint!("\r{line:<72}");
 }
 
 fn print_catalog(response: &Value) -> Result<()> {
@@ -847,13 +928,91 @@ fn install_tls_crypto_provider() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use rustls::crypto::CryptoProvider;
 
-    use super::install_tls_crypto_provider;
+    use super::{DownloadRate, RATE_WINDOW, eta, human_duration, install_tls_crypto_provider};
 
     #[test]
     fn installs_tls_crypto_provider() {
         install_tls_crypto_provider().expect("install TLS provider");
         assert!(CryptoProvider::get_default().is_some());
+    }
+
+    #[test]
+    fn speed_needs_a_span_to_divide_by() {
+        let start = Instant::now();
+        let mut rate = DownloadRate::default();
+        assert_eq!(rate.observe(0, start), None, "a single sample has no span");
+        assert_eq!(
+            rate.observe(1_000_000, start + Duration::from_millis(100)),
+            None,
+            "a span this short is noise"
+        );
+        assert_eq!(
+            rate.observe(2_000_000, start + Duration::from_secs(2)),
+            Some(1_000_000.0),
+            "2 MB over 2 seconds"
+        );
+    }
+
+    #[test]
+    fn speed_forgets_history_older_than_the_window() {
+        let start = Instant::now();
+        let mut rate = DownloadRate::default();
+        // A slow start that must not drag the number down forever.
+        rate.observe(0, start);
+        rate.observe(1_000, start + Duration::from_secs(1));
+        let recent = start + RATE_WINDOW + Duration::from_secs(1);
+        rate.observe(10_000_000, recent);
+        let speed = rate
+            .observe(20_000_000, recent + Duration::from_secs(1))
+            .expect("a speed");
+        assert!(
+            (speed - 10_000_000.0).abs() < 1.0,
+            "expected the recent 10 MB/s, got {speed}"
+        );
+    }
+
+    #[test]
+    fn a_restarted_download_does_not_report_a_negative_speed() {
+        let start = Instant::now();
+        let mut rate = DownloadRate::default();
+        rate.observe(900_000_000, start);
+        rate.observe(950_000_000, start + Duration::from_secs(1));
+        // The next component of a pull starts its own count from zero.
+        assert_eq!(rate.observe(0, start + Duration::from_secs(2)), None);
+        assert_eq!(
+            rate.observe(5_000_000, start + Duration::from_secs(7)),
+            Some(1_000_000.0)
+        );
+    }
+
+    #[test]
+    fn eta_is_what_is_left_at_the_current_speed() {
+        assert_eq!(
+            eta(50, 100, 10.0),
+            Some(Duration::from_secs(5)),
+            "50 bytes left at 10 B/s"
+        );
+        assert_eq!(eta(100, 100, 10.0), None, "nothing left to wait for");
+        assert_eq!(eta(0, 100, 0.0), None, "a stalled download has no ETA");
+        assert_eq!(
+            eta(0, u64::MAX, 1.0),
+            None,
+            "an ETA past a day is not worth printing"
+        );
+    }
+
+    #[test]
+    fn durations_read_as_time_not_seconds() {
+        assert_eq!(human_duration(Duration::from_secs(9)), "9s");
+        assert_eq!(human_duration(Duration::from_millis(200)), "1s");
+        assert_eq!(human_duration(Duration::from_secs(92)), "1m32s");
+        assert_eq!(
+            human_duration(Duration::from_secs(3 * 3600 + 5 * 60)),
+            "3h05m"
+        );
     }
 }
