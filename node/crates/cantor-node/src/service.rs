@@ -2,7 +2,9 @@
 use crate::{config::NodePaths, control, process_lock};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
+use std::ffi::OsString;
 use std::fs::OpenOptions;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::{fs::OpenOptionsExt, process::CommandExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -10,6 +12,47 @@ use std::time::Duration;
 
 pub const UNIT: &str = "cantor.service";
 const LABEL: &str = "xyz.ckadirt.cantor";
+
+/// What Linux appends to `/proc/self/exe` once the running binary's inode has
+/// been unlinked.
+const DELETED_MARKER: &[u8] = b" (deleted)";
+
+/// Drops the marker Linux appends to a deleted binary's path, if it is there.
+fn without_deleted_marker(path: &Path) -> Option<PathBuf> {
+    path.as_os_str()
+        .as_bytes()
+        .strip_suffix(DELETED_MARKER)
+        .map(|bytes| PathBuf::from(OsString::from_vec(bytes.to_vec())))
+}
+
+/// The binary to run the daemon from.
+///
+/// `cantor upgrade` renames the new release over the running one, so by the
+/// time it restarts the node, this process is executing an unlinked inode and
+/// `current_exe` reports `/path/to/cantor (deleted)` -- a path that cannot be
+/// spawned. Stripping the marker names exactly what should run: the upgrade
+/// just put the new binary there, and restarting onto it is the point of the
+/// whole operation.
+fn node_binary() -> Result<PathBuf> {
+    binary_from_exe_path(
+        std::env::current_exe().context("could not determine the running binary path")?,
+    )
+}
+
+fn binary_from_exe_path(exe: PathBuf) -> Result<PathBuf> {
+    if exe.exists() {
+        return Ok(exe);
+    }
+    if let Some(replaced) = without_deleted_marker(&exe)
+        && replaced.exists()
+    {
+        return Ok(replaced);
+    }
+    bail!(
+        "the cantor binary is no longer at {}; reinstall it and run cantor start",
+        without_deleted_marker(&exe).unwrap_or(exe).display()
+    )
+}
 
 fn user_unit() -> Option<PathBuf> {
     std::env::var_os("XDG_CONFIG_HOME")
@@ -202,7 +245,7 @@ pub async fn run_action(
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
         .open(&log_path)?;
-    let mut command = Command::new(std::env::current_exe()?);
+    let mut command = Command::new(node_binary()?);
     command
         .arg("run")
         .arg("--config-dir")
@@ -287,4 +330,64 @@ pub fn logs(lines: &str, follow: bool, config: Option<PathBuf>) -> Result<()> {
         bail!("log reader failed");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::{binary_from_exe_path, without_deleted_marker};
+
+    #[test]
+    fn a_live_binary_path_is_used_as_it_is() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let binary = directory.path().join("cantor");
+        fs::write(&binary, b"#!/bin/sh\n").expect("write binary");
+        assert_eq!(
+            binary_from_exe_path(binary.clone()).expect("a path"),
+            binary
+        );
+    }
+
+    /// The upgrade case: this process runs an unlinked inode, and the new
+    /// release is already sitting at the unmarked path.
+    #[test]
+    fn an_upgraded_binary_is_found_without_the_deleted_marker() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let binary = directory.path().join("cantor");
+        fs::write(&binary, b"the new release").expect("write binary");
+        let reported = PathBuf::from(format!("{} (deleted)", binary.display()));
+
+        assert_eq!(binary_from_exe_path(reported).expect("a path"), binary);
+    }
+
+    #[test]
+    fn a_binary_that_is_really_gone_says_so_without_the_marker() {
+        let directory = tempfile::tempdir().expect("temp dir");
+        let missing = directory.path().join("cantor");
+        let reported = PathBuf::from(format!("{} (deleted)", missing.display()));
+
+        let error = binary_from_exe_path(reported).expect_err("no binary");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "{message}"
+        );
+        assert!(!message.contains("(deleted)"), "{message}");
+    }
+
+    #[test]
+    fn only_a_trailing_marker_is_stripped() {
+        assert_eq!(
+            without_deleted_marker(&PathBuf::from("/opt/cantor (deleted)")),
+            Some(PathBuf::from("/opt/cantor"))
+        );
+        assert_eq!(without_deleted_marker(&PathBuf::from("/opt/cantor")), None);
+        assert_eq!(
+            without_deleted_marker(&PathBuf::from("/opt/a (deleted)/cantor")),
+            None,
+            "a directory that merely contains the words is not a marker"
+        );
+    }
 }
