@@ -107,6 +107,46 @@ test('piped install prompts on the terminal and continues after detached start',
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('setup detects accelerators and selects the operator\'s choice', () => {
+  const root = mkdtempSync(join(tmpdir(), 'cantor-backend-'));
+  try {
+    const home = join(root, 'home'); const bin = join(root, 'bin');
+    mkdirSync(home); mkdirSync(bin);
+    const command = (name, body) => writeFileSync(join(bin, name), `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    command('uname', 'case "$1" in -s) echo Linux;; -m) echo x86_64;; esac');
+    command('id', 'echo 1000');
+    command('systemctl', 'exit 1');
+    // Only a bare `backends` reports detection; `--use` just switches.
+    command('source', `printf "%s\\n" "$*" >> "$CALLS"
+case "$*" in
+  backends)
+    printf 'architecture  x86_64\\n\\nDetected, in preference order:\\n'
+    printf '  cuda12   nvidia-smi reports a device \u00b7 NVIDIA H100\\n'
+    printf '  cpu      always available\\n'
+    printf '\\nSelected cuda12\\n  engine    acestep 1.5\\n'
+    ;;
+esac
+exit 0`);
+    const calls = join(root, 'calls');
+    const result = spawnSync('python3', [resolve('node/scripts/installer-pty-test.py'), resolve('node/install.sh'),
+      'Y', 'n', 'Y', '', 'cpu'], { encoding: 'utf8', timeout: 25000, env: {
+      ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, CALLS: calls,
+      XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.data'),
+      CANTOR_NODE_BINARY: join(bin, 'source'), CANTOR_NODE_NAME: 'backend-test',
+      CANTOR_RELAY_URL: 'wss://cantor.ckadirt.xyz', CANTOR_NON_INTERACTIVE: '0',
+      CANTOR_MODEL_DIR: join(home, 'models'), CANTOR_LIBRARY_DIR: join(home, 'library'),
+    }});
+    assert.equal(result.status, 0, result.stderr);
+    const history = readFileSync(calls, 'utf8');
+    assert.match(history, /^pull acestep:1.5-fast$/m);
+    // Detection first, then the operator's pick -- not the detected default.
+    assert.match(history, /^backends$/m);
+    assert.match(history, /^backends --use cpu$/m);
+    // PATH is only configured for future shells, so say so where it is read.
+    assert.match(result.stdout, /Open another terminal/);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 for (const [arch, target] of [['arm64', 'aarch64-apple-darwin'], ['x86_64', 'x86_64-apple-darwin']]) {
   test(`macOS download selects and verifies ${target}`, () => {
     const root = mkdtempSync(join(tmpdir(), 'cantor-download-'));
