@@ -501,9 +501,11 @@ cantor_shell_quote() {
   printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
 }
 # Configure future shells; a child installer cannot change its parent's PATH.
+cantor_path_pending=0
 case ":$PATH:" in
   *":$cantor_install_dir:"*) ;;
   *)
+    cantor_path_pending=1
     cantor_path_line="export PATH=$(cantor_shell_quote "$cantor_install_dir"):\"\$PATH\""
     for cantor_profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.zshrc"; do
       if ! grep -Fqx "$cantor_path_line" "$cantor_profile" 2>/dev/null; then
@@ -588,6 +590,47 @@ if [ "$cantor_started" = '1' ]; then
   else
     cantor_warn 'could not load the model catalog; run `cantor list --all` later'
   fi
+
+  # `pull` quietly takes the first detected accelerator. Show what this machine
+  # has and let the operator pin a different one -- which only works once a
+  # model is installed, since a backend is fetched per engine that model needs.
+  # Re-selecting what `pull` already installed costs nothing: the engine store
+  # skips an archive it already has.
+  if [ "$cantor_model_ready" = '1' ]; then
+    printf '\n%s\n' 'Compute backends on this machine:'
+    if cantor_backends_report=$("$cantor_binary_path" backends); then
+      printf '%s\n' "$cantor_backends_report"
+      cantor_accelerators=$(printf '%s\n' "$cantor_backends_report" | awk '
+        /^Detected, in preference order:/ { listing = 1; next }
+        listing && /^[^ ]/ { exit }
+        listing && NF { print $1 }
+      ')
+      cantor_backend_default=$(printf '%s\n' "$cantor_accelerators" | sed -n '1p')
+      if [ -z "$cantor_backend_default" ]; then
+        cantor_warn 'no compute backend was detected; run `cantor backends` later'
+      else
+        if [ "$(printf '%s\n' "$cantor_accelerators" | wc -l)" -gt 1 ]; then
+          cantor_backend_list=$(printf '%s\n' "$cantor_accelerators" | tr '\n' ',' | sed 's/,$//; s/,/, /g')
+          printf '\n%s\n' "Detected: $cantor_backend_list"
+          cantor_prompt 'Backend to use' "$cantor_backend_default"
+          cantor_setup_backend=$cantor_prompt_result
+          cantor_reject_control 'backend' "$cantor_setup_backend"
+          if ! printf '%s\n' "$cantor_accelerators" | grep -Fqx "$cantor_setup_backend"; then
+            cantor_warn "$cantor_setup_backend was not detected; using $cantor_backend_default"
+            cantor_setup_backend=$cantor_backend_default
+          fi
+        else
+          cantor_setup_backend=$cantor_backend_default
+        fi
+        printf '\n%s\n' "Selecting the $cantor_setup_backend backend. This downloads its engine if it is missing."
+        if ! "$cantor_binary_path" backends --use "$cantor_setup_backend"; then
+          cantor_warn "could not select $cantor_setup_backend; run \`cantor backends --use <name>\` later"
+        fi
+      fi
+    else
+      cantor_warn 'could not detect compute backends; run `cantor backends` later'
+    fi
+  fi
 else
   printf '%s\n' 'Finish setup with:'
   printf '  %s start\n' "$cantor_cli_command"
@@ -606,3 +649,9 @@ printf '  %s backends               # detected and selected compute backends\n' 
 printf '  %s backends --install     # try and install the best backend for this machine\n' "$cantor_cli_command"
 printf '  %s pair                   # open another phone-pairing code\n' "$cantor_cli_command"
 printf '  %s pairings               # confirm which phones are paired\n' "$cantor_cli_command"
+
+if [ "$cantor_path_pending" = '1' ]; then
+  printf '\n%s\n' 'Those commands are written out in full because `cantor` is only on PATH'
+  printf '%s\n' 'in new shells. Open another terminal to use the short name, or run here:'
+  printf '  %s\n' "$cantor_path_line"
+fi
