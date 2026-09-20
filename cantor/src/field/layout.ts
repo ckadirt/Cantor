@@ -20,6 +20,13 @@ import type {
 export const LAYOUT_KNOBS = {
   SHELF_GAP_WORLD: 300,
   CLUSTER_ROW_GAP_WORLD: 300,
+  /** Minimum air between adjacent rows of bloomed groups, including labels. */
+  CLUSTER_CONTENT_GAP_WORLD: 150,
+  /** Label (32 px offset), mark/job radius, and clear air at map distance. */
+  CLUSTER_CONTENT_GAP_PX: 64,
+  /** Space for date labels and marks in neighboring map columns. */
+  CLUSTER_COLUMN_PITCH_PX: 160,
+  PACKING_PASSES: 64,
   /**
    * The rank spacing of the *bloomed* pose, in world units: how far apart two
    * successive members are before the spiral displaces them.
@@ -107,8 +114,6 @@ export function layoutField(request: LayoutRequest): FieldLayout {
   );
   const columns = gridColumnCount(definitions.length);
   const rowCount = columns === 0 ? 0 : Math.ceil(definitions.length / columns);
-  const verticalMidpoint =
-    ((rowCount - 1) * LAYOUT_KNOBS.CLUSTER_ROW_GAP_WORLD) / 2;
 
   /*
    * The bloom first, then FIT, then the column.
@@ -118,18 +123,22 @@ export function layoutField(request: LayoutRequest): FieldLayout {
    * three cannot be computed in one pass without the column feeding back into
    * the frame that sizes it — and that loop diverges rather than settling: a
    * wider column makes a smaller FIT, which `shelfRowGapWorld` answers with a
-   * wider column. Written in this order there is no loop at all, because the
-   * bloom is made of constants alone.
+   * wider column. Bloom shapes use constants; their centers are packed for
+   * map label clearance before the independent gathered shelves are measured.
    */
   const seats = definitions.map((definition, groupIndex) => {
-    if (definitions.some((other, index) => index < groupIndex && other.key === definition.key)) {
+    if (
+      definitions.some(
+        (other, index) => index < groupIndex && other.key === definition.key,
+      )
+    ) {
       throw new Error(`Arrangement group key is duplicated: ${definition.key}`);
     }
     const column = groupIndex % columns;
     const row = Math.floor(groupIndex / columns);
     const groupsInRow = Math.min(columns, definitions.length - row * columns);
     const cx = (column - (groupsInRow - 1) / 2) * LAYOUT_KNOBS.SHELF_GAP_WORLD;
-    const cy = row * LAYOUT_KNOBS.CLUSTER_ROW_GAP_WORLD - verticalMidpoint;
+    const cy = 0;
     // Seating order is the layout's, not the arrangement's: the same three
     // orders apply to every axis, and applying them here is what stops
     // `byPlaylist` from seating its members in whatever order their tags
@@ -159,9 +168,95 @@ export function layoutField(request: LayoutRequest): FieldLayout {
     return { definition, cx, cy, entityKeys, blooms };
   });
 
-  const targetBounds = boxFromPoints(seats.flatMap(seat => seat.blooms));
-  const fitScale = fit(targetBounds, request.viewport, FIT_OPTIONS);
+  // Measure complete blooms, not just their capped spiral: the rank run
+  // continues growing with membership. Reserve the tallest group in each row.
+  const rowExtents = Array.from({ length: rowCount }, (_, row) => {
+    const points = seats
+      .slice(row * columns, (row + 1) * columns)
+      .flatMap(seat => seat.blooms);
+    return {
+      top: Math.min(0, ...points.map(point => point.y)),
+      bottom: Math.max(0, ...points.map(point => point.y)),
+    };
+  });
+  let contentGap = LAYOUT_KNOBS.CLUSTER_CONTENT_GAP_WORLD as number;
+  let columnPitch = LAYOUT_KNOBS.SHELF_GAP_WORLD as number;
+  let targetBounds: Box | null = null;
+  let fitScale: number = LAYOUT_KNOBS.EMPTY_FIT_SCALE;
+  // Labels and marks retain screen size as FIT shrinks. Repack with their
+  // screen clearance too; measuring world extents alone still overlaps labels
+  // in a library with several dense weeks. This only translates whole blooms.
+  for (let pass = 0; pass < LAYOUT_KNOBS.PACKING_PASSES; pass++) {
+    const rowCenters: number[] = [];
+    rowExtents.forEach((extent, row) => {
+      rowCenters.push(
+        row === 0
+          ? 0
+          : rowCenters[row - 1] +
+              Math.max(
+                LAYOUT_KNOBS.CLUSTER_ROW_GAP_WORLD,
+                rowExtents[row - 1].bottom - extent.top + contentGap,
+              ),
+      );
+    });
+    const midpoint = (rowCenters[rowCount - 1] ?? 0) / 2;
+    seats.forEach((seat, index) => {
+      const row = Math.floor(index / columns);
+      const groupsInRow = Math.min(columns, definitions.length - row * columns);
+      const cx = ((index % columns) - (groupsInRow - 1) / 2) * columnPitch;
+      seat.blooms.forEach(point => {
+        point.x += cx - seat.cx;
+      });
+      seat.cx = cx;
+      const cy = rowCenters[row] - midpoint;
+      seat.blooms.forEach(point => {
+        point.y += cy - seat.cy;
+      });
+      seat.cy = cy;
+    });
+    targetBounds = boxFromPoints(seats.flatMap(seat => seat.blooms));
+    fitScale = fit(targetBounds, request.viewport, FIT_OPTIONS);
+    const requiredGap = LAYOUT_KNOBS.CLUSTER_CONTENT_GAP_PX / fitScale;
+    const requiredPitch = LAYOUT_KNOBS.CLUSTER_COLUMN_PITCH_PX / fitScale;
+    if (contentGap >= requiredGap - 1e-6 && columnPitch >= requiredPitch - 1e-6)
+      break;
+    contentGap = Math.max(contentGap, requiredGap);
+    columnPitch = Math.max(columnPitch, requiredPitch);
+  }
   const songGapWorld = shelfRowGapWorld(fitScale);
+  // Shelves have a different footprint from their blooms. Pack their centers
+  // independently after FIT: feeding the 92 px row pitch back into FIT would
+  // create a shrinking-frame / growing-column cycle. The bloom offsets below
+  // retain the map seats while each gathered column gets its own clear run.
+  const shelfHalfHeights = Array.from({ length: rowCount }, (_, row) =>
+    Math.max(
+      0,
+      ...seats
+        .slice(row * columns, (row + 1) * columns)
+        .map(
+          seat => (Math.max(0, seat.entityKeys.length - 1) * songGapWorld) / 2,
+        ),
+    ),
+  );
+  const shelfCenters: number[] = [];
+  shelfHalfHeights.forEach((halfHeight, row) => {
+    const mapCy = seats[row * columns].cy;
+    shelfCenters.push(
+      row === 0
+        ? mapCy
+        : Math.max(
+            mapCy,
+            shelfCenters[row - 1] +
+              shelfHalfHeights[row - 1] +
+              halfHeight +
+              songGapWorld,
+          ),
+    );
+  });
+  seats.forEach((seat, index) => {
+    seat.cy = shelfCenters[Math.floor(index / columns)];
+  });
+
   const groups: Group[] = [];
   const placements: Placement[] = [];
   const placementKeys = new Set<string>();

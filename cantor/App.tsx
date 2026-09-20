@@ -12,6 +12,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { FieldScreen } from './src/screens/FieldScreen';
 import { Onboarding } from './src/onboarding/Onboarding';
+import { FieldGroupLab } from './src/dev/FieldGroupLab';
 import { MotionLab } from './src/dev/MotionLab';
 import { getIdentityPhrase } from './src/identity/mnemonic';
 import {
@@ -24,6 +25,8 @@ import { space, touch, type, usePalette } from './src/theme/tokens';
 // Dev workbench for the motion engine (src/dev/MotionLab). Flip to true to
 // iterate on shapes/text morphs with the scrubber; never ship it on.
 const MOTION_LAB = false;
+// Visual-only group stress cases. Never enabled in release builds.
+const FIELD_GROUP_LAB = false;
 
 type IdentityBoot =
   | { state: 'loading' }
@@ -77,7 +80,9 @@ export default function App() {
           barStyle={scheme === 'dark' ? 'light-content' : 'dark-content'}
           backgroundColor={pal.bg}
         />
-        {MOTION_LAB ? (
+        {__DEV__ && FIELD_GROUP_LAB ? (
+          <FieldGroupLab />
+        ) : MOTION_LAB ? (
           <MotionLab />
         ) : boot.state === 'loading' ? (
           <View style={[styles.loading, { backgroundColor: pal.bg }]}>

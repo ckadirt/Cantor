@@ -253,3 +253,24 @@ re-cut generation so outgoing mappers never read a newborn clock.
 
 `fieldCanvasClock.test.tsx` checks that a live job preserves the native song
 scene across progress updates, including fresh controller projection objects.
+
+### Group layout stress checks
+
+`layoutField` measures complete map blooms (rank run plus spiral), reserves
+64 screen pixels between row envelopes and 160 screen pixels between columns,
+and retains the 300-world-unit minimum center pitch. A bounded packing pass
+accounts for FIT shrinking while labels retain screen size. At the existing
+minimum FIT of 0.05, very large maps require panning instead of further squeezing
+labels. Bloom shapes remain independent of viewport size; group positions can
+change to reserve screen-space clearance.
+
+Gathered shelves are packed separately after FIT, using their actual member
+counts and the 92 px shelf row pitch. Their centers may differ vertically from
+the map centers. Bloom offsets preserve the map pose, and the existing gather
+interpolates into the separate shelf pose without changing glyph ownership.
+
+For device QA, set `FIELD_GROUP_LAB = true` in `cantor/App.tsx` in a debug build.
+`NEXT SCENARIO` cycles 7, 29, 61, and 155 artificial songs in uneven groups;
+`BUSIEST SHELF` checks the dense list pose. Fixtures are memory-only and have no
+backend actions. Restore the flag to false after QA. Regression tests cover
+both date and playlist groupings, map clearance, and cross-group shelf spacing.

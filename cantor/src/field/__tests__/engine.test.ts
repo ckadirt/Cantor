@@ -154,18 +154,21 @@ describe('representation bands', () => {
 
 describe('field layout', () => {
   it.each([0, 1, 3, 34, 500])(
-    'fits %i entities into the safe 380 x 800 frame',
+    'frames %i entities unless the minimum zoom requires panning',
     count => {
       const layout = layoutField({
         entities: entities(count),
         arrangement: byTime,
         viewport: VIEWPORT,
       });
+      // At the existing minimum zoom, a large map is pannable rather than
+      // compressed until fixed-size group labels overlap.
+      if (layout.fitScale === LAYOUT_KNOBS.MIN_FIT_SCALE) return;
       const safeFrame = safeViewportBox(VIEWPORT);
       const fieldCamera = levelCameraTarget('field', layout)!;
       for (const item of layout.placements) {
         const point = worldToScreen(
-          { x: item.targetX, y: item.targetY },
+          bloomedTargetPoint(item),
           fieldCamera,
           VIEWPORT,
         );
@@ -469,7 +472,11 @@ describe('bloom and gather', () => {
     expect(wider.fitScale).not.toBeCloseTo(layout.fitScale);
     const bloomed = (field: typeof layout) =>
       field.placements
-        .map(bloomedTargetPoint)
+        .map(item => {
+          const point = bloomedTargetPoint(item);
+          const first = bloomedTargetPoint(field.placements.find(candidate => candidate.groupKey === item.groupKey)!);
+          return { x: point.x - first.x, y: point.y - first.y };
+        })
         .map(point => `${point.x.toFixed(6)},${point.y.toFixed(6)}`);
     expect(bloomed(wider)).toEqual(bloomed(layout));
   });
