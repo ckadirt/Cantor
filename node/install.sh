@@ -577,14 +577,13 @@ if [ "$cantor_started" = '1' ]; then
   printf '%s\n\n' 'whether it fits, and how much free space this node has.'
   if "$cantor_binary_path" list --all; then
     if cantor_confirm_recommended 'Download a model variant and matching backend now? Strongly recommended.'; then
-      cantor_prompt 'Model variant to download' 'acestep:1.5-fast'
-      cantor_setup_model=$cantor_prompt_result
-      cantor_reject_control 'model selector' "$cantor_setup_model"
-      printf '\n%s\n' "Downloading $cantor_setup_model. This can take a while and resumes if interrupted."
-      if "$cantor_binary_path" pull "$cantor_setup_model"; then
+      # No argument: the node asks which variant with its own arrow-key
+      # chooser, which reads /dev/tty and so works under `curl ... | sh` too.
+      printf '\n%s\n' 'Choose a variant. The download can take a while and resumes if interrupted.'
+      if "$cantor_binary_path" pull; then
         cantor_model_ready=1
       else
-        cantor_warn "could not install $cantor_setup_model; run cantor pull $cantor_setup_model later"
+        cantor_warn 'could not install a model variant; run `cantor pull` later'
       fi
     fi
   else
@@ -643,7 +642,7 @@ fi
 
 printf '\n%s\n' 'Useful model and backend commands for later:'
 printf '  %s list --all             # available variants, licences, sizes and fit\n' "$cantor_cli_command"
-printf '  %s pull <model:tag>       # download a variant and its matching backend\n' "$cantor_cli_command"
+printf '  %s pull [<model:tag>]     # download a variant and its matching backend\n' "$cantor_cli_command"
 printf '  %s list                   # variants already installed\n' "$cantor_cli_command"
 printf '  %s backends               # detected and selected compute backends\n' "$cantor_cli_command"
 printf '  %s backends --install     # try and install the best backend for this machine\n' "$cantor_cli_command"

@@ -13,6 +13,7 @@ mod generation;
 mod identity;
 mod jobs;
 mod library;
+mod menu;
 mod pairing;
 mod principal;
 mod process_lock;
@@ -53,7 +54,7 @@ Usage:
   cantor rename    --node <new-name>
   cantor start | stop | restart
   cantor logs      [--follow] [--lines N]
-  cantor pull      <model:tag>
+  cantor pull      [<model:tag>]   # no argument opens a chooser
   cantor list      [--all]
   cantor rm        <model:tag>
   cantor backends  [--install] [--use cpu|cuda12|metal|vulkan] [--keep-loaded on|off]
@@ -418,10 +419,10 @@ async fn streaming_command(cli: Cli) -> Result<()> {
     let id = "1";
     let request = match cli.command {
         Command_::Pull => {
-            let selector = cli
-                .positional
-                .first()
-                .context("pull needs a model and tag, like `cantor pull acestep:1.5-fast`")?;
+            let selector = match cli.positional.first() {
+                Some(selector) => selector.clone(),
+                None => choose_from_catalog(&socket_path).await?,
+            };
             json!({"v": 1, "id": id, "t": "pull", "selector": selector})
         }
         Command_::Backends => json!({"v": 1, "id": id, "t": "backends",
@@ -490,6 +491,99 @@ async fn streaming_command(cli: Cli) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Asks the catalog what there is and lets the operator walk it, so a pull
+/// needs no exact `model:tag` typed from memory. Falls back to the old
+/// instruction when there is no terminal to ask on.
+async fn choose_from_catalog(socket_path: &std::path::Path) -> Result<String> {
+    let catalog = control::request_streaming(
+        socket_path,
+        &json!({"v": 1, "id": "1", "t": "catalog"}),
+        |_| {},
+    )
+    .await
+    .context("could not read the model catalog")?;
+
+    let models = catalog
+        .get("models")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if models.is_empty() {
+        bail!("the catalog is empty, so there is nothing to pull");
+    }
+    let installed: Vec<&str> = catalog
+        .get("installed")
+        .and_then(Value::as_array)
+        .map(|values| values.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    let available = catalog
+        .get("available_bytes")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+
+    let cancelled = || anyhow::anyhow!("nothing was chosen");
+    // One model is not a choice worth making; go straight to its variants.
+    let model = if let [only] = models {
+        only
+    } else {
+        let choices: Vec<menu::Item> = models
+            .iter()
+            .map(|model| menu::Item {
+                label: string_field(model, "name"),
+                detail: string_field(model, "licence"),
+            })
+            .collect();
+        let at = menu::choose("Which model?", &choices)
+            .context("pull needs a model and tag, like `cantor pull acestep:1.5-fast`")?
+            .ok_or_else(cancelled)?;
+        &models[at]
+    };
+
+    let name = string_field(model, "name");
+    let variants = model
+        .get("variants")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    if variants.is_empty() {
+        bail!("{name} publishes no variants to pull");
+    }
+    let choices: Vec<menu::Item> = variants
+        .iter()
+        .map(|variant| {
+            let tag = string_field(variant, "tag");
+            let bytes: u64 = variant
+                .get("components")
+                .and_then(Value::as_array)
+                .map(|components| {
+                    components
+                        .iter()
+                        .filter_map(|component| component.get("bytes").and_then(Value::as_u64))
+                        .sum()
+                })
+                .unwrap_or(0);
+            let mark = if installed.contains(&format!("{name}:{tag}").as_str()) {
+                "  installed"
+            } else if bytes > available {
+                "  will not fit"
+            } else {
+                ""
+            };
+            menu::Item {
+                label: tag,
+                detail: format!("{}{mark}", store::human_bytes(bytes)),
+            }
+        })
+        .collect();
+    let at = menu::choose(&format!("Which {name} variant?"), &choices)
+        .context("pull needs a model and tag, like `cantor pull acestep:1.5-fast`")?
+        .ok_or_else(cancelled)?;
+
+    let selector = format!("{name}:{}", string_field(&variants[at], "tag"));
+    println!("pulling {selector}");
+    Ok(selector)
 }
 
 fn print_generating(frame: &Value) {

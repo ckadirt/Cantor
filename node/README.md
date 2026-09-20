@@ -86,6 +86,7 @@ can be added without touching an installed node.
 
 ```sh
 cantor list --all                  # the catalog, with what fits this node
+cantor pull                        # choose a variant with the arrow keys
 cantor pull acestep:1.5-fast       # licence, size and plan first, then fetch
 cantor list                        # installed, with size and licence
 cantor rm acestep:1.5-fast         # and reclaim any blob nothing else needs
