@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
-use qrcode::QrCode;
-use qrcode::render::unicode;
+use qrcode::render::{Renderer, unicode};
+use qrcode::{EcLevel, QrCode};
 use sha2::Sha256;
 use url::Url;
 
@@ -98,9 +98,34 @@ pub fn pairing_uri(
     Ok(url)
 }
 
+/// A pairing URI runs to about 420 bytes, and at the crate's default "medium"
+/// recovery that needs 81 modules — 89 terminal columns once the quiet zone is
+/// drawn. Every row then wraps in an 80-column window, which destroys the code
+/// far more thoroughly than thin margins do. A terminal draws modules
+/// pixel-perfect, so the recovery a camera can use is limited by the camera
+/// and not by the code: "low" gives back eight modules for nothing, and a
+/// two-module quiet zone gives back four more.
+const QR_EC_LEVEL: EcLevel = EcLevel::L;
+const QR_QUIET_ZONE_MODULES: u32 = 2;
+
+/// One module per character cell across and two down, which is square on a
+/// terminal: cells run about twice as tall as they are wide. Packing two
+/// modules into a cell across would halve the columns, but it stretches every
+/// module to twice its width and saves no lines at all, since two module rows
+/// per line is already the floor for a rendering made of solid blocks.
+fn render_pairing_code(uri: &Url) -> Result<String> {
+    let code = QrCode::with_error_correction_level(uri.as_str().as_bytes(), QR_EC_LEVEL)
+        .context("failed to encode pairing QR")?;
+    let colors = code.to_colors();
+    Ok(
+        Renderer::<unicode::Dense1x2>::new(&colors, code.width(), QR_QUIET_ZONE_MODULES)
+            .quiet_zone(true)
+            .build(),
+    )
+}
+
 pub fn print_pairing_code(uri: &Url) -> Result<()> {
-    let code = QrCode::new(uri.as_str().as_bytes()).context("failed to encode pairing QR")?;
-    let rendered = code.render::<unicode::Dense1x2>().quiet_zone(true).build();
+    let rendered = render_pairing_code(uri)?;
     println!("Scan this one-time pairing code in Cantor:\n\n{rendered}");
     println!("Pairing URI (copy/paste fallback):\n{uri}\n");
     Ok(())
@@ -117,7 +142,7 @@ mod tests {
     use crate::secure::TransportDescriptor;
     use crate::transport::TRANSPORT_SUITE_ID;
 
-    use super::{PAIR_PROOF_DOMAIN, pairing_uri, verify_pair_proof};
+    use super::{PAIR_PROOF_DOMAIN, Url, pairing_uri, render_pairing_code, verify_pair_proof};
 
     #[test]
     fn uri_contains_the_documented_fields_and_one_time_token() {
@@ -159,6 +184,76 @@ mod tests {
         assert_eq!(fields.get("tkid").map(String::as_str), Some("key-id"));
         assert_eq!(fields.get("tx").map(String::as_str), Some("transport-key"));
         assert_eq!(fields.get("tsig").map(String::as_str), Some("signature"));
+    }
+
+    /// A pairing URI with full-length, incompressible key material: the size
+    /// that matters is the one a real pairing prints, not the short fixtures
+    /// above.
+    fn realistic_pairing_uri() -> Url {
+        let bytes = |seed: u8, len: usize| -> Vec<u8> {
+            (0..len)
+                .map(|index| seed.wrapping_add((index as u8).wrapping_mul(37)))
+                .collect()
+        };
+        let hex =
+            |value: &[u8]| -> String { value.iter().map(|byte| format!("{byte:02x}")).collect() };
+        let config = NodeConfig {
+            name: "workstation-rtx6000".to_owned(),
+            relay_url: "wss://cantor.example.xyz".to_owned(),
+            model_dir: None,
+            library_dir: None,
+            catalog_url: None,
+            backends_url: None,
+            backend: None,
+            engine: crate::config::EngineTuning::default(),
+            jobs: crate::config::JobsConfig::default(),
+            pairings: Vec::new(),
+        };
+        let node_key = bs58::encode(bytes(11, 32)).into_string();
+        let descriptor = TransportDescriptor {
+            schema: 1,
+            node_ed25519: node_key.clone(),
+            transport_suite: TRANSPORT_SUITE_ID.to_owned(),
+            transport_key_id: hex(&bytes(29, 32)),
+            transport_x25519: URL_SAFE_NO_PAD.encode(bytes(53, 32)),
+            signature_ed25519: URL_SAFE_NO_PAD.encode(bytes(97, 64)),
+        };
+        let token = URL_SAFE_NO_PAD.encode(bytes(151, 32));
+        let uri = pairing_uri(&config, &node_key, &token, &descriptor).expect("pairing URI");
+        assert!(
+            uri.as_str().len() >= 415,
+            "fixture URI is unrealistically short"
+        );
+        uri
+    }
+
+    #[test]
+    fn the_pairing_code_fits_an_eighty_column_terminal() {
+        // A wrapped row is an unscannable code, so width is the hard limit.
+        let uri = realistic_pairing_uri();
+        let rendered = render_pairing_code(&uri).expect("rendered QR");
+        let columns = rendered
+            .lines()
+            .map(|line| line.chars().count())
+            .max()
+            .unwrap_or_default();
+
+        assert!(
+            columns <= 80,
+            "pairing QR is {columns} columns and would wrap"
+        );
+    }
+
+    /// Not a test: prints a scannable code over a pairing URI with the shape
+    /// and length of a real one, for checking a change against a real phone.
+    ///
+    ///     cargo test -p cantor print_pairing_code_to_scan -- --ignored --nocapture
+    #[test]
+    #[ignore = "prints a pairing code to scan by hand"]
+    fn print_pairing_code_to_scan() {
+        let uri = realistic_pairing_uri();
+        let rendered = render_pairing_code(&uri).expect("rendered QR");
+        println!("\n{rendered}\nA scanner should read exactly this, and nothing else:\n\n{uri}\n");
     }
 
     #[test]
