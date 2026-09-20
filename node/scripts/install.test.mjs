@@ -129,7 +129,7 @@ esac
 exit 0`);
     const calls = join(root, 'calls');
     const result = spawnSync('python3', [resolve('node/scripts/installer-pty-test.py'), resolve('node/install.sh'),
-      'Y', 'n', 'Y', '', 'cpu'], { encoding: 'utf8', timeout: 25000, env: {
+      'Y', 'n', 'Y', 'cpu'], { encoding: 'utf8', timeout: 25000, env: {
       ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, CALLS: calls,
       XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.data'),
       CANTOR_NODE_BINARY: join(bin, 'source'), CANTOR_NODE_NAME: 'backend-test',
@@ -138,7 +138,8 @@ exit 0`);
     }});
     assert.equal(result.status, 0, result.stderr);
     const history = readFileSync(calls, 'utf8');
-    assert.match(history, /^pull acestep:1.5-fast$/m);
+    // No selector typed: the node's chooser asks which variant.
+    assert.match(history, /^pull$/m);
     // Detection first, then the operator's pick -- not the detected default.
     assert.match(history, /^backends$/m);
     assert.match(history, /^backends --use cpu$/m);
