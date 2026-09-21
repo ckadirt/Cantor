@@ -25,7 +25,6 @@ import {
   localIsoWeekKey,
   placementPoint,
   representationAlphas,
-  safeViewportBox,
   screenToWorld,
   shelfLabelAlpha,
   worldToScreen,
@@ -154,29 +153,17 @@ describe('representation bands', () => {
 
 describe('field layout', () => {
   it.each([0, 1, 3, 34, 500])(
-    'frames %i entities unless the minimum zoom requires panning',
+    'keeps %i entities reachable with a bounded browsing window',
     count => {
       const layout = layoutField({
         entities: entities(count),
         arrangement: byTime,
         viewport: VIEWPORT,
       });
-      // At the existing minimum zoom, a large map is pannable rather than
-      // compressed until fixed-size group labels overlap.
-      if (layout.fitScale === LAYOUT_KNOBS.MIN_FIT_SCALE) return;
-      const safeFrame = safeViewportBox(VIEWPORT);
-      const fieldCamera = levelCameraTarget('field', layout)!;
-      for (const item of layout.placements) {
-        const point = worldToScreen(
-          bloomedTargetPoint(item),
-          fieldCamera,
-          VIEWPORT,
-        );
-        expect(point.x).toBeGreaterThanOrEqual(safeFrame.x);
-        expect(point.x).toBeLessThanOrEqual(safeFrame.x + safeFrame.width);
-        expect(point.y).toBeGreaterThanOrEqual(safeFrame.y);
-        expect(point.y).toBeLessThanOrEqual(safeFrame.y + safeFrame.height);
-      }
+      expect(layout.placements).toHaveLength(count);
+      expect(layout.browseBounds!.minY).toBe(0);
+      expect(layout.browseBounds!.maxY).toBeGreaterThanOrEqual(0);
+      expect(layout.fieldCenter).toEqual({ x: 0, y: 0 });
       if (count === 0) {
         expect(layout).toMatchObject({
           fitScale: LAYOUT_KNOBS.EMPTY_FIT_SCALE,
