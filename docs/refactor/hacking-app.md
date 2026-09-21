@@ -258,8 +258,10 @@ scene across progress updates, including fresh controller projection objects.
 
 `layoutField` uses a two-column browsing window, with three rows visible for
 ordinary groups. Date groups start newest first. The scale depends on viewport
-width, never library length. Compact marks use five columns; extra songs add
-rows, and dense groups reserve more vertical space instead of shrinking.
+width, never library length. Marks form stable irregular oval clusters. Sparse
+groups have room between songs; increasing membership compresses the particles
+with slight internal overlap before the oval grows vertically. Group-key-seeded
+variation keeps refreshes deterministic; gathered shelves retain their order.
 Rows reserve at least 64 screen pixels between their mark envelopes. At overview
 distance, dragging moves freely in both axes, even when all groups fit;
 zooming out cannot compress all groups into the viewport. Header/footer veils

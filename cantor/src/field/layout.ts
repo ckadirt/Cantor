@@ -1,4 +1,4 @@
-import { BROWSE_KNOBS, browseOffset, browseScale } from './browse';
+import { BROWSE_KNOBS, browseOffsets, browseScale } from './browse';
 import { LEVEL_SCALE_RATIOS } from './camera';
 import { boxFromPoints } from './geometry';
 import { orderByKey, orderMembers, DEFAULT_ORDER_KEY } from './order';
@@ -76,14 +76,12 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       request.order ?? orderByKey(DEFAULT_ORDER_KEY),
       request.orderSeed ?? 0,
     );
-    // Additional content adds compact rows at a fixed mark pitch.
-    const blooms = entityKeys.map((_entityKey, entityIndex) => {
-      const compact = browseOffset(entityIndex, entityKeys.length);
-      return {
-        x: cx + compact.x,
-        y: compact.y,
-      };
-    });
+    const blooms = browseOffsets(entityKeys.length, definition.key).map(
+      point => ({
+        x: cx + point.x,
+        y: point.y,
+      }),
+    );
     return { definition, cx, cy, entityKeys, blooms };
   });
 
