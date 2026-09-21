@@ -13,9 +13,7 @@ import {
 import { easeSmoother } from '../../motion';
 import { CURTAIN_KNOBS, releaseTarget, unrollMs } from '../curtain';
 import {
-  containBrowseCamera,
   inBrowseFrame,
-  type BrowseBounds,
   GRAIN_ENABLED,
   GRAIN_KNOBS,
   LAYOUT_KNOBS,
@@ -333,10 +331,6 @@ export function useFieldCamera({
   const flightProgress = useRef(flightProgressCandidate).current;
 
   layoutRef.current = layout;
-  const browseBoundsShared = useSharedValue<BrowseBounds | null>(null);
-  useEffect(() => {
-    browseBoundsShared.value = layout?.browseBounds ?? null;
-  }, [browseBoundsShared, layout]);
   const seats = useMemo(
     () => (layout === null ? [] : shelfSeats(layout)),
     [layout],
@@ -1092,13 +1086,8 @@ export function useFieldCamera({
    */
   const gesture = useMemo(() => {
     const knobs = FIELD_CAMERA_KNOBS;
-    const publish = (candidate: Camera) => {
+    const publish = (next: Camera) => {
       'worklet';
-      const next = containBrowseCamera(
-        candidate,
-        browseBoundsShared.value,
-        layoutFitShared.value,
-      );
       cameraShared.value = next;
       if (mirrorBusy.value) return;
       mirrorBusy.value = true;
@@ -1384,7 +1373,6 @@ export function useFieldCamera({
     return Gesture.Simultaneous(pinch, pan, Gesture.Exclusive(hold, tap));
   }, [
     cameraShared,
-    browseBoundsShared,
     cancelCameraFlight,
     completePull,
     layoutFitShared,

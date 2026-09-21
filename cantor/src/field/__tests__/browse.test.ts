@@ -1,5 +1,5 @@
 import { byTime, bloomedTargetPoint, layoutField } from '..';
-import { containBrowseCamera, inBrowseFrame } from '../browse';
+import { inBrowseFrame } from '../browse';
 import { groupScenario } from '../fixtures/groupScenarios';
 
 const viewport = { width: 393, height: 793 };
@@ -41,22 +41,4 @@ it('adding months or dense weeks never reduces the overview scale', () => {
   expect(makeLayout(Array(24).fill(44)).browseBounds!.maxY).toBeGreaterThan(
     makeLayout(Array(24).fill(24)).browseBounds!.maxY,
   );
-});
-it('bounds overview scrolling vertically and leaves zoomed navigation free', () => {
-  const bounds = { minY: 0, maxY: 500 };
-  expect(containBrowseCamera({ x: 30, y: -100, scale: 1 }, bounds, 1)).toEqual({
-    x: 0,
-    y: 0,
-    scale: 1,
-  });
-  expect(containBrowseCamera({ x: 30, y: 900, scale: 1 }, bounds, 1)).toEqual({
-    x: 0,
-    y: 500,
-    scale: 1,
-  });
-  expect(containBrowseCamera({ x: 30, y: 900, scale: 2 }, bounds, 1)).toEqual({
-    x: 30,
-    y: 900,
-    scale: 2,
-  });
 });

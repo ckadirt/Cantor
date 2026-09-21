@@ -261,7 +261,7 @@ ordinary groups. Date groups start newest first. The scale depends on viewport
 width, never library length. Compact marks use five columns; extra songs add
 rows, and dense groups reserve more vertical space instead of shrinking.
 Rows reserve at least 64 screen pixels between their mark envelopes. At overview
-distance, dragging scrolls vertically between the newest and oldest content;
+distance, dragging moves freely in both axes, even when all groups fit;
 zooming out cannot compress all groups into the viewport. Header/footer veils
 and hit testing keep off-screen marks clear of controls. Job captions appear
 at shelf distance, leaving compact overview marks unobstructed.
