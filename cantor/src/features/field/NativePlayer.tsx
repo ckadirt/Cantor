@@ -573,6 +573,17 @@ export function describeAudio(state: FieldPresentation['localAudio']['state']): 
  * that are the same at both ends simply grow and travel, which is the whole
  * gesture; the letters a row had no room for grow out of the ellipsis that
  * stood in for them.
+ *
+ * Both sides are laid out unwrapped, because both *are* one line: `fitText`
+ * and `recipeLine` have already cut them to the column, `centredOnAxis` seats
+ * them by the width of a single run, and the fallback draws them with one
+ * `Text`. Handing `layoutText` the column instead would let it disagree about
+ * that — it measures by summing per-glyph advances plus a trailing space for
+ * every word, where `fitText` measures the whole string with `measureText`, so
+ * a title cut to sit exactly inside the column can still be a space too wide
+ * here and wrap. It wrapped silently: the line height is 0, so the remainder
+ * came back at the same baseline and at the left edge of the line, drawn over
+ * the name's own first letters. One name, printed twice across itself.
  */
 function buildLineMorph(
   fromText: string,
@@ -581,11 +592,10 @@ function buildLineMorph(
   toFont: SkFont,
   fromOrigin: Readonly<{ x: number; y: number }>,
   toOrigin: Readonly<{ x: number; y: number }>,
-  toColumn: number,
 ): readonly GlyphMorph[] | null {
   if (fromText.length === 0 && toText.length === 0) return null;
   const fromBoxes = layoutText(fromText, fromFont, 0, Infinity, 0);
-  const toBoxes = layoutText(toText, toFont, 0, toColumn, 0);
+  const toBoxes = layoutText(toText, toFont, 0, Infinity, 0);
   const count = Math.max(fromBoxes.length, toBoxes.length);
   if (count === 0) return null;
   const morphs: GlyphMorph[] = [];
@@ -706,7 +716,6 @@ export function nativeSongModel(
       fonts.songTitle,
       rowTitleOriginPx(),
       seats.titleSeat,
-      songTitleColumnPx(viewport.width),
     ),
     metaMorph: buildLineMorph(
       rowMeta,
@@ -715,7 +724,6 @@ export function nativeSongModel(
       fonts.songMeta,
       { x: rowTitleOriginPx().x, y: NAME_LENS_KNOBS.ROW_META_BASELINE_PX },
       seats.metaSeat,
-      songTitleColumnPx(viewport.width),
     ),
   };
 }
