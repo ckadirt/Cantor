@@ -270,7 +270,19 @@ the map centers. Bloom offsets preserve the map pose, and the existing gather
 interpolates into the separate shelf pose without changing glyph ownership.
 
 For device QA, set `FIELD_GROUP_LAB = true` in `cantor/App.tsx` in a debug build.
-`NEXT SCENARIO` cycles 7, 29, 61, and 155 artificial songs in uneven groups;
-`BUSIEST SHELF` checks the dense list pose. Fixtures are memory-only and have no
+`NEXT SCENARIO` cycles a six-month sample (576 songs, 24 weeks, 4–44 songs
+per week) and 7, 29, 61, and 155 artificial songs in uneven groups;
+`BUSIEST SHELF` checks the dense list pose. The lab also switches between
+weeks and months and supports dragging to inspect off-screen groups. Fixtures are memory-only and have no
 backend actions. Restore the flag to false after QA. Regression tests cover
 both date and playlist groupings, map clearance, and cross-group shelf spacing.
+
+The lab uses the same `SafeAreaView` canvas sizing and `useFieldCamera` as
+`FieldScreen`; its controls overlay the canvas instead of reducing its height.
+Use `FIT MAP` after changing a lab scenario. Compare settled views after using production's “Return to the fitted field”:
+startup library hydration can preserve a different camera position. The default
+`crowdedWeek` fixture matches the measured phone's 5/3/2/19 memberships (26 songs
+plus 3 jobs in the actual library). At 392.727 × 792.727 dp, both layouts have
+FIT 0.6371039368 and field center (11.64020708, 84.33340949). The lab substitutes
+synthetic remote songs, so artwork, job captions and availability ink differ;
+this is geometry parity, not a release-build performance comparison.

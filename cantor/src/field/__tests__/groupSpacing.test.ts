@@ -81,3 +81,16 @@ describe.each(Object.entries(GROUP_SCENARIOS))(
     );
   },
 );
+
+it('matches the measured Xiaomi library geometry with production group counts', () => {
+  // Captured from FieldScreen: 26 songs + 3 jobs across four weeks.
+  // Entity kind changes artwork, but not these membership-based seats.
+  const layout = layoutField({
+    entities: groupScenario([5, 3, 2, 19]),
+    arrangement: byTime,
+    viewport: { width: 392.7272644042969, height: 792.727294921875 },
+  });
+  expect(layout.fitScale).toBeCloseTo(0.6371039367882025, 10);
+  expect(layout.fieldCenter.x).toBeCloseTo(11.640207080167443, 10);
+  expect(layout.fieldCenter.y).toBeCloseTo(84.33340948651471, 10);
+});
