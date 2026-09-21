@@ -128,15 +128,6 @@ function firstSeatPoint() {
   );
 }
 
-async function zoomForFreePan() {
-  await ReactTestRenderer.act(async () => {
-    const [pinch] = gestures();
-    pinch.onStart({ focalX: viewport.width / 2, focalY: viewport.height / 2 });
-    pinch.onUpdate({ scale: 1.5 });
-    pinch.onEnd({});
-  });
-}
-
 function camera(): Camera {
   return latest.camera;
 }
@@ -806,9 +797,28 @@ describe('useFieldCamera', () => {
     expect(latest.transitionGeneration).toBe(generation);
   });
 
+  it('allows dragging in both axes at minimum zoom even when all groups fit', async () => {
+    await renderCamera();
+    const [pinch] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pinch.onStart({ focalX: 190, focalY: 400 });
+      pinch.onUpdate({ scale: 0.01 });
+      pinch.onEnd({});
+    });
+    const start = latest.cameraShared.value;
+    const [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 65, translationY: 90 });
+      pan.onEnd({});
+    });
+    expect(latest.cameraShared.value.x).toBeCloseTo(start.x - 65 / start.scale);
+    expect(latest.cameraShared.value.y).toBeCloseTo(start.y - 90 / start.scale);
+    expect(latest.cameraShared.value.scale).toBe(start.scale);
+  });
+
   it('moves the camera every touch frame but only mirrors what React commits', async () => {
     await renderCamera();
-    await zoomForFreePan();
     const [, pan] = gestures();
     const start = latest.camera;
 
@@ -838,7 +848,6 @@ describe('useFieldCamera', () => {
 
   it('reopens the mirror after a gesture that never moved the camera', async () => {
     await renderCamera();
-    await zoomForFreePan();
     const [, pan] = gestures();
     const start = latest.camera;
 

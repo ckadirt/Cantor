@@ -1,4 +1,4 @@
-import type { Camera, Point, Viewport } from './types';
+import type { Point, Viewport } from './types';
 
 /** KNOBS — the map is a browsing window, never a fit of the entire library. */
 export const BROWSE_KNOBS = {
@@ -16,8 +16,6 @@ export const BROWSE_KNOBS = {
   FADE_PX: 12,
 } as const;
 
-export type BrowseBounds = Readonly<{ minY: number; maxY: number }>;
-
 export function browseScale(viewport: Viewport): number {
   return Math.max(
     0.05,
@@ -34,21 +32,6 @@ export function browseOffset(index: number, count: number): Point {
   return {
     x: ((index % columns) - (inRow - 1) / 2) * BROWSE_KNOBS.MARK_PITCH_WORLD,
     y: row * BROWSE_KNOBS.MARK_PITCH_WORLD,
-  };
-}
-
-/** At browsing distance, a drag scrolls vertically within the library. */
-export function containBrowseCamera(
-  camera: Camera,
-  bounds: BrowseBounds | null,
-  fitScale: number,
-): Camera {
-  'worklet';
-  if (bounds === null || camera.scale > fitScale * 1.01) return camera;
-  return {
-    ...camera,
-    x: 0,
-    y: Math.max(bounds.minY, Math.min(bounds.maxY, camera.y)),
   };
 }
 
