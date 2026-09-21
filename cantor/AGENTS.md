@@ -197,8 +197,9 @@ idea.
   it with uniform scaling; never stretch a finished silhouette to an optical
   width or height.
 - Favor larger, elegant forms with clean negative space.
-- Prefer uniform spacing, even rhythm, regularity, and clear spatial order over
-  deliberately uneven or noisy layouts.
+- Keep chrome and gathered song lists orderly. Overview groups use stable,
+  irregular particle clusters: sparse groups have air, dense groups compress
+  with slight internal overlap. Keep separate groups clear of each other.
 - Bundled typefaces are CMU Serif for display and Spectral for body copy. They
   must continue to work with the hot-reload development flow.
 
