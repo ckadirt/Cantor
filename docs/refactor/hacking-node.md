@@ -121,6 +121,45 @@ What the engine library has to hold up, because the node checks it:
   duration must return JSON with a top-level `duration` — `enforce_duration_ceiling`
   refuses an engine that quietly grows the ask before allocating for it.
 
+What the engine *archive* has to hold up, because nothing checks it:
+
+- **Its ggml needs a SONAME no other family answers to.** Every family vendors
+  its own ggml, and they arrive here as `libggml-base.so.0` and `libggml.so.0`
+  unless the build renames them. One node process loads every family it is
+  asked for and unloads none (`loaded_engines`, `engine.rs`), and glibc
+  satisfies a `DT_NEEDED` from the objects already loaded *before* it consults
+  `$ORIGIN`, `RUNPATH`, or anything else. So the first family loaded answers
+  for the rest, and a later one silently runs on a ggml it was never built
+  against. Separate directories do not help; only the name decides. Each
+  family sets `OUTPUT_NAME` on the `ggml` and `ggml-base` targets
+  (`libggml-base-minimax`, `-acestep`, `-levo2`).
+
+  This is not theoretical. ACE-Step builds its ggml with `GGML_MAX_NAME=128`
+  because its DiT has 67-character tensor names. Once MiniMax had loaded in
+  the same process, ACE-Step read GGUFs through MiniMax's ggml, whose limit is
+  the default 64, and every ACE-Step generation failed with
+  `tensor name 803 is too long: 67 >= 64` — a model file that was never wrong.
+  Diverging *versions* are the worse half of the hazard and fail silently:
+  0.17 and 0.19 shipped simultaneously under one name.
+
+- **`RUNPATH` must be `$ORIGIN`, and the SONAME-named file must be in the
+  tarball.** ACE-Step shipped the CI runner's absolute build directory as its
+  `RUNPATH`, and shipped `libggml-base.so` without the `libggml-base.so.0` that
+  its own `DT_NEEDED` asks for. Both faults are invisible while some other
+  family happens to have loaded a compatible ggml first, which is exactly how
+  they survived to production.
+
+- **Packaging globs break when the SONAME changes.** Every family's release
+  workflow copies its core ggml libs by name. Renaming the targets without
+  updating the workflow produces a tarball missing its ggml. Where the build
+  drops backend plugins in the same directory as the core libs (ACE-Step), a
+  bare `libggml*.so` glob is worse than a name: it sweeps `libggml-cuda.so`
+  into a CPU-only archive.
+
+Check a new family with `readelf -d` on the staged tarball before publishing:
+every `libggml*` SONAME should carry the family name, `RUNPATH` should be
+`$ORIGIN`, and every `NEEDED` should name a file that is actually present.
+
 ### Add a delivery format
 
 `delivery/` splits repository, worker, and encoder. `DeliveryEncoder` is a real
@@ -173,6 +212,12 @@ encrypted carrier frames, node authentication, and a `status` round trip.
   a row pointing at nothing. It refuses anything but `failed` and `cancelled`,
   and refuses again if a song row shares the job's id — a completed job owns
   that song's audio under the very directory this would remove.
+- **Two engine families in one process share a ggml.** See "Publish a new
+  model or engine family" — identical `libggml-base.so.0` SONAMEs mean the
+  first family loaded answers every later family's `DT_NEEDED`. Symptoms look
+  like corrupt model files, and depend on which model ran first since the last
+  daemon restart. Until every published archive carries renamed SONAMEs, the
+  workaround is one engine family per daemon lifetime.
 - **The generated transport module allows dead code.** Constants the node does
   not speak still belong there so a future caller reads the same value the app,
   relay, and native module already agree on.
