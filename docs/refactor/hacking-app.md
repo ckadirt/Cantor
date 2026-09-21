@@ -256,13 +256,15 @@ scene across progress updates, including fresh controller projection objects.
 
 ### Group layout stress checks
 
-`layoutField` measures complete map blooms (rank run plus spiral), reserves
-64 screen pixels between row envelopes and 160 screen pixels between columns,
-and retains the 300-world-unit minimum center pitch. A bounded packing pass
-accounts for FIT shrinking while labels retain screen size. At the existing
-minimum FIT of 0.05, very large maps require panning instead of further squeezing
-labels. Bloom shapes remain independent of viewport size; group positions can
-change to reserve screen-space clearance.
+`layoutField` uses a two-column browsing window, with three rows visible for
+ordinary groups. Date groups start newest first. The scale depends on viewport
+width, never library length. Compact marks use five columns; extra songs add
+rows, and dense groups reserve more vertical space instead of shrinking.
+Rows reserve at least 64 screen pixels between their mark envelopes. At overview
+distance, dragging scrolls vertically between the newest and oldest content;
+zooming out cannot compress all groups into the viewport. Header/footer veils
+and hit testing keep off-screen marks clear of controls. Job captions appear
+at shelf distance, leaving compact overview marks unobstructed.
 
 Gathered shelves are packed separately after FIT, using their actual member
 counts and the 92 px shelf row pitch. Their centers may differ vertically from
@@ -283,6 +285,6 @@ Use `FIT MAP` after changing a lab scenario. Compare settled views after using p
 startup library hydration can preserve a different camera position. The default
 `crowdedWeek` fixture matches the measured phone's 5/3/2/19 memberships (26 songs
 plus 3 jobs in the actual library). At 392.727 × 792.727 dp, both layouts have
-FIT 0.6371039368 and field center (11.64020708, 84.33340949). The lab substitutes
+browsing scale approximately 0.7265 and home center (0, 0). The lab substitutes
 synthetic remote songs, so artwork, job captions and availability ink differ;
 this is geometry parity, not a release-build performance comparison.

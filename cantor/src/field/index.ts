@@ -10,3 +10,5 @@ export * from './transition';
 export * from './types';
 export * from './arrangements';
 export * from './shelf';
+
+export * from './browse';

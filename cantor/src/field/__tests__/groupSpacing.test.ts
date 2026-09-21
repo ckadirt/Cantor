@@ -4,7 +4,7 @@ import {
   bloomedTargetPoint,
   layoutField,
   gridColumnCount,
-  LAYOUT_KNOBS,
+  BROWSE_KNOBS,
 } from '..';
 import { GROUP_SCENARIOS, groupScenario } from '../fixtures/groupScenarios';
 
@@ -34,20 +34,18 @@ describe.each(Object.entries(GROUP_SCENARIOS))(
           rows.push({ top: Math.min(...ys), bottom: Math.max(...ys) });
         }
         for (let row = 1; row < rows.length; row++) {
-          expect(rows[row].top - rows[row - 1].bottom).toBeGreaterThanOrEqual(
-            LAYOUT_KNOBS.CLUSTER_CONTENT_GAP_WORLD - 1e-8,
-          );
-        }
-        for (let row = 1; row < rows.length; row++) {
           expect(
             (rows[row].top - rows[row - 1].bottom) * layout.fitScale,
-          ).toBeGreaterThanOrEqual(LAYOUT_KNOBS.CLUSTER_CONTENT_GAP_PX - 0.01);
+          ).toBeGreaterThanOrEqual(BROWSE_KNOBS.GROUP_GAP_PX - 0.01);
         }
         for (let index = 1; index < columns; index++) {
           expect(
             (layout.groups[index].cx - layout.groups[index - 1].cx) *
               layout.fitScale,
-          ).toBeGreaterThanOrEqual(LAYOUT_KNOBS.CLUSTER_COLUMN_PITCH_PX - 0.01);
+          ).toBeGreaterThanOrEqual(
+            (393 - BROWSE_KNOBS.HORIZONTAL_PADDING_PX) / BROWSE_KNOBS.COLUMNS -
+              0.01,
+          );
         }
         // Gathered columns must also be disjoint across groups, not merely
         // have correct spacing within each individual group.
@@ -81,16 +79,3 @@ describe.each(Object.entries(GROUP_SCENARIOS))(
     );
   },
 );
-
-it('matches the measured Xiaomi library geometry with production group counts', () => {
-  // Captured from FieldScreen: 26 songs + 3 jobs across four weeks.
-  // Entity kind changes artwork, but not these membership-based seats.
-  const layout = layoutField({
-    entities: groupScenario([5, 3, 2, 19]),
-    arrangement: byTime,
-    viewport: { width: 392.7272644042969, height: 792.727294921875 },
-  });
-  expect(layout.fitScale).toBeCloseTo(0.6371039367882025, 10);
-  expect(layout.fieldCenter.x).toBeCloseTo(11.640207080167443, 10);
-  expect(layout.fieldCenter.y).toBeCloseTo(84.33340948651471, 10);
-});

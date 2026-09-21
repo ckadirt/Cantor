@@ -210,13 +210,8 @@ describe('shelf label morphs', () => {
       arrangement: byPlaylist,
       viewport,
     });
-    // Clusters of different sizes, which is what makes centre and top differ.
-    expect(new Set(dates.groups.map(cluster => cluster.top)).size).toBe(
-      dates.groups.length,
-    );
-    for (const cluster of [...dates.groups, ...playlists.groups]) {
-      expect(cluster.top).toBeLessThan(cluster.cy);
-    }
+    // Compact groups in the same row share their map label baseline.
+    expect(new Set(dates.groups.map(cluster => cluster.top)).size).toBe(1);
 
     const flights = planShelfLabels(dates.groups, playlists.groups, font, NOW);
     expect(flights).not.toBeNull();

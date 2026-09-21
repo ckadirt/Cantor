@@ -135,7 +135,9 @@ export type FieldLayout = Readonly<{
   groups: readonly Group[];
   placements: readonly Placement[];
   fitScale: number;
+  /** Home of the browsing window, not the center of the entire library. */
   fieldCenter: Point;
+  browseBounds?: Readonly<{ minY: number; maxY: number }>;
   targetBounds: Box | null;
 }>;
 

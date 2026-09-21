@@ -2,6 +2,9 @@ import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import {
   GRAIN_ENABLED,
+  worldToScreen,
+  placementPoint,
+  gatherFraction,
   layoutField,
   screenToWorld,
   type Camera,
@@ -113,6 +116,27 @@ async function renderCamera() {
   return { layout, onHoldPlacement, onOpenComposer, onOpenEngines };
 }
 
+function firstSeatPoint() {
+  const placement = latest.renderedPlacements[0];
+  return worldToScreen(
+    placementPoint(
+      placement,
+      gatherFraction(latest.camera.scale, latest.renderFitScale),
+    ),
+    latest.camera,
+    viewport,
+  );
+}
+
+async function zoomForFreePan() {
+  await ReactTestRenderer.act(async () => {
+    const [pinch] = gestures();
+    pinch.onStart({ focalX: viewport.width / 2, focalY: viewport.height / 2 });
+    pinch.onUpdate({ scale: 1.5 });
+    pinch.onEnd({});
+  });
+}
+
 function camera(): Camera {
   return latest.camera;
 }
@@ -169,13 +193,10 @@ describe('useFieldCamera', () => {
     // Down to L2 the way a person gets there: a tap into the shelf, a tap into
     // the song.
     await ReactTestRenderer.act(async () => {
-      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+      tap.onEnd(firstSeatPoint(), true);
     });
     await ReactTestRenderer.act(async () => {
-      gestures()[2].onEnd(
-        { x: viewport.width / 2, y: viewport.height / 2 },
-        true,
-      );
+      gestures()[2].onEnd(firstSeatPoint(), true);
     });
     expect(latest.level).toBe('song');
     const still = latest.camera;
@@ -206,13 +227,10 @@ describe('useFieldCamera', () => {
     const [, , tap] = gestures();
 
     await ReactTestRenderer.act(async () => {
-      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+      tap.onEnd(firstSeatPoint(), true);
     });
     await ReactTestRenderer.act(async () => {
-      gestures()[2].onEnd(
-        { x: viewport.width / 2, y: viewport.height / 2 },
-        true,
-      );
+      gestures()[2].onEnd(firstSeatPoint(), true);
     });
     expect(latest.level).toBe('song');
     const before = latest.camera;
@@ -434,7 +452,7 @@ describe('useFieldCamera', () => {
 
   it('answers a hold with the mark under it, and stays where it is', async () => {
     const { layout, onHoldPlacement } = await renderCamera();
-    const centre = { x: viewport.width / 2, y: viewport.height / 2 };
+    const centre = firstSeatPoint();
 
     await ReactTestRenderer.act(async () => {
       gestures()[3].onStart(centre);
@@ -464,14 +482,14 @@ describe('useFieldCamera', () => {
     const [, , tap] = gestures();
 
     await ReactTestRenderer.act(async () => {
-      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+      tap.onEnd(firstSeatPoint(), true);
     });
     expect(latest.focus?.key).toBe(placement.key);
     expect(latest.level).toBe('shelf');
 
     const [, , shelfTap] = gestures();
     await ReactTestRenderer.act(async () => {
-      shelfTap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+      shelfTap.onEnd(firstSeatPoint(), true);
     });
     expect(latest.focus?.key).toBe(placement.key);
     expect(latest.level).toBe('song');
@@ -518,7 +536,7 @@ describe('useFieldCamera', () => {
     const [, , tap] = gestures();
 
     await ReactTestRenderer.act(async () => {
-      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+      tap.onEnd(firstSeatPoint(), true);
     });
     // The tap landed, and the shelf knows what it is listing.
     expect(latest.level).toBe('shelf');
@@ -529,7 +547,7 @@ describe('useFieldCamera', () => {
     // One more level, and now there is a player, so now it moves.
     const [, , shelfTap] = gestures();
     await ReactTestRenderer.act(async () => {
-      shelfTap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+      shelfTap.onEnd(firstSeatPoint(), true);
     });
     expect(latest.level).toBe('song');
     expect(latest.playerFocus?.key).toBe(placement.key);
@@ -595,21 +613,29 @@ describe('useFieldCamera', () => {
     mockReducedMotion = false;
     const { layout } = await renderCamera();
     const placement = layout.placements[0];
-    await ReactTestRenderer.act(async () => { latest.descend(placement); });
-    await ReactTestRenderer.act(async () => { latest.descend(placement); });
+    await ReactTestRenderer.act(async () => {
+      latest.descend(placement);
+    });
+    await ReactTestRenderer.act(async () => {
+      latest.descend(placement);
+    });
     expect(latest.playerFocus?.key).toBe(placement.key);
     const reanimated = require('react-native-reanimated');
     let land!: (finished: boolean) => void;
-    jest.spyOn(reanimated, 'withTiming').mockImplementation(
-      (...args: unknown[]) => {
+    jest
+      .spyOn(reanimated, 'withTiming')
+      .mockImplementation((...args: unknown[]) => {
         land = args[2] as (finished: boolean) => void;
         return 0;
-      },
-    );
-    await ReactTestRenderer.act(async () => { latest.ascend(); });
+      });
+    await ReactTestRenderer.act(async () => {
+      latest.ascend();
+    });
     expect(latest.focus).toBeNull();
     expect(latest.playerFocus?.key).toBe(placement.key);
-    await ReactTestRenderer.act(async () => { land(true); });
+    await ReactTestRenderer.act(async () => {
+      land(true);
+    });
     expect(latest.playerFocus).toBeNull();
     expect(latest.level).toBe('shelf');
   });
@@ -621,7 +647,7 @@ describe('useFieldCamera', () => {
     const [, , tap] = gestures();
 
     await ReactTestRenderer.act(async () => {
-      tap.onEnd({ x: viewport.width / 2, y: viewport.height / 2 }, true);
+      tap.onEnd(firstSeatPoint(), true);
     });
     expect(latest.focus?.key).toBe(placement.key);
     expect(latest.level).toBe('shelf');
@@ -782,6 +808,7 @@ describe('useFieldCamera', () => {
 
   it('moves the camera every touch frame but only mirrors what React commits', async () => {
     await renderCamera();
+    await zoomForFreePan();
     const [, pan] = gestures();
     const start = latest.camera;
 
@@ -811,6 +838,7 @@ describe('useFieldCamera', () => {
 
   it('reopens the mirror after a gesture that never moved the camera', async () => {
     await renderCamera();
+    await zoomForFreePan();
     const [, pan] = gestures();
     const start = latest.camera;
 
@@ -1056,9 +1084,9 @@ describe('useFieldCamera', () => {
     await ReactTestRenderer.act(async () => {
       renderer.update(<TransitionProbe field={later} />);
     });
-    expect(
-      latest.recut?.flights.map(flight => flight.entityKey),
-    ).toEqual(['node-a:song-a']);
+    expect(latest.recut?.flights.map(flight => flight.entityKey)).toEqual([
+      'node-a:song-a',
+    ]);
   });
 
   /**
@@ -1160,7 +1188,12 @@ describe('useFieldCamera', () => {
     mockReducedMotion = true;
     const tagged: FieldEntity[] = [
       { ...entities[0], tags: ['p/Drive'] },
-      { ...entities[0], key: 'node-a:song-b', entityId: 'song-b', tags: ['p/Drive'] },
+      {
+        ...entities[0],
+        key: 'node-a:song-b',
+        entityId: 'song-b',
+        tags: ['p/Drive'],
+      },
     ];
     const dated = layoutField({
       entities: tagged,

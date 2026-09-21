@@ -40,6 +40,7 @@ import {
   REPRESENTATION_WINDOWS,
   SHELF_BOX,
   bandAlphaAt,
+  BROWSE_KNOBS,
   faceArrival,
   gatherFraction,
   isNativeDrawnDistance,
@@ -234,9 +235,7 @@ const ROW_ARRIVAL_KNOBS = {
  *  so this is a scale rather than a second path: 9 / 7.5. */
 const FACE_GROWTH =
   NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX / NAME_LENS_KNOBS.MARK_RADIUS_PX;
-const MARK_RING_RADIUS_PX = nameLensRingRadius(
-  NAME_LENS_KNOBS.MARK_RADIUS_PX,
-);
+const MARK_RING_RADIUS_PX = nameLensRingRadius(NAME_LENS_KNOBS.MARK_RADIUS_PX);
 const ROW_RING_RADIUS_PX = nameLensRingRadius(
   NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
 );
@@ -424,56 +423,49 @@ const ShelfVeil = React.memo(function ShelfVeilImpl({
   fitScaleShared,
   viewport,
   colour,
+  map = false,
 }: {
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
   viewport: Viewport;
   colour: string;
+  map?: boolean;
 }) {
+  const box = map ? BROWSE_KNOBS : SHELF_BOX;
   const opacity = useDerivedValue(
     () =>
       bandAlphaAt(
         cameraShared.value.scale,
         fitScaleShared.value,
-        REPRESENTATION_WINDOWS.row,
+        map ? REPRESENTATION_WINDOWS.dot : REPRESENTATION_WINDOWS.row,
       ),
-    [cameraShared, fitScaleShared],
+    [cameraShared, fitScaleShared, map],
   );
   // The far end of each gradient is the paper with nothing left of it. Built
   // from the palette's own colour rather than written as a literal: a gradient
   // that runs to `transparent` runs through grey on the way in a light theme
   // and through nothing at all in a dark one.
   const clear = useMemo(() => clearPaper(colour), [colour]);
-  const topFade = SHELF_BOX.TOP_PX + SHELF_BOX.FADE_PX;
-  const foot = viewport.height - SHELF_BOX.FOOT_PX;
-  const footFade = foot - SHELF_BOX.FADE_PX;
+  const topFade = box.TOP_PX + box.FADE_PX;
+  const foot = viewport.height - box.FOOT_PX;
+  const footFade = foot - box.FADE_PX;
   return (
     <SkiaGroup opacity={opacity}>
       <Rect
         color={colour}
-        height={SHELF_BOX.TOP_PX}
+        height={box.TOP_PX}
         width={viewport.width}
         x={0}
         y={0}
       />
-      <Rect
-        height={SHELF_BOX.FADE_PX}
-        width={viewport.width}
-        x={0}
-        y={SHELF_BOX.TOP_PX}
-      >
+      <Rect height={box.FADE_PX} width={viewport.width} x={0} y={box.TOP_PX}>
         <LinearGradient
           colors={[colour, clear]}
           end={vec(0, topFade)}
-          start={vec(0, SHELF_BOX.TOP_PX)}
+          start={vec(0, box.TOP_PX)}
         />
       </Rect>
-      <Rect
-        height={SHELF_BOX.FADE_PX}
-        width={viewport.width}
-        x={0}
-        y={footFade}
-      >
+      <Rect height={box.FADE_PX} width={viewport.width} x={0} y={footFade}>
         <LinearGradient
           colors={[clear, colour]}
           end={vec(0, foot)}
@@ -482,7 +474,7 @@ const ShelfVeil = React.memo(function ShelfVeilImpl({
       </Rect>
       <Rect
         color={colour}
-        height={SHELF_BOX.FOOT_PX}
+        height={box.FOOT_PX}
         width={viewport.width}
         x={0}
         y={foot}
@@ -826,16 +818,28 @@ function FieldCanvasImpl({
    * The box the shelf is read inside, held by identity like everything else on
    * this canvas that outlives a camera frame.
    */
+  const browsing = layout.browseBounds !== undefined;
   const veil = useMemo(
     () => (
-      <ShelfVeil
-        cameraShared={cameraShared}
-        colour={palette.bg}
-        fitScaleShared={fitScaleShared}
-        viewport={viewport}
-      />
+      <>
+        {browsing ? (
+          <ShelfVeil
+            map
+            cameraShared={cameraShared}
+            colour={palette.bg}
+            fitScaleShared={fitScaleShared}
+            viewport={viewport}
+          />
+        ) : null}
+        <ShelfVeil
+          cameraShared={cameraShared}
+          colour={palette.bg}
+          fitScaleShared={fitScaleShared}
+          viewport={viewport}
+        />
+      </>
     ),
-    [cameraShared, fitScaleShared, palette.bg, viewport],
+    [cameraShared, fitScaleShared, palette.bg, viewport, browsing],
   );
 
   /**
@@ -1381,9 +1385,7 @@ function NativePlayhead({
     () => [
       { translateX: viewport.width / 2 },
       {
-        translateY:
-          viewport.height / 2 -
-          playerRisePx(viewport.height, 1),
+        translateY: viewport.height / 2 - playerRisePx(viewport.height, 1),
       },
     ],
     [viewport.height, viewport.width],
@@ -1628,8 +1630,8 @@ function useNativeCameraMotion(
   const arrived = useDerivedValue(() =>
     bandAlphaAt(scale.value, fit.value, REPRESENTATION_WINDOWS.song),
   );
-  const playerLineInk = useDerivedValue(() =>
-    1 - lineOwnedByPlayer(nameArrived.value),
+  const playerLineInk = useDerivedValue(
+    () => 1 - lineOwnedByPlayer(nameArrived.value),
   );
   const rowOnly = useDerivedValue(() => 1 - arrived.value);
   const walked = useDerivedValue(() => faceArrival(scale.value, fit.value));
@@ -1651,8 +1653,7 @@ function useNativeCameraMotion(
    * two renderers are one now and a cut is a thing you can see.
    */
   const fieldFade = useDerivedValue(
-    () =>
-      1 - bandAlphaAt(scale.value, fit.value, REPRESENTATION_WINDOWS.grain),
+    () => 1 - bandAlphaAt(scale.value, fit.value, REPRESENTATION_WINDOWS.grain),
   );
   /**
    * Where the player hangs: on the face, not on the mark.
@@ -1674,8 +1675,18 @@ function useNativeCameraMotion(
     return [{ translateX: pose.x }, { translateY: pose.y }];
   });
   return {
-    zero, one, becomingRow, shapeArrived, nameArrived, arrived,
-    playerLineInk, rowOnly, walked, written, playerAnchor, fieldFade,
+    zero,
+    one,
+    becomingRow,
+    shapeArrived,
+    nameArrived,
+    arrived,
+    playerLineInk,
+    rowOnly,
+    walked,
+    written,
+    playerAnchor,
+    fieldFade,
   };
 }
 
@@ -1797,13 +1808,17 @@ export function faceFlightsOf(
     const song = presentation.song;
     const availability = availabilityOf(presentation.localAudio.state);
     result.push({
-      wedges: waveWedges(facePoints({
-        seed: song.seed,
-        id: presentation.entity.entityId,
-        model: song.model,
-        durationMs: song.duration_ms,
-      })),
-      levels: Array.from((analyses?.get(flight.entityKey) ?? neutralAnalysis()).rms),
+      wedges: waveWedges(
+        facePoints({
+          seed: song.seed,
+          id: presentation.entity.entityId,
+          model: song.model,
+          durationMs: song.duration_ms,
+        }),
+      ),
+      levels: Array.from(
+        (analyses?.get(flight.entityKey) ?? neutralAnalysis()).rms,
+      ),
       markPath: nameLensFacePath(
         {
           seed: song.seed,
@@ -1963,7 +1978,8 @@ export function drawFieldFaces(
       canvas.drawPath(face.markPath, paints.fill);
     }
     paints.stroke.setAlphaf(
-      opacity * (1 - mix) *
+      opacity *
+        (1 - mix) *
         (face.weight +
           (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived),
     );
@@ -1976,21 +1992,35 @@ export function drawFieldFaces(
     canvas.restore();
     if (mix > 0 && face.wedges !== undefined) {
       const knobs = WAVE_GEOMETRY_KNOBS;
-      const rowWidth = knobs.MARK_WIDTH_PX +
+      const rowWidth =
+        knobs.MARK_WIDTH_PX +
         (knobs.ROW_WIDTH_PX - knobs.MARK_WIDTH_PX) * walked;
-      const rowHeight = knobs.MARK_HEIGHT_PX +
+      const rowHeight =
+        knobs.MARK_HEIGHT_PX +
         (knobs.ROW_HEIGHT_PX - knobs.MARK_HEIGHT_PX) * walked;
-      const width = rowWidth + (viewport.width * knobs.SONG_WIDTH_RATIO - rowWidth) * shapeArrived;
-      const height = rowHeight + (viewport.height * knobs.SONG_HEIGHT_RATIO - rowHeight) * shapeArrived;
+      const width =
+        rowWidth +
+        (viewport.width * knobs.SONG_WIDTH_RATIO - rowWidth) * shapeArrived;
+      const height =
+        rowHeight +
+        (viewport.height * knobs.SONG_HEIGHT_RATIO - rowHeight) * shapeArrived;
       canvas.save();
       canvas.translate(x + pose.x, y + pose.y);
-      const fillAlpha = reducedMotion || !face.filled
-        ? mix
-        : (1 - shapeArrived) * (1 - mix) + mix;
+      const fillAlpha =
+        reducedMotion || !face.filled
+          ? mix
+          : (1 - shapeArrived) * (1 - mix) + mix;
       paints.fill.setAlphaf(opacity * face.weight * fillAlpha);
-      drawWaveMorph(canvas, paints.fill, face.wedges, face.levels ?? [],
-        NAME_LENS_KNOBS.MARK_RADIUS_PX * pose.scale, width, height,
-        reducedMotion ? 1 : mix);
+      drawWaveMorph(
+        canvas,
+        paints.fill,
+        face.wedges,
+        face.levels ?? [],
+        NAME_LENS_KNOBS.MARK_RADIUS_PX * pose.scale,
+        width,
+        height,
+        reducedMotion ? 1 : mix,
+      );
       canvas.restore();
     }
 
@@ -2149,10 +2179,8 @@ export function drawSongDetail(
   const bloom = 1 - gatherFraction(cameraScale, fitted);
   const seatX = model.fromX + (model.targetX - model.fromX) * p;
   const seatY = model.fromY + (model.targetY - model.fromY) * p;
-  const bloomX =
-    model.fromBloomX + (model.targetBloomX - model.fromBloomX) * p;
-  const bloomY =
-    model.fromBloomY + (model.targetBloomY - model.fromBloomY) * p;
+  const bloomX = model.fromBloomX + (model.targetBloomX - model.fromBloomX) * p;
+  const bloomY = model.fromBloomY + (model.targetBloomY - model.fromBloomY) * p;
   const pose = facePoseAt(
     faceArrival(cameraScale, fitted),
     songShapeArrival(cameraScale, fitted),
@@ -2195,7 +2223,10 @@ export function drawSongDetail(
   const shownSpan =
     grain === null
       ? GRAIN_KNOBS.ENTRY_SECONDS
-      : Math.max(GRAIN_KNOBS.MIN_SECONDS, grain.endSeconds - grain.startSeconds);
+      : Math.max(
+          GRAIN_KNOBS.MIN_SECONDS,
+          grain.endSeconds - grain.startSeconds,
+        );
   const span =
     duration <= 0
       ? shownSpan
@@ -2274,7 +2305,8 @@ export function drawSongDetail(
   // The detail arrives *as* the axis opens: it is a dense sliver at the
   // playhead while the ring is still a ring, and there is no room for it there.
   const detail = resolved * unrolled;
-  const coarse = (1 - detail) * (1 - smootherstep(lensProgress) * (1 - unrolled));
+  const coarse =
+    (1 - detail) * (1 - smootherstep(lensProgress) * (1 - unrolled));
   if (coarse > 0) {
     paints.stroke.setAlphaf(knobs.SONG_WAVE_ALPHA * coarse * opacity);
     paints.stroke.setStrokeWidth(knobs.SONG_WAVE_WIDTH_PX);
@@ -2406,9 +2438,10 @@ function NativeSongDetail({
   // when settled, and preserve the ink while the camera carries it out.
   const phase = useDerivedValue(() => {
     const fitted = nativeFitScale(clock.value, recut, fitScaleShared);
-    const ratio = fitted > 0
-      ? nativeCameraScale(clock.value, recut, cameraShared) / fitted
-      : 0;
+    const ratio =
+      fitted > 0
+        ? nativeCameraScale(clock.value, recut, cameraShared) / fitted
+        : 0;
     return songDetailPhase(ratio);
   });
   const drawn = useSharedValue(0);
@@ -2528,14 +2561,21 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     });
   }, [clock, recut]);
   // Worklets need camera endpoints, not the entire layout and flight family.
-  const nativeRecut = useMemo<NativeRecut>(() => ({
-    fromCamera: recut.fromCamera,
-    toCamera: recut.toCamera,
-    fromFitScale: recut.fromFitScale,
-    toFitScale: recut.toFitScale,
-  }), [recut]);
+  const nativeRecut = useMemo<NativeRecut>(
+    () => ({
+      fromCamera: recut.fromCamera,
+      toCamera: recut.toCamera,
+      fromFitScale: recut.fromFitScale,
+      toFitScale: recut.toFitScale,
+    }),
+    [recut],
+  );
   const motion = useNativeCameraMotion(
-    clock, nativeRecut, cameraShared, fitScaleShared, viewport,
+    clock,
+    nativeRecut,
+    cameraShared,
+    fitScaleShared,
+    viewport,
   );
   /*
    * The whole field's faces, as one node and one mapper. See `drawFieldFaces`.
@@ -2548,7 +2588,14 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    */
   const facePaints = useMemo(() => createFacePaints(palette), [palette]);
   const faceFlights = useMemo(
-    () => faceFlightsOf(recut.flights, presentations, focusKey, playingKey, analyses),
+    () =>
+      faceFlightsOf(
+        recut.flights,
+        presentations,
+        focusKey,
+        playingKey,
+        analyses,
+      ),
     [recut, presentations, focusKey, playingKey, analyses],
   );
   const facePicture = useDerivedValue(() =>
@@ -2655,9 +2702,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
                     viewport,
                     row.title,
                     row.meta,
-                    row.action === null
-                      ? 0
-                      : textWidth(row.action, monoFont),
+                    row.action === null ? 0 : textWidth(row.action, monoFont),
                     {
                       rowTitle: displayFont,
                       songTitle: songTitleFont,
@@ -3035,11 +3080,7 @@ function NativePlacementFlight({
       */}
       {row.titleTrace === null ? null : (
         <SkiaGroup opacity={traceOpacity}>
-          <TracedTitle
-            paths={row.titleTrace}
-            written={written}
-            color={color}
-          />
+          <TracedTitle paths={row.titleTrace} written={written} color={color} />
         </SkiaGroup>
       )}
       <Text
@@ -3522,24 +3563,25 @@ function drawJobMark(
     canvas.save();
     canvas.translate(point.x, point.y);
     canvas.drawPath(
-      stageGlyphPath(model.symbol as SymbolName, FIELD_CANVAS_KNOBS.JOB_GLYPH_PX),
+      stageGlyphPath(
+        model.symbol as SymbolName,
+        FIELD_CANVAS_KNOBS.JOB_GLYPH_PX,
+      ),
       paint,
     );
     canvas.restore();
   }
 
-  // What is happening, under the mark, where the shelf label would be for a
-  // cluster: a job is the one mark that says its own state out loud, at every
-  // distance. Gated on the dot alpha alone it went silent exactly when the
-  // rows arrived — a ring with nothing to say.
-  if (visible > 0.01) {
+  // Compact map clusters show the job ring/symbol. State words arrive
+  // with the shelf, where each entity owns a full row.
+  if (alpha.row > 0.01) {
     const label = jobStateLabel(pending.job);
     const counted =
       model.progress.kind === 'determinate'
         ? ` ${model.progress.completed}/${model.progress.total}`
         : '';
     const line = `${label}${counted}`;
-    request.paints.muted.setAlphaf(visible * quiet);
+    request.paints.muted.setAlphaf(alpha.row * quiet);
     canvas.drawText(
       line,
       point.x - request.fonts.mono.measureText(line).width / 2,

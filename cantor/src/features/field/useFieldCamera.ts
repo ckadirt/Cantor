@@ -13,6 +13,9 @@ import {
 import { easeSmoother } from '../../motion';
 import { CURTAIN_KNOBS, releaseTarget, unrollMs } from '../curtain';
 import {
+  containBrowseCamera,
+  inBrowseFrame,
+  type BrowseBounds,
   GRAIN_ENABLED,
   GRAIN_KNOBS,
   LAYOUT_KNOBS,
@@ -70,7 +73,7 @@ export const FIELD_CAMERA_KNOBS = {
   EDGE_PULL_HORIZONTAL_TOLERANCE_PX: 50,
   /** How long the camera takes to fall back into a seat it was pulled out of. */
   SEAT_SETTLE_MS: 340,
-  MIN_SCALE_RATIO: 0.5,
+  MIN_SCALE_RATIO: 1,
   /**
    * The camera's ceiling. It bounds a *camera*, not a pinch — see
    * `PINCH_CEILING_RATIO`.
@@ -330,6 +333,10 @@ export function useFieldCamera({
   const flightProgress = useRef(flightProgressCandidate).current;
 
   layoutRef.current = layout;
+  const browseBoundsShared = useSharedValue<BrowseBounds | null>(null);
+  useEffect(() => {
+    browseBoundsShared.value = layout?.browseBounds ?? null;
+  }, [browseBoundsShared, layout]);
   const seats = useMemo(
     () => (layout === null ? [] : shelfSeats(layout)),
     [layout],
@@ -367,7 +374,8 @@ export function useFieldCamera({
         return;
       }
       cameraRef.current = next;
-      const fit = lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
+      const fit =
+        lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
       if (
         focusKeyRef.current === null &&
         next.scale <= fit * LEVEL_SCALE_RATIOS.shelf
@@ -409,7 +417,8 @@ export function useFieldCamera({
       setFocusKey(next);
       // Logical focus leaves immediately; the outgoing drawing keeps its
       // owner until the camera has returned it to the row pose.
-      const fit = lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
+      const fit =
+        lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
       if (next !== null && drawsPlayer) setPlayerKey(next);
       else if (cameraShared.value.scale <= fit * LEVEL_SCALE_RATIOS.shelf) {
         setPlayerKey(null);
@@ -962,6 +971,12 @@ export function useFieldCamera({
       const size = viewport;
       if (field === null || size === null) return null;
       const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
+      if (
+        field.browseBounds &&
+        levelOf(cameraRef.current.scale, hitFitScale) === 'field' &&
+        !inBrowseFrame(point, size)
+      )
+        return null;
       return hitTestPlacement(
         renderedPlacements,
         cameraRef.current,
@@ -989,6 +1004,12 @@ export function useFieldCamera({
       if (field === null || size === null) return;
       const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
       const hitLevel = levelOf(cameraRef.current.scale, hitFitScale);
+      if (
+        field.browseBounds &&
+        hitLevel === 'field' &&
+        !inBrowseFrame(point, size)
+      )
+        return;
       // The action column is answered before the row it sits in, so `GET` on a
       // song you are not opening does not also open it.
       const actionRow = hitTestRowAction(
@@ -1071,8 +1092,13 @@ export function useFieldCamera({
    */
   const gesture = useMemo(() => {
     const knobs = FIELD_CAMERA_KNOBS;
-    const publish = (next: Camera) => {
+    const publish = (candidate: Camera) => {
       'worklet';
+      const next = containBrowseCamera(
+        candidate,
+        browseBoundsShared.value,
+        layoutFitShared.value,
+      );
       cameraShared.value = next;
       if (mirrorBusy.value) return;
       mirrorBusy.value = true;
@@ -1197,15 +1223,13 @@ export function useFieldCamera({
         const pulling =
           start.pull !== null
             ? start.pull
-            : edgeReady &&
-                horizontal < knobs.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
-              ? start.y < knobs.EDGE_PULL_ZONE_PX && vertical > 0
-                ? 'compose'
-                : start.y > size.height - knobs.EDGE_PULL_ZONE_PX &&
-                    vertical < 0
-                  ? 'engines'
-                  : null
-              : null;
+            : edgeReady && horizontal < knobs.EDGE_PULL_HORIZONTAL_TOLERANCE_PX
+            ? start.y < knobs.EDGE_PULL_ZONE_PX && vertical > 0
+              ? 'compose'
+              : start.y > size.height - knobs.EDGE_PULL_ZONE_PX && vertical < 0
+              ? 'engines'
+              : null
+            : null;
         if (pulling !== null) {
           const pullSign = pulling === 'compose' ? 1 : -1;
           const seatPx = Math.max(0, size.height - CURTAIN_KNOBS.PEEK_PX);
@@ -1360,6 +1384,7 @@ export function useFieldCamera({
     return Gesture.Simultaneous(pinch, pan, Gesture.Exclusive(hold, tap));
   }, [
     cameraShared,
+    browseBoundsShared,
     cancelCameraFlight,
     completePull,
     layoutFitShared,
@@ -1425,6 +1450,8 @@ function stillDrawn(placement: Placement): boolean {
 function layoutsDiffer(left: FieldLayout, right: FieldLayout): boolean {
   if (left === right) return false;
   if (
+    left.browseBounds?.minY !== right.browseBounds?.minY ||
+    left.browseBounds?.maxY !== right.browseBounds?.maxY ||
     left.fitScale !== right.fitScale ||
     left.fieldCenter.x !== right.fieldCenter.x ||
     left.fieldCenter.y !== right.fieldCenter.y ||
