@@ -1,3 +1,4 @@
+import * as nativeRows from '../nativeRows';
 /**
  * The L0 → L1 handover: the picture appears where the camera already is.
  *
@@ -29,6 +30,13 @@ import type { FieldPresentation } from '../useFieldController';
 import type { FieldRecutModel } from '../useFieldCamera';
 
 /** Every shared value the canvas built, in creation order. */
+const drawRows = jest.spyOn(nativeRows, 'drawNativeRows');
+
+function rowText() {
+  const rows = drawRows.mock.calls.slice(-1)[0]?.[1] ?? [];
+  return rows.flatMap(({ row }) => [row.title, row.meta, row.action]);
+}
+
 const sharedValues: Array<{ value: unknown }> = [];
 
 jest.mock('react-native-reanimated', () => {
@@ -213,6 +221,7 @@ describe('field canvas L0 to L1 handover', () => {
 
   beforeEach(() => {
     sharedValues.length = 0;
+    drawRows.mockClear();
   });
 
   /**
@@ -282,16 +291,16 @@ describe('field canvas L0 to L1 handover', () => {
     for (const ratio of [3, 1, 30, 3, 30]) {
       await ReactTestRenderer.act(async () => renderer.update(render(removed, data, ratio)));
       expect(recordedPictures(renderer)).toHaveLength(0);
-      // Its nodes survive the data removal; only their UI-thread exit opacity
+      // Its batched recipe survives data removal; only UI-thread exit opacity
       // hides them. The surviving song retains the native detail drawing too.
-      expect(renderer.root.findAllByType(Text).map(node => node.props.text)).toContain('Song song-b');
+      expect(rowText()).toContain('Song song-b');
     }
     const settled = { ...removed, generation: 3,
       flights: planPlacementFlights(remaining.placements, remaining.placements, 3),
       fromGroups: remaining.groups, animate: false };
     await ReactTestRenderer.act(async () => renderer.update(render(settled, data, 3)));
     expect(recordedPictures(renderer)).toHaveLength(0);
-    expect(renderer.root.findAllByType(Text).map(node => node.props.text)).not.toContain('Song song-b');
+    expect(rowText()).not.toContain('Song song-b');
     await ReactTestRenderer.act(async () => renderer.unmount());
   });
 
@@ -337,11 +346,9 @@ describe('field canvas L0 to L1 handover', () => {
       );
     });
     expect(recordedPictures(renderer)).toHaveLength(0);
-    // The row's own text, as Skia nodes the UI thread can move and fade —
-    // never baked into a recording that a scale would stretch.
-    const drawn = renderer.root
-      .findAllByType(Text)
-      .map(node => node.props.text as string);
+    // The row's text recipe reaches the UI-thread batch, which redraws
+    // at screen-sized font metrics rather than scaling a baked picture.
+    const drawn = rowText();
     // The title, the availability line and the action word: the three strings
     // `nameLens` draws for a row, from the same two functions it calls.
     expect(drawn).toContain('Song song-a');
@@ -479,7 +486,7 @@ describe('field canvas L0 to L1 handover', () => {
         .filter(node => node.props.strokeCap === 'round'),
     ).toHaveLength(0);
     expect(
-      renderer.root.findAllByType(Text).map(node => node.props.text as string),
+      rowText(),
     ).toContain('Song song-a');
   });
 

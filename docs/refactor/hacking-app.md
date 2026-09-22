@@ -290,3 +290,17 @@ plus 3 jobs in the actual library). At 392.727 × 792.727 dp, both layouts have
 browsing scale approximately 0.7265 and home center (0, 0). The lab substitutes
 synthetic remote songs, so artwork, job captions and availability ink differ;
 this is geometry parity, not a release-build performance comparison.
+
+### Regrouping startup cost
+
+The native field batches ordinary song rows and group labels into one UI-thread
+picture (`nativeRows.ts`, `nativeLabels.ts`). Regrouping must not mount a text
+mapper tree per song: that delayed the start of the re-cut clock even at L0,
+where every row title is invisible. The focused player keeps its own morph
+owner; the batch excludes that placement. Title tracing, label crossfade windows,
+flight ownership and the 850 ms re-cut remain unchanged. Cull off-screen row
+text before tracing it, and return immediately when the row has not arrived.
+
+The transparent job canvas includes the same live map/shelf veils as the song
+canvas. A veil below that canvas cannot protect the header from failed jobs.
+Keep the job scene memoized so camera mirrors do not recreate its children.

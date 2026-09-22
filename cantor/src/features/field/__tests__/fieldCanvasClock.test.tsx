@@ -360,6 +360,10 @@ describe('field canvas re-cut clock', () => {
     expect(canvases).toHaveLength(2);
     const songScene = canvases[0].props.children;
     const jobScene = canvases[1].props.children;
+    // Jobs paint above the song canvas, so they must carry the same live
+    // header/footer protection rather than relying on the layer underneath.
+    expect(jobScene.props.children[1]).toBe(songScene.props.children[1]);
+    expect(jobScene.props.children[1].props.children[0].props.map).toBe(true);
     await ReactTestRenderer.act(async () => {
       renderer.update(render(2));
     });

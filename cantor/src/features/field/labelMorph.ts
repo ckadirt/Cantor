@@ -45,7 +45,7 @@ import {
 import { shelfLabel } from './shelfLabels';
 
 /** KNOBS — how a label changes into another label. */
-const LABEL_MORPH_KNOBS = {
+export const LABEL_MORPH_KNOBS = {
   /**
    * `transform`, not `matching`: a shelf label is one short phrase naming one
    * thing, and when that thing stops being a week and starts being a month the
