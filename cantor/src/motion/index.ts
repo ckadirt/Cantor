@@ -24,6 +24,7 @@ export {
   type SymbolPrimitive,
 } from './symbolLibrary';
 export { useMorphFont } from './fonts';
+export { type Ink } from './MorphText';
 export {
   MorphShape,
   type MorphShapeProps,

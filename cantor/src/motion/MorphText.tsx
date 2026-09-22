@@ -357,7 +357,7 @@ function MorphGlyph({
   m: MorphModel;
   tt: SharedValue<number>;
   font: SkFont;
-  color: string;
+  color: Ink;
   dip: SharedValue<number>;
 }) {
   const amount = useDerivedValue(() => smootherstep(m.a, m.b, tt.value));
@@ -393,7 +393,7 @@ function TransformLayer({
   model: TransformLayerModel;
   tt: SharedValue<number> | DerivedValue<number>;
   font: SkFont;
-  color: string;
+  color: Ink;
 }) {
   const amount = useDerivedValue(() => smootherstep(0, 1, tt.value));
   const path = useSeededPathInterpolation(amount, model.fromPath, model.toPath);
@@ -443,7 +443,7 @@ function WriteGlyph({
 }: {
   model: WriteModel;
   tt: SharedValue<number> | DerivedValue<number>;
-  color: string;
+  color: Ink;
 }) {
   const borderEnd = useDerivedValue(() =>
     writePhase(writeSubAlpha(tt.value, model.index, model.count)).borderEnd,
@@ -475,7 +475,7 @@ function WriteFallbackGlyph({
   count: number;
   tt: SharedValue<number> | DerivedValue<number>;
   font: SkFont;
-  color: string;
+  color: Ink;
 }) {
   const opacity = useDerivedValue(() =>
     smootherstep(0, 1, writeSubAlpha(tt.value, index, count)),
@@ -512,7 +512,7 @@ function WriteScene({
   model: Model;
   tt: SharedValue<number>;
   font: SkFont;
-  color: string;
+  color: Ink;
 }) {
   /**
    * The same clock, backwards, for the erase.
@@ -611,7 +611,7 @@ function TransitionGlyphs({
   model: Model;
   tt: SharedValue<number>;
   font: SkFont;
-  color: string;
+  color: Ink;
 }) {
   const matching = model.kind === 'matching';
   const movers = model.flights.movers;
@@ -702,10 +702,21 @@ function TransitionGlyphs({
   );
 }
 
+/**
+ * Ink that may be a value or a clock.
+ *
+ * Every Skia prop is `T | { value: T }` (`AnimatedProp`), so a colour driven by
+ * a shared value costs nothing to pass through and never crosses to the JS
+ * thread. It exists because a control's ink is a *state* — live, or out of
+ * reach — and a state that changes instantly is the thing this engine was
+ * built to stop doing. Plain strings still work everywhere they did.
+ */
+export type Ink = string | SharedValue<string>;
+
 export type MorphTextProps = {
   text: string;
   charStyle: TextStyle;
-  color: string;
+  color: Ink;
   /** Morph/crossfade duration. Write uses Manim's automatic duration by default. */
   duration?: number;
   writeDuration?: number;
@@ -901,7 +912,7 @@ export type MorphTextSequenceItem = {
 export type MorphTextSequenceProps = {
   items: readonly MorphTextSequenceItem[];
   charStyle: TextStyle;
-  color: string;
+  color: Ink;
   progress: SharedValue<number> | DerivedValue<number>;
   /** All initial texts write together inside this normalized clock window. */
   writeWindow?: readonly [number, number];
@@ -989,7 +1000,7 @@ function SequenceTransform({
   model: SequenceItemModel;
   progress: SharedValue<number> | DerivedValue<number>;
   font: SkFont;
-  color: string;
+  color: Ink;
 }) {
   const tt = useDerivedValue(() =>
     Math.min(
