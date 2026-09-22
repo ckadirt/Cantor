@@ -60,6 +60,22 @@ export const LEDGER_KNOBS = {
 export const LEDGER_VALUE_PX = LEDGER_KNOBS.LABEL_PX + LEDGER_KNOBS.GUTTER_PX;
 
 /**
+ * The quiet mono line under a value, as a plain style object.
+ *
+ * Hoisted out of the stylesheet because a note that *morphs* rather than being
+ * replaced has to hand its exact metrics to the motion engine, and the engine
+ * reads `fontFamily` and `fontSize` off the object it is given — a registered
+ * style would arrive as an id. One definition either way: `styles.note` spreads
+ * this, so a note drawn as glyphs and a note drawn as text cannot drift.
+ */
+export const LEDGER_NOTE_STYLE = {
+  fontFamily: font.mono,
+  fontSize: LEDGER_KNOBS.LABEL_SIZE_PX,
+  letterSpacing: 1.2,
+  lineHeight: 16,
+} as const;
+
+/**
  * The spine, and everything hanging from it.
  *
  * One hairline at a fixed measure with every label ending against it and every
@@ -211,13 +227,7 @@ const styles = StyleSheet.create({
     width: LEDGER_KNOBS.LABEL_PX,
   },
   value: { flex: 1, minWidth: 0 },
-  note: {
-    fontFamily: font.mono,
-    fontSize: LEDGER_KNOBS.LABEL_SIZE_PX,
-    letterSpacing: 1.2,
-    lineHeight: 16,
-    marginTop: 3,
-  },
+  note: { ...LEDGER_NOTE_STYLE, marginTop: 3 },
   gap: { height: LEDGER_KNOBS.GAP_PX },
   foot: {
     borderTopWidth: 1,

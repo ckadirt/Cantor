@@ -19,6 +19,7 @@ import {
   type ViewStyle,
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
+import type { SongPatch } from '../../../../protocol/SongPatch';
 import type { LocalAudioState } from '../../audio/native';
 import { formatBytes } from '../../lenses';
 import { nameLensFacePath } from '../../lenses/nameLens';
@@ -37,11 +38,20 @@ import {
   Ledger,
   LedgerFoot,
   LedgerGap,
+  LEDGER_NOTE_STYLE,
   LEDGER_VALUE_PX,
   Row,
 } from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
-import { plainTagsOf, playlistsOf } from '../../playlists/playlists';
+import {
+  plainTagsOf,
+  playlistsOf,
+  tagsAreFull,
+  toggle,
+  toggleTag,
+} from '../../playlists/playlists';
+import { pendingLookup, pendingNames } from './songWish';
+import { useSongWish } from './useSongWish';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — the sheet's two pages, and the mark that identifies it. */
@@ -115,6 +125,27 @@ export const SONG_SHEET_KNOBS = {
    */
   ACT_SLOT_PX: 28,
   NOTE_SLOT_PX: 16,
+  /**
+   * How long one state's reading takes to become the next one's.
+   *
+   * Shorter than the foot's `ACT_MS`, because this is a fact reporting itself
+   * rather than the act you came to perform, and longer than the header's
+   * `PAGE_NAME_MS`, because the line is `type.body` at 15 px carrying a whole
+   * sentence rather than an 11 px word. Both readings share it: the state and
+   * the weight under it turn over on one event and must not finish apart.
+   */
+  STATE_MS: 360,
+  /**
+   * The seats those two readings take.
+   *
+   * A morphing line is drawn on a canvas that fills its container, so both
+   * slots are reserved rather than measured — the same rule the foot's act
+   * follows. `STATE_SLOT_PX` is `type.body`'s own 22 px line; the note under
+   * it takes the 16 px every ledger note takes, plus the 3 px it is already
+   * offset by.
+   */
+  STATE_SLOT_PX: 22,
+  STATE_NOTE_SLOT_PX: 16,
 } as const;
 
 type Props = {
@@ -132,18 +163,34 @@ type Props = {
    * lives on a page you may not be looking at.
    */
   problem: string | null;
+  /**
+   * An act that is not a patch and is still running: a deletion, or one of the
+   * audio acts on a slow enough file to be worth saying so about.
+   *
+   * Patching a song no longer takes the sheet away from you. Every change that
+   * goes through `onPatch` is folded into one serialized queue and drawn the
+   * instant it is asked for — see `useSongWish`. This flag is for the acts that
+   * have no such layer because they are not undoable by animating backwards.
+   */
   busy: boolean;
   onClose: () => void;
-  onRename: (title: string) => void;
-  onToggleFavourite: () => void;
+  /**
+   * Send one patch, and reject if the node refuses it.
+   *
+   * The sheet computes every patch itself — a rename, a star, a membership —
+   * because it is the only thing that knows what it is currently *drawing*,
+   * which since it draws unconfirmed asks is not always what the node holds. A
+   * caller that folded a tag into the node's own tag list would drop whichever
+   * tag was still in flight.
+   *
+   * It must reject on refusal. A swallowed error leaves the sheet drawing a
+   * change that never happened.
+   */
+  onPatch: (patch: SongPatch) => Promise<void>;
   /** Every playlist that exists anywhere, so the peel has a vocabulary. */
   knownPlaylists: readonly string[];
   /** Every plain tag used anywhere, for the same reason. */
   knownTags: readonly string[];
-  onTogglePlaylist: (name: string, member: boolean) => void;
-  onToggleTag: (name: string, member: boolean) => void;
-  /** True when the song is at the node's tag bound and may hold no more. */
-  full: boolean;
   /** Why a typed name cannot be used, checked before a patch is sent. */
   playlistProblem: (name: string) => string | null;
   tagProblem: (name: string) => string | null;
@@ -191,7 +238,7 @@ type Props = {
  */
 function SongSheetImpl({
   visible,
-  song,
+  song: known,
   nodeLabel,
   audioState,
   detail,
@@ -199,13 +246,9 @@ function SongSheetImpl({
   problem,
   busy,
   onClose,
-  onRename,
-  onToggleFavourite,
+  onPatch,
   knownPlaylists,
   knownTags,
-  onTogglePlaylist,
-  onToggleTag,
-  full,
   playlistProblem,
   tagProblem,
   scopeLabel,
@@ -218,7 +261,13 @@ function SongSheetImpl({
   onDelete,
 }: Props) {
   const pal = usePalette();
-  const [title, setTitle] = useState(song.title);
+  /**
+   * What the sheet draws: the node's song with every unanswered ask folded
+   * over it. `known` is still the truth, and is what a patch is computed
+   * against when the queue is empty; `song` is the drawing.
+   */
+  const { song, wish, ask } = useSongWish(known, onPatch);
+  const [title, setTitle] = useState(known.title);
   const [page, setPage] = useState(0);
   const [confirming, setConfirming] = useState(false);
   const [width, setWidth] = useState(0);
@@ -249,10 +298,11 @@ function SongSheetImpl({
   }, [arrival, reducedMotion, song.id, visible]);
 
   // Adopt the node's title whenever a different song is shown, or the node
-  // renames this one under us.
+  // renames this one under us. Read from truth rather than from the drawing:
+  // a title this sheet has only asked for is already in the field below.
   useEffect(() => {
-    setTitle(song.title);
-  }, [song.id, song.title]);
+    setTitle(known.title);
+  }, [known.id, known.title]);
 
   // A sheet that opens on a different song must never open on the back page
   // already asking to destroy it.
@@ -272,6 +322,48 @@ function SongSheetImpl({
   const wordEntries = useMemo(
     () => merge(words, knownTags),
     [words, knownTags],
+  );
+  /**
+   * The bound is checked against what the sheet is drawing, not against what
+   * the node last said. Sixteen tags asked for is sixteen tags, and a
+   * seventeenth offered on the strength of an unconfirmed removal would be
+   * refused on arrival — which is the exact round trip `playlists.ts` exists
+   * to prevent.
+   */
+  const full = useMemo(() => tagsAreFull(song.tags), [song.tags]);
+  /**
+   * Which names are still asks rather than facts, per namespace: `Focus` the
+   * playlist and `focus` the tag are different memberships that read alike.
+   */
+  const placePending = useMemo(
+    () => pendingLookup(pendingNames(known, wish, 'playlist')),
+    [known, wish],
+  );
+  const wordPending = useMemo(
+    () => pendingLookup(pendingNames(known, wish, 'tag')),
+    [known, wish],
+  );
+
+  const onTogglePlaylist = useCallback(
+    (name: string, member: boolean) => {
+      ask({ tags: [...toggle(song.tags, name, member)] });
+    },
+    [ask, song.tags],
+  );
+  const onToggleTag = useCallback(
+    (name: string, member: boolean) => {
+      ask({ tags: [...toggleTag(song.tags, name, member)] });
+    },
+    [ask, song.tags],
+  );
+  const onToggleFavourite = useCallback(() => {
+    ask({ favorite: !song.favorite });
+  }, [ask, song.favorite]);
+  const onRename = useCallback(
+    (next: string) => {
+      ask({ title: next });
+    },
+    [ask],
   );
 
   const onPagerEnd = useCallback(
@@ -356,6 +448,7 @@ function SongSheetImpl({
             onToggleTag={onToggleTag}
             onUnpin={onUnpin}
             placeEntries={placeEntries}
+            placePending={placePending}
             placementCount={placementCount}
             playlistProblem={playlistProblem}
             scopeLabel={scopeLabel}
@@ -363,6 +456,7 @@ function SongSheetImpl({
             title={title}
             usedTags={song.tags.length}
             wordEntries={wordEntries}
+            wordPending={wordPending}
           />
         </View>
         <View style={{ width }}>
@@ -572,6 +666,7 @@ function Front({
   onToggleTag,
   onUnpin,
   placeEntries,
+  placePending,
   placementCount,
   playlistProblem,
   problem,
@@ -580,6 +675,7 @@ function Front({
   title,
   usedTags,
   wordEntries,
+  wordPending,
 }: {
   arrival: SharedValue<number>;
   audioState: LocalAudioState;
@@ -596,6 +692,7 @@ function Front({
   onToggleTag: (name: string, member: boolean) => void;
   onUnpin: () => void;
   placeEntries: readonly MembershipEntry[];
+  placePending: (name: string) => boolean;
   placementCount: number;
   playlistProblem: (name: string) => string | null;
   problem: string | null;
@@ -604,6 +701,7 @@ function Front({
   title: string;
   usedTags: number;
   wordEntries: readonly MembershipEntry[];
+  wordPending: (name: string) => boolean;
 }) {
   const pal = usePalette();
   const pinned = audioState === 'pinned';
@@ -652,6 +750,7 @@ function Front({
                 full={full}
                 note={budget(usedTags)}
                 onToggle={onTogglePlaylist}
+                pendingOf={placePending}
                 problemOf={playlistProblem}
               />
             </Row>
@@ -666,19 +765,55 @@ function Front({
                 full={full}
                 note={budget(usedTags)}
                 onToggle={onToggleTag}
+                pendingOf={wordPending}
                 problemOf={tagProblem}
               />
             </Row>
           </Arriving>
           <LedgerGap />
           <Arriving arrival={arrival} index={3}>
-            <Row
-              label="Offline"
-              note={weight(deliveryBytes, downloaded, nodeLabel)}
-            >
-              <Text style={[type.body, { color: pal.ink }]}>
-                {whereItIs(audioState, nodeLabel)}
-              </Text>
+            <Row label="Offline">
+              {/*
+                Where the audio is is one state with several readings, so the
+                sentence is not replaced when it changes — it becomes the next
+                one. `Cached on this phone` and `Downloaded on this phone` are
+                the same fact seen either side of keeping it, and swapping one
+                for the other made the act you had just performed look like a
+                different row arriving in place of the old one.
+
+                Both lines morph, because the weight underneath turns over on
+                exactly the same event: `3.1 MB TO FETCH` becoming `3.1 MB
+                HERE` is the other half of the same sentence, and one of them
+                cutting while the other travels is the two-clocks-on-one-gesture
+                fault this engine exists to prevent.
+
+                Glyphs drawn on a canvas are not text, so the pair is given one
+                label and read as one line — which is what it is.
+              */}
+              <View
+                accessible
+                accessibilityLabel={`${whereItIs(audioState, nodeLabel)}. ${weight(
+                  deliveryBytes,
+                  downloaded,
+                  nodeLabel,
+                )}`}
+                accessibilityRole="text"
+              >
+                <TransformText
+                  charStyle={type.body}
+                  color={pal.ink}
+                  duration={SONG_SHEET_KNOBS.STATE_MS}
+                  style={styles.stateSlot}
+                  text={whereItIs(audioState, nodeLabel)}
+                />
+                <TransformText
+                  charStyle={LEDGER_NOTE_STYLE}
+                  color={pal.faint}
+                  duration={SONG_SHEET_KNOBS.STATE_MS}
+                  style={styles.stateNoteSlot}
+                  text={weight(deliveryBytes, downloaded, nodeLabel)}
+                />
+              </View>
             </Row>
           </Arriving>
           {downloaded ? (
@@ -1142,6 +1277,8 @@ const styles = StyleSheet.create({
   act: { justifyContent: 'center', minHeight: touch.min },
   /** A morphing word needs a slot that does not resize under it. */
   actSlot: { height: SONG_SHEET_KNOBS.ACT_SLOT_PX },
+  stateSlot: { height: SONG_SHEET_KNOBS.STATE_SLOT_PX },
+  stateNoteSlot: { height: SONG_SHEET_KNOBS.STATE_NOTE_SLOT_PX, marginTop: 3 },
   footNoteSlot: {
     height: SONG_SHEET_KNOBS.NOTE_SLOT_PX,
     marginTop: space.xs,

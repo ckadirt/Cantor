@@ -76,11 +76,9 @@ import {
   playlistNameProblem,
   playlistsOf,
   tagNameProblem,
-  tagsAreFull,
-  toggle,
-  toggleTag,
 } from '../playlists';
 import type { SongDetail, SongHeader } from '../core/protocol';
+import type { SongPatch } from '../../../protocol/SongPatch';
 import type { AppIdentity } from '../identity/derive';
 import {
   AnalysisCache,
@@ -182,6 +180,15 @@ export function FieldScreen({ identity }: Props) {
    * it meant a toggle could fail on a page you were not looking at.
    */
   const [songProblem, setSongProblem] = useState<string | null>(null);
+  /**
+   * An act on the sheet's song that is not a patch: an audio act, or ending it.
+   *
+   * Patching no longer belongs here. A `song.patch` is guarded by
+   * `expected_revision`, so two of them in flight on one song is a real fault —
+   * but the cure is a queue, not a frozen sheet, and `useSongWish` owns that
+   * queue. What is left is the work that cannot be drawn ahead of its answer:
+   * native storage, and a deletion that has no backwards.
+   */
   const [songBusy, setSongBusy] = useState(false);
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
@@ -884,18 +891,35 @@ export function FieldScreen({ identity }: Props) {
     }
   }, []);
 
-  const patchSheetSong = useCallback(
-    (patch: Parameters<typeof commands.patchSong>[2]) => {
+  /**
+   * Send one patch the sheet has already drawn, and say if the node refuses it.
+   *
+   * Deliberately *not* through `runSongCommand`: this act does not take the
+   * sheet away while it runs, because the sheet is showing the change already.
+   * The error is reported here, where the sheet's problem line reads from, and
+   * then re-thrown — `useSongWish` needs the rejection to animate the mark back
+   * to what the node actually holds. Swallowing it would leave a tick drawn
+   * under a tag the node never accepted.
+   *
+   * One patch at a time is the caller's guarantee, and it is what keeps
+   * `sheetSong.song.revision` fresh enough to be worth sending.
+   */
+  const commitSheetPatch = useCallback(
+    async (patch: SongPatch) => {
       if (sheetSong === null) return;
-      void runSongCommand(() =>
-        commands.patchSong(
+      setSongProblem(null);
+      try {
+        await commands.patchSong(
           sheetSong.entity.nodePublicKey,
           sheetSong.song,
           patch,
-        ),
-      );
+        );
+      } catch (error) {
+        setSongProblem(error instanceof Error ? error.message : String(error));
+        throw error;
+      }
     },
-    [commands, runSongCommand, sheetSong],
+    [commands, sheetSong],
   );
 
   const runAudioAction = useCallback(
@@ -1581,7 +1605,6 @@ export function FieldScreen({ identity }: Props) {
             detailError={songDetailError}
             problem={songProblem}
             deliveryBytes={sheetSong.delivery?.byte_length ?? null}
-            full={tagsAreFull(sheetSong.song.tags)}
             knownPlaylists={knownPlaylists}
             knownTags={knownTags}
             masterBytes={masterBytesOf(sheetSong.song)}
@@ -1626,23 +1649,10 @@ export function FieldScreen({ identity }: Props) {
                 setSheetOpen(false);
               })
             }
+            onPatch={commitSheetPatch}
             onPin={() => runAudioAction('pin')}
             onRemoveDownload={() => runAudioAction('remove')}
             onUnpin={() => runAudioAction('unpin')}
-            onRename={title => patchSheetSong({ title })}
-            onToggleFavourite={() =>
-              patchSheetSong({ favorite: !sheetSong.song.favorite })
-            }
-            onTogglePlaylist={(name, member) =>
-              patchSheetSong({
-                tags: [...toggle(sheetSong.song.tags, name, member)],
-              })
-            }
-            onToggleTag={(name, member) =>
-              patchSheetSong({
-                tags: [...toggleTag(sheetSong.song.tags, name, member)],
-              })
-            }
             placementCount={sheetScope.placements}
             playlistProblem={playlistNameProblem}
             scopeLabel={sheetScope.label}
