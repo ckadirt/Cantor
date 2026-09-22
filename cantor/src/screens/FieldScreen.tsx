@@ -40,7 +40,11 @@ import {
 } from '../features/field/FieldCanvas';
 import type { FieldPresentation } from '../features/field/useFieldController';
 import { LensPicker } from '../features/song/LensPicker';
-import { SongSheet, SONG_SHEET_KNOBS } from '../features/song/SongSheet';
+import {
+  SongSheet,
+  SONG_SHEET_KNOBS,
+  type SongAct,
+} from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
   PLAYER_TRANSPORT_KNOBS,
@@ -181,15 +185,20 @@ export function FieldScreen({ identity }: Props) {
    */
   const [songProblem, setSongProblem] = useState<string | null>(null);
   /**
-   * An act on the sheet's song that is not a patch: an audio act, or ending it.
+   * The act on the sheet's song that is running, if one is: an audio act, or
+   * ending it.
    *
-   * Patching no longer belongs here. A `song.patch` is guarded by
-   * `expected_revision`, so two of them in flight on one song is a real fault —
-   * but the cure is a queue, not a frozen sheet, and `useSongWish` owns that
-   * queue. What is left is the work that cannot be drawn ahead of its answer:
-   * native storage, and a deletion that has no backwards.
+   * A name rather than a flag, because the sheet draws the two sides of it
+   * differently: the act that is running *works* — it keeps its ink and grows
+   * a rule — and every other act is merely out of reach. A boolean could only
+   * say "something", which is how the button you pressed used to go grey along
+   * with everything it had locked out.
+   *
+   * Patching does not belong here. A `song.patch` is guarded by
+   * `expected_revision`, so two in flight on one song is a real fault — but the
+   * cure is a queue, not a frozen sheet, and `useSongWish` owns that queue.
    */
-  const [songBusy, setSongBusy] = useState(false);
+  const [songAct, setSongAct] = useState<SongAct | null>(null);
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
   /**
@@ -879,17 +888,20 @@ export function FieldScreen({ identity }: Props) {
    * error rather than failing silently and leaving the sheet showing a state
    * the node never accepted.
    */
-  const runSongCommand = useCallback(async (work: () => Promise<void>) => {
-    setSongBusy(true);
-    setSongProblem(null);
-    try {
-      await work();
-    } catch (error) {
-      setSongProblem(error instanceof Error ? error.message : String(error));
-    } finally {
-      setSongBusy(false);
-    }
-  }, []);
+  const runSongCommand = useCallback(
+    async (act: SongAct, work: () => Promise<void>) => {
+      setSongAct(act);
+      setSongProblem(null);
+      try {
+        await work();
+      } catch (error) {
+        setSongProblem(error instanceof Error ? error.message : String(error));
+      } finally {
+        setSongAct(null);
+      }
+    },
+    [],
+  );
 
   /**
    * Send one patch the sheet has already drawn, and say if the node refuses it.
@@ -930,7 +942,7 @@ export function FieldScreen({ identity }: Props) {
       const isCurrent =
         track?.nodeKey === sheetSong.entity.nodePublicKey &&
         track?.songId === sheetSong.entity.entityId;
-      void runSongCommand(async () => {
+      void runSongCommand(action, async () => {
         // Never delete a file the player still holds open: drop the reference
         // first, then remove. Native storage stays authoritative either way.
         if (action === 'remove' && isCurrent) await transport.close();
@@ -1600,7 +1612,7 @@ export function FieldScreen({ identity }: Props) {
         >
           <SongSheet
             audioState={sheetSong.localAudio.state}
-            busy={songBusy}
+            acting={songAct}
             detail={songDetail}
             detailError={songDetailError}
             problem={songProblem}
@@ -1611,7 +1623,7 @@ export function FieldScreen({ identity }: Props) {
             nodeLabel={sheetSong.nodeLabels[0] ?? sheetSong.backend.petname}
             onClose={closeSongSheet}
             onDelete={() =>
-              void runSongCommand(async () => {
+              void runSongCommand('delete', async () => {
                 const track = transport.snapshot.track;
                 if (
                   track?.nodeKey === sheetSong.entity.nodePublicKey &&

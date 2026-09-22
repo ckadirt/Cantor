@@ -8,25 +8,21 @@ import {
   type LayoutChangeEvent,
 } from 'react-native';
 import Animated, {
-  cancelAnimation,
-  Easing,
   interpolateColor,
   useAnimatedStyle,
-  useDerivedValue,
   useReducedMotion,
   useSharedValue,
-  withRepeat,
   withTiming,
-  type SharedValue,
 } from 'react-native-reanimated';
-import {
-  Canvas,
-  Path,
-  Skia,
-  type SkSize,
-} from '@shopify/react-native-skia';
 import { easeSmoother } from '../../motion';
-import { Caret, REVEAL_KNOBS } from '../controls';
+import {
+  Caret,
+  REVEAL_KNOBS,
+  STATE_KNOBS,
+  WorkingRule,
+  useReach,
+  useRuleInk,
+} from '../controls';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — how a membership is drawn, and how it changes. */
@@ -57,58 +53,16 @@ export const MEMBERSHIP_KNOBS = {
    */
   PEEL_MS: REVEAL_KNOBS.MS,
 
-  /* ---- The hairline while the node has not answered yet ---- */
-
   /**
-   * The mark's weight, and where it sits under the word.
+   * Where the membership mark sits under its word.
    *
-   * `TICK_BOX_PX` is the seat the mark is drawn in rather than the mark
-   * itself: a travelling wave needs room above and below the line it settles
-   * into, and a canvas has to be given a size. The line still lands exactly
-   * `TICK_BOTTOM_PX` above the word's baseline box, because the box is centred
-   * on where the plain hairline used to be.
+   * The box is the seat the rule is drawn in, not the rule: a rule that waves
+   * needs room above and below the line it settles into, and a canvas has to
+   * be given a size. It is centred on where the plain hairline used to be, so
+   * a settled mark still lands `TICK_BOTTOM_PX` above the word's baseline box.
+   * How it waves is `STATE_KNOBS` — the same rule every working control draws.
    */
-  TICK_W_PX: StyleSheet.hairlineWidth,
   TICK_BOTTOM_PX: 3,
-  TICK_BOX_PX: 6,
-  /**
-   * How far the hairline leaves straight while a membership is unconfirmed.
-   *
-   * Past about 3 px it stops being a mark under a word and becomes a novelty;
-   * under about 1 the travel cannot be read at hairline weight.
-   */
-  WAVE_AMP_PX: 1.3,
-  /**
-   * One wavelength, along the word — and the knob that decides whether any of
-   * this reads as craft or as a defect.
-   *
-   * It was 8 px first, which is about eleven cycles under a two-word tag, and
-   * on the phone that is not a wave: it is the squiggle every text field in
-   * the world draws under a misspelling, so a tag being *saved* read as a tag
-   * being *rejected*. The exact opposite of the sentence. At 18 the same name
-   * carries four or five slow undulations, the travel is legible between
-   * frames, and it reads as a line that is alive rather than a line that is
-   * complaining. Amplitude barely mattered by comparison.
-   */
-  WAVE_PERIOD_PX: 18,
-  /** How long one wavelength takes to travel its own length, left to right. */
-  WAVE_TRAVEL_MS: 900,
-  /**
-   * How long the wave takes to rise out of the line, and to relax back into it.
-   *
-   * Shorter than `TICK_MS` on purpose: the mark's job is to say *this one*, and
-   * the wave is a second sentence said over the top of that one. It must never
-   * be the thing that finishes last.
-   *
-   * There is no threshold constant here and there does not need to be one. The
-   * engine's rule is that a new target takes over from wherever the old one
-   * got to, so an answer that comes back in 60 ms simply means the amplitude
-   * never left 0.2 and the eye sees a ripple; an answer that takes two seconds
-   * means it arrived and travelled. The gesture scales itself to the wait.
-   */
-  WAVE_MS: 180,
-  /** Points along the line. Enough that a wavelength is not a triangle. */
-  WAVE_SAMPLES: 48,
 } as const;
 
 export type MembershipEntry = Readonly<{ name: string; member: boolean }>;
@@ -463,10 +417,18 @@ function Name({
           easing: easeSmoother,
         });
   }, [amount, member, reducedMotion]);
+  // Held is ink and unheld is faint; out of reach, held settles to faint too.
+  // One colour, two clocks folded into it, so a name cannot be caught in a
+  // grey that neither of them meant.
+  const reach = useReach(busy);
   const inked = useAnimatedStyle(() => ({
-    color: interpolateColor(amount.value, [0, 1], [pal.faint, pal.ink]),
+    color: interpolateColor(
+      amount.value,
+      [0, 1],
+      [pal.faint, reach.colour.value],
+    ),
   }));
-  const drawing = useInk(member || pending);
+  const drawing = useRuleInk(member || pending);
   return (
     <Pressable
       accessibilityLabel={member ? `Remove from ${name}` : `Add to ${name}`}
@@ -478,131 +440,15 @@ function Name({
       <View style={styles.word}>
         <Animated.Text style={[type.body, inked]}>{name}</Animated.Text>
         {drawing ? (
-          <Tick amount={amount} colour={pal.ink} pending={pending} />
+          <WorkingRule
+            amount={amount}
+            colour={pal.ink}
+            style={styles.tickBox}
+            working={pending}
+          />
         ) : null}
       </View>
     </Pressable>
-  );
-}
-
-/**
- * Whether the mark has anything to draw, held open until it provably does not.
- *
- * The tick is a Skia canvas and every open name would otherwise own one, so it
- * is mounted only while there is ink in it — a library of thirty tags is
- * thirty surfaces, and the song can hold sixteen at the very most.
- *
- * The delay is what keeps that from being a Flicker Law violation. Unmounting
- * on the commit that clears the ink would cut an erase off mid-stroke, so the
- * seat stays for as long as the longest thing in it can still be running. This
- * is a timeout rather than an animation callback on purpose: rule 4 forbids a
- * *completion callback* mutating the tree, because a callback fires at the
- * moment ownership would change hands. Nothing changes hands here — by the
- * time this fires the canvas is empty and nothing replaces it.
- */
-function useInk(inked: boolean): boolean {
-  const [drawing, setDrawing] = useState(inked);
-  useEffect(() => {
-    if (inked) {
-      setDrawing(true);
-      return;
-    }
-    const timer = setTimeout(
-      () => setDrawing(false),
-      MEMBERSHIP_KNOBS.TICK_MS + MEMBERSHIP_KNOBS.WAVE_MS,
-    );
-    return () => clearTimeout(timer);
-  }, [inked]);
-  return drawing;
-}
-
-/**
- * The membership mark: a line that draws on from the left, and waves while the
- * node has not answered.
- *
- * Three values, one path. `amount` is how much of the line exists — the same
- * clock that darkens the word. `wave` is how far it leaves straight, and it
- * has no threshold in front of it: a fast answer retargets it to 0 from
- * wherever it got to, which is a ripple, and a slow one lets it arrive. Both
- * are the same code. `phase` is the travel, and it only runs while there is
- * amplitude for it to move.
- *
- * The path is built per frame rather than interpolated between two prepared
- * ones, which is the one place this departs from the motion engine's house
- * style. It buys the travel: a translating wave is not a point-wise morph
- * between two fixed outlines, and forty-eight points of arithmetic on the UI
- * thread is cheaper than the machinery that would avoid it. Verb identity is
- * not at risk because there is only ever one path here, never a pair.
- */
-function Tick({
-  amount,
-  colour,
-  pending,
-}: {
-  amount: SharedValue<number>;
-  colour: string;
-  pending: boolean;
-}) {
-  const reducedMotion = useReducedMotion();
-  const size = useSharedValue<SkSize>({ width: 0, height: 0 });
-  const wave = useSharedValue(0);
-  const phase = useSharedValue(0);
-
-  useEffect(() => {
-    // Reduced motion gets the mark and not the second sentence: a line that
-    // never stops moving is exactly what the preference is asking us not to do.
-    const to = pending && !reducedMotion ? 1 : 0;
-    wave.value = withTiming(to, {
-      duration: MEMBERSHIP_KNOBS.WAVE_MS,
-      easing: easeSmoother,
-    });
-    if (to === 0) {
-      // Let it flatten from wherever the travel had reached; a cancelled phase
-      // holds its value, so the relax is the amplitude leaving and nothing else.
-      cancelAnimation(phase);
-      return;
-    }
-    phase.value = 0;
-    phase.value = withRepeat(
-      withTiming(1, {
-        duration: MEMBERSHIP_KNOBS.WAVE_TRAVEL_MS,
-        easing: Easing.linear,
-      }),
-      -1,
-      false,
-    );
-    return () => cancelAnimation(phase);
-  }, [pending, phase, reducedMotion, wave]);
-
-  const path = useDerivedValue(() => {
-    'worklet';
-    const width = size.value.width * amount.value;
-    const middle = size.value.height / 2;
-    const builder = Skia.PathBuilder.Make();
-    if (width <= 0) return builder.build();
-    const amp = wave.value * MEMBERSHIP_KNOBS.WAVE_AMP_PX;
-    const turn = 2 * Math.PI;
-    const shift = phase.value * turn;
-    const steps = MEMBERSHIP_KNOBS.WAVE_SAMPLES;
-    for (let i = 0; i <= steps; i++) {
-      const x = (width * i) / steps;
-      const y =
-        middle + amp * Math.sin(turn * (x / MEMBERSHIP_KNOBS.WAVE_PERIOD_PX) - shift);
-      if (i === 0) builder.moveTo(x, y);
-      else builder.lineTo(x, y);
-    }
-    return builder.build();
-  });
-
-  return (
-    <Canvas onSize={size} style={styles.tickBox}>
-      <Path
-        color={colour}
-        path={path}
-        strokeWidth={MEMBERSHIP_KNOBS.TICK_W_PX}
-        style="stroke"
-      />
-    </Canvas>
   );
 }
 
@@ -654,11 +500,11 @@ const styles = StyleSheet.create({
    *
    * A canvas reports no size of its own, so the box is measured here and the
    * line is drawn down its middle — which puts it back at `TICK_BOTTOM_PX`
-   * above the word, with `WAVE_AMP_PX` of room either side of it to move in.
+   * above the word, with `STATE_KNOBS.AMP_PX` of room either side to move in.
    */
   tickBox: {
-    bottom: MEMBERSHIP_KNOBS.TICK_BOTTOM_PX - MEMBERSHIP_KNOBS.TICK_BOX_PX / 2,
-    height: MEMBERSHIP_KNOBS.TICK_BOX_PX,
+    bottom: MEMBERSHIP_KNOBS.TICK_BOTTOM_PX - STATE_KNOBS.RULE_BOX_PX / 2,
+    height: STATE_KNOBS.RULE_BOX_PX,
     left: 0,
     position: 'absolute',
     right: 0,

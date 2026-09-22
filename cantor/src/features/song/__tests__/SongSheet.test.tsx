@@ -58,7 +58,7 @@ function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
     detail: detail(),
     detailError: null,
     problem: null,
-    busy: false,
+    acting: null,
     onClose: jest.fn(),
     onPatch: jest.fn(async () => {}),
     knownPlaylists: ['Dog walk', 'Birthday', 'Focus'],
@@ -248,6 +248,51 @@ describe('SongSheet', () => {
   it('says a refused act where the acts are, not on the other page', () => {
     const { words } = render({ problem: 'Backend is not ready.' });
     expect(words()).toContain('BACKEND IS NOT READY.');
+  });
+
+  it('lets the act you pressed work while the rest go out of reach', () => {
+    const { tree } = render({ acting: 'pin' });
+    // The outermost control carrying the label: a working act has no press
+    // handler to find it by, which is the point.
+    const act = (label: string) =>
+      tree.root.findAll(
+        node =>
+          typeof node.type !== 'string' &&
+          node.props.accessibilityRole === 'button' &&
+          node.props.accessibilityLabel === label,
+      )[0];
+    // The pressed act is busy, not disabled: it keeps its ink and says it is
+    // working. It cannot be pressed twice, but it is the one thing that is
+    // doing something, and going grey would say the opposite.
+    const keep = act('Keep it here');
+    expect(keep.props.accessibilityState).toEqual({
+      disabled: false,
+      busy: true,
+    });
+    expect(keep.props.onPress).toBeUndefined();
+    // Its neighbour is simply out of reach.
+    const remove = act('Remove from this phone');
+    expect(remove.props.accessibilityState).toEqual({
+      disabled: true,
+      busy: false,
+    });
+  });
+
+  it('never marks one act as both working and out of reach', () => {
+    for (const acting of ['pin', 'unpin', 'remove', 'delete', null] as const) {
+      const { tree } = render({ acting, audioState: 'cached' });
+      const states = tree.root
+        .findAll(
+          node =>
+            typeof node.type !== 'string' &&
+            node.props.accessibilityRole === 'button' &&
+            node.props.accessibilityState?.busy !== undefined,
+        )
+        .map(node => node.props.accessibilityState);
+      for (const state of states) {
+        expect(state.disabled && state.busy).toBe(false);
+      }
+    }
   });
 
   it('stays honest while the node has not answered', () => {

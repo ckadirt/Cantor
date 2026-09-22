@@ -12,4 +12,10 @@ export {
   LEDGER_STATED,
 } from './Ledger';
 export { PanelPressable } from './PanelPressable';
+export {
+  STATE_KNOBS,
+  WorkingRule,
+  useReach,
+  useRuleInk,
+} from './state';
 export { Reveal, REVEAL_KNOBS } from './Reveal';

@@ -16,6 +16,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type StyleProp,
+  type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
@@ -41,6 +42,10 @@ import {
   LEDGER_NOTE_STYLE,
   LEDGER_VALUE_PX,
   Row,
+  STATE_KNOBS,
+  WorkingRule,
+  useReach,
+  useRuleInk,
 } from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
 import {
@@ -146,7 +151,29 @@ export const SONG_SHEET_KNOBS = {
    */
   STATE_SLOT_PX: 22,
   STATE_NOTE_SLOT_PX: 16,
+  /**
+   * How far below a working label its rule is drawn.
+   *
+   * The rule is measured off the label's own text box, whose bottom is the
+   * line's leading rather than the ink; this is the gap from there. The
+   * membership mark sits 3 px *inside* its word's box because it is part of
+   * the word. A working rule is not — it is said about the word — so it
+   * stands a little clear of it.
+   */
+  UNDERWAY_GAP_PX: 2,
 } as const;
+
+/** Between the offline state and its weight: every ledger note's own offset. */
+const STATE_NOTE_GAP_PX = 3;
+
+/**
+ * The acts on a song that are not patches, by name.
+ *
+ * The sheet needs the name, not a flag: the act that is running keeps its ink
+ * and grows a rule, and every other act goes out of reach. See
+ * `controls/state.tsx` for why those two must never land on one control.
+ */
+export type SongAct = 'pin' | 'unpin' | 'remove' | 'delete';
 
 type Props = {
   visible: boolean;
@@ -164,15 +191,19 @@ type Props = {
    */
   problem: string | null;
   /**
-   * An act that is not a patch and is still running: a deletion, or one of the
-   * audio acts on a slow enough file to be worth saying so about.
+   * The act that is running, if one is: an audio act, or ending the song.
    *
-   * Patching a song no longer takes the sheet away from you. Every change that
-   * goes through `onPatch` is folded into one serialized queue and drawn the
-   * instant it is asked for — see `useSongWish`. This flag is for the acts that
-   * have no such layer because they are not undoable by animating backwards.
+   * The act named here *works* — it keeps its ink and grows a rule under it —
+   * and everything else on the sheet goes out of reach until it finishes. Its
+   * result then lands as a morph: `Keep it here` becomes `Unpin`, and the
+   * offline line becomes its next reading.
+   *
+   * Patching is not one of these. Every change that goes through `onPatch` is
+   * folded into one serialized queue and drawn the instant it is asked for —
+   * see `useSongWish`. These are the acts with no such layer, because they are
+   * not undone by animating backwards.
    */
-  busy: boolean;
+  acting: SongAct | null;
   onClose: () => void;
   /**
    * Send one patch, and reject if the node refuses it.
@@ -244,7 +275,7 @@ function SongSheetImpl({
   detail,
   detailError,
   problem,
-  busy,
+  acting,
   onClose,
   onPatch,
   knownPlaylists,
@@ -313,6 +344,8 @@ function SongSheetImpl({
   }, [song.id, visible]);
 
   const downloaded = audioState === 'cached' || audioState === 'pinned';
+  /** Everything but the running act is out of reach while one runs. */
+  const locked = acting !== null;
   const mine = useMemo(() => playlistsOf(song.tags), [song.tags]);
   const words = useMemo(() => plainTagsOf(song.tags), [song.tags]);
   const placeEntries = useMemo(
@@ -386,7 +419,7 @@ function SongSheetImpl({
           }
           accessibilityRole="button"
           accessibilityState={{ selected: song.favorite }}
-          disabled={busy}
+          disabled={locked}
           hitSlop={space.sm}
           onPress={onToggleFavourite}
           style={styles.seat}
@@ -430,8 +463,8 @@ function SongSheetImpl({
         <View style={{ width }}>
           <Front
             arrival={arrival}
+            acting={acting}
             audioState={audioState}
-            busy={busy}
             problem={problem}
             downloaded={downloaded}
             deliveryBytes={deliveryBytes}
@@ -461,7 +494,7 @@ function SongSheetImpl({
         </View>
         <View style={{ width }}>
           <Back
-            busy={busy}
+            acting={acting}
             confirming={confirming}
             detail={detail}
             detailError={detailError}
@@ -651,9 +684,9 @@ function Face({
 
 /** What you do with a song. */
 function Front({
+  acting,
   arrival,
   audioState,
-  busy,
   downloaded,
   deliveryBytes,
   full,
@@ -677,9 +710,9 @@ function Front({
   wordEntries,
   wordPending,
 }: {
+  acting: SongAct | null;
   arrival: SharedValue<number>;
   audioState: LocalAudioState;
-  busy: boolean;
   downloaded: boolean;
   deliveryBytes: number | null;
   full: boolean;
@@ -705,6 +738,10 @@ function Front({
 }) {
   const pal = usePalette();
   const pinned = audioState === 'pinned';
+  const locked = acting !== null;
+  /** An audio act is under way: the offline line is what it will change. */
+  const moving = acting === 'pin' || acting === 'unpin' || acting === 'remove';
+  const keeping = acting === 'pin' || acting === 'unpin';
   // The axis exists before the facts land on it, and after the mark that
   // opened the sheet: one clock, read at three different stretches of itself.
   const spine = useDerivedValue(() =>
@@ -728,7 +765,7 @@ function Front({
         <Arriving arrival={arrival} index={0} style={styles.subject}>
           <Subject
             arrival={arrival}
-            busy={busy}
+            busy={locked}
             colour={pal.ink}
             onBlur={onRename}
             onChangeText={onTitle}
@@ -744,7 +781,7 @@ function Front({
             <Row control label="Playlists">
               <Membership
                 addPlaceholder="new playlist"
-                busy={busy}
+                busy={locked}
                 empty="In no playlist."
                 entries={placeEntries}
                 full={full}
@@ -759,7 +796,7 @@ function Front({
             <Row control label="Tags">
               <Membership
                 addPlaceholder="add a tag"
-                busy={busy}
+                busy={locked}
                 empty="No tags."
                 entries={wordEntries}
                 full={full}
@@ -813,6 +850,23 @@ function Front({
                   style={styles.stateNoteSlot}
                   text={weight(deliveryBytes, downloaded, nodeLabel)}
                 />
+                {/*
+                  The fact an audio act is about to change. It is not a
+                  control, so it never goes out of reach — it says it is
+                  being worked on, and then it becomes its next reading.
+                */}
+                {/*
+                  Under the weight rather than the state: the two lines are
+                  3 px apart, which is no room for a rule, and the fact being
+                  changed is both of them — where the audio is and what that
+                  costs here. The rule underlines the whole sentence.
+                */}
+                <Underway
+                  charStyle={LEDGER_NOTE_STYLE}
+                  label={weight(deliveryBytes, downloaded, nodeLabel)}
+                  offset={SONG_SHEET_KNOBS.STATE_SLOT_PX + STATE_NOTE_GAP_PX}
+                  working={moving}
+                />
               </View>
             </Row>
           </Arriving>
@@ -823,9 +877,10 @@ function Front({
                 note={`STAYS ON ${nodeLabel.toUpperCase()}`}
               >
                 <Act
-                  busy={busy}
+                  disabled={locked && acting !== 'remove'}
                   label="Remove from this phone"
                   onPress={onRemoveDownload}
+                  working={acting === 'remove'}
                 />
               </Row>
             </Arriving>
@@ -855,11 +910,12 @@ function Front({
           read as the foot being rebuilt every time you touched it.
         */}
         <Act
-          busy={busy || (!pinned && !downloaded)}
+          disabled={(locked && !keeping) || (!pinned && !downloaded)}
           display
           label={pinned ? 'Unpin' : 'Keep it here'}
           morph
           onPress={pinned ? onUnpin : onPin}
+          working={keeping}
         />
         <TransformText
           charStyle={type.eyebrow}
@@ -875,7 +931,7 @@ function Front({
 
 /** What a song is, and the act that ends it. */
 function Back({
-  busy,
+  acting,
   confirming,
   detail,
   detailError,
@@ -889,7 +945,7 @@ function Back({
   placementCount,
   song,
 }: {
-  busy: boolean;
+  acting: SongAct | null;
   confirming: boolean;
   detail: SongDetail | null;
   detailError: string | null;
@@ -1011,11 +1067,26 @@ function Back({
       <LedgerFoot>
         {confirming ? (
           <View style={styles.confirm}>
-            <Act busy={busy} display label="Delete it" onPress={onDelete} />
-            <Act busy={busy} label="Keep it" onPress={onKeep} />
+            <Act
+              disabled={acting !== null && acting !== 'delete'}
+              display
+              label="Delete it"
+              onPress={onDelete}
+              working={acting === 'delete'}
+            />
+            <Act
+              disabled={acting !== null}
+              label="Keep it"
+              onPress={onKeep}
+            />
           </View>
         ) : (
-          <Act busy={busy} display label="Delete everywhere" onPress={onAsk} />
+          <Act
+            disabled={acting !== null}
+            display
+            label="Delete everywhere"
+            onPress={onAsk}
+          />
         )}
         <Text style={[type.eyebrow, styles.footNote, { color: pal.faint }]}>
           {cost(downloaded ? deliveryBytes : null, masterBytes, nodeLabel)}
@@ -1072,45 +1143,123 @@ function Arriving({
  * the word is then drawn as geometry and transformed into its opposite when
  * the state turns over. It costs a reserved slot, which is why it is asked for
  * rather than assumed — a settled `Text` still measures itself.
+ *
+ * An act has three ways of not simply sitting there, and they are the panel
+ * vocabulary in `controls/state.tsx`: `disabled` settles its ink to faint and
+ * back, `working` keeps the ink and grows a rule under it, and a new `label`
+ * morphs. A working act cannot be pressed again, but it is not *disabled* —
+ * it is the one thing on the sheet that is doing something, and going grey
+ * would say the opposite.
  */
 function Act({
-  busy,
+  disabled = false,
   display,
   label,
   morph = false,
   onPress,
+  working = false,
 }: {
-  busy: boolean;
+  disabled?: boolean;
   display?: boolean;
   label: string;
   morph?: boolean;
   onPress: () => void;
+  working?: boolean;
 }) {
-  const pal = usePalette();
-  const colour = busy ? pal.faint : pal.ink;
+  const { tint, colour } = useReach(disabled);
+  const charStyle = display ? type.heading : type.body;
   return (
     <Pressable
       accessibilityLabel={label}
       accessibilityRole="button"
-      accessibilityState={{ disabled: busy }}
-      disabled={busy}
-      onPress={onPress}
+      accessibilityState={{ disabled, busy: working }}
+      // Not `disabled || working`. `Pressable` folds its own `disabled` into
+      // the accessibility state, so a working act was announced as "busy,
+      // disabled" — the very contradiction this component exists to avoid. A
+      // second press is refused by having nothing to call instead.
+      disabled={disabled}
+      onPress={working ? undefined : onPress}
       style={styles.act}
     >
-      {morph ? (
-        <TransformText
-          charStyle={display ? type.heading : type.body}
-          color={colour}
-          duration={SONG_SHEET_KNOBS.ACT_MS}
-          style={styles.actSlot}
-          text={label}
-        />
-      ) : (
-        <Text style={[display ? type.heading : type.body, { color: colour }]}>
-          {label}
-        </Text>
-      )}
+      <View>
+        {morph ? (
+          <TransformText
+            charStyle={charStyle}
+            color={colour}
+            duration={SONG_SHEET_KNOBS.ACT_MS}
+            style={styles.actSlot}
+            text={label}
+          />
+        ) : (
+          <Animated.Text style={[charStyle, tint]}>{label}</Animated.Text>
+        )}
+        <Underway charStyle={charStyle} label={label} working={working} />
+      </View>
     </Pressable>
+  );
+}
+
+/**
+ * The working rule, laid under a line of words as wide as the words.
+ *
+ * A label drawn on a canvas does not report how wide its ink is — the canvas
+ * fills its slot — so the words are set once more, invisibly, as real text,
+ * and the rule is measured off that box. Mounted only while there is a rule to
+ * draw: at rest this is nothing at all, not even the invisible copy.
+ */
+function Underway({
+  charStyle,
+  label,
+  offset = 0,
+  working,
+}: {
+  charStyle: TextStyle;
+  label: string;
+  /** How far down its container the measured line sits. */
+  offset?: number;
+  working: boolean;
+}) {
+  const pal = usePalette();
+  const drawing = useRuleInk(working);
+  const [box, setBox] = useState<{ width: number; height: number } | null>(
+    null,
+  );
+  const onBox = useCallback((event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    setBox({ width, height });
+  }, []);
+  if (!drawing) return null;
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      pointerEvents="none"
+      style={StyleSheet.absoluteFill}
+    >
+      <Text
+        onLayout={onBox}
+        style={[charStyle, styles.measure, { top: offset }]}
+      >
+        {label}
+      </Text>
+      {box === null ? null : (
+        <WorkingRule
+          colour={pal.ink}
+          style={[
+            styles.underway,
+            {
+              top:
+                offset +
+                box.height -
+                STATE_KNOBS.RULE_BOX_PX / 2 +
+                SONG_SHEET_KNOBS.UNDERWAY_GAP_PX,
+              width: box.width,
+            },
+          ]}
+          working={working}
+        />
+      )}
+    </View>
   );
 }
 
@@ -1278,7 +1427,13 @@ const styles = StyleSheet.create({
   /** A morphing word needs a slot that does not resize under it. */
   actSlot: { height: SONG_SHEET_KNOBS.ACT_SLOT_PX },
   stateSlot: { height: SONG_SHEET_KNOBS.STATE_SLOT_PX },
-  stateNoteSlot: { height: SONG_SHEET_KNOBS.STATE_NOTE_SLOT_PX, marginTop: 3 },
+  /** The invisible copy a working rule is measured from. */
+  measure: { left: 0, opacity: 0, position: 'absolute', top: 0 },
+  underway: { height: STATE_KNOBS.RULE_BOX_PX, left: 0, position: 'absolute' },
+  stateNoteSlot: {
+    height: SONG_SHEET_KNOBS.STATE_NOTE_SLOT_PX,
+    marginTop: STATE_NOTE_GAP_PX,
+  },
   footNoteSlot: {
     height: SONG_SHEET_KNOBS.NOTE_SLOT_PX,
     marginTop: space.xs,
