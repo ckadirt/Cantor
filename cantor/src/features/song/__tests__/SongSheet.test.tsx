@@ -34,6 +34,21 @@ const detail = (): SongDetail =>
     attempts: 1,
   }) as SongDetail;
 
+/**
+ * Every tree this file mounts, torn down after each test.
+ *
+ * A membership mark holds a timer open for as long as its ink could still be
+ * animating — see `useInk` — so a tree left mounted fires it after Jest has
+ * taken the environment away, which reads as a crash in a component that was
+ * fine.
+ */
+const mounted: ReactTestRenderer.ReactTestRenderer[] = [];
+afterEach(() => {
+  for (const tree of mounted.splice(0)) {
+    ReactTestRenderer.act(() => tree.unmount());
+  }
+});
+
 function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
   const props: React.ComponentProps<typeof SongSheet> = {
     visible: true,
@@ -45,13 +60,9 @@ function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
     problem: null,
     busy: false,
     onClose: jest.fn(),
-    onRename: jest.fn(),
-    onToggleFavourite: jest.fn(),
+    onPatch: jest.fn(async () => {}),
     knownPlaylists: ['Dog walk', 'Birthday', 'Focus'],
     knownTags: ['ambient', 'loud'],
-    onTogglePlaylist: jest.fn(),
-    onToggleTag: jest.fn(),
-    full: false,
     playlistProblem: () => null,
     tagProblem: () => null,
     scopeLabel: 'Dog walk',
@@ -87,6 +98,7 @@ function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
         )
         .props.onPress();
     });
+  mounted.push(tree);
   return { tree, props, words, labels, press };
 }
 
@@ -128,10 +140,24 @@ describe('SongSheet', () => {
   });
 
   it('never claims a copy here for a song that is only on the node', () => {
-    const { words } = render({ audioState: 'remote' });
-    expect(words()).toContain('3.1 MB TO FETCH · ON AGENTBOX');
+    // Where the audio is is a state that becomes the next state rather than
+    // being replaced, so both of its lines are drawn as glyphs; the pair
+    // carries one label, which is what a screen reader is given.
+    const { labels, words } = render({ audioState: 'remote' });
+    expect(labels()).toContain(
+      'On agentbox only. 3.1 MB TO FETCH · ON AGENTBOX',
+    );
     expect(words()).toContain('27 MB ON AGENTBOX');
     expect(words()).not.toContain('3.1 MB HERE · 27 MB ON AGENTBOX');
+  });
+
+  it('says where a kept copy is, in the same line that said it was cached', () => {
+    expect(render({ audioState: 'cached' }).labels()).toContain(
+      'Cached on this phone. 3.1 MB HERE · ON AGENTBOX',
+    );
+    expect(render({ audioState: 'pinned' }).labels()).toContain(
+      'Downloaded on this phone. 3.1 MB HERE · ON AGENTBOX',
+    );
   });
 
   it('offers to remove a local copy only when there is one', () => {
@@ -143,11 +169,74 @@ describe('SongSheet', () => {
     );
   });
 
-  it('toggles a playlist rather than offering to leave one', () => {
+  it('toggles a playlist rather than offering to leave one', async () => {
     const { labels, press, props } = render();
     expect(labels()).not.toContain('Remove from Dog walk. KEEPS THE SONG');
     press('Remove from Dog walk');
-    expect(props.onTogglePlaylist).toHaveBeenCalledWith('Dog walk', false);
+    expect(props.onPatch).toHaveBeenCalledWith({
+      tags: ['p/Birthday', 'ambient'],
+    });
+    // Let the queue notice the wire is free again before the tree goes away.
+    await ReactTestRenderer.act(async () => {});
+  });
+
+  it('draws a membership the moment it is asked for, not when it lands', () => {
+    // The node is never allowed to answer here, so anything the sheet shows is
+    // something it decided to show on the strength of the tap alone.
+    const { labels, press } = render({ onPatch: jest.fn(() => new Promise<void>(() => {})) });
+    expect(labels()).toContain('Remove from Dog walk');
+    press('Remove from Dog walk');
+    expect(labels()).toContain('Add to Dog walk');
+    expect(labels()).not.toContain('Remove from Dog walk');
+  });
+
+  it('keeps one patch on the wire and folds the rest into it', async () => {
+    // Two patches in flight on one song is the fault `expected_revision`
+    // exists to catch: the second would carry a revision the node has already
+    // replaced, and a tag list computed without the first tag in it.
+    let release: () => void = () => {};
+    const onPatch = jest.fn(
+      () =>
+        new Promise<void>(resolve => {
+          release = resolve;
+        }),
+    );
+    const { press } = render({ onPatch });
+    press('Remove from Dog walk');
+    press('Remove from Birthday');
+    expect(onPatch).toHaveBeenCalledTimes(1);
+    expect(onPatch).toHaveBeenLastCalledWith({ tags: ['p/Birthday', 'ambient'] });
+    await ReactTestRenderer.act(async () => {
+      release();
+    });
+    expect(onPatch).toHaveBeenCalledTimes(2);
+    expect(onPatch).toHaveBeenLastCalledWith({ tags: ['ambient'] });
+  });
+
+  it('puts the mark back when the node refuses the ask', async () => {
+    const onPatch = jest.fn(async () => {
+      throw new Error('Backend is not ready.');
+    });
+    const { labels, press } = render({ onPatch });
+    press('Remove from Dog walk');
+    expect(labels()).toContain('Add to Dog walk');
+    await ReactTestRenderer.act(async () => {});
+    expect(labels()).toContain('Remove from Dog walk');
+  });
+
+  it('stops drawing an ask once the node has agreed with it', async () => {
+    const { labels, press, props, tree } = render();
+    press('Remove from Dog walk');
+    await ReactTestRenderer.act(async () => {});
+    // The node's own header arrives without the playlist. Nothing should move:
+    // the sheet has been drawing this since the tap.
+    ReactTestRenderer.act(() => {
+      tree.update(
+        <SongSheet {...props} song={song({ tags: ['p/Birthday', 'ambient'] })} />,
+      );
+    });
+    expect(labels()).toContain('Add to Dog walk');
+    expect(props.onPatch).toHaveBeenCalledTimes(1);
   });
 
   it('carries the model own declared parameters', () => {

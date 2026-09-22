@@ -6,6 +6,7 @@ export {
   LedgerGap,
   Row,
   LEDGER_KNOBS,
+  LEDGER_NOTE_STYLE,
   LEDGER_VALUE_PX,
   LEDGER_DIAL_ITEM,
   LEDGER_STATED,

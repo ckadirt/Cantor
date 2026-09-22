@@ -8,6 +8,21 @@ const entries: MembershipEntry[] = [
   { name: 'Focus', member: false },
 ];
 
+/**
+ * Every tree this file mounts, torn down after each test.
+ *
+ * A membership mark holds a timer open for as long as its ink could still be
+ * animating — see `useInk` — so a tree left mounted fires it after Jest has
+ * taken the environment away, which reads as a crash in a component that was
+ * fine.
+ */
+const mounted: ReactTestRenderer.ReactTestRenderer[] = [];
+afterEach(() => {
+  for (const tree of mounted.splice(0)) {
+    ReactTestRenderer.act(() => tree.unmount());
+  }
+});
+
 function render(over: Partial<React.ComponentProps<typeof Membership>> = {}) {
   const props: React.ComponentProps<typeof Membership> = {
     entries,
@@ -58,6 +73,7 @@ function render(over: Partial<React.ComponentProps<typeof Membership>> = {}) {
     walk(tree.root);
     return out;
   };
+  mounted.push(tree);
   return { tree, props, press, labels, pressable, reachable };
 }
 
@@ -112,6 +128,18 @@ describe('Membership', () => {
     const { press, pressable } = render({ full: true });
     press('Show every name');
     expect(pressable('Add to Focus').props.disabled).toBe(true);
+  });
+
+  it('says an unanswered membership in the mark, not by taking the name away', () => {
+    const { pressable } = render({ pendingOf: name => name === 'Dog walk' });
+    const waiting = pressable('Remove from Dog walk');
+    // The mark carries the waiting; the control stays live, because the queue
+    // behind it takes a second tap rather than needing to be protected from one.
+    expect(waiting.props.accessibilityState).toMatchObject({ busy: true });
+    expect(waiting.props.disabled).toBe(false);
+    expect(
+      pressable('Remove from Birthday').props.accessibilityState,
+    ).toMatchObject({ busy: false });
   });
 
   it('says so plainly when a song holds nothing yet', () => {
