@@ -1,3 +1,14 @@
+import {
+  prepareNativeLabels,
+  createLabelPaints,
+  drawNativeLabels,
+} from './nativeLabels';
+import { flightOwnerAlpha } from './flightOwnerAlpha';
+import {
+  createRowPaints,
+  drawNativeRows,
+  type NativeRowModel,
+} from './nativeRows';
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import React, { useEffect, useMemo, useRef } from 'react';
 import { facePoints } from '../../lenses/face';
@@ -1092,7 +1103,7 @@ function FieldCanvasImpl({
 
   const jobScene = useMemo(() => {
     if (!jobs || !recut || !nativeClock || !monoFont) return null;
-    return recut.flights.map(flight => {
+    const flights = recut.flights.map(flight => {
       const pending = jobs.get(flight.entityKey);
       if (!pending || presentations.has(flight.entityKey)) return null;
       return (
@@ -1115,7 +1126,14 @@ function FieldCanvasImpl({
         />
       );
     });
+    return (
+      <>
+        {flights}
+        {veil}
+      </>
+    );
   }, [
+    veil,
     jobs,
     recut,
     nativeClock,
@@ -1563,42 +1581,6 @@ function nativeFitScale(
     Math.log(recut.fromFitScale) +
       (Math.log(recut.toFitScale) - Math.log(recut.fromFitScale)) * progress,
   );
-}
-
-/**
- * How much of a mark or a name this generation has handed over.
- *
- * The ownership windows are the transition engine's, not the camera's: a mark
- * that branches appears early in the cut and one that folds leaves late, so
- * two copies of the same song are never both solid at once.
- */
-function flightOwnerAlpha(
-  ownership: FlightOwnership,
-  fromAlpha: number,
-  targetAlpha: number,
-  progress: number,
-): number {
-  'worklet';
-  let start = 0;
-  let end = 1;
-  if (ownership === 'branch') {
-    start = 0.02;
-    end = 0.18;
-  } else if (ownership === 'fold') {
-    start = 0.55;
-    end = 0.82;
-  } else if (ownership === 'enter') {
-    start = 0.08;
-    end = 0.42;
-  } else if (ownership === 'exit') {
-    start = 0.58;
-    end = 0.9;
-  }
-  const raw =
-    ownership === 'carry' ? progress : (progress - start) / (end - start);
-  const t = Math.min(Math.max(raw, 0), 1);
-  const amount = t * t * t * (t * (t * 6 - 15) + 10);
-  return fromAlpha + (targetAlpha - fromAlpha) * amount;
 }
 
 // These camera-only values are identical for every song. Install their
@@ -2620,6 +2602,96 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     () => songDetailOf(recut.flights, presentations, analyses, focusKey),
     [recut, presentations, analyses, focusKey],
   );
+  const rows = useMemo(
+    () =>
+      recut.flights.flatMap(flight => {
+        if (focusKey !== null && flight.targetPlacementKey === focusKey)
+          return [];
+        const presentation = presentations.get(flight.entityKey);
+        if (!presentation) return [];
+        const song = presentation.song;
+        return [
+          {
+            flight,
+            row: nativeRowModel(
+              presentation,
+              {
+                seed: song.seed,
+                id: presentation.entity.entityId,
+                model: song.model,
+                durationMs: song.duration_ms,
+              },
+              displayFont,
+              monoFont,
+            ),
+          },
+        ];
+      }),
+    [recut, presentations, focusKey, displayFont, monoFont],
+  );
+  const rowPaints = useMemo(
+    () =>
+      createRowPaints(
+        palette.ink,
+        palette.muted,
+        ROW_ARRIVAL_KNOBS.TRACE_STROKE_PX,
+      ),
+    [palette],
+  );
+  const rowFonts = useMemo(
+    () => ({ title: displayFont, mono: monoFont }),
+    [displayFont, monoFont],
+  );
+  const labels = useMemo(
+    () => prepareNativeLabels(labelFlights ?? [], monoFont),
+    [labelFlights, monoFont],
+  );
+  const labelPaints = useMemo(
+    () => createLabelPaints(palette.muted, palette.faint),
+    [palette],
+  );
+  const rowsPicture = useDerivedValue(() => {
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    const live = p >= 1 ? cameraShared.value : null;
+    const rowCamera = {
+      x:
+        live?.x ??
+        nativeRecut.fromCamera.x +
+          (nativeRecut.toCamera.x - nativeRecut.fromCamera.x) * p,
+      y:
+        live?.y ??
+        nativeRecut.fromCamera.y +
+          (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
+      scale: nativeCameraScale(p, nativeRecut, cameraShared),
+    };
+    return createPicture(canvas => {
+      const fit = nativeFitScale(p, nativeRecut, fitScaleShared);
+      drawNativeLabels(
+        canvas,
+        labels,
+        p,
+        rowCamera,
+        fit,
+        viewport,
+        monoFont,
+        labelPaints,
+        FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
+        FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
+      );
+      drawNativeRows(
+        canvas,
+        rows,
+        p,
+        rowCamera,
+        fit,
+        viewport,
+        motion.written.value,
+        motion.fieldFade.value,
+        rowFonts,
+        rowPaints,
+      );
+    }, viewport);
+  });
   return (
     <>
       <Fill color={palette.bg} />
@@ -2641,22 +2713,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         recut={nativeRecut}
         viewport={viewport}
       />
-      {(labelFlights ?? []).map((flight, index) => (
-        <NativeShelfLabel
-          key={`${flight.fromGroupKey ?? 'new'}:${
-            flight.toGroupKey ?? 'gone'
-          }:${index}`}
-          flight={flight}
-          clock={clock}
-          cameraShared={cameraShared}
-          fitScaleShared={fitScaleShared}
-          recut={nativeRecut}
-          viewport={viewport}
-          font={monoFont}
-          palette={palette}
-        />
-      ))}
+      <Picture picture={rowsPicture} />
       {recut.flights.map(flight => {
+        if (focusKey === null || flight.targetPlacementKey !== focusKey)
+          return null;
         const presentation = presentations.get(flight.entityKey);
         if (presentation === undefined) return null;
         const song = presentation.song;
@@ -2743,22 +2803,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
  * two functions the lens calls, because a row that changed shape when the
  * renderer changed would be a different row.
  */
-type NativeRowModel = Readonly<{
-  action: string | null;
-  actionX: number;
-  title: string;
-  /**
-   * The title's exact glyph outlines, one per letter, at the baseline and the
-   * x the row draws each of them on.
-   *
-   * What the name is traced from on the way in. Null where Skia cannot give an
-   * outline — CanvasKit has no `MakeFromText` — and the caller falls back to
-   * fading the real glyphs, which is what the row did before it could write.
-   */
-  titleTrace: readonly SkPath[] | null;
-  titleAlpha: number;
-  meta: string;
-}>;
 
 function nativeRowModel(
   presentation: FieldPresentation,
@@ -3140,180 +3184,8 @@ function NativePlacementFlight({
   );
 }
 
-/**
- * One cluster's name, carried by one animated value.
- *
- * Both lines ride a single group transform, and each glyph run sits at a fixed
- * offset inside it. Positioning the runs individually meant four shared values
- * per label — a screen anchor, two x's derived from it and a y — so a camera
- * frame reached the four Skia properties across two mapper hops instead of
- * one, and a pan tore the name apart between them. One value per node moves
- * like the faces do, and leaves the opacities off the camera's path entirely:
- * they answer to the clock, so a pan does not wake them at all.
- */
-function NativeShelfLabel({
-  flight,
-  clock,
-  cameraShared,
-  fitScaleShared,
-  recut,
-  viewport,
-  font: labelFont,
-  palette,
-}: {
-  flight: LabelFlight;
-  clock: SharedValue<number>;
-  cameraShared: SharedValue<Camera>;
-  fitScaleShared: SharedValue<number>;
-  recut: NativeRecut;
-  viewport: Viewport;
-  font: NonNullable<ReturnType<typeof useMorphFont>>;
-  palette: Palette;
-}) {
-  const transform = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    const liveCamera = p >= 1 ? cameraShared.value : null;
-    const cameraX =
-      liveCamera?.x ??
-      recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
-    const cameraY =
-      liveCamera?.y ??
-      recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
-    const cameraScale = nativeCameraScale(p, recut, cameraShared);
-    // Seat to seat, in the same units at both ends. The previous generation
-    // left this name on its cluster's top, which is exactly this flight's
-    // `fromTop`, so the first frame lands where the last one did instead of
-    // stepping by the difference between a centre and a top.
-    //
-    // And each of those seats is itself two, because a name hangs from a
-    // cluster and a cluster has two poses. The gather picks between the
-    // bloomed top and the column's, exactly as it does for the marks — without
-    // it the name would stay out at the packing's top while its songs closed
-    // into a column beneath it.
-    const gather = gatherFraction(
-      cameraScale,
-      nativeFitScale(p, recut, fitScaleShared),
-    );
-    const worldX = flight.from.x + (flight.to.x - flight.from.x) * p;
-    const fromTop =
-      flight.fromTop + (flight.fromTopGathered - flight.fromTop) * gather;
-    const toTop = flight.toTop + (flight.toTopGathered - flight.toTop) * gather;
-    const worldY = fromTop + (toTop - fromTop) * p;
-    return [
-      {
-        translateX: (worldX - cameraX) * cameraScale + viewport.width / 2,
-      },
-      {
-        translateY:
-          (worldY - cameraY) * cameraScale +
-          viewport.height / 2 -
-          FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
-      },
-    ];
-  });
-  const opacity = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    return shelfLabelAlpha(
-      nativeCameraScale(p, recut, cameraShared),
-      nativeFitScale(p, recut, fitScaleShared),
-    );
-  });
-  return (
-    <SkiaGroup transform={transform} opacity={opacity}>
-      <NativeLabelLine
-        from={flight.primaryFrom}
-        to={flight.primaryTo}
-        y={0}
-        color={palette.muted}
-        {...{ flight, clock, font: labelFont }}
-      />
-      <NativeLabelLine
-        from={flight.secondaryFrom}
-        to={flight.secondaryTo}
-        y={FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX}
-        color={palette.faint}
-        {...{ flight, clock, font: labelFont }}
-      />
-    </SkiaGroup>
-  );
-}
-
-/** One line of a name, centred in its label's frame and fading on the clock. */
-function NativeLabelLine({
-  from,
-  to,
-  y,
-  color,
-  flight,
-  clock,
-  font: labelFont,
-}: {
-  from: string;
-  to: string;
-  y: number;
-  color: string;
-  flight: LabelFlight;
-  clock: SharedValue<number>;
-  font: NonNullable<ReturnType<typeof useMorphFont>>;
-}) {
-  const fromWidth = labelFont.measureText(from).width;
-  const toWidth = labelFont.measureText(to).width;
-  const owner = useDerivedValue(() =>
-    flightOwnerAlpha(
-      flight.ownership,
-      flight.fromAlpha,
-      flight.targetAlpha,
-      Math.min(Math.max(clock.value, 0), 1),
-    ),
-  );
-  const fromOpacity = useDerivedValue(() => {
-    if (from.length === 0) return 0;
-    if (from === to) return owner.value;
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    const raw = to.length === 0 ? p / 0.7 : (p - 0.25) / 0.5;
-    const t = Math.min(Math.max(raw, 0), 1);
-    const amount = t * t * t * (t * (t * 6 - 15) + 10);
-    return owner.value * (1 - amount);
-  });
-  const toOpacity = useDerivedValue(() => {
-    if (to.length === 0 || from === to) return 0;
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    const raw = from.length === 0 ? p / 0.7 : (p - 0.25) / 0.5;
-    const t = Math.min(Math.max(raw, 0), 1);
-    const amount = t * t * t * (t * (t * 6 - 15) + 10);
-    return owner.value * amount;
-  });
-  return (
-    <>
-      {from.length > 0 ? (
-        <Text
-          text={from}
-          x={-fromWidth / 2}
-          y={y}
-          font={labelFont}
-          color={color}
-          opacity={fromOpacity}
-        />
-      ) : null}
-      {to.length > 0 && to !== from ? (
-        <Text
-          text={to}
-          x={-toWidth / 2}
-          y={y}
-          font={labelFont}
-          color={color}
-          opacity={toOpacity}
-        />
-      ) : null}
-    </>
-  );
-}
-
-/** What L3 needs to draw: the resolved samples and what to call the span. */
-export type GrainRender = Readonly<{
-  window: SampleWindow;
-  label: string;
-}>;
+/** Resolved samples and the label for the L3 span. */
+export type GrainRender = Readonly<{ window: SampleWindow; label: string }>;
 
 type PictureRequest = Readonly<{
   layout: FieldLayout;
