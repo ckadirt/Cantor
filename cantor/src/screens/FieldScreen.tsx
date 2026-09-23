@@ -1575,6 +1575,7 @@ export function FieldScreen({ identity }: Props) {
         >
           <EnginesSheet
             backends={backends}
+            open={enginesOpen}
             onClose={closeEngines}
             onPair={pairFromEngines}
             onRefresh={commands.refreshLibraries}

@@ -16,7 +16,6 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type StyleProp,
-  type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
@@ -42,10 +41,8 @@ import {
   LEDGER_NOTE_STYLE,
   LEDGER_VALUE_PX,
   Row,
-  STATE_KNOBS,
-  WorkingRule,
+  Underway,
   useReach,
-  useRuleInk,
 } from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
 import {
@@ -151,16 +148,6 @@ export const SONG_SHEET_KNOBS = {
    */
   STATE_SLOT_PX: 22,
   STATE_NOTE_SLOT_PX: 16,
-  /**
-   * How far below a working label its rule is drawn.
-   *
-   * The rule is measured off the label's own text box, whose bottom is the
-   * line's leading rather than the ink; this is the gap from there. The
-   * membership mark sits 3 px *inside* its word's box because it is part of
-   * the word. A working rule is not — it is said about the word — so it
-   * stands a little clear of it.
-   */
-  UNDERWAY_GAP_PX: 2,
 } as const;
 
 /** Between the offline state and its weight: every ledger note's own offset. */
@@ -1199,70 +1186,6 @@ function Act({
   );
 }
 
-/**
- * The working rule, laid under a line of words as wide as the words.
- *
- * A label drawn on a canvas does not report how wide its ink is — the canvas
- * fills its slot — so the words are set once more, invisibly, as real text,
- * and the rule is measured off that box. Mounted only while there is a rule to
- * draw: at rest this is nothing at all, not even the invisible copy.
- */
-function Underway({
-  charStyle,
-  label,
-  offset = 0,
-  working,
-}: {
-  charStyle: TextStyle;
-  label: string;
-  /** How far down its container the measured line sits. */
-  offset?: number;
-  working: boolean;
-}) {
-  const pal = usePalette();
-  const drawing = useRuleInk(working);
-  const [box, setBox] = useState<{ width: number; height: number } | null>(
-    null,
-  );
-  const onBox = useCallback((event: LayoutChangeEvent) => {
-    const { width, height } = event.nativeEvent.layout;
-    setBox({ width, height });
-  }, []);
-  if (!drawing) return null;
-  return (
-    <View
-      accessibilityElementsHidden
-      importantForAccessibility="no-hide-descendants"
-      pointerEvents="none"
-      style={StyleSheet.absoluteFill}
-    >
-      <Text
-        onLayout={onBox}
-        style={[charStyle, styles.measure, { top: offset }]}
-      >
-        {label}
-      </Text>
-      {box === null ? null : (
-        <WorkingRule
-          colour={pal.ink}
-          style={[
-            styles.underway,
-            {
-              top:
-                offset +
-                box.height -
-                STATE_KNOBS.RULE_BOX_PX / 2 +
-                SONG_SHEET_KNOBS.UNDERWAY_GAP_PX,
-              width: box.width,
-            },
-          ]}
-          working={working}
-        />
-      )}
-    </View>
-  );
-}
-
 function Fact({
   label,
   mono,
@@ -1428,8 +1351,6 @@ const styles = StyleSheet.create({
   actSlot: { height: SONG_SHEET_KNOBS.ACT_SLOT_PX },
   stateSlot: { height: SONG_SHEET_KNOBS.STATE_SLOT_PX },
   /** The invisible copy a working rule is measured from. */
-  measure: { left: 0, opacity: 0, position: 'absolute', top: 0 },
-  underway: { height: STATE_KNOBS.RULE_BOX_PX, left: 0, position: 'absolute' },
   stateNoteSlot: {
     height: SONG_SHEET_KNOBS.STATE_NOTE_SLOT_PX,
     marginTop: STATE_NOTE_GAP_PX,
