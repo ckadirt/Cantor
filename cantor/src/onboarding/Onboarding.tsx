@@ -6,7 +6,7 @@
  * clock. Their first appearance uses Manim's Write gesture. Nothing just cuts.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
+import { BackHandler, Pressable, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -49,6 +49,9 @@ const SIGIL_ASPECT_RATIO = 1; // uniform scale preserves the source SVG exactly
 const SIGIL_INK_INSET = 2; // authored units removed uniformly from SVG boundaries
 const EYEBROW_H = 20;
 const TITLE_H = 78;
+// A panel with no eyebrow or title (the threshold) lets its body rise into
+// their empty zones instead of hanging a quote under a blank frame.
+const HEADING_ZONE_H = EYEBROW_H + space.md + TITLE_H + space.md;
 
 type Props = {
   onDone: () => void;
@@ -118,6 +121,20 @@ export function Onboarding({ onDone, onRestored }: Props) {
 
   const go = (next: number) => setStep(Math.max(-1, next));
 
+  // The system back gesture walks the flow backwards, like ‹ BACK, instead of
+  // leaving the app from the middle of it. The restore sheet is a Modal and
+  // closes itself. From the intro, back leaves as usual.
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (step < 0) {
+        return false;
+      }
+      setStep(step - 1);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [step]);
+
   const handleBodyNext = () => {
     if (shownStep !== step) {
       return;
@@ -130,7 +147,10 @@ export function Onboarding({ onDone, onRestored }: Props) {
   }
 
   const def = PANELS[step];
-  const Body = PANELS[shownStep].Body;
+  const shown = PANELS[shownStep];
+  const Body = shown.Body;
+  // Keyed to the shown body, so the rise happens while it is invisible.
+  const bare = !shown.eyebrow && !shown.title;
 
   return (
     <View style={[styles.root, { backgroundColor: pal.bg }]}>
@@ -186,9 +206,9 @@ export function Onboarding({ onDone, onRestored }: Props) {
 
       {/* The animated view persists; only its content swaps (while invisible).
           A fading-out body's buttons are inert — shownStep lags step. */}
-      <Animated.View style={[styles.body, bodyStyle]}>
+      <Animated.View style={[styles.body, bare && styles.bareBody, bodyStyle]}>
         <Body
-          key={PANELS[shownStep].key}
+          key={shown.key}
           onNext={handleBodyNext}
           onDone={() => shownStep === step && onDone()}
         />
@@ -241,4 +261,5 @@ const styles = StyleSheet.create({
     marginBottom: space.md,
   },
   body: { flex: 1 },
+  bareBody: { marginTop: -HEADING_ZONE_H },
 });
