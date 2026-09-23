@@ -32,6 +32,7 @@ import {
   placementFlightAt,
   planPlacementFlights,
   seatAfterRelease,
+  seatCameraAround,
   seatCameraBounds,
   shelfSeats,
   smootherstep,
@@ -975,6 +976,24 @@ export function useFieldCamera({
     strandedFocus.current = null;
     commitFocus(null, true);
   }, [commitFocus, activeRecut?.generation]);
+  /**
+   * The shelf a song climbs back into, with that song's row on screen.
+   *
+   * `levelCameraTarget` seats the camera in the column's middle, which is where
+   * a tap enters one; coming back out of a song should put you where you were.
+   */
+  const shelfAround = useCallback(
+    (field: FieldLayout, placement: Placement): Camera | null => {
+      const shelf = levelCameraTarget('shelf', field, placement);
+      if (shelf === null || viewport === null) return shelf;
+      const seat = shelfSeats(field).find(
+        candidate => candidate.key === placement.groupKey,
+      );
+      if (seat === undefined) return shelf;
+      return seatCameraAround(seat, placement.targetY, viewport, shelf.scale);
+    },
+    [viewport],
+  );
   const ascend = useCallback((): boolean => {
     const field = layoutRef.current;
     if (field === null) return false;
@@ -988,9 +1007,7 @@ export function useFieldCamera({
     // in through; without one there is no group to return to, so go home.
     if (current !== 'shelf') {
       const placement = focusRef.current;
-      const shelf = placement
-        ? levelCameraTarget('shelf', field, placement)
-        : null;
+      const shelf = placement ? shelfAround(field, placement) : null;
       if (shelf) {
         flyTo(shelf);
         // Drop navigation focus now, retaining the outgoing canvas owner
@@ -1003,7 +1020,7 @@ export function useFieldCamera({
     const target = levelCameraTarget('field', field);
     if (target) flyTo(target);
     return true;
-  }, [commitFocus, flyTo]);
+  }, [commitFocus, flyTo, shelfAround]);
   const step = useCallback(
     (placement: Placement) => {
       // Still folding back into the row: retarget where it goes down again.
@@ -1021,7 +1038,7 @@ export function useFieldCamera({
         lastRenderFitScale.current ?? field.fitScale,
       );
       if (current !== 'song' && current !== 'grain') return;
-      const shelf = levelCameraTarget('shelf', field, from);
+      const shelf = shelfAround(field, from);
       if (!shelf) return;
       commitFocus(null, true);
       flyTo(shelf, FIELD_CAMERA_KNOBS.STEP_LEG_MS, () => {
@@ -1040,7 +1057,7 @@ export function useFieldCamera({
       // After `flyTo`, which drops any earlier step's target with its flight.
       stepTarget.current = placement;
     },
-    [commitFocus, flyTo],
+    [commitFocus, flyTo, shelfAround],
   );
   const stepping = useCallback(() => stepTarget.current, []);
   const home = useCallback(() => {

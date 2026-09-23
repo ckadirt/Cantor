@@ -238,6 +238,28 @@ export function seatCameraBounds(
 }
 
 /**
+ * The shelf camera that has `row` on screen: its column, with the camera as
+ * near the row's own y as the seat's range allows.
+ *
+ * Where a climb out of a song lands. The shelf's middle is the right place to
+ * *enter* a column, but leaving a song for it lost your place in any column
+ * taller than the screen — you came back to rows you had not been reading.
+ */
+export function seatCameraAround(
+  seat: ShelfSeat,
+  rowY: number,
+  viewport: { readonly height: number },
+  scale: number,
+): Camera {
+  const bounds = seatCameraBounds(seat, viewport, scale);
+  return {
+    x: seat.cx,
+    y: Math.min(Math.max(rowY, bounds.min), bounds.max),
+    scale,
+  };
+}
+
+/**
  * Hold a camera inside its seat.
  *
  * Vertical travel is clamped to the column's own run plus an overscroll margin
