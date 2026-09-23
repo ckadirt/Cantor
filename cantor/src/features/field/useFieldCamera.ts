@@ -71,6 +71,13 @@ export const FIELD_CAMERA_KNOBS = {
   EDGE_PULL_HORIZONTAL_TOLERANCE_PX: 50,
   /** How long the camera takes to fall back into a seat it was pulled out of. */
   SEAT_SETTLE_MS: 340,
+  /**
+   * Each of the two legs of a step from one song to the next on its shelf:
+   * the player folding back into its row, then the neighbour opening.
+   * Shorter than `CAMERA_FLIGHT_MS` because a step does not cross the field —
+   * the two rows are one seat apart — and two full flights read as a detour.
+   */
+  STEP_LEG_MS: 520,
   MIN_SCALE_RATIO: 1,
   /**
    * The camera's ceiling. It bounds a *camera*, not a pinch — see
@@ -176,6 +183,18 @@ type CameraState = {
   /** Where the blind is currently headed, or NaN while a finger owns it. */
   pullDestinationShared: SharedValue<number>;
   descend: (placement: Placement) => void;
+  /**
+   * Move a player that is open onto another song on the same shelf.
+   *
+   * Not a lateral glide: the player is drawn off its own mark and cannot change
+   * owner while it is full size without a flash (see `commitFocus`). So a step
+   * is the two moves the zoom model already makes — back into the row, then
+   * down into the neighbour — chained on the first one's landing. Does nothing
+   * unless a player is open.
+   */
+  step: (placement: Placement) => void;
+  /** The song a step in its first leg is headed for, or null. */
+  stepping: () => Placement | null;
   ascend: () => boolean;
   home: () => void;
   cancelGesture: () => void;
@@ -243,6 +262,19 @@ export function useFieldCamera({
   const [playerKey, setPlayerKey] = useState<string | null>(null);
   /** A descent held until the commit that mounts its player has landed. */
   const pendingDescent = useRef<Camera | null>(null);
+  /** What to do when the current flight lands; dropped with the flight. */
+  const flightThen = useRef<(() => void) | null>(null);
+  /** A step's second leg, waiting for the commit that mounts its player. */
+  const pendingStepLeg = useRef<Camera | null>(null);
+  /**
+   * Where a step still folding back into its row will go down again.
+   *
+   * Navigation focus is null for that whole leg — the player is on its way
+   * out — so this is the only record that the camera is, in intent, already
+   * on the next song. The queue can move twice in that time (a song that
+   * refuses at once is stepped over), and the second move has to land.
+   */
+  const stepTarget = useRef<Placement | null>(null);
   const [descentTicket, setDescentTicket] = useState(0);
   const [recutClock, setRecutClock] = useState<RecutClock>({
     generation: 0,
@@ -425,8 +457,16 @@ export function useFieldCamera({
     // anything that takes the camera somewhere else drops it. The newest
     // flight wins, which is what every other caller here already assumes.
     pendingDescent.current = null;
+    pendingStepLeg.current = null;
+    stepTarget.current = null;
+    flightThen.current = null;
     cancelAnimation(flightProgress);
   }, [flightProgress]);
+  const landFlight = useCallback(() => {
+    const then = flightThen.current;
+    flightThen.current = null;
+    then?.();
+  }, []);
   const cancelRelayout = useCallback(() => {
     if (relayoutFrame.current !== null) {
       cancelAnimationFrame(relayoutFrame.current);
@@ -454,12 +494,15 @@ export function useFieldCamera({
     (
       target: Camera,
       durationMs: number = FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS,
+      then: (() => void) | null = null,
     ) => {
       cancelCameraFlight();
       if (reducedMotion) {
         commitCamera(target);
+        then?.();
         return;
       }
+      flightThen.current = then;
       // From the *live* camera, not React's copy of it. A flight that begins
       // where the last mirrored frame happened to land would start with a jump
       // back to it — the exact distance the gesture covered after React's last
@@ -483,6 +526,9 @@ export function useFieldCamera({
           cameraShared.value = landed;
           mirrorBusy.value = true;
           runOnJS(mirrorCamera)(landed);
+          // Queued after the mirror, so whatever runs on landing already
+          // reads the camera the flight arrived at.
+          runOnJS(landFlight)();
         },
       );
     },
@@ -493,6 +539,7 @@ export function useFieldCamera({
       flightFrom,
       flightProgress,
       flightTo,
+      landFlight,
       mirrorBusy,
       mirrorCamera,
       reducedMotion,
@@ -903,6 +950,12 @@ export function useFieldCamera({
    * never leave. A counter always does.
    */
   useEffect(() => {
+    const leg = pendingStepLeg.current;
+    if (leg !== null) {
+      pendingStepLeg.current = null;
+      flyTo(leg, FIELD_CAMERA_KNOBS.STEP_LEG_MS);
+      return;
+    }
     const target = pendingDescent.current;
     if (target === null) return;
     pendingDescent.current = null;
@@ -951,6 +1004,45 @@ export function useFieldCamera({
     if (target) flyTo(target);
     return true;
   }, [commitFocus, flyTo]);
+  const step = useCallback(
+    (placement: Placement) => {
+      // Still folding back into the row: retarget where it goes down again.
+      if (stepTarget.current !== null) {
+        stepTarget.current = placement;
+        return;
+      }
+      const field = layoutRef.current;
+      const from = focusRef.current;
+      if (field === null || from === null || from.key === placement.key) {
+        return;
+      }
+      const current = levelOf(
+        cameraRef.current.scale,
+        lastRenderFitScale.current ?? field.fitScale,
+      );
+      if (current !== 'song' && current !== 'grain') return;
+      const shelf = levelCameraTarget('shelf', field, from);
+      if (!shelf) return;
+      commitFocus(null, true);
+      flyTo(shelf, FIELD_CAMERA_KNOBS.STEP_LEG_MS, () => {
+        const destination = stepTarget.current ?? placement;
+        stepTarget.current = null;
+        const landedOn = layoutRef.current;
+        if (landedOn === null) return;
+        const target = levelCameraTarget('song', landedOn, destination);
+        if (!target) return;
+        // `descend`'s own path, one level: commit the new owner, then fly on
+        // the commit that mounts it. See the note in `descend`.
+        commitFocus(destination.key, true);
+        pendingStepLeg.current = target;
+        setDescentTicket(ticket => ticket + 1);
+      });
+      // After `flyTo`, which drops any earlier step's target with its flight.
+      stepTarget.current = placement;
+    },
+    [commitFocus, flyTo],
+  );
+  const stepping = useCallback(() => stepTarget.current, []);
   const home = useCallback(() => {
     const field = layoutRef.current;
     if (field === null) return;
@@ -1411,6 +1503,8 @@ export function useFieldCamera({
     pullShared,
     pullDestinationShared: pullDestination,
     descend,
+    step,
+    stepping,
     ascend,
     home,
     cancelGesture,

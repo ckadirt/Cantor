@@ -6,6 +6,7 @@ import React, {
   useState,
 } from 'react';
 import {
+  AppState,
   BackHandler,
   StyleSheet,
   View,
@@ -39,6 +40,8 @@ import {
   type GrainRender,
 } from '../features/field/FieldCanvas';
 import type { FieldPresentation } from '../features/field/useFieldController';
+import { useShelfQueue } from '../features/field/useShelfQueue';
+import { easeSmoother } from '../motion';
 import { LensPicker } from '../features/song/LensPicker';
 import {
   SongSheet,
@@ -47,6 +50,7 @@ import {
 } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
+  MODE_POSE,
   PLAYER_TRANSPORT_KNOBS,
   PLAYER_VERB_POSE,
 } from '../features/field/NativePlayer';
@@ -65,12 +69,15 @@ import {
   grainWindow,
   layoutField,
   orderByKey,
+  queueFrom,
   representationAlphas,
   placementPoint,
+  stepFrom,
   visibleSecondsAt,
   worldToScreen,
   type DateResolution,
   type Placement,
+  type QueueStep,
   type Viewport,
 } from '../field';
 import {
@@ -101,7 +108,16 @@ import {
   saveAudioBudget,
 } from '../audio/budget';
 import { audioKey } from '../audio/repository';
-import { createAudioApiPlayer, PlayerHost, usePlayer } from '../player';
+import {
+  DEFAULT_AFTER_SONG,
+  createAudioApiPlayer,
+  loadAfterSong,
+  nextAfterSong,
+  PlayerHost,
+  saveAfterSong,
+  usePlayer,
+  type AfterSong,
+} from '../player';
 import { useBackendRuntime } from '../runtime';
 import { readError } from '../core/errors';
 import { space, usePalette } from '../theme/tokens';
@@ -829,16 +845,209 @@ export function FieldScreen({ identity }: Props) {
         });
   }, [focusedArrivingFraction, reducedMotion, transportArriving]);
 
+  /** What happens when a song runs off its end; read once, written on change. */
+  const [afterSong, setAfterSong] = useState<AfterSong>(DEFAULT_AFTER_SONG);
+  useEffect(() => {
+    let active = true;
+    loadAfterSong().then(mode => {
+      if (active) setAfterSong(mode);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  const cycleAfterSong = useCallback(() => {
+    setAfterSong(current => {
+      const next = nextAfterSong(current);
+      saveAfterSong(next).catch(error => setPlaybackError(readError(error)));
+      return next;
+    });
+  }, []);
+
   /**
-   * Play the focused song, fetching it first if the phone does not have it.
+   * A verified local path for a song, fetching it first if the phone lacks it.
    *
    * Download belongs to the runtime and playback belongs to the player; this is
-   * the seam between them, and the only place they meet.
+   * the seam between them, and the only place they meet. The path is asked for
+   * *first* and native storage answers it only for a whole, verified file — so
+   * a song already on the phone plays with its node offline, and the decision
+   * never rests on a presentation that may be a render old by the time an
+   * advance fires in a pocket.
    */
+  const fetchPath = useCallback(
+    async (presentation: FieldPresentation): Promise<string> => {
+      const artifact = presentation.delivery;
+      if (artifact === undefined) {
+        throw new Error('This song has no delivery audio yet.');
+      }
+      const where = () =>
+        commands.audioPath(
+          presentation.entity.nodePublicKey,
+          presentation.song,
+          artifact,
+        );
+      try {
+        return await where();
+      } catch {
+        await commands.audio(
+          presentation.entity.nodePublicKey,
+          presentation.song,
+          artifact,
+          'download',
+        );
+        return where();
+      }
+    },
+    [commands],
+  );
+  const prefetch = useCallback(
+    async (presentation: FieldPresentation) => {
+      const artifact = presentation.delivery;
+      if (artifact === undefined) return;
+      await commands.audio(
+        presentation.entity.nodePublicKey,
+        presentation.song,
+        artifact,
+        'download',
+      );
+    },
+    [commands],
+  );
+
+  /**
+   * The camera follows the queue only if you were watching the song that ended.
+   *
+   * At L0 and L1 nothing has to move — the ring already travels to whichever
+   * mark the player holds. At L2 on that song the player steps down its shelf
+   * to the next one. Looking at any other song, you are left where you are.
+   *
+   * With the screen off the step waits for the app to come back: a flight is
+   * frames, and a backgrounded app draws none, so it would otherwise run the
+   * moment the screen woke and look like something happening on its own.
+   */
+  const pendingFollow = useRef<Readonly<{
+    from: string;
+    to: Placement;
+  }> | null>(null);
+  const cameraStep = fieldCamera.step;
+  const cameraStepping = fieldCamera.stepping;
+  const cameraFocusKey = useRef<string | null>(null);
+  cameraFocusKey.current = fieldCamera.focus?.entityKey ?? null;
+  const followQueue = useCallback(
+    (fromEntityKey: string, to: QueueStep) => {
+      if (to.placement === null) return;
+      // Where the camera is, in intent: a follow still waiting for the
+      // screen, then a step on its way, then wherever it actually stands.
+      const pending = pendingFollow.current;
+      const watching =
+        pending?.to.entityKey ??
+        cameraStepping()?.entityKey ??
+        cameraFocusKey.current;
+      if (watching !== fromEntityKey) return;
+      if (AppState.currentState === 'active') {
+        pendingFollow.current = null;
+        cameraStep(to.placement);
+      } else {
+        // Songs can change several times in a pocket; the camera goes once,
+        // from where it stood to where the music is when the screen returns.
+        pendingFollow.current = {
+          from: pending?.from ?? fromEntityKey,
+          to: to.placement,
+        };
+      }
+    },
+    [cameraStep, cameraStepping],
+  );
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', next => {
+      const follow = pendingFollow.current;
+      if (next !== 'active' || follow === null) return;
+      pendingFollow.current = null;
+      if (cameraFocusKey.current === follow.from) cameraStep(follow.to);
+    });
+    return () => subscription.remove();
+  }, [cameraStep]);
+
+  const queue = useShelfQueue({
+    player,
+    transport,
+    afterSong,
+    layout,
+    presentations: controller.presentations,
+    fetchPath,
+    prefetch,
+    onMove: followQueue,
+    onError: setPlaybackError,
+  });
+  const skipFromLockScreen = useCallback(
+    (direction: 1 | -1) => {
+      queue.skip(direction).catch(() => undefined);
+    },
+    [queue],
+  );
+
+  /**
+   * Whether the focused song has a neighbour to step to, each way.
+   *
+   * Previous is always live on the song that is playing, because back from
+   * there is its own top. The drawn steps fade on a shared value — see
+   * `transportLights` — so this changing costs the canvas nothing.
+   */
+  const focusedSteps = useMemo(() => {
+    if (layout === null || playerPlacement === null || focused === null) {
+      return { previous: false, next: false };
+    }
+    const shelf = queueFrom(layout, playerPlacement);
+    const playable = (key: string) =>
+      controller.presentations.get(key)?.delivery !== undefined;
+    const from = playerPlacement.entityKey;
+    return {
+      previous:
+        focusedIsCurrent ||
+        stepFrom(shelf, layout, from, -1, playable) !== null,
+      next: stepFrom(shelf, layout, from, 1, playable) !== null,
+    };
+  }, [controller.presentations, focused, focusedIsCurrent, layout, playerPlacement]);
+  /**
+   * `[previous, next, mode]`; see `TransportControls`. One clock for all
+   * three, on the transport's own morph time, so a press on the mode retargets
+   * from wherever the shape had got to — the same as the verb beside it.
+   */
+  const transportLights = useSharedValue<number[]>([
+    0,
+    0,
+    MODE_POSE[DEFAULT_AFTER_SONG],
+  ]);
+  useEffect(() => {
+    const next = [
+      focusedSteps.previous ? 1 : 0,
+      focusedSteps.next ? 1 : 0,
+      MODE_POSE[afterSong],
+    ];
+    transportLights.value = reducedMotion
+      ? next
+      : withTiming(next, {
+          duration: PLAYER_TRANSPORT_KNOBS.MORPH_MS,
+          easing: easeSmoother,
+        });
+  }, [
+    afterSong,
+    focusedSteps.next,
+    focusedSteps.previous,
+    reducedMotion,
+    transportLights,
+  ]);
+  const stepFocused = useCallback(
+    (direction: 1 | -1) => {
+      queue.skip(direction, playerPlacement).catch(() => undefined);
+    },
+    [playerPlacement, queue],
+  );
+
+  /** Play or pause the focused song; a new one makes its shelf the queue. */
   const playFocused = useCallback(async () => {
-    if (focused === null) return;
-    const artifact = focused.delivery;
-    if (artifact === undefined) {
+    if (focused === null || playerPlacement === null) return;
+    if (focused.delivery === undefined) {
       setPlaybackError('This song has no delivery audio yet.');
       return;
     }
@@ -846,40 +1055,8 @@ export function FieldScreen({ identity }: Props) {
       transport.toggle();
       return;
     }
-    setPlaybackError(null);
-    try {
-      if (
-        focused.localAudio.state !== 'cached' &&
-        focused.localAudio.state !== 'pinned'
-      ) {
-        await commands.audio(
-          focused.entity.nodePublicKey,
-          focused.song,
-          artifact,
-          'download',
-        );
-      }
-      const path = await commands.audioPath(
-        focused.entity.nodePublicKey,
-        focused.song,
-        artifact,
-      );
-      await transport.open(
-        {
-          nodeKey: focused.entity.nodePublicKey,
-          songId: focused.entity.entityId,
-          digest: artifact.sha256,
-        },
-        path,
-        {
-          title: focused.song.title,
-          artist: focused.nodeLabels[0] ?? 'Cantor',
-        },
-      );
-    } catch (error) {
-      setPlaybackError(error instanceof Error ? error.message : String(error));
-    }
-  }, [commands, focused, focusedIsCurrent, transport]);
+    await queue.start(focused, playerPlacement);
+  }, [focused, focusedIsCurrent, playerPlacement, queue, transport]);
 
   /**
    * Run one song command, keeping the sheet honest about failure.
@@ -1422,6 +1599,7 @@ export function FieldScreen({ identity }: Props) {
                 transportArriving={
                   focusedArrivingFraction === null ? null : transportArriving
                 }
+                transportLights={transportLights}
                 nowMs={nowMs}
                 playingProgress={playingProgress}
                 relayoutLinear={fieldCamera.relayoutLinear}
@@ -1491,6 +1669,10 @@ export function FieldScreen({ identity }: Props) {
               onSeek={focusedIsCurrent ? transport.scrub : () => {}}
               onSeekEnd={transport.finishScrub}
               onToggle={() => void playFocused()}
+              steps={focusedSteps}
+              onStep={stepFocused}
+              afterSong={afterSong}
+              onCycleAfterSong={cycleAfterSong}
               positionSeconds={focusedPosition}
               snapshot={
                 playbackError === null
@@ -1730,7 +1912,7 @@ export function FieldScreen({ identity }: Props) {
           to={condenseTarget}
         />
       ) : null}
-      <PlayerHost player={player} />
+      <PlayerHost onStep={skipFromLockScreen} player={player} />
     </SafeAreaView>
   );
 }

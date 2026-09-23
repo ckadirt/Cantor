@@ -134,7 +134,21 @@ Worse, `show()` **resets those actions back to none**. Updating the notification
 — which any honest player does on every transition — silently removes its own
 controls unless the controls are re-declared afterwards. `createAudioApiPlayer`
 re-declares them after every `show`, and `dumpsys media_session` reporting
-`actions=262` rather than `actions=0` is how to tell the difference.
+`actions=310` (play, pause, seek, next, previous) rather than `actions=0` is how
+to tell the difference.
+
+## Later findings (the shelf queue, 2026-09-23)
+
+- **`onEnded` is delivered in doze.** A song run off its end with the phone
+  `Dozing` reached JS, the queue fetched and swapped the source, and
+  `dumpsys audio` showed the new player `state:started` — no native piece was
+  needed for auto-advance.
+- **The element re-fires `onLoad` when it is sought back from its end.** Replay
+  from `ended` (`seekToTime(0)` then `play()`) is followed ~25 ms later by an
+  `onLoad` nobody asked for; settled as a load, it published `paused` and left the
+  song silent at 0:00. The adapter now ignores an `onLoad` with no load pending.
+- The per-load leak above now scales with listening, not with taps: an
+  auto-advancing shelf swaps the source once per song. Not re-measured yet.
 
 ## Reproducing
 

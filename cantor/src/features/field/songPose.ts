@@ -125,6 +125,14 @@ export const PLAYER_POSE_KNOBS = {
   /** The step silhouettes' box, quieter than the verb between them. */
   SONG_TRANSPORT_STEP_PX: 19,
   /**
+   * The mode button — what happens when the song ends — outboard of next,
+   * where every player keeps its repeat. From the axis, not from next, so the
+   * three-button transport stays a mirror pair about the verb.
+   */
+  SONG_MODE_OFFSET_PX: 128,
+  /** Its box: a step's, because it is the same weight of control. */
+  SONG_MODE_PX: 19,
+  /**
    * The finger's target around any of the three.
    *
    * Larger than the gap would allow if the boxes were square-packed, which is
@@ -355,6 +363,31 @@ export function transportSeatsPx(
       size: knobs.SONG_TRANSPORT_STEP_PX,
     },
   ];
+}
+
+/** The mode button's seat, on the transport's row, right of next. */
+export function modeSeatPx(
+  viewport: PoseViewport,
+): Readonly<{ x: number; y: number; size: number }> {
+  'worklet';
+  const knobs = PLAYER_POSE_KNOBS;
+  return {
+    x: knobs.SONG_MODE_OFFSET_PX,
+    y: footRowPx(viewport, knobs.SONG_TRANSPORT_BOTTOM_PX),
+    size: knobs.SONG_MODE_PX,
+  };
+}
+
+/** The mode seat in screen pixels; see `transportScreenPx`. */
+export function modeScreenPx(
+  viewport: PoseViewport,
+): Readonly<{ x: number; y: number; size: number }> {
+  const seat = modeSeatPx(viewport);
+  return {
+    ...seat,
+    x: viewport.width / 2 + seat.x,
+    y: viewport.height / 2 + seat.y,
+  };
 }
 
 /**

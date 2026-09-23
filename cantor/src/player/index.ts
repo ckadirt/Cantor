@@ -20,3 +20,12 @@ export {
   type SampleRequest,
   type SampleWindow,
 } from './types';
+export {
+  AFTER_SONG_CHOICES,
+  DEFAULT_AFTER_SONG,
+  afterSongChoice,
+  loadAfterSong,
+  nextAfterSong,
+  saveAfterSong,
+  type AfterSong,
+} from './afterSong';

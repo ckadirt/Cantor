@@ -1,6 +1,7 @@
 import { Skia } from '@shopify/react-native-skia';
 import { NAME_LENS_KNOBS } from '../../../lenses';
 import {
+  modeSilhouettes,
   playPauseSilhouettes,
   playerWords,
   stepSilhouette,
@@ -23,6 +24,7 @@ import {
   songWordsOriginPx,
   transportScreenPx,
   transportSeatsPx,
+  modeSeatPx,
 } from '../songPose';
 
 const viewport = { width: 412, height: 892 };
@@ -208,6 +210,19 @@ describe('the foot\u2019s words', () => {
 });
 
 describe('the transport', () => {
+  it('seats the mode on the transport row, outboard of next and on screen', () => {
+    const seats = transportSeatsPx(viewport);
+    const mode = modeSeatPx(viewport);
+    const hit = PLAYER_POSE_KNOBS.SONG_TRANSPORT_HIT_PX;
+    expect(mode.y).toBe(seats[2].y);
+    // Its target and next's sit side by side, never overlapping.
+    expect(mode.x - hit / 2).toBeGreaterThanOrEqual(seats[2].x + hit / 2);
+    // And the target stays inside the view.
+    expect(viewport.width / 2 + mode.x + hit / 2).toBeLessThanOrEqual(
+      viewport.width,
+    );
+  });
+
   it('seats the three buttons in reading order about the mark', () => {
     const seats = transportSeatsPx(viewport);
     expect(seats.map(seat => seat.key)).toEqual([
@@ -271,6 +286,34 @@ describe('the transport', () => {
    * pressed. The triangle is written as two quads with its apex emitted twice
    * for exactly this reason, so the pairing is what has to be pinned.
    */
+  /**
+   * The mode button morphs between its three poses on one ramp, so every pair
+   * of neighbours has to interpolate — a mismatch answers null, and the button
+   * would vanish mid-press instead of turning into the next shape.
+   */
+  it('morphs the mode between repeat, continue and stop', () => {
+    const seat = modeSeatPx(viewport);
+    const shapes = modeSilhouettes(seat.x, seat.y, seat.size);
+    const ramp = [shapes.repeat, shapes.continue, shapes.stop];
+    for (const shape of ramp) expect(shape.countPoints()).toBe(24);
+    for (let index = 0; index < ramp.length - 1; index += 1) {
+      expect(ramp[index].isInterpolatable(ramp[index + 1])).toBe(true);
+      expect(ramp[index].interpolate(ramp[index + 1], 0.5)).not.toBeNull();
+    }
+    // Continue is repeat without its numeral: the loop itself does not move.
+    const loop = shapes.continue.getBounds();
+    const withOne = shapes.repeat.getBounds();
+    expect(loop.x).toBeCloseTo(withOne.x);
+    expect(loop.width).toBeCloseTo(withOne.width);
+    // And the whole of it stays inside the finger's box around the seat.
+    for (const shape of ramp) {
+      const bounds = shape.getBounds();
+      const hit = PLAYER_POSE_KNOBS.SONG_TRANSPORT_HIT_PX / 2;
+      expect(bounds.x).toBeGreaterThan(seat.x - hit);
+      expect(bounds.x + bounds.width).toBeLessThan(seat.x + hit);
+    }
+  });
+
   it('morphs play into pause rather than crossfading them', () => {
     const seat = transportSeatsPx(viewport)[1];
     const { play, pause } = playPauseSilhouettes(seat.x, seat.y, seat.size);

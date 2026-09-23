@@ -1,4 +1,4 @@
-import React, { useEffect, useSyncExternalStore } from 'react';
+import React, { useEffect, useRef, useSyncExternalStore } from 'react';
 import {
   Audio,
   AudioManager,
@@ -20,8 +20,23 @@ import { declarePlaybackControls } from './createAudioApiPlayer';
  * Mount it once, high in the tree, above anything that plays audio. Mounting it
  * twice would create two elements and two audio sessions.
  */
-function PlayerHostImpl({ player }: { player: AudioApiPlayer }) {
+function PlayerHostImpl({
+  player,
+  onStep,
+}: {
+  player: AudioApiPlayer;
+  /**
+   * The lock screen's and the headset's next and previous.
+   *
+   * Read through a ref so a new callback never tears down the session wiring
+   * below: that effect claims the audio session, and re-running it would hide
+   * and re-show the notification on every change of the caller's closure.
+   */
+  onStep?: (direction: 1 | -1) => void;
+}) {
   const binding = player.binding;
+  const step = useRef(onStep);
+  step.current = onStep;
 
   const source = useSyncExternalStore(
     binding.subscribe,
@@ -56,6 +71,14 @@ function PlayerHostImpl({ player }: { player: AudioApiPlayer }) {
       PlaybackNotificationManager.addEventListener(
         'playbackNotificationSeekTo',
         event => void player.seek(event.value),
+      ),
+      PlaybackNotificationManager.addEventListener(
+        'playbackNotificationNextTrack',
+        () => step.current?.(1),
+      ),
+      PlaybackNotificationManager.addEventListener(
+        'playbackNotificationPreviousTrack',
+        () => step.current?.(-1),
       ),
     ];
 
