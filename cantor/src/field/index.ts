@@ -12,3 +12,4 @@ export * from './arrangements';
 export * from './shelf';
 
 export * from './browse';
+export * from './queue';

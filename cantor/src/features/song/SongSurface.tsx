@@ -20,12 +20,16 @@ import {
   playerLensBottomPx,
   playerSeekScreenPx,
   seekFractionAt,
+  modeScreenPx,
   transportScreenPx,
-  type TransportSeat,
 } from '../field/songPose';
 import { REPRESENTATION_WINDOWS, bandAlphaAt, type Camera } from '../../field';
 import { useMorphFont } from '../../motion/fonts';
-import type { PlayerSnapshot } from '../../player';
+import {
+  afterSongChoice,
+  type AfterSong,
+  type PlayerSnapshot,
+} from '../../player';
 import { font, space, touch, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — what is left of L2 in React, in real units. */
@@ -47,6 +51,8 @@ const SONG_SURFACE_KNOBS = {
    */
   WORD_HIT_PAD_PX: 12,
 } as const;
+
+const NO_STEPS = { previous: false, next: false } as const;
 
 export type SongSurfaceSong = Readonly<{
   key: string;
@@ -76,6 +82,12 @@ type Props = {
   /** True when the node has a delivery artifact this song can be fetched from. */
   available: boolean;
   onToggle: () => void;
+  /**
+   * Which steps have somewhere to go, and what pressing one does. A step with
+   * nowhere to go gets no target; see `TransportTarget`.
+   */
+  steps?: Readonly<{ previous: boolean; next: boolean }>;
+  onStep?: (direction: 1 | -1) => void;
   onSeek: (seconds: number) => void;
   onSeekEnd?: () => void;
   onOpenDetail: () => void;
@@ -94,6 +106,9 @@ type Props = {
    * it a button.
    */
   lens: React.ReactNode;
+  /** What happens at the end of the song, and the press that changes it. */
+  afterSong?: AfterSong;
+  onCycleAfterSong?: () => void;
 };
 
 /**
@@ -137,6 +152,8 @@ function SongSurfaceImpl({
   isCurrent,
   available,
   onToggle,
+  steps = NO_STEPS,
+  onStep,
   onSeek,
   onSeekEnd,
   onOpenDetail,
@@ -145,6 +162,8 @@ function SongSurfaceImpl({
   cameraShared,
   fitScale,
   lens,
+  afterSong,
+  onCycleAfterSong,
 }: Props) {
   const pal = usePalette();
   const durationSeconds = song.durationMs / 1000;
@@ -179,6 +198,7 @@ function SongSurfaceImpl({
     () => transportScreenPx({ width, height }),
     [height, width],
   );
+  const mode = useMemo(() => modeScreenPx({ width, height }), [height, width]);
   /*
    * How wide the whole quiet line is, so the touch layer can centre it on the
    * axis exactly as the canvas does. Both sides step back half of this from
@@ -270,10 +290,25 @@ function SongSurfaceImpl({
               ? 'NEXT'
               : 'PREVIOUS'
           }
-          onPress={seat.key === 'playPause' ? onToggle : null}
+          onPress={
+            seat.key === 'playPause'
+              ? onToggle
+              : onStep !== undefined && steps[seat.key]
+              ? () => onStep(seat.key === 'next' ? 1 : -1)
+              : null
+          }
           seat={seat}
         />
       ))}
+
+      {afterSong === undefined || onCycleAfterSong === undefined ? null : (
+        <TransportTarget
+          disabled={false}
+          label={`When this song ends, ${afterSongChoice(afterSong).description}`}
+          onPress={onCycleAfterSong}
+          seat={mode}
+        />
+      )}
 
       <Animated.View style={[styles.lens, readout]}>{lens}</Animated.View>
 
@@ -421,8 +456,8 @@ function WordTarget({
  * measurement the canvas draws the silhouette from, for the reason `WordTarget`
  * gives.
  *
- * A step with nothing to step to gets no box at all rather than a disabled one.
- * There is no queue yet, so the honest state is "not a control", and a disabled
+ * A step with nothing to step to — the end of its shelf — gets no box at all
+ * rather than a disabled one. The drawing says so in soft grey, and a disabled
  * button announces itself to a screen reader as a thing that could work and
  * does not.
  */
@@ -432,7 +467,7 @@ function TransportTarget({
   onPress,
   disabled,
 }: {
-  seat: TransportSeat;
+  seat: Readonly<{ x: number; y: number }>;
   label: string;
   onPress: (() => void) | null;
   disabled: boolean;

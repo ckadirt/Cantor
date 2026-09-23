@@ -14,6 +14,7 @@ import {
   type Transforms3d,
 } from '@shopify/react-native-skia';
 import {
+  interpolateColor,
   useAnimatedReaction,
   useDerivedValue,
   useReducedMotion,
@@ -34,6 +35,7 @@ import {
   songTitleColumnPx,
   songTitleOriginPx,
   songWordsOriginPx,
+  modeSeatPx,
   transportSeatsPx,
   type PoseViewport,
   type TransportSeat,
@@ -112,8 +114,17 @@ export const PLAYER_TRANSPORT_KNOBS = {
    * enough to see the triangle open, and no longer.
    */
   MORPH_MS: 240,
-  /** How quietly a step is drawn while there is no queue for it to step through. */
+  /** How quietly a step is drawn when its shelf has nothing that way. */
   INERT_ALPHA: 0.4,
+  /** The mode glyph's line weight, in pixels. */
+  MODE_STROKE_PX: 1.6,
+  /** The loop's width and height, over the mode's box. */
+  MODE_LOOP_WIDTH_RATIO: 1.1,
+  MODE_LOOP_HEIGHT_RATIO: 0.7,
+  /** An arrowhead's reach either side of its line, over the box. */
+  MODE_HEAD_RATIO: 0.2,
+  /** The repeat-one numeral's height, over the box. */
+  MODE_ONE_RATIO: 0.36,
   /**
    * The waiting mark's side, over the box the verb is drawn in.
    *
@@ -246,6 +257,246 @@ export function stepSilhouette(
   return builder.detach();
 }
 
+/**
+ * One step, crossfaded between out of reach and live.
+ *
+ * Two fills of one path rather than one fill whose colour is interpolated,
+ * because the quiet pose is a colour *and* an alpha and the live one is
+ * neither — the same soft-grey gesture `useReach` makes for a word.
+ */
+function TransportStep({
+  path,
+  index,
+  reach,
+  colour,
+  mutedColour,
+}: {
+  path: SkPath;
+  index: 0 | 1;
+  reach: SharedValue<number[]> | null;
+  colour: string;
+  mutedColour: string;
+}) {
+  const live = useDerivedValue(() => reach?.value[index] ?? 0);
+  const quiet = useDerivedValue(
+    () => PLAYER_TRANSPORT_KNOBS.INERT_ALPHA * (1 - live.value),
+  );
+  return (
+    <>
+      <Path
+        color={mutedColour}
+        fillType="evenOdd"
+        opacity={quiet}
+        path={path}
+        style="fill"
+      />
+      <Path
+        color={colour}
+        fillType="evenOdd"
+        opacity={live}
+        path={path}
+        style="fill"
+      />
+    </>
+  );
+}
+
+/**
+ * Where the mode button sits on its own ramp: one number, three poses, for the
+ * reason `PLAYER_VERB_POSE` gives.
+ *
+ * Repeat, continue, stop — not the order a press walks (continue, repeat,
+ * stop), but the order that keeps every press a walk between neighbours.
+ * Repeat and continue are one loop that differs by a numeral; stop is the loop
+ * pulled straight. Put continue in the middle and no press ever passes through
+ * a pose it is not going to: stop back to continue does not flash the 1 on
+ * its way past repeat.
+ */
+export const MODE_POSE = { repeat: 0, continue: 1, stop: 2 } as const;
+const MODE_POSE_STOPS = [MODE_POSE.repeat, MODE_POSE.continue, MODE_POSE.stop];
+
+type Point = readonly [number, number];
+
+/**
+ * The mode button's three poses as one silhouette each, contour for contour.
+ *
+ * Every pose is the same five closed contours with the same point counts — the
+ * loop's upper run (6), its lower run (6), their two heads (3 each), and the
+ * numeral (6) — so the three can be interpolated point for point, the way
+ * `playPauseSilhouettes` makes one drawing of play and pause. The loop is every
+ * player's repeat. Stop is that loop pulled straight: the upper run flattens
+ * into the arrow's shaft and keeps its head, the lower run stands up into the
+ * bar it runs into, and what stop has no use for — the other head, the 1 —
+ * collapses to a point rather than fading out.
+ */
+export function modeSilhouettes(
+  cx: number,
+  cy: number,
+  size: number,
+): Readonly<{ repeat: SkPath; continue: SkPath; stop: SkPath }> {
+  const knobs = PLAYER_TRANSPORT_KNOBS;
+  const t = knobs.MODE_STROKE_PX;
+  const halfW = (size * knobs.MODE_LOOP_WIDTH_RATIO) / 2;
+  const halfH = (size * knobs.MODE_LOOP_HEIGHT_RATIO) / 2;
+  const head = size * knobs.MODE_HEAD_RATIO;
+  const back = head * 1.6;
+  const left = cx - halfW;
+  const right = cx + halfW;
+  const top = cy - halfH;
+  const bottom = cy + halfH;
+  const legEnd = halfH * 0.2;
+  const turn = (point: Point): Point => [2 * cx - point[0], 2 * cy - point[1]];
+
+  // The upper run: up the left side and along the top, stopping for its head.
+  const upper: Point[] = [
+    [left - t / 2, cy + legEnd],
+    [left - t / 2, top - t / 2],
+    [right - back * 0.6, top - t / 2],
+    [right - back * 0.6, top + t / 2],
+    [left + t / 2, top + t / 2],
+    [left + t / 2, cy + legEnd],
+  ];
+  const upperHead = arrowHead(right + back * 0.4, top, head, 1);
+  // The lower run is the upper turned half round, which is what a loop is.
+  const lower = upper.map(turn);
+  const lowerHead = arrowHead(left - back * 0.4, bottom, head, -1);
+
+  const n = (size * knobs.MODE_ONE_RATIO) / 2;
+  const one: Point[] = [
+    [cx + t / 2, cy - n],
+    [cx + t / 2, cy + n],
+    [cx - t / 2, cy + n],
+    [cx - t / 2, cy - n + t * 1.4],
+    [cx - n * 0.55, cy - n * 0.45 + t * 0.5],
+    [cx - n * 0.55 - t * 0.4, cy - n * 0.45 - t * 0.5],
+  ];
+  const nothing = (at: Point, count: number): Point[] =>
+    Array.from({ length: count }, () => at);
+
+  // Stop: the shaft, walked in the upper run's own order so each point knows
+  // where it is going; then the bar, in the lower run's.
+  const tip = right - t * 2;
+  const shaftEnd = tip - back * 0.9;
+  const shaft: Point[] = [
+    [left, cy + t / 2],
+    [left, cy - t / 2],
+    [shaftEnd, cy - t / 2],
+    [shaftEnd, cy + t / 2],
+    [left + t, cy + t / 2],
+    [left, cy + t / 2],
+  ];
+  // The lower run's leg stands up into the bar and its foot — the run along
+  // the bottom — draws back into the bar's own foot. Send the run's inner
+  // corner anywhere higher and the two edges part mid-morph into a wedge.
+  const barX = right + t;
+  const bar: Point[] = [
+    [barX + t / 2, top],
+    [barX + t / 2, bottom],
+    [barX - t / 2, bottom],
+    [barX - t / 2, bottom],
+    [barX - t / 2, bottom],
+    [barX - t / 2, top],
+  ];
+
+  const loop = [upper, lower, upperHead, lowerHead];
+  return {
+    repeat: silhouette([...loop, one]),
+    continue: silhouette([...loop, nothing([cx, cy], one.length)]),
+    stop: silhouette([
+      shaft,
+      bar,
+      arrowHead(tip, cy, head, 1),
+      nothing([left, cy], lowerHead.length),
+      nothing([cx, cy], one.length),
+    ]),
+  };
+}
+
+/** A head with its tip at `(x, y)`, pointing along `direction`. */
+function arrowHead(
+  x: number,
+  y: number,
+  reach: number,
+  direction: 1 | -1,
+): Point[] {
+  const back = x - reach * 1.6 * direction;
+  return [
+    [x, y],
+    [back, y - reach],
+    [back, y + reach],
+  ];
+}
+
+/**
+ * Closed contours, every one wound the same way.
+ *
+ * The fill is nonzero, so a head overlapping the end of its run adds rather
+ * than cancels — which only holds if they turn the same way. A contour that
+ * has collapsed to a point has no winding and is left as it is, which keeps
+ * its points in step with the pose it is morphing from.
+ */
+function silhouette(contours: readonly (readonly Point[])[]): SkPath {
+  const builder = Skia.PathBuilder.Make();
+  for (const contour of contours) {
+    let area = 0;
+    for (let index = 0; index < contour.length; index += 1) {
+      const [x0, y0] = contour[index];
+      const [x1, y1] = contour[(index + 1) % contour.length];
+      area += x0 * y1 - x1 * y0;
+    }
+    const wound = area < 0 ? [...contour].reverse() : contour;
+    builder.moveTo(wound[0][0], wound[0][1]);
+    for (let index = 1; index < wound.length; index += 1) {
+      builder.lineTo(wound[index][0], wound[index][1]);
+    }
+    builder.close();
+  }
+  return builder.detach();
+}
+
+/**
+ * The mode button, one silhouette morphing along its ramp.
+ *
+ * Continue is drawn in the quiet hand and the two it can become in ink, so the
+ * ink travels with the shape: a pose's distance from continue is how inked it is.
+ */
+function TransportMode({
+  viewport,
+  pose,
+  colour,
+  mutedColour,
+}: {
+  viewport: PoseViewport;
+  pose: DerivedValue<number>;
+  colour: string;
+  mutedColour: string;
+}) {
+  const stops = useMemo(() => {
+    const seat = modeSeatPx(viewport);
+    const shapes = modeSilhouettes(seat.x, seat.y, seat.size);
+    return [shapes.repeat, shapes.continue, shapes.stop];
+  }, [viewport]);
+  const path = useSharedValue(
+    interpolatePaths(pose.value, MODE_POSE_STOPS, stops),
+  );
+  useAnimatedReaction(
+    () => pose.value,
+    value => {
+      path.value = interpolatePaths(value, MODE_POSE_STOPS, stops);
+      notifyChange(path);
+    },
+    [stops],
+  );
+  const ink = useDerivedValue(() =>
+    interpolateColor(
+      Math.min(Math.abs(pose.value - MODE_POSE.continue), 1),
+      [0, 1],
+      [mutedColour, colour],
+    ),
+  );
+  return <Path color={ink} path={path} style="fill" />;
+}
+
 /** One closed four-point contour, appended to a builder. */
 function quad(
   builder: ReturnType<typeof Skia.PathBuilder.Make>,
@@ -279,7 +530,7 @@ function quad(
  * Deliberately the same geometry as the playhead's arc and deliberately not the
  * same ink — a download filling in the colour the playhead uses would read as a
  * song already playing. It is drawn in the muted hand, which is the same hand
- * the inert transport steps are drawn in: present, and not yet yours.
+ * a transport step at the end of its shelf is drawn in: present, not yet yours.
  */
 export function ArrivingRing({
   radius,
@@ -843,20 +1094,28 @@ function MorphGlyph({
  * a row: a retarget is `withTiming` picking up wherever the last one had got
  * to, which is the mid-morph interrupt the motion rules ask for, for free.
  *
- * The steps are drawn quiet and are not pressable. There is no queue in Cantor
- * — the shelf's order *is* the order, and nothing auto-advances — so there is
- * nothing for a step to step to yet. Drawing them anyway is the honest half of
- * that: the transport's shape is settled, and the day the shelf can hand the
- * player a neighbour these light up without moving.
+ * The steps walk the shelf — its order *is* the queue, see `field/queue.ts` —
+ * and each is drawn twice, quiet and inked, crossfaded on `lights`: a step with
+ * a neighbour to go to is in reach, one at the end of its shelf is soft grey.
+ * Outboard of next is the mode — what happens when the song ends — drawn the
+ * way every player draws repeat. All of it on one shared value, for the reason
+ * `playing` is one: a prop would re-record the canvas to say any of it.
  */
 export function TransportControls({
   viewport,
   playing,
   onPhone,
+  lights = null,
   colour,
   mutedColour,
 }: {
   viewport: PoseViewport;
+  /**
+   * `[previous, next, mode]`. The steps are 0 out of reach and 1 live; the
+   * mode is its place on `MODE_POSE`'s ramp. Null draws both steps quiet and
+   * no mode at all.
+   */
+  lights?: SharedValue<number[]> | null;
   /**
    * How far through the play-to-pause morph the verb is, 0..1.
    *
@@ -869,7 +1128,7 @@ export function TransportControls({
   mutedColour: string;
 }) {
   const seats = useMemo(() => transportSeatsPx(viewport), [viewport]);
-  const steps = useMemo(
+  const paths = useMemo(
     () =>
       seats
         .filter(seat => seat.key !== 'playPause')
@@ -885,18 +1144,29 @@ export function TransportControls({
     [seats],
   );
   const verb = seats.find(seat => seat.key === 'playPause');
+  const modePose = useDerivedValue(
+    () => lights?.value[2] ?? MODE_POSE.continue,
+  );
   return (
     <>
-      {steps.map(step => (
-        <Path
-          color={mutedColour}
-          fillType="evenOdd"
+      {paths.map(step => (
+        <TransportStep
+          colour={colour}
+          index={step.key === 'previous' ? 0 : 1}
           key={step.key}
-          opacity={PLAYER_TRANSPORT_KNOBS.INERT_ALPHA}
+          mutedColour={mutedColour}
           path={step.path}
-          style="fill"
+          reach={lights}
         />
       ))}
+      {lights === null ? null : (
+        <TransportMode
+          colour={colour}
+          mutedColour={mutedColour}
+          pose={modePose}
+          viewport={viewport}
+        />
+      )}
       {verb === undefined ? null : (
         <TransportVerb
           colour={onPhone ? colour : mutedColour}
@@ -1004,6 +1274,7 @@ export function NativePlayerParts({
   positionSeconds,
   transportPlaying,
   arriving,
+  lights = null,
   colour,
   mutedColour,
   songTitleFont,
@@ -1039,6 +1310,8 @@ export function NativePlayerParts({
    * download.
    */
   arriving: SharedValue<number> | null;
+  /** The transport's lights; see `TransportControls`. */
+  lights?: SharedValue<number[]> | null;
   colour: string;
   mutedColour: string;
   songTitleFont: SkFont;
@@ -1153,6 +1426,7 @@ export function NativePlayerParts({
           mutedColour={mutedColour}
           onPhone={model.onPhone}
           playing={transportPlaying}
+          lights={lights}
           viewport={viewport}
         />
       </SkiaGroup>

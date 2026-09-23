@@ -175,6 +175,23 @@ describe('AudioApiPlayer source discipline', () => {
     expect(player.snapshot().positionSeconds).toBe(0);
   });
 
+  it('stays playing when the element re-announces its load on a replay', async () => {
+    const { player, element } = createPlayer();
+    await player.load(FIRST, '/audio/second.opus');
+    await player.seek(44);
+    await player.play();
+    element.advance(2000, 45);
+    expect(player.snapshot().state).toBe('ended');
+
+    await player.play();
+    // Seeking a finished element back to 0 makes the real one fire `onLoad`
+    // again, with no load in flight.
+    player.binding.onLoad();
+
+    expect(player.snapshot().state).toBe('playing');
+    expect(element.playing).toBe(true);
+  });
+
   it('releases the source on unload so nothing keeps a file open', async () => {
     const { player, element } = createPlayer();
     await player.load(FIRST, '/audio/first.opus');

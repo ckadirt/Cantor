@@ -131,6 +131,35 @@ the released copies — the rule a row's `REMOVE` already follows. A song that
 leaves the field while the camera is standing in it is handled one layer down;
 see the `lastVisualPlacements` trap below.
 
+## The shelf queue
+
+`field/queue.ts` is pure: a `ShelfQueue` is the group a song was started from
+plus the seating it had then, and `stepFrom` walks the *live* seating when the
+group still holds the song, falling back to the saved one. `features/field/
+useShelfQueue.ts` owns every way of moving along it — a song running off its
+end (read against `player/afterSong.ts`: continue, stop, repeat), the L2 steps,
+and the lock screen's next/previous through `PlayerHost`'s `onStep`.
+
+Three rules that are not optional:
+
+- **`ended` is heard on `PlayerPort.subscribe`, never in an effect.** The song
+  that matters ends with the screen off, where a React commit may not happen.
+  The advance, the fetch, the source swap and the notification all run in doze;
+  this was verified on the Xiaomi with the phone `Dozing`.
+- **Every play takes a ticket.** An advance mostly waits on a download; a tap
+  meanwhile takes a newer ticket and the stale advance must not open its track.
+- **Ask native storage for the path before fetching.** `fetchPath` tries
+  `audioPath` first, because `commands.audio('download')` throws "not connected"
+  for an offline node even when the file is on the phone.
+
+"Previous" restarts the song past `RESTART_WITHIN_SECONDS`, read from the
+port's `snapshot()` — the element's position events keep arriving in doze; the
+visual clock does not move without frames. The camera follows with
+`useFieldCamera.step`: ascend to the row, then descend into the neighbour on the
+first flight's landing. A step can be retargeted during its first leg (a song
+that refuses at once is stepped over while the camera is still folding), and a
+follow that happens with the screen off is deferred to the next `active`.
+
 ## Playback gestures and field lenses
 
 `player/scrubSession.ts` owns a silent seek transaction: pause once, preview on

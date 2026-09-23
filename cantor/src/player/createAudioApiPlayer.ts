@@ -73,9 +73,19 @@ function clampFrame(value: number, frames: number): number {
  *
  * Until this runs the session advertises `actions=0` and Android routes no
  * media button to the app, however visible the notification is.
+ *
+ * The two steps walk the shelf the song was started from; the adapter only
+ * reports them — see `PlayerHost`'s `onStep` — because what "next" is belongs
+ * to the field, not to the thing that makes sound.
  */
 export async function declarePlaybackControls(): Promise<void> {
-  for (const control of ['play', 'pause', 'seekTo'] as const) {
+  for (const control of [
+    'play',
+    'pause',
+    'seekTo',
+    'nextTrack',
+    'previousTrack',
+  ] as const) {
     await PlaybackNotificationManager.enableControl(control, true);
   }
 }

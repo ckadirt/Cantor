@@ -301,6 +301,8 @@ type Props = {
    */
   transportPlaying?: SharedValue<number> | null;
   transportArriving?: SharedValue<number> | null;
+  /** The transport's lights, 0..1 each; see `TransportControls`. */
+  transportLights?: SharedValue<number[]> | null;
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
   /** How far through the playing song we are, 0..1. */
@@ -519,6 +521,7 @@ function FieldCanvasImpl({
   focusKey = null,
   transportPlaying = null,
   transportArriving = null,
+  transportLights = null,
   analyses,
   playingProgress = null,
   grain = null,
@@ -903,6 +906,7 @@ function FieldCanvasImpl({
           grainShared={grainValue}
           transportPlaying={transportPlaying}
           transportArriving={transportArriving}
+          transportLights={transportLights}
           positionSeconds={positionSeconds}
           analyses={analyses}
           labelFlights={labelFlights}
@@ -936,6 +940,7 @@ function FieldCanvasImpl({
     songTitleFont,
     transportPlaying,
     transportArriving,
+    transportLights,
     veil,
     viewport,
   ]);
@@ -1033,6 +1038,7 @@ function FieldCanvasImpl({
         songTitleFont={songTitleFont}
         transportPlaying={transportPlaying}
         transportArriving={transportArriving}
+        transportLights={transportLights}
         viewport={viewport}
       />
     );
@@ -1048,6 +1054,7 @@ function FieldCanvasImpl({
     songTitleFont,
     transportPlaying,
     transportArriving,
+    transportLights,
     viewport,
   ]);
 
@@ -1454,6 +1461,7 @@ function PlayerChrome({
   model,
   transportPlaying,
   transportArriving,
+  transportLights,
   viewport,
   colour,
   mutedColour,
@@ -1465,6 +1473,7 @@ function PlayerChrome({
   model: NativeSongModel;
   transportPlaying: SharedValue<number> | null;
   transportArriving: SharedValue<number> | null;
+  transportLights: SharedValue<number[]> | null;
   viewport: Viewport;
   colour: string;
   mutedColour: string;
@@ -1529,6 +1538,7 @@ function PlayerChrome({
         songTitleFont={songTitleFont}
         transportPlaying={transportPlaying}
         arriving={transportArriving}
+        lights={transportLights}
         viewport={viewport}
       />
     </SkiaGroup>
@@ -1689,6 +1699,7 @@ type NativeFieldContentProps = Readonly<{
   /** The play-to-pause morph, 0..1, for the song the player holds. */
   transportPlaying: SharedValue<number> | null;
   transportArriving: SharedValue<number> | null;
+  transportLights: SharedValue<number[]> | null;
   positionSeconds: SharedValue<number> | null;
   analyses: ReadonlyMap<string, SongAnalysis> | undefined;
   /**
@@ -2521,6 +2532,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   focusKey,
   transportPlaying,
   transportArriving,
+  transportLights,
   positionSeconds,
   analyses,
   grainShared,
@@ -2777,6 +2789,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             positionSeconds={focused ? positionSeconds : null}
             transportPlaying={focused ? transportPlaying : null}
             transportArriving={focused ? transportArriving : null}
+            transportLights={focused ? transportLights : null}
             durationSeconds={song.duration_ms / 1000}
             displayFont={displayFont}
             monoFont={monoFont}
@@ -2908,6 +2921,7 @@ function NativePlacementFlight({
   positionSeconds,
   transportPlaying,
   transportArriving,
+  transportLights,
   durationSeconds,
   displayFont,
   monoFont,
@@ -2939,6 +2953,7 @@ function NativePlacementFlight({
   positionSeconds: SharedValue<number> | null;
   transportPlaying: SharedValue<number> | null;
   transportArriving: SharedValue<number> | null;
+  transportLights: SharedValue<number[]> | null;
   durationSeconds: number;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -3174,6 +3189,7 @@ function NativePlacementFlight({
           positionSeconds={positionSeconds}
           transportPlaying={transportPlaying}
           arriving={transportArriving}
+          lights={transportLights}
           anchor={playerAnchor}
           songMetaFont={songMetaFont}
           songTitleFont={songTitleFont}

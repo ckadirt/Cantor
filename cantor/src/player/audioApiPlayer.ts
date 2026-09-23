@@ -126,6 +126,12 @@ export class AudioApiPlayer implements PlayerPort {
         };
       },
       onLoad() {
+        // Only a load this adapter asked for may settle one. The element also
+        // re-announces `onLoad` when it is sought back from its end — which is
+        // what replaying a finished song does — and settling that as a fresh
+        // load published `paused` 25 ms after `play()` had started the song,
+        // leaving it silent at 0:00.
+        if (player.pendingLoad === null) return;
         player.settleLoad('paused');
       },
       onError(error) {
