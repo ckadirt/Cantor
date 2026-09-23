@@ -243,6 +243,7 @@ function Body({ onNext }: PanelBodyProps) {
         ))}
         {sequenceItems.length > 0 && (
           <MorphTextSequence
+            allowFontScaling={false}
             items={sequenceItems}
             charStyle={wordStyle}
             color={pal.ink}

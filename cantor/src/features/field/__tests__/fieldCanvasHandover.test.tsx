@@ -72,6 +72,7 @@ let mockFont: ReturnType<typeof Skia.Font> | null = null;
 jest.mock('../../../motion/fonts', () => ({
   __esModule: true,
   useMorphFont: () => mockFont,
+  useFontScaledStyle: (style: unknown) => style,
 }));
 
 const viewport = { width: 380, height: 800 };

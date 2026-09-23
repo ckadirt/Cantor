@@ -8,6 +8,7 @@ import type { SongDetail, SongHeader } from '../../../core/protocol';
 jest.mock('../../../motion/fonts', () => ({
   __esModule: true,
   useMorphFont: () => null,
+  useFontScaledStyle: (style: unknown) => style,
 }));
 
 const song = (over: Partial<SongHeader> = {}): SongHeader =>

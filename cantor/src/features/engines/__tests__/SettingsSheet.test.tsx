@@ -6,6 +6,7 @@ import { SettingsSheet } from '../SettingsSheet';
 jest.mock('../../../motion/fonts', () => ({
   __esModule: true,
   useMorphFont: () => null,
+  useFontScaledStyle: (style: unknown) => style,
 }));
 
 const WORDS = [
