@@ -1,13 +1,13 @@
 # Cantor
 
-A new way to interact with music. Cantor generates full songs on-device — no cloud inference required — built on the ACE-Step 1.5 music model. This repo is the **React Native app** (RN 0.86, bare CLI, `applicationId com.cantor.app`).
+A new way to interact with music. Cantor generates full songs through a paired local node today, with on-device generation as the destination and no cloud inference required. It is built around the ACE-Step 1.5 music model. This repo is the **React Native app** (RN 0.86, bare CLI, `applicationId com.cantor.app`).
 
 Changing app code? Read [`AGENTS.md`](AGENTS.md) for product and motion rules
 and [`../docs/refactor/hacking-app.md`](../docs/refactor/hacking-app.md) for the
 module map, layering rules, and extension recipes. This file is about building
 and running the app.
 
-> **Generation runs where you are.** The generation engine is being disentangled from the app so a song can be produced on **local devices (smartphones)**, on a **PC or Mac**, and — coming soon — on **our own servers**. Same app, interchangeable backends. This is core to the philosophy: revolutionize how we interact with music by letting the music be made anywhere.
+> **Generation runs where you are.** Today a song is produced by a paired **PC or Mac** node. The same engine architecture is intended to expand to **local devices (smartphones)** and, later, **our own servers**. Same app, interchangeable backends. This is core to the philosophy: revolutionize how we interact with music by letting the music be made anywhere.
 
 ---
 

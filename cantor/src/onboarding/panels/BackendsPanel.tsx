@@ -1,20 +1,16 @@
 /**
- * Panel 2 — where the work happens. Instead of prose rows, a live diagram:
- * this phone, connected peer-to-peer to your PC and to Cantor's cloud. The
- * drawing traces itself in (the app's Create gesture — path trim on thin
- * strokes), the labels use the same Write gesture as everything else, and
- * the whole choreography rides one linear clock with smootherstep windows.
- * Only on-device runs today; PC and cloud carry honest "soon" tags.
+ * Panel 2 — the phone is the permanent control centre; compute is a separate,
+ * interchangeable role. The phone sits on the left with the Cantor set on its
+ * screen; a fan of dashed links reaches out to a tidy column of the places
+ * that role can live, each a single-weight line drawing with its label and
+ * status on one row.
+ *
+ * The whole sentence is native Cantor motion: Skia paths trace in and labels
+ * use WriteText, all reading from one linear clock through smootherstep windows.
  */
 import React, { useEffect, useMemo } from 'react';
 import { StyleSheet, Text, useWindowDimensions, View, type TextStyle } from 'react-native';
-import {
-  Canvas,
-  DashPathEffect,
-  Path,
-  Skia,
-  type SkPath,
-} from '@shopify/react-native-skia';
+import { Canvas, DashPathEffect, Path, Skia, type SkPath } from '@shopify/react-native-skia';
 import Animated, {
   cancelAnimation,
   Easing,
@@ -29,165 +25,147 @@ import Animated, {
 import { smootherstep, WriteText } from '../../motion';
 import { Button, PanelBody } from './kit';
 import { SIGILS } from '../sigils';
+import { cantorSegments } from '../cantorBars';
 import { space, type, usePalette } from '../../theme/tokens';
 import type { PanelBodyProps, PanelDef } from './types';
 
 // ---- choreography ----------------------------------------------------------
-// One linear clock; every element owns a smootherstep window on it. The phone
-// draws first, links reach out, the peers form as the links arrive, labels
-// write themselves, and the status tags surface last.
-const DIAG_MS = 2100;
-const DIAG_DELAY_MS = 250; // let the body finish rising before ink appears
+// One linear clock. The phone draws first and the Cantor set grows on its
+// screen; the links fan out one by one, each node forms as its link lands,
+// its name writes, and its status surfaces last.
+const DIAG_MS = 2400;
+const DIAG_DELAY_MS = 250;
 type Win = readonly [number, number];
 const W_PHONE: Win = [0, 0.2];
-const W_PHONE_HOME: Win = [0.16, 0.24];
-const W_LINK_PC: Win = [0.2, 0.4];
-const W_PC_SCREEN: Win = [0.36, 0.56];
-const W_PC_BASE: Win = [0.52, 0.6];
-const W_LINK_CLOUD: Win = [0.3, 0.5];
-const W_CLOUD: Win = [0.46, 0.7];
-const W_LABEL_PHONE: Win = [0.22, 0.5];
-const W_LABEL_PC: Win = [0.56, 0.82];
-const W_LABEL_CLOUD: Win = [0.64, 0.9];
-const W_TAG_NOW: Win = [0.5, 0.66];
-const W_TAG_PC: Win = [0.8, 0.94];
-const W_TAG_CLOUD: Win = [0.86, 1];
-const W_CAPTION: Win = [0.78, 0.98];
+const W_PHONE_DETAIL: Win = [0.14, 0.26];
+const W_SET_START = 0.18; // first Cantor row; each deeper row follows
+const W_SET_STEP = 0.05;
+const W_CONTROL_LABEL: Win = [0.24, 0.44];
+const W_CONTROL_TAG: Win = [0.38, 0.52];
+const NODE_STEP = 0.065; // lag between consecutive nodes
+const W_LINK: Win = [0.28, 0.46];
+const W_ICON: Win = [0.4, 0.58];
+const W_LABEL: Win = [0.48, 0.68];
+const W_TAG: Win = [0.6, 0.72];
+const W_CAPTION: Win = [0.82, 1];
 
-/** One quiet line under the drawing; the diagram carries the argument. */
 const CAPTION =
-  'Only the engine changes. Your songs stay yours. ' +
-  'This phone works today. PC and cloud are coming soon.';
+  'Start and steer songs here. Choose the compute node that makes them.';
 
 // ---- geometry knobs --------------------------------------------------------
-// Step 2 carries more information than the other panels. Keep its illustration
-// compact so the caption and action retain a quiet amount of space below it.
-// Every authored device dimension is scaled by the same value; no silhouette
-// is stretched to make it fit.
-const DIAGRAM_SCALE = 0.84;
-const DIAGRAM_BASE_H = 212; // original composition height, dp
-const DIAG_H = DIAGRAM_BASE_H * DIAGRAM_SCALE;
-const DIAGRAM_META_OVERFLOW_H = 26; // room for the cloud's stacked status tag
-const DIAGRAM_STAGE_H = DIAG_H + DIAGRAM_META_OVERFLOW_H;
-const CAPTION_GAP = space.lg; // clear separation from the illustration
-const CLOUD_BASE_SCALE = 1.28; // wide enough for the full-size cloud label
-const CLOUD_CENTER_Y = 0.75; // clears the PC row after the uniform size increase
-const REMOTE_TAG_HALF_H = 10; // centres SOON inside PC and cloud outlines
-const STROKE = 1.8 * DIAGRAM_SCALE; // device outlines
-const LINK_STROKE = 1.4 * DIAGRAM_SCALE;
-const DASH: number[] = [7, 6];
-const LABEL_H = 16;
+const DIAG_H = 204;
+const CAPTION_GAP = space.md;
+const ROW_Y0 = 22; // first node row centre
+const ROW_STEP = 40;
+const PHONE = { cx: 42, w: 58, h: 108, r: 12 };
+const PHONE_CY = ROW_Y0 + ROW_STEP * 2 - 6; // level with the middle row, lifted for its label
+const LINK_GAP = 8; // clear air between a link and what it joins
+const ICON_HALF_W = 16;
+const ICON_COLUMN = 0.47; // icon centres, as a fraction of the width
+const LABEL_INSET = 30; // icon centre → label start
+const PHONE_STROKE = 1.6;
+const ICON_STROKE = 1.4;
+const LINK_STROKE = 1;
+const DASH: number[] = [3, 4];
+const LABEL_H = 15;
+const TAG_H = 16;
+const CHAR_W = 7.6; // mono advance at LABEL_STYLE, letter spacing included
 
-const LABEL_STYLE: TextStyle = { ...type.eyebrow, textAlign: 'center' };
-
-// Labels use the same fixed mono metrics. The short device rows remain
-// horizontal; the cloud status sits inside its outline so its full-size label
-// can stay centred below it.
-type StationMeta = {
-  label: string;
-  labelW: number;
-  tag: string;
-  tagW: number;
-  strong: boolean;
-  tagInside?: boolean;
+const LABEL_STYLE: TextStyle = {
+  ...type.eyebrow,
+  fontSize: 10,
+  letterSpacing: 1.6,
 };
 
-const STATION_META: readonly StationMeta[] = [
-  { label: 'THIS DEVICE', labelW: 104, tag: 'NOW', tagW: 40, strong: true },
-  {
-    label: 'YOUR PC',
-    labelW: 70,
-    tag: 'SOON',
-    tagW: 48,
-    strong: false,
-    tagInside: true,
-  },
-  {
-    label: 'CANTOR’S CLOUD',
-    labelW: 130,
-    tag: 'SOON',
-    tagW: 48,
-    strong: false,
-    tagInside: true,
-  },
-];
-const ROW_GAP = 8;
+const labelWidth = (label: string) => Math.ceil(label.length * CHAR_W) + 4;
 
+type NodeKey = 'pc' | 'gpu' | 'mac' | 'cloud' | 'phone';
+type NodeDef = { key: NodeKey; label: string; ready: boolean };
+
+// NOW first, SOON after, so the column reads top-down as "today, then next".
+const NODES: readonly NodeDef[] = [
+  { key: 'pc', label: 'PC', ready: true },
+  { key: 'gpu', label: 'GPU', ready: true },
+  { key: 'mac', label: 'MAC', ready: true },
+  { key: 'cloud', label: 'CANTOR CLOUD', ready: false },
+  { key: 'phone', label: 'ON PHONE', ready: false },
+];
+
+const CONTROL_LABEL = 'THIS PHONE';
+
+type Tone = 'ink' | 'muted' | 'faint';
 type Piece = {
   key: string;
   path: SkPath;
   win: Win;
-  tone: 'ink' | 'muted' | 'faint';
+  tone: Tone;
   width: number;
   dashed?: boolean;
+  cap?: 'round' | 'butt';
 };
 
-type Station = { x: number; labelY: number; tagY?: number };
+type Row = NodeDef & {
+  y: number;
+  labelX: number;
+  labelWin: Win;
+  tagWin: Win;
+};
 
-function buildDiagram(w: number): { pieces: Piece[]; stations: Station[] } {
-  const scaled = (value: number) => value * DIAGRAM_SCALE;
-  // Anchors — fractions of the canvas, phone left of centre, peers stacked
-  // on the right like the corners of a small constellation.
-  const phone = {
-    cx: w * 0.23,
-    cy: DIAG_H * 0.44,
-    w: scaled(60),
-    h: scaled(116),
-    r: scaled(14),
-  };
-  const pc = {
-    cx: w * 0.74,
-    cy: DIAG_H * 0.19,
-    w: scaled(92),
-    h: scaled(58),
-    r: scaled(6),
-  };
-  const cloudScale = CLOUD_BASE_SCALE * DIAGRAM_SCALE; // authored 128×72 box
-  const cloud = {
-    cx: w * 0.73,
-    cy: DIAG_H * CLOUD_CENTER_Y,
-    hw: 64 * cloudScale,
-    hh: 36 * cloudScale,
-  };
+type Diagram = { pieces: Piece[]; rows: Row[]; iconX: number };
 
-  const phoneBody = Skia.Path.Make();
-  phoneBody.addRRect(
-    Skia.RRectXY(
-      Skia.XYWHRect(phone.cx - phone.w / 2, phone.cy - phone.h / 2, phone.w, phone.h),
-      phone.r,
-      phone.r,
-    ),
-  );
-  const phoneHome = Skia.Path.Make();
-  phoneHome.moveTo(
-    phone.cx - scaled(8),
-    phone.cy + phone.h / 2 - scaled(12),
-  );
-  phoneHome.lineTo(
-    phone.cx + scaled(8),
-    phone.cy + phone.h / 2 - scaled(12),
-  );
+const shift = (win: Win, by: number): Win => [
+  Math.min(win[0] + by, 1),
+  Math.min(win[1] + by, 1),
+];
 
-  const pcScreen = Skia.Path.Make();
-  pcScreen.addRRect(
-    Skia.RRectXY(
-      Skia.XYWHRect(pc.cx - pc.w / 2, pc.cy - pc.h / 2, pc.w, pc.h),
-      pc.r,
-      pc.r,
-    ),
-  );
-  const pcBase = Skia.Path.Make();
-  pcBase.moveTo(
-    pc.cx - pc.w / 2 - scaled(12),
-    pc.cy + pc.h / 2 + scaled(5),
-  );
-  pcBase.lineTo(
-    pc.cx + pc.w / 2 + scaled(12),
-    pc.cy + pc.h / 2 + scaled(5),
-  );
+// ---- drawings --------------------------------------------------------------
+// Every node is drawn in the same ~32×24 box at one stroke weight, so the
+// column reads as a set rather than as five borrowed icons.
 
-  // A soft cumulus authored in a 128×72 box, then scaled and moved into place.
-  const cloudPath = Skia.Path.MakeFromSVGString(
+function roundedRect(path: SkPath, x: number, y: number, w: number, h: number, r: number) {
+  path.addRRect(Skia.RRectXY(Skia.XYWHRect(x, y, w, h), r, r));
+}
+
+function line(path: SkPath, x1: number, y1: number, x2: number, y2: number) {
+  path.moveTo(x1, y1);
+  path.lineTo(x2, y2);
+}
+
+function monitorPath(x: number, y: number): SkPath {
+  const p = Skia.Path.Make();
+  roundedRect(p, x - 14, y - 11, 28, 17, 2);
+  line(p, x, y + 6, x, y + 10);
+  line(p, x - 7, y + 10, x + 7, y + 10);
+  return p;
+}
+
+/** A graphics card: two fans on a board, its bracket and edge connector. */
+function gpuPath(x: number, y: number): SkPath {
+  const p = Skia.Path.Make();
+  p.moveTo(x - 16, y - 11);
+  p.lineTo(x - 13, y - 11);
+  p.lineTo(x - 13, y + 11);
+  roundedRect(p, x - 13, y - 8, 29, 14, 2);
+  p.addCircle(x - 4, y - 1, 4);
+  p.addCircle(x + 8, y - 1, 4);
+  line(p, x - 6, y + 9, x + 10, y + 9);
+  return p;
+}
+
+function laptopPath(x: number, y: number): SkPath {
+  const p = Skia.Path.Make();
+  roundedRect(p, x - 11, y - 11, 22, 15, 2);
+  p.moveTo(x - 15, y + 7);
+  p.lineTo(x + 15, y + 7);
+  p.lineTo(x + 13, y + 10);
+  p.lineTo(x - 13, y + 10);
+  p.close();
+  return p;
+}
+
+/** The same soft cumulus the first draft used, authored in a 128×72 box. */
+function cloudPath(x: number, y: number): SkPath {
+  const p = Skia.Path.MakeFromSVGString(
     'M 24 64 L 104 64 ' +
       'C 118 64 126 54 122 44 ' +
       'C 130 36 122 24 110 26 ' +
@@ -197,97 +175,136 @@ function buildDiagram(w: number): { pieces: Piece[]; stations: Station[] } {
       'C 10 28 6 40 14 48 ' +
       'C 16 58 20 64 24 64 Z',
   )!;
+  const s = 0.24;
   const m = Skia.Matrix();
-  m.translate(cloud.cx - cloud.hw, cloud.cy - cloud.hh);
-  m.scale(cloudScale, cloudScale);
-  cloudPath.transform(m);
+  m.translate(x - 64 * s, y - 38 * s);
+  m.scale(s, s);
+  p.transform(m);
+  return p;
+}
 
-  // Peer-to-peer links, leaving from the phone's right edge.
-  const linkPc = Skia.Path.Make();
-  linkPc.moveTo(
-    phone.cx + phone.w / 2 + scaled(10),
-    phone.cy - scaled(22),
-  );
-  linkPc.lineTo(
-    pc.cx - pc.w / 2 - scaled(20),
-    pc.cy + scaled(8),
-  );
-  const linkCloud = Skia.Path.Make();
-  linkCloud.moveTo(
-    phone.cx + phone.w / 2 + scaled(10),
-    phone.cy + scaled(22),
-  );
-  linkCloud.lineTo(
-    cloud.cx - cloud.hw - scaled(10),
-    cloud.cy + scaled(4),
-  );
+function handsetPath(x: number, y: number): SkPath {
+  const p = Skia.Path.Make();
+  roundedRect(p, x - 7.5, y - 12, 15, 24, 3);
+  line(p, x - 2.5, y + 8, x + 2.5, y + 8);
+  return p;
+}
 
-  return {
-    pieces: [
-      { key: 'phone', path: phoneBody, win: W_PHONE, tone: 'ink', width: STROKE },
-      { key: 'home', path: phoneHome, win: W_PHONE_HOME, tone: 'ink', width: STROKE },
-      { key: 'link-pc', path: linkPc, win: W_LINK_PC, tone: 'faint', width: LINK_STROKE, dashed: true },
-      { key: 'pc-screen', path: pcScreen, win: W_PC_SCREEN, tone: 'muted', width: STROKE },
-      { key: 'pc-base', path: pcBase, win: W_PC_BASE, tone: 'muted', width: STROKE },
-      { key: 'link-cloud', path: linkCloud, win: W_LINK_CLOUD, tone: 'faint', width: LINK_STROKE, dashed: true },
-      { key: 'cloud', path: cloudPath, win: W_CLOUD, tone: 'muted', width: STROKE },
-    ],
-    stations: [
-      { x: phone.cx, labelY: phone.cy + phone.h / 2 + scaled(12) },
+const ICONS: Record<NodeKey, (x: number, y: number) => SkPath> = {
+  pc: monitorPath,
+  gpu: gpuPath,
+  mac: laptopPath,
+  cloud: cloudPath,
+  phone: handsetPath,
+};
+
+function buildDiagram(w: number): Diagram {
+  const { cx, w: pw, h: ph, r } = PHONE;
+  const cy = PHONE_CY;
+  const top = cy - ph / 2;
+  const bottom = cy + ph / 2;
+  const iconX = Math.round(w * ICON_COLUMN);
+
+  const body = Skia.Path.Make();
+  roundedRect(body, cx - pw / 2, top, pw, ph, r);
+  const detail = Skia.Path.Make();
+  line(detail, cx - 6, top + 9, cx + 6, top + 9);
+  line(detail, cx - 8, bottom - 10, cx + 8, bottom - 10);
+
+  const pieces: Piece[] = [
+    { key: 'phone', path: body, win: W_PHONE, tone: 'ink', width: PHONE_STROKE },
+    { key: 'phone-detail', path: detail, win: W_PHONE_DETAIL, tone: 'ink', width: PHONE_STROKE },
+  ];
+
+  // The Cantor set on the phone's screen, one row per depth, each tracing in
+  // after the one above it: the app's own mark as the thing being steered.
+  const setW = pw - 16;
+  const setX = cx - setW / 2;
+  for (let depth = 0; depth < 4; depth += 1) {
+    const rowY = cy - 18 + depth * 10;
+    const set = Skia.Path.Make();
+    for (const [sx, sw] of cantorSegments(depth)) {
+      line(set, setX + sx * setW, rowY, setX + (sx + sw) * setW, rowY);
+    }
+    const start = W_SET_START + depth * W_SET_STEP;
+    pieces.push({
+      key: `set-${depth}`,
+      path: set,
+      win: [start, start + 0.12],
+      tone: 'ink',
+      width: 3,
+      cap: 'butt',
+    });
+  }
+
+  const rows: Row[] = NODES.map((node, i) => {
+    const y = ROW_Y0 + i * ROW_STEP;
+    const lag = i * NODE_STEP;
+
+    // Links leave the phone's edge slightly spread, like fibres from a
+    // bundle, and arrive level with their node.
+    const x1 = cx + pw / 2 + LINK_GAP;
+    const y1 = cy + (y - cy) * 0.22;
+    const x2 = iconX - ICON_HALF_W - LINK_GAP;
+    const mid = (x1 + x2) / 2;
+    const link = Skia.Path.Make();
+    link.moveTo(x1, y1);
+    link.cubicTo(mid, y1, mid, y, x2, y);
+
+    pieces.push(
       {
-        x: pc.cx,
-        labelY: pc.cy + pc.h / 2 + scaled(5) + scaled(12),
-        tagY: pc.cy - REMOTE_TAG_HALF_H,
+        key: `link-${node.key}`,
+        path: link,
+        win: shift(W_LINK, lag),
+        tone: node.ready ? 'muted' : 'faint',
+        width: LINK_STROKE,
+        dashed: true,
       },
       {
-        x: cloud.cx,
-        labelY: cloud.cy + cloud.hh + scaled(12),
-        tagY: cloud.cy - REMOTE_TAG_HALF_H,
+        key: `icon-${node.key}`,
+        path: ICONS[node.key](iconX, y),
+        win: shift(W_ICON, lag),
+        tone: node.ready ? 'ink' : 'muted',
+        width: ICON_STROKE,
       },
-    ],
-  };
+    );
+
+    return {
+      ...node,
+      y,
+      labelX: iconX + LABEL_INSET,
+      labelWin: shift(W_LABEL, lag),
+      tagWin: shift(W_TAG, lag),
+    };
+  });
+
+  return { pieces, rows, iconX };
 }
 
 // ---- pieces ----------------------------------------------------------------
 
 /** One stroke that traces itself in over its window (the Create gesture). */
-function Trace({
-  piece,
-  clock,
-  color,
-}: {
-  piece: Piece;
-  clock: SharedValue<number>;
-  color: string;
-}) {
-  const end = useDerivedValue(() =>
-    smootherstep(piece.win[0], piece.win[1], clock.value),
-  );
+function Trace({ piece, clock, color }: { piece: Piece; clock: SharedValue<number>; color: string }) {
+  const end = useDerivedValue(() => smootherstep(piece.win[0], piece.win[1], clock.value));
   return (
     <Path
       path={piece.path}
       style="stroke"
       strokeWidth={piece.width}
-      strokeCap="round"
+      strokeCap={piece.cap ?? 'round'}
       strokeJoin="round"
       color={color}
       start={0}
-      end={end}
-    >
+      end={end}>
       {piece.dashed ? <DashPathEffect intervals={DASH} /> : null}
     </Path>
   );
 }
 
-/** The square status tag — NOW in ink, SOON in a whisper. */
-function Tag({
-  label,
-  strong,
-  clock,
-  win,
-}: {
+/** The square status tag — ink when it works today, a whisper when it's next. */
+function Tag({ label, strong, clock, win }: {
   label: string;
-  strong?: boolean;
+  strong: boolean;
   clock: SharedValue<number>;
   win: Win;
 }) {
@@ -303,13 +320,45 @@ function Tag({
   );
 }
 
+function useWindowClock(clock: SharedValue<number>, win: Win) {
+  return useDerivedValue(() =>
+    Math.min(1, Math.max(0, (clock.value - win[0]) / (win[1] - win[0]))),
+  );
+}
+
+function NodeRow({ row, right, clock }: { row: Row; right: number; clock: SharedValue<number> }) {
+  const pal = usePalette();
+  const progress = useWindowClock(clock, row.labelWin);
+  const labelW = labelWidth(row.label);
+  return (
+    <View
+      style={[
+        styles.row,
+        { left: row.labelX, top: row.y - TAG_H / 2, width: right - row.labelX },
+      ]}>
+      <WriteText
+        text={row.label}
+        charStyle={LABEL_STYLE}
+        color={row.ready ? pal.ink : pal.muted}
+        progress={progress}
+        style={{ width: labelW, height: LABEL_H }}
+      />
+      <Tag
+        label={row.ready ? 'NOW' : 'SOON'}
+        strong={row.ready}
+        clock={clock}
+        win={row.tagWin}
+      />
+    </View>
+  );
+}
+
 function Body({ onNext }: PanelBodyProps) {
   const pal = usePalette();
   const reduced = useReducedMotion();
   const { width } = useWindowDimensions();
   const w = width - space.lg * 2;
   const clock = useSharedValue(0);
-
   const diagram = useMemo(() => buildDiagram(w), [w]);
 
   useEffect(() => {
@@ -324,103 +373,48 @@ function Body({ onNext }: PanelBodyProps) {
     return () => cancelAnimation(clock);
   }, [clock, reduced]);
 
-  // The labels ride the same clock through their own linear windows.
-  const phoneLabelT = useDerivedValue(() =>
-    Math.min(1, Math.max(0, (clock.value - W_LABEL_PHONE[0]) / (W_LABEL_PHONE[1] - W_LABEL_PHONE[0]))),
-  );
-  const pcLabelT = useDerivedValue(() =>
-    Math.min(1, Math.max(0, (clock.value - W_LABEL_PC[0]) / (W_LABEL_PC[1] - W_LABEL_PC[0]))),
-  );
-  const cloudLabelT = useDerivedValue(() =>
-    Math.min(1, Math.max(0, (clock.value - W_LABEL_CLOUD[0]) / (W_LABEL_CLOUD[1] - W_LABEL_CLOUD[0]))),
-  );
-
-  const tone = { ink: pal.ink, muted: pal.muted, faint: pal.faint };
-  const [phoneSt, pcSt, cloudSt] = diagram.stations;
+  const controlProgress = useWindowClock(clock, W_CONTROL_LABEL);
   const captionStyle = useAnimatedStyle(() => ({
     opacity: smootherstep(W_CAPTION[0], W_CAPTION[1], clock.value),
   }));
+  const tones = { ink: pal.ink, muted: pal.muted, faint: pal.faint };
+  const controlW = labelWidth(CONTROL_LABEL);
 
   return (
     <PanelBody footer={<Button label="Continue" onPress={onNext} />}>
       <View
         style={styles.stage}
         accessible
-        accessibilityLabel="Diagram: this device makes songs now; your PC and Cantor's cloud connect soon."
-      >
+        accessibilityLabel="This phone controls Cantor. PC, GPU, and Mac compute now. Cantor cloud and on-phone compute are coming soon.">
         <Canvas style={{ width: w, height: DIAG_H }}>
           {diagram.pieces.map(piece => (
-            <Trace key={piece.key} piece={piece} clock={clock} color={tone[piece.tone]} />
+            <Trace key={piece.key} piece={piece} clock={clock} color={tones[piece.tone]} />
           ))}
         </Canvas>
-
-        {(
-          [
-            { st: phoneSt, t: phoneLabelT, win: W_TAG_NOW, ink: pal.ink },
-            { st: pcSt, t: pcLabelT, win: W_TAG_PC, ink: pal.muted },
-            { st: cloudSt, t: cloudLabelT, win: W_TAG_CLOUD, ink: pal.muted },
-          ] as const
-        ).map(({ st, t, win }, i) => {
-          const meta = STATION_META[i];
-          const rowW = meta.tagInside
-            ? meta.labelW
-            : meta.labelW + ROW_GAP + meta.tagW;
-          return (
-            <React.Fragment key={meta.label}>
-              {meta.tagInside ? (
-                <View
-                  style={[
-                    styles.stationTag,
-                    {
-                      left: st.x - meta.tagW / 2,
-                      top: st.tagY,
-                      width: meta.tagW,
-                    },
-                  ]}
-                >
-                  <Tag
-                    label={meta.tag}
-                    strong={meta.strong}
-                    clock={clock}
-                    win={win}
-                  />
-                </View>
-              ) : null}
-              <View
-                style={[
-                  styles.station,
-                  {
-                    left: st.x - rowW / 2,
-                    top: st.labelY,
-                    width: meta.tagInside ? rowW : undefined,
-                  },
-                ]}
-              >
-                <WriteText
-                  text={meta.label}
-                  charStyle={LABEL_STYLE}
-                  color={meta.strong ? pal.ink : pal.muted}
-                  progress={t}
-                  style={{ width: meta.labelW, height: LABEL_H }}
-                />
-                {meta.tagInside ? null : (
-                  <Tag
-                    label={meta.tag}
-                    strong={meta.strong}
-                    clock={clock}
-                    win={win}
-                  />
-                )}
-              </View>
-            </React.Fragment>
-          );
-        })}
+        <View
+          style={[
+            styles.control,
+            {
+              left: PHONE.cx - controlW / 2,
+              top: PHONE_CY + PHONE.h / 2 + space.sm,
+              width: controlW,
+            },
+          ]}>
+          <WriteText
+            text={CONTROL_LABEL}
+            charStyle={LABEL_STYLE}
+            color={pal.ink}
+            progress={controlProgress}
+            style={{ width: controlW, height: LABEL_H }}
+          />
+          <Tag label="CONTROL" strong clock={clock} win={W_CONTROL_TAG} />
+        </View>
+        {diagram.rows.map(row => (
+          <NodeRow key={row.key} row={row} right={w - 2} clock={clock} />
+        ))}
       </View>
-
       <Animated.View style={captionStyle}>
-        <Text style={[type.small, styles.caption, { color: pal.muted }]}>
-          {CAPTION}
-        </Text>
+        <Text style={[type.small, styles.caption, { color: pal.muted }]}>{CAPTION}</Text>
       </Animated.View>
     </PanelBody>
   );
@@ -435,31 +429,26 @@ export const backendsPanel: PanelDef = {
 };
 
 const styles = StyleSheet.create({
-  stage: {
-    marginTop: space.sm,
-    height: DIAGRAM_STAGE_H,
-  },
-  station: {
+  stage: { marginTop: space.sm, height: DIAG_H },
+  control: { position: 'absolute', alignItems: 'center', gap: 4 },
+  row: {
     position: 'absolute',
+    height: TAG_H,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: ROW_GAP,
-  },
-  stationTag: {
-    position: 'absolute',
-    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   tag: {
+    height: TAG_H,
     borderWidth: 1,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   tagText: {
     fontFamily: type.mono.fontFamily,
-    fontSize: 10,
-    letterSpacing: 1.5,
+    fontSize: 9,
+    letterSpacing: 1.4,
   },
-  caption: {
-    marginTop: CAPTION_GAP,
-  },
+  caption: { marginTop: CAPTION_GAP },
 });
