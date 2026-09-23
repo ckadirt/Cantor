@@ -2,6 +2,10 @@ import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import {
   GRAIN_ENABLED,
+  LEVEL_SCALE_RATIOS,
+  seatCameraAround,
+  seatCameraBounds,
+  shelfSeats,
   worldToScreen,
   placementPoint,
   gatherFraction,
@@ -1104,6 +1108,73 @@ describe('useFieldCamera', () => {
    * which left it at song scale over a seat nothing was in — a small zoom and
    * a nudge, with no way out but the system back button.
    */
+  it('climbs out of a song to its own row in a shelf taller than the screen', async () => {
+    mockReducedMotion = true;
+    const shelfful: FieldEntity[] = Array.from({ length: 30 }, (_, index) => ({
+      ...entities[0],
+      key: `node-a:song-${index}`,
+      entityId: `song-${index}`,
+      createdAtMs: entities[0].createdAtMs + index * 60_000,
+    }));
+    const field = layoutField({
+      entities: shelfful,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    expect(field.groups).toHaveLength(1);
+
+    function TallProbe() {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+    await ReactTestRenderer.act(async () => {
+      ReactTestRenderer.create(<TallProbe />);
+    });
+
+    const [seat] = shelfSeats(field);
+    const shelfScale = field.fitScale * LEVEL_SCALE_RATIOS.shelf;
+    const bounds = seatCameraBounds(seat, viewport, shelfScale);
+    // The column has to outrun the screen, or every row is already in view.
+    expect(bounds.max).toBeGreaterThan(bounds.min);
+
+    for (const inside of [
+      field.placements.find(p => p.targetY === seat.top)!,
+      field.placements.find(p => p.targetY === seat.bottom)!,
+    ]) {
+      await ReactTestRenderer.act(async () => {
+        latest.home();
+      });
+      await ReactTestRenderer.act(async () => {
+        latest.descend(inside);
+      });
+      await ReactTestRenderer.act(async () => {
+        latest.descend(inside);
+      });
+      expect(latest.level).toBe('song');
+
+      await ReactTestRenderer.act(async () => {
+        expect(latest.ascend()).toBe(true);
+      });
+      expect(latest.level).toBe('shelf');
+      // The row you left is on screen, not wherever the column's middle was.
+      const expected = seatCameraAround(seat, inside.targetY, viewport, shelfScale);
+      expect(latest.camera.x).toBeCloseTo(expected.x, 6);
+      expect(latest.camera.y).toBeCloseTo(expected.y, 6);
+      const row = worldToScreen(
+        { x: seat.cx, y: inside.targetY },
+        latest.camera,
+        viewport,
+      );
+      expect(row.y).toBeGreaterThan(0);
+      expect(row.y).toBeLessThan(viewport.height);
+    }
+  });
+
   it('climbs out of a song that left the field, to its shelf or home', async () => {
     mockReducedMotion = true;
     const week = Date.UTC(2026, 7, 8);
