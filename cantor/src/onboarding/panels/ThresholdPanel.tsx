@@ -42,6 +42,8 @@ const QUOTE_STYLE: TextStyle = {
   letterSpacing: 0.3,
 };
 
+const QUOTE_MIN_HEIGHT = QUOTE_STYLE.lineHeight! * 3;
+
 function Body({ onDone }: PanelBodyProps) {
   const pal = usePalette();
   const reduced = useReducedMotion();
@@ -118,7 +120,9 @@ export const thresholdPanel: PanelDef = {
 
 const styles = StyleSheet.create({
   block: { alignItems: 'center', paddingHorizontal: space.sm },
-  quoteZone: { alignSelf: 'stretch' },
+  // RN and Skia can choose different line breaks for the bundled face. Keep
+  // the canvas tall enough for the quote's three Skia lines on phone widths.
+  quoteZone: { alignSelf: 'stretch', minHeight: QUOTE_MIN_HEIGHT },
   sizer: { opacity: 0 },
   attrib: { marginTop: space.lg, textAlign: 'center' },
 });
