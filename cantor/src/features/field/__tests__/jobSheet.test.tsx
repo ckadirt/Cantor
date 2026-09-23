@@ -11,6 +11,7 @@ import type { JobPresentation } from '../useFieldController';
 jest.mock('../../../motion/fonts', () => ({
   __esModule: true,
   useMorphFont: () => null,
+  useFontScaledStyle: (style: unknown) => style,
 }));
 
 const node = fixture.node as NodeInfo;

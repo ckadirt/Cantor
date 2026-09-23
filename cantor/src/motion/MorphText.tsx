@@ -45,7 +45,7 @@ import {
 } from 'react-native-reanimated';
 import { bornClock } from './clock';
 import { smootherstep } from './geometry';
-import { useMorphFont } from './fonts';
+import { useFontScaledStyle, useMorphFont } from './fonts';
 import { buildGlyphMorphPaths, placedGlyphPath } from './glyphs';
 import {
   buildCrossfadeFlights,
@@ -716,6 +716,9 @@ export type Ink = string | SharedValue<string>;
 export type MorphTextProps = {
   text: string;
   charStyle: TextStyle;
+  /** As on <Text>: draw at the system font scale so a hand-off to real text
+   *  lands on the same glyphs. Off for scenes laid out from raw font metrics. */
+  allowFontScaling?: boolean;
   color: Ink;
   /** Morph/crossfade duration. Write uses Manim's automatic duration by default. */
   duration?: number;
@@ -739,7 +742,8 @@ export const MorphText = React.memo(MorphTextImpl);
 
 function MorphTextImpl({
   text,
-  charStyle,
+  charStyle: authoredStyle,
+  allowFontScaling,
   color,
   duration = DEFAULT_TEXT_TRANSFORM_MS,
   writeDuration,
@@ -748,6 +752,7 @@ function MorphTextImpl({
   style,
   progress,
 }: MorphTextProps) {
+  const charStyle = useFontScaledStyle(authoredStyle, allowFontScaling);
   const idle = useSharedValue(1);
   const reduced = useReducedMotion();
   const font = useMorphFont(charStyle);
@@ -912,6 +917,8 @@ export type MorphTextSequenceItem = {
 export type MorphTextSequenceProps = {
   items: readonly MorphTextSequenceItem[];
   charStyle: TextStyle;
+  /** As on MorphText. */
+  allowFontScaling?: boolean;
   color: Ink;
   progress: SharedValue<number> | DerivedValue<number>;
   /** All initial texts write together inside this normalized clock window. */
@@ -1052,12 +1059,14 @@ function SequenceTransform({
  */
 export const MorphTextSequence = React.memo(function MorphTextSequenceComponent({
   items,
-  charStyle,
+  charStyle: authoredStyle,
+  allowFontScaling,
   color,
   progress,
   writeWindow,
   style,
 }: MorphTextSequenceProps) {
+  const charStyle = useFontScaledStyle(authoredStyle, allowFontScaling);
   const font = useMorphFont(charStyle);
   const reduced = useReducedMotion();
   const fontSize = charStyle.fontSize ?? 14;

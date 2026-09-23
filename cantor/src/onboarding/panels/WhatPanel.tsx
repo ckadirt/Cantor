@@ -219,6 +219,7 @@ function RunText({ run, clock }: { run: Run; clock: SharedValue<number> }) {
   return (
     <View style={[styles.slot, { left: run.x, top: run.y, width: run.w + SLACK }]}>
       <WriteText
+        allowFontScaling={false}
         text={run.text}
         charStyle={CLAUSE_STYLE}
         color={pal.muted}
@@ -287,6 +288,7 @@ function SparedText({ spared, index, clock }: {
   return (
     <Animated.View style={[styles.slot, { width: w + SLACK }, style]}>
       <WriteText
+        allowFontScaling={false}
         text={spared.text}
         charStyle={SENTENCE_STYLE}
         color={pal.ink}
@@ -321,6 +323,7 @@ function Stage({ w, small, large, clock }: {
       accessibilityLabel="The usual terms: all rights in the songs you make remain with the company, and you are granted a revocable licence. Blacked out, it reads: all rights remain with you. No licence, no lockouts, no rules.">
       <View style={[styles.slot, { width: w }]}>
         <WriteText
+          allowFontScaling={false}
           text={EYEBROW}
           charStyle={EYEBROW_STYLE}
           color={pal.muted}
@@ -345,6 +348,7 @@ function Stage({ w, small, large, clock }: {
           { left: layout.stop.x, top: layout.sentenceTop, width: layout.stop.w + SLACK },
         ]}>
         <WriteText
+          allowFontScaling={false}
           text="."
           charStyle={SENTENCE_STYLE}
           color={pal.ink}
@@ -358,6 +362,7 @@ function Stage({ w, small, large, clock }: {
           { top: layout.sentenceTop + SENTENCE_LINE_H + LEDGER_GAP, width: w },
         ]}>
         <WriteText
+          allowFontScaling={false}
           text={LEDGER}
           charStyle={EYEBROW_STYLE}
           color={pal.muted}

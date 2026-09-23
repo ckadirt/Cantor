@@ -8,7 +8,7 @@
  * reason MorphText can launch a transition with zero measurement frames.
  */
 import { useMemo } from 'react';
-import type { TextStyle } from 'react-native';
+import { useWindowDimensions, type TextStyle } from 'react-native';
 import { FontStyle, Skia, useTypeface, type SkFont } from '@shopify/react-native-skia';
 
 const BUNDLED: Record<string, number> = {
@@ -36,4 +36,29 @@ export function useMorphFont(style: TextStyle): SkFont | null {
     );
     return Skia.Font(tf ?? undefined, size);
   }, [src, bundled, family, size]);
+}
+
+/**
+ * A TextStyle as RN <Text> will actually lay it out: Android scales fontSize,
+ * lineHeight and letterSpacing by the system font scale, and Skia does not.
+ * Anything that draws a line and then hands it to a real <Text> has to draw
+ * at this size, or the glyphs jump at the hand-off on any phone whose font
+ * size is not the default.
+ */
+export function useFontScaledStyle(style: TextStyle, allowFontScaling = true): TextStyle {
+  const { fontScale: systemScale } = useWindowDimensions();
+  const fontScale = allowFontScaling ? systemScale : 1;
+  return useMemo(
+    () =>
+      fontScale === 1
+        ? style
+        : {
+            ...style,
+            fontSize: (style.fontSize ?? 14) * fontScale,
+            lineHeight: style.lineHeight === undefined ? undefined : style.lineHeight * fontScale,
+            letterSpacing:
+              style.letterSpacing === undefined ? undefined : style.letterSpacing * fontScale,
+          },
+    [style, fontScale],
+  );
 }

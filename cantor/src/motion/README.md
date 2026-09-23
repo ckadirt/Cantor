@@ -167,6 +167,14 @@ forever.
 7. **Respect reduced motion.** Every animated component must degrade to a
    crossfade under `useReducedMotion()`. `MorphText`, `MorphShape`, and
    `MorphTextSequence` already do; new components must too.
+8. **Draw at the size `<Text>` will.** Android scales `fontSize`,
+   `lineHeight` and `letterSpacing` by the system font scale; Skia does not.
+   `MorphText` and `MorphTextSequence` apply it (`useFontScaledStyle`) so a
+   write that hands off to real text lands on the same glyphs — on a phone at
+   0.8 the job sheet's title wrote 25% large and snapped small at the end.
+   A scene laid out from raw `useMorphFont` metrics, with no `<Text>` under
+   it, passes `allowFontScaling={false}` (the onboarding redaction, the
+   recovery words).
 
 ---
 
