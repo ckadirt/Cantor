@@ -19,10 +19,14 @@
  * Nothing here knows what a song is. These are the panel vocabulary, next to
  * `Caret` and `Reveal`.
  */
-import React, { useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
   StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
   type StyleProp,
+  type TextStyle,
   type ViewStyle,
 } from 'react-native';
 import {
@@ -95,6 +99,16 @@ export const STATE_KNOBS = {
   DRAW_MS: 220,
   /** Points along it. Enough that a wavelength is not a triangle. */
   SAMPLES: 48,
+  /**
+   * How far below a working label its rule is drawn.
+   *
+   * The rule is measured off the label's own text box, whose bottom is the
+   * line's leading rather than the ink; this is the gap from there. The
+   * membership mark sits 3 px *inside* its word's box because it is part of
+   * the word. A working rule is not — it is said about the word — so it
+   * stands a little clear of it.
+   */
+  UNDERWAY_GAP_PX: 2,
 } as const;
 
 /**
@@ -273,3 +287,72 @@ export function useRuleInk(inked: boolean): boolean {
   }, [inked]);
   return drawing;
 }
+
+/**
+ * The working rule, laid under a line of words as wide as the words.
+ *
+ * A label drawn on a canvas does not report how wide its ink is — the canvas
+ * fills its slot — so the words are set once more, invisibly, as real text,
+ * and the rule is measured off that box. Mounted only while there is a rule to
+ * draw: at rest this is nothing at all, not even the invisible copy.
+ */
+export function Underway({
+  charStyle,
+  label,
+  offset = 0,
+  working,
+}: {
+  charStyle: TextStyle;
+  label: string;
+  /** How far down its container the measured line sits. */
+  offset?: number;
+  working: boolean;
+}) {
+  const pal = usePalette();
+  const drawing = useRuleInk(working);
+  const [box, setBox] = useState<{ width: number; height: number } | null>(
+    null,
+  );
+  const onBox = useCallback((event: LayoutChangeEvent) => {
+    const { width, height } = event.nativeEvent.layout;
+    setBox({ width, height });
+  }, []);
+  if (!drawing) return null;
+  return (
+    <View
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      pointerEvents="none"
+      style={StyleSheet.absoluteFill}
+    >
+      <Text
+        onLayout={onBox}
+        style={[charStyle, styles.measure, { top: offset }]}
+      >
+        {label}
+      </Text>
+      {box === null ? null : (
+        <WorkingRule
+          colour={pal.ink}
+          style={[
+            styles.underway,
+            {
+              top:
+                offset +
+                box.height -
+                STATE_KNOBS.RULE_BOX_PX / 2 +
+                STATE_KNOBS.UNDERWAY_GAP_PX,
+              width: box.width,
+            },
+          ]}
+          working={working}
+        />
+      )}
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  measure: { left: 0, opacity: 0, position: 'absolute', top: 0 },
+  underway: { height: STATE_KNOBS.RULE_BOX_PX, left: 0, position: 'absolute' },
+});

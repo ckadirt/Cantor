@@ -5,6 +5,13 @@ import type { NodeInfo } from '../../../core/protocol';
 import type { BackendRecord } from '../../../backends/types';
 import { EnginesSheet } from '../EnginesSheet';
 
+// CanvasKit's system font manager is empty under Jest, so the recovery grid
+// and the settings act have no face to lay out. The rest is plain React.
+jest.mock('../../../motion/fonts', () => ({
+  __esModule: true,
+  useMorphFont: () => null,
+}));
+
 const node = fixture.node as NodeInfo;
 const backend = (nodePubkey: string, selector: string): BackendRecord => ({
   nodePubkey,
@@ -28,6 +35,7 @@ function render() {
   Renderer.act(() => {
     tree = Renderer.create(
       <EnginesSheet
+        open
         backends={[
           backend('studio', 'acestep:1.5-fast'),
           backend('phone', 'levo2:1.0-fast'),

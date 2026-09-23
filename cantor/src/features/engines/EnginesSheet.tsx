@@ -38,6 +38,7 @@ type Props = {
   refreshing: boolean;
   /** What forgetting each node would actually take, keyed by public key. */
   footprints: Readonly<Record<string, BackendFootprint>>;
+  open: boolean;
   onClose: () => void;
   onPair: () => void;
   onRefresh: () => void;
@@ -68,6 +69,7 @@ function EnginesSheetImpl({
   snapshots,
   refreshing,
   footprints,
+  open,
   onClose,
   onPair,
   onRefresh,
@@ -105,7 +107,14 @@ function EnginesSheetImpl({
       ? backends?.find(backend => backend.nodePubkey === page.node)
       : undefined;
   const home = () => setPage({ kind: 'engines' });
+  const close = () => {
+    home();
+    onClose();
+  };
   const isHome = page.kind === 'engines';
+  React.useEffect(() => {
+    if (!open && page.kind !== 'engines') home();
+  }, [open, page.kind]);
   const title =
     page.kind === 'forget'
       ? `FORGET ${nameOf(selectedBackend)}`
@@ -150,7 +159,7 @@ function EnginesSheetImpl({
           accessibilityRole="button"
           hitSlop={space.md}
           style={styles.close}
-          onPress={isHome ? onClose : home}
+          onPress={isHome ? close : home}
         >
           <Text style={[styles.meta, { color: pal.muted }]}>
             {isHome ? 'CLOSE' : page.kind === 'forget' ? 'KEEP IT' : 'BACK'}
@@ -169,7 +178,7 @@ function EnginesSheetImpl({
             onChangeBudget={onChangeBudget}
             publicKey={publicKey}
             storage={storage}
-            visible
+            visible={open}
           />
         ) : page.kind === 'models' ? (
           <ModelsSheet backend={selectedBackend} known={known} />

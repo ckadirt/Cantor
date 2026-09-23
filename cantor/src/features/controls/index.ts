@@ -14,6 +14,7 @@ export {
 export { PanelPressable } from './PanelPressable';
 export {
   STATE_KNOBS,
+  Underway,
   WorkingRule,
   useReach,
   useRuleInk,

@@ -9,7 +9,7 @@ import com.facebook.react.uimanager.ViewManager
 class CantorSecurePackage : ReactPackage {
   @Deprecated("Required by React Native's legacy package bridge.")
   override fun createNativeModules(reactContext: ReactApplicationContext): List<NativeModule> =
-      listOf(CantorSecureModule(reactContext))
+      listOf(CantorSecureModule(reactContext), CantorRecoveryModule(reactContext))
 
   override fun createViewManagers(
       reactContext: ReactApplicationContext,
