@@ -314,4 +314,30 @@ describe('the field drawn as one pass', () => {
     expect(heard.paths()).toBe(4);
     expect(heard.circles).toHaveLength(2);
   });
+
+  /**
+   * At the player the lens is a morph, not the two beats: the face's contour
+   * is the line the dots grow along, so something is drawn at every instant
+   * and nothing is scaled down to a point.
+   */
+  it('morphs the player between circle and seal without vanishing', () => {
+    const held = layout.placements[0];
+    const atSong: Camera = {
+      x: held.x,
+      y: held.y,
+      scale: layout.fitScale * 30,
+    };
+    const faces = facesAt(held.key, null);
+    const circle = drawAt(faces, atSong, 0);
+    for (const lens of [0.1, 0.5, 0.9]) {
+      const between = drawAt(faces, atSong, lens);
+      // The line and the dots, and no shrinking scale on the way.
+      expect(between.paths()).toBe(2);
+      expect(Math.max(...between.scales, 0)).toBeLessThanOrEqual(
+        Math.max(...circle.scales, 0),
+      );
+    }
+    // Identity only, once formed: the line has handed its ink to the dots.
+    expect(drawAt(faces, atSong, 1).paths()).toBe(1);
+  });
 });

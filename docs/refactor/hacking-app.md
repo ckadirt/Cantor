@@ -170,7 +170,10 @@ next song. Ordinary seeks also reconcile the visual clock after native seek.
 
 Circle and Seal share `NativeFieldContent`. Lens changes drive one retained
 linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS = 420`) that `drawFieldFaces`
-reads in two beats: the face scales in to its centre, then the seal scales out.
+reads in two beats for marks and rows: the face scales in to its centre, then
+the seal scales out. The player's face morphs instead: its dots walk out of the
+contour in time order and the contour becomes the Peano thread, while
+`PlayerRing` widens the circle's arc out to the seal's rim.
 The seal's geometry is pure and Skia-free in `lenses/seal.ts` (masks, Peano
 order, per-dot sound, `sealDotAt`); `lenses/sealLens.ts` builds one cached path
 per song for L0/L1 and draws the picture fallback. The player's seal is drawn a

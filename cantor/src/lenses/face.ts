@@ -128,21 +128,49 @@ export function facePoints(
   samples: number = FACE_KNOBS.SAMPLES,
 ): readonly FacePoint[] {
   const count = Math.max(3, Math.floor(samples));
-  const { lobes, detail, primary, secondary, rotation, eccentricity } =
-    faceParams(recipe);
+  const params = faceParams(recipe);
   const points: FacePoint[] = [];
   for (let index = 0; index < count; index += 1) {
-    const angle = (index / count) * Math.PI * 2 + rotation;
-    const radius =
-      1 +
-      primary * Math.sin(lobes * angle) +
-      secondary * Math.sin(detail * angle + 1.1);
-    points.push({
-      x: Math.cos(angle) * radius * eccentricity,
-      y: (Math.sin(angle) * radius) / eccentricity,
-    });
+    points.push(
+      contourPoint(params, (index / count) * Math.PI * 2 + params.rotation),
+    );
   }
   return points;
+}
+
+/**
+ * The same contour at `count` points read as a clock: point `k` is where the
+ * hand stands in the middle of the `k`-th of `count` equal slices of a turn,
+ * from twelve o'clock clockwise on screen.
+ *
+ * For a lens that has to grow out of the face with its time order intact —
+ * the seal's `k`-th dot leaves the contour where the circle's own clock says
+ * that moment is.
+ */
+export function faceClockPoints(
+  recipe: FaceRecipe,
+  count: number,
+): readonly FacePoint[] {
+  const params = faceParams(recipe);
+  const points: FacePoint[] = [];
+  for (let k = 0; k < count; k += 1) {
+    points.push(
+      contourPoint(params, ((k + 0.5) / count) * Math.PI * 2 - Math.PI / 2),
+    );
+  }
+  return points;
+}
+
+function contourPoint(params: FaceParams, angle: number): FacePoint {
+  const { lobes, detail, primary, secondary, eccentricity } = params;
+  const radius =
+    1 +
+    primary * Math.sin(lobes * angle) +
+    secondary * Math.sin(detail * angle + 1.1);
+  return {
+    x: Math.cos(angle) * radius * eccentricity,
+    y: (Math.sin(angle) * radius) / eccentricity,
+  };
 }
 
 /** FNV-1a over a string, so ids and model names reduce to a stable integer. */
