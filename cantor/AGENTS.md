@@ -128,8 +128,12 @@ geometry at full size and produces a flash.
 
 **Lenses share the renderer.** Circle and Seal use `NativeFieldContent` and the
 same row/player text. A retained linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS`)
-switches them in two beats: the face scales in to a point, then the seal opens
-out of it — scale, never a ghosted crossfade. Reduced motion crossfades instead.
+switches them. Marks and rows take two beats: the face scales in to a point,
+then the seal opens out of it — scale, never a ghosted crossfade. The player
+morphs instead (`drawSealPlayer`'s `formed`): each dot leaves the face's contour
+where the circle's clock stands at its moment (`faceClockPoints`), the contour
+becomes the Peano thread, and `PlayerRing`'s arc and hand run out to the rim and
+knob. Reduced motion crossfades instead.
 Keep the lens clock outside the keyed re-cut generation so regrouping during a
 lens change preserves its current progress.
 

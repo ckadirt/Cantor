@@ -11,6 +11,7 @@ import {
 } from './nativeRows';
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import React, { useEffect, useMemo, useRef } from 'react';
+import { faceClockPoints } from '../../lenses/face';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
@@ -1814,6 +1815,13 @@ export type NativeSeal = Readonly<{
   parent: readonly number[];
   /** Depth 3 in time order. */
   order: readonly number[];
+  /**
+   * The face's contour in the same unit square, one point per dot in time
+   * order, where the circle's clock stands at that dot's moment. The lens
+   * morph walks each dot out of this point; see `faceClockPoints`.
+   */
+  contourX: readonly number[];
+  contourY: readonly number[];
   /** Null until the song has been measured: identity only. */
   sound: SealSound | null;
 }>;
@@ -1887,6 +1895,9 @@ function nativeSealOf(
   const mark = model.levels[SEAL_KNOBS.MARK_DEPTH];
   const deep = model.levels[SEAL_KNOBS.SONG_DEPTH];
   const slices = analysis?.measured ? analysis.slices : null;
+  // The face is drawn at a radius and the seal at `SIDE_RATIO` times it, so a
+  // contour point over that ratio is in the seal's own unit square.
+  const contour = faceClockPoints(recipe, model.order.length);
   return {
     markX: mark.x,
     markY: mark.y,
@@ -1894,7 +1905,10 @@ function nativeSealOf(
     y: deep.y,
     parent: deep.parent,
     order: model.order,
-    sound: slices === null || slices === undefined ? null : sealSound(model, slices),
+    contourX: contour.map(point => point.x / SEAL_KNOBS.SIDE_RATIO),
+    contourY: contour.map(point => point.y / SEAL_KNOBS.SIDE_RATIO),
+    sound:
+      slices === null || slices === undefined ? null : sealSound(model, slices),
   };
 }
 
@@ -1932,10 +1946,19 @@ function createFacePaints(palette: Palette): FacePaints {
  * how hollow it is, and its width as how far it splits into a pair. The Peano
  * thread runs through the dots in time order, inked behind the bead.
  *
- * Every dot is drawn as a stroked circle whose stroke is its own ink: a solid
- * dot is a circle of half its radius stroked with its full radius, a ring is a
- * thinner stroke. One primitive for every state, so none of these transitions
- * has to swap one drawing for another.
+ * `formed` is the lens morph: at 0 this is the circle's face, at 1 the seal.
+ * Every dot starts as a point on the face's contour where the circle's clock
+ * stands at that dot's moment, and the contour itself is the thread — a closed
+ * line through those points in time order. As `formed` runs the points walk to
+ * their cells and grow into dots, the line becomes the Peano thread, and the
+ * segment that closed it shrinks into the last dot. One drawing throughout;
+ * nothing is swapped for anything else. `lineAlpha` is the face's own ink,
+ * which the line carries until the seal's thread takes it over.
+ *
+ * A dot is a fill: a ring is its outer circle wound one way and its inner
+ * circle the other, so the fill's winding cuts the hole, and a solid dot has no
+ * inner circle. One primitive for every state, so none of these transitions has
+ * to swap one drawing for another.
  */
 function drawSealPlayer(
   canvas: SkCanvas,
@@ -1948,34 +1971,43 @@ function drawSealPlayer(
   arrived: number,
   soundProgress: number,
   heard: number,
+  formed = 1,
+  lineAlpha = 0,
 ): void {
   'worklet';
   const knobs = SEAL_KNOBS;
   const player = SEAL_PLAYER_KNOBS;
   const sound = seal.sound;
   const s = sound === null ? 0 : arrived * soundProgress;
+  // The thread and the bead belong to the seal, so they arrive with it.
+  const threadInk = s * formed;
+  const lineInk = lineAlpha * (1 - formed);
   const markRadius = sealDotRadius(knobs.MARK_DEPTH) * side;
   const deepRadius = sealDotRadius(knobs.SONG_DEPTH) * side;
-  const identityRadius = markRadius + (deepRadius - markRadius) * arrived;
+  const identityRadius =
+    (markRadius + (deepRadius - markRadius) * arrived) * formed;
   const cell = side / 3 ** knobs.SONG_DEPTH;
   const count = seal.order.length;
   const head = heard < 0 ? -1 : Math.min(Math.max(heard, 0), 1) * count;
-  const at = (dot: number, axis: 0 | 1): number => {
+  /** The `k`-th dot in time order, on its way from the contour to its cell. */
+  const at = (k: number, axis: 0 | 1): number => {
+    const dot = seal.order[k];
     const own = axis === 0 ? seal.x[dot] : seal.y[dot];
     const parent = seal.parent[dot];
     const from = axis === 0 ? seal.markX[parent] : seal.markY[parent];
-    return (from + (own - from) * arrived) * side;
+    const cellAt = from + (own - from) * arrived;
+    const contour = axis === 0 ? seal.contourX[k] : seal.contourY[k];
+    return (contour + (cellAt - contour) * formed) * side;
   };
 
-  if (s > 0) {
+  if (threadInk > 0 || lineInk > 0) {
     // The thread, under the dots: the whole of it quiet, the heard part inked.
     const ahead = Skia.PathBuilder.Make();
     const behind = Skia.PathBuilder.Make();
     const last = Math.floor(head);
     for (let k = 0; k < count; k++) {
-      const dot = seal.order[k];
-      const x = at(dot, 0);
-      const y = at(dot, 1);
+      const x = at(k, 0);
+      const y = at(k, 1);
       if (k === 0) ahead.moveTo(x, y);
       else ahead.lineTo(x, y);
       if (k <= last) {
@@ -1983,20 +2015,33 @@ function drawSealPlayer(
         else behind.lineTo(x, y);
       }
     }
-    if (last >= 0 && last < count - 1) {
-      const a = seal.order[last];
-      const b = seal.order[last + 1];
-      const f = head - last;
-      behind.lineTo(
-        at(a, 0) + (at(b, 0) - at(a, 0)) * f,
-        at(a, 1) + (at(b, 1) - at(a, 1)) * f,
+    if (formed < 1 && count > 1) {
+      // The face was closed and the thread is not: the closing segment's far
+      // end slides back along it into the last dot.
+      const firstX = at(0, 0);
+      const firstY = at(0, 1);
+      ahead.lineTo(
+        firstX + (at(count - 1, 0) - firstX) * formed,
+        firstY + (at(count - 1, 1) - firstY) * formed,
       );
     }
-    paints.stroke.setStrokeWidth(player.THREAD_WIDTH_PX);
-    paints.stroke.setAlphaf(opacity * s * player.THREAD_AHEAD_ALPHA);
+    if (last >= 0 && last < count - 1) {
+      const f = head - last;
+      behind.lineTo(
+        at(last, 0) + (at(last + 1, 0) - at(last, 0)) * f,
+        at(last, 1) + (at(last + 1, 1) - at(last, 1)) * f,
+      );
+    }
+    paints.stroke.setStrokeWidth(
+      FIELD_CANVAS_KNOBS.FACE_STROKE_PX +
+        (player.THREAD_WIDTH_PX - FIELD_CANVAS_KNOBS.FACE_STROKE_PX) * formed,
+    );
+    paints.stroke.setAlphaf(
+      opacity * (lineInk + threadInk * player.THREAD_AHEAD_ALPHA),
+    );
     canvas.drawPath(ahead.detach(), paints.stroke);
-    if (last >= 0) {
-      paints.stroke.setAlphaf(opacity * s);
+    if (last >= 0 && threadInk > 0) {
+      paints.stroke.setAlphaf(opacity * threadInk);
       canvas.drawPath(behind.detach(), paints.stroke);
     }
   }
@@ -2010,10 +2055,10 @@ function drawSealPlayer(
      * calls each, a few hundred times a frame, and the flight dropped frames
      * the circle's single cached contour never did.
      */
+    if (identityRadius <= 0) return;
     const dots = Skia.PathBuilder.Make();
     for (let k = 0; k < count; k++) {
-      const dot = seal.order[k];
-      dots.addCircle(at(dot, 0), at(dot, 1), identityRadius);
+      dots.addCircle(at(k, 0), at(k, 1), identityRadius);
     }
     const path = dots.detach();
     if (filled) {
@@ -2029,31 +2074,28 @@ function drawSealPlayer(
 
   /*
    * The sound: two fills, the heard dots and the rest, rather than a draw per
-   * dot. A ring is its outer circle wound one way and its inner circle the
-   * other, so the fill's winding cuts the hole; a solid dot has no inner
-   * circle. A wide slice is two such dots side by side.
+   * dot. A wide slice is two dots side by side.
    */
   const heardDots = Skia.PathBuilder.Make();
   const aheadDots = Skia.PathBuilder.Make();
   for (let k = 0; k < count; k++) {
-    const dot = seal.order[k];
-    const x = at(dot, 0);
-    const y = at(dot, 1);
+    const x = at(k, 0);
+    const y = at(k, 1);
     let radius = identityRadius;
     let punch = 0;
     let width = 0;
     if (sound !== null) {
       const loud = sealLoudness(sound.loudness[k] ?? 0);
       const measured =
-        (cell / 2) * (knobs.SOUND_MIN_FILL + knobs.SOUND_SPAN_FILL * loud);
+        (cell / 2) *
+        (knobs.SOUND_MIN_FILL + knobs.SOUND_SPAN_FILL * loud) *
+        formed;
       radius = identityRadius + (measured - identityRadius) * s;
       punch = (sound.punch[k] ?? 0) * s;
       width = (sound.width[k] ?? 0) * s;
     }
     // Identity: a filled dot, or a hairline ring for a song not kept here.
-    const identityStroke = filled
-      ? radius
-      : FIELD_CANVAS_KNOBS.FACE_STROKE_PX;
+    const identityStroke = filled ? radius : FIELD_CANVAS_KNOBS.FACE_STROKE_PX;
     const soundStroke = radius * (1 - knobs.PUNCH_HOLLOW * punch);
     const stroke = identityStroke + (soundStroke - identityStroke) * s;
     const outer = Math.max(0.01, radius * (1 - knobs.WIDTH_SHRINK * width));
@@ -2078,18 +2120,16 @@ function drawSealPlayer(
   );
   canvas.drawPath(aheadDots.detach(), paints.fill);
 
-  if (s > 0 && head >= 0) {
+  if (threadInk > 0 && head >= 0) {
     // The bead: where the song is, on the thread.
     const k = Math.min(count - 1, Math.floor(head));
     const next = Math.min(count - 1, k + 1);
     const f = head - k;
-    const a = seal.order[k];
-    const b = seal.order[next];
-    const bx = at(a, 0) + (at(b, 0) - at(a, 0)) * f;
-    const by = at(a, 1) + (at(b, 1) - at(a, 1)) * f;
-    paints.paper.setAlphaf(s);
+    const bx = at(k, 0) + (at(next, 0) - at(k, 0)) * f;
+    const by = at(k, 1) + (at(next, 1) - at(k, 1)) * f;
+    paints.paper.setAlphaf(opacity * threadInk);
     canvas.drawCircle(bx, by, player.BEAD_RADIUS_PX, paints.paper);
-    paints.stroke.setAlphaf(opacity * s);
+    paints.stroke.setAlphaf(opacity * threadInk);
     paints.stroke.setStrokeWidth(player.BEAD_STROKE_PX);
     canvas.drawCircle(bx, by, player.BEAD_RADIUS_PX, paints.stroke);
   }
@@ -2219,57 +2259,86 @@ export function drawFieldFaces(
 
     canvas.save();
     canvas.translate(x + pose.x, y + pose.y);
-    const faceSize = pose.scale * faceScale;
-    if (faceInk > 0 && faceSize > 0.001) {
-      canvas.save();
-      canvas.scale(faceSize, faceSize);
-      if (face.filled) {
+    const faceLine =
+      face.weight +
+      (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived;
+    const seal = face.seal;
+    if (seal !== undefined && !reducedMotion && lens > 0) {
+      // The player morphs rather than trading places: see `drawSealPlayer`.
+      const formed = smootherstep(lens);
+      if (face.filled && shapeArrived < 1) {
+        canvas.save();
+        canvas.scale(pose.scale, pose.scale);
         paints.fill.setAlphaf(
-          opacity * faceInk * face.weight * (1 - shapeArrived),
+          opacity * face.weight * (1 - shapeArrived) * (1 - formed),
         );
         canvas.drawPath(face.markPath, paints.fill);
-      }
-      paints.stroke.setAlphaf(
-        opacity *
-          faceInk *
-          (face.weight +
-            (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived),
-      );
-      // A hairline is a hairline at any size, so it is drawn back out of the
-      // scale the face is standing at.
-      paints.stroke.setStrokeWidth(FIELD_CANVAS_KNOBS.FACE_STROKE_PX / faceSize);
-      canvas.drawPath(face.markPath, paints.stroke);
-      canvas.restore();
-    }
-    const sealSize = pose.scale * sealScale;
-    if (lens > 0 && sealInk > 0 && sealSize > 0.001) {
-      if (face.seal !== undefined) {
-        drawSealPlayer(
-          canvas,
-          face.seal,
-          paints,
-          SEAL_MARK_SIDE_PX * sealSize,
-          opacity * sealInk,
-          face.filled ? 1 : face.weight,
-          face.filled,
-          shapeArrived,
-          soundProgress,
-          heard,
-        );
-      } else {
-        canvas.save();
-        canvas.scale(sealSize, sealSize);
-        if (face.filled) {
-          paints.fill.setAlphaf(opacity * sealInk);
-          canvas.drawPath(face.sealPath, paints.fill);
-        } else {
-          paints.stroke.setAlphaf(opacity * sealInk * face.weight);
-          paints.stroke.setStrokeWidth(
-            FIELD_CANVAS_KNOBS.FACE_STROKE_PX / sealSize,
-          );
-          canvas.drawPath(face.sealPath, paints.stroke);
-        }
         canvas.restore();
+      }
+      drawSealPlayer(
+        canvas,
+        seal,
+        paints,
+        SEAL_MARK_SIDE_PX * pose.scale,
+        opacity,
+        face.filled ? 1 : face.weight,
+        face.filled,
+        shapeArrived,
+        soundProgress,
+        heard,
+        formed,
+        faceLine,
+      );
+    } else {
+      const faceSize = pose.scale * faceScale;
+      if (faceInk > 0 && faceSize > 0.001) {
+        canvas.save();
+        canvas.scale(faceSize, faceSize);
+        if (face.filled) {
+          paints.fill.setAlphaf(
+            opacity * faceInk * face.weight * (1 - shapeArrived),
+          );
+          canvas.drawPath(face.markPath, paints.fill);
+        }
+        paints.stroke.setAlphaf(opacity * faceInk * faceLine);
+        // A hairline is a hairline at any size, so it is drawn back out of the
+        // scale the face is standing at.
+        paints.stroke.setStrokeWidth(
+          FIELD_CANVAS_KNOBS.FACE_STROKE_PX / faceSize,
+        );
+        canvas.drawPath(face.markPath, paints.stroke);
+        canvas.restore();
+      }
+      const sealSize = pose.scale * sealScale;
+      if (lens > 0 && sealInk > 0 && sealSize > 0.001) {
+        if (face.seal !== undefined) {
+          drawSealPlayer(
+            canvas,
+            face.seal,
+            paints,
+            SEAL_MARK_SIDE_PX * sealSize,
+            opacity * sealInk,
+            face.filled ? 1 : face.weight,
+            face.filled,
+            shapeArrived,
+            soundProgress,
+            heard,
+          );
+        } else {
+          canvas.save();
+          canvas.scale(sealSize, sealSize);
+          if (face.filled) {
+            paints.fill.setAlphaf(opacity * sealInk);
+            canvas.drawPath(face.sealPath, paints.fill);
+          } else {
+            paints.stroke.setAlphaf(opacity * sealInk * face.weight);
+            paints.stroke.setStrokeWidth(
+              FIELD_CANVAS_KNOBS.FACE_STROKE_PX / sealSize,
+            );
+            canvas.drawPath(face.sealPath, paints.stroke);
+          }
+          canvas.restore();
+        }
       }
     }
     canvas.restore();
