@@ -1,4 +1,8 @@
-import { NAME_LENS_KNOBS } from '../../lenses';
+import {
+  NAME_LENS_KNOBS,
+  SEAL_PLAYER_KNOBS,
+  sealSidePx,
+} from '../../lenses';
 
 /**
  * Where the player's parts sit, as pure numbers on the UI thread.
@@ -514,6 +518,77 @@ export function seekFractionAt(
   if (reach < ring.inner || reach > ring.outer) return null;
   const turn = (Math.atan2(dy, dx) + Math.PI / 2) / (Math.PI * 2);
   return turn - Math.floor(turn);
+}
+
+/**
+ * The seal as the player lays it out, in screen pixels: its centre (the ring's),
+ * its side, and the band a finger grabs its rim in.
+ *
+ * The side is the face's own size at the player through `sealSidePx`, which is
+ * exactly what `drawFieldFaces` scales the seal to — the gesture and the drawing
+ * are one measurement, or a tapped dot is a neighbour of the one you meant.
+ */
+export function playerSealScreenPx(viewport: PoseViewport): Readonly<{
+  cx: number;
+  cy: number;
+  side: number;
+  inner: number;
+  outer: number;
+}> {
+  'worklet';
+  const ring = playerSeekScreenPx(viewport);
+  const radius = playerRadiusPx(viewport.width);
+  return {
+    cx: ring.cx,
+    cy: ring.cy,
+    side: sealSidePx(radius * NAME_LENS_KNOBS.SONG_FACE_RATIO),
+    inner: ring.inner,
+    outer: radius * SEAL_PLAYER_KNOBS.SEEK_REACH_RATIO,
+  };
+}
+
+/** The rim's angle under a finger, or null in the dead centre or past reach. */
+export function sealRimFraction(
+  viewport: PoseViewport,
+  x: number,
+  y: number,
+): Readonly<{ kind: 'rim'; fraction: number }> | null {
+  'worklet';
+  const seal = playerSealScreenPx(viewport);
+  const dx = x - seal.cx;
+  const dy = y - seal.cy;
+  const reach = Math.sqrt(dx * dx + dy * dy);
+  if (reach < seal.inner || reach > seal.outer) return null;
+  const turn = (Math.atan2(dy, dx) + Math.PI / 2) / (Math.PI * 2);
+  return { kind: 'rim', fraction: turn - Math.floor(turn) };
+}
+
+/**
+ * What a finger that lands at `x, y` on the seal is reaching for.
+ *
+ * On the dust it is a dot — a moment, to jump to — and its position comes back
+ * in the seal's unit square for `sealDotAt`. Anywhere else in reach it is the
+ * rim, and the answer is the angle, from twelve o'clock clockwise, exactly as
+ * `seekFractionAt` measures the circle's. The dead centre and the far outside
+ * answer null.
+ */
+export type SealTouch =
+  | Readonly<{ kind: 'dot'; x: number; y: number }>
+  | Readonly<{ kind: 'rim'; fraction: number }>;
+
+export function sealTouchAt(
+  viewport: PoseViewport,
+  x: number,
+  y: number,
+): SealTouch | null {
+  'worklet';
+  const seal = playerSealScreenPx(viewport);
+  const dx = x - seal.cx;
+  const dy = y - seal.cy;
+  if (Math.abs(dx) <= seal.side / 2 && Math.abs(dy) <= seal.side / 2) {
+    return { kind: 'dot', x: dx / seal.side, y: dy / seal.side };
+  }
+  return sealRimFraction(viewport, x, y);
 }
 
 /**

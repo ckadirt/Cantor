@@ -1,6 +1,7 @@
 import {
   FACE_KNOBS,
   FACE_MAX_EXTENT,
+  faceClockPoints,
   faceParams,
   facePoints,
   faceSeed,
@@ -124,5 +125,39 @@ describe('the face', () => {
     expect(facePoints(recipe(), 0)).toHaveLength(3);
     expect(facePoints(recipe(), 1)).toHaveLength(3);
     expect(facePoints(recipe(), 12)).toHaveLength(12);
+  });
+
+  /**
+   * What the seal's lens morph rests on: its `k`-th dot leaves the face where
+   * the circle's clock stands at that moment — on the contour itself, from
+   * twelve o'clock, clockwise on screen.
+   */
+  it('reads the contour as a clock', () => {
+    const count = 240;
+    const clock = faceClockPoints(recipe(), count);
+    expect(clock).toHaveLength(count);
+    // On the same curve: every point is between the contour's nearest and
+    // furthest reach.
+    const contour = facePoints(recipe(), 4096);
+    const reach = contour.map(point => Math.hypot(point.x, point.y));
+    for (const point of clock) {
+      const r = Math.hypot(point.x, point.y);
+      expect(r).toBeLessThanOrEqual(Math.max(...reach) + 1e-6);
+      expect(r).toBeGreaterThanOrEqual(Math.min(...reach) - 1e-6);
+    }
+    // Starting at twelve and turning clockwise with y down.
+    expect(clock[0].y).toBeLessThan(0);
+    expect(Math.abs(clock[0].x)).toBeLessThan(Math.abs(clock[0].y) * 0.1);
+    let turned = 0;
+    for (let k = 1; k < count; k += 1) {
+      const a = Math.atan2(clock[k - 1].y, clock[k - 1].x);
+      const b = Math.atan2(clock[k].y, clock[k].x);
+      let step = b - a;
+      if (step > Math.PI) step -= Math.PI * 2;
+      if (step < -Math.PI) step += Math.PI * 2;
+      expect(step).toBeGreaterThan(0);
+      turned += step;
+    }
+    expect(turned).toBeGreaterThan(Math.PI * 1.9);
   });
 });

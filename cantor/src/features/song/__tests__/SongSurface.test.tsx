@@ -1,4 +1,9 @@
-import { playerSeekScreenPx } from '../../field/songPose';
+import { SEAL_PLAYER_KNOBS, sealModel } from '../../../lenses';
+import {
+  playerRadiusPx,
+  playerSealScreenPx,
+  playerSeekScreenPx,
+} from '../../field/songPose';
 import { seekBoxPx, seekGesture } from '../SongSurface';
 
 const viewport = { width: 412, height: 892 };
@@ -99,20 +104,95 @@ describe('seeking over the ring', () => {
 });
 
 
-describe('seeking over a Cantor wave', () => {
-  it('maps left, centre and right to start, halfway and end', () => {
-    const seek = jest.fn();
-    const finish = jest.fn();
-    const gesture = seekGesture(viewport, 120, seek, finish, 'cantor-wave') as unknown as {
+describe('seeking on a seal', () => {
+  const seal = sealModel({
+    seed: 1000,
+    id: 'song-a',
+    model: 'acestep-1.5-quality',
+    durationMs: 120000,
+  });
+
+  function sealGesture(onSeek = jest.fn(), onSeekEnd = jest.fn()) {
+    return seekGesture(
+      viewport,
+      120,
+      onSeek,
+      onSeekEnd,
+      'seal',
+      seal,
+    ) as unknown as {
       handlers: Record<string, (event: { x: number; y: number }) => void>;
     };
-    const box = seekBoxPx(viewport, 'cantor-wave');
-    for (const [x, seconds] of [[0, 0], [box.size / 2, 60], [box.size, 120]]) {
-      gesture.handlers.onUpdate({ x, y: box.size / 2 });
-      expect(seek).toHaveBeenLastCalledWith(seconds);
-    }
-    expect(finish).not.toHaveBeenCalled();
-    gesture.handlers.onFinalize({ x: box.size, y: box.size / 2 });
+  }
+
+  /** A point on the rim, in the gesture's own coordinates. */
+  function onRim(fraction: number) {
+    const placed = playerSealScreenPx(viewport);
+    const box = seekBoxPx(viewport, 'seal');
+    const rim = playerRadiusPx(viewport.width) * SEAL_PLAYER_KNOBS.RIM_RATIO;
+    const radians = fraction * Math.PI * 2 - Math.PI / 2;
+    return {
+      x: placed.cx - box.left + Math.cos(radians) * rim,
+      y: placed.cy - box.top + Math.sin(radians) * rim,
+    };
+  }
+
+  it('listens over the rim, which reaches past the circle\'s own ring', () => {
+    const box = seekBoxPx(viewport, 'seal');
+    const placed = playerSealScreenPx(viewport);
+    expect(box.size).toBeCloseTo(placed.outer * 2);
+    expect(placed.outer).toBeGreaterThan(playerSeekScreenPx(viewport).outer);
+    const rim = playerRadiusPx(viewport.width) * SEAL_PLAYER_KNOBS.RIM_RATIO;
+    // The rim clears the seal's corners, and the reach clears the rim.
+    expect(rim).toBeGreaterThan((placed.side / 2) * Math.SQRT2);
+    expect(placed.outer).toBeGreaterThan(rim);
+  });
+
+  it('scrubs by angle along the rim, from twelve o\'clock clockwise', () => {
+    const seek = jest.fn();
+    const finish = jest.fn();
+    const gesture = sealGesture(seek, finish);
+    gesture.handlers.onBegin(onRim(0.25));
+    expect(seek).toHaveBeenLastCalledWith(30);
+    gesture.handlers.onUpdate(onRim(0.5));
+    expect(seek).toHaveBeenLastCalledWith(60);
+    // Once the rim is held, the drag may cross the dust and still means time.
+    gesture.handlers.onUpdate(onRim(0.75));
+    expect(seek).toHaveBeenLastCalledWith(90);
+    gesture.handlers.onFinalize(onRim(0.75));
+    expect(finish).toHaveBeenCalledTimes(1);
+  });
+
+  it('jumps to a tapped dot when the finger lifts, and not before', () => {
+    const seek = jest.fn();
+    const gesture = sealGesture(seek);
+    const placed = playerSealScreenPx(viewport);
+    const box = seekBoxPx(viewport, 'seal');
+    const deepest = seal.levels[3];
+    const k = 40;
+    const dot = seal.order[k];
+    const point = {
+      x: placed.cx - box.left + deepest.x[dot] * placed.side,
+      y: placed.cy - box.top + deepest.y[dot] * placed.side,
+    };
+    gesture.handlers.onBegin(point);
+    expect(seek).not.toHaveBeenCalled();
+    gesture.handlers.onFinalize(point);
+    const expected = Math.round((k / seal.order.length) * 120);
+    expect(seek).toHaveBeenCalledWith(expected);
+  });
+
+  it('abandons a tap that wanders off its dot', () => {
+    const seek = jest.fn();
+    const finish = jest.fn();
+    const gesture = sealGesture(seek, finish);
+    const placed = playerSealScreenPx(viewport);
+    const box = seekBoxPx(viewport, 'seal');
+    const start = { x: placed.cx - box.left, y: placed.cy - box.top };
+    gesture.handlers.onBegin(start);
+    gesture.handlers.onUpdate({ x: start.x + 40, y: start.y });
+    gesture.handlers.onFinalize({ x: start.x + 40, y: start.y });
+    expect(seek).not.toHaveBeenCalled();
     expect(finish).toHaveBeenCalledTimes(1);
   });
 });

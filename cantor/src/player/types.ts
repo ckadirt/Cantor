@@ -35,8 +35,9 @@ export type PlayerSnapshot = Readonly<{
  * One channel of a window, reduced to `buckets` columns.
  *
  * `min`/`max` are the extremes within each bucket, which is what a waveform
- * actually draws; `rms` is the energy, which is what the Cantor wave lens draws.
- * All three are the same length and every value is in -1..1 (`rms` in 0..1).
+ * actually draws; `rms` is the energy, which is what a lens's loudness is read
+ * from. All three are the same length and every value is in -1..1 (`rms` in
+ * 0..1).
  */
 export type ChannelWindow = Readonly<{
   min: Float32Array;
@@ -67,6 +68,16 @@ export type SampleWindow = Readonly<{
   sampleRate: number;
   /** One entry per source channel, in channel order. */
   channels: readonly ChannelWindow[];
+  /**
+   * The stereo image, per bucket, for a source with two or more channels.
+   *
+   * `mid` is the RMS of `(L + R) / 2` and `side` of `(L − R) / 2`. Width cannot
+   * be read from the channels' own RMS: a mix panned hard left and one spread
+   * wide can have identical per-channel energy, and only the difference signal
+   * tells them apart. Absent for a mono source, which is honest — it has no
+   * width.
+   */
+  stereo?: Readonly<{ mid: Float32Array; side: Float32Array }>;
 }>;
 
 /**

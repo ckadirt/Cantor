@@ -14,6 +14,7 @@ import {
   type Camera,
   type FieldEntity,
 } from '../../../field';
+import { analyseWindow, sealModel, type SongAnalysis } from '../../../lenses';
 import { drawFieldFaces, faceFlightsOf, type FaceFlight } from '../FieldCanvas';
 import { playerFaceScale } from '../songPose';
 import type { FieldPresentation } from '../useFieldController';
@@ -89,7 +90,7 @@ function recordingCanvas() {
 
 function facePaints() {
   const make = () => Skia.Paint();
-  return { fill: make(), stroke: make(), ring: make() };
+  return { fill: make(), stroke: make(), ring: make(), paper: make() };
 }
 
 const layout = layoutField({
@@ -112,18 +113,25 @@ const recut = {
   toFitScale: layout.fitScale,
 };
 
-function facesAt(focusKey: string | null, playingKey: string | null) {
+function facesAt(
+  focusKey: string | null,
+  playingKey: string | null,
+  analyses?: ReadonlyMap<string, SongAnalysis>,
+) {
   return faceFlightsOf(
     planPlacementFlights([], layout.placements, 1),
     presentations,
     focusKey,
     playingKey,
+    analyses,
   );
 }
 
 function drawAt(
   faces: readonly FaceFlight[],
   camera: Camera,
+  lens = 0,
+  heard = -1,
 ): ReturnType<typeof recordingCanvas> {
   const target = recordingCanvas();
   drawFieldFaces(
@@ -135,8 +143,27 @@ function drawAt(
     { value: camera } as never,
     { value: layout.fitScale } as never,
     viewport,
+    lens,
+    false,
+    1,
+    heard,
   );
   return target;
+}
+
+/** A measured mono song: loud, steady, and with no width to split a dot. */
+function measured(): SongAnalysis {
+  const buckets = 729;
+  const rms = new Float32Array(buckets).fill(0.3);
+  const max = new Float32Array(buckets).fill(0.45);
+  const min = new Float32Array(buckets).fill(-0.45);
+  return analyseWindow({
+    startSeconds: 0,
+    endSeconds: 11,
+    buckets,
+    sampleRate: 48000,
+    channels: [{ min, max, rms }],
+  });
 }
 
 /** The whole field in frame, which is what L0 means. */
@@ -222,5 +249,95 @@ describe('the field drawn as one pass', () => {
     const faces = facesAt(null, null);
     const elsewhere: Camera = { ...settled, x: settled.x + 1e6 };
     expect(drawAt(faces, elsewhere).paths()).toBe(0);
+  });
+
+  /** Seal: the same field, the same seats, one path per song. */
+  it('draws the seal in the face\'s place once the lens has switched', () => {
+    const faces = facesAt(null, null);
+    const sealed = drawAt(faces, atField, 1);
+    expect(sealed.paths()).toBe(faces.length);
+    // Neither lens moves a mark: the same seat and the same scale.
+    expect(sealed.scales).toEqual(drawAt(faces, atField, 0).scales);
+  });
+
+  /**
+   * The switch is two beats, and never two drawings at once: the face draws in
+   * to a point, then the seal opens out of it.
+   */
+  it('switches lens in two beats, the face first', () => {
+    const faces = facesAt(null, null);
+    const full = drawAt(faces, atField, 0).scales[0];
+    const early = drawAt(faces, atField, 0.2);
+    expect(early.paths()).toBe(faces.length);
+    expect(early.scales[0]).toBeLessThan(full);
+    expect(drawAt(faces, atField, 0.5).paths()).toBe(0);
+    const late = drawAt(faces, atField, 0.8);
+    expect(late.paths()).toBe(faces.length);
+    expect(late.scales[0]).toBeLessThan(full);
+  });
+
+  /**
+   * The player's seal in as few draws as it can be.
+   *
+   * The opening runs on every frame of the descent, so every dot goes into one
+   * path; a draw per dot is what made the flight drop frames. With the sound in,
+   * it is still a handful of draws, however many dots the seal has.
+   */
+  it('draws the player\'s seal in a handful of draws, not one per dot', () => {
+    const held = layout.placements[0];
+    const atSong: Camera = {
+      x: held.x,
+      y: held.y,
+      scale: layout.fitScale * 30,
+    };
+    const song = presentations.get(held.entityKey)!;
+    const dots = sealModel({
+      seed: song.song.seed,
+      id: song.entity.entityId,
+      model: song.song.model,
+      durationMs: song.song.duration_ms,
+    }).order.length;
+    expect(dots).toBeGreaterThan(100);
+
+    // Identity only: the whole seal is one path.
+    const quiet = drawAt(facesAt(held.key, null), atSong, 1, 0.5);
+    expect(quiet.paths()).toBe(1);
+    expect(quiet.circles).toHaveLength(0);
+
+    // Sounding: the thread twice, the heard dots and the rest, and the bead.
+    const heard = drawAt(
+      facesAt(held.key, null, new Map([[held.entityKey, measured()]])),
+      atSong,
+      1,
+      0.5,
+    );
+    expect(heard.paths()).toBe(4);
+    expect(heard.circles).toHaveLength(2);
+  });
+
+  /**
+   * At the player the lens is a morph, not the two beats: the face's contour
+   * is the line the dots grow along, so something is drawn at every instant
+   * and nothing is scaled down to a point.
+   */
+  it('morphs the player between circle and seal without vanishing', () => {
+    const held = layout.placements[0];
+    const atSong: Camera = {
+      x: held.x,
+      y: held.y,
+      scale: layout.fitScale * 30,
+    };
+    const faces = facesAt(held.key, null);
+    const circle = drawAt(faces, atSong, 0);
+    for (const lens of [0.1, 0.5, 0.9]) {
+      const between = drawAt(faces, atSong, lens);
+      // The line and the dots, and no shrinking scale on the way.
+      expect(between.paths()).toBe(2);
+      expect(Math.max(...between.scales, 0)).toBeLessThanOrEqual(
+        Math.max(...circle.scales, 0),
+      );
+    }
+    // Identity only, once formed: the line has handed its ink to the dots.
+    expect(drawAt(faces, atSong, 1).paths()).toBe(1);
   });
 });
