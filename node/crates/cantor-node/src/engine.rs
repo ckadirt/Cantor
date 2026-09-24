@@ -20,16 +20,60 @@ const ENGINE_LIBRARY: &str = "libcantor_engine.so";
 #[cfg(target_os = "macos")]
 const ENGINE_LIBRARY: &str = "libcantor_engine.dylib";
 
-/// Loaded first, in this order, with RTLD_GLOBAL. The engine links against
-/// their versioned SONAMEs, and an archive that ships them without the
-/// versioned filenames — or a library whose RUNPATH points at its build
-/// machine — will not resolve them on its own. Loading them explicitly makes
-/// the node robust to both, which it has to be: it did not build the engine
-/// and cannot assume how it was packaged.
+/// Older archives use generic GGML names; current Linux archives give each
+/// engine family its own SONAME so multiple engines can share one node process.
 #[cfg(not(target_os = "macos"))]
-const DEPENDENCIES: [&str; 2] = ["libggml-base.so", "libggml.so"];
+const GGML_LIBRARY_SUFFIX: &str = ".so";
 #[cfg(target_os = "macos")]
-const DEPENDENCIES: [&str; 2] = ["libggml-base.dylib", "libggml.dylib"];
+const GGML_LIBRARY_SUFFIX: &str = ".dylib";
+
+/// Load the archive's own base and GGML libraries before its backend modules.
+/// In particular, CUDA validation needs symbols from the renamed GGML library;
+/// looking only for libggml.so leaves that validation with no registry API.
+fn core_dependencies(directory: &Path) -> Result<Vec<PathBuf>> {
+    let prefix = "libggml-base-";
+    let mut families = Vec::new();
+    for entry in std::fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if let Some(family) = name
+            .strip_prefix(prefix)
+            .and_then(|name| name.strip_suffix(GGML_LIBRARY_SUFFIX))
+        {
+            if !family.is_empty() {
+                families.push(family.to_owned());
+            }
+        }
+    }
+    families.sort();
+    families.dedup();
+    if families.len() > 1 {
+        bail!(
+            "engine archive contains multiple GGML core families: {}",
+            families.join(", ")
+        );
+    }
+    let family = families
+        .first()
+        .map(|name| format!("-{name}"))
+        .unwrap_or_default();
+    let base = directory.join(format!("libggml-base{family}{GGML_LIBRARY_SUFFIX}"));
+    let ggml = directory.join(format!("libggml{family}{GGML_LIBRARY_SUFFIX}"));
+    if base.is_file() && ggml.is_file() {
+        Ok(vec![base, ggml])
+    } else if family.is_empty() && !base.exists() && !ggml.exists() {
+        // Preserve the old load path for archives whose engine resolves its
+        // own dependencies. CUDA validation will reject one without a GGML API.
+        Ok(Vec::new())
+    } else {
+        bail!(
+            "engine archive has an incomplete GGML core pair: {} and {}",
+            base.display(),
+            ggml.display()
+        )
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,21 +255,14 @@ impl Engine {
         } else {
             Vec::new()
         };
-        for name in DEPENDENCIES {
-            let dependency = directory.join(name);
-            if !dependency.is_file() {
-                continue;
-            }
+        for dependency in core_dependencies(directory)? {
             // SAFETY: loading a shared library runs its initialisers. These come
             // from an archive whose SHA-256 was verified against the manifest.
-            match unsafe { Library::new(&dependency) } {
-                Ok(library) => dependencies.push(library),
-                Err(error) => {
-                    // Not fatal: a correctly packaged engine resolves these
-                    // itself, and this preloading exists only for ones that do not.
-                    eprintln!("note: could not preload {}: {error}", dependency.display());
-                }
-            }
+            dependencies.push(
+                unsafe { Library::new(&dependency) }.with_context(|| {
+                    format!("could not load GGML core {}", dependency.display())
+                })?,
+            );
         }
 
         if backend == "cuda12" {
@@ -749,7 +786,69 @@ fn to_cstring(value: &str) -> Result<CString> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Stage, check_stage_mask, first_stage, select};
+    use super::{
+        GGML_LIBRARY_SUFFIX, Stage, check_stage_mask, core_dependencies, first_stage, select,
+    };
+
+    #[test]
+    fn finds_each_engines_renamed_ggml_pair_and_legacy_names() {
+        use std::fs;
+
+        for family in ["acestep", "levo2", "minimax", ""] {
+            let temp = tempfile::tempdir().unwrap();
+            let name = if family.is_empty() {
+                String::new()
+            } else {
+                format!("-{family}")
+            };
+            let base = temp
+                .path()
+                .join(format!("libggml-base{name}{GGML_LIBRARY_SUFFIX}"));
+            let ggml = temp
+                .path()
+                .join(format!("libggml{name}{GGML_LIBRARY_SUFFIX}"));
+            fs::write(&base, []).unwrap();
+            fs::write(&ggml, []).unwrap();
+            assert_eq!(core_dependencies(temp.path()).unwrap(), vec![base, ggml]);
+        }
+    }
+
+    #[test]
+    fn refuses_an_incomplete_or_ambiguous_ggml_pair() {
+        use std::fs;
+
+        let temp = tempfile::tempdir().unwrap();
+        fs::write(
+            temp.path()
+                .join(format!("libggml-base-minimax{GGML_LIBRARY_SUFFIX}")),
+            [],
+        )
+        .unwrap();
+        assert!(
+            core_dependencies(temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("incomplete")
+        );
+        fs::write(
+            temp.path()
+                .join(format!("libggml-minimax{GGML_LIBRARY_SUFFIX}")),
+            [],
+        )
+        .unwrap();
+        fs::write(
+            temp.path()
+                .join(format!("libggml-base-levo2{GGML_LIBRARY_SUFFIX}")),
+            [],
+        )
+        .unwrap();
+        assert!(
+            core_dependencies(temp.path())
+                .unwrap_err()
+                .to_string()
+                .contains("multiple")
+        );
+    }
 
     #[test]
     #[cfg(target_os = "linux")]
