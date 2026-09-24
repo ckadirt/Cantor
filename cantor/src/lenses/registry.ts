@@ -1,5 +1,5 @@
-import { cantorWaveLens } from './cantorWaveLens';
 import { nameLens } from './nameLens';
+import { sealLens } from './sealLens';
 import type { Lens } from './types';
 
 /**
@@ -9,7 +9,7 @@ import type { Lens } from './types';
  * come from here, so adding a lens is one import and one entry rather than a
  * change in three places.
  */
-export const LENSES: readonly Lens[] = [nameLens, cantorWaveLens];
+export const LENSES: readonly Lens[] = [nameLens, sealLens];
 
 export const DEFAULT_LENS_KEY = nameLens.key;
 

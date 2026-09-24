@@ -131,7 +131,7 @@ new screens.
 | Lens | v1 | Notes |
 | --- | --- | --- |
 | name | yes | title, date, cluster, playlist tags |
-| cantor wave | yes | 32 middle-thirds bars, height = RMS of that slice |
+| seal | yes | recipe-derived 2D Cantor dust; loaded sound sizes, hollows and splits its Peano-ordered dots; the rim is the clock |
 | vector scope | phase 2 | L vs R as a Lissajous curve |
 | melgram, sphere, embedding map | later | plug into the same registry |
 

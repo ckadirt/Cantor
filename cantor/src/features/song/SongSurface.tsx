@@ -1,4 +1,3 @@
-import { WAVE_GEOMETRY_KNOBS } from '../../lenses/cantorWaveGeometry';
 import React, { useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
@@ -18,12 +17,21 @@ import {
   PLAYER_POSE_KNOBS,
   playerFootScreenPx,
   playerLensBottomPx,
+  playerSealScreenPx,
   playerSeekScreenPx,
+  sealRimFraction,
+  sealTouchAt,
   seekFractionAt,
   modeScreenPx,
   transportScreenPx,
 } from '../field/songPose';
 import { REPRESENTATION_WINDOWS, bandAlphaAt, type Camera } from '../../field';
+import {
+  SEAL_PLAYER_KNOBS,
+  sealDotAt,
+  sealModel,
+  type SealModel,
+} from '../../lenses';
 import { useMorphFont } from '../../motion/fonts';
 import {
   afterSongChoice,
@@ -56,6 +64,8 @@ const NO_STEPS = { previous: false, next: false } as const;
 
 export type SongSurfaceSong = Readonly<{
   key: string;
+  /** The song's own id: with the seed, the model and the duration, its recipe. */
+  id: string;
   title: string;
   model: string;
   seed: number | undefined;
@@ -210,10 +220,33 @@ function SongSurfaceImpl({
     return last === undefined ? 0 : last.x + last.width;
   }, [words]);
 
-  const seekBox = useMemo(() => seekBoxPx({ width, height }, lensKey), [height, width, lensKey]);
+  const seal = useMemo(
+    () =>
+      lensKey === 'seal'
+        ? sealModel({
+            seed: song.seed,
+            id: song.id,
+            model: song.model,
+            durationMs: song.durationMs,
+          })
+        : null,
+    [lensKey, song.durationMs, song.id, song.model, song.seed],
+  );
+  const seekBox = useMemo(
+    () => seekBoxPx({ width, height }, lensKey),
+    [height, width, lensKey],
+  );
   const scrub = useMemo(
-    () => seekGesture({ width, height }, durationSeconds, onSeek, onSeekEnd, lensKey),
-    [durationSeconds, height, onSeek, onSeekEnd, width, lensKey],
+    () =>
+      seekGesture(
+        { width, height },
+        durationSeconds,
+        onSeek,
+        onSeekEnd,
+        lensKey,
+        seal,
+      ),
+    [durationSeconds, height, onSeek, onSeekEnd, width, lensKey, seal],
   );
 
   useEffect(() => () => onSeekEnd?.(), [onSeekEnd]);
@@ -333,10 +366,8 @@ export function seekBoxPx(
   lensKey = 'name',
 ): Readonly<{ left: number; top: number; size: number }> {
   const ring = playerSeekScreenPx(viewport);
-  const reach = lensKey === 'cantor-wave'
-    ? Math.max(viewport.width * WAVE_GEOMETRY_KNOBS.SONG_WIDTH_RATIO,
-      viewport.height * WAVE_GEOMETRY_KNOBS.SONG_HEIGHT_RATIO) / 2
-    : ring.outer;
+  const reach =
+    lensKey === 'seal' ? playerSealScreenPx(viewport).outer : ring.outer;
   return {
     left: ring.cx - reach,
     top: ring.cy - reach,
@@ -351,6 +382,13 @@ export function seekBoxPx(
  * one fact, instead of a circle that shows the position and a bar underneath
  * that sets it.
  *
+ * The seal keeps that gesture and moves it outward: its clock is a rim around
+ * the dust, so a drag that starts off the dust is the same angle, measured the
+ * same way. A drag across the dust itself cannot be a scrub — the Peano order
+ * walks smoothly through space as time passes, but two neighbouring dots can be
+ * a third of the song apart — so a touch that starts on the dust is a *tap*: it
+ * jumps to the dot under the finger when it lifts, and wandering off abandons it.
+ *
  * A pure builder rather than a hook body, because the one thing about it that
  * has to be guaranteed is a piece of *configuration*, and configuration is only
  * testable if it can be built without a renderer, a font and a gesture root.
@@ -362,8 +400,12 @@ export function seekGesture(
   onSeek: (seconds: number) => void,
   onSeekEnd: () => void = () => {},
   lensKey = 'name',
+  seal: SealModel | null = null,
 ) {
   const box = seekBoxPx(viewport, lensKey);
+  const step = SONG_SURFACE_KNOBS.SEEK_STEP_SECONDS;
+  const seekFraction = (fraction: number) =>
+    onSeek(Math.round((fraction * durationSeconds) / step) * step);
   /*
    * The gesture's coordinates are the box's and `seekFractionAt` wants the
    * viewport's, so the box's origin goes back on here. Laying the box out at
@@ -375,14 +417,52 @@ export function seekGesture(
    * song, so an angle there is noise wearing the shape of an intention.
    */
   const seekTo = (x: number, y: number) => {
-    const ring = playerSeekScreenPx(viewport);
-    const waveWidth = viewport.width * WAVE_GEOMETRY_KNOBS.SONG_WIDTH_RATIO;
-    const fraction = lensKey === 'cantor-wave'
-      ? Math.max(0, Math.min(1, (box.left + x - ring.cx) / waveWidth + 0.5))
-      : seekFractionAt(viewport, box.left + x, box.top + y);
-    if (fraction === null) return;
-    const step = SONG_SURFACE_KNOBS.SEEK_STEP_SECONDS;
-    onSeek(Math.round((fraction * durationSeconds) / step) * step);
+    const fraction = seekFractionAt(viewport, box.left + x, box.top + y);
+    if (fraction !== null) seekFraction(fraction);
+  };
+  /** What the current touch on a seal is doing, decided where it lands. */
+  let sealTouch:
+    | { kind: 'rim' }
+    | { kind: 'dot'; x: number; y: number; startX: number; startY: number }
+    | null = null;
+  const begin = (x: number, y: number) => {
+    if (seal === null) {
+      seekTo(x, y);
+      return;
+    }
+    const landed = sealTouchAt(viewport, box.left + x, box.top + y);
+    if (landed === null) {
+      sealTouch = null;
+    } else if (landed.kind === 'rim') {
+      sealTouch = { kind: 'rim' };
+      seekFraction(landed.fraction);
+    } else {
+      sealTouch = { ...landed, startX: x, startY: y };
+    }
+  };
+  const update = (x: number, y: number) => {
+    if (seal === null) {
+      seekTo(x, y);
+      return;
+    }
+    if (sealTouch?.kind === 'rim') {
+      const rim = sealRimFraction(viewport, box.left + x, box.top + y);
+      if (rim !== null) seekFraction(rim.fraction);
+    } else if (
+      sealTouch?.kind === 'dot' &&
+      Math.hypot(x - sealTouch.startX, y - sealTouch.startY) >
+        SEAL_PLAYER_KNOBS.TAP_SLOP_PX
+    ) {
+      sealTouch = null;
+    }
+  };
+  const finish = () => {
+    if (seal !== null && sealTouch?.kind === 'dot') {
+      const at = sealDotAt(seal, sealTouch.x, sealTouch.y);
+      if (at !== null) seekFraction(at / seal.order.length);
+    }
+    sealTouch = null;
+    onSeekEnd();
   };
   return (
     Gesture.Pan()
@@ -397,9 +477,9 @@ export function seekGesture(
        * one finger over the circle can mean nothing but a seek.
        */
       .maxPointers(1)
-      .onBegin(event => seekTo(event.x, event.y))
-      .onUpdate(event => seekTo(event.x, event.y))
-      .onFinalize(() => onSeekEnd())
+      .onBegin(event => begin(event.x, event.y))
+      .onUpdate(event => update(event.x, event.y))
+      .onFinalize(() => finish())
       .runOnJS(true)
   );
 }

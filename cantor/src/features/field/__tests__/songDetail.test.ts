@@ -67,7 +67,7 @@ function recordingCanvas() {
 
 function paints() {
   const make = () => Skia.Paint();
-  return { fill: make(), stroke: make(), ring: make() };
+  return { fill: make(), stroke: make(), ring: make(), paper: make() };
 }
 
 function drawAt(options: {

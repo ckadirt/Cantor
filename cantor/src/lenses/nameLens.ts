@@ -135,8 +135,8 @@ export const nameLens: Lens = {
    * `Circle`, not `Name`.
    *
    * The picker names *what is drawn*, and the other entry beside it says
-   * `Cantor wave` — so a lens called `Name` read as a choice about titles when
-   * it is the choice of the circle: the song's own contour, its ring, and the
+   * `Seal` — so a lens called `Name` read as a choice about titles when it is
+   * the choice of the circle: the song's own contour, its ring, and the
    * measurement written around it. The key stays `name`, because it is what the
    * chosen lens is remembered as and a stored key is not a label.
    */
@@ -192,54 +192,72 @@ export const nameLens: Lens = {
         paints,
       );
     }
-    // The action word is right-aligned against the row's edge, and the title
-    // is cut to whatever is left. Measuring both keeps a long title from
-    // running under the word that acts on it.
-    const availability = availabilityOf(song.audioState);
-    const action = availabilityAction(availability);
-    const titleLeft = box.x - NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
-    const rowRight = box.x + NAME_LENS_KNOBS.ROW_RIGHT_PX;
-    let titleRight = rowRight;
-    if (action !== null) {
-      const width = textWidth(action, fonts.mono);
-      paints.muted.setAlphaf(alpha * NAME_LENS_KNOBS.ROW_ACTION_ALPHA);
-      canvas.drawText(
-        action,
-        rowRight - width,
-        box.y + NAME_LENS_KNOBS.ROW_ACTION_BASELINE_PX,
-        paints.muted,
-        fonts.mono,
-      );
-      titleRight = rowRight - width - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
-    }
-    // A song that is not on the phone says so twice: in the weight of its face
-    // and in the weight of its name.
-    paints.ink.setAlphaf(
-      alpha *
-        (availability === 'cached' || availability === 'downloaded'
-          ? 1
-          : NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA),
-    );
-    paints.muted.setAlphaf(alpha);
-    paints.faint.setAlphaf(alpha);
+    drawRowWords(canvas, box, song, alpha, fonts, paints);
+  },
+};
+
+/**
+ * A row's words: the title, the availability line and the action word.
+ *
+ * Shared by every lens, because a lens draws a song's picture and the row's
+ * words are not the picture — the seal's row says exactly what the circle's
+ * does.
+ */
+export function drawRowWords(
+  canvas: Parameters<Lens['draw']>[0],
+  box: Parameters<Lens['draw']>[1],
+  song: LensSong,
+  alpha: number,
+  fonts: Parameters<Lens['draw']>[3]['fonts'],
+  paints: LensPaints,
+): void {
+  // The action word is right-aligned against the row's edge, and the title
+  // is cut to whatever is left. Measuring both keeps a long title from
+  // running under the word that acts on it.
+  const availability = availabilityOf(song.audioState);
+  const action = availabilityAction(availability);
+  const titleLeft = box.x - NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
+  const rowRight = box.x + NAME_LENS_KNOBS.ROW_RIGHT_PX;
+  let titleRight = rowRight;
+  if (action !== null) {
+    const width = textWidth(action, fonts.mono);
+    paints.muted.setAlphaf(alpha * NAME_LENS_KNOBS.ROW_ACTION_ALPHA);
     canvas.drawText(
-      fitText(song.title, fonts.display, titleRight - titleLeft),
-      titleLeft,
-      box.y + NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX,
-      paints.ink,
-      fonts.display,
-    );
-    canvas.drawText(
-      // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
-      // the longest line here and it must not run under the action word.
-      fitText(availabilityLine(song), fonts.mono, titleRight - titleLeft),
-      titleLeft,
-      box.y + NAME_LENS_KNOBS.ROW_META_BASELINE_PX,
+      action,
+      rowRight - width,
+      box.y + NAME_LENS_KNOBS.ROW_ACTION_BASELINE_PX,
       paints.muted,
       fonts.mono,
     );
-  },
-};
+    titleRight = rowRight - width - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
+  }
+  // A song that is not on the phone says so twice: in the weight of its face
+  // and in the weight of its name.
+  paints.ink.setAlphaf(
+    alpha *
+      (availability === 'cached' || availability === 'downloaded'
+        ? 1
+        : NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA),
+  );
+  paints.muted.setAlphaf(alpha);
+  paints.faint.setAlphaf(alpha);
+  canvas.drawText(
+    fitText(song.title, fonts.display, titleRight - titleLeft),
+    titleLeft,
+    box.y + NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX,
+    paints.ink,
+    fonts.display,
+  );
+  canvas.drawText(
+    // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
+    // the longest line here and it must not run under the action word.
+    fitText(availabilityLine(song), fonts.mono, titleRight - titleLeft),
+    titleLeft,
+    box.y + NAME_LENS_KNOBS.ROW_META_BASELINE_PX,
+    paints.muted,
+    fonts.mono,
+  );
+}
 
 /**
  * The part of `SkFont` this file needs.
@@ -463,7 +481,7 @@ function drawAvailableFace(
  * whole picture, so leaving one stroked would silently outline everything drawn
  * after it.
  */
-function drawArrivingArc(
+export function drawArrivingArc(
   canvas: Parameters<Lens['draw']>[0],
   fraction: number | null,
   cx: number,
@@ -496,7 +514,7 @@ function drawArrivingArc(
  * Restores the paint's fill style afterwards, for the same reason the arriving
  * arc does.
  */
-function drawPlayingRing(
+export function drawPlayingRing(
   canvas: Parameters<Lens['draw']>[0],
   x: number,
   y: number,

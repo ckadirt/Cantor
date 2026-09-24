@@ -60,7 +60,55 @@ async function readSamples(request: SampleRequest): Promise<SampleWindow> {
     buckets,
     sampleRate: rate,
     channels,
+    stereo:
+      buffer.numberOfChannels >= 2
+        ? stereoImage(
+            buffer.getChannelData(0),
+            buffer.getChannelData(1),
+            from,
+            span,
+            buckets,
+          )
+        : undefined,
   };
+}
+
+/**
+ * The first two channels as mid and side energy, per bucket.
+ *
+ * A second pass rather than folded into the per-channel loop above, because
+ * that loop reads one channel at a time and this needs both at once. It is the
+ * same order of work as reading one more channel.
+ */
+function stereoImage(
+  left: Float32Array,
+  right: Float32Array,
+  from: number,
+  span: number,
+  buckets: number,
+): { mid: Float32Array; side: Float32Array } {
+  const mid = new Float32Array(buckets);
+  const side = new Float32Array(buckets);
+  for (let bucket = 0; bucket < buckets; bucket += 1) {
+    const start = from + Math.floor((span * bucket) / buckets);
+    const end = Math.max(
+      start + 1,
+      from + Math.floor((span * (bucket + 1)) / buckets),
+    );
+    let midEnergy = 0;
+    let sideEnergy = 0;
+    for (let index = start; index < end; index += 1) {
+      const l = left[index] ?? 0;
+      const r = right[index] ?? 0;
+      const m = (l + r) / 2;
+      const d = (l - r) / 2;
+      midEnergy += m * m;
+      sideEnergy += d * d;
+    }
+    mid[bucket] = Math.sqrt(midEnergy / (end - start));
+    side[bucket] = Math.sqrt(sideEnergy / (end - start));
+  }
+  return { mid, side };
 }
 
 function clampFrame(value: number, frames: number): number {

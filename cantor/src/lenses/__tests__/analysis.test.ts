@@ -150,3 +150,81 @@ describe('AnalysisCache', () => {
     );
   });
 });
+
+describe('slices', () => {
+  function stereoWindow(
+    fill: (bucket: number) => { l: number; r: number; peak: number },
+    buckets = 81,
+  ): SampleWindow {
+    const channels = [0, 1].map(() => ({
+      min: new Float32Array(buckets),
+      max: new Float32Array(buckets),
+      rms: new Float32Array(buckets),
+    }));
+    const mid = new Float32Array(buckets);
+    const side = new Float32Array(buckets);
+    for (let i = 0; i < buckets; i += 1) {
+      const { l, r, peak } = fill(i);
+      channels[0].rms[i] = Math.abs(l);
+      channels[1].rms[i] = Math.abs(r);
+      channels[0].max[i] = peak;
+      channels[1].max[i] = peak;
+      channels[0].min[i] = -peak;
+      channels[1].min[i] = -peak;
+      mid[i] = Math.abs(l + r) / 2;
+      side[i] = Math.abs(l - r) / 2;
+    }
+    return {
+      startSeconds: 0,
+      endSeconds: 10,
+      buckets,
+      sampleRate: 48000,
+      channels,
+      stereo: { mid, side },
+    };
+  }
+
+  it('is null for the skeleton, which has no sound to draw', () => {
+    expect(neutralAnalysis().slices).toBeNull();
+  });
+
+  it('keeps one entry per bucket, each in range', () => {
+    const { slices } = analyseWindow(
+      stereoWindow(i => ({ l: 0.3, r: 0.2, peak: 0.3 + i / 100 })),
+    );
+    expect(slices?.loudness).toHaveLength(81);
+    for (const series of [slices!.loudness, slices!.punch, slices!.width]) {
+      for (const value of series) {
+        expect(value).toBeGreaterThanOrEqual(0);
+        expect(value).toBeLessThanOrEqual(1);
+      }
+    }
+  });
+
+  it('reads a sustained tone as no punch and a drum hit as full punch', () => {
+    const { slices } = analyseWindow(
+      stereoWindow(i =>
+        i < 40
+          ? { l: 0.2, r: 0.2, peak: 0.2 * Math.SQRT2 }
+          : { l: 0.1, r: 0.1, peak: 0.9 },
+      ),
+    );
+    expect(slices!.punch[10]).toBeCloseTo(0);
+    expect(slices!.punch[60]).toBeCloseTo(1);
+  });
+
+  it('reads identical channels as no width and opposed ones as full width', () => {
+    const { slices } = analyseWindow(
+      stereoWindow(i =>
+        i < 40 ? { l: 0.3, r: 0.3, peak: 0.4 } : { l: 0.3, r: -0.3, peak: 0.4 },
+      ),
+    );
+    expect(slices!.width[10]).toBeCloseTo(0);
+    expect(slices!.width[60]).toBeCloseTo(1);
+  });
+
+  it('gives a mono source no width at all', () => {
+    const { slices } = analyseWindow(window(() => 0.4));
+    expect([...slices!.width].every(value => value === 0)).toBe(true);
+  });
+});
