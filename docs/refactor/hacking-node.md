@@ -121,7 +121,7 @@ What the engine library has to hold up, because the node checks it:
   duration must return JSON with a top-level `duration` — `enforce_duration_ceiling`
   refuses an engine that quietly grows the ask before allocating for it.
 
-What the engine *archive* has to hold up, because nothing checks it:
+What the engine *archive* has to hold up:
 
 - **Its ggml needs a SONAME no other family answers to.** Every family vendors
   its own ggml, and they arrive here as `libggml-base.so.0` and `libggml.so.0`
@@ -155,6 +155,11 @@ What the engine *archive* has to hold up, because nothing checks it:
   drops backend plugins in the same directory as the core libs (ACE-Step), a
   bare `libggml*.so` glob is worse than a name: it sweeps `libggml-cuda.so`
   into a CPU-only archive.
+
+The node discovers and preloads the archive's matching `libggml-base-<family>`
+and `libggml-<family>` pair before checking a CUDA device. It also accepts the
+older generic pair for existing archives. A missing half of a named pair is a
+load error, not a reason to silently use another family's GGML.
 
 Check a new family with `readelf -d` on the staged tarball before publishing:
 every `libggml*` SONAME should carry the family name, `RUNPATH` should be
