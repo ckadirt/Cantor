@@ -527,6 +527,7 @@ cantor_pair_command="$cantor_cli_command pair"
 cantor_started=0
 cantor_phone_ready=0
 cantor_model_ready=0
+cantor_backend_ready=0
 if cantor_confirm_recommended 'Start the node now? Recommended for pairing and model setup.'; then
   if [ "$cantor_has_systemd" = '1' ]; then
     systemctl "$cantor_systemctl_scope" enable cantor.service || cantor_warn 'could not enable startup at login/boot'
@@ -622,7 +623,9 @@ if [ "$cantor_started" = '1' ]; then
           cantor_setup_backend=$cantor_backend_default
         fi
         printf '\n%s\n' "Selecting the $cantor_setup_backend backend. This downloads its engine if it is missing."
-        if ! "$cantor_binary_path" backends --use "$cantor_setup_backend"; then
+        if "$cantor_binary_path" backends --use "$cantor_setup_backend"; then
+          cantor_backend_ready=1
+        else
           cantor_warn "could not select $cantor_setup_backend; run \`cantor backends --use <name>\` later"
         fi
       fi
@@ -636,7 +639,7 @@ else
   printf '  %s\n' "$cantor_pair_command"
 fi
 
-if [ "$cantor_phone_ready" = '1' ] && [ "$cantor_model_ready" = '1' ]; then
+if [ "$cantor_phone_ready" = '1' ] && [ "$cantor_model_ready" = '1' ] && [ "$cantor_backend_ready" = '1' ]; then
   printf '\n%s\n' 'Recommended setup complete: a phone is paired and a model plus backend are ready.'
 fi
 
