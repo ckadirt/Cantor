@@ -51,7 +51,7 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
  * supposed to be on the frame it is supposed to be that size.
  *
  * The picture is not gone: it stands in before the native field is ready.
- * Circle and Cantor wave both use the live native renderer. It is no longer the thing that owns
+ * Circle and Seal both use the live native renderer. It is no longer the thing that owns
  * a *distance*.
  */
 export function isNativeDrawnDistance(scale: number, fitScale: number): boolean {

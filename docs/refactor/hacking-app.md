@@ -168,11 +168,20 @@ running before the drag. `SongSurface` finalizes on gesture completion and
 unmount. Track replacement cancels ownership so a late release cannot seek the
 next song. Ordinary seeks also reconcile the visual clock after native seek.
 
-Circle and Cantor wave share `NativeFieldContent`. Lens changes drive one
-retained linear clock (`MORPH_MS = 420`); the drawing eases it once. Pure bar
-geometry is shared with the fallback lens in `lenses/cantorWaveGeometry.ts`.
-The field's morph module partitions the exact face polygon into 32 wedges,
-then interpolates those wedges into bars at the measured Cantor intervals.
+Circle and Seal share `NativeFieldContent`. Lens changes drive one retained
+linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS = 420`) that `drawFieldFaces`
+reads in two beats: the face scales in to its centre, then the seal scales out.
+The seal's geometry is pure and Skia-free in `lenses/seal.ts` (masks, Peano
+order, per-dot sound, `sealDotAt`); `lenses/sealLens.ts` builds one cached path
+per song for L0/L1 and draws the picture fallback. The player's seal is drawn a
+dot at a time by `drawSealPlayer`: mark dots split into their children as
+`songShapeArrival` runs, and the sound rises on a born clock
+(`SEAL_PLAYER_KNOBS.SOUND_MS`) when a measurement lands. `PlayerRing` draws both
+clocks — the circle's arc and hand, the seal's rim and knob — on the same lens
+clock. `seekGesture` scrubs the seal by rim angle (`sealRimFraction`) and treats
+a touch that starts on the dust as a tap (`sealTouchAt`, `sealDotAt`).
+`analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
+(side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
 `features/field/songDetailPhase.ts` separates reveal, hold, and hidden states:
 the outgoing waveform keeps its ink while camera opacity fades it, and resets
 only after it is hidden. Playhead mappers must include the position shared

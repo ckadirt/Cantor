@@ -75,9 +75,10 @@ mockup. They are verified.
 | `types.ts` | `Lens = { key, label, draw(ctx, box, song, opts) }` and `LensOpts` (alpha, progress, live) |
 | `registry.ts` | registration and lookup; the only place a lens list exists |
 | `nameLens.ts` | title, date, semantic cluster, `p/` tags, `×n` for multi-membership |
-| `cantorWaveLens.ts` | 32 middle-thirds intervals, bar height = RMS of that slice |
+| `seal.ts` | the seal's pure geometry: symmetric 3×3 masks, Peano time order, per-dot sound, tap hit-test |
+| `sealLens.ts` | the seal as a lens: one cached path per song, and the picture-fallback drawing |
 | `scopeLens.ts` | L vs R Lissajous (phase 2) |
-| `analysis.ts` | RMS/envelope/peak extraction, memoised per `(songId, resolution)` |
+| `analysis.ts` | RMS/peak per interval, plus per-bucket loudness/punch/width, memoised per `(songId, resolution)` |
 | `cantorIntervals.ts` | middle-thirds interval generation, shared with the origin mark |
 
 ### `src/player/` — playback

@@ -1,6 +1,5 @@
-import { timelineHandPath } from './waveGeometry';
 import { smootherstep } from '../../field/bands';
-import { WAVE_GEOMETRY_KNOBS } from '../../lenses/cantorWaveGeometry';
+import { SEAL_PLAYER_KNOBS } from '../../lenses/seal';
 import React, { useMemo } from 'react';
 import {
   Group as SkiaGroup,
@@ -17,7 +16,6 @@ import {
   interpolateColor,
   useAnimatedReaction,
   useDerivedValue,
-  useReducedMotion,
   useSharedValue,
   type DerivedValue,
   type SharedValue,
@@ -58,7 +56,7 @@ export const PLAYER_RING_KNOBS = {
   SONG_WAVE_REACH_RATIO: 0.36,
   SONG_WAVE_WIDTH_PX: 1.5,
   SONG_WAVE_ALPHA: 0.55,
-  /** Music sits at 0.1–0.3 RMS; the wave lens takes the same fixed gain. */
+  /** Music sits at 0.1–0.3 RMS, so a fixed gain spends the reach. */
   SONG_WAVE_GAIN: 2.6,
   /**
    * The beat: how far either side of the playhead the lift reaches, in turns,
@@ -567,23 +565,43 @@ export function ArrivingRing({
   );
 }
 
+/** The hand: a radial line at `fraction` of a turn from twelve o'clock. */
+function handPath(inner: number, outer: number, fraction: number): SkPath {
+  'worklet';
+  const angle = fraction * Math.PI * 2 - Math.PI / 2;
+  const builder = Skia.PathBuilder.Make();
+  builder.moveTo(Math.cos(angle) * inner, Math.sin(angle) * inner);
+  builder.lineTo(Math.cos(angle) * outer, Math.sin(angle) * outer);
+  return builder.detach();
+}
+
+/**
+ * The player's clock, in whichever form the lens draws it.
+ *
+ * The circle's is an arc that fills inside the face and a hand that sweeps
+ * across it. The seal's is a rim outside the dust — the dust is where the song
+ * is drawn, so the clock goes round it rather than through it — with a knob
+ * where the hand would be. Both answer to one fraction on the UI thread, and
+ * the lens clock hands one over to the other, so a lens change mid-song never
+ * loses the playhead.
+ */
 export function PlayerRing({
   radius,
   lensMix,
-  viewport,
   durationSeconds,
   positionSeconds,
   colour,
 }: {
   radius: number;
   lensMix?: SharedValue<number>;
-  viewport?: PoseViewport;
   durationSeconds: number;
   positionSeconds: SharedValue<number>;
   colour: string;
 }) {
   const knobs = PLAYER_RING_KNOBS;
+  const seal = SEAL_PLAYER_KNOBS;
   const arcRadius = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
+  const rimRadius = radius * seal.RIM_RATIO;
 
   const ring = useMemo(() => {
     const builder = Skia.PathBuilder.Make();
@@ -594,6 +612,30 @@ export function PlayerRing({
     );
     return builder.detach();
   }, [arcRadius]);
+  const rim = useMemo(() => {
+    const builder = Skia.PathBuilder.Make();
+    builder.addArc(
+      Skia.XYWHRect(-rimRadius, -rimRadius, rimRadius * 2, rimRadius * 2),
+      -90,
+      360,
+    );
+    return builder.detach();
+  }, [rimRadius]);
+  /** Twelve, three, six and nine, pointing in from the rim. */
+  const rimTicks = useMemo(() => {
+    const builder = Skia.PathBuilder.Make();
+    for (let quarter = 0; quarter < 4; quarter += 1) {
+      const angle = (quarter * Math.PI) / 2;
+      const x = Math.sin(angle);
+      const y = -Math.cos(angle);
+      builder.moveTo(x * rimRadius, y * rimRadius);
+      builder.lineTo(
+        x * (rimRadius - seal.RIM_TICK_PX),
+        y * (rimRadius - seal.RIM_TICK_PX),
+      );
+    }
+    return builder.detach();
+  }, [rimRadius, seal.RIM_TICK_PX]);
 
   const fraction = useDerivedValue(() => {
     if (durationSeconds <= 0) return 0;
@@ -601,48 +643,71 @@ export function PlayerRing({
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }, [durationSeconds, positionSeconds]);
 
-  const reducedMotion = useReducedMotion();
-  const circleOpacity = useDerivedValue(() => 1 - smootherstep(lensMix?.value ?? 0));
-  const waveOpacity = useDerivedValue(() => smootherstep(lensMix?.value ?? 0));
-  const width = (viewport?.width ?? 0) * WAVE_GEOMETRY_KNOBS.SONG_WIDTH_RATIO;
-  const height = (viewport?.height ?? 0) * WAVE_GEOMETRY_KNOBS.SONG_HEIGHT_RATIO;
-  const hand = useDerivedValue(() => timelineHandPath(
-    radius * knobs.SONG_HAND_INNER_RATIO,
-    radius * knobs.SONG_HAND_OUTER_RATIO,
-    fraction.value, width, height,
-    reducedMotion ? 0 : smootherstep(lensMix?.value ?? 0),
-  ));
-  const waveHand = useDerivedValue(() => timelineHandPath(
-    0, 0, fraction.value, width, height, 1,
-  ));
+  const circleOpacity = useDerivedValue(
+    () => 1 - smootherstep(lensMix?.value ?? 0),
+  );
+  const sealOpacity = useDerivedValue(() => smootherstep(lensMix?.value ?? 0));
+  const hand = useDerivedValue(() =>
+    handPath(
+      radius * knobs.SONG_HAND_INNER_RATIO,
+      radius * knobs.SONG_HAND_OUTER_RATIO,
+      fraction.value,
+    ),
+  );
+  const knob = useDerivedValue(() => {
+    const angle = fraction.value * Math.PI * 2 - Math.PI / 2;
+    const builder = Skia.PathBuilder.Make();
+    builder.addCircle(
+      Math.cos(angle) * rimRadius,
+      Math.sin(angle) * rimRadius,
+      seal.KNOB_RADIUS_PX,
+    );
+    return builder.detach();
+  });
 
   return (
     <>
-      <Path
-        color={colour}
-        end={fraction}
-        opacity={circleOpacity}
-        path={ring}
-        start={0}
-        strokeWidth={knobs.SONG_ARC_WIDTH_PX}
-        style="stroke"
-      />
-      <Path
-        color={colour}
-        path={hand}
-        opacity={reducedMotion ? circleOpacity : 1}
-        strokeWidth={knobs.SONG_HAND_WIDTH_PX}
-        style="stroke"
-      />
-      {reducedMotion ? (
+      <SkiaGroup opacity={circleOpacity}>
         <Path
           color={colour}
-          path={waveHand}
-          opacity={waveOpacity}
+          end={fraction}
+          path={ring}
+          start={0}
+          strokeWidth={knobs.SONG_ARC_WIDTH_PX}
+          style="stroke"
+        />
+        <Path
+          color={colour}
+          path={hand}
           strokeWidth={knobs.SONG_HAND_WIDTH_PX}
           style="stroke"
         />
-      ) : null}
+      </SkiaGroup>
+      <SkiaGroup opacity={sealOpacity}>
+        <Path
+          color={colour}
+          opacity={seal.RIM_ALPHA}
+          path={rim}
+          strokeWidth={seal.RIM_WIDTH_PX}
+          style="stroke"
+        />
+        <Path
+          color={colour}
+          opacity={seal.RIM_TICK_ALPHA}
+          path={rimTicks}
+          strokeWidth={seal.RIM_WIDTH_PX}
+          style="stroke"
+        />
+        <Path
+          color={colour}
+          end={fraction}
+          path={rim}
+          start={0}
+          strokeWidth={seal.RIM_HEARD_WIDTH_PX}
+          style="stroke"
+        />
+        <Path color={colour} path={knob} />
+      </SkiaGroup>
     </>
   );
 }
@@ -1349,7 +1414,6 @@ export function NativePlayerParts({
         {positionSeconds === null ? null : (
           <PlayerRing
             lensMix={lensMix}
-            viewport={viewport}
             colour={colour}
             durationSeconds={durationSeconds}
             positionSeconds={positionSeconds}
