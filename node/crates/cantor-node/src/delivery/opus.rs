@@ -47,18 +47,35 @@ fn encode_opus(source: &Path, destination: &Path) -> Result<()> {
         || &header[12..16] != b"fmt "
         || u16::from_le_bytes([header[20], header[21]]) != 1
         || u16::from_le_bytes([header[22], header[23]]) != CHANNELS
-        || u32::from_le_bytes(header[24..28].try_into()?) != SAMPLE_RATE
         || u16::from_le_bytes([header[34], header[35]]) != 16
         || &header[36..40] != b"data"
     {
-        bail!("delivery input is not canonical 48 kHz stereo PCM16 WAV");
+        bail!("delivery input is not canonical stereo PCM16 WAV");
+    }
+    let input_rate = u32::from_le_bytes(header[24..28].try_into()?);
+    if input_rate == 0 {
+        bail!("delivery input has an invalid sample rate");
     }
     let data_bytes = u32::from_le_bytes(header[40..44].try_into()?) as u64;
-    if data_bytes == 0 || data_bytes % (u64::from(CHANNELS) * 2) != 0 {
+    if data_bytes == 0
+        || data_bytes % (u64::from(CHANNELS) * 2) != 0
+        || input.metadata()?.len() != data_bytes + 44
+    {
         bail!("delivery input has an invalid PCM length");
     }
     let source_frames = data_bytes / (u64::from(CHANNELS) * 2);
     input.seek(SeekFrom::Start(44))?;
+    let resampled = if input_rate == SAMPLE_RATE {
+        None
+    } else {
+        let mut pcm = Vec::new();
+        input.read_to_end(&mut pcm)?;
+        Some(pcm)
+    };
+    let output_frames = source_frames
+        .checked_mul(u64::from(SAMPLE_RATE))
+        .context("delivery frame count overflow")?
+        .div_ceil(u64::from(input_rate));
 
     let parent = destination
         .parent()
@@ -84,7 +101,7 @@ fn encode_opus(source: &Path, destination: &Path) -> Result<()> {
     )?;
     writer.write_packet(opus_tags(), serial, PacketWriteEndInfo::EndPage, 0)?;
 
-    let mut remaining = source_frames;
+    let mut remaining = output_frames;
     let mut source_position = 0_u64;
     let mut pcm_bytes = vec![0_u8; FRAME_SAMPLES * usize::from(CHANNELS) * 2];
     let mut samples = vec![0_i16; FRAME_SAMPLES * usize::from(CHANNELS)];
@@ -94,7 +111,19 @@ fn encode_opus(source: &Path, destination: &Path) -> Result<()> {
         let byte_count = frame_count * usize::from(CHANNELS) * 2;
         pcm_bytes.fill(0);
         samples.fill(0);
-        input.read_exact(&mut pcm_bytes[..byte_count])?;
+        if let Some(pcm) = &resampled {
+            for frame in 0..frame_count {
+                let output_frame = source_position + frame as u64;
+                for channel in 0..usize::from(CHANNELS) {
+                    let sample =
+                        resample_pcm16(pcm, source_frames, input_rate, output_frame, channel);
+                    let start = (frame * usize::from(CHANNELS) + channel) * 2;
+                    pcm_bytes[start..start + 2].copy_from_slice(&sample.to_le_bytes());
+                }
+            }
+        } else {
+            input.read_exact(&mut pcm_bytes[..byte_count])?;
+        }
         for (sample, encoded) in samples.iter_mut().zip(pcm_bytes.chunks_exact(2)) {
             *sample = i16::from_le_bytes([encoded[0], encoded[1]]);
         }
@@ -118,6 +147,34 @@ fn encode_opus(source: &Path, destination: &Path) -> Result<()> {
     fs::rename(&temporary, destination)?;
     File::open(parent)?.sync_all()?;
     Ok(())
+}
+
+/// Four-point cubic interpolation keeps the two channels aligned while
+/// converting engine-native PCM to Opus's fixed 48 kHz clock.
+fn resample_pcm16(pcm: &[u8], frames: u64, rate: u32, output_frame: u64, channel: usize) -> i16 {
+    let numerator = output_frame * u64::from(rate);
+    let index = (numerator / u64::from(SAMPLE_RATE)) as i64;
+    let fraction = (numerator % u64::from(SAMPLE_RATE)) as f64 / f64::from(SAMPLE_RATE);
+    let at = |frame: i64| -> f64 {
+        let frame = frame.clamp(0, frames as i64 - 1) as usize;
+        let offset = (frame * usize::from(CHANNELS) + channel) * 2;
+        f64::from(i16::from_le_bytes([pcm[offset], pcm[offset + 1]]))
+    };
+    let a = at(index - 1);
+    let b = at(index);
+    let c = at(index + 1);
+    let d = at(index + 2);
+    let slope_b = (c - a) * 0.5;
+    let slope_c = (d - b) * 0.5;
+    let t2 = fraction * fraction;
+    let t3 = t2 * fraction;
+    let value = (2.0 * t3 - 3.0 * t2 + 1.0) * b
+        + (t3 - 2.0 * t2 + fraction) * slope_b
+        + (-2.0 * t3 + 3.0 * t2) * c
+        + (t3 - t2) * slope_c;
+    value
+        .round()
+        .clamp(f64::from(i16::MIN), f64::from(i16::MAX)) as i16
 }
 
 fn opus_head(pre_skip: u16) -> [u8; 19] {
@@ -211,5 +268,32 @@ mod tests {
                 .starts_with(b"OpusTags")
         );
         assert!(!packets.read_packet().unwrap().unwrap().data.is_empty());
+    }
+
+    #[test]
+    fn master_at_44100_hz_encodes_without_changing_the_master() {
+        let temporary = tempfile::tempdir().unwrap();
+        let source = temporary.path().join("master.wav");
+        let destination = temporary.path().join("delivery.opus");
+        let frames = 44_100;
+        crate::generate::Audio {
+            planar: vec![0.25; frames * 2],
+            sample_rate: 44_100,
+        }
+        .write_wav(&source)
+        .unwrap();
+        let master = std::fs::read(&source).unwrap();
+
+        encode_opus(&source, &destination).unwrap();
+
+        let inspected = inspect_delivery(&destination).unwrap();
+        assert!(inspected.byte_length > 100);
+        let mut reader = ogg::PacketReader::new(std::fs::File::open(&destination).unwrap());
+        let mut last = None;
+        while let Some(packet) = reader.read_packet().unwrap() {
+            last = Some(packet);
+        }
+        assert_eq!(last.unwrap().absgp_page(), 48_000 + 312);
+        assert_eq!(std::fs::read(source).unwrap(), master);
     }
 }
