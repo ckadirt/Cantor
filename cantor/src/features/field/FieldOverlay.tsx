@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { TransformText, WriteText } from '../../motion';
 import { Dial, Reveal } from '../controls';
@@ -246,11 +246,36 @@ function FieldOverlayImpl({
   onChangeOrder,
 }: Props) {
   const pal = usePalette();
-  const onDateAxis = arrangementKey === byTime.key;
   // L2 and L3 belong to the player, which draws its own name and metadata in
   // this corner. Two headers in one place is the fault this step exists to
   // remove, so at those levels the breadcrumb carries the depth alone.
   const showHeader = level === 'field' || level === 'shelf';
+  /*
+   * What the header and the foot say, held at the last level they were shown.
+   *
+   * They stay mounted at L2 and are only hidden. Unmounting them is tearing
+   * down a handful of Skia text canvases and two dials on the UI thread, and it
+   * happened on the frame the camera crossed into a song — mid-descent — as
+   * one frame of about eighty milliseconds: the player stopped, then appeared.
+   * Hidden, they must not keep morphing to say things nobody can see, so while
+   * hidden they are drawn from the last props they showed.
+   */
+  const live = {
+    level,
+    offline,
+    arrangementKey,
+    dateResolution,
+    songCount,
+    groupCount,
+    groupLabel,
+    shelfAction,
+    orderKey,
+  };
+  const shown = useRef(live);
+  if (showHeader) shown.current = live;
+  const h = shown.current;
+  const onDateAxis = h.arrangementKey === byTime.key;
+  const away = !showHeader;
   return (
     <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
       <EdgeTab
@@ -260,11 +285,17 @@ function FieldOverlayImpl({
         label="NEW SONG"
         onPress={onOpenComposer}
       />
-      {showHeader ? (
-        // box-none, not none: the count is not touchable but the shelf action
-        // beside it is, and it is the only thing in this corner that is.
-        <View style={styles.header} pointerEvents="box-none">
-          {/*
+      {/*
+        box-none, not none: the count is not touchable but the shelf action
+        beside it is, and it is the only thing in this corner that is.
+      */}
+      <View
+        accessibilityElementsHidden={away}
+        importantForAccessibility={away ? 'no-hide-descendants' : 'auto'}
+        pointerEvents={away ? 'none' : 'box-none'}
+        style={[styles.header, away && styles.hidden]}
+      >
+        {/*
             The header is one object at every level, not a different header per
             level. So the depth, the name and the count *change* rather than
             being replaced. `Field` becoming `Last week` is the gesture the
@@ -282,37 +313,37 @@ function FieldOverlayImpl({
             shared alpha, so the count re-forms in place: one object, one
             gesture, which is what the paragraph above is claiming.
           */}
-          <TransformText
-            text={`L${LEVELS[level].index} · ${LEVELS[level].name}`}
-            charStyle={CHROME_STYLES.eyebrow}
-            color={pal.muted}
-            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-            style={styles.eyebrowSlot}
-          />
-          <TransformText
-            text={level === 'shelf' ? groupLabel ?? 'Group' : 'Field'}
-            charStyle={CHROME_STYLES.title}
-            color={pal.ink}
-            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-            style={styles.titleSlot}
-          />
-          <View style={styles.metaRow} pointerEvents="box-none">
-            <View style={styles.metaCount} pointerEvents="none">
-              <TransformText
-                text={`${metaLine(
-                  level,
-                  songCount,
-                  groupCount,
-                  onDateAxis,
-                  dateResolution,
-                )}${offline ? ' · OFFLINE' : ''}`}
-                charStyle={CHROME_STYLES.eyebrow}
-                color={pal.faint}
-                duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-                style={styles.eyebrowSlot}
-              />
-            </View>
-            {/*
+        <TransformText
+          text={`L${LEVELS[h.level].index} · ${LEVELS[h.level].name}`}
+          charStyle={CHROME_STYLES.eyebrow}
+          color={pal.muted}
+          duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+          style={styles.eyebrowSlot}
+        />
+        <TransformText
+          text={h.level === 'shelf' ? h.groupLabel ?? 'Group' : 'Field'}
+          charStyle={CHROME_STYLES.title}
+          color={pal.ink}
+          duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+          style={styles.titleSlot}
+        />
+        <View style={styles.metaRow} pointerEvents="box-none">
+          <View style={styles.metaCount} pointerEvents="none">
+            <TransformText
+              text={`${metaLine(
+                h.level,
+                h.songCount,
+                h.groupCount,
+                onDateAxis,
+                h.dateResolution,
+              )}${h.offline ? ' · OFFLINE' : ''}`}
+              charStyle={CHROME_STYLES.eyebrow}
+              color={pal.faint}
+              duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+              style={styles.eyebrowSlot}
+            />
+          </View>
+          {/*
               Always mounted, and empty at every level that has no bulk action.
               An action that unmounted could not be taken back off the screen:
               the engine needs the outgoing ink and a stable slot width to
@@ -320,70 +351,70 @@ function FieldOverlayImpl({
               writes itself on when you enter a shelf and unwrites itself when
               you leave — one gesture, both directions.
             */}
-            <Pressable
-              accessibilityElementsHidden={shelfAction === null}
-              accessibilityLabel={shelfAction ?? undefined}
-              accessibilityRole="button"
-              hitSlop={space.md}
-              importantForAccessibility={
-                shelfAction === null ? 'no-hide-descendants' : 'yes'
-              }
-              onPress={onShelfAction}
-              pointerEvents={shelfAction === null ? 'none' : 'auto'}
-              style={styles.actionSlot}
-            >
-              {({ pressed }) => (
-                <WriteText
-                  text={level === 'shelf' ? shelfAction ?? '' : ''}
-                  charStyle={CHROME_STYLES.action}
-                  color={pressed ? pal.muted : pal.ink}
-                  // Both, because this slot has two gestures: it writes and
-                  // unwrites on the level change, and morphs in place when the
-                  // shelf's size changes under it while you are standing there.
-                  duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-                  writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-                  // The second of those gestures is the header's, so it is the
-                  // header's variant. `write` and `erase` are chosen ahead of
-                  // the variant and so are untouched by this.
-                  variant="transform"
-                  style={styles.eyebrowSlot}
-                />
-              )}
-            </Pressable>
-          </View>
-          {/*
+          <Pressable
+            accessibilityElementsHidden={h.shelfAction === null}
+            accessibilityLabel={h.shelfAction ?? undefined}
+            accessibilityRole="button"
+            hitSlop={space.md}
+            importantForAccessibility={
+              h.shelfAction === null ? 'no-hide-descendants' : 'yes'
+            }
+            onPress={onShelfAction}
+            pointerEvents={h.shelfAction === null ? 'none' : 'auto'}
+            style={styles.actionSlot}
+          >
+            {({ pressed }) => (
+              <WriteText
+                text={h.level === 'shelf' ? h.shelfAction ?? '' : ''}
+                charStyle={CHROME_STYLES.action}
+                color={pressed ? pal.muted : pal.ink}
+                // Both, because this slot has two gestures: it writes and
+                // unwrites on the level change, and morphs in place when the
+                // shelf's size changes under it while you are standing there.
+                duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+                writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+                // The second of those gestures is the header's, so it is the
+                // header's variant. `write` and `erase` are chosen ahead of
+                // the variant and so are untouched by this.
+                variant="transform"
+                style={styles.eyebrowSlot}
+              />
+            )}
+          </Pressable>
+        </View>
+        {/*
             Always mounted, rising into a seat the header keeps for it. The
             header stacks downward from the top of the screen, so the seat
             costs nothing at L0 — it is below everything — and the control
             arrives by coming up into focus rather than by existing suddenly.
           */}
-          <Reveal
-            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-            open={level === 'shelf'}
-          >
-            <View style={styles.orderRow} pointerEvents="box-none">
-              <Text
-                style={[type.eyebrow, styles.orderLabel, { color: pal.line }]}
-                pointerEvents="none">
-                ORDER
-              </Text>
-              <Dial
-                activeKey={orderKey}
-                activeColour={pal.ink}
-                items={SONG_ORDERS.map(order => ({
-                  key: order.key,
-                  label: order.label.toUpperCase(),
-                  accessibilityLabel: `Order by ${order.label}`,
-                }))}
-                onSelect={onChangeOrder}
-                restColour={pal.faint}
-                textStyle={type.eyebrow}
-                tickColour={pal.ink}
-              />
-            </View>
-          </Reveal>
-        </View>
-      ) : null}
+        <Reveal
+          duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+          open={h.level === 'shelf'}
+        >
+          <View style={styles.orderRow} pointerEvents="box-none">
+            <Text
+              style={[type.eyebrow, styles.orderLabel, { color: pal.line }]}
+              pointerEvents="none"
+            >
+              ORDER
+            </Text>
+            <Dial
+              activeKey={h.orderKey}
+              activeColour={pal.ink}
+              items={SONG_ORDERS.map(order => ({
+                key: order.key,
+                label: order.label.toUpperCase(),
+                accessibilityLabel: `Order by ${order.label}`,
+              }))}
+              onSelect={onChangeOrder}
+              restColour={pal.faint}
+              textStyle={type.eyebrow}
+              tickColour={pal.ink}
+            />
+          </View>
+        </Reveal>
+      </View>
 
       {/* An alert clears the player's transport as well as the dial. */}
       {storageError ? (
@@ -394,83 +425,81 @@ function FieldOverlayImpl({
           {storageError}
         </Text>
       ) : null}
-      {showHeader ? (
-        <View style={styles.foot} pointerEvents="box-none">
-          {/*
+      <View
+        accessibilityElementsHidden={away}
+        importantForAccessibility={away ? 'no-hide-descendants' : 'auto'}
+        pointerEvents={away ? 'none' : 'box-none'}
+        style={[styles.foot, away && styles.hidden]}
+      >
+        {/*
           The dial is a property of the map, so it is drawn on the map. At L1
           you are inside one cluster and re-cutting the whole field from there
           would move the ground you are standing on.
         */}
-          {/*
+        {/*
             The dial is a property of the map, so it is drawn on the map — and
             it leaves the same way it arrives. Always mounted: the foot is
             anchored to the bottom of the screen and stacks upward, so the hint
             below it does not move whether the dial is lit or not, and the dial
             can therefore rise and set instead of blinking in and out.
           */}
-          <Reveal open={level === 'field'}>
-            <>
-              <Dial
-                activeKey={arrangementKey}
-                activeColour={pal.ink}
-                items={ARRANGEMENTS.map(arrangement => ({
-                  key: arrangement.key,
-                  label: arrangement.label.toUpperCase(),
-                  accessibilityLabel: `Arrange by ${arrangement.label}`,
-                }))}
-                onSelect={onChangeArrangement}
-                restColour={pal.faint}
-                textStyle={type.eyebrow}
-                tickColour={pal.ink}
-              />
-              {/*
+        <Reveal open={h.level === 'field'}>
+          <>
+            <Dial
+              activeKey={h.arrangementKey}
+              activeColour={pal.ink}
+              items={ARRANGEMENTS.map(arrangement => ({
+                key: arrangement.key,
+                label: arrangement.label.toUpperCase(),
+                accessibilityLabel: `Arrange by ${arrangement.label}`,
+              }))}
+              onSelect={onChangeArrangement}
+              restColour={pal.faint}
+              textStyle={type.eyebrow}
+              tickColour={pal.ink}
+            />
+            {/*
                 Resolution sits under the axis it belongs to, because it is a
                 property of that axis rather than a fourth arrangement. It
                 grows in and out rather than appearing: the foot is anchored to
                 the bottom of the screen, so a row arriving at full height
                 shoves the axis above it upward in one frame.
               */}
-              <Reveal
-                open={onDateAxis}
-                height={OVERLAY_KNOBS.RESOLUTION_ROW_PX}
-              >
-                <Dial
-                  activeKey={dateResolution}
-                  activeColour={pal.muted}
-                  items={DATE_RESOLUTIONS.map(resolution => ({
-                    key: resolution,
-                    label: CLUSTER_NOUN[resolution],
-                    accessibilityLabel: `Group dates by ${resolution}`,
-                  }))}
-                  onSelect={key =>
-                    onChangeDateResolution(key as DateResolution)
-                  }
-                  restColour={pal.line}
-                  textStyle={styles.resolution}
-                  tickColour={pal.muted}
-                />
-              </Reveal>
-            </>
-          </Reveal>
-          {/*
+            <Reveal open={onDateAxis} height={OVERLAY_KNOBS.RESOLUTION_ROW_PX}>
+              <Dial
+                activeKey={h.dateResolution}
+                activeColour={pal.muted}
+                items={DATE_RESOLUTIONS.map(resolution => ({
+                  key: resolution,
+                  label: CLUSTER_NOUN[resolution],
+                  accessibilityLabel: `Group dates by ${resolution}`,
+                }))}
+                onSelect={key => onChangeDateResolution(key as DateResolution)}
+                restColour={pal.line}
+                textStyle={styles.resolution}
+                tickColour={pal.muted}
+              />
+            </Reveal>
+          </>
+        </Reveal>
+        {/*
             The hint names the one gesture worth naming, and which gesture that
             is changes with the level and with the axis. It is the same
             sentence being rewritten, so it morphs like the header does.
           */}
-          <TransformText
-            text={
-              level === 'field'
-                ? `${HINTS.field} ${
-                    onDateAxis ? CLUSTER_NOUN[dateResolution] : 'PLAYLIST'
-                  }`
-                : HINTS.shelf
-            }
-            charStyle={CHROME_STYLES.hint}
-            color={pal.faint}
-            style={styles.hintSlot}
-          />
-        </View>
-      ) : null}
+        <TransformText
+          text={
+            h.level === 'field'
+              ? `${HINTS.field} ${
+                  onDateAxis ? CLUSTER_NOUN[h.dateResolution] : 'PLAYLIST'
+                }`
+              : HINTS.shelf
+          }
+          charStyle={CHROME_STYLES.hint}
+          color={pal.faint}
+          style={styles.hintSlot}
+        />
+      </View>
       <EdgeTab
         accessibilityLabel="Open engines"
         colour={pal.faint}
@@ -594,6 +623,8 @@ function EdgeTab({
 }
 
 const styles = StyleSheet.create({
+  /** At L2 and L3: still mounted, drawn nowhere and touched by nothing. */
+  hidden: { opacity: 0 },
   header: {
     left: space.lg,
     position: 'absolute',

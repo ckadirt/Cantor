@@ -155,8 +155,13 @@ function hash(value: string): number {
   return result >>> 0;
 }
 
-/** A small deterministic PRNG. The same seed draws the same face on every device. */
-function mulberry32(seed: number): () => number {
+/**
+ * A small deterministic PRNG. The same seed draws the same face on every device.
+ *
+ * Exported for the seal, which draws its own identity from the same recipe and
+ * has to be just as stable across devices.
+ */
+export function mulberry32(seed: number): () => number {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) | 0;

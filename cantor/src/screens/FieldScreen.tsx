@@ -127,7 +127,11 @@ type Props = {
 };
 
 /** KNOBS */
-const ANALYSIS_BUCKETS = 512; // resolution the Cantor intervals are reduced from
+/**
+ * The resolution a song is measured at: 3⁶, so the seal's base-3 grid and the
+ * Cantor intervals both divide it into whole buckets.
+ */
+const ANALYSIS_BUCKETS = 729;
 /**
  * How often the field re-reads the visual clock while a song plays.
  *
@@ -1630,9 +1634,19 @@ export function FieldScreen({ identity }: Props) {
             />
           </>
         ) : null}
-        {songAlpha > 0.01 && focused !== null && viewport !== null ? (
+        {(songAlpha > 0.01 || fieldCamera.playerFocus !== null) &&
+        focused !== null &&
+        viewport !== null ? (
           <View
             /*
+             * Mounted on the commit that starts the descent, not when the band
+             * opens. A tap into a song already waits for one commit before the
+             * camera moves (see `descend`), so mounting here costs nothing the
+             * flight can see; mounted at the band's edge instead, its native
+             * views and gesture root landed mid-flight as one long frame, and
+             * the player stopped and then appeared. It is invisible until the
+             * band opens either way — its fade reads the live camera.
+             *
              * Touchable only once it is mostly here: a transport at 4% opacity
              * is a control nobody can see and everybody can press.
              *
@@ -1681,6 +1695,7 @@ export function FieldScreen({ identity }: Props) {
               }
               song={{
                 key: focused.entity.key,
+                id: focused.entity.entityId,
                 title: focused.song.title,
                 model: focused.song.model,
                 seed: focused.song.seed,

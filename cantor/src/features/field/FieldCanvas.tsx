@@ -11,8 +11,6 @@ import {
 } from './nativeRows';
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import React, { useEffect, useMemo, useRef } from 'react';
-import { facePoints } from '../../lenses/face';
-import { drawWaveMorph, waveWedges, WAVE_GEOMETRY_KNOBS } from './waveGeometry';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
@@ -86,8 +84,17 @@ import {
   nameLensFacePath,
   nameLensRingRadius,
   neutralAnalysis,
+  SEAL_KNOBS,
+  SEAL_PLAYER_KNOBS,
+  sealDotRadius,
+  sealLoudness,
+  sealMarkPath,
+  sealModel,
+  sealSidePx,
+  sealSound,
   textWidth,
   type LensFonts,
+  type SealSound,
   type LensPaints,
   type SongAnalysis,
 } from '../../lenses';
@@ -200,7 +207,7 @@ const FIELD_CANVAS_KNOBS = {
   SONG_WAVE_REACH_RATIO: 0.36,
   SONG_WAVE_WIDTH_PX: 1.5,
   SONG_WAVE_ALPHA: 0.55,
-  /** Music sits at 0.1–0.3 RMS; the wave lens takes the same fixed gain. */
+  /** Music sits at 0.1–0.3 RMS, so a fixed gain spends the reach. */
   SONG_WAVE_GAIN: 2.6,
   /**
    * The beat: how far either side of the playhead the lift reaches, in turns,
@@ -695,14 +702,18 @@ function FieldCanvasImpl({
     viewport,
   );
 
-  const lensMixCandidate = useSharedValue(
-    activeLensKey === 'cantor-wave' ? 1 : 0,
-  );
+  /*
+   * The lens clock: 0 on the circle, 1 on the seal, linear, eased once by
+   * whoever draws from it. Retained across re-cuts on purpose — it lives out
+   * here rather than in the keyed native scene, so regrouping mid-switch keeps
+   * the switch where it was.
+   */
+  const lensMixCandidate = useSharedValue(activeLensKey === 'seal' ? 1 : 0);
   const lensMix = useRef(lensMixCandidate).current;
   const reducedMotion = useReducedMotion();
   useEffect(() => {
-    lensMix.value = withTiming(activeLensKey === 'cantor-wave' ? 1 : 0, {
-      duration: WAVE_GEOMETRY_KNOBS.MORPH_MS,
+    lensMix.value = withTiming(activeLensKey === 'seal' ? 1 : 0, {
+      duration: SEAL_PLAYER_KNOBS.LENS_MORPH_MS,
       easing: Easing.linear,
     });
   }, [activeLensKey, lensMix]);
@@ -972,6 +983,7 @@ function FieldCanvasImpl({
         colour={palette.ink}
         durationSeconds={presentation.song.duration_ms / 1000}
         fitScale={renderFitScale}
+        lensMix={lensMix}
         positionSeconds={positionSeconds}
         viewport={viewport}
       />
@@ -979,6 +991,7 @@ function FieldCanvasImpl({
   }, [
     cameraShared,
     focusKey,
+    lensMix,
     palette.ink,
     placements,
     positionSeconds,
@@ -995,8 +1008,8 @@ function FieldCanvasImpl({
    * lens whose faces and rows the native path draws. The player's name, its
    * recipe, its transport and its quiet line are not that lens's business:
    * they are laid out from `songPose` and the viewport, and a lens draws a
-   * song's picture, not the chrome around it. They went missing anyway. On
-   * `cantor-wave` you could start a song on `circle`, switch lens, and be left
+   * song's picture, not the chrome around it. They went missing anyway. On the
+   * old wave lens you could start a song on `circle`, switch lens, and be left
    * looking at a waveform with no name, no recipe and no way to pause it.
    *
    * So it is mounted here, on the picture path, which is exactly the complement
@@ -1388,7 +1401,9 @@ function NativePlayhead({
   fitScale,
   durationSeconds,
   colour,
+  lensMix,
 }: {
+  lensMix: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
   positionSeconds: SharedValue<number>;
   viewport: Viewport;
@@ -1433,6 +1448,7 @@ function NativePlayhead({
       <PlayerRing
         colour={colour}
         durationSeconds={durationSeconds}
+        lensMix={lensMix}
         positionSeconds={positionSeconds}
         radius={playerRadiusPx(viewport.width)}
       />
@@ -1756,8 +1772,10 @@ type NativeFieldContentProps = Readonly<{
  */
 export type FaceFlight = Readonly<{
   markPath: SkPath;
-  wedges?: ReturnType<typeof waveWedges>;
-  levels?: readonly number[];
+  /** The same song as a seal, at the mark's size; see `sealMarkPath`. */
+  sealPath: SkPath;
+  /** The seal at the player's depth, for the one face that is the player. */
+  seal?: NativeSeal;
   fromX: number;
   fromY: number;
   targetX: number;
@@ -1780,6 +1798,30 @@ export type FaceFlight = Readonly<{
 }>;
 
 /**
+ * The seal as the player draws it: both of its deepest levels, and the sound.
+ *
+ * Plain arrays, because a worklet cannot hold the model's own objects any more
+ * than a typed array. Built for one face at a time — the player — so its cost
+ * is one song's, not the field's.
+ */
+export type NativeSeal = Readonly<{
+  /** Depth 2, the mark's dots, in the unit square. */
+  markX: readonly number[];
+  markY: readonly number[];
+  /** Depth 3, the player's dots, and which mark dot each grew out of. */
+  x: readonly number[];
+  y: readonly number[];
+  parent: readonly number[];
+  /** Depth 3 in time order. */
+  order: readonly number[];
+  /** Null until the song has been measured: identity only. */
+  sound: SealSound | null;
+}>;
+
+/** The seal at the mark's size, drawn around the origin. */
+const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
+
+/**
  * The field's faces as plain rows, built once per re-cut on the JS thread.
  *
  * Every field here is a number, a boolean, or an `SkPath` — which is a host
@@ -1800,27 +1842,20 @@ export function faceFlightsOf(
     if (presentation === undefined) continue;
     const song = presentation.song;
     const availability = availabilityOf(presentation.localAudio.state);
+    const recipe = {
+      seed: song.seed,
+      id: presentation.entity.entityId,
+      model: song.model,
+      durationMs: song.duration_ms,
+    };
+    const isPlayer =
+      focusKey !== null && flight.targetPlacementKey === focusKey;
     result.push({
-      wedges: waveWedges(
-        facePoints({
-          seed: song.seed,
-          id: presentation.entity.entityId,
-          model: song.model,
-          durationMs: song.duration_ms,
-        }),
-      ),
-      levels: Array.from(
-        (analyses?.get(flight.entityKey) ?? neutralAnalysis()).rms,
-      ),
-      markPath: nameLensFacePath(
-        {
-          seed: song.seed,
-          id: presentation.entity.entityId,
-          model: song.model,
-          durationMs: song.duration_ms,
-        },
-        NAME_LENS_KNOBS.MARK_RADIUS_PX,
-      ),
+      markPath: nameLensFacePath(recipe, NAME_LENS_KNOBS.MARK_RADIUS_PX),
+      sealPath: sealMarkPath(recipe, SEAL_MARK_SIDE_PX),
+      seal: isPlayer
+        ? nativeSealOf(recipe, analyses?.get(flight.entityKey))
+        : undefined,
       fromX: flight.fromX,
       fromY: flight.fromY,
       targetX: flight.targetX,
@@ -1837,15 +1872,40 @@ export function faceFlightsOf(
       // The same two questions `NativePlacementFlight` asks, asked here so the
       // gate travels with the row rather than being chosen beside it. A pose
       // shared across the field is how every mark once grew into the player.
-      isPlayer: focusKey !== null && flight.targetPlacementKey === focusKey,
+      isPlayer,
       playing: flight.entityKey === playingKey,
     });
   }
   return result;
 }
 
-/** The three paints a field of faces needs, built once per palette. */
-type FacePaints = Readonly<{ fill: SkPaint; stroke: SkPaint; ring: SkPaint }>;
+function nativeSealOf(
+  recipe: Parameters<typeof sealModel>[0],
+  analysis: SongAnalysis | undefined,
+): NativeSeal {
+  const model = sealModel(recipe);
+  const mark = model.levels[SEAL_KNOBS.MARK_DEPTH];
+  const deep = model.levels[SEAL_KNOBS.SONG_DEPTH];
+  const slices = analysis?.measured ? analysis.slices : null;
+  return {
+    markX: mark.x,
+    markY: mark.y,
+    x: deep.x,
+    y: deep.y,
+    parent: deep.parent,
+    order: model.order,
+    sound: slices === null || slices === undefined ? null : sealSound(model, slices),
+  };
+}
+
+/** The paints a field of faces needs, built once per palette. */
+type FacePaints = Readonly<{
+  fill: SkPaint;
+  stroke: SkPaint;
+  ring: SkPaint;
+  /** The ground, for the seal's bead, which is a hole in the thread. */
+  paper: SkPaint;
+}>;
 
 function createFacePaints(palette: Palette): FacePaints {
   const stroke = paint(palette.ink);
@@ -1853,7 +1913,186 @@ function createFacePaints(palette: Palette): FacePaints {
   const ring = paint(palette.ink);
   ring.setStyle(PaintStyle.Stroke);
   ring.setStrokeWidth(NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX);
-  return { fill: paint(palette.ink), stroke, ring };
+  return { fill: paint(palette.ink), stroke, ring, paper: paint(palette.bg) };
+}
+
+/**
+ * The seal as the player: the dust at its deepest, and the song inside it.
+ *
+ * Drawn a dot at a time rather than from the cached path, because every dot
+ * moves on its own here. As the player arrives (`arrived`) each mark dot splits
+ * into the dots it holds — they start stacked on their parent at the parent's
+ * size and walk out to their own cells — so the seal deepens by the same
+ * construction that made it. At `arrived = 0` every child sits on its parent at
+ * the parent's radius, which is the cached mark path to the pixel: the row
+ * hands over to the player with nothing to see.
+ *
+ * Then the sound, which only a measured song has, rises into the dust
+ * (`sound`): each dot takes the loudness of its slice as its size, its punch as
+ * how hollow it is, and its width as how far it splits into a pair. The Peano
+ * thread runs through the dots in time order, inked behind the bead.
+ *
+ * Every dot is drawn as a stroked circle whose stroke is its own ink: a solid
+ * dot is a circle of half its radius stroked with its full radius, a ring is a
+ * thinner stroke. One primitive for every state, so none of these transitions
+ * has to swap one drawing for another.
+ */
+function drawSealPlayer(
+  canvas: SkCanvas,
+  seal: NativeSeal,
+  paints: FacePaints,
+  side: number,
+  opacity: number,
+  weight: number,
+  filled: boolean,
+  arrived: number,
+  soundProgress: number,
+  heard: number,
+): void {
+  'worklet';
+  const knobs = SEAL_KNOBS;
+  const player = SEAL_PLAYER_KNOBS;
+  const sound = seal.sound;
+  const s = sound === null ? 0 : arrived * soundProgress;
+  const markRadius = sealDotRadius(knobs.MARK_DEPTH) * side;
+  const deepRadius = sealDotRadius(knobs.SONG_DEPTH) * side;
+  const identityRadius = markRadius + (deepRadius - markRadius) * arrived;
+  const cell = side / 3 ** knobs.SONG_DEPTH;
+  const count = seal.order.length;
+  const head = heard < 0 ? -1 : Math.min(Math.max(heard, 0), 1) * count;
+  const at = (dot: number, axis: 0 | 1): number => {
+    const own = axis === 0 ? seal.x[dot] : seal.y[dot];
+    const parent = seal.parent[dot];
+    const from = axis === 0 ? seal.markX[parent] : seal.markY[parent];
+    return (from + (own - from) * arrived) * side;
+  };
+
+  if (s > 0) {
+    // The thread, under the dots: the whole of it quiet, the heard part inked.
+    const ahead = Skia.PathBuilder.Make();
+    const behind = Skia.PathBuilder.Make();
+    const last = Math.floor(head);
+    for (let k = 0; k < count; k++) {
+      const dot = seal.order[k];
+      const x = at(dot, 0);
+      const y = at(dot, 1);
+      if (k === 0) ahead.moveTo(x, y);
+      else ahead.lineTo(x, y);
+      if (k <= last) {
+        if (k === 0) behind.moveTo(x, y);
+        else behind.lineTo(x, y);
+      }
+    }
+    if (last >= 0 && last < count - 1) {
+      const a = seal.order[last];
+      const b = seal.order[last + 1];
+      const f = head - last;
+      behind.lineTo(
+        at(a, 0) + (at(b, 0) - at(a, 0)) * f,
+        at(a, 1) + (at(b, 1) - at(a, 1)) * f,
+      );
+    }
+    paints.stroke.setStrokeWidth(player.THREAD_WIDTH_PX);
+    paints.stroke.setAlphaf(opacity * s * player.THREAD_AHEAD_ALPHA);
+    canvas.drawPath(ahead.detach(), paints.stroke);
+    if (last >= 0) {
+      paints.stroke.setAlphaf(opacity * s);
+      canvas.drawPath(behind.detach(), paints.stroke);
+    }
+  }
+
+  if (s <= 0) {
+    /*
+     * The opening: every dot alike, so one path and one draw.
+     *
+     * This runs on every frame of the descent, and it is the whole cost of the
+     * seal while the camera moves — a draw per dot here was three or four JSI
+     * calls each, a few hundred times a frame, and the flight dropped frames
+     * the circle's single cached contour never did.
+     */
+    const dots = Skia.PathBuilder.Make();
+    for (let k = 0; k < count; k++) {
+      const dot = seal.order[k];
+      dots.addCircle(at(dot, 0), at(dot, 1), identityRadius);
+    }
+    const path = dots.detach();
+    if (filled) {
+      paints.fill.setAlphaf(opacity * weight);
+      canvas.drawPath(path, paints.fill);
+    } else {
+      paints.stroke.setAlphaf(opacity * weight);
+      paints.stroke.setStrokeWidth(FIELD_CANVAS_KNOBS.FACE_STROKE_PX);
+      canvas.drawPath(path, paints.stroke);
+    }
+    return;
+  }
+
+  /*
+   * The sound: two fills, the heard dots and the rest, rather than a draw per
+   * dot. A ring is its outer circle wound one way and its inner circle the
+   * other, so the fill's winding cuts the hole; a solid dot has no inner
+   * circle. A wide slice is two such dots side by side.
+   */
+  const heardDots = Skia.PathBuilder.Make();
+  const aheadDots = Skia.PathBuilder.Make();
+  for (let k = 0; k < count; k++) {
+    const dot = seal.order[k];
+    const x = at(dot, 0);
+    const y = at(dot, 1);
+    let radius = identityRadius;
+    let punch = 0;
+    let width = 0;
+    if (sound !== null) {
+      const loud = sealLoudness(sound.loudness[k] ?? 0);
+      const measured =
+        (cell / 2) * (knobs.SOUND_MIN_FILL + knobs.SOUND_SPAN_FILL * loud);
+      radius = identityRadius + (measured - identityRadius) * s;
+      punch = (sound.punch[k] ?? 0) * s;
+      width = (sound.width[k] ?? 0) * s;
+    }
+    // Identity: a filled dot, or a hairline ring for a song not kept here.
+    const identityStroke = filled
+      ? radius
+      : FIELD_CANVAS_KNOBS.FACE_STROKE_PX;
+    const soundStroke = radius * (1 - knobs.PUNCH_HOLLOW * punch);
+    const stroke = identityStroke + (soundStroke - identityStroke) * s;
+    const outer = Math.max(0.01, radius * (1 - knobs.WIDTH_SHRINK * width));
+    const inner = outer - stroke;
+    const target = head < 0 || k < head ? heardDots : aheadDots;
+    const addDot = (cx: number) => {
+      target.addCircle(cx, y, outer);
+      if (inner > 0.05) target.addCircle(cx, y, inner, true);
+    };
+    if (width > 0.02) {
+      const offset = width * radius * knobs.WIDTH_SPLIT;
+      addDot(x - offset);
+      addDot(x + offset);
+    } else {
+      addDot(x);
+    }
+  }
+  paints.fill.setAlphaf(opacity * (weight + (1 - weight) * s));
+  canvas.drawPath(heardDots.detach(), paints.fill);
+  paints.fill.setAlphaf(
+    opacity * (weight + (player.UNHEARD_ALPHA - weight) * s),
+  );
+  canvas.drawPath(aheadDots.detach(), paints.fill);
+
+  if (s > 0 && head >= 0) {
+    // The bead: where the song is, on the thread.
+    const k = Math.min(count - 1, Math.floor(head));
+    const next = Math.min(count - 1, k + 1);
+    const f = head - k;
+    const a = seal.order[k];
+    const b = seal.order[next];
+    const bx = at(a, 0) + (at(b, 0) - at(a, 0)) * f;
+    const by = at(a, 1) + (at(b, 1) - at(a, 1)) * f;
+    paints.paper.setAlphaf(s);
+    canvas.drawCircle(bx, by, player.BEAD_RADIUS_PX, paints.paper);
+    paints.stroke.setAlphaf(opacity * s);
+    paints.stroke.setStrokeWidth(player.BEAD_STROKE_PX);
+    canvas.drawCircle(bx, by, player.BEAD_RADIUS_PX, paints.stroke);
+  }
 }
 
 /**
@@ -1880,9 +2119,26 @@ export function drawFieldFaces(
   viewport: Viewport,
   lensProgress = 0,
   reducedMotion = false,
+  soundProgress = 1,
+  heard = -1,
 ): void {
   'worklet';
-  const mix = smootherstep(lensProgress);
+  /*
+   * Switching lens, in two beats: the face draws itself in to a point, then
+   * the seal opens out of that point. Scale, not opacity, so neither drawing
+   * is ever a ghost of itself — and the lens clock is linear, so running it
+   * backwards plays the same two beats the other way. Reduced motion
+   * crossfades instead, as the rest of the canvas does.
+   */
+  const lens = Math.min(Math.max(lensProgress, 0), 1);
+  const faceScale = reducedMotion
+    ? 1
+    : 1 - smootherstep(Math.min(Math.max(lens * 2, 0), 1));
+  const faceInk = reducedMotion ? 1 - smootherstep(lens) : 1;
+  const sealScale = reducedMotion
+    ? 1
+    : smootherstep(Math.min(Math.max(lens * 2 - 1, 0), 1));
+  const sealInk = reducedMotion ? smootherstep(lens) : 1;
   const p = Math.min(Math.max(progress, 0), 1);
   const live = p >= 1 ? cameraShared.value : null;
   const cameraX =
@@ -1963,59 +2219,60 @@ export function drawFieldFaces(
 
     canvas.save();
     canvas.translate(x + pose.x, y + pose.y);
-    canvas.scale(pose.scale, pose.scale);
-    if (face.filled && (mix === 0 || reducedMotion)) {
-      paints.fill.setAlphaf(
-        opacity * face.weight * (1 - shapeArrived) * (1 - mix),
-      );
-      canvas.drawPath(face.markPath, paints.fill);
-    }
-    paints.stroke.setAlphaf(
-      opacity *
-        (1 - mix) *
-        (face.weight +
-          (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived),
-    );
-    // A hairline is a hairline at any size, so it is drawn back out of the
-    // scale the face is standing at.
-    paints.stroke.setStrokeWidth(
-      FIELD_CANVAS_KNOBS.FACE_STROKE_PX / pose.scale,
-    );
-    canvas.drawPath(face.markPath, paints.stroke);
-    canvas.restore();
-    if (mix > 0 && face.wedges !== undefined) {
-      const knobs = WAVE_GEOMETRY_KNOBS;
-      const rowWidth =
-        knobs.MARK_WIDTH_PX +
-        (knobs.ROW_WIDTH_PX - knobs.MARK_WIDTH_PX) * walked;
-      const rowHeight =
-        knobs.MARK_HEIGHT_PX +
-        (knobs.ROW_HEIGHT_PX - knobs.MARK_HEIGHT_PX) * walked;
-      const width =
-        rowWidth +
-        (viewport.width * knobs.SONG_WIDTH_RATIO - rowWidth) * shapeArrived;
-      const height =
-        rowHeight +
-        (viewport.height * knobs.SONG_HEIGHT_RATIO - rowHeight) * shapeArrived;
+    const faceSize = pose.scale * faceScale;
+    if (faceInk > 0 && faceSize > 0.001) {
       canvas.save();
-      canvas.translate(x + pose.x, y + pose.y);
-      const fillAlpha =
-        reducedMotion || !face.filled
-          ? mix
-          : (1 - shapeArrived) * (1 - mix) + mix;
-      paints.fill.setAlphaf(opacity * face.weight * fillAlpha);
-      drawWaveMorph(
-        canvas,
-        paints.fill,
-        face.wedges,
-        face.levels ?? [],
-        NAME_LENS_KNOBS.MARK_RADIUS_PX * pose.scale,
-        width,
-        height,
-        reducedMotion ? 1 : mix,
+      canvas.scale(faceSize, faceSize);
+      if (face.filled) {
+        paints.fill.setAlphaf(
+          opacity * faceInk * face.weight * (1 - shapeArrived),
+        );
+        canvas.drawPath(face.markPath, paints.fill);
+      }
+      paints.stroke.setAlphaf(
+        opacity *
+          faceInk *
+          (face.weight +
+            (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived),
       );
+      // A hairline is a hairline at any size, so it is drawn back out of the
+      // scale the face is standing at.
+      paints.stroke.setStrokeWidth(FIELD_CANVAS_KNOBS.FACE_STROKE_PX / faceSize);
+      canvas.drawPath(face.markPath, paints.stroke);
       canvas.restore();
     }
+    const sealSize = pose.scale * sealScale;
+    if (lens > 0 && sealInk > 0 && sealSize > 0.001) {
+      if (face.seal !== undefined) {
+        drawSealPlayer(
+          canvas,
+          face.seal,
+          paints,
+          SEAL_MARK_SIDE_PX * sealSize,
+          opacity * sealInk,
+          face.filled ? 1 : face.weight,
+          face.filled,
+          shapeArrived,
+          soundProgress,
+          heard,
+        );
+      } else {
+        canvas.save();
+        canvas.scale(sealSize, sealSize);
+        if (face.filled) {
+          paints.fill.setAlphaf(opacity * sealInk);
+          canvas.drawPath(face.sealPath, paints.fill);
+        } else {
+          paints.stroke.setAlphaf(opacity * sealInk * face.weight);
+          paints.stroke.setStrokeWidth(
+            FIELD_CANVAS_KNOBS.FACE_STROKE_PX / sealSize,
+          );
+          canvas.drawPath(face.sealPath, paints.stroke);
+        }
+        canvas.restore();
+      }
+    }
+    canvas.restore();
 
     // Outside the face's own scale, for the reason the node tree gave: the
     // ring's radius is the face's extent *plus a gap*, so it is not a multiple
@@ -2581,16 +2838,86 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * down.
    */
   const facePaints = useMemo(() => createFacePaints(palette), [palette]);
-  const faceFlights = useMemo(
-    () =>
-      faceFlightsOf(
-        recut.flights,
-        presentations,
-        focusKey,
-        playingKey,
-        analyses,
-      ),
-    [recut, presentations, focusKey, playingKey, analyses],
+  /**
+   * The songs whose sound has already been shown, so a measurement that lands
+   * while you are looking rises into the seal rather than appearing in it —
+   * which it would otherwise do mid-descent, since a song is measured as it
+   * opens.
+   */
+  const soundShown = useRef(new Set<string>());
+  const faces = useMemo(() => {
+    const flights = faceFlightsOf(
+      recut.flights,
+      presentations,
+      focusKey,
+      playingKey,
+      analyses,
+    );
+    const player = flights.find(face => face.isPlayer);
+    const playerFlight =
+      focusKey === null
+        ? undefined
+        : recut.flights.find(flight => flight.targetPlacementKey === focusKey);
+    const presentation =
+      playerFlight === undefined
+        ? undefined
+        : presentations.get(playerFlight.entityKey);
+    const key = presentation?.entity.key;
+    const rising =
+      player?.seal?.sound != null &&
+      key !== undefined &&
+      !soundShown.current.has(key);
+    return {
+      flights,
+      playerKey: key,
+      playerSeconds: (presentation?.song.duration_ms ?? 0) / 1000,
+      // Born with the faces, and at its start, when the sound has to rise: a
+      // clock shared across generations would paint the risen sound for a frame
+      // before the effect below could wind it back. Null is risen.
+      soundClock: rising ? bornClock(0) : null,
+    };
+  }, [recut, presentations, focusKey, playingKey, analyses]);
+  const faceFlights = faces.flights;
+  useEffect(() => {
+    if (faces.soundClock === null || faces.playerKey === undefined) return;
+    soundShown.current.add(faces.playerKey);
+    faces.soundClock.value = withTiming(1, {
+      duration: reducedMotion ? 0 : SEAL_PLAYER_KNOBS.SOUND_MS,
+      easing: Easing.linear,
+    });
+  }, [faces, reducedMotion]);
+  /*
+   * The seal's sound waits for the descent, as the circle's ring does.
+   *
+   * During the flight the seal only opens — its dots splitting into the dots
+   * they hold — and the sound, the thread and the bead draw themselves on once
+   * the camera has arrived. Riding the flight instead put every change the
+   * player makes into the same few hundred milliseconds, and it read as the
+   * seal stopping and then appearing. The same three phases as the ring's:
+   * reset only while hidden, keep the ink while the camera carries it out.
+   */
+  const sealPhase = useDerivedValue(() => {
+    const fitted = nativeFitScale(clock.value, nativeRecut, fitScaleShared);
+    const ratio =
+      fitted > 0
+        ? nativeCameraScale(clock.value, nativeRecut, cameraShared) / fitted
+        : 0;
+    return songDetailPhase(ratio);
+  });
+  const sealDrawn = useSharedValue(0);
+  useAnimatedReaction(
+    () => sealPhase.value,
+    (next, before) => {
+      if (next === before) return;
+      cancelAnimation(sealDrawn);
+      if (next === 'hidden') sealDrawn.value = 0;
+      else if (next === 'reveal') {
+        sealDrawn.value = withTiming(1, {
+          duration: reducedMotion ? 0 : SEAL_PLAYER_KNOBS.SOUND_MS,
+          easing: easeSmoother,
+        });
+      }
+    },
   );
   const facePicture = useDerivedValue(() =>
     createPicture(
@@ -2606,6 +2933,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           viewport,
           lensMix.value,
           reducedMotion,
+          smootherstep(faces.soundClock?.value ?? 1) * sealDrawn.value,
+          positionSeconds === null || faces.playerSeconds <= 0
+            ? -1
+            : positionSeconds.value / faces.playerSeconds,
         ),
       { width: viewport.width, height: viewport.height },
     ),

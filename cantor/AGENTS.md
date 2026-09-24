@@ -126,13 +126,22 @@ releases it. A new descent replaces that owner before starting its flight.
 Never clear the visible player at the start of an ascent: that removes its
 geometry at full size and produces a flash.
 
-**Lenses share the renderer.** Circle and Cantor wave use `NativeFieldContent`
-and the same row/player text. A retained shared clock interpolates the face
-wedges into bars; switching lenses does not replace the scene. Middle-thirds
-positions and bar sizes live in `lenses/cantorWaveGeometry.ts`; the canvas morph
-lives in `features/field/waveGeometry.ts`. Reduced motion crossfades the two
-shapes. Keep the lens clock outside the keyed re-cut generation so regrouping
-during a lens change preserves its current progress.
+**Lenses share the renderer.** Circle and Seal use `NativeFieldContent` and the
+same row/player text. A retained linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS`)
+switches them in two beats: the face scales in to a point, then the seal opens
+out of it — scale, never a ghosted crossfade. Reduced motion crossfades instead.
+Keep the lens clock outside the keyed re-cut generation so regrouping during a
+lens change preserves its current progress.
+
+**Every lens is two layers, like the circle.** *Identity* is a pure function of
+the recipe (`facePoints`'s inputs), so it exists at L0 for songs never on the
+phone; *sound* exists only once the song is measured, lives inside the identity's
+own geometry, carries the playhead, and is gone at L0. The seal's identity is
+three nested symmetric 3×3 masks plus an orientation (`lenses/seal.ts`); its sound
+is the Peano-ordered deepest dots, sized by loudness, hollowed by punch, split by
+stereo width (`SongAnalysis.slices`). Its clock and seek are a rim around the
+dust; a touch that starts on the dust is a tap that jumps to that dot. A lens
+whose field of unloaded songs looks identical has broken the identity rule.
 
 **Nothing that moves with the camera may be laid out in React.** React's copy of
 the camera lands a commit late by design (`mirrorCamera`, `mirrorBusy`), so
