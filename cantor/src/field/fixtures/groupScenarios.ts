@@ -10,6 +10,10 @@ export const GROUP_SCENARIOS = {
   crowdedWeek: [5, 3, 2, 19],
   alternating: [1, 24, 2, 18, 3, 12, 1],
   dense: [40, 1, 3, 60, 2, 12, 4, 32, 1],
+  // Scale: four years of weekly groups, 2,280 songs, 0–22 per week.
+  fourYears: Array.from({ length: 208 }, (_, week) => (week * 7 + 3) % 23),
+  // One import that stamps every file with the same date: 300 in one group.
+  importDay: [300],
 } as const;
 
 export function groupScenario(

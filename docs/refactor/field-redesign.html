@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cantor field redesign — proposal</title>
+<style>
+  :root {
+    --bg: #f7f5f0; --paper: #ffffff; --ink: #1c1b19; --muted: #6b675f;
+    --faint: #e4e0d6; --accent: #8a3b12; --warn: #b3261e; --ok: #2e6b3a;
+    --mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151412; --paper: #1d1c19; --ink: #ece8df; --muted: #9c978c;
+            --faint: #34312b; --accent: #e08a5a; --warn: #ef7b72; --ok: #7fc28d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 48px 24px 96px; }
+  header p { color: var(--muted); margin-top: 4px; }
+  h1 { font-size: 30px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 56px 0 12px; padding-top: 16px;
+       border-top: 1px solid var(--faint); }
+  h2 .n { color: var(--accent); font-family: var(--mono); margin-right: 8px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  code { font-family: var(--mono); font-size: 0.88em; background: var(--faint);
+         padding: 1px 5px; border-radius: 4px; }
+  pre { font-family: var(--mono); font-size: 13px; line-height: 1.5;
+        background: var(--paper); border: 1px solid var(--faint);
+        border-radius: 8px; padding: 16px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0;
+          background: var(--paper); font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--faint);
+           vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+       color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  nav { background: var(--paper); border: 1px solid var(--faint); border-radius: 8px;
+        padding: 14px 20px; margin: 28px 0; font-size: 14.5px; }
+  nav ol { margin: 6px 0 0; padding-left: 20px; columns: 2; }
+  nav a { color: var(--ink); }
+  a { color: var(--accent); }
+  .card { background: var(--paper); border: 1px solid var(--faint); border-radius: 8px;
+          padding: 14px 18px; margin: 14px 0; }
+  .bug { border-left: 4px solid var(--warn); }
+  .rule { border-left: 4px solid var(--accent); }
+  .good { border-left: 4px solid var(--ok); }
+  .tag { font-family: var(--mono); font-size: 12px; text-transform: uppercase;
+         letter-spacing: 0.06em; color: var(--muted); }
+  .bug .tag { color: var(--warn); }
+  .muted { color: var(--muted); }
+  ol.phases > li { margin-bottom: 14px; }
+  @media (max-width: 640px) { nav ol { columns: 1; } }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>Field redesign: proposal</h1>
+  <p>Follows <a href="app-walkthrough.html">the app walkthrough</a> · 2026-09-24 ·
+  targets: no flicker by construction, thousands of songs, a cool phone, L3 as a normal layer</p>
+</header>
+
+<nav>
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#flickers">The two flickers, traced</a></li>
+    <li><a href="#law">The rule the design follows</a></li>
+    <li><a href="#next">What the next features need</a></li>
+    <li><a href="#layers">The new layers</a></li>
+    <li><a href="#scene">The scene: one renderer</a></li>
+    <li><a href="#scale">Thousands of songs</a></li>
+    <li><a href="#heat">Heat budget</a></li>
+    <li><a href="#plan">Migration plan</a></li>
+    <li><a href="#decisions">Decisions for you</a></li>
+  </ol>
+</nav>
+
+<h2 id="flickers"><span class="n">1</span>The two flickers, traced</h2>
+
+<div class="card bug">
+  <span class="tag">flicker A · L1 → L2 · bars pop in seconds late</span>
+  <h3>The reveal is tied to the camera, not to the data</h3>
+  <ul>
+    <li>Analysis starts only when a song becomes <code>focused</code>, i.e. at the descent
+    (<code>FieldScreen.tsx:1225</code>). It decodes the <em>whole song</em> on JS, which the
+    code's own comment says takes “several seconds for a two-minute song”.</li>
+    <li>The results live in an in-memory <code>AnalysisCache</code> only, so every app launch decodes
+    again, and so does every song opened after a restart.</li>
+    <li>The circle's bars reveal on <code>drawn</code>, a clock started by the <em>camera phase</em>
+    (<code>NativeSongDetail</code>, <code>FieldCanvas.tsx:2758</code>). If the data isn't there
+    yet, <code>drawn</code> runs 0→1 over nothing. When the analysis lands later, the model
+    prop changes and the bars appear already at <code>drawn = 1</code>: a pop.</li>
+    <li>The seal already has the fix: <code>soundClock</code> is born at 0 when a measurement
+    arrives while you're looking. The circle never got it.</li>
+  </ul>
+  <p><strong>Category:</strong> content that arrives late has no clock of its own.</p>
+</div>
+
+<div class="card bug">
+  <span class="tag">flicker B · L2 → L1 · name vanishes one frame on arrival</span>
+  <h3>Ownership of one glyph is handed between two Skia nodes through React</h3>
+  <ul>
+    <li>While in a song, the row batch <em>excludes</em> the focused placement
+    (<code>rows</code> memo, <code>FieldCanvas.tsx:3040</code>). The name is drawn by the
+    player's own <code>NativePlacementFlight</code> instead.</li>
+    <li>When the ascent lands, <code>mirrorCamera</code> calls <code>setPlayerKey(null)</code>
+    (<code>useFieldCamera.ts:410</code>). In that one React commit:
+      <ul>
+        <li>the player flight unmounts from the Skia tree (the name's owner leaves), and</li>
+        <li><code>rows</code> gets a new array that includes the row again. But
+        <code>rowsPicture</code> is a <code>useDerivedValue</code>, so its mapper is re-created
+        in a <em>passive effect</em>, one step later.</li>
+      </ul>
+    </li>
+    <li>For one frame, nobody draws the name. This is exactly the gap that “house rule 5” and
+    Flicker Law rule 4 warn about, happening at the one hand-off that still goes through React.</li>
+  </ul>
+  <p><strong>Category:</strong> who draws a thing is decided by a React commit, while
+  <em>when</em> it's drawn is decided by the UI thread.</p>
+  <p class="muted">Traced from the code; I'll confirm both on the Xiaomi with burst capture
+  before and after.</p>
+</div>
+
+<p>Every other flicker I found in the code comments falls into one of these two categories, or
+into the “two render paths” one from the walkthrough. So the design removes those three
+categories instead of the individual bugs.</p>
+
+<h3 id="baseline">Baseline on the Xiaomi (release build, 2026-09-24)</h3>
+<p>CPU is the app's share of one core (100% = a whole core), averaged over 15–20 s with
+<code>scripts/perf-sample.sh</code>. The build is a release APK installed over the debug one,
+with its data kept. A debuggable build roughly doubles every number here, so it isn't used for
+measuring.</p>
+<table>
+  <tr><th>Scenario</th><th>CPU</th><th>Notes</th></tr>
+  <tr><td>L0 idle, nothing playing</td><td>11.6%</td><td>0 React commits per second; RN's per-frame callbacks are most of it</td></tr>
+  <tr><td>L2 paused</td><td>11.3%</td><td></td></tr>
+  <tr><td><strong>L2 playing</strong></td><td><strong>102%</strong></td><td rowspan="3">the playhead clock (<code>withTiming</code> over the whole song) re-records Skia pictures every tick, even with the screen off (<code>Recorder::playGroup</code>, <code>JsiRecorder::applyUpdates</code> on the main thread)</td></tr>
+  <tr><td><strong>L0 playing</strong></td><td><strong>105%</strong></td></tr>
+  <tr><td><strong>Screen off, playing</strong></td><td><strong>71%</strong></td></tr>
+  <tr><td>… same three with the clock frozen (experiment)</td><td>32% / 32% / 28%</td><td>proves the clock causes ~70 points; what's left is ~10% AudioTrack plus event plumbing</td></tr>
+  <tr><td>L0 panning, 35 songs</td><td>78%</td><td>22% of samples on the JS thread: React re-rendering for the mirrored camera, which the drawing doesn't need</td></tr>
+  <tr><td>Lab, 2,280 songs, idle / panning</td><td>14.5% / 84%</td><td>culling keeps drawing cost close to 35 songs' cost</td></tr>
+</table>
+<div class="card bug">
+  <span class="tag">found while measuring</span>
+  <ul>
+    <li><strong>Empty field after a regroup.</strong> In the lab, switching scenario while the camera was
+    far away (the regroup and the flight home on one tap) settled on an empty canvas while React's
+    camera read home. FIT MAP recovered it. Same category as flicker B: two copies of the camera
+    disagreeing.</li>
+    <li><strong>Startup pop.</strong> Downloaded marks draw as outlines, then snap to solid once local
+    audio is inspected. That's data arriving late with no clock.</li>
+    <li><strong>300 songs in one group</strong> (an import with one shared date) become one tall column
+    of overlapping marks clipped by the bottom veil. Import needs a better grouping than import
+    date, e.g. the file's own date, the album, or the artist.</li>
+  </ul>
+</div>
+<p class="muted">Not measured yet: a live generation (needs a real job on a node), and the flickers
+themselves. <code>screencap</code> takes about 250 ms, so a one-frame flicker (8 ms at 120 Hz)
+can't be caught by burst capture. That needs an in-app frame trace instead.</p>
+
+<h2 id="law"><span class="n">2</span>The rule the design follows</h2>
+
+<div class="card rule">
+  <p><strong>React decides <em>what exists</em>. The UI thread decides <em>who draws it, where,
+  and how much</em>.</strong></p>
+  <ol>
+    <li><strong>One renderer.</strong> One canvas, one draw function, one frame state. No
+    native/fallback switch, no per-flight React components, no second canvas for jobs.</li>
+    <li><strong>Ownership is a UI-thread value.</strong> “Which placement is the player” and
+    “has it shrunk back into its row” are numbers in the frame state, not React state. The row
+    and the player are the <em>same slot</em> drawn in two poses, so there's never a hand-off.</li>
+    <li><strong>Every arrival has its own clock.</strong> Data landing (analysis, download,
+    title rename, a new song) starts a born clock in the scene. Nothing appears at full ink
+    because the camera already got there.</li>
+    <li><strong>Nothing per-frame goes through React.</strong> The camera, playhead, pulls and
+    progress are shared values. React hears about <em>threshold crossings</em> (level changed,
+    focus changed), never frames.</li>
+    <li><strong>Draw only what changed.</strong> The settled field is a cached picture; motion
+    and the player are drawn live on top.</li>
+  </ol>
+</div>
+
+<h2 id="next"><span class="n">2½</span>What the next features need</h2>
+
+<p>Three features change what the design has to carry: <strong>importing your own songs</strong>
+(before alpha), then a <strong>semantic field</strong> (node-side embeddings projected with UMAP)
+and <strong>more lenses</strong> (tree and others, with a smooth player). Today the code assumes
+the opposite of each:</p>
+
+<table>
+  <tr><th>Today's assumption</th><th>Where it's baked in</th><th>What it becomes</th></tr>
+  <tr><td>Every song comes from a node</td>
+      <td>entity key <code>nodePubkey:songId</code>; <code>FieldPresentation.backend</code> required;
+      <code>AudioRef = (nodeKey, songId, digest)</code>; unpaired nodes' songs dropped unless pinned</td>
+      <td>A song has a <strong>source</strong>: <code>node</code> or <code>device</code>. Keys become
+      <code>node:&lt;pubkey&gt;:&lt;id&gt;</code> / <code>device:&lt;contentHash&gt;</code>. Playback,
+      analysis and lenses only see a <code>SongRef</code> + a way to open its audio.</td></tr>
+  <tr><td>The field is groups on a grid</td>
+      <td><code>layoutField</code>, <code>Group</code>, bloom ovals, shelf seats</td>
+      <td>Split into two steps: a <strong>placer</strong> gives each song world coordinates
+      (grid-of-groups today, UMAP coordinates for the semantic field). Grouping becomes optional,
+      and clusters can be derived for labels and shelves. The scene only ever sees target
+      arrays, so switching date → semantic is an ordinary re-cut.</td></tr>
+  <tr><td>Exactly two lenses</td>
+      <td><code>drawFieldFaces</code> blends circle↔seal on one <code>lensMix</code>; seal code
+      threaded through the player, ring and seek</td>
+      <td>A <strong>lens contract</strong> the renderer calls: <code>identity(song)</code>,
+      <code>sound(analysis)</code>, draw at mark/row/player poses, <code>hit/seek</code> at the
+      player. Lens change is <code>(from, to, t)</code>, with a generic scale-out/scale-in morph and
+      optional hand-written pair morphs (circle→seal keeps its dot walk).</td></tr>
+  <tr><td>Identity = the recipe (seed, model)</td>
+      <td>AGENTS.md two-layer rule; <code>facePoints</code> inputs</td>
+      <td>Identity = a <strong>fingerprint</strong>: the recipe for generated songs, something
+      derived for imported ones (see the questions). The rule survives: identity must exist at L0
+      without the audio being measured.</td></tr>
+  <tr><td>Analysis is a detail for one song</td>
+      <td>decoded on descent, in memory</td>
+      <td>An <strong>analysis store</strong> is core infrastructure: persisted per artifact, filled by a
+      background queue with priority (focused → on screen → rest), throttled for heat. Every
+      lens's sound layer and the player read it.</td></tr>
+</table>
+
+<div class="card good">
+  <p>None of this fights the redesign; it sharpens it. The scene already takes typed target arrays
+  (so any placer works), the owner slot already makes the player one drawing (so any lens can
+  morph through it), and the stores already separate data from drawing (so a second source is one
+  more producer). Thousands of songs also stops being hypothetical: 300 imported songs on day one.</p>
+</div>
+
+<h3>Songs, homes and copies</h3>
+<p>Import from the phone, import on the node, offload to a node and bring back all fit in one
+model:</p>
+<pre><code>Song      id · kind (generated | imported) · title · artist · album · track
+          · duration · recipe? (generated only) · tags (playlists = p/&lt;name&gt;)
+Home      where the song's record is the truth: device | node:&lt;pubkey&gt;
+Copies    device original (content URI, never evicted) · node artifact
+          · phone cache (remote / partial / cached / pinned, as today)
+Features  small derived data, arrives later: analysis summary, embedding, UMAP xy</code></pre>
+<ul>
+  <li><strong>Import on the phone</strong> creates a song with home = device and a device-original copy.
+  The metadata comes from the file's tags.</li>
+  <li><strong>Offload</strong> uploads the file, metadata and tags to a node, moves the home there, and
+  then (optionally) deletes the original. Android shows its own confirmation for that.</li>
+  <li><strong>Bring back</strong> is today's download/pin, unchanged.</li>
+  <li><strong>Import on the node</strong> is the same song with home = node from the start.</li>
+  <li><strong>Playlists:</strong> tags live with the song's home. Device-home songs keep them in the phone
+  database; node-home songs keep them on the node, as today. A playlist is still derived from all songs'
+  tags, so one playlist can mix both. Offloading moves the tags with the song.</li>
+  <li><strong>L0 stays cheap:</strong> identity comes from a fingerprint (recipe, or a hash of the metadata).
+  <em>Features</em> are a per-song row that arrives later from the node and enters with its own clock.
+  What an imported mark should look like is still open. The architecture only guarantees it can use
+  either.</li>
+</ul>
+<div class="card rule">
+  <p><strong>Two consequences.</strong></p>
+  <ol>
+    <li><strong>A real phone database.</strong> The whole library cache is one AsyncStorage JSON blob
+    today (<code>cantor.private-library.v1</code>), rewritten whole on every commit. With thousands of
+    songs plus metadata and features, that should become SQLite, with a one-time migration from the
+    old key. Storage keys are a compatibility contract, so the old blob must keep loading.</li>
+    <li><strong>A wire change for offload and node-side import.</strong> <code>SongHeader</code> requires
+    <code>model</code> and has no artist or album. Imported songs on a node need an optional kind and
+    metadata, plus an upload path. That touches <code>protocol/</code>, the node, and the fixtures.
+    Phone-only import needs none of it.</li>
+  </ol>
+</div>
+
+<h2 id="layers"><span class="n">3</span>The new layers</h2>
+
+<pre><code>┌─ stores (JS, outside React) ──────────────────────────────────────────┐
+│ libraryStore   songs from every source (node, device), jobs, audio    │
+│ analysisStore  persisted measurements, background queue by priority   │
+│ playbackStore  track, state, afterSong  (the port already owns time)  │
+│ uiStore        lens, arrangement, order, sheets, errors               │
+└──────────┬────────────────────────────────────────────────────────────┘
+           │ selectors (useSyncExternalStore) — components re-render only
+           │ when *their* slice changes
+┌──────────▼────────────────────────────────────────────────────────────┐
+│ fieldModel (pure JS)   placer (groups | semantic) → SceneTargets      │
+│                        stable slot per placement, not per render      │
+│ lenses (pure)          identity · sound · poses · morphs · hit/seek   │
+└──────────┬────────────────────────────────────────────────────────────┘
+           │ one hand-off per re-cut: new targets + born clock
+┌──────────▼────────────────────────────────────────────────────────────┐
+│ scene (UI thread)      frame state: camera, recut, owners, lens,      │
+│                        arrivals, playhead, grain                      │
+│                        drawField(canvas, frame)  ← the only renderer  │
+│                        emits: level / focus / hit events → JS         │
+└──────────┬────────────────────────────────────────────────────────────┘
+           │ assets on demand
+┌──────────▼────────────────────────────────────────────────────────────┐
+│ assetCache             per song: face path, seal path, row text,      │
+│                        analysis (persisted), cached pictures — LRU    │
+└───────────────────────────────────────────────────────────────────────┘
+chrome (RN views)        overlay, SongSurface touch layer, curtains, sheets
+                         — reads stores + scene events, fades from shared values</code></pre>
+
+<h3>What each layer replaces</h3>
+<table>
+  <tr><th>New</th><th>Replaces</th><th>Why it's better</th></tr>
+  <tr><td><code>libraryStore</code></td>
+      <td><code>useBackendRuntime</code>'s <code>snapshots</code>/<code>localAudio</code> state +
+      <code>buildFieldController</code></td>
+      <td>Events update one song. Unchanged songs keep their object identity, so the defensive
+      <code>previousPresentations</code> compare goes away. <code>inspect</code> runs only for songs
+      whose artifact changed.</td></tr>
+  <tr><td><code>uiStore</code> / <code>playbackStore</code></td>
+      <td>~30 <code>useState</code>s in <code>FieldScreen</code></td>
+      <td>Opening a sheet re-renders the sheet, not the field. <code>FieldScreen</code> becomes
+      composition only.</td></tr>
+  <tr><td><code>fieldModel</code></td><td><code>layoutField</code> (kept) + flights as objects</td>
+      <td>Same geometry code, output as typed arrays indexed by a stable slot. Worklets read
+      arrays; no closures re-captured per render.</td></tr>
+  <tr><td><code>scene</code></td>
+      <td><code>NativeFieldContent</code>, <code>recordFieldPicture</code>,
+      <code>NativePlacementFlight</code>, <code>NativeJobFlight</code>, <code>PlayerChrome</code>,
+      <code>NativeSongDetail</code>, the camera mirror</td>
+      <td>One owner of every pixel in the field, one frame state, no React in the loop.</td></tr>
+  <tr><td><code>assetCache</code></td>
+      <td>row models rebuilt for every song per re-cut; in-memory analysis</td>
+      <td>Built lazily for what's near the viewport. Analysis saved to disk once per artifact
+      (729 buckets is a few KB).</td></tr>
+</table>
+
+<p class="muted">The runtime's network side (<code>BackendConnection</code>, secure tunnel, sync
+reducer, outbox, repositories) stays as it is. Only the React state it publishes into changes.
+Storage keys and stored shapes don't change.</p>
+
+<h2 id="scene"><span class="n">4</span>The scene: one renderer</h2>
+
+<h3>Frame state (UI thread)</h3>
+<pre><code>type Frame = {
+  camera: Camera;                  // authored by gestures, as today
+  recut:  { from: Targets; to: Targets; clock: number };
+  owner:  { slot: number; pose: number };   // player slot, 0 = row … 1 = player
+  lens:   number;                  // 0 circle … 1 seal (existing LENS_MORPH clock)
+  arrivals: Float32Array;          // per slot: 0 → 1 born when data lands
+  playhead: number;                // seconds, the player's visual clock
+  grain:  GrainBars | null;        // L3
+};</code></pre>
+
+<h3>Drawing</h3>
+<pre><code>drawField(canvas, frame):
+  layer 1  settled marks + labels   → cached SkPicture, replayed with a transform
+                                       (re-recorded only when the set or lens band changes)
+  layer 2  moving slots             → drawn live: re-cut flights, gather/bloom, arrivals
+  layer 3  the owner slot           → face ⇄ row ⇄ player by owner.pose, name morph, ring, detail
+  layer 4  playhead + progress      → only this layer reads the playhead
+  layer 5  grain (L3)               → same camera, same frame
+  layer 6  veils</code></pre>
+
+<ul>
+  <li><strong>Flicker B goes away by construction.</strong> The row and the player are one slot.
+  Ascending just runs <code>owner.pose</code> 1→0 on the UI thread. When it reaches 0, that slot is
+  simply drawn as a row by the same function in the same frame. React is told afterwards, as an
+  event.</li>
+  <li><strong>Flicker A goes away by construction.</strong> The detail's ink is
+  <code>min(cameraPhase, arrivals[slot])</code>. Data landing late starts
+  <code>arrivals[slot]</code> at 0 and it draws in. Analysis also starts earlier (when the
+  song enters the shelf you're in, or right after download), and it's persisted, so usually
+  it's already there.</li>
+  <li><strong>Playback no longer re-records the field.</strong> Only layer 4 reads the playhead.</li>
+  <li><strong>L3 is just layer 5.</strong> It isn't a second renderer, so adding it is ordinary
+  work, not a special case.</li>
+</ul>
+
+<h3>Implementation primitives</h3>
+<ul>
+  <li>One <code>&lt;Canvas&gt;</code> with one <code>&lt;Picture picture={frameRecording}/&gt;</code>
+  child, where <code>frameRecording</code> is a <code>useDerivedValue</code> that calls
+  <code>drawField</code>. The Skia React tree never changes shape after mount, so there are no
+  reconciler commits during navigation.</li>
+  <li>Inputs from JS reach the worklet through shared values set in one batch per re-cut, never
+  through closure capture. That's what removes the “mapper re-created one step later” class.</li>
+  <li>The existing pure geometry (<code>camera.ts</code>, <code>bands.ts</code>, <code>layout.ts</code>,
+  <code>seal.ts</code>, <code>songPose.ts</code>, <code>labelMorph.ts</code>, the motion engine) is
+  reused. This is a new <em>owner</em> for that code, not new geometry.</li>
+</ul>
+
+<h2 id="scale"><span class="n">5</span>Thousands of songs</h2>
+<table>
+  <tr><th>Cost</th><th>Today</th><th>Redesign</th></tr>
+  <tr><td>Data update (job tick, sync page)</td><td>O(N) rebuild + O(N) native inspects</td>
+      <td>O(changed)</td></tr>
+  <tr><td>Re-cut start</td><td>O(N) row text layout on JS before the clock starts</td>
+      <td>O(N) typed-array targets only; text built lazily for visible rows</td></tr>
+  <tr><td>Frame, idle</td><td>nothing (good)</td><td>nothing</td></tr>
+  <tr><td>Frame, panning at L0</td><td>O(N) loop + draw visible faces</td>
+      <td>replay cached picture with a transform: O(1) JS work</td></tr>
+  <tr><td>Frame, re-cut in flight</td><td>O(N)</td><td>O(N) over typed arrays, visible only
+      drawn; faces as cached per-song pictures, or <code>drawAtlas</code> if needed</td></tr>
+  <tr><td>Frame, music playing</td><td>O(N) face re-record every frame + a React render 6×/s</td>
+      <td>O(1): the player layer only</td></tr>
+  <tr><td>Memory</td><td>all row models, all faces</td><td>LRU of assets near the viewport</td></tr>
+</table>
+<p>For thousands, the L0 overview also needs a <em>level-of-detail</em> rule. Below a
+screen-size threshold a mark is drawn as a dot, not its full face path. That's a band like the
+others, and it's cheap.</p>
+
+<h2 id="heat"><span class="n">6</span>Heat budget</h2>
+<p>A target we can measure against on the Xiaomi:</p>
+<ul>
+  <li><strong>Idle on the map, music playing:</strong> JS thread ~0% (no timers re-rendering),
+  UI thread drawing one small layer.</li>
+  <li><strong>Panning:</strong> zero React commits per frame. JS only hears about level
+  crossings.</li>
+  <li><strong>Generating:</strong> job progress repaints one mark, and nothing else rebuilds.</li>
+  <li><strong>Each song decoded at most once per install</strong> for analysis.</li>
+</ul>
+
+<h2 id="plan"><span class="n">7</span>Migration plan</h2>
+<p>A bold rewrite of the field, done so the app works at every step.</p>
+<ol class="phases">
+  <li><strong>Measure.</strong> Extend <code>FieldGroupLab</code> with 2,000 songs; add a debug
+  overlay showing JS and UI frame rate and React commits per second. Take a baseline on the Xiaomi
+  and record flickers A and B with burst capture. <span class="muted">~½ day</span></li>
+  <li><strong>Stores.</strong> <code>libraryStore</code> keyed by source from day one (only
+  <code>node</code> filled in yet), with incremental updates and incremental
+  <code>inspect</code>; <code>analysisStore</code> with the background queue; persisted analysis started early; <code>uiStore</code> and
+  <code>playbackStore</code>; <code>FieldScreen</code> reads selectors. This fixes most of the heat
+  on its own and is independent of the renderer. <span class="muted">~2 days</span></li>
+  <li><strong>Scene renderer</strong>, built beside the current one behind a flag, in
+  <code>features/scene/</code>: frame state, typed targets, the owner slot, arrivals, cached
+  settled layer, and the lens contract, with circle and seal ported onto it as its first two
+  lenses. It reaches parity with the lab and on device (marks, rows, player, both lenses,
+  jobs, re-cuts, gather). <span class="muted">the big one, ~1 week</span></li>
+  <li><strong>Switch over.</strong> Replace the camera mirror with events; move chrome fades onto
+  shared values; delete <code>NativeFieldContent</code>, <code>recordFieldPicture</code> and the
+  flight components. <span class="muted">~2 days</span></li>
+  <li><strong>Import</strong> on the new foundations: a <code>device</code> source in
+  <code>libraryStore</code>, a media-library picker, playback from a content URI, and fingerprint
+  identity. Because stores, analysis and lenses already speak <code>SongRef</code>, this is mostly
+  a new producer plus the import UI. <span class="muted">~3–4 days, depends on the answers
+  below</span></li>
+  <li><strong>L3</strong> as layer 5, if we want it for alpha. <span class="muted">~2–3 days</span></li>
+  <li class="muted"><em>After alpha:</em> the semantic placer (UMAP coordinates from the node as a
+  new placer) and new lenses (tree, …) against the lens contract. Neither should touch the
+  renderer.</li>
+  <li><strong>Docs.</strong> Rewrite <code>hacking-app.md</code> and the parts of
+  <code>AGENTS.md</code> that describe the old owners. The Flicker Law stays, and the redesign is
+  how we obey it.</li>
+</ol>
+<p class="muted">Estimates are rough. Phase 3 carries almost all the risk. Phase 2 pays off
+even if phase 3 slips.</p>
+
+<h2 id="decisions"><span class="n">8</span>Decisions for you</h2>
+<h3>About import (these shape the data model)</h3>
+<ol>
+  <li><strong>Where do imported files live?</strong> Referenced in place through Android's media
+  library (recommended: 300 songs can be gigabytes), or copied into Cantor's storage?</li>
+  <li><strong>What is an imported song's identity?</strong> A fingerprint that exists at L0 without
+  decoding: a hash of the file or of title/artist/duration used as a pseudo-seed (recommended,
+  instant, and stable), or something derived from the audio (more meaningful, but it needs every
+  song decoded before its mark can be drawn)?</li>
+  <li><strong>Do imported songs ever reach a node?</strong> The semantic field computes embeddings
+  on the node, so either the audio is uploaded to a node (bandwidth, and your own music leaves the
+  phone even if encrypted), or the phone runs the embedding model, or imported songs are only on
+  the date/playlist fields.</li>
+  <li><strong>Playlists and tags for imported songs</strong> are on the node today (<code>p/&lt;name&gt;</code>
+  tags). For device songs they'd be stored locally, unless they sync to a node. Is local-only
+  fine for alpha?</li>
+</ol>
+<h3>About the plan</h3>
+<ol>
+  <li><strong>Store library:</strong> a small hand-rolled store on
+  <code>useSyncExternalStore</code> (recommended: no dependency, ~100 lines, easy to test in Jest),
+  or Zustand.</li>
+  <li><strong>Order:</strong> start with phases 1–2 now (measurable, low risk, fixes heat and
+  flicker A), then the renderer? Or go straight at the renderer?</li>
+  <li><strong>L3 for alpha:</strong> decide after phase 3 lands, when we can see how hard it
+  actually is?</li>
+</ol>
+
+</main>
+</body>
+</html>

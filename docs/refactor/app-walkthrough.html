@@ -1,0 +1,355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cantor app — how the UI works, and what it costs</title>
+<style>
+  :root {
+    --bg: #f7f5f0; --paper: #ffffff; --ink: #1c1b19; --muted: #6b675f;
+    --faint: #e4e0d6; --accent: #8a3b12; --warn: #b3261e; --ok: #2e6b3a;
+    --mono: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #151412; --paper: #1d1c19; --ink: #ece8df; --muted: #9c978c;
+            --faint: #34312b; --accent: #e08a5a; --warn: #ef7b72; --ok: #7fc28d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 16px/1.6 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 900px; margin: 0 auto; padding: 48px 24px 96px; }
+  header p { color: var(--muted); margin-top: 4px; }
+  h1 { font-size: 30px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 21px; margin: 56px 0 12px; padding-top: 16px;
+       border-top: 1px solid var(--faint); }
+  h2 .n { color: var(--accent); font-family: var(--mono); margin-right: 8px; }
+  h3 { font-size: 17px; margin: 28px 0 8px; }
+  code { font-family: var(--mono); font-size: 0.88em; background: var(--faint);
+         padding: 1px 5px; border-radius: 4px; }
+  pre { font-family: var(--mono); font-size: 13px; line-height: 1.5;
+        background: var(--paper); border: 1px solid var(--faint);
+        border-radius: 8px; padding: 16px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  table { width: 100%; border-collapse: collapse; margin: 12px 0;
+          background: var(--paper); border-radius: 8px; overflow: hidden;
+          font-size: 14.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--faint);
+           vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em;
+       color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  nav { background: var(--paper); border: 1px solid var(--faint); border-radius: 8px;
+        padding: 14px 20px; margin: 28px 0; font-size: 14.5px; }
+  nav ol { margin: 6px 0 0; padding-left: 20px; columns: 2; }
+  nav a { color: var(--ink); }
+  a { color: var(--accent); }
+  .card { background: var(--paper); border: 1px solid var(--faint); border-radius: 8px;
+          padding: 14px 18px; margin: 14px 0; }
+  .cost { border-left: 4px solid var(--warn); }
+  .cost h3 { margin-top: 2px; }
+  .cost .tag { font-family: var(--mono); font-size: 12px; color: var(--warn);
+               text-transform: uppercase; letter-spacing: 0.06em; }
+  .note { border-left: 4px solid var(--accent); color: var(--ink); }
+  .good { border-left: 4px solid var(--ok); }
+  .threads { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 14px 0; }
+  .threads .card { margin: 0; }
+  .threads b { display: block; font-family: var(--mono); font-size: 13px; color: var(--accent); }
+  @media (max-width: 640px) { .threads { grid-template-columns: 1fr; } nav ol { columns: 1; } }
+  .questions li { margin-bottom: 10px; }
+  .muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <h1>The Cantor app: how the UI works, and what it costs</h1>
+  <p>A walkthrough of <code>cantor/</code> before the alpha redesign · 2026-09-24 ·
+  based on reading the code at <code>82b8988</code>; nothing here has been profiled yet</p>
+</header>
+
+<nav>
+  <strong>Contents</strong>
+  <ol>
+    <li><a href="#shape">The shape of the app</a></li>
+    <li><a href="#skia">What Skia is</a></li>
+    <li><a href="#state">State: what exists and where it lives</a></li>
+    <li><a href="#map">The map</a></li>
+    <li><a href="#bugs">Why the bugs feel endless</a></li>
+    <li><a href="#direction">Where this could go</a></li>
+    <li><a href="#questions">Questions for you</a></li>
+  </ol>
+</nav>
+
+<h2 id="shape"><span class="n">1</span>The shape of the app</h2>
+
+<pre><code>App.tsx ── identity boot (keychain) ──► Onboarding  or  FieldScreen
+                                                        │
+  useBackendRuntime (network, cache, audio files) ──────┤  "data"
+  buildFieldController  → entities + presentations      │
+  layoutField           → groups + placements           │  "geometry"
+  useFieldCamera        → camera, level, focus, re-cuts │  "navigation"
+  FieldCanvas (Skia)    → draws everything that moves   │  "picture"
+  FieldOverlay, SongSurface, Curtains, sheets (RN views)│  "chrome"</code></pre>
+
+<p>After onboarding there is only one screen, <code>FieldScreen</code>. There's no navigator.
+Zooming is the navigation: the map (L0), a shelf of rows (L1), the player (L2) and the
+grain/waveform (L3) are all the same drawing seen from different camera distances. The
+composer, engines, song sheet and job sheet are “curtains” pulled down or up over it.</p>
+
+<p>Everything runs on three threads:</p>
+<div class="threads">
+  <div class="card"><b>JS thread</b>React, your state, the network, decoding. Slow and bursty.</div>
+  <div class="card"><b>UI thread</b>Reanimated worklets (functions marked <code>'worklet'</code>) and gestures. They run every frame.</div>
+  <div class="card"><b>Render / GPU</b>Where Skia actually paints the pixels.</div>
+</div>
+<div class="card note">Almost every flicker comment in the code comes down to
+<em>“two of these threads disagreed for one frame.”</em></div>
+
+<h2 id="skia"><span class="n">2</span>What Skia is</h2>
+
+<p>Skia isn't a component. It's the 2D graphics engine that Chrome, Flutter and Android
+itself use to draw pixels. <code>@shopify/react-native-skia</code> exposes it to React Native
+in two ways:</p>
+<ol>
+  <li><strong><code>&lt;Canvas&gt;</code></strong> <em>is</em> a component. It's one native view with its own
+  GPU surface. Its children (<code>&lt;Fill&gt;</code>, <code>&lt;Path&gt;</code>, <code>&lt;Picture&gt;</code>,
+  <code>&lt;Group&gt;</code>) aren't RN views. They're a <strong>scene graph</strong> reconciled by a
+  <em>separate React root</em> inside the canvas. That separate root is why “a React commit is
+  not proof Skia painted” (the Flicker Law).</li>
+  <li><strong><code>SkPicture</code></strong> is a recorded list of draw commands (“move here, fill this
+  path, draw this text”). You record it once and replay it cheaply.</li>
+</ol>
+
+<p>The field uses a pattern that matters for everything else:</p>
+<pre><code>const facePicture = useDerivedValue(() =>
+  createPicture(canvas => drawFieldFaces(canvas, faceFlights, …, cameraShared, …)));</code></pre>
+<p class="muted"><code>features/field/FieldCanvas.tsx:2991</code></p>
+
+<div class="card good">This is an <em>imperative</em> drawing function running on the UI thread. It
+re-records the whole field whenever any shared value it reads changes. React is out of the
+loop: at L0, a pan never touches JS for drawing. It's the right architecture, and it's why the
+map feels smooth.</div>
+
+<h3>Two render paths inside <code>FieldCanvas</code></h3>
+<table>
+  <tr><th>Path</th><th>Where it records</th><th>Used for</th></tr>
+  <tr><td><strong>Native</strong> — <code>NativeFieldContent</code></td><td>UI thread, per frame</td><td>L0 to L2</td></tr>
+  <tr><td><strong>Recorded fallback</strong> — <code>recordFieldPicture</code></td><td>JS thread, inside a <code>useMemo</code></td><td>grain distance, and whenever <code>nativeField</code> is false</td></tr>
+</table>
+<p><code>nativeField</code> is a 10-condition boolean at <code>FieldCanvas.tsx:722</code>: fonts loaded,
+flights resolvable, both ends of the re-cut native-drawable, and so on. Several documented bugs
+were “the field silently fell back to the picture path” (see the <code>lastVisualPlacements</code>
+trap in <code>hacking-app.md</code>).</p>
+
+<p><strong>Canvas count:</strong> the field has 2 (songs, plus a transparent one for jobs). Every
+<code>MorphText</code>, <code>Dial</code> and control-state glyph in the chrome is <strong>its own
+<code>&lt;Canvas&gt;</code></strong>, so its own GPU surface.</p>
+
+<h2 id="state"><span class="n">3</span>State: what exists and where it lives</h2>
+
+<p>There are three kinds, and the distinction is the whole game:</p>
+<table>
+  <tr><th>Kind</th><th>Lives on</th><th>Changing it costs</th><th>Used for</th></tr>
+  <tr><td><code>useState</code></td><td>JS</td><td>a React re-render of that component and everything below it</td><td>discrete facts</td></tr>
+  <tr><td><code>useSharedValue</code></td><td>UI thread</td><td>nothing in React; worklets re-run</td><td>anything that moves</td></tr>
+  <tr><td><code>useRef</code></td><td>JS</td><td>nothing; invisible to render</td><td>bookkeeping</td></tr>
+</table>
+
+<h3>What's in React state today</h3>
+<ul>
+  <li><strong><code>useBackendRuntime</code></strong> (<code>runtime/useBackendRuntime.ts</code>):
+  <code>backends</code>, <code>snapshots</code> (the per-node songs and jobs), <code>localAudio</code>
+  (per-song file state), <code>downloading</code>, <code>outbox</code>, <code>pairing</code>,
+  <code>storageError</code>.</li>
+  <li><strong><code>FieldScreen</code></strong>: <strong>about 30 <code>useState</code>s</strong>. There are
+  sheet open/target flags (×4 sheets), lens, arrangement, order, seed, date resolution, grain,
+  analyses, budget, after-song mode, song/job errors and busy flags, the viewport,
+  <code>visualPosition</code>, <code>nowMs</code> and more.</li>
+  <li><strong><code>useFieldCamera</code></strong>: <code>camera</code> (a React <em>mirror</em> of the real
+  camera), <code>focusKey</code>, <code>playerKey</code>, <code>recutClock</code>,
+  <code>descentTicket</code>. Plus about 15 shared values: the real camera, the pull, the flight,
+  the seats.</li>
+</ul>
+
+<h3>The derivation chain</h3>
+<p>Recomputed with <code>useMemo</code>:</p>
+<pre><code>snapshots + localAudio + backends + outbox
+  → buildFieldController   (new FieldPresentation object for every song)
+  → layoutField            (groups, placements)
+  → useFieldCamera re-cut  (only if layoutsDiffer → generation++, flights from→to)
+  → FieldCanvas            (faces, rows, labels rebuilt per re-cut)</code></pre>
+
+<h3>Is it efficient?</h3>
+<p>The UI-thread part mostly is. React is doing a lot more work than it looks like. These four
+costs are what I'd blame first for heat and small glitches.</p>
+
+<div class="card cost">
+  <span class="tag">cost 1 · JS · during every gesture</span>
+  <h3>Camera mirroring re-renders the whole screen</h3>
+  <p>Each pan, pinch or flight frame calls <code>runOnJS(mirrorCamera)</code> →
+  <code>setCameraState</code> in <code>useFieldCamera.ts:394</code>. <code>mirrorBusy</code> throttles it
+  to one in flight, but that still means “as fast as JS can commit”, all gesture long. Every commit
+  re-runs <code>FieldScreen</code>'s ~1900-line body, <code>FieldCanvas</code>, the overlay,
+  <code>SongSurface</code>, the a11y list and the origin mark. The mirror exists because level,
+  hit-testing, <code>songAlpha</code> and chrome read the camera from React.</p>
+</div>
+
+<div class="card cost">
+  <span class="tag">cost 2 · JS + UI · the whole time music plays</span>
+  <h3>Playback keeps the screen re-rendering ~6×/s and redraws the field every frame</h3>
+  <ul>
+    <li><code>setVisualPosition</code> runs every 160 ms while playing
+    (<code>FieldScreen.tsx:734</code>) just to feed <code>playingProgress</code> to the fallback
+    picture. That re-renders all of <code>FieldScreen</code>, even with the phone sitting on the
+    map.</li>
+    <li><code>facePicture</code> reads <code>positionSeconds.value</code>, which is a
+    <code>withTiming</code> running for the whole song. So <strong>every face in the field is
+    re-recorded every frame for as long as music plays</strong>, even at L0 with nothing moving.
+    <code>heldFocus</code> keeps the last player focused, so that clock stays attached after you
+    zoom out.</li>
+  </ul>
+  <p>This is very likely a real part of the “phone gets warm” symptom.</p>
+</div>
+
+<div class="card cost">
+  <span class="tag">cost 3 · bridge · on every snapshot change</span>
+  <h3>Any snapshot change asks native storage about every song</h3>
+  <p>The effect at <code>useBackendRuntime.ts:895</code> depends on <code>snapshots</code>. A
+  job-progress event, a sync page or a rename all trigger <code>audioStore.inspect</code> on
+  <strong>every song on every node</strong> over the bridge. Then <code>setLocalAudio</code> returns a
+  fresh object even if nothing changed, which rebuilds the controller. With 30 songs you don't
+  notice. With 500 songs and a generation running, it's a steady storm.</p>
+</div>
+
+<div class="card cost">
+  <span class="tag">cost 4 · JS · on every data change</span>
+  <h3>The controller never shares structure</h3>
+  <p>Every rebuild creates new presentation objects for every song. <code>FieldCanvas</code> then has
+  to compare them field by field to get the old map back (<code>FieldCanvas.tsx:551</code>), so the
+  Skia mappers don't restart. That's a patch for a problem one layer up. The same pattern repeats:
+  <code>lastVisualPlacements</code>, <code>heldFocus</code>, <code>previousPresentations</code>, and
+  “held by ref because the Jest mock isn't stable”.</p>
+</div>
+
+<div class="card note">
+  <strong>The structural issue is ownership.</strong> <code>FieldScreen</code> (1938 lines) and
+  <code>FieldCanvas</code> (4288 lines) own almost everything, so any change anywhere re-renders nearly
+  everything. Correctness then depends on dozens of carefully commented identity tricks to stop
+  those re-renders from reaching Skia. Each tricky comment is a flicker that was fixed once.
+</div>
+
+<h2 id="map"><span class="n">4</span>The map</h2>
+
+<h3>Grouping</h3>
+<p class="muted"><code>field/layout.ts</code>, <code>field/arrangements/</code>, <code>field/browse.ts</code></p>
+<ul>
+  <li>An <em>arrangement</em> (by date at week or month resolution, or by playlist tag
+  <code>p/&lt;name&gt;</code>) turns entities into groups. Date groups start newest first.</li>
+  <li>Groups sit on a 2-column grid, <code>SHELF_GAP_WORLD = 300</code> apart. Inside a group,
+  members are seated by <code>order</code> (time, duration, or seeded random) into an irregular oval
+  (“bloom”). The oval is seeded by the group key, so it's deterministic between refreshes. Denser
+  groups compress before they grow.</li>
+  <li>A <strong>placement</strong> is a <code>(song, group)</code> pair. A song in three playlists is
+  three marks, which is why <code>sheetTarget</code> carries a <code>groupKey</code>.</li>
+  <li>Each group also has a separate <em>shelf</em> pose: rows 92 px apart at L1. Zooming into a group
+  “gathers” the bloom into that list.</li>
+</ul>
+
+<h3>Camera</h3>
+<p class="muted"><code>field/camera.ts</code></p>
+<p>The camera is <code>{x, y, scale}</code>. The level is just <code>scale / fitScale</code> compared
+against <code>LEVEL_SCALE_RATIOS</code>. Crossfades between representations are “bands”
+(<code>REPRESENTATION_WINDOWS</code>); positions are “arrivals” (log-scale, no easing). When the
+layout really changes (regroup, song added), you get a <strong>re-cut</strong>: generation+1, each
+placement becomes a <em>flight</em> from its old pose to its new one, on a born clock over
+850 ms.</p>
+
+<h3>Is every song rendered at once?</h3>
+<table>
+  <tr><th>Question</th><th>Answer</th></tr>
+  <tr><td>Iterated every recorded frame?</td><td><strong>Yes.</strong> <code>drawFieldFaces</code> loops
+  over <em>every</em> flight and skips anything outside the viewport plus overscan
+  (<code>FieldCanvas.tsx:2240</code>). Rows and labels do the same in <code>nativeRows.ts</code> and
+  <code>nativeLabels.ts</code>.</td></tr>
+  <tr><td>Drawn every frame?</td><td><strong>No</strong>, only what's on screen. But at L0 overview,
+  everything <em>is</em> on screen by design, so you draw all of them.</td></tr>
+  <tr><td>Built per re-cut?</td><td><strong>Yes, for every song</strong>, not only visible ones: face
+  paths (cached per song), plus <code>nativeRowModel</code>, which lays out the title and metadata text
+  for every row (<code>FieldCanvas.tsx:3040</code>), even at L0 where titles are invisible.</td></tr>
+</table>
+
+<h3>Can it handle hundreds?</h3>
+<p>Geometry, yes. <code>FieldGroupLab</code> already checks 576 songs across 24 weeks, but it's a
+geometry check, not a performance one. What I'd expect to hurt first as the library grows, in
+order:</p>
+<ol>
+  <li>the native <code>inspect</code> storm (cost 3)</li>
+  <li>building text for every row at the start of each re-cut, on JS, which delays the 850 ms clock</li>
+  <li>whole-field re-recording every frame during playback (cost 2)</li>
+  <li>controller and layout rebuilds on every progress tick (cost 4)</li>
+</ol>
+<p>A few hundred faces drawn per frame on the GPU is fine. A few thousand would want per-song
+cached pictures or an atlas.</p>
+<div class="card note"><strong>I haven't profiled any of this on the Xiaomi yet.</strong> These are
+predictions from reading the code, and measuring them should be step one.</div>
+
+<h2 id="bugs"><span class="n">5</span>Why the bugs feel endless</h2>
+<p>The recurring shapes:</p>
+<ul>
+  <li><strong>Two clocks on one gesture.</strong> React's lagging camera copy drives chrome while the
+  UI-thread camera drives the canvas.</li>
+  <li><strong>Two renderers for one field.</strong> The native and fallback paths switch on a large
+  boolean, and anything that flips it for one frame is a seam.</li>
+  <li><strong>Ownership hand-offs between React and Skia</strong>: glyphs, the player lifetime
+  (<code>playerKey</code> vs <code>focusKey</code>), sheets that keep their subject while closing.</li>
+  <li><strong>Identity churn.</strong> New objects each render force defensive memo and ref tricks
+  downstream.</li>
+</ul>
+<p>Patching them one at a time works, but each patch adds one more invariant to hold in your head.
+A redesign would remove the <em>categories</em>: one owner per value, one renderer, and a
+UI-thread-owned scene that React only feeds with discrete facts.</p>
+
+<h2 id="direction"><span class="n">6</span>Where this could go <span class="muted">(not decided yet)</span></h2>
+<ol>
+  <li><strong>Split state by rate.</strong>
+    <ul>
+      <li>Data (songs, jobs, files) goes in a store with structural sharing, updated incrementally per event.</li>
+      <li>Discrete UI (sheets, lens, arrangement) goes in small feature stores, not 30 <code>useState</code>s in one component.</li>
+      <li>Continuous values (camera, playhead, pulls, progress) are shared values only, never mirrored per frame.</li>
+    </ul>
+  </li>
+  <li><strong>Make React camera-agnostic.</strong> Level and focus become <em>events</em> sent across
+  threads when a threshold is crossed, not a mirrored camera.</li>
+  <li><strong>One renderer.</strong> Bring grain/L3 onto the native path and delete
+  <code>recordFieldPicture</code>, or give both paths a single draw function.</li>
+  <li><strong>Draw only what changed.</strong> Cache a picture per song (face + row). Redraw only the
+  player while music plays. Build row text lazily for rows that come into view.</li>
+  <li><strong>Break up the two god files</strong> along those seams: data / navigation / scene /
+  chrome.</li>
+</ol>
+<p class="muted"><code>docs/refactor/hacking-app.md</code>'s module map is already stale (it still names
+<code>MainScreen</code> and <code>LibraryTimeline</code>). It would be rewritten as part of this.</p>
+
+<h2 id="questions"><span class="n">7</span>Questions for you</h2>
+<ol class="questions">
+  <li><strong>Where do you see the flicker most?</strong> For example: regrouping, entering or
+  leaving a song, opening sheets, lens switches, startup hydration. Knowing the top 3 tells me which
+  of the categories above you're actually hitting.</li>
+  <li><strong>Heat:</strong> is it worst while playing, while generating (job progress), while
+  panning, or just sitting idle on the map? That would separate costs 1–3.</li>
+  <li><strong>Scale target:</strong> is “a few hundred songs per user” the goal, or should we design
+  for thousands?</li>
+  <li><strong>Is L3 (grain) staying?</strong> Its being on the JS picture path is the main reason two
+  renderers exist.</li>
+  <li><strong>Appetite:</strong> a staged refactor behind the current behaviour (measure → fix the
+  three cheap wins → restructure stores → unify the renderer), or a bolder rewrite of
+  <code>FieldScreen</code>/<code>FieldCanvas</code> now, before alpha?</li>
+</ol>
+<div class="card good">The cheap wins are small and independent: stop the per-frame playback redraw,
+stop the 160 ms screen re-render, and make the <code>inspect</code> effect incremental. They can be
+profiled and fixed while the bigger design is discussed.</div>
+
+</main>
+</body>
+</html>

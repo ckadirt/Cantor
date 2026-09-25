@@ -14,6 +14,7 @@ import { FieldScreen } from './src/screens/FieldScreen';
 import { Onboarding } from './src/onboarding/Onboarding';
 import { FieldGroupLab } from './src/dev/FieldGroupLab';
 import { MotionLab } from './src/dev/MotionLab';
+import { PerfHud, PerfProfiler } from './src/dev/PerfHud';
 import { getIdentityPhrase } from './src/identity/mnemonic';
 import {
   createAndStoreIdentity,
@@ -27,6 +28,9 @@ import { space, touch, type, usePalette } from './src/theme/tokens';
 const MOTION_LAB = false;
 // Visual-only group stress cases. Never enabled in release builds.
 const FIELD_GROUP_LAB = false;
+// Frame and commit readout over the field (src/dev/PerfHud). Not gated on
+// __DEV__, so it can be read on a production-mode bundle; never ship it on.
+const PERF_HUD = false;
 
 type IdentityBoot =
   | { state: 'loading' }
@@ -81,7 +85,9 @@ export default function App() {
           backgroundColor={pal.bg}
         />
         {__DEV__ && FIELD_GROUP_LAB ? (
-          <FieldGroupLab />
+          <PerfProfiler>
+            <FieldGroupLab />
+          </PerfProfiler>
         ) : MOTION_LAB ? (
           <MotionLab />
         ) : boot.state === 'loading' ? (
@@ -106,7 +112,9 @@ export default function App() {
         ) : (
           <>
             {boot.state === 'ready' ? (
-              <FieldScreen identity={boot.identity} />
+              <PerfProfiler>
+                <FieldScreen identity={boot.identity} />
+              </PerfProfiler>
             ) : (
               <View style={[styles.flex, { backgroundColor: pal.bg }]} />
             )}
@@ -118,6 +126,7 @@ export default function App() {
             ) : null}
           </>
         )}
+        {PERF_HUD ? <PerfHud /> : null}
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
