@@ -145,6 +145,12 @@ const ANALYSIS_BUCKETS = 729;
  * between samples, longer and it lags the number it is drawing.
  */
 const ARRIVING_GLIDE_MS = 100;
+/**
+ * How far the player's hand moves between two redraws, in physical pixels of
+ * the ring. The canvas redraws once per step, so this is smoothness against
+ * heat: on the Xiaomi at L2, 1 px held ~80% of a core, 2 px ~60%, 4 px ~51%.
+ */
+const PLAYHEAD_STEP_PX = 2;
 
 /** Where song measurements are kept, apart from every other stored key. */
 const ANALYSIS_DATABASE = 'cantor-analysis';
@@ -802,20 +808,21 @@ export function FieldScreen({ identity }: Props) {
     ? transport.positionSeconds
     : idlePosition;
   /**
-   * The playhead, stepped to one physical pixel of the player's ring.
+   * The playhead, stepped to `PLAYHEAD_STEP_PX` physical pixels of the
+   * player's ring.
    *
    * The canvas redraws whenever the playhead moves, and the clock moves every
    * frame — 120 a second on this phone — while the hand it draws travels about
    * eighteen pixels a second on a two-minute song. Nearly every one of those
    * redraws painted the same image, and at L2 that held a whole core (99%,
-   * measured). Stepped to a pixel, the value holds still between steps, a
-   * shared value set to what it holds wakes nothing, and the ring redraws only
-   * when the hand has somewhere new to be.
+   * measured). Stepped, the value holds still between steps, a shared value
+   * set to what it holds wakes nothing, and the ring redraws only when the
+   * hand has somewhere new to be.
    */
   const playheadStepSeconds =
     viewport === null || transport.snapshot.durationSeconds <= 0
       ? 0
-      : transport.snapshot.durationSeconds /
+      : (transport.snapshot.durationSeconds * PLAYHEAD_STEP_PX) /
         (2 * Math.PI * playerRadiusPx(viewport.width) * PixelRatio.get());
   const steppedCandidate = useSharedValue(0);
   const steppedPosition = useRef(steppedCandidate).current;
