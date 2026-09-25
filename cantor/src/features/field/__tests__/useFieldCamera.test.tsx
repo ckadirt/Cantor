@@ -83,6 +83,31 @@ function gestures(): [
 
 let latest: ReturnType<typeof useFieldCamera>;
 
+/**
+ * Hold the next re-cuts in the air at `progress`, and hand back the landing.
+ *
+ * A re-cut runs on a `withTiming` clock on the UI thread; the Jest mock of it
+ * lands at once and runs no reactions. So this stands the clock where a test
+ * wants it and keeps the finishing callback for when the test says so. Other
+ * timings — camera flights — behave as the mock always has.
+ */
+function holdRecut(progress: number): () => void {
+  const reanimated = require('react-native-reanimated');
+  const actual = reanimated.withTiming;
+  let finish: ((finished: boolean) => void) | undefined;
+  jest
+    .spyOn(reanimated, 'withTiming')
+    .mockImplementation((...args: unknown[]) => {
+      const config = args[1] as { duration?: number } | undefined;
+      if (config?.duration !== FIELD_CAMERA_KNOBS.RELAYOUT_MS) {
+        return actual(...args);
+      }
+      finish = args[2] as (finished: boolean) => void;
+      return progress;
+    });
+  return () => finish?.(true);
+}
+
 function Probe({
   layout,
   onOpenComposer,
@@ -660,16 +685,7 @@ describe('useFieldCamera', () => {
 
   it('commits a born source frame and retargets rapid re-cuts continuously', async () => {
     mockReducedMotion = false;
-    let now = 0;
-    const frames: Array<(timestamp: number) => void> = [];
-    jest.spyOn(Date, 'now').mockImplementation(() => now);
-    jest
-      .spyOn(globalThis, 'requestAnimationFrame')
-      .mockImplementation((callback: (timestamp: number) => void) => {
-        frames.push(callback);
-        return frames.length;
-      });
-    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    holdRecut(0.5);
 
     const tagged: FieldEntity[] = [
       {
@@ -730,10 +746,6 @@ describe('useFieldCamera', () => {
     ).toBe(true);
     expect(renders.some(render => render.relayoutLinear === 1)).toBe(false);
 
-    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS / 2;
-    await ReactTestRenderer.act(async () => {
-      frames.shift()?.(now);
-    });
     // The flight plays on the UI thread's values, not on React's: the camera
     // and the fit it is measured against move together there.
     expect(
@@ -901,16 +913,7 @@ describe('useFieldCamera', () => {
 
   it('keeps a native re-cut capture across an unrelated re-render', async () => {
     mockReducedMotion = false;
-    let now = 0;
-    const frames: Array<(timestamp: number) => void> = [];
-    jest.spyOn(Date, 'now').mockImplementation(() => now);
-    jest
-      .spyOn(globalThis, 'requestAnimationFrame')
-      .mockImplementation((callback: (timestamp: number) => void) => {
-        frames.push(callback);
-        return frames.length;
-      });
-    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    holdRecut(0.5);
     const tagged = [{ ...entities[0], tags: ['p/Drive', 'p/Focus'] }];
     const month = layoutField({
       entities: tagged,
@@ -950,10 +953,6 @@ describe('useFieldCamera', () => {
       renderer.update(<NativeProbe field={playlist} tick={0} />);
     });
 
-    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS / 2;
-    await ReactTestRenderer.act(async () => {
-      frames.shift()?.(now);
-    });
 
     // Anything upstream — a library refresh, a playhead tick — re-renders the
     // screen mid-flight. The UI-runtime canvas is already halfway through and
@@ -977,16 +976,7 @@ describe('useFieldCamera', () => {
 
   it('keeps native L0 frame ticks out of React while retaining interruption capture', async () => {
     mockReducedMotion = false;
-    let now = 0;
-    const frames: Array<(timestamp: number) => void> = [];
-    jest.spyOn(Date, 'now').mockImplementation(() => now);
-    jest
-      .spyOn(globalThis, 'requestAnimationFrame')
-      .mockImplementation((callback: (timestamp: number) => void) => {
-        frames.push(callback);
-        return frames.length;
-      });
-    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    holdRecut(0.5);
     const tagged = [{ ...entities[0], tags: ['p/Drive', 'p/Focus'] }];
     const month = layoutField({
       entities: tagged,
@@ -1025,10 +1015,6 @@ describe('useFieldCamera', () => {
     });
     const rendersAtBorn = renderCount;
 
-    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS / 2;
-    await ReactTestRenderer.act(async () => {
-      frames.shift()?.(now);
-    });
     expect(renderCount).toBe(rendersAtBorn);
 
     await ReactTestRenderer.act(async () => {
@@ -1053,16 +1039,7 @@ describe('useFieldCamera', () => {
    */
   it('sheds a removed song from the source capture once its exit has landed', async () => {
     mockReducedMotion = false;
-    let now = 0;
-    const frames: Array<(timestamp: number) => void> = [];
-    jest.spyOn(Date, 'now').mockImplementation(() => now);
-    jest
-      .spyOn(globalThis, 'requestAnimationFrame')
-      .mockImplementation((callback: (timestamp: number) => void) => {
-        frames.push(callback);
-        return frames.length;
-      });
-    jest.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation(() => {});
+    const land = holdRecut(0.5);
 
     const pair: FieldEntity[] = [
       entities[0],
@@ -1114,9 +1091,8 @@ describe('useFieldCamera', () => {
       ),
     ).toBe(true);
 
-    now = FIELD_CAMERA_KNOBS.RELAYOUT_MS;
     await ReactTestRenderer.act(async () => {
-      while (frames.length > 0) frames.shift()?.(now);
+      land();
     });
     expect(latest.relayoutLinear).toBe(1);
 

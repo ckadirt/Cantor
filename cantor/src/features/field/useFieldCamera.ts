@@ -21,7 +21,6 @@ import {
   containToSeat,
   hitTestPlacement,
   hitTestRowAction,
-  interpolateCamera,
   interpolatePositiveScale,
   isShelfDistance,
   isSongDistance,
@@ -222,6 +221,13 @@ type PinchStart = {
 
 const EMPTY_CAMERA: Camera = { x: 0, y: 0, scale: 0.9 };
 
+type RecutEnds = Readonly<{
+  fromCamera: Camera;
+  toCamera: Camera;
+  fromFitScale: number;
+  toFitScale: number;
+}>;
+
 export type FieldRecutModel = Readonly<{
   generation: number;
   layout: FieldLayout;
@@ -280,7 +286,6 @@ export function useFieldCamera({
   const cameraRef = useRef(camera);
   const layoutRef = useRef(layout);
   const focusKeyRef = useRef(focusKey);
-  const relayoutFrame = useRef<number | null>(null);
   const recutModel = useRef<FieldRecutModel | null>(null);
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
   /** See the capture beside `focus`, and the strand it answers in the re-cut. */
@@ -294,7 +299,7 @@ export function useFieldCamera({
   const panStart = useSharedValue<PanStart | null>(null);
   const pinchStart = useSharedValue<PinchStart | null>(null);
   const pinching = useSharedValue(false);
-  /** Whether a native L0 re-cut is still writing the live capture refs. */
+  /** The generation whose re-cut is in the air, or null once it has landed. */
   const nativeFlight = useRef<number | null>(null);
   // Native shared values are stable. Keep that property in the Jest mock too,
   // which deliberately returns a fresh object for every render.
@@ -328,6 +333,16 @@ export function useFieldCamera({
    * `interpolateCamera` smoothersteps position and moves scale logarithmically
    * so a zoom reads as even.
    */
+  /**
+   * A re-cut's own camera and fit, on the UI thread: a linear clock and the
+   * endpoints it runs between, as a camera flight is. It used to tick on the
+   * JS thread by `requestAnimationFrame`, writing both shared values from JS
+   * and rebuilding every placement's pose on every frame — work the canvas
+   * never reads (it runs the re-cut from its own clock) and that only the
+   * next re-cut needs, once, if it interrupts this one (`liveCapture`).
+   */
+  const recutProgressCandidate = useSharedValue(1);
+  const recutEndsCandidate = useSharedValue<RecutEnds | null>(null);
   const flightFromCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const flightToCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const flightProgressCandidate = useSharedValue(1);
@@ -363,6 +378,8 @@ export function useFieldCamera({
   const pullShared = useRef(pullSharedCandidate).current;
   const pullDestination = useRef(pullDestinationCandidate).current;
   const shelfSeatsShared = useRef(shelfSeatsSharedCandidate).current;
+  const recutProgress = useRef(recutProgressCandidate).current;
+  const recutEnds = useRef(recutEndsCandidate).current;
   const flightFrom = useRef(flightFromCandidate).current;
   const flightTo = useRef(flightToCandidate).current;
   const flightProgress = useRef(flightProgressCandidate).current;
@@ -380,6 +397,30 @@ export function useFieldCamera({
     };
   }, [layout, originShared, seats, shelfSeatsShared]);
 
+  /**
+   * FIT as the field is drawn right now: the re-cut's own value while one is
+   * in the air, since that is written on the UI thread and not to React.
+   */
+  const renderedFit = useCallback(
+    (fallback: number): number =>
+      nativeFlight.current !== null
+        ? fitScaleShared.value
+        : lastRenderFitScale.current ?? fallback,
+    [fitScaleShared],
+  );
+  /**
+   * Where every mark is drawn right now, for the re-cut that interrupts this
+   * one to start from. Worked out when it is asked for — once, by the next
+   * re-cut — rather than on every frame of this one.
+   */
+  const liveCapture = useCallback((): readonly Placement[] => {
+    const model = recutModel.current;
+    if (model === null || nativeFlight.current !== model.generation) {
+      return lastVisualPlacements.current;
+    }
+    const eased = smootherstep(Math.min(Math.max(recutProgress.value, 0), 1));
+    return model.flights.map(flight => placementFlightAt(flight, eased));
+  }, [recutProgress]);
   const commitCamera = useCallback(
     (next: Camera) => {
       cameraRef.current = next;
@@ -422,8 +463,7 @@ export function useFieldCamera({
         return;
       }
       cameraRef.current = next;
-      const fit =
-        lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
+      const fit = renderedFit(layoutRef.current?.fitScale ?? 1);
       if (
         focusKeyRef.current === null &&
         next.scale <= fit * LEVEL_SCALE_RATIOS.shelf
@@ -432,7 +472,7 @@ export function useFieldCamera({
       }
       setCameraState(next);
     },
-    [mirrorBusy],
+    [renderedFit, mirrorBusy],
   );
   useEffect(() => {
     mirrorBusy.value = false;
@@ -518,14 +558,13 @@ export function useFieldCamera({
       setFocusKey(next);
       // Logical focus leaves immediately; the outgoing drawing keeps its
       // owner until the camera has returned it to the row pose.
-      const fit =
-        lastRenderFitScale.current ?? layoutRef.current?.fitScale ?? 1;
+      const fit = renderedFit(layoutRef.current?.fitScale ?? 1);
       if (next !== null && drawsPlayer) setPlayerKey(next);
       else if (cameraShared.value.scale <= fit * LEVEL_SCALE_RATIOS.shelf) {
         setPlayerKey(null);
       }
     },
-    [cameraShared, focusKeyShared],
+    [renderedFit, cameraShared, focusKeyShared],
   );
   const cancelCameraFlight = useCallback(() => {
     // A descent still waiting for its commit is a flight like any other, so
@@ -543,11 +582,8 @@ export function useFieldCamera({
     then?.();
   }, []);
   const cancelRelayout = useCallback(() => {
-    if (relayoutFrame.current !== null) {
-      cancelAnimationFrame(relayoutFrame.current);
-      relayoutFrame.current = null;
-    }
-  }, []);
+    cancelAnimation(recutProgress);
+  }, [recutProgress]);
   const cancelGesture = useCallback(() => {
     cancelCameraFlight();
     pinching.value = false;
@@ -677,8 +713,7 @@ export function useFieldCamera({
     const previous = recutModel.current;
     const generation = (previous?.generation ?? 0) + 1;
     const firstLayout = previous === null;
-    const fromFitScale =
-      lastRenderFitScale.current ?? previous?.toFitScale ?? layout.fitScale;
+    const fromFitScale = renderedFit(previous?.toFitScale ?? layout.fitScale);
     const fromCamera = firstLayout
       ? levelCameraTarget('field', layout) ?? EMPTY_CAMERA
       : cameraShared.value;
@@ -726,7 +761,7 @@ export function useFieldCamera({
       : fitCorrected;
     const sources = firstLayout
       ? layout.placements
-      : lastVisualPlacements.current.filter(stillDrawn);
+      : liveCapture().filter(stillDrawn);
     const flights = planPlacementFlights(
       sources,
       layout.placements,
@@ -806,6 +841,51 @@ export function useFieldCamera({
     lastRenderFitScale.current = renderFitScale;
   }
 
+  /** A re-cut has landed: React takes the camera and the settled clock. */
+  const landRecut = useCallback(
+    (generation: number) => {
+      const model = recutModel.current;
+      if (model === null || model.generation !== generation) return;
+      nativeFlight.current = null;
+      setRecutClock({ generation, linear: 1 });
+      commitCamera(model.toCamera);
+    },
+    [commitCamera],
+  );
+  /**
+   * The re-cut's camera and fit, one frame at a time on the UI thread.
+   *
+   * The same curves a camera flight uses (see the reaction on
+   * `flightProgress`): smootherstep on position, logarithmic on scale, and the
+   * fit on the same eased clock.
+   */
+  useAnimatedReaction(
+    () => recutProgress.value,
+    (progress, previous) => {
+      'worklet';
+      if (progress === previous) return;
+      const ends = recutEnds.value;
+      if (ends === null) return;
+      const t = Math.min(Math.max(progress, 0), 1);
+      const eased = t * t * t * (t * (t * 6 - 15) + 10);
+      const from = ends.fromCamera;
+      const to = ends.toCamera;
+      fitScaleShared.value = Math.exp(
+        Math.log(ends.fromFitScale) +
+          (Math.log(ends.toFitScale) - Math.log(ends.fromFitScale)) * eased,
+      );
+      if (!(from.scale > 0) || !(to.scale > 0)) return;
+      cameraShared.value = {
+        x: from.x + (to.x - from.x) * eased,
+        y: from.y + (to.y - from.y) * eased,
+        scale: Math.exp(
+          Math.log(from.scale) +
+            (Math.log(to.scale) - Math.log(from.scale)) * eased,
+        ),
+      };
+    },
+  );
+
   useEffect(() => {
     const model = recutModel.current;
     if (model === null) return;
@@ -818,52 +898,35 @@ export function useFieldCamera({
       setRecutClock({ generation, linear: 1 });
       return;
     }
-    const startedAt = Date.now();
     fitScaleShared.value = model.fromFitScale;
     nativeFlight.current = generation;
     setRecutClock({ generation, linear: 0 });
-    const tick = () => {
-      if (recutModel.current?.generation !== generation) return;
-      const progress = Math.min(
-        1,
-        (Date.now() - startedAt) / FIELD_CAMERA_KNOBS.RELAYOUT_MS,
-      );
-      const eased = smootherstep(progress);
-      const nextFitScale = interpolatePositiveScale(
-        model.fromFitScale,
-        model.toFitScale,
-        eased,
-      );
-      const nextCamera = interpolateCamera(
-        model.fromCamera,
-        model.toCamera,
-        progress,
-      );
-      // React is not told: the canvas plays the re-cut from its own clock
-      // and these two shared values, and React hears the landing.
-      fitScaleShared.value = nextFitScale;
-      lastVisualPlacements.current = model.flights.map(flight =>
-        placementFlightAt(flight, eased),
-      );
-      lastRenderFitScale.current = nextFitScale;
-      cameraRef.current = nextCamera;
-      cameraShared.value = nextCamera;
-      if (progress < 1) {
-        relayoutFrame.current = requestAnimationFrame(tick);
-      } else {
-        relayoutFrame.current = null;
-        nativeFlight.current = null;
-        setRecutClock({ generation, linear: 1 });
-        commitCamera(model.toCamera);
-      }
+    // React is not told about the frames between: the canvas plays the
+    // re-cut from its own clock, the reaction below moves the camera and fit
+    // on the UI thread, and React hears the landing.
+    recutEnds.value = {
+      fromCamera: model.fromCamera,
+      toCamera: model.toCamera,
+      fromFitScale: model.fromFitScale,
+      toFitScale: model.toFitScale,
     };
-    relayoutFrame.current = requestAnimationFrame(tick);
+    recutProgress.value = 0;
+    recutProgress.value = withTiming(
+      1,
+      { duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS, easing: Easing.linear },
+      finished => {
+        'worklet';
+        if (finished === true) runOnJS(landRecut)(generation);
+      },
+    );
   }, [
     activeRecut?.generation,
-    cameraShared,
     cancelRelayout,
     commitCamera,
     fitScaleShared,
+    landRecut,
+    recutEnds,
+    recutProgress,
   ]);
 
   useEffect(
@@ -951,7 +1014,7 @@ export function useFieldCamera({
       if (field === null) return;
       const current = levelOf(
         cameraShared.value.scale,
-        lastRenderFitScale.current ?? field.fitScale,
+        renderedFit(field.fitScale),
       );
       // Where the descent stops is `GRAIN_ENABLED`'s to say: with L3 closed a
       // song is the end of it, and tapping the player again does nothing rather
@@ -997,7 +1060,7 @@ export function useFieldCamera({
       pendingDescent.current = target;
       setDescentTicket(ticket => ticket + 1);
     },
-    [cameraShared, commitFocus, flyTo],
+    [renderedFit, cameraShared, commitFocus, flyTo],
   );
   /*
    * Ticket rather than the focus itself: descending from a song into its grain
@@ -1053,7 +1116,7 @@ export function useFieldCamera({
     if (field === null) return false;
     const current = levelOf(
       cameraShared.value.scale,
-      lastRenderFitScale.current ?? field.fitScale,
+      renderedFit(field.fitScale),
     );
     if (current === 'field') return false;
 
@@ -1074,7 +1137,7 @@ export function useFieldCamera({
     const target = levelCameraTarget('field', field);
     if (target) flyTo(target);
     return true;
-  }, [cameraShared, commitFocus, flyTo, shelfAround]);
+  }, [renderedFit, cameraShared, commitFocus, flyTo, shelfAround]);
   const step = useCallback(
     (placement: Placement) => {
       // Still folding back into the row: retarget where it goes down again.
@@ -1089,7 +1152,7 @@ export function useFieldCamera({
       }
       const current = levelOf(
         cameraShared.value.scale,
-        lastRenderFitScale.current ?? field.fitScale,
+        renderedFit(field.fitScale),
       );
       if (current !== 'song' && current !== 'grain') return;
       const shelf = shelfAround(field, from);
@@ -1111,7 +1174,7 @@ export function useFieldCamera({
       // After `flyTo`, which drops any earlier step's target with its flight.
       stepTarget.current = placement;
     },
-    [cameraShared, commitFocus, flyTo, shelfAround],
+    [renderedFit, cameraShared, commitFocus, flyTo, shelfAround],
   );
   const stepping = useCallback(() => stepTarget.current, []);
   const home = useCallback(() => {
@@ -1127,7 +1190,7 @@ export function useFieldCamera({
       const field = layoutRef.current;
       const size = viewport;
       if (field === null || size === null) return null;
-      const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
+      const hitFitScale = renderedFit(field.fitScale);
       if (
         field.browseBounds &&
         levelOf(cameraShared.value.scale, hitFitScale) === 'field' &&
@@ -1143,7 +1206,7 @@ export function useFieldCamera({
         hitFitScale,
       );
     },
-    [cameraShared, renderedPlacements, viewport],
+    [renderedFit, cameraShared, renderedPlacements, viewport],
   );
 
   const holdAt = useCallback(
@@ -1159,7 +1222,7 @@ export function useFieldCamera({
       const field = layoutRef.current;
       const size = viewport;
       if (field === null || size === null) return;
-      const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
+      const hitFitScale = renderedFit(field.fitScale);
       const hitLevel = levelOf(cameraShared.value.scale, hitFitScale);
       if (
         field.browseBounds &&
@@ -1193,6 +1256,7 @@ export function useFieldCamera({
       descend(hit);
     },
     [
+      renderedFit,
       cameraShared,
       descend,
       onClaimTap,
