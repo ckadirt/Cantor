@@ -315,6 +315,22 @@ describe('field canvas re-cut clock', () => {
         updated_at: '2026-08-08T00:00:00Z',
       },
     };
+    // One object per revision, as the controller hands back an unchanged job.
+    const revisions = new Map<number, JobPresentation>();
+    const jobAt = (revision: number) => {
+      const kept = revisions.get(revision);
+      if (kept !== undefined) return kept;
+      const next = {
+        ...pending,
+        job: {
+          ...pending.job,
+          revision,
+          progress: { completed: revision, total: 8, unit: 'steps' },
+        },
+      } as JobPresentation;
+      revisions.set(revision, next);
+      return next;
+    };
     const render = (revision: number) => (
       <FieldCanvas
         camera={cameraFor(year)}
@@ -336,41 +352,34 @@ describe('field canvas re-cut clock', () => {
             ]),
           )
         }
-        jobs={
-          new Map([
-            [
-              entity.key,
-              {
-                ...pending,
-                job: {
-                  ...pending.job,
-                  revision,
-                  progress: { completed: revision, total: 8, unit: 'steps' },
-                },
-              },
-            ],
-          ])
-        }
+        jobs={new Map([[entity.key, jobAt(revision)]])}
       />
     );
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
       renderer = ReactTestRenderer.create(render(1));
     });
+    // One canvas: jobs are a layer of the song scene, not a surface over it.
     const canvases = renderer.root.findAllByType(Canvas);
-    expect(canvases).toHaveLength(2);
-    const songScene = canvases[0].props.children;
-    const jobScene = canvases[1].props.children;
-    // Jobs paint above the song canvas, so they must carry the same live
-    // header/footer protection rather than relying on the layer underneath.
-    expect(jobScene.props.children[1]).toBe(songScene.props.children[1]);
-    expect(jobScene.props.children[1].props.children[0].props.map).toBe(true);
+    expect(canvases).toHaveLength(1);
+    const scene = canvases[0].props.children;
+    const jobMarks = scene.props.children[0].props.jobMarks;
+    const first = jobMarks.value[entity.key];
+    expect(first).toBeDefined();
     await ReactTestRenderer.act(async () => {
       renderer.update(render(2));
     });
-    const updated = renderer.root.findAllByType(Canvas);
-    expect(updated[0].props.children).toBe(songScene);
-    expect(updated[1].props.children).not.toBe(jobScene);
+    // Progress reaches the drawing through the shared value, and the canvas is
+    // handed the element it already had — nothing repaints from React.
+    expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
+    expect(jobMarks.value[entity.key]).toBeDefined();
+    expect(jobMarks.value[entity.key] === first).toBe(false);
+    // A render with nothing new records nothing new.
+    const second = jobMarks.value;
+    await ReactTestRenderer.act(async () => {
+      renderer.update(render(2));
+    });
+    expect(jobMarks.value === second).toBe(true);
     await ReactTestRenderer.act(async () => {
       renderer.unmount();
     });

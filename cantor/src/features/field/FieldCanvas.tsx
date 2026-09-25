@@ -4,6 +4,7 @@ import {
   drawNativeLabels,
 } from './nativeLabels';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
+import { drawNativeJobs, type JobMark } from './nativeJobs';
 import {
   ARRIVAL_KNOBS,
   arriveInk,
@@ -747,6 +748,47 @@ function FieldCanvasImpl({
   // held by ref the way `useFieldCamera` holds its own candidates.
   const grainFallback = useSharedValue<GrainBars | null>(null);
   const grainValue = useRef(grainShared ?? grainFallback).current;
+  /*
+   * The jobs' marks, recorded here and drawn by the native scene.
+   *
+   * Recorded per job and only when that job's presentation is a new object —
+   * the controller hands back the same one when nothing about it moved — and
+   * kept for a job that has left the data while its outgoing flight is still
+   * in the air, the way `presentations` keeps a removed song's.
+   */
+  const jobMarksCandidate = useSharedValue<Readonly<Record<string, JobMark>>>(
+    {},
+  );
+  const jobMarks = useRef(jobMarksCandidate).current;
+  const recordedJobs = useRef(
+    new Map<string, { pending: JobPresentation; mark: JobMark }>(),
+  );
+  useEffect(() => {
+    if (monoFont === null) return;
+    const flying = new Set(recut?.flights.map(flight => flight.entityKey));
+    const previous = recordedJobs.current;
+    const next = new Map<string, { pending: JobPresentation; mark: JobMark }>();
+    for (const [key, pending] of jobs ?? []) {
+      const kept = previous.get(key);
+      next.set(
+        key,
+        kept !== undefined && kept.pending === pending
+          ? kept
+          : { pending, mark: recordJobMark(pending, palette, monoFont) },
+      );
+    }
+    for (const [key, kept] of previous) {
+      if (!next.has(key) && flying.has(key)) next.set(key, kept);
+    }
+    const unchanged =
+      next.size === previous.size &&
+      [...next].every(([key, entry]) => previous.get(key) === entry);
+    recordedJobs.current = next;
+    if (unchanged) return;
+    const marks: Record<string, JobMark> = {};
+    for (const [key, entry] of next) marks[key] = entry.mark;
+    jobMarks.value = marks;
+  }, [jobMarks, jobs, monoFont, palette, recut]);
   /**
    * The camera the next picture will be recorded at.
    *
@@ -922,6 +964,7 @@ function FieldCanvasImpl({
           playingKey={playingKey}
           focusKey={focusKey}
           grainShared={grainValue}
+          jobMarks={jobMarks}
           transportPlaying={transportPlaying}
           transportArriving={transportArriving}
           transportLights={transportLights}
@@ -944,6 +987,7 @@ function FieldCanvasImpl({
     fitScaleShared,
     focusKey,
     grainValue,
+    jobMarks,
     labelFlights,
     monoFont,
     nativeClock,
@@ -1128,50 +1172,6 @@ function FieldCanvasImpl({
     ],
   );
 
-  const jobScene = useMemo(() => {
-    if (!jobs || !recut || !nativeClock || !monoFont) return null;
-    const flights = recut.flights.map(flight => {
-      const pending = jobs.get(flight.entityKey);
-      if (!pending || presentations.has(flight.entityKey)) return null;
-      return (
-        <NativeJobFlight
-          key={`${recut.generation}:${flight.key}`}
-          flight={flight}
-          pending={pending}
-          recut={{
-            fromCamera: recut.fromCamera,
-            toCamera: recut.toCamera,
-            fromFitScale: recut.fromFitScale,
-            toFitScale: recut.toFitScale,
-          }}
-          clock={nativeClock}
-          cameraShared={cameraShared}
-          fitScaleShared={fitScaleShared}
-          viewport={viewport}
-          palette={palette}
-          monoFont={monoFont}
-        />
-      );
-    });
-    return (
-      <>
-        {flights}
-        {veil}
-      </>
-    );
-  }, [
-    veil,
-    jobs,
-    recut,
-    nativeClock,
-    monoFont,
-    presentations,
-    cameraShared,
-    fitScaleShared,
-    viewport,
-    palette,
-  ]);
-
   if (nativeField) {
     return (
       <>
@@ -1183,15 +1183,6 @@ function FieldCanvasImpl({
         >
           {nativeScene}
         </Canvas>
-        {jobs && jobs.size > 0 && recut && nativeClock && monoFont ? (
-          <Canvas
-            pointerEvents="none"
-            importantForAccessibility="no-hide-descendants"
-            style={StyleSheet.absoluteFill}
-          >
-            {jobScene}
-          </Canvas>
-        ) : null}
       </>
     );
   }
@@ -1205,120 +1196,6 @@ function FieldCanvasImpl({
     >
       {scene}
     </Canvas>
-  );
-}
-
-/** Progress redraws only this transparent canvas; songs keep their native scene. */
-function NativeJobFlight({
-  flight,
-  pending,
-  recut,
-  clock,
-  cameraShared,
-  fitScaleShared,
-  viewport,
-  palette,
-  monoFont,
-}: {
-  flight: PlacementFlight;
-  pending: JobPresentation;
-  recut: NativeRecut;
-  clock: SharedValue<number>;
-  cameraShared: SharedValue<Camera>;
-  fitScaleShared: SharedValue<number>;
-  viewport: Viewport;
-  palette: Props['palette'];
-  monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
-}) {
-  const pictures = useMemo(() => {
-    const paints = createPaints(palette);
-    const record = (row: boolean) => {
-      const recorder = Skia.PictureRecorder();
-      const canvas = recorder.beginRecording(
-        Skia.XYWHRect(-256, -128, 512, 256),
-      );
-      drawJobMark(
-        canvas,
-        { paints, fonts: { mono: monoFont } },
-        { x: 0, y: 0 },
-        row ? pending : { ...pending, caption: null },
-        { dot: row ? 0 : 1, row: row ? 1 : 0, song: 0, grain: 0 },
-      );
-      return recorder.finishRecordingAsPicture();
-    };
-    return { dot: record(false), row: record(true) };
-  }, [pending, palette, monoFont]);
-  const transform = useDerivedValue(() => {
-    const p = Math.min(Math.max(clock.value, 0), 1);
-    const liveCamera = p >= 1 ? cameraShared.value : null;
-    const cameraX =
-      liveCamera?.x ??
-      recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
-    const cameraY =
-      liveCamera?.y ??
-      recut.fromCamera.y + (recut.toCamera.y - recut.fromCamera.y) * p;
-    const cameraScale = nativeCameraScale(p, recut, cameraShared);
-    const bloom =
-      1 - gatherFraction(cameraScale, nativeFitScale(p, recut, fitScaleShared));
-    const seatX = flight.fromX + (flight.targetX - flight.fromX) * p;
-    const seatY = flight.fromY + (flight.targetY - flight.fromY) * p;
-    const bloomX =
-      flight.fromBloomX + (flight.targetBloomX - flight.fromBloomX) * p;
-    const bloomY =
-      flight.fromBloomY + (flight.targetBloomY - flight.fromBloomY) * p;
-    return [
-      {
-        translateX:
-          (seatX + bloomX * bloom - cameraX) * cameraScale + viewport.width / 2,
-      },
-      {
-        translateY:
-          (seatY + bloomY * bloom - cameraY) * cameraScale +
-          viewport.height / 2,
-      },
-    ];
-  });
-  const dot = useDerivedValue(() => {
-    const p = clock.value;
-    return (
-      bandAlphaAt(
-        nativeCameraScale(p, recut, cameraShared),
-        nativeFitScale(p, recut, fitScaleShared),
-        REPRESENTATION_WINDOWS.dot,
-      ) *
-      flightOwnerAlpha(
-        flight.ownership,
-        flight.fromAlpha,
-        flight.targetAlpha,
-        p,
-      )
-    );
-  });
-  const row = useDerivedValue(() => {
-    const p = clock.value;
-    return (
-      bandAlphaAt(
-        nativeCameraScale(p, recut, cameraShared),
-        nativeFitScale(p, recut, fitScaleShared),
-        REPRESENTATION_WINDOWS.row,
-      ) *
-      flightOwnerAlpha(
-        flight.ownership,
-        flight.fromAlpha,
-        flight.targetAlpha,
-        p,
-      )
-    );
-  });
-  return (
-    <SkiaGroup transform={transform}>
-      <SkiaGroup layer={<Paint opacity={dot} />}>
-        <Picture picture={pictures.dot} />
-      </SkiaGroup>
-      <SkiaGroup layer={<Paint opacity={row} />}>
-        <Picture picture={pictures.row} />
-      </SkiaGroup>
-    </SkiaGroup>
   );
 }
 
@@ -1755,6 +1632,12 @@ type NativeFieldContentProps = Readonly<{
    * `scene`.
    */
   grainShared: SharedValue<GrainBars | null>;
+  /**
+   * Every generating job's mark, by entity key — a shared value for the reason
+   * `grainShared` is one: progress lands about once a second and must not hand
+   * `Canvas` a fresh element. See `drawNativeJobs`.
+   */
+  jobMarks: SharedValue<Readonly<Record<string, JobMark>>>;
   labelFlights: ShelfLabelFlights | null;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -2932,6 +2815,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   positionSeconds,
   analyses,
   grainShared,
+  jobMarks,
   labelFlights,
   displayFont,
   songTitleFont,
@@ -3230,6 +3114,41 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       );
     }, viewport);
   });
+  // Whatever in this re-cut is not a song is a job; one whose mark has not
+  // arrived, or has left, draws nothing.
+  const jobFlights = useMemo(
+    () => recut.flights.filter(flight => !presentations.has(flight.entityKey)),
+    [recut, presentations],
+  );
+  const jobLayer = useMemo(() => Skia.Paint(), []);
+  const jobsPicture = useDerivedValue(() => {
+    const p = Math.min(Math.max(clock.value, 0), 1);
+    const live = p >= 1 ? cameraShared.value : null;
+    const jobCamera = {
+      x:
+        live?.x ??
+        nativeRecut.fromCamera.x +
+          (nativeRecut.toCamera.x - nativeRecut.fromCamera.x) * p,
+      y:
+        live?.y ??
+        nativeRecut.fromCamera.y +
+          (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
+      scale: nativeCameraScale(p, nativeRecut, cameraShared),
+    };
+    const marks = jobMarks.value;
+    return createPicture(canvas => {
+      drawNativeJobs(
+        canvas,
+        jobFlights,
+        marks,
+        p,
+        jobCamera,
+        nativeFitScale(p, nativeRecut, fitScaleShared),
+        viewport,
+        jobLayer,
+      );
+    }, viewport);
+  });
   return (
     <>
       <Fill color={palette.bg} />
@@ -3327,6 +3246,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           />
         );
       })}
+      <Picture picture={jobsPicture} />
     </>
   );
 });
@@ -3963,6 +3883,28 @@ function paint(color: string): SkPaint {
  * no stage mask to compute a percentage from, and a ring that guessed would be
  * a number that looks like knowledge.
  */
+/** A job's mark at map and shelf size, around the origin; see `JobMark`. */
+function recordJobMark(
+  pending: JobPresentation,
+  palette: Palette,
+  monoFont: NonNullable<ReturnType<typeof useMorphFont>>,
+): JobMark {
+  const paints = createPaints(palette);
+  const record = (row: boolean) => {
+    const recorder = Skia.PictureRecorder();
+    const canvas = recorder.beginRecording(Skia.XYWHRect(-256, -128, 512, 256));
+    drawJobMark(
+      canvas,
+      { paints, fonts: { mono: monoFont } },
+      { x: 0, y: 0 },
+      row ? pending : { ...pending, caption: null },
+      { dot: row ? 0 : 1, row: row ? 1 : 0, song: 0, grain: 0 },
+    );
+    return recorder.finishRecordingAsPicture();
+  };
+  return { dot: record(false), row: record(true) };
+}
+
 function drawJobMark(
   canvas: SkCanvas,
   request: { paints: LensPaints; fonts: Pick<LensFonts, 'mono'> },
