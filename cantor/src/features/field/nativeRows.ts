@@ -32,6 +32,11 @@ export type NativeRowModel = Readonly<{
 export type NativeRowFlight = Readonly<{
   flight: PlacementFlight;
   row: NativeRowModel;
+  /**
+   * The title's alpha when its ink last changed, reached by the arrival
+   * clock; absent when nothing is arriving. See `arriveInk`.
+   */
+  titleFrom?: number;
 }>;
 
 export function createRowPaints(
@@ -70,11 +75,13 @@ export function drawNativeRows(
    * `useNativeCameraMotion`. Skipped here so one owner draws it.
    */
   yieldKey: string | null = null,
+  /** The ink arrival's clock; see `arriveInk`. */
+  arrival = 1,
 ) {
   'worklet';
   if (written <= 0 || fieldAlpha <= 0) return;
   const bloom = 1 - gatherFraction(camera.scale, fitScale);
-  for (const { flight, row } of rows) {
+  for (const { flight, row, titleFrom } of rows) {
     if (yieldKey !== null && flight.targetPlacementKey === yieldKey) continue;
     const owner =
       flightOwnerAlpha(
@@ -111,17 +118,21 @@ export function drawNativeRows(
       continue;
     canvas.save();
     canvas.translate(x, y);
+    const titleAlpha =
+      titleFrom === undefined
+        ? row.titleAlpha
+        : titleFrom + (row.titleAlpha - titleFrom) * arrival;
     const count = row.titleTrace?.length ?? 0;
     const phase = writePhase(writeSubAlpha(written, count - 1, count));
     if (row.titleTrace !== null && phase.borderAlpha > 0) {
       const path = traceTitlePath(row.titleTrace, written);
-      paints.trace.setAlphaf(owner * row.titleAlpha * phase.borderAlpha);
+      paints.trace.setAlphaf(owner * titleAlpha * phase.borderAlpha);
       canvas.drawPath(path, paints.trace);
       path.dispose();
     }
     paints.title.setAlphaf(
       owner *
-        row.titleAlpha *
+        titleAlpha *
         (row.titleTrace === null ? written : phase.fillAlpha),
     );
     canvas.drawText(

@@ -69,14 +69,16 @@ const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
 function recordingCanvas() {
   const scales: number[] = [];
   const circles: Array<{ x: number; r: number }> = [];
+  const alphas: number[] = [];
   let paths = 0;
   const canvas = {
     save: () => {},
     restore: () => {},
     translate: () => {},
     scale: (sx: number) => scales.push(sx),
-    drawPath: () => {
+    drawPath: (_path: unknown, paint: { getAlphaf: () => number }) => {
       paths += 1;
+      alphas.push(paint.getAlphaf());
     },
     drawCircle: (x: number, _y: number, r: number) => circles.push({ x, r }),
   };
@@ -84,6 +86,7 @@ function recordingCanvas() {
     canvas: canvas as unknown as SkCanvas,
     scales,
     circles,
+    alphas,
     paths: () => paths,
   };
 }
@@ -132,6 +135,7 @@ function drawAt(
   camera: Camera,
   lens = 0,
   heard = -1,
+  arrival = 1,
 ): ReturnType<typeof recordingCanvas> {
   const target = recordingCanvas();
   drawFieldFaces(
@@ -147,6 +151,7 @@ function drawAt(
     false,
     1,
     heard,
+    arrival,
   );
   return target;
 }
@@ -230,6 +235,31 @@ describe('the field drawn as one pass', () => {
     const walkedOnly: Camera = { ...atSong, scale: layout.fitScale * 6 };
     expect(drawAt(asMark, walkedOnly).scales).toEqual(markScales);
     expect(markScales[0]).toBeLessThan(playerFaceScale(viewport.width));
+  });
+
+  /**
+   * A song found on the phone fills in rather than snapping filled: the fill
+   * rises and the outline firms with the arrival's clock, from exactly what
+   * the frame before drew.
+   */
+  it('fills a face in on the ink arrival clock', () => {
+    const [outline] = facesAt(null, null);
+    expect(outline.fill).toBe(0);
+    const arriving: FaceFlight[] = [
+      { ...outline, fill: 1, weight: 1, fromFill: 0, fromWeight: outline.weight },
+    ];
+    // Born: the outline, and nothing else.
+    expect(drawAt(arriving, atField, 0, -1, 0).alphas).toEqual(
+      drawAt([outline], atField).alphas,
+    );
+    // Halfway: a half fill under an outline halfway firmer.
+    const half = drawAt(arriving, atField, 0, -1, 0.5).alphas;
+    const halfWeight = (outline.weight + 1) / 2;
+    expect(half).toHaveLength(2);
+    expect(half[0]).toBeCloseTo(halfWeight * 0.5, 2);
+    expect(half[1]).toBeCloseTo(halfWeight, 2);
+    // Landed: as a downloaded song is drawn.
+    expect(drawAt(arriving, atField, 0, -1, 1).alphas).toEqual([1, 1]);
   });
 
   /** The ring belongs to the song making sound, and to no other. */

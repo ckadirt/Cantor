@@ -5,6 +5,13 @@ import {
 } from './nativeLabels';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 import {
+  ARRIVAL_KNOBS,
+  arriveInk,
+  mix,
+  songInkOf,
+  type InkArrival,
+} from './arrivals';
+import {
   createRowPaints,
   drawNativeRows,
   type NativeRowModel,
@@ -73,8 +80,6 @@ import {
   type Viewport,
 } from '../../field';
 import {
-  FACE_FILL_ALPHA,
-  FACE_STROKE_ALPHA,
   NAME_LENS_KNOBS,
   arrivingFraction,
   availabilityAction,
@@ -94,6 +99,7 @@ import {
   sealSidePx,
   sealSound,
   textWidth,
+  TITLE_ALPHA,
   type LensFonts,
   type SealSound,
   type LensPaints,
@@ -1811,8 +1817,15 @@ export type FaceFlight = Readonly<{
   targetAlpha: number;
   /** The availability alpha this face is drawn at; see `FACE_STROKE_ALPHA`. */
   weight: number;
-  /** A downloaded song is filled rather than outlined. */
-  filled: boolean;
+  /** How filled it is: a downloaded song is filled rather than outlined. */
+  fill: number;
+  /**
+   * The same two where the face stood when its ink last changed, reached by
+   * the arrival clock; equal to the targets when nothing is arriving. See
+   * `arriveInk`.
+   */
+  fromWeight: number;
+  fromFill: number;
   /** The one placement the camera has arrived at, which grows into the player. */
   isPlayer: boolean;
   /** The one song making sound, which wears the ring. */
@@ -1864,13 +1877,15 @@ export function faceFlightsOf(
   focusKey: string | null,
   playingKey: string | null,
   analyses?: ReadonlyMap<string, SongAnalysis>,
+  ink?: InkArrival,
 ): readonly FaceFlight[] {
   const result: FaceFlight[] = [];
   for (const flight of flights) {
     const presentation = presentations.get(flight.entityKey);
     if (presentation === undefined) continue;
     const song = presentation.song;
-    const availability = availabilityOf(presentation.localAudio.state);
+    const to = ink?.to.get(flight.entityKey) ?? songInkOf(presentation);
+    const from = ink?.from.get(flight.entityKey) ?? to;
     const recipe = {
       seed: song.seed,
       id: presentation.entity.entityId,
@@ -1896,8 +1911,10 @@ export function faceFlightsOf(
       ownership: flight.ownership,
       fromAlpha: flight.fromAlpha,
       targetAlpha: flight.targetAlpha,
-      weight: FACE_STROKE_ALPHA[availability],
-      filled: FACE_FILL_ALPHA[availability] > 0,
+      weight: to.stroke,
+      fill: to.fill,
+      fromWeight: from.stroke,
+      fromFill: from.fill,
       // The same two questions `NativePlacementFlight` asks, asked here so the
       // gate travels with the row rather than being chosen beside it. A pose
       // shared across the field is how every mark once grew into the player.
@@ -1988,7 +2005,8 @@ function drawSealPlayer(
   side: number,
   opacity: number,
   weight: number,
-  filled: boolean,
+  /** 1 filled, 0 outlined, and in between while a download lands. */
+  fill: number,
   arrived: number,
   soundProgress: number,
   heard: number,
@@ -2082,11 +2100,12 @@ function drawSealPlayer(
       dots.addCircle(at(k, 0), at(k, 1), identityRadius);
     }
     const path = dots.detach();
-    if (filled) {
-      paints.fill.setAlphaf(opacity * weight);
+    if (fill > 0) {
+      paints.fill.setAlphaf(opacity * weight * fill);
       canvas.drawPath(path, paints.fill);
-    } else {
-      paints.stroke.setAlphaf(opacity * weight);
+    }
+    if (fill < 1) {
+      paints.stroke.setAlphaf(opacity * weight * (1 - fill));
       paints.stroke.setStrokeWidth(FIELD_CANVAS_KNOBS.FACE_STROKE_PX);
       canvas.drawPath(path, paints.stroke);
     }
@@ -2115,8 +2134,11 @@ function drawSealPlayer(
       punch = (sound.punch[k] ?? 0) * s;
       width = (sound.width[k] ?? 0) * s;
     }
-    // Identity: a filled dot, or a hairline ring for a song not kept here.
-    const identityStroke = filled ? radius : FIELD_CANVAS_KNOBS.FACE_STROKE_PX;
+    // Identity: a filled dot, or a hairline ring for a song not kept here —
+    // and a ring thickening into a dot while a download lands.
+    const identityStroke =
+      FIELD_CANVAS_KNOBS.FACE_STROKE_PX +
+      (radius - FIELD_CANVAS_KNOBS.FACE_STROKE_PX) * fill;
     const soundStroke = radius * (1 - knobs.PUNCH_HOLLOW * punch);
     const stroke = identityStroke + (soundStroke - identityStroke) * s;
     const outer = Math.max(0.01, radius * (1 - knobs.WIDTH_SHRINK * width));
@@ -2182,6 +2204,8 @@ export function drawFieldFaces(
   reducedMotion = false,
   soundProgress = 1,
   heard = -1,
+  /** The ink arrival's clock; see `arriveInk`. */
+  arrival = 1,
 ): void {
   'worklet';
   /*
@@ -2280,18 +2304,19 @@ export function drawFieldFaces(
 
     canvas.save();
     canvas.translate(x + pose.x, y + pose.y);
+    const weight = mix(face.fromWeight, face.weight, arrival);
+    const fill = mix(face.fromFill, face.fill, arrival);
     const faceLine =
-      face.weight +
-      (NAME_LENS_KNOBS.SONG_FACE_ALPHA - face.weight) * shapeArrived;
+      weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * shapeArrived;
     const seal = face.seal;
     if (seal !== undefined && !reducedMotion && lens > 0) {
       // The player morphs rather than trading places: see `drawSealPlayer`.
       const formed = smootherstep(lens);
-      if (face.filled && shapeArrived < 1) {
+      if (fill > 0 && shapeArrived < 1) {
         canvas.save();
         canvas.scale(pose.scale, pose.scale);
         paints.fill.setAlphaf(
-          opacity * face.weight * (1 - shapeArrived) * (1 - formed),
+          opacity * weight * fill * (1 - shapeArrived) * (1 - formed),
         );
         canvas.drawPath(face.markPath, paints.fill);
         canvas.restore();
@@ -2302,8 +2327,8 @@ export function drawFieldFaces(
         paints,
         SEAL_MARK_SIDE_PX * pose.scale,
         opacity,
-        face.filled ? 1 : face.weight,
-        face.filled,
+        mix(weight, 1, fill),
+        fill,
         shapeArrived,
         soundProgress,
         heard,
@@ -2315,9 +2340,9 @@ export function drawFieldFaces(
       if (faceInk > 0 && faceSize > 0.001) {
         canvas.save();
         canvas.scale(faceSize, faceSize);
-        if (face.filled) {
+        if (fill > 0) {
           paints.fill.setAlphaf(
-            opacity * faceInk * face.weight * (1 - shapeArrived),
+            opacity * faceInk * weight * fill * (1 - shapeArrived),
           );
           canvas.drawPath(face.markPath, paints.fill);
         }
@@ -2339,8 +2364,8 @@ export function drawFieldFaces(
             paints,
             SEAL_MARK_SIDE_PX * sealSize,
             opacity * sealInk,
-            face.filled ? 1 : face.weight,
-            face.filled,
+            mix(weight, 1, fill),
+            fill,
             shapeArrived,
             soundProgress,
             heard,
@@ -2348,11 +2373,12 @@ export function drawFieldFaces(
         } else {
           canvas.save();
           canvas.scale(sealSize, sealSize);
-          if (face.filled) {
-            paints.fill.setAlphaf(opacity * sealInk);
+          if (fill > 0) {
+            paints.fill.setAlphaf(opacity * sealInk * fill);
             canvas.drawPath(face.sealPath, paints.fill);
-          } else {
-            paints.stroke.setAlphaf(opacity * sealInk * face.weight);
+          }
+          if (fill < 1) {
+            paints.stroke.setAlphaf(opacity * sealInk * weight * (1 - fill));
             paints.stroke.setStrokeWidth(
               FIELD_CANVAS_KNOBS.FACE_STROKE_PX / sealSize,
             );
@@ -2958,6 +2984,25 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * opens.
    */
   const soundShown = useRef(new Set<string>());
+  /*
+   * Ink that changes while you look — a file found at launch, a download
+   * landing — arrives on its own clock instead of in one frame. The last
+   * committed arrival is what the next one starts from; see `arriveInk`.
+   */
+  const lastInk = useRef<InkArrival | null>(null);
+  const ink = useMemo(
+    () => arriveInk(lastInk.current, presentations),
+    [presentations],
+  );
+  const inkClock = ink.clock;
+  useEffect(() => {
+    lastInk.current = ink;
+    if (ink.clock === null) return;
+    ink.clock.value = withTiming(1, {
+      duration: ARRIVAL_KNOBS.INK_MS,
+      easing: easeSmoother,
+    });
+  }, [ink]);
   const faces = useMemo(() => {
     const flights = faceFlightsOf(
       recut.flights,
@@ -2965,6 +3010,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       focusKey,
       playingKey,
       analyses,
+      ink,
     );
     const player = flights.find(face => face.isPlayer);
     const playerFlight =
@@ -2989,7 +3035,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       // before the effect below could wind it back. Null is risen.
       soundClock: rising ? bornClock(0) : null,
     };
-  }, [recut, presentations, focusKey, playingKey, analyses]);
+  }, [recut, presentations, focusKey, playingKey, analyses, ink]);
   const faceFlights = faces.flights;
   useEffect(() => {
     if (faces.soundClock === null || faces.playerKey === undefined) return;
@@ -3069,6 +3115,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           reducedMotion,
           smootherstep(faces.soundClock?.value ?? 1) * sealDrawn.value,
           heard.value,
+          inkClock?.value ?? 1,
         ),
       { width: viewport.width, height: viewport.height },
     ),
@@ -3101,6 +3148,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         return [
           {
             flight,
+            titleFrom: ink.from.get(flight.entityKey)?.title,
             row: nativeRowModel(
               presentation,
               {
@@ -3115,7 +3163,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           },
         ];
       }),
-    [recut, presentations, displayFont, monoFont],
+    [recut, presentations, ink, displayFont, monoFont],
   );
   const rowPaints = useMemo(
     () =>
@@ -3178,6 +3226,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         rowFonts,
         rowPaints,
         motion.owned.value > 0 ? playerRow.value : null,
+        inkClock?.value ?? 1,
       );
     }, viewport);
   });
@@ -3245,6 +3294,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             recut={nativeRecut}
             viewport={viewport}
             row={row}
+            titleFrom={ink.from.get(flight.entityKey)?.title ?? row.titleAlpha}
+            inkClock={inkClock}
             song={
               focused
                 ? nativeSongModel(
@@ -3326,12 +3377,7 @@ function nativeRowModel(
       titleLeft,
       NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX,
     ),
-    // A song that is not on the phone says so twice: in the weight of its face
-    // and in the weight of its name.
-    titleAlpha:
-      availability === 'cached' || availability === 'downloaded'
-        ? 1
-        : NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA,
+    titleAlpha: TITLE_ALPHA[availability],
     meta: fitText(
       // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
       // the longest line here and it must not run under the action word.
@@ -3394,6 +3440,8 @@ function NativePlacementFlight({
   recut,
   viewport,
   row,
+  titleFrom,
+  inkClock,
   song,
   songTitleFont,
   songMetaFont,
@@ -3418,6 +3466,9 @@ function NativePlacementFlight({
   recut: NativeRecut;
   viewport: Viewport;
   row: NativeRowModel;
+  /** The name's alpha when its ink last changed; see `arriveInk`. */
+  titleFrom: number;
+  inkClock: SharedValue<number> | null;
   /**
    * The player, for the one song the camera is focused on, and null for every
    * other song in the field.
@@ -3441,7 +3492,10 @@ function NativePlacementFlight({
   color: string;
   mutedColor: string;
 }) {
-  const titleAlpha = row.titleAlpha;
+  const titleTo = row.titleAlpha;
+  const titleAlpha = useDerivedValue(() =>
+    mix(titleFrom, titleTo, inkClock?.value ?? 1),
+  );
   /**
    * Where this song is, this frame.
    *
@@ -3575,7 +3629,7 @@ function NativePlacementFlight({
   const traceOpacity = useDerivedValue(
     () =>
       owner.value *
-      titleAlpha *
+      titleAlpha.value *
       rowTitleInk.value *
       writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
         .borderAlpha,
@@ -3583,14 +3637,14 @@ function NativePlacementFlight({
   const titleOpacity = useDerivedValue(
     () =>
       owner.value *
-      titleAlpha *
+      titleAlpha.value *
       rowTitleInk.value *
       writePhase(writeSubAlpha(written.value, traceCount - 1, traceCount))
         .fillAlpha,
   );
   /** The pre-write behaviour, kept for where an outline cannot be had. */
   const rowTitleFade = useDerivedValue(
-    () => owner.value * titleAlpha * rowTitleInk.value * written.value,
+    () => owner.value * titleAlpha.value * rowTitleInk.value * written.value,
   );
   /**
    * The row's second voice, which arrives with the name rather than before it.
