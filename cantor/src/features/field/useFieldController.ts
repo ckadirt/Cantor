@@ -87,35 +87,46 @@ const REMOTE_AUDIO: LocalAudio = { state: 'remote', bytes: 0 };
 /**
  * Project runtime truth into the tiny read model used by the field. The field
  * deliberately does not own a backend connection or inspect persisted data.
+ *
+ * Given the controller it built last time, it hands back every presentation
+ * whose inputs are the same objects as before, and the whole controller when
+ * nothing changed — so a job's progress tick rebuilds that job and nothing
+ * else, and the field downstream sees the same songs it already drew.
  */
 export function buildFieldController(
   state: FieldRuntimeState,
+  previous: FieldController | null = null,
 ): FieldController {
   const presentations = new Map<string, FieldPresentation>();
   const paired = new Map(
     (state.backends ?? []).map(backend => [backend.nodePubkey, backend]),
   );
   for (const [nodeKey, snapshot] of Object.entries(state.snapshots)) {
-    const backend = paired.get(nodeKey) ?? {
-      nodePubkey: nodeKey,
-      petname: 'Offline engine',
-      relayUrl: '',
-      lastNodeInfo: null,
-    };
+    const backend = paired.get(nodeKey) ??
+      offlineBackend(nodeKey, previous) ?? {
+        nodePubkey: nodeKey,
+        petname: 'Offline engine',
+        relayUrl: '',
+        lastNodeInfo: null,
+      };
 
     for (const song of snapshot?.songs ?? []) {
       if (song.trashed) continue;
       const delivery = deliveryArtifact(song);
       const localAudio =
-        state.localAudio[audioKey(nodeKey, song.id, delivery?.sha256 ?? 'none')] ??
-        REMOTE_AUDIO;
+        state.localAudio[
+          audioKey(nodeKey, song.id, delivery?.sha256 ?? 'none')
+        ] ?? REMOTE_AUDIO;
       // An unpaired node keeps only what you pinned. A cached copy is a loan
       // `enforceCacheBudget` may call in at any download, and with no node to
       // fetch it back from a mark standing on one would simply vanish one day.
       // `forgetBackend` releases them, so this is the field agreeing with what
       // is actually on disk rather than a second policy.
       if (!paired.has(nodeKey) && localAudio.state !== 'pinned') continue;
-      const entity: FieldEntity = {
+      const kept = previous?.presentations.get(
+        `${backend.nodePubkey}:${song.id}`,
+      );
+      const entity = keepEntity(kept?.entity, {
         key: `${backend.nodePubkey}:${song.id}`,
         nodePublicKey: backend.nodePubkey,
         entityId: song.id,
@@ -123,17 +134,24 @@ export function buildFieldController(
         createdAtMs: timestampOrEpoch(song.created_at),
         durationMs: song.duration_ms,
         tags: song.tags,
-      };
+      });
+      const ready = paired.has(nodeKey) && snapshot?.phase === 'ready';
+      if (
+        kept !== undefined &&
+        kept.song === song &&
+        kept.backend === backend &&
+        kept.ready === ready &&
+        kept.localAudio === localAudio
+      ) {
+        presentations.set(entity.key, kept);
+        continue;
+      }
       presentations.set(entity.key, {
         entity,
         song,
         backend,
-        ready: paired.has(nodeKey) && snapshot?.phase === 'ready',
-        nodeLabels: [
-          backend.petname,
-          backend.lastNodeInfo?.name ?? '',
-          backend.nodePubkey,
-        ].filter(Boolean),
+        ready,
+        nodeLabels: nodeLabelsOf(backend),
         delivery,
         localAudio,
       });
@@ -149,7 +167,8 @@ export function buildFieldController(
       const key = `${backend.nodePubkey}:${job.id}`;
       // Once the song exists it owns the placement; the job stops drawing.
       if (presentations.has(key)) continue;
-      const entity: FieldEntity = {
+      const kept = previous?.jobs.get(key);
+      const entity = keepEntity(kept?.entity, {
         key,
         nodePublicKey: backend.nodePubkey,
         entityId: job.id,
@@ -158,38 +177,127 @@ export function buildFieldController(
         // A job has no length until it becomes a song; by duration it sorts
         // to the head, which is where a thing being made belongs anyway.
         durationMs: 0,
-        tags: [],
-      };
+        tags: NO_TAGS,
+      });
+      const caption =
+        job.caption ?? state.outbox[key]?.generation.caption ?? null;
+      const request = state.outbox[key]?.generation ?? null;
+      if (
+        kept !== undefined &&
+        kept.job === job &&
+        kept.backend === backend &&
+        kept.caption === caption &&
+        kept.request === request
+      ) {
+        jobs.set(key, kept);
+        continue;
+      }
       jobs.set(key, {
         entity,
         job,
         backend,
-        nodeLabels: [
-          backend.petname,
-          backend.lastNodeInfo?.name ?? '',
-          backend.nodePubkey,
-        ].filter(Boolean),
-        caption:
-          job.caption ?? state.outbox[key]?.generation.caption ?? null,
-        request: state.outbox[key]?.generation ?? null,
+        nodeLabels: nodeLabelsOf(backend),
+        caption,
+        request,
         declaredStages:
           backend.lastNodeInfo?.models?.find(
             model => model.selector === job.model,
-          )?.stages ?? [],
+          )?.stages ?? NO_STAGES,
       });
     }
   }
 
+  if (
+    previous !== null &&
+    sameEntries(previous.presentations, presentations) &&
+    sameEntries(previous.jobs, jobs)
+  ) {
+    return previous;
+  }
   const ordered = [...presentations.values(), ...jobs.values()].sort(
     (left, right) =>
       right.entity.createdAtMs - left.entity.createdAtMs ||
       left.entity.key.localeCompare(right.entity.key),
   );
+  const entities = ordered.map(presentation => presentation.entity);
   return {
-    entities: ordered.map(presentation => presentation.entity),
-    presentations,
-    jobs,
+    // Only which entities exist, and in what order, reaches the layout: a
+    // re-projected song with the same identity must not re-cut the field.
+    entities:
+      previous !== null && sameMembers(previous.entities, entities)
+        ? previous.entities
+        : entities,
+    presentations: sameEntries(previous?.presentations, presentations)
+      ? previous!.presentations
+      : presentations,
+    jobs: sameEntries(previous?.jobs, jobs) ? previous!.jobs : jobs,
   };
+}
+
+const NO_STAGES: readonly GenerationStage[] = [];
+const NO_TAGS: readonly string[] = [];
+
+/** The entity drawn last time, if nothing the layout reads has changed. */
+function keepEntity(
+  kept: FieldEntity | undefined,
+  next: FieldEntity,
+): FieldEntity {
+  if (
+    kept !== undefined &&
+    kept.key === next.key &&
+    kept.kind === next.kind &&
+    kept.createdAtMs === next.createdAtMs &&
+    kept.durationMs === next.durationMs &&
+    kept.tags.length === next.tags.length &&
+    kept.tags.every((tag, index) => tag === next.tags[index])
+  ) {
+    return kept;
+  }
+  return next;
+}
+
+function nodeLabelsOf(backend: BackendRecord): readonly string[] {
+  return [
+    backend.petname,
+    backend.lastNodeInfo?.name ?? '',
+    backend.nodePubkey,
+  ].filter(Boolean);
+}
+
+/** The stand-in record an unpaired node's songs were last drawn with. */
+function offlineBackend(
+  nodeKey: string,
+  previous: FieldController | null,
+): BackendRecord | undefined {
+  if (previous === null) return undefined;
+  for (const presentation of previous.presentations.values()) {
+    if (
+      presentation.entity.nodePublicKey === nodeKey &&
+      presentation.backend.relayUrl === ''
+    ) {
+      return presentation.backend;
+    }
+  }
+  return undefined;
+}
+
+function sameEntries<V>(
+  left: ReadonlyMap<string, V> | undefined,
+  right: ReadonlyMap<string, V>,
+): boolean {
+  if (left === undefined || left.size !== right.size) return false;
+  for (const [key, value] of right) {
+    if (left.get(key) !== value) return false;
+  }
+  return true;
+}
+
+/** Same entity objects in the same order: the same thing to lay out. */
+function sameMembers<T>(left: readonly T[], right: readonly T[]): boolean {
+  return (
+    left.length === right.length &&
+    left.every((member, index) => member === right[index])
+  );
 }
 
 function timestampOrEpoch(value: string): number {

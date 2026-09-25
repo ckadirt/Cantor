@@ -306,10 +306,20 @@ export function FieldScreen({ identity }: Props) {
     () => new Map(),
   );
   const analysisCache = useRef(new AnalysisCache());
+  // The last projection, so an unchanged song keeps the presentation the
+  // canvas already drew from.
+  const lastController = useRef<ReturnType<typeof buildFieldController> | null>(
+    null,
+  );
   const controller = useMemo(
-    () => buildFieldController({ backends, snapshots, localAudio, outbox }),
+    () =>
+      buildFieldController(
+        { backends, snapshots, localAudio, outbox },
+        lastController.current,
+      ),
     [backends, localAudio, outbox, snapshots],
   );
+  lastController.current = controller;
   /**
    * What the phone thinks the time is, for labels that read relatively.
    *
@@ -1011,7 +1021,13 @@ export function FieldScreen({ identity }: Props) {
         stepFrom(shelf, layout, from, -1, playable) !== null,
       next: stepFrom(shelf, layout, from, 1, playable) !== null,
     };
-  }, [controller.presentations, focused, focusedIsCurrent, layout, playerPlacement]);
+  }, [
+    controller.presentations,
+    focused,
+    focusedIsCurrent,
+    layout,
+    playerPlacement,
+  ]);
   /**
    * `[previous, next, mode]`; see `TransportControls`. One clock for all
    * three, on the transport's own morph time, so a press on the mode retargets
@@ -1880,7 +1896,9 @@ export function FieldScreen({ identity }: Props) {
           openMs={JOB_SHEET_KNOBS.BLIND_MS}
           destination={jobDestination}
           pull={jobPull}
-          title={(pendingJob.caption ?? jobStateLabel(pendingJob.job)).toUpperCase()}
+          title={(
+            pendingJob.caption ?? jobStateLabel(pendingJob.job)
+          ).toUpperCase()}
           viewportHeight={viewport.height}
         >
           <JobSheet
