@@ -99,7 +99,6 @@ function recutBetween(
     toCamera: cameraFor(to),
     fromGroups: from.groups,
     animate,
-    nativeDriven: true,
   };
 }
 

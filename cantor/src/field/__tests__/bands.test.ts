@@ -4,65 +4,13 @@ import {
   REPRESENTATION_WINDOWS,
   SONG_ARRIVAL,
   faceArrival,
-  isNativeDrawnDistance,
   nameArrival,
-  representationAlphas,
   songNameArrival,
   songShapeArrival,
-  GRAIN_KNOBS,
 } from '..';
 import { writePhase } from '../../motion/text';
 
 const fit = 0.42;
-
-describe('the natively drawn distance', () => {
-  /**
-   * The whole reason this predicate exists. Two renderers draw the field —
-   * `NativeFieldContent`, which knows a face at mark size, a row and the
-   * player, and the recorded picture, which knows all four representations —
-   * and swapping between them may only happen where they would draw the same
-   * thing.
-   */
-  it('covers every distance that is marks, rows and the player', () => {
-    for (const ratio of [0.4, 1.0, 1.19, 2, 3.6, 8, 11.9, 27, 90, 177]) {
-      expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
-      expect(representationAlphas(fit * ratio, fit).grain).toBe(0);
-    }
-  });
-
-  /**
-   * And it no longer stops at the grain, because nothing stops there any more.
-   *
-   * `drawSongDetail` draws the ring's ticks and the grain's columns as one
-   * measurement in two poses, so the last distance the picture owned alone is
-   * the native path's too. What used to be a hand-over between two renderers
-   * is a crossing inside one.
-   */
-  it('covers the grain as well, which it once handed away', () => {
-    // Asked at a fit of exactly 1, because the boundary itself is the claim:
-    // `fit * ratio / fit` is not `ratio` in binary floating point, so at any
-    // other fit this reads a scale a hair either side of the edge.
-    expect(isNativeDrawnDistance(REPRESENTATION_WINDOWS.grain[0], 1)).toBe(true);
-    expect(isNativeDrawnDistance(GRAIN_KNOBS.ENTRY_RATIO, 1)).toBe(true);
-    // Far past it, where the grain is all there is.
-    expect(isNativeDrawnDistance(100_000, 1)).toBe(true);
-    expect(isNativeDrawnDistance(REPRESENTATION_WINDOWS.song[0], 1)).toBe(true);
-    const atRowEntry = representationAlphas(
-      fit * REPRESENTATION_WINDOWS.row[0],
-      fit,
-    );
-    expect(atRowEntry.song).toBe(0);
-    expect(isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.row[0], fit)).toBe(
-      true,
-    );
-  });
-
-  it('answers false rather than throwing before a scale exists', () => {
-    expect(isNativeDrawnDistance(1, 0)).toBe(false);
-    expect(isNativeDrawnDistance(0, 1)).toBe(false);
-    expect(isNativeDrawnDistance(Number.NaN, 1)).toBe(false);
-  });
-});
 
 /**
  * A mark becoming a row: the face steps aside, then the name is written.

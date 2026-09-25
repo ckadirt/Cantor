@@ -634,15 +634,6 @@ export function FieldScreen({ identity }: Props) {
     onRowAction,
     onHoldPlacement,
     onClaimTap,
-    // Songs and jobs both draw on the UI thread, so a re-cut of either plays
-    // there; only a placement the controller cannot describe keeps it in React.
-    nativeRelayout:
-      layout !== null &&
-      layout.placements.every(
-        placement =>
-          controller.presentations.has(placement.entityKey) ||
-          controller.jobs.has(placement.entityKey),
-      ),
   });
   // The overlay button drops any gesture in flight before the sheet arrives.
   const { cancelGesture } = fieldCamera;

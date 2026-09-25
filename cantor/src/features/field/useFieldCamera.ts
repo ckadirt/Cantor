@@ -23,7 +23,6 @@ import {
   hitTestRowAction,
   interpolateCamera,
   interpolatePositiveScale,
-  isNativeDrawnDistance,
   isShelfDistance,
   isSongDistance,
   LEVEL_SCALE_RATIOS,
@@ -143,8 +142,6 @@ type Options = {
    * no inside to descend into. Returns whether it was consumed.
    */
   onClaimTap?: (placement: Placement) => boolean;
-  /** The active canvas can play an L0 re-cut without React frame commits. */
-  nativeRelayout?: boolean;
 };
 
 type CameraState = {
@@ -235,7 +232,6 @@ export type FieldRecutModel = Readonly<{
   toCamera: Camera;
   fromGroups: readonly Group[];
   animate: boolean;
-  nativeDriven: boolean;
 }>;
 
 type RecutClock = Readonly<{
@@ -255,7 +251,6 @@ export function useFieldCamera({
   onRowAction,
   onHoldPlacement,
   onClaimTap,
-  nativeRelayout = false,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
@@ -745,14 +740,6 @@ export function useFieldCamera({
         groupsChanged(fromGroups, layout.groups) ||
         camerasDiffer(fromCamera, toCamera) ||
         fromFitScale !== layout.fitScale);
-    // A re-cut marked native stops publishing to React: the canvas plays it
-    // from its own clock and the shared camera. Every placement the app lays
-    // out is a song or a job, both drawn natively, so the React branch below
-    // runs only for callers that do not opt in (tests); it goes in phase 4.
-    const nativeDriven =
-      nativeRelayout &&
-      isNativeDrawnDistance(fromCamera.scale, fromFitScale) &&
-      isNativeDrawnDistance(toCamera.scale, layout.fitScale);
     recutModel.current = {
       generation,
       layout,
@@ -763,7 +750,6 @@ export function useFieldCamera({
       toCamera,
       fromGroups,
       animate,
-      nativeDriven,
     };
     if (stranded) strandedFocus.current = generation;
   }
@@ -813,7 +799,6 @@ export function useFieldCamera({
   // which anything upstream may re-render. The flight itself is the window.
   const nativeFlightLive =
     activeRecut !== null &&
-    activeRecut.nativeDriven &&
     activeRecut.animate &&
     (recutBorn || nativeFlight.current === activeRecut.generation);
   if (!nativeFlightLive) {
@@ -835,7 +820,7 @@ export function useFieldCamera({
     }
     const startedAt = Date.now();
     fitScaleShared.value = model.fromFitScale;
-    if (model.nativeDriven) nativeFlight.current = generation;
+    nativeFlight.current = generation;
     setRecutClock({ generation, linear: 0 });
     const tick = () => {
       if (recutModel.current?.generation !== generation) return;
@@ -854,27 +839,22 @@ export function useFieldCamera({
         model.toCamera,
         progress,
       );
+      // React is not told: the canvas plays the re-cut from its own clock
+      // and these two shared values, and React hears the landing.
       fitScaleShared.value = nextFitScale;
-      if (model.nativeDriven) {
-        lastVisualPlacements.current = model.flights.map(flight =>
-          placementFlightAt(flight, eased),
-        );
-        lastRenderFitScale.current = nextFitScale;
-        cameraRef.current = nextCamera;
-        cameraShared.value = nextCamera;
-      } else {
-        setRecutClock({ generation, linear: progress });
-        commitCamera(nextCamera);
-      }
+      lastVisualPlacements.current = model.flights.map(flight =>
+        placementFlightAt(flight, eased),
+      );
+      lastRenderFitScale.current = nextFitScale;
+      cameraRef.current = nextCamera;
+      cameraShared.value = nextCamera;
       if (progress < 1) {
         relayoutFrame.current = requestAnimationFrame(tick);
       } else {
         relayoutFrame.current = null;
-        if (model.nativeDriven) {
-          nativeFlight.current = null;
-          setRecutClock({ generation, linear: 1 });
-          commitCamera(model.toCamera);
-        }
+        nativeFlight.current = null;
+        setRecutClock({ generation, linear: 1 });
+        commitCamera(model.toCamera);
       }
     };
     relayoutFrame.current = requestAnimationFrame(tick);

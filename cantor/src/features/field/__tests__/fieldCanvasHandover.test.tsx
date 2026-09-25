@@ -15,12 +15,9 @@ import React from 'react';
 import { Path, Picture, Skia, Text } from '@shopify/react-native-skia';
 import ReactTestRenderer from 'react-test-renderer';
 import {
-  REPRESENTATION_WINDOWS,
   byDate,
-  isNativeDrawnDistance,
   layoutField,
   planPlacementFlights,
-  representationAlphas,
   type Camera,
   type FieldEntity,
   type FieldLayout,
@@ -222,33 +219,6 @@ describe('field canvas L0 to L1 handover', () => {
     drawRows.mockClear();
   });
 
-  /**
-   * The reason the native renderer had to learn the row, and then the player.
-   *
-   * A recorded picture moves by being scaled, and a row is measured in screen
-   * pixels from end to end — as is every part of the player. So the picture may
-   * only take over once there is nothing left on screen whose size the scale
-   * would falsify, which is where the grain opens: the waveform is drawn from
-   * the viewport rather than from the camera, so it is the one representation a
-   * recording cannot lie about.
-   */
-  it('keeps the picture out of the whole span where rows and the player are drawn', () => {
-    const fit = month.fitScale;
-    for (const ratio of [1.2, 2, 3.6, 11.9]) {
-      const alphas = representationAlphas(fit * ratio, fit);
-      expect(alphas.row + alphas.dot).toBeGreaterThan(0);
-      expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
-    }
-    for (const ratio of [REPRESENTATION_WINDOWS.song[0], 27, 90, 177]) {
-      expect(isNativeDrawnDistance(fit * ratio, fit)).toBe(true);
-    }
-    // And the grain too, now that `drawSongDetail` opens the ring's ticks onto
-    // the grain's own axis. There is no distance left that the picture owns.
-    expect(
-      isNativeDrawnDistance(fit * REPRESENTATION_WINDOWS.grain[0], fit),
-    ).toBe(true);
-  });
-
   it('keeps removed songs on their exit clock without disabling native rows or waves', async () => {
     const remaining = layoutField({ entities: [entities[0]], arrangement: byDate('month'), viewport });
     const before: FieldRecutModel = {
@@ -256,14 +226,14 @@ describe('field canvas L0 to L1 handover', () => {
       flights: planPlacementFlights(month.placements, month.placements, 1),
       fromFitScale: month.fitScale, toFitScale: month.fitScale,
       fromCamera: cameraFor(month), toCamera: cameraFor(month),
-      fromGroups: month.groups, animate: false, nativeDriven: true,
+      fromGroups: month.groups, animate: false,
     };
     const removed: FieldRecutModel = {
       generation: 2, layout: remaining,
       flights: planPlacementFlights(month.placements, remaining.placements, 2),
       fromFitScale: month.fitScale, toFitScale: remaining.fitScale,
       fromCamera: cameraFor(month), toCamera: cameraFor(remaining),
-      fromGroups: month.groups, animate: true, nativeDriven: true,
+      fromGroups: month.groups, animate: true,
     };
     const cameraShared = { value: cameraFor(month) };
     const fitScaleShared = { value: month.fitScale };
@@ -312,7 +282,6 @@ describe('field canvas L0 to L1 handover', () => {
       toCamera: cameraFor(year),
       fromGroups: month.groups,
       animate: true,
-      nativeDriven: true,
     };
     // Deep inside the row band, where the picture used to own the field and
     // where a zoom inflated every title it had baked.
@@ -369,11 +338,9 @@ describe('field canvas L0 to L1 handover', () => {
       toCamera: cameraFor(year),
       fromGroups: month.groups,
       animate: true,
-      nativeDriven: true,
     };
     const held = year.placements[0];
     const atSong = { ...cameraFor(year), scale: year.fitScale * 30 };
-    expect(isNativeDrawnDistance(atSong.scale, year.fitScale)).toBe(true);
     const drawn = await drawnTextAt(recut, atSong, held.key);
     // The player's own words, which no row has. The transport is not among
     // them: it is a silhouette on a shared value, so that pressing it moves
@@ -421,7 +388,6 @@ describe('field canvas L0 to L1 handover', () => {
       toCamera: cameraFor(year),
       fromGroups: month.groups,
       animate: true,
-      nativeDriven: true,
     };
     const held = year.placements[0];
     expect(held.entityKey).not.toBe(held.key);
@@ -449,7 +415,6 @@ describe('field canvas L0 to L1 handover', () => {
       toCamera: cameraFor(year),
       fromGroups: month.groups,
       animate: true,
-      nativeDriven: true,
     };
     const inRowBand = { ...cameraFor(year), scale: year.fitScale * 3 };
     let renderer!: ReactTestRenderer.ReactTestRenderer;
