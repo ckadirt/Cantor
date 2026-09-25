@@ -26,12 +26,10 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
 /**
  * Whether the native renderer knows everything the field shows here.
  *
- * It does, now, at every distance the camera can reach — which is why this
- * answers yes rather than being deleted: the canvas still chooses a path with
- * it, and the camera still asks it whether a re-cut may skip React, and those
- * two must never disagree. If they did, a re-cut would animate on the UI
- * thread while the picture was recorded from React state that is no longer
- * being updated.
+ * It does, at every distance the camera can reach, and the native renderer is
+ * the only one there is. What still asks is the camera, choosing whether a
+ * re-cut may skip React; that choice and its React-driven branch go with the
+ * camera mirror in phase 4 of the field rewrite, and this with them.
  *
  * It used to stop where the grain opened, because `NativeFieldContent` knew
  * three representations — a face at mark size, a row, and the player — and L3
@@ -50,9 +48,7 @@ export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
  * and snaps back. Only the UI thread can redraw a row at the size it is
  * supposed to be on the frame it is supposed to be that size.
  *
- * The picture is not gone: it stands in before the native field is ready.
- * Circle and Seal both use the live native renderer. It is no longer the thing that owns
- * a *distance*.
+ * That is why the recorded picture this stood between is gone altogether.
  */
 export function isNativeDrawnDistance(scale: number, fitScale: number): boolean {
   'worklet';

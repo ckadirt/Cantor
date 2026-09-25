@@ -90,9 +90,10 @@ the camera moves continuously between them:
 - The name is one object across L1 and L2, morphed between the row's 15 px cut
   and the player's 26 px, because a row truncates a long title and the player
   has room for it. Two strings, one interpolation.
-- `NativeFieldContent` owns the canvas for all three, up to where the grain
-  opens (`isNativeDrawnDistance`). Everything is written against the live camera
-  on the UI thread.
+- `NativeFieldContent` owns the canvas for all three and the grain beyond them
+  (`drawSongDetail`), and for generating jobs (`nativeJobs.ts`). It is the only
+  renderer: until the fonts load the canvas is paper. Everything is written
+  against the live camera on the UI thread.
 
 Each crossing is **two beats, not one**: `ROW_ARRIVAL` for L0→L1 and
 `SONG_ARRIVAL` for L1→L2. The shape moves first and the words follow it. Putting

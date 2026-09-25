@@ -186,7 +186,8 @@ contour in time order and the contour becomes the Peano thread, while
 `PlayerRing` widens the circle's arc out to the seal's rim.
 The seal's geometry is pure and Skia-free in `lenses/seal.ts` (masks, Peano
 order, per-dot sound, `sealDotAt`); `lenses/sealLens.ts` builds one cached path
-per song for L0/L1 and draws the picture fallback. The player's seal is drawn a
+per song for L0/L1 (its `draw`, like the other lenses', now runs only in tests;
+the lens contract is phase 3's R6 in `field-rewrite-log.md`). The player's seal is drawn a
 dot at a time by `drawSealPlayer`: mark dots split into their children as
 `songShapeArrival` runs, and the sound rises on a born clock
 (`SEAL_PLAYER_KNOBS.SOUND_MS`) when a measurement lands. `PlayerRing` draws both
@@ -265,11 +266,11 @@ cable is replugged.
   keeps it as the poses on screen, so an interrupted re-cut resumes from where
   the eye left it — and plans the next re-cut's `before` from it. Anything left
   in it after its flight has landed gets re-planned forever. A finished exit
-  that stayed there named a song `controller.presentations` no longer had,
-  which held `nativeField` false for the rest of the session: the field fell
-  back to `recordFieldPicture`, losing the wave morph and seaming every level
-  change, until the app restarted. `stillDrawn` is the shed; keep any new
-  ownership that ends at alpha zero behind it.
+  that stayed there named a song `controller.presentations` no longer had;
+  when the canvas still had a picture fallback, that held the whole field on
+  it until the app restarted. There is one renderer now, which draws such a
+  flight as nothing, but it is still a flight planned for ever. `stillDrawn` is
+  the shed; keep any new ownership that ends at alpha zero behind it.
 
 ## Review checklist
 

@@ -15,7 +15,7 @@ finding, decision, trap and commit.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931` done; see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done; see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | not started |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -75,6 +75,14 @@ doubles every number — never measure on it (see Traps).
 
 ## Findings
 
+- **2026-09-25 — A mid-flight re-cut on the native path retargets shelf
+  labels from the start of the interrupted flight.** `relayoutLinear` stays 0
+  for a native flight until it lands (`useFieldCamera` stops publishing), and
+  `FieldCanvas`'s label plan captures an interrupted flight at
+  `lastLabelLinear` — so a second dial tap mid-re-cut plans the names from
+  their source pose, not from where they were drawn. Faces and rows are
+  unaffected (`lastVisualPlacements` is updated from the tick). Found reading
+  R4; not yet seen on the phone. Fix with the camera events of phase 4.
 - **2026-09-25 — Tried and reverted: a separate playhead canvas (R5a).** Moved
   the ring's hand/arc and the detail ticks to their own transparent
   `<Canvas>` so a playhead step re-records only them. It worked as designed —
@@ -210,9 +218,27 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   morph) and the fallback picture path (R4 deletes it). Verified on the
   Xiaomi (release build, cold launch, burst capture): the downloaded faces
   pass through a half fill under a greying outline on the way to solid.
-- **R4 — One renderer.** Remove the `recordFieldPicture` fallback path and the
-  10-condition `nativeField` switch; jobs join the one canvas as a layer that
-  redraws only when progress moves.
+- **R4 — done (`9690ff0`, `aa3e5ce`). One renderer.** Jobs are a layer of
+  the one canvas (`features/field/nativeJobs.ts`): `FieldCanvas` records each
+  job's mark (`JobMark`, ring for the map and ring + words for the shelf) only
+  when that job's presentation is a new object and publishes the marks in the
+  `jobMarks` shared value, so a progress tick never hands `Canvas` a new
+  element; an outgoing job keeps its mark while its flight is in the air. The
+  transparent job canvas (a TextureView over the field's SurfaceView) is gone,
+  and so is `FieldScreen`'s rule that any job on the field kept re-cuts in
+  React. Then the fallback: `recordFieldPicture`, the record camera and
+  `pictureTransformFor`, and `NativePlayhead`/`PlayerChrome` (drawn only for
+  it) are deleted; the canvas is paper until the fonts load. `FieldCanvas`
+  lost the mirrored `camera` prop with them, so a pan no longer re-renders
+  it. FieldCanvas.tsx 4,399 → 3,325 lines. **Left for phase 4:**
+  `useFieldCamera`'s React-driven re-cut branch (`nativeRelayout`,
+  `nativeDriven`, `isNativeDrawnDistance`) is dead in the app — every
+  placement is a song or a job — but six camera tests drive it; it goes with
+  the camera mirror. **Left for R6:** the JS lens registry (`lensByKey`, each
+  lens's `draw`, `drawRowWords`) now runs only in tests. Verified on the
+  Xiaomi: cold launch (paper → field → faces fill), L0/L1/L2, the failed job
+  at L0 and L1, and a MONTH re-cut with jobs on the field, mid-flight frames
+  showing the job rings travelling with the songs.
 - **R5 — Cached settled layer.** Record the settled field once and replay it
   under the camera transform; re-record only when the set, lens band or
   palette changes.
@@ -267,6 +293,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `aa3e5ce` field: one renderer, no picture fallback
+- `9690ff0` field: jobs are a layer of the one canvas
+- `14c93c0` docs: R3 in the log
 - `82dc931` field: ink that changes on screen arrives on its own clock
 - `5218cf7` field: the player and its row hand over on the UI thread
 - `2c4043b`, `4d99970` docs: R1 in the log
