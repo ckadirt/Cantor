@@ -295,10 +295,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Open questions (for Cesar)
 
-- **Playhead smoothness vs heat at L2 — trying 2 px (2026-09-25).** The hand
-  steps `PLAYHEAD_STEP_PX` physical pixels of the ring per redraw
-  (`FieldScreen.tsx`): 1 px ≈ 18 redraws/s on a 2-minute song ≈ 80% of a core,
-  2 px ≈ 61% (measured), 4 px ≈ 51%. Waiting on Cesar's eye on the phone.
+- None open. (Settled 2026-09-25: the playhead steps 2 px — `PLAYHEAD_STEP_PX`
+  in `FieldScreen.tsx`, 61% of a core at L2 playing against 80 at 1 px —
+  Cesar looked on the phone and it reads clean.)
 
 ## Traps (learned the hard way)
 
