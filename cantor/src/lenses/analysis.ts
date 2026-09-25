@@ -3,7 +3,6 @@ import { LENS_INTERVALS, type Interval } from './cantorIntervals';
 
 /** KNOBS */
 export const ANALYSIS_KNOBS = {
-  MAX_CACHED_SONGS: 64, // enough for a shelf; bounded so a long session cannot grow without limit
   /**
    * Peak over RMS, the crest factor, where punch starts and where it is full.
    *
@@ -115,7 +114,10 @@ export function analyseWindow(
 
   for (let index = 0; index < intervals.length; index += 1) {
     const { start, end } = intervals[index];
-    const from = Math.min(buckets - 1, Math.max(0, Math.floor(start * buckets)));
+    const from = Math.min(
+      buckets - 1,
+      Math.max(0, Math.floor(start * buckets)),
+    );
     const to = Math.min(buckets, Math.max(from + 1, Math.ceil(end * buckets)));
 
     let energy = 0;
@@ -188,34 +190,6 @@ function slicesOf(window: SampleWindow): NonNullable<SongAnalysis['slices']> {
  * Bounded and insertion-ordered: the oldest entry goes when the cache is full,
  * so browsing a large library cannot grow this without limit.
  */
-export class AnalysisCache {
-  private entries = new Map<string, SongAnalysis>();
-
-  get(key: AnalysisKey): SongAnalysis | null {
-    return this.entries.get(analysisCacheKey(key)) ?? null;
-  }
-
-  put(key: AnalysisKey, analysis: SongAnalysis): void {
-    const id = analysisCacheKey(key);
-    // Re-insert so recency is the map's own order.
-    this.entries.delete(id);
-    this.entries.set(id, analysis);
-    while (this.entries.size > ANALYSIS_KNOBS.MAX_CACHED_SONGS) {
-      const oldest = this.entries.keys().next().value;
-      if (oldest === undefined) break;
-      this.entries.delete(oldest);
-    }
-  }
-
-  get size(): number {
-    return this.entries.size;
-  }
-
-  clear(): void {
-    this.entries.clear();
-  }
-}
-
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.min(Math.max(value, 0), 1);

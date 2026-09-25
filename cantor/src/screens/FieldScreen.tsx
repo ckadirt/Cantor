@@ -92,7 +92,6 @@ import type { SongDetail, SongHeader } from '../core/protocol';
 import type { SongPatch } from '../../../protocol/SongPatch';
 import type { AppIdentity } from '../identity/derive';
 import {
-  AnalysisCache,
   DEFAULT_LENS_KEY,
   analyseWindow,
   arrivingFraction,
@@ -100,8 +99,11 @@ import {
   availabilityOf,
   formatBytes,
   type AvailabilityAction,
-  type SongAnalysis,
 } from '../lenses';
+import { AnalysisStore, type AnalysisRef } from '../lenses/analysisStore';
+import { createAsyncStorage } from '@react-native-async-storage/async-storage';
+import type { ArtifactView } from '../../../protocol/ArtifactView';
+import { useStore } from '../core/useStore';
 import {
   DEFAULT_AUDIO_CACHE_BYTES,
   loadAudioBudget,
@@ -148,6 +150,34 @@ const PROGRESS_SAMPLE_MS = 160;
  * between samples, longer and it lags the number it is drawing.
  */
 const ARRIVING_GLIDE_MS = 100;
+
+/** Where song measurements are kept, apart from every other stored key. */
+const ANALYSIS_DATABASE = 'cantor-analysis';
+
+type AnalysisSource = Readonly<{ song: SongHeader; artifact: ArtifactView }>;
+
+/** How to measure a song, when its audio is on the phone to measure. */
+function analysisRefOf(
+  presentation: FieldPresentation,
+): AnalysisRef<AnalysisSource> | null {
+  const artifact = presentation.delivery;
+  const state = presentation.localAudio.state;
+  if (artifact === undefined || (state !== 'cached' && state !== 'pinned')) {
+    return null;
+  }
+  return {
+    entityKey: presentation.entity.key,
+    nodePublicKey: presentation.entity.nodePublicKey,
+    songId: presentation.entity.entityId,
+    artifactDigest: artifact.sha256,
+    resolution: ANALYSIS_BUCKETS,
+    source: { song: presentation.song, artifact },
+  };
+}
+
+function everything<T>(state: T): T {
+  return state;
+}
 
 /** The post-onboarding surface: one field, no parallel console navigation. */
 export function FieldScreen({ identity }: Props) {
@@ -302,10 +332,36 @@ export function FieldScreen({ identity }: Props) {
   /** Rows whose audio command is in flight, so a second tap cannot double it. */
   const audioBusy = useRef(new Set<string>());
   const [audioError, setAudioError] = useState<string | null>(null);
-  const [analyses, setAnalyses] = useState<ReadonlyMap<string, SongAnalysis>>(
-    () => new Map(),
+  /**
+   * Every song's measurement: read back from disk, or decoded one at a time.
+   * See `AnalysisStore`.
+   */
+  const analysisStore = useMemo(
+    () =>
+      new AnalysisStore<AnalysisSource>(async ref => {
+        const { song, artifact } = ref.source;
+        const localPath = await commands.audioPath(
+          ref.nodePublicKey,
+          song,
+          artifact,
+        );
+        const window = await player.samples({
+          ref: {
+            nodeKey: ref.nodePublicKey,
+            songId: ref.songId,
+            digest: artifact.sha256,
+          },
+          localPath,
+          startSeconds: 0,
+          endSeconds: song.duration_ms / 1000,
+          buckets: ANALYSIS_BUCKETS,
+        });
+        return analyseWindow(window);
+      }, createAsyncStorage(ANALYSIS_DATABASE)),
+    [commands, player],
   );
-  const analysisCache = useRef(new AnalysisCache());
+  useEffect(() => () => analysisStore.dispose(), [analysisStore]);
+  const analyses = useStore(analysisStore.store, everything);
   // The last projection, so an unchanged song keeps the presentation the
   // canvas already drew from.
   const lastController = useRef<ReturnType<typeof buildFieldController> | null>(
@@ -1231,72 +1287,17 @@ export function FieldScreen({ identity }: Props) {
   ]);
 
   /**
-   * Measure the focused song, once its audio is already on the phone.
+   * Measure the focused song first, whenever its audio is on the phone.
    *
-   * Deliberately narrow: decoding a song costs tens of megabytes, so this runs
-   * for the song being looked at rather than for every cached song in the
-   * field. Everything else draws the neutral skeleton, and nothing is ever
-   * downloaded in order to decorate a mark.
+   * Nothing is ever downloaded in order to decorate a mark: a song whose
+   * audio is not here draws the neutral skeleton. The store reads a measurement
+   * back from disk when one was ever taken, so this decodes a song once per
+   * install rather than once per visit.
    */
   useEffect(() => {
-    if (focused === null || focused.delivery === undefined) return;
-    const onPhone =
-      focused.localAudio.state === 'cached' ||
-      focused.localAudio.state === 'pinned';
-    if (!onPhone) return;
-
-    const key = {
-      nodePublicKey: focused.entity.nodePublicKey,
-      songId: focused.entity.entityId,
-      artifactDigest: focused.delivery.sha256,
-      resolution: ANALYSIS_BUCKETS,
-    };
-    const cached = analysisCache.current.get(key);
-    const entityKey = focused.entity.key;
-    if (cached !== null) {
-      setAnalyses(current =>
-        current.get(entityKey) === cached
-          ? current
-          : new Map(current).set(entityKey, cached),
-      );
-      return;
-    }
-
-    let active = true;
-    const artifact = focused.delivery;
-    void (async () => {
-      try {
-        const path = await commands.audioPath(
-          focused.entity.nodePublicKey,
-          focused.song,
-          artifact,
-        );
-        const window = await player.samples({
-          ref: {
-            nodeKey: focused.entity.nodePublicKey,
-            songId: focused.entity.entityId,
-            digest: artifact.sha256,
-          },
-          localPath: path,
-          startSeconds: 0,
-          endSeconds: focused.song.duration_ms / 1000,
-          buckets: ANALYSIS_BUCKETS,
-        });
-        if (!active) return;
-        const analysis = analyseWindow(window);
-        analysisCache.current.put(key, analysis);
-        setAnalyses(current => new Map(current).set(entityKey, analysis));
-      } catch (error) {
-        // A song we cannot measure keeps its skeleton — drawing is not worth an
-        // error surface of its own. It is still worth saying why in the log,
-        // because a silent fallback and a broken decoder look identical.
-        console.warn('lens analysis failed', readError(error));
-      }
-    })();
-    return () => {
-      active = false;
-    };
-  }, [commands, focused, player]);
+    const ref = focused === null ? null : analysisRefOf(focused);
+    if (ref !== null) analysisStore.request(ref);
+  }, [analysisStore, focused]);
 
   /**
    * Resolve the visible slice of audio while the camera is inside a song.
@@ -1539,6 +1540,27 @@ export function FieldScreen({ identity }: Props) {
     const groupKey = fieldCamera.groupKey;
     return layout.groups.find(candidate => candidate.key === groupKey) ?? null;
   }, [fieldCamera.groupKey, fieldCamera.level, layout]);
+
+  /**
+   * Measure the shelf you are standing in, in the background.
+   *
+   * So the song you open next has its sound already, rather than drawing it
+   * in a few seconds after the descent. Only songs already on the phone, and
+   * only this shelf: leaving it — for another shelf, the map, or a song, where
+   * a decode would compete with playback — drops the rest of the list.
+   */
+  useEffect(() => {
+    const refs =
+      shelfGroup === null
+        ? []
+        : shelfGroup.entityKeys.flatMap(key => {
+            const presentation = controller.presentations.get(key);
+            const ref =
+              presentation === undefined ? null : analysisRefOf(presentation);
+            return ref === null ? [] : [ref];
+          });
+    analysisStore.prefetch(refs);
+  }, [analysisStore, controller.presentations, shelfGroup]);
 
   /**
    * What `DOWNLOAD ALL` would fetch from the shelf you are standing in, and
