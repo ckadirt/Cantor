@@ -65,11 +65,17 @@ export function drawNativeRows(
   fieldAlpha: number,
   fonts: { title: SkFont; mono: SkFont },
   paints: ReturnType<typeof createRowPaints>,
+  /**
+   * The row the player is drawing this frame, if any: see `owned` in
+   * `useNativeCameraMotion`. Skipped here so one owner draws it.
+   */
+  yieldKey: string | null = null,
 ) {
   'worklet';
   if (written <= 0 || fieldAlpha <= 0) return;
   const bloom = 1 - gatherFraction(camera.scale, fitScale);
   for (const { flight, row } of rows) {
+    if (yieldKey !== null && flight.targetPlacementKey === yieldKey) continue;
     const owner =
       flightOwnerAlpha(
         flight.ownership,
