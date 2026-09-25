@@ -120,6 +120,17 @@ export const FACE_FILL_ALPHA: Readonly<Record<Availability, number>> = {
 };
 
 /**
+ * A song that is not on the phone says so twice: in the weight of its face
+ * and in the weight of its name.
+ */
+export const TITLE_ALPHA: Readonly<Record<Availability, number>> = {
+  'not-synced': NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA,
+  arriving: NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA,
+  cached: 1,
+  downloaded: 1,
+};
+
+/**
  * Where a ring goes around a face drawn at `radius`.
  *
  * Exported because the flying face in `FieldCanvas` draws the playing ring from
@@ -231,14 +242,7 @@ export function drawRowWords(
     );
     titleRight = rowRight - width - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
   }
-  // A song that is not on the phone says so twice: in the weight of its face
-  // and in the weight of its name.
-  paints.ink.setAlphaf(
-    alpha *
-      (availability === 'cached' || availability === 'downloaded'
-        ? 1
-        : NAME_LENS_KNOBS.ROW_TITLE_AWAY_ALPHA),
-  );
+  paints.ink.setAlphaf(alpha * TITLE_ALPHA[availability]);
   paints.muted.setAlphaf(alpha);
   paints.faint.setAlphaf(alpha);
   canvas.drawText(
