@@ -15,7 +15,7 @@ finding, decision, trap and commit.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7` done; see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931` done; see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | not started |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -165,7 +165,8 @@ doubles every number — never measure on it (see Traps).
   canvas while React's camera read home; FIT MAP recovered. Same category as
   flicker B (two copies of the camera). **Open** — phase 3/4.
 - **2026-09-24 — Startup pop**: downloaded marks draw as outlines, then snap to
-  filled once local audio is inspected. **Open** — an arrival clock (R3).
+  filled once local audio is inspected. **Fixed** in `82dc931` (R3, ink
+  arrivals).
 - **2026-09-24 — 300 songs in one group** become one tall column clipped by the
   bottom veil. Import must group by something better than import date.
 
@@ -193,8 +194,22 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   distance, where `owned` is 0. Relies on: a pinch cannot pass the shelf seat
   (`MAX_SCALE_RATIO`), so only a tap/step enters a song, and both commit the
   owner before flying.
-- **R3 — Arrivals.** A per-song born clock for data that lands late (audio
-  inspected, analysis, rename), so nothing snaps. Fixes the startup pop.
+- **R3 — done (`82dc931`). Arrivals.** Data that lands late gets its own clock, so nothing
+  snaps. *Ink* is built (`features/field/arrivals.ts`): a song's face stroke,
+  face fill and name alpha come from what the phone holds of it, and when that
+  changes under a song on screen — the file found at launch (the startup pop),
+  a download landing — `arriveInk` bears one clock at 0 in the same commit,
+  with each changed song's *drawn* ink as its `from`. So the first frame of
+  the new targets paints what the last frame did, and an arrival interrupting
+  another starts from where it stood. Same ink → the same object back, so
+  download progress ticks restart nothing. The faces, the row batch and the
+  player's name all read the one clock; `drawSealPlayer`'s `filled` became a
+  number (a ring thickening into a dot). Knob: `ARRIVAL_KNOBS.INK_MS` 600.
+  Analysis already had its clocks (the circle's draw-in restart, the seal's
+  `soundClock`). Not covered: a rename (row text still swaps; wants the name
+  morph) and the fallback picture path (R4 deletes it). Verified on the
+  Xiaomi (release build, cold launch, burst capture): the downloaded faces
+  pass through a half fill under a greying outline on the way to solid.
 - **R4 — One renderer.** Remove the `recordFieldPicture` fallback path and the
   10-condition `nativeField` switch; jobs join the one canvas as a layer that
   redraws only when progress moves.
@@ -252,6 +267,7 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `82dc931` field: ink that changes on screen arrives on its own clock
 - `5218cf7` field: the player and its row hand over on the UI thread
 - `2c4043b`, `4d99970` docs: R1 in the log
 - `ecddc22` field: redraw for the playhead only where it is drawn
