@@ -26,16 +26,17 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 
 | Path | Owns |
 | --- | --- |
-| `src/core/` | `errors`, `text`, `validation`, `protocol` decoders and constants, `storage` primitives, `transport` (the generated manifest constants) |
+| `src/core/` | `errors`, `text`, `validation`, `protocol` decoders and constants, `storage` primitives, `transport` (the generated manifest constants), `store`/`useStore` (the external store every shared state lives in) |
 | `src/security/` | `descriptor` verification, `carrier` and `inner` codecs, `secureTunnel` orchestration, `native` channel factory, `types` |
 | `src/backends/` | `BackendConnection` façade, `relaySocket` lifecycle, `requestRegistry`, `applicationResponses` decoders, `pairing`, `storage` |
-| `src/runtime/` | `useBackendRuntime` — backend records, connection lifecycles, snapshots, cache hydration, persistence, outbox flush, feature commands |
-| `src/features/` | `backends/BackendCard`, `jobs/JobQueue`, `library/LibraryTimeline` and `LibrarySongRow` |
-| `src/screens/` | `MainScreen`: composition, navigation, and wiring only |
+| `src/runtime/` | `BackendRuntime` — a plain object publishing one store: backend records, connection lifecycles, snapshots, cache hydration, persistence, outbox flush, audio inspection, feature commands. `useBackendRuntime` starts it for a component's life |
+| `src/features/` | `field/` (the canvas, camera, controller, overlays), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
+| `src/screens/` | `FieldScreen`: the one screen after onboarding — composition and wiring |
 | `src/library/` | cached library repository, query helpers, and the pure `sync` reducer |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
+| `src/lenses/` | how a song is drawn (circle, seal), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
 
 ## The rules that are not obvious
@@ -51,6 +52,15 @@ other way will leak or resolve twice.
 **Native filesystem state is authoritative for audio.** `LocalAudioStore`
 inspects the device rather than trusting a cached flag. If you add advisory
 state, reconcile it explicitly.
+
+**Shared state lives in a store, and keeps unchanged objects.** `BackendRuntime`
+and `AnalysisStore` publish through `core/store`; a component selects the part it
+reads with `useStore`. Writers return the previous object when nothing changed —
+a snapshot, a song, a presentation — because everything downstream (the layout,
+the canvas's mappers) treats a new object as new work. A song's audio file is
+inspected once when it appears and every file again only after something that
+can evict (a finished download, an unpin); do not go back to inspecting on every
+snapshot.
 
 **Library sync is a pure reducer.** `library/sync/state.ts` returns
 `{state, effects}`. Keep decisions there and side effects at the caller, so
