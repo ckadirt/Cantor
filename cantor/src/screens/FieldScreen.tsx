@@ -8,6 +8,7 @@ import React, {
 import {
   AppState,
   BackHandler,
+  PixelRatio,
   StyleSheet,
   View,
   type LayoutChangeEvent,
@@ -30,10 +31,12 @@ import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
   cancelAnimation,
+  useAnimatedReaction,
   useReducedMotion,
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
+import { playerRadiusPx } from '../features/field/songPose';
 import {
   grainBarsOf,
   type GrainBars,
@@ -134,14 +137,6 @@ type Props = {
  * Cantor intervals both divide it into whole buckets.
  */
 const ANALYSIS_BUCKETS = 729;
-/**
- * How often the field re-reads the visual clock while a song plays.
- *
- * Six times a second: fast enough that the player's ring is never seen standing
- * still, slow enough that a playing song is not re-recording the picture at
- * frame rate for a boundary that moves a fraction of a degree.
- */
-const PROGRESS_SAMPLE_MS = 160;
 /**
  * How long the arriving arc takes to reach each published progress sample.
  *
@@ -784,32 +779,23 @@ export function FieldScreen({ identity }: Props) {
       : null;
   const playingKey = heldKey;
   /**
-   * Where the head is, sampled from the *visual clock*.
+   * How far through the held song, for the recorded picture only.
    *
-   * `PlayerSnapshot.positionSeconds` says of itself that it is "a resync point,
-   * not a per-frame value… goes stale immediately while playing", and this used
-   * to divide by it — so the player's ring stood still through an entire song
-   * and only jumped when a pause published a new snapshot. The clock that
-   * actually moves is the shared value the scrub playhead rides.
-   *
-   * Sampled rather than read per frame: the picture is recorded in a React
-   * memo, so the ring can only advance as often as this screen re-renders.
-   * `PROGRESS_SAMPLE_MS` is that rate, and it is the knob to turn if the ring
-   * ever looks like it is stepping.
+   * The native canvas draws every ring from the visual clock on the UI thread;
+   * this number reaches only `recordFieldPicture`, the fallback that draws a
+   * frame or two while fonts load. It used to be sampled from the visual clock
+   * every 160 ms, which re-rendered this whole screen six times a second for as
+   * long as anything played. Read from the snapshot's resync point instead: a
+   * fallback frame shows where the song was at its last pause or seek.
    */
-  const [visualPosition, setVisualPosition] = useState(0);
-  useEffect(() => {
-    if (heldKey === null) return;
-    const read = () => setVisualPosition(transport.positionSeconds.value);
-    read();
-    if (transport.snapshot.state !== 'playing') return;
-    const timer = setInterval(read, PROGRESS_SAMPLE_MS);
-    return () => clearInterval(timer);
-  }, [heldKey, transport.positionSeconds, transport.snapshot.state]);
   const playingProgress =
     transport.snapshot.durationSeconds > 0
       ? Math.min(
-          Math.max(visualPosition / transport.snapshot.durationSeconds, 0),
+          Math.max(
+            transport.snapshot.positionSeconds /
+              transport.snapshot.durationSeconds,
+            0,
+          ),
           1,
         )
       : null;
@@ -836,6 +822,52 @@ export function FieldScreen({ identity }: Props) {
   const focusedPosition = focusedIsCurrent
     ? transport.positionSeconds
     : idlePosition;
+  /**
+   * The playhead, stepped to one physical pixel of the player's ring.
+   *
+   * The canvas redraws whenever the playhead moves, and the clock moves every
+   * frame — 120 a second on this phone — while the hand it draws travels about
+   * eighteen pixels a second on a two-minute song. Nearly every one of those
+   * redraws painted the same image, and at L2 that held a whole core (99%,
+   * measured). Stepped to a pixel, the value holds still between steps, a
+   * shared value set to what it holds wakes nothing, and the ring redraws only
+   * when the hand has somewhere new to be.
+   */
+  const playheadStepSeconds =
+    viewport === null || transport.snapshot.durationSeconds <= 0
+      ? 0
+      : transport.snapshot.durationSeconds /
+        (2 * Math.PI * playerRadiusPx(viewport.width) * PixelRatio.get());
+  const steppedCandidate = useSharedValue(0);
+  const steppedPosition = useRef(steppedCandidate).current;
+  useAnimatedReaction(
+    () => {
+      const seconds = transport.positionSeconds.value;
+      return playheadStepSeconds > 0
+        ? Math.round(seconds / playheadStepSeconds) * playheadStepSeconds
+        : seconds;
+    },
+    next => {
+      steppedPosition.value = next;
+    },
+    [playheadStepSeconds],
+  );
+  /**
+   * The playhead the canvas reads: the moving clock only while the canvas owns
+   * the player of the song being heard.
+   *
+   * Everything the canvas draws from the clock belongs to the player — the
+   * ring's hand and arc, the heard dots of the seal — but a picture that reads
+   * it is re-recorded on every tick, and the faces' picture holds the whole
+   * field. Handed the moving clock at L0, it re-drew every mark sixty times a
+   * second for as long as a song played (105% of a core, measured). The
+   * owner's lifetime is `playerFocus`, which changes on the same commit as the
+   * canvas's own focus, so this switch adds no hand-off of its own.
+   */
+  const canvasPosition =
+    heldKey !== null && fieldCamera.playerFocus?.entityKey === heldKey
+      ? steppedPosition
+      : idlePosition;
   const transportPlaying = useSharedValue<number>(PLAYER_VERB_POSE.play);
   const reducedMotion = useReducedMotion();
   /*
@@ -1635,7 +1667,7 @@ export function FieldScreen({ identity }: Props) {
                 // The player's focus, not the tap's: entering a shelf must
                 // not re-record this canvas. See `commitFocus`.
                 focusKey={fieldCamera.playerFocus?.key ?? null}
-                positionSeconds={focusedPosition}
+                positionSeconds={canvasPosition}
                 playingKey={playingKey}
                 transportPlaying={transportPlaying}
                 transportArriving={

@@ -121,12 +121,19 @@ export function usePlayer(player: PlayerPort): PlayerController {
   // playing. See docs/interface/m3-audio-gate.md.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
-      if (state !== 'active') return;
+      if (state !== 'active') {
+        // Nothing can see the clock with the screen off, but Reanimated keeps
+        // running it — and every picture that reads it with it: 71% of a core
+        // while a song played in a pocket, measured. Held here, and run again
+        // from the port's truth below when the screen comes back.
+        cancelAnimation(positionSeconds);
+        return;
+      }
       reconciled.current = null;
       reconcile();
     });
     return () => subscription.remove();
-  }, [reconcile]);
+  }, [positionSeconds, reconcile]);
 
   const play = useCallback(() => void player.play(), [player]);
   const pause = useCallback(() => void player.pause(), [player]);
