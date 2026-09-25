@@ -16,7 +16,7 @@ finding, decision, trap and commit.
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
 | 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 after phase 4; see "Phase 3 plan" |
-| 4. Camera events, chrome, UI stores | **next** — the panning lever (JS thread + GC ≈ 30% of samples) |
+| 4. Camera events, chrome, UI stores | **in progress** — C1 camera summary `b1a72aa`; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
@@ -69,7 +69,8 @@ doubles every number — never measure on it (see Traps).
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
 | … the three above with the clock frozen (experiment) | 32 / 32 / 28 | — | proves the clock is ~70 points |
-| L0 panning, 35 songs | 78 | 74 (R4, 38 songs, seal) | 22% of samples on the JS thread: the camera mirror re-rendering `FieldScreen` |
+| L0 idle | — | 10 | C1 (was 13 on the R4 build) |
+| L0 panning, 35 songs | 78 | 54–59 (C1, 38 songs); 74 at R4 | 22% of samples on the JS thread: the camera mirror re-rendering `FieldScreen` |
 | … with faces, rows, labels and jobs drawing nothing (experiment) | — | 62–71 | the ceiling for any cached settled layer (R5): 5–10 points |
 | Lab, 2,280 songs idle / panning | 14.5 / 84 | — | culling holds; drawing cost barely grows |
 | Shelf prefetch (analysis) | — | ~100 for ~9 s | 1.5 s of a core per decode; gap raised to 1.5 s → ~50% while it runs |
@@ -263,6 +264,35 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 - **R6 — Lens contract.** Circle and seal ported onto `identity / sound /
   poses / morphs / hit`, so tree needs no renderer change.
 
+## Phase 4 plan (camera events, chrome, UI stores)
+
+- **C1 — done (`b1a72aa`). React hears the camera at thresholds.** The pan
+  and pinch worklets and the camera flight used to copy every camera frame
+  React could keep up with into React (`mirrorCamera`), re-rendering
+  `FieldScreen` each time: ~30% of samples while panning, JS thread + GC.
+  Now `cameraSummary` (`features/field/cameraSummary.ts`, a worklet) reduces
+  the camera to what React shows of it — level, nearest shelf, the origin
+  mark's run, the player surface's mount/touch step (`SONG_MOUNT_ALPHA` 0.01,
+  `SONG_TOUCH_ALPHA` 0.6, which `FieldScreen` now reads too), the grain's zoom
+  step (`GRAIN_STEPS_PER_E` 8) — and `mirrorOnChange` copies the camera only
+  when that key changes; `mirrorNow` still hands over the camera a gesture
+  ended on or a flight landed on. Taps, holds, descents, ascents, seat
+  settles and the re-cut's `fromCamera` read the live `cameraShared` (a
+  synchronous read from JS in Reanimated 4) instead of React's copy. L0
+  panning 74 → 54–59%, idle 13 → 10. Verified on the Xiaomi: taps hit the
+  right mark after a pan (a job ring, correctly), L0→L1→L2, the player's
+  controls, a shelf-to-shelf drag at L1 renaming the header and moving the
+  origin mark. Trap found: a synthetic drag must cross ~⅓ of the 300-unit
+  shelf gap in *world* units — 800 px at L1 is only ~80, so it stays put.
+- **C2 — the React re-cut branch** (`nativeRelayout`, `nativeDriven`,
+  `isNativeDrawnDistance`, the per-frame `setRecutClock`/`commitCamera`
+  tick): dead in the app since R4; delete it and port the six tests.
+- **C3 — UI stores.** `FieldScreen`'s ~30 `useState`s into stores, so a job
+  progress tick or a sheet opening re-renders its reader, not the screen
+  (L0 with a live generation: 17.6 vs 11.6 idle).
+- **C4 — chrome fades on shared values** where anything still fades from
+  React state.
+
 ## Open questions (for Cesar)
 
 - **Playhead smoothness vs heat at L2 — trying 2 px (2026-09-25).** The hand
@@ -311,6 +341,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `b1a72aa` field: React hears the camera at thresholds, not every frame
+- `0805800` docs: commit list
 - `adcdd4a` docs: R5 shelved, the 2 px playhead, phase 4 next
 - `c96cdef` field: the playhead steps two pixels of the ring
 - `6465084` docs: where L0 panning goes; the ceiling for a cached layer

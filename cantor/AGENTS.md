@@ -149,9 +149,10 @@ dust; a touch that starts on the dust is a tap that jumps to that dot. A lens
 whose field of unloaded songs looks identical has broken the identity rule.
 
 **Nothing that moves with the camera may be laid out in React.** React's copy of
-the camera lands a commit late by design (`mirrorCamera`, `mirrorBusy`), so
-chrome faded by React state steps while the canvas under it moves — two clocks
-on one gesture. This is the Flicker Law's first rule at the level of a whole
+the camera changes only at thresholds (`cameraSummary`: level, shelf, origin
+run, the player surface's mount and touch) and when a gesture ends or a flight
+lands — so chrome faded by React state would step while the canvas under it
+moves — two clocks on one gesture. This is the Flicker Law's first rule at the level of a whole
 representation, and the player violated it until it was drawn here.
 
 What stays in React at L2 is what has no pose at L1 and no reason to be
