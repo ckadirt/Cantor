@@ -3011,6 +3011,27 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       }
     },
   );
+  /*
+   * How far the player's song has been heard, for the seal's dots — and a
+   * constant whenever no seal is showing.
+   *
+   * The faces' picture holds every mark in the field, and a picture is
+   * re-recorded whenever anything it reads moves. Reading the playhead there
+   * directly re-recorded the whole field on every frame of playback, for a
+   * number only the seal draws. A shared value set to what it already holds
+   * wakes nothing (Reanimated's `valueSetter`), so on the circle this settles
+   * at -1 and the faces stay recorded while the song plays.
+   */
+  const heard = useDerivedValue(() => {
+    if (
+      lensMix.value <= 0 ||
+      positionSeconds === null ||
+      faces.playerSeconds <= 0
+    ) {
+      return -1;
+    }
+    return positionSeconds.value / faces.playerSeconds;
+  });
   const facePicture = useDerivedValue(() =>
     createPicture(
       canvas =>
@@ -3026,9 +3047,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           lensMix.value,
           reducedMotion,
           smootherstep(faces.soundClock?.value ?? 1) * sealDrawn.value,
-          positionSeconds === null || faces.playerSeconds <= 0
-            ? -1
-            : positionSeconds.value / faces.playerSeconds,
+          heard.value,
         ),
       { width: viewport.width, height: viewport.height },
     ),
