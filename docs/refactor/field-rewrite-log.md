@@ -16,7 +16,7 @@ finding, decision, trap and commit.
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
 | 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 after phase 4; see "Phase 3 plan" |
-| 4. Camera events, chrome, UI stores | **in progress** — C1 camera summary `b1a72aa`; see "Phase 4 plan" |
+| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87` done; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
@@ -284,9 +284,18 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   controls, a shelf-to-shelf drag at L1 renaming the header and moving the
   origin mark. Trap found: a synthetic drag must cross ~⅓ of the 300-unit
   shelf gap in *world* units — 800 px at L1 is only ~80, so it stays put.
-- **C2 — the React re-cut branch** (`nativeRelayout`, `nativeDriven`,
-  `isNativeDrawnDistance`, the per-frame `setRecutClock`/`commitCamera`
-  tick): dead in the app since R4; delete it and port the six tests.
+- **C2 — done (`c38fc87`). One way to play a re-cut.** The React-driven branch
+  (`setRecutClock`/`commitCamera` every frame), `nativeRelayout`,
+  `nativeDriven` and `isNativeDrawnDistance` are deleted; their tests went
+  with them, and the retarget test now reads the mid-flight pose from the
+  flights (`placementFlightAt`) rather than from React, which no longer sees
+  it. Verified on the Xiaomi: WEEK → MONTH → WEEK re-cut with jobs on the
+  field.
+- **C2b — the re-cut clock onto the UI thread.** Found doing C2: the re-cut
+  still ticks on the JS thread (`requestAnimationFrame` in `useFieldCamera`),
+  writing `cameraShared` and `fitScaleShared` from JS every frame — the cost
+  the 30 Hz playhead experiment measured. A `withTiming` + reaction, as camera
+  flights already are.
 - **C3 — UI stores.** `FieldScreen`'s ~30 `useState`s into stores, so a job
   progress tick or a sheet opening re-renders its reader, not the screen
   (L0 with a live generation: 17.6 vs 11.6 idle).
@@ -340,6 +349,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `c38fc87` field: every re-cut plays on the canvas's clock
+- `2d2f643` docs: the 2 px playhead is settled
+- `ad9bfab` docs: phase 4 plan, C1 in the log
 - `b1a72aa` field: React hears the camera at thresholds, not every frame
 - `0805800` docs: commit list
 - `adcdd4a` docs: R5 shelved, the 2 px playhead, phase 4 next
