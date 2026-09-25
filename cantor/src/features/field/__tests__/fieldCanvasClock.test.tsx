@@ -159,27 +159,30 @@ describe('field canvas re-cut clock', () => {
     const fitScaleShared = { value: year.fitScale };
     const canvas = (ready: boolean) => (
       <FieldCanvas
-        camera={cameraFor(year)}
         cameraShared={cameraShared as never}
         fitScaleShared={fitScaleShared as never}
         layout={year}
         labelFromGroups={recut.fromGroups}
         palette={palette}
-        placements={year.placements}
-        nowMs={Date.UTC(2026, 7, 30)}
         recut={recut}
-        renderFitScale={year.fitScale}
         transitionGeneration={recut.generation}
-        presentations={ready ? presentations : new Map()}
+        presentations={presentations}
         viewport={viewport}
+        // A new prop per state, so the memoised canvas renders again.
+        nowMs={ready ? Date.UTC(2026, 7, 30) : Date.UTC(2026, 7, 29)}
       />
     );
+    // The fonts are what the scene waits for: until they load, the canvas is
+    // paper and nothing may spend the re-cut's clock.
+    const font = mockFont;
+    mockFont = null;
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
       renderer = ReactTestRenderer.create(canvas(false));
     });
     const clock = mockBornClocks[0].clock;
     expect(clock.value).toBe(0);
+    mockFont = font;
     await ReactTestRenderer.act(async () => {
       renderer.update(canvas(true));
     });
@@ -197,16 +200,13 @@ describe('field canvas re-cut clock', () => {
 
     const canvas = (recut: FieldRecutModel, layout: FieldLayout) => (
       <FieldCanvas
-        camera={cameraFor(layout)}
         cameraShared={cameraShared as never}
         fitScaleShared={fitScaleShared as never}
         layout={layout}
         labelFromGroups={recut.fromGroups}
         palette={palette}
-        placements={layout.placements}
         nowMs={Date.UTC(2026, 7, 30)}
         recut={recut}
-        renderFitScale={layout.fitScale}
         transitionGeneration={recut.generation}
         presentations={new Map()}
         viewport={viewport}
@@ -255,17 +255,14 @@ describe('field canvas re-cut clock', () => {
     const fitScaleShared = { value: month.fitScale };
     const canvas = (camera: Camera, activeLensKey = lens) => (
       <FieldCanvas
-        camera={camera}
         activeLensKey={activeLensKey}
         cameraShared={cameraShared as never}
         fitScaleShared={fitScaleShared as never}
         layout={year}
         labelFromGroups={recut.fromGroups}
         palette={palette}
-        placements={year.placements}
         nowMs={Date.UTC(2026, 7, 30)}
         recut={recut}
-        renderFitScale={year.fitScale}
         transitionGeneration={recut.generation}
         presentations={presentations}
         viewport={viewport}
@@ -333,15 +330,12 @@ describe('field canvas re-cut clock', () => {
     };
     const render = (revision: number) => (
       <FieldCanvas
-        camera={cameraFor(year)}
         cameraShared={cameraShared as never}
         fitScaleShared={fitScaleShared as never}
         layout={year}
-        placements={year.placements}
         palette={palette}
         viewport={viewport}
         recut={recut}
-        renderFitScale={year.fitScale}
         transitionGeneration={1}
         nowMs={0}
         presentations={
