@@ -69,12 +69,28 @@ doubles every number — never measure on it (see Traps).
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
 | … the three above with the clock frozen (experiment) | 32 / 32 / 28 | — | proves the clock is ~70 points |
-| L0 panning, 35 songs | 78 | — | 22% of samples on the JS thread: the camera mirror re-rendering `FieldScreen` |
+| L0 panning, 35 songs | 78 | 74 (R4, 38 songs, seal) | 22% of samples on the JS thread: the camera mirror re-rendering `FieldScreen` |
+| … with faces, rows, labels and jobs drawing nothing (experiment) | — | 62–71 | the ceiling for any cached settled layer (R5): 5–10 points |
 | Lab, 2,280 songs idle / panning | 14.5 / 84 | — | culling holds; drawing cost barely grows |
 | Shelf prefetch (analysis) | — | ~100 for ~9 s | 1.5 s of a core per decode; gap raised to 1.5 s → ~50% while it runs |
 
 ## Findings
 
+- **2026-09-25 — Where L0 panning goes (R4 build, 38 songs, simpleperf 10 s,
+  74% of a core).** By thread: UI 55% of samples, JS 25%, Hermes GC (`hades`)
+  8%. On the UI thread nearly all of it runs inside the touch event
+  (Reanimated runs the pan worklet and every mapper that reads the camera,
+  synchronously): Skia's render of the canvas is 38% of the thread — 15%
+  raster, 21% GL present/swap, paid once per frame whatever is drawn — and
+  worklet JS (`libhermesvm` self 19%) plus Skia's per-call cost is the rest.
+  Then an experiment: the faces, rows, labels and jobs pictures drawing
+  nothing → panning still 62–71%. So **R5 as designed (a cached settled layer
+  replayed under a transform) can save at most 5–10 points** here, and the
+  lab's 2,280-song numbers (84 vs 78) say culling already keeps drawing from
+  growing with the library. The large levers while panning are the JS thread
+  and its GC — the camera mirror re-rendering `FieldScreen`, ~30% of samples,
+  which is phase 4 — and the fixed per-frame render, which only fewer frames
+  would reduce.
 - **2026-09-25 — A mid-flight re-cut on the native path retargets shelf
   labels from the start of the interrupted flight.** `relayoutLinear` stays 0
   for a native flight until it lands (`useFieldCamera` stops publishing), and
