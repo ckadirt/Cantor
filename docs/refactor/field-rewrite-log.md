@@ -15,8 +15,8 @@ finding, decision, trap and commit.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done; see "Phase 3 plan" |
-| 4. Camera events, chrome, UI stores | not started |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 after phase 4; see "Phase 3 plan" |
+| 4. Camera events, chrome, UI stores | **next** — the panning lever (JS thread + GC ≈ 30% of samples) |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
@@ -65,7 +65,7 @@ doubles every number — never measure on it (see Traps).
 | --- | --- | --- | --- |
 | L0 idle | 11.6 | — | 0 React commits/s; mostly RN's own per-frame callbacks |
 | L0, a generation running on the node | — | 17.6 | vs 11.6 idle. (An earlier 30.3 included the composer's submit animation.) The node sends progress ≤1/s (`PROGRESS_INTERVAL`); each update re-renders `FieldScreen` and re-records the job mark (~60 ms CPU) → phase 4 |
-| L2 playing | 102 | 80 | R1: canvas now redraws at 20 fps (1 px playhead step) instead of 120; each redraw still costs ~20 ms of CPU → R5 |
+| L2 playing | 102 | 61 | `PLAYHEAD_STEP_PX` 2 (80 at 1 px). R1: canvas now redraws at 20 fps (1 px playhead step) instead of 120; each redraw still costs ~20 ms of CPU → R5 |
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
 | … the three above with the clock frozen (experiment) | 32 / 32 / 28 | — | proves the clock is ~70 points |
@@ -255,18 +255,20 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   Xiaomi: cold launch (paper → field → faces fill), L0/L1/L2, the failed job
   at L0 and L1, and a MONTH re-cut with jobs on the field, mid-flight frames
   showing the job rings travelling with the songs.
-- **R5 — Cached settled layer.** Record the settled field once and replay it
-  under the camera transform; re-record only when the set, lens band or
-  palette changes.
+- **R5 — shelved (2026-09-25, with Cesar).** A cached settled layer replayed
+  under the camera transform. Measured first: with the faces, rows, labels and
+  jobs drawing nothing, L0 panning still costs 62–71% of a core against 74%
+  drawn, so the cache's ceiling is 5–10 points — see Findings. Revisit only if
+  imported libraries make drawing grow; culling keeps it flat today.
 - **R6 — Lens contract.** Circle and seal ported onto `identity / sound /
   poses / morphs / hit`, so tree needs no renderer change.
 
 ## Open questions (for Cesar)
 
-- **Playhead smoothness vs heat at L2.** The hand steps one physical pixel
-  (~18 redraws/s on a 2-minute song) → ~80% of a core while the player is on
-  screen. Two pixels ≈ 10/s ≈ 60%; four ≈ 5/s ≈ 51%. Knob: the divisor in
-  `playheadStepSeconds` (`FieldScreen.tsx`).
+- **Playhead smoothness vs heat at L2 — trying 2 px (2026-09-25).** The hand
+  steps `PLAYHEAD_STEP_PX` physical pixels of the ring per redraw
+  (`FieldScreen.tsx`): 1 px ≈ 18 redraws/s on a 2-minute song ≈ 80% of a core,
+  2 px ≈ 61% (measured), 4 px ≈ 51%. Waiting on Cesar's eye on the phone.
 
 ## Traps (learned the hard way)
 
