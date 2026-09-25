@@ -95,13 +95,31 @@ function runForCamera(
   camera: Camera,
   level: Level,
 ): number {
-  const runs = runCount(level);
-  const span = Math.max(1, layout.groups.length * 300);
+  return originRun(
+    camera.x,
+    layout.fieldCenter.x,
+    layout.groups.length,
+    levelDepth(level),
+  );
+}
+
+/**
+ * Which run of the mark is lit, from plain numbers so the camera's summary on
+ * the UI thread asks exactly what this component shows (`cameraSummary`).
+ */
+export function originRun(
+  cameraX: number,
+  centerX: number,
+  groupCount: number,
+  depth: number,
+): number {
+  'worklet';
+  const span = Math.max(1, groupCount * 300);
   const unit = Math.min(
     0.9999,
-    Math.max(0, (camera.x - layout.fieldCenter.x + span / 2) / span),
+    Math.max(0, (cameraX - centerX + span / 2) / span),
   );
-  return Math.floor(unit * runs);
+  return Math.floor(unit * 2 ** depth);
 }
 
 function levelDepth(level: Level): number {

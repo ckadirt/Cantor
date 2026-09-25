@@ -821,7 +821,7 @@ describe('useFieldCamera', () => {
     expect(latest.cameraShared.value.scale).toBe(start.scale);
   });
 
-  it('moves the camera every touch frame but only mirrors what React commits', async () => {
+  it('moves the camera every touch frame but tells React only what it shows', async () => {
     await renderCamera();
     const [, pan] = gestures();
     const start = latest.camera;
@@ -837,10 +837,10 @@ describe('useFieldCamera', () => {
       start.x - 120 / start.scale,
       10,
     );
-    // React took the first and skipped the second: one mirror is allowed in
-    // flight at a time, so a slow commit cannot build a backlog of frames the
-    // finger has already left behind.
-    expect(latest.camera.x).toBeCloseTo(start.x - 40 / start.scale, 10);
+    // Neither reached React: a pan across the map changes nothing React draws
+    // — not the level, not a shelf, not the origin mark's run — so there is no
+    // render to pay for. See `cameraSummary`.
+    expect(latest.camera).toBe(start);
 
     await ReactTestRenderer.act(async () => {
       pan.onEnd({});
@@ -848,6 +848,22 @@ describe('useFieldCamera', () => {
     // The gesture always ends with React holding the camera it ended on.
     expect(latest.camera.x).toBeCloseTo(start.x - 120 / start.scale, 10);
     expect(latest.camera).toEqual(latest.cameraShared.value);
+  });
+
+  it('tells React mid-gesture when the camera crosses what it shows', async () => {
+    await renderCamera();
+    const [pinch] = gestures();
+    const start = latest.camera;
+    expect(latest.level).toBe('field');
+
+    await ReactTestRenderer.act(async () => {
+      pinch.onStart({ focalX: 190, focalY: 400 });
+      pinch.onUpdate({ scale: 3 });
+    });
+    // Past `LEVEL_BOUNDARIES.field` with the fingers still down: the level is
+    // chrome, and it changes on the frame the camera crosses it.
+    expect(latest.camera.scale).toBeCloseTo(start.scale * 3, 10);
+    expect(latest.level).toBe('shelf');
   });
 
   it('reopens the mirror after a gesture that never moved the camera', async () => {
@@ -863,12 +879,13 @@ describe('useFieldCamera', () => {
       pan.onEnd({});
     });
 
-    const [, second] = gestures();
+    // A crossing mid-gesture still reaches React, so the mirror is open.
+    const [pinch] = gestures();
     await ReactTestRenderer.act(async () => {
-      second.onBegin({ x: 190, y: 400 });
-      second.onUpdate({ translationX: 40, translationY: 0 });
+      pinch.onStart({ focalX: 190, focalY: 400 });
+      pinch.onUpdate({ scale: 3 });
     });
-    expect(latest.camera.x).toBeCloseTo(start.x - 40 / start.scale, 10);
+    expect(latest.camera.scale).toBeCloseTo(start.scale * 3, 10);
   });
 
   it('keeps a native re-cut capture across an unrelated re-render', async () => {
