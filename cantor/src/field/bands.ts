@@ -23,38 +23,6 @@ export const REPRESENTATION_WINDOWS = {
  */
 export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
 
-/**
- * Whether the native renderer knows everything the field shows here.
- *
- * It does, at every distance the camera can reach, and the native renderer is
- * the only one there is. What still asks is the camera, choosing whether a
- * re-cut may skip React; that choice and its React-driven branch go with the
- * camera mirror in phase 4 of the field rewrite, and this with them.
- *
- * It used to stop where the grain opened, because `NativeFieldContent` knew
- * three representations — a face at mark size, a row, and the player — and L3
- * was one song's samples, which it could not draw. `drawSongDetail` is the
- * fourth, and it does not so much add a drawing as finish one: the ring's
- * ticks and the grain's columns are the same measurement at two resolutions,
- * so what was a hand-over between two renderers is now a pose.
- *
- * Why the native path has to reach this far rather than stopping at the row
- * band: a recorded picture moves by being *scaled*, and everything a row is
- * measured in — a 240×30 box, a 15 px title, a 9 px meta line — is measured in
- * screen pixels. Scaling the recording inflates all of it. That is invisible
- * under a pan, where the scale factor is exactly 1, and it is the whole of what
- * a zoom looks like: the recording can only be remade once per React commit,
- * the camera covers a lot of scale in between, and every row on screen swells
- * and snaps back. Only the UI thread can redraw a row at the size it is
- * supposed to be on the frame it is supposed to be that size.
- *
- * That is why the recorded picture this stood between is gone altogether.
- */
-export function isNativeDrawnDistance(scale: number, fitScale: number): boolean {
-  'worklet';
-  return fitScale > 0 && scale > 0;
-}
-
 export type RepresentationAlphas = Readonly<{
   dot: number;
   row: number;

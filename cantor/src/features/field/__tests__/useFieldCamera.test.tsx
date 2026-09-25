@@ -10,6 +10,8 @@ import {
   placementPoint,
   gatherFraction,
   layoutField,
+  placementFlightAt,
+  smootherstep,
   screenToWorld,
   type Camera,
   type FieldEntity,
@@ -732,14 +734,23 @@ describe('useFieldCamera', () => {
     await ReactTestRenderer.act(async () => {
       frames.shift()?.(now);
     });
-    expect(latest.camera.scale / latest.renderFitScale).toBeCloseTo(1, 10);
-    const midpoint = latest.visualPlacements.map(item => ({
-      x: item.x,
-      y: item.y,
-      bloomX: item.bloomX,
-      bloomY: item.bloomY,
-      opacity: item.opacity,
-    }));
+    // The flight plays on the UI thread's values, not on React's: the camera
+    // and the fit it is measured against move together there.
+    expect(
+      latest.cameraShared.value.scale / latest.fitScaleShared.value,
+    ).toBeCloseTo(1, 10);
+    // Where the canvas drew each mark on this frame.
+    const midpoint = latest
+      .recut!.flights.map(flight =>
+        placementFlightAt(flight, smootherstep(0.5)),
+      )
+      .map(item => ({
+        x: item.x,
+        y: item.y,
+        bloomX: item.bloomX,
+        bloomY: item.bloomY,
+        opacity: item.opacity,
+      }));
     renders.length = 0;
 
     await ReactTestRenderer.act(async () => {
@@ -925,7 +936,6 @@ describe('useFieldCamera', () => {
         viewport,
         onOpenComposer: jest.fn(),
         onOpenEngines: jest.fn(),
-        nativeRelayout: true,
       });
       return null;
     }
@@ -1001,7 +1011,6 @@ describe('useFieldCamera', () => {
         viewport,
         onOpenComposer: jest.fn(),
         onOpenEngines: jest.fn(),
-        nativeRelayout: true,
       });
       renderCount += 1;
       return null;

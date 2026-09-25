@@ -78,7 +78,6 @@ export function FieldGroupLab() {
     viewport,
     onOpenComposer: noop,
     onOpenEngines: noop,
-    nativeRelayout: true,
   });
   const shelf = fieldCamera.level !== 'field';
   return (
