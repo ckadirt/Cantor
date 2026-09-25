@@ -98,7 +98,12 @@ doubles every number — never measure on it (see Traps).
   `lastLabelLinear` — so a second dial tap mid-re-cut plans the names from
   their source pose, not from where they were drawn. Faces and rows are
   unaffected (`lastVisualPlacements` is updated from the tick). Found reading
-  R4; not yet seen on the phone. Fix with the camera events of phase 4.
+  R4; not yet seen on the phone. **Fixed** in `671af18`: `FieldCanvas` reads
+  the outgoing re-cut's born clock when the next one is born
+  (`interruptedAt`) and `retargetShelfLabelFlights` uses it as drawn, no
+  second easing; the `relayoutLinear` prop is gone. Test: "starts an
+  interrupting re-cut from where the names were drawn" (fails on the old
+  code). The smoothness itself wants Cesar's eye (MONTH then WEEK quickly).
 - **2026-09-25 — Tried and reverted: a separate playhead canvas (R5a).** Moved
   the ring's hand/arc and the detail ticks to their own transparent
   `<Canvas>` so a playhead step re-records only them. It worked as designed —
@@ -355,6 +360,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `671af18` field: an interrupted re-cut resumes its names from where they were drawn
+- `32e91de` docs: C2b in the log
 - `cd54f40` field: a re-cut's camera runs on the UI thread
 - `dae7e30` docs: C2 in the log
 - `c38fc87` field: every re-cut plays on the canvas's clock
