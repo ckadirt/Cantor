@@ -16,7 +16,7 @@ finding, decision, trap and commit.
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
 | 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 after phase 4; see "Phase 3 plan" |
-| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87` done; see "Phase 4 plan" |
+| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40` done; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
@@ -63,13 +63,12 @@ doubles every number — never measure on it (see Traps).
 
 | Scenario | Before | Now | Notes |
 | --- | --- | --- | --- |
-| L0 idle | 11.6 | — | 0 React commits/s; mostly RN's own per-frame callbacks |
+| L0 idle | 11.6 | 10 (C1; 13 on the R4 build) | 0 React commits/s; mostly RN's own per-frame callbacks |
 | L0, a generation running on the node | — | 17.6 | vs 11.6 idle. (An earlier 30.3 included the composer's submit animation.) The node sends progress ≤1/s (`PROGRESS_INTERVAL`); each update re-renders `FieldScreen` and re-records the job mark (~60 ms CPU) → phase 4 |
 | L2 playing | 102 | 61 | `PLAYHEAD_STEP_PX` 2 (80 at 1 px). R1: canvas now redraws at 20 fps (1 px playhead step) instead of 120; each redraw still costs ~20 ms of CPU → R5 |
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
 | … the three above with the clock frozen (experiment) | 32 / 32 / 28 | — | proves the clock is ~70 points |
-| L0 idle | — | 10 | C1 (was 13 on the R4 build) |
 | L0 panning, 35 songs | 78 | 54–59 (C1, 38 songs); 74 at R4 | 22% of samples on the JS thread: the camera mirror re-rendering `FieldScreen` |
 | … with faces, rows, labels and jobs drawing nothing (experiment) | — | 62–71 | the ceiling for any cached settled layer (R5): 5–10 points |
 | Lab, 2,280 songs idle / panning | 14.5 / 84 | — | culling holds; drawing cost barely grows |
@@ -291,11 +290,18 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   flights (`placementFlightAt`) rather than from React, which no longer sees
   it. Verified on the Xiaomi: WEEK → MONTH → WEEK re-cut with jobs on the
   field.
-- **C2b — the re-cut clock onto the UI thread.** Found doing C2: the re-cut
-  still ticks on the JS thread (`requestAnimationFrame` in `useFieldCamera`),
-  writing `cameraShared` and `fitScaleShared` from JS every frame — the cost
-  the 30 Hz playhead experiment measured. A `withTiming` + reaction, as camera
-  flights already are.
+- **C2b — done (`cd54f40`). A re-cut's camera runs on the UI thread.** It
+  ticked on the JS thread by `requestAnimationFrame`, writing `cameraShared`
+  and `fitScaleShared` from JS every frame (the cost the 30 Hz playhead
+  experiment measured) and rebuilding every placement's pose per frame for a
+  capture only the *next* re-cut reads. Now `recutProgress` is a `withTiming`
+  and a reaction moves the camera and fit (flight curves: smootherstep on
+  position, log on scale); `landRecut` hands React the landing. `liveCapture`
+  and `renderedFit` answer the in-flight poses and fit on demand. Tests hold
+  a re-cut mid-air with `holdRecut` (a `withTiming` spy), since the Jest mock
+  lands at once and runs no reactions. Verified on the Xiaomi: WEEK → MONTH
+  → WEEK plain and interrupted 250 ms in, landing on the same camera each
+  round trip.
 - **C3 — UI stores.** `FieldScreen`'s ~30 `useState`s into stores, so a job
   progress tick or a sheet opening re-renders its reader, not the screen
   (L0 with a live generation: 17.6 vs 11.6 idle).
@@ -349,6 +355,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `cd54f40` field: a re-cut's camera runs on the UI thread
+- `dae7e30` docs: C2 in the log
 - `c38fc87` field: every re-cut plays on the canvas's clock
 - `2d2f643` docs: the 2 px playhead is settled
 - `ad9bfab` docs: phase 4 plan, C1 in the log
