@@ -15,7 +15,7 @@ finding, decision, trap and commit.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 done (`ecddc22`); see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7` done; see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | not started |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -104,8 +104,10 @@ doubles every number — never measure on it (see Traps).
   batch excludes the focused placement; on arrival `setPlayerKey(null)`
   (`useFieldCamera.ts`, in `mirrorCamera`) unmounts the player flight and
   rebuilds `rows` in one commit, but `rowsPicture`'s mapper is re-created one
-  passive effect later → one frame where nothing draws the name. **Open** —
-  phase 3 step R2.
+  passive effect later → one frame where nothing draws the name. **Fixed** in
+  `5218cf7` (R2). Burst capture shows one name through descent and ascent on
+  three runs; a one-frame gap is below burst resolution, so Cesar's eye is the
+  final check.
 - **2026-09-24 — Empty field after a regroup** (seen in the lab): regroup +
   flight home on one tap while the camera was far away settled on an empty
   canvas while React's camera read home; FIT MAP recovered. Same category as
@@ -128,9 +130,17 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   re-render is gone. *Not* done, on purpose: splitting the player face into
   its own picture — moving a face between two Skia nodes on a focus change is
   the flicker-B pattern.
-- **R2 — The player and its row are one slot.** Ownership (which placement is
-  the player, and how far it has shrunk back) becomes UI-thread state, so the
-  ascent hands the name back to the row in the same frame. Fixes flicker B.
+- **R2 — done (`5218cf7`). The player and its row hand over on the UI thread.**
+  As built: the row batch keeps every row (`rows` no longer depends on
+  `focusKey`) and skips the focused one via `drawNativeRows(…, yieldKey)` only
+  while `motion.owned` (camera past row distance: any song arrival > 0) *and*
+  `playerRow` (a shared value the flight sets from its own
+  `useAnimatedReaction` once live) names it. The flight's group opacity is
+  gated by the same two values, so the two owners are exact complements on
+  every frame. React mounting/unmounting the flight happens only at row
+  distance, where `owned` is 0. Relies on: a pinch cannot pass the shelf seat
+  (`MAX_SCALE_RATIO`), so only a tap/step enters a song, and both commit the
+  owner before flying.
 - **R3 — Arrivals.** A per-song born clock for data that lands late (audio
   inspected, analysis, rename), so nothing snaps. Fixes the startup pop.
 - **R4 — One renderer.** Remove the `recordFieldPicture` fallback path and the
@@ -143,6 +153,18 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   poses / morphs / hit`, so tree needs no renderer change.
 
 ## Traps (learned the hard way)
+
+- **A React prop in a picture's closure is stale for a while after the
+  commit.** First R2 attempt read `focusKey` inside `rowsPicture`: at the start
+  of a descent the flight had mounted and was drawing from the JS thread's
+  initial camera while the batch's mapper still had the old closure → the name
+  drawn twice, a few px apart (caught by burst capture). Hand-overs must be
+  decided by shared values both owners read, set from the UI thread (a
+  reaction runs only once the component's mappers are live).
+- **Driving the phone:** after an ascent the camera centres on the row you
+  left, so fixed tap coordinates drift; re-enter the shelf from L0 for a known
+  layout. BACK at L0 leaves the app. Failed jobs' rows open a job sheet.
+  `uiautomator` does not list the field's accessibility rows.
 
 - **Measure on a release build.** Debuggable = interpreted Java + CheckJNI.
   `assembleRelease` is signed with the same `debug.keystore`, so
@@ -165,6 +187,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `5218cf7` field: the player and its row hand over on the UI thread
+- `2c4043b`, `4d99970` docs: R1 in the log
 - `ecddc22` field: redraw for the playhead only where it is drawn
 - `e193d35` docs: field rewrite implementation log
 - `1475be9` docs: app module map for the runtime store and analysis store
