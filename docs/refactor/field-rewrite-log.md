@@ -15,7 +15,7 @@ finding, decision, trap and commit.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 done (`ecddc22`); see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | not started |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -65,15 +65,29 @@ doubles every number — never measure on it (see Traps).
 | --- | --- | --- | --- |
 | L0 idle | 11.6 | — | 0 React commits/s; mostly RN's own per-frame callbacks |
 | L0, a generation running on the node | — | 30.3 | measured after phase 2; main thread in Choreographer/Fabric frame callbacks and `HybridData.<init>` → something draws every frame while a job is live (job canvas?) |
-| L2 playing | 102 | — | playhead clock re-records Skia pictures every tick |
-| L0 playing | 105 | — | same |
-| Screen off, playing | 71 | — | same — Reanimated keeps running with the screen off |
+| L2 playing | 102 | 80 | R1: canvas now redraws at 20 fps (1 px playhead step) instead of 120; each redraw still costs ~20 ms of CPU → R5 |
+| L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
+| Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
 | … the three above with the clock frozen (experiment) | 32 / 32 / 28 | — | proves the clock is ~70 points |
 | L0 panning, 35 songs | 78 | — | 22% of samples on the JS thread: the camera mirror re-rendering `FieldScreen` |
 | Lab, 2,280 songs idle / panning | 14.5 / 84 | — | culling holds; drawing cost barely grows |
 | Shelf prefetch (analysis) | — | ~100 for ~9 s | 1.5 s of a core per decode; gap raised to 1.5 s → ~50% while it runs |
 
 ## Findings
+
+- **2026-09-25 — A canvas redraw at L2 costs ~20 ms of CPU.** Measured by
+  stepping the playhead: 20 redraws/s → 80%, 5/s → 51%, so ≈2 points per
+  redraw/s and ~41% with none. Skia time is spread across per-call overhead:
+  `Recorder::playGroup`/`applyUpdates` (declarative scene replay),
+  `processPath`, and one JSI call per line in `drawSongDetail`'s tick loop.
+  R5 must make a redraw re-record only what moves.
+- **2026-09-25 — L2 playing without any redraw still costs ~41%** vs 33% at L0
+  playing and 11% at L2 paused: per-frame UI-thread work that is not drawing
+  (the visual clock's `withTiming`, reactions, SongSurface). Investigate in R5.
+- **2026-09-25 — Reanimated wakes nothing for a same-value write.**
+  `valueSetter` returns early when a plain value equals `_value`; a derived
+  value that settles on a constant stops every mapper downstream of it. This
+  is the tool for rate-limiting redraws (`heard`, the stepped playhead).
 
 - **2026-09-25 — Decoding a song for analysis is ~1.5 s of a full core**, most
   of it `readSamples`' JS loop over every sample (`player/createAudioApiPlayer.ts`).
@@ -105,7 +119,7 @@ doubles every number — never measure on it (see Traps).
 
 Each step ships alone, keeps tests green, and is checked on the phone.
 
-- **R1 — Nothing redraws for the playhead but the player.** The face picture
+- **R1 — done (`ecddc22`). Nothing redraws for the playhead but the player.** The face picture
   (`drawFieldFaces`) reads `positionSeconds` for the seal player's heard dots,
   so every face in the field is re-recorded every frame of playback. Split the
   player face into its own picture; only it (and the detail ring) read the
@@ -149,6 +163,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `ecddc22` field: redraw for the playhead only where it is drawn
+- `e193d35` docs: field rewrite implementation log
 - `1475be9` docs: app module map for the runtime store and analysis store
 - `d8f9588` lenses: persisted analysis store; late ticks draw in
 - `53b3488` runtime: move state into a store that keeps unchanged songs and jobs
