@@ -320,12 +320,6 @@ type Props = {
   nowMs: number;
   /** Groups visibly owned before this born re-cut generation. */
   labelFromGroups?: readonly Group[];
-  /**
-   * The relayout tween, un-eased. Shelf labels ride it so a re-cut is one
-   * movement: the marks travel, the camera corrects and the names change
-   * together rather than as three overlapping animations.
-   */
-  relayoutLinear?: number;
   /** Born transition identity used to capture interrupted label geometry. */
   transitionGeneration?: number;
   /** The re-cut being drawn: flights, camera endpoints, generation. */
@@ -447,7 +441,6 @@ function FieldCanvasImpl({
   activeLensKey = 'name',
   nowMs,
   labelFromGroups = [],
-  relayoutLinear = 1,
   transitionGeneration = 0,
   recut = null,
 }: Props) {
@@ -524,7 +517,14 @@ function FieldCanvasImpl({
     generation: number;
     clock: SharedValue<number>;
   } | null>(null);
+  /**
+   * Where the outgoing re-cut's clock stood when the next one was born: 1 if
+   * it had landed. This is what the canvas drew the labels at, so it is what
+   * an interrupted label plan is captured at (`retargetShelfLabelFlights`).
+   */
+  const interruptedAt = useRef(1);
   if (recut !== null && clockPlan.current?.generation !== recut.generation) {
+    interruptedAt.current = clockPlan.current?.clock.value ?? 1;
     // A re-cut that does not animate is born finished rather than born at its
     // source, so reduced motion shows the new cut instead of one stale frame.
     clockPlan.current = {
@@ -557,7 +557,6 @@ function FieldCanvasImpl({
     generation: number;
     flights: ShelfLabelFlights | null;
   } | null>(null);
-  const lastLabelLinear = useRef(1);
   if (
     monoFont !== null &&
     labelPlan.current?.generation !== transitionGeneration
@@ -570,21 +569,20 @@ function FieldCanvasImpl({
     // describes that as its own source. Capturing it anyway would sample the
     // contours of every label in the field on every re-cut to morph each name
     // into itself.
-    const interrupted = lastLabelLinear.current < 1;
+    const interrupted = interruptedAt.current < 1;
     labelPlan.current = {
       generation: transitionGeneration,
       flights:
         interrupted && previous?.flights != null && semanticLabelFlights != null
           ? retargetShelfLabelFlights(
               previous.flights,
-              lastLabelLinear.current,
+              interruptedAt.current,
               semanticLabelFlights,
               monoFont,
             )
           : semanticLabelFlights,
     };
   }
-  lastLabelLinear.current = relayoutLinear;
   const labelFlights = labelPlan.current?.flights ?? semanticLabelFlights;
   /*
    * The lens clock: 0 on the circle, 1 on the seal, linear, eased once by
@@ -3227,6 +3225,11 @@ type CapturedShelfFlight = Readonly<{
  * interrupted generation. This is the field-canvas equivalent of
  * `captureSilhouette`: the next filter never restarts from either semantic
  * endpoint when the person taps the dial mid-morph.
+ *
+ * `progress` is the value the canvas drew at — the re-cut's clock, which is
+ * already eased — so it is used as it is. It once took React's un-eased copy
+ * and eased it here; on the native path React's copy stands at 0 for the
+ * whole flight, and the names restarted from their source.
  */
 function retargetShelfLabelFlights(
   current: ShelfLabelFlights,
@@ -3234,7 +3237,7 @@ function retargetShelfLabelFlights(
   next: ShelfLabelFlights,
   labelFont: Parameters<typeof captureLabelMorph>[2],
 ): ShelfLabelFlights {
-  const travel = smootherstep(progress);
+  const travel = progress;
   const capturedByGroup = new Map<string, CapturedShelfFlight>();
   for (const flight of current) {
     if (flight.toGroupKey === null) continue;

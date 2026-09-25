@@ -1646,7 +1646,6 @@ export function FieldScreen({ identity }: Props) {
                 }
                 transportLights={transportLights}
                 nowMs={nowMs}
-                relayoutLinear={fieldCamera.relayoutLinear}
                 transitionGeneration={fieldCamera.transitionGeneration}
                 recut={fieldCamera.recut}
                 presentations={controller.presentations}

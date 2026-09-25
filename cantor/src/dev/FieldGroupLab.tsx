@@ -97,7 +97,6 @@ export function FieldGroupLab() {
               fitScaleShared={fieldCamera.fitScaleShared}
               recut={fieldCamera.recut}
               labelFromGroups={fieldCamera.labelFromGroups}
-              relayoutLinear={fieldCamera.relayoutLinear}
               transitionGeneration={fieldCamera.transitionGeneration}
               nowMs={nowMs}
             />

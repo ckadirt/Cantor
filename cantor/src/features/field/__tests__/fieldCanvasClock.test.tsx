@@ -191,6 +191,82 @@ describe('field canvas re-cut clock', () => {
     await ReactTestRenderer.act(async () => renderer.unmount());
   });
 
+  it('starts an interrupting re-cut from where the names were drawn', async () => {
+    // The names' outlines are native-only (CanvasKit's are stubs), so their
+    // capture answers as it does without them; where they are is the question.
+    const labelMorph = require('../labelMorph');
+    jest.spyOn(labelMorph, 'captureLabelText').mockReturnValue(null);
+    jest.spyOn(labelMorph, 'captureLabelMorph').mockReturnValue(null);
+    const cameraShared = { value: cameraFor(year) };
+    const fitScaleShared = { value: year.fitScale };
+    const canvas = (recut: FieldRecutModel, from: FieldLayout) => (
+      <FieldCanvas
+        cameraShared={cameraShared as never}
+        fitScaleShared={fitScaleShared as never}
+        layout={recut.layout}
+        labelFromGroups={from.groups}
+        palette={palette}
+        nowMs={Date.UTC(2026, 7, 30)}
+        recut={recut}
+        transitionGeneration={recut.generation}
+        presentations={presentations}
+        viewport={viewport}
+      />
+    );
+    const labelsOf = (renderer: ReactTestRenderer.ReactTestRenderer) =>
+      renderer.root.findByType(Canvas).props.children.props.children[0].props
+        .labelFlights as readonly {
+        fromGroupKey: string | null;
+        toGroupKey: string | null;
+        from: { x: number; y: number };
+        to: { x: number; y: number };
+      }[];
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(
+        canvas(recutBetween(1, month, year, true), month),
+      );
+    });
+    const first = labelsOf(renderer);
+    // Halfway through, as the UI thread would have it when the dial is
+    // tapped again. The clock is already eased: this is where the canvas drew.
+    mockBornClocks[0].clock.value = 0.5;
+    await ReactTestRenderer.act(async () => {
+      renderer.update(canvas(recutBetween(2, year, month, true), year));
+    });
+    const second = labelsOf(renderer);
+
+    const moved = first.filter(
+      flight =>
+        flight.toGroupKey !== null &&
+        (flight.from.x !== flight.to.x || flight.from.y !== flight.to.y),
+    );
+    expect(moved.length).toBeGreaterThan(0);
+    // Each group keeps one capture — several months can fly into one year —
+    // so a resumed name starts where one of the names flying into its group
+    // was drawn: halfway, not at either end of the flight it interrupted.
+    const near = (a: number, b: number) => Math.abs(a - b) < 1e-6;
+    for (const group of new Set(moved.map(flight => flight.toGroupKey))) {
+      const resumed = second.find(next => next.fromGroupKey === group);
+      expect(resumed).toBeDefined();
+      const drawnAt = first
+        .filter(flight => flight.toGroupKey === group)
+        .map(flight => ({
+          x: flight.from.x + (flight.to.x - flight.from.x) * 0.5,
+          y: flight.from.y + (flight.to.y - flight.from.y) * 0.5,
+        }));
+      expect(
+        drawnAt.some(
+          point =>
+            near(point.x, resumed!.from.x) && near(point.y, resumed!.from.y),
+        ),
+      ).toBe(true);
+    }
+    await ReactTestRenderer.act(async () => renderer.unmount());
+    jest.restoreAllMocks();
+  });
+
   it('gives every generation its own clock and never advances the last one', async () => {
     const first = recutBetween(1, month, month, false);
     const second = recutBetween(2, month, year, true);
@@ -248,45 +324,48 @@ describe('field canvas re-cut clock', () => {
    * render therefore paints a stale frame of the whole scene between two live
    * ones — which is what a pan looked like.
    */
-  it.each(['name', 'seal'])('keeps the %s scene while the camera moves or the lens changes', async lens => {
-    const recut = recutBetween(1, month, year, true);
-    const cameraShared = { value: cameraFor(month) };
-    const fitScaleShared = { value: month.fitScale };
-    const canvas = (camera: Camera, activeLensKey = lens) => (
-      <FieldCanvas
-        activeLensKey={activeLensKey}
-        cameraShared={cameraShared as never}
-        fitScaleShared={fitScaleShared as never}
-        layout={year}
-        labelFromGroups={recut.fromGroups}
-        palette={palette}
-        nowMs={Date.UTC(2026, 7, 30)}
-        recut={recut}
-        transitionGeneration={recut.generation}
-        presentations={presentations}
-        viewport={viewport}
-      />
-    );
+  it.each(['name', 'seal'])(
+    'keeps the %s scene while the camera moves or the lens changes',
+    async lens => {
+      const recut = recutBetween(1, month, year, true);
+      const cameraShared = { value: cameraFor(month) };
+      const fitScaleShared = { value: month.fitScale };
+      const canvas = (camera: Camera, activeLensKey = lens) => (
+        <FieldCanvas
+          activeLensKey={activeLensKey}
+          cameraShared={cameraShared as never}
+          fitScaleShared={fitScaleShared as never}
+          layout={year}
+          labelFromGroups={recut.fromGroups}
+          palette={palette}
+          nowMs={Date.UTC(2026, 7, 30)}
+          recut={recut}
+          transitionGeneration={recut.generation}
+          presentations={presentations}
+          viewport={viewport}
+        />
+      );
 
-    let renderer!: ReactTestRenderer.ReactTestRenderer;
-    await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(canvas(cameraFor(year)));
-    });
-    const scene = renderer.root.findByType(Canvas).props.children;
-    // The native path is what this is about; a picture would legitimately be
-    // rebuilt on every camera frame.
-    expect(scene).not.toBeNull();
+      let renderer!: ReactTestRenderer.ReactTestRenderer;
+      await ReactTestRenderer.act(async () => {
+        renderer = ReactTestRenderer.create(canvas(cameraFor(year)));
+      });
+      const scene = renderer.root.findByType(Canvas).props.children;
+      // The native path is what this is about; a picture would legitimately be
+      // rebuilt on every camera frame.
+      expect(scene).not.toBeNull();
 
-    const panned = { ...cameraFor(year), x: cameraFor(year).x + 240 };
-    await ReactTestRenderer.act(async () => {
-      renderer.update(canvas(panned));
-    });
-    expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
-    await ReactTestRenderer.act(async () => {
-      renderer.update(canvas(panned, lens === 'name' ? 'seal' : 'name'));
-    });
-    expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
-  });
+      const panned = { ...cameraFor(year), x: cameraFor(year).x + 240 };
+      await ReactTestRenderer.act(async () => {
+        renderer.update(canvas(panned));
+      });
+      expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
+      await ReactTestRenderer.act(async () => {
+        renderer.update(canvas(panned, lens === 'name' ? 'seal' : 'name'));
+      });
+      expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
+    },
+  );
   it('keeps songs on the same native scene across live job progress updates', async () => {
     const recut = recutBetween(1, year, year, false);
     const cameraShared = { value: cameraFor(year) };
@@ -377,5 +456,4 @@ describe('field canvas re-cut clock', () => {
       renderer.unmount();
     });
   });
-
 });
