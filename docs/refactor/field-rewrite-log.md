@@ -311,6 +311,10 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `adcdd4a` docs: R5 shelved, the 2 px playhead, phase 4 next
+- `c96cdef` field: the playhead steps two pixels of the ring
+- `6465084` docs: where L0 panning goes; the ceiling for a cached layer
+- `2756b9e` docs: R4 in the log; notes that still described the picture fallback
 - `aa3e5ce` field: one renderer, no picture fallback
 - `9690ff0` field: jobs are a layer of the one canvas
 - `14c93c0` docs: R3 in the log
