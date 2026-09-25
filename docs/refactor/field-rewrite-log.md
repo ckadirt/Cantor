@@ -119,13 +119,15 @@ doubles every number — never measure on it (see Traps).
 
 Each step ships alone, keeps tests green, and is checked on the phone.
 
-- **R1 — done (`ecddc22`). Nothing redraws for the playhead but the player.** The face picture
-  (`drawFieldFaces`) reads `positionSeconds` for the seal player's heard dots,
-  so every face in the field is re-recorded every frame of playback. Split the
-  player face into its own picture; only it (and the detail ring) read the
-  playhead. Stop the visual clock while the app is in the background
-  (`usePlayer` already resyncs on `active`). Drop `FieldScreen`'s 160 ms
-  `visualPosition` re-render (it only feeds the fallback picture).
+- **R1 — done (`ecddc22`). Nothing redraws for the playhead but the player.**
+  What was built: the canvas gets the moving clock only while
+  `fieldCamera.playerFocus` is the held song (`canvasPosition`), stepped to one
+  physical pixel of the ring (`steppedPosition`); the faces' picture reads it
+  through `heard`, which is -1 unless a seal is showing; `usePlayer` holds the
+  visual clock when the app leaves `active`; the 160 ms `visualPosition`
+  re-render is gone. *Not* done, on purpose: splitting the player face into
+  its own picture — moving a face between two Skia nodes on a focus change is
+  the flicker-B pattern.
 - **R2 — The player and its row are one slot.** Ownership (which placement is
   the player, and how far it has shrunk back) becomes UI-thread state, so the
   ascent hands the name back to the row in the same frame. Fixes flicker B.
