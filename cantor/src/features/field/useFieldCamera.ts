@@ -671,10 +671,10 @@ export function useFieldCamera({
         groupsChanged(fromGroups, layout.groups) ||
         camerasDiffer(fromCamera, toCamera) ||
         fromFitScale !== layout.fitScale);
-    // The same predicate the canvas chooses its renderer with, and it has to
-    // be: a re-cut marked native stops publishing to React, so if the canvas
-    // disagreed and drew the picture, it would record from state that is no
-    // longer moving.
+    // A re-cut marked native stops publishing to React: the canvas plays it
+    // from its own clock and the shared camera. Every placement the app lays
+    // out is a song or a job, both drawn natively, so the React branch below
+    // runs only for callers that do not opt in (tests); it goes in phase 4.
     const nativeDriven =
       nativeRelayout &&
       isNativeDrawnDistance(fromCamera.scale, fromFitScale) &&
@@ -1190,8 +1190,8 @@ export function useFieldCamera({
    * The camera moves with the finger inside one worklet: no thread hop per
    * touch event, no React render per frame, and at L0 no JS involvement at all
    * because the canvas reads `cameraShared` directly. React still learns every
-   * camera it can keep up with, which is what the level chrome, hit testing
-   * and the picture path at L1 and closer are drawn from.
+   * camera it can keep up with, which is what the level chrome and hit
+   * testing are drawn from.
    */
   const gesture = useMemo(() => {
     const knobs = FIELD_CAMERA_KNOBS;
