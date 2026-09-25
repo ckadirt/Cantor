@@ -1642,6 +1642,26 @@ function useNativeCameraMotion(
   const playerLineInk = useDerivedValue(
     () => 1 - lineOwnedByPlayer(nameArrived.value),
   );
+  /**
+   * Whether the player, rather than the row batch, draws the focused song's
+   * row this frame: 1 once any part of the player has started to arrive, 0
+   * while the camera is at row distance or farther.
+   *
+   * Decided here, from the camera, so both owners answer on the same frame.
+   * It used to be a React commit: the batch left the focused row out while
+   * the player's flight was mounted, so on the way back up the flight
+   * unmounted and the batch's picture took the row back one passive effect
+   * later — a frame with no name at all (flicker B). Now the hand-over happens
+   * at row distance, where the two drawings are the same pixels, and the
+   * commits that mount and unmount the flight land while it is drawing nothing.
+   * A pinch cannot pass the shelf seat, so the flight is always mounted before
+   * the camera can make this 1.
+   */
+  const owned = useDerivedValue(() =>
+    shapeArrived.value > 0 || nameArrived.value > 0 || arrived.value > 0
+      ? 1
+      : 0,
+  );
   const rowOnly = useDerivedValue(() => 1 - arrived.value);
   const walked = useDerivedValue(() => faceArrival(scale.value, fit.value));
   const written = useDerivedValue(() => nameArrival(scale.value, fit.value));
@@ -1691,6 +1711,7 @@ function useNativeCameraMotion(
     nameArrived,
     arrived,
     playerLineInk,
+    owned,
     rowOnly,
     walked,
     written,
@@ -3056,11 +3077,24 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     () => songDetailOf(recut.flights, presentations, analyses, focusKey),
     [recut, presentations, analyses, focusKey],
   );
+  /**
+   * The row the player's flight has taken over, once that flight is live on
+   * the UI thread; null otherwise.
+   *
+   * Written by the flight itself, from a reaction — which only runs once its
+   * mappers do — so "the player draws this row" and "the batch leaves it out"
+   * turn on the same shared value in the same pass. A React prop could not say
+   * this: the batch's picture learnt a new focus one passive effect after the
+   * flight had mounted and started drawing from the JS thread's idea of the
+   * camera, and for those frames the same name was drawn twice, a few pixels
+   * apart (seen on the phone at the start of a descent).
+   */
+  const playerRow = useSharedValue<string | null>(null);
+  // Every row, the focused one included: who draws it is decided per frame,
+  // by `motion.owned`, not by which rows this list holds.
   const rows = useMemo(
     () =>
       recut.flights.flatMap(flight => {
-        if (focusKey !== null && flight.targetPlacementKey === focusKey)
-          return [];
         const presentation = presentations.get(flight.entityKey);
         if (!presentation) return [];
         const song = presentation.song;
@@ -3081,7 +3115,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           },
         ];
       }),
-    [recut, presentations, focusKey, displayFont, monoFont],
+    [recut, presentations, displayFont, monoFont],
   );
   const rowPaints = useMemo(
     () =>
@@ -3143,6 +3177,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         motion.fieldFade.value,
         rowFonts,
         rowPaints,
+        motion.owned.value > 0 ? playerRow.value : null,
       );
     }, viewport);
   });
@@ -3201,6 +3236,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           <NativePlacementFlight
             lensMix={lensMix}
             key={flight.key}
+            playerRow={playerRow}
             motion={motion}
             flight={flight}
             clock={clock}
@@ -3349,6 +3385,7 @@ function TracedTitle({
  */
 function NativePlacementFlight({
   motion,
+  playerRow,
   lensMix,
   flight,
   clock,
@@ -3371,6 +3408,8 @@ function NativePlacementFlight({
   mutedColor,
 }: {
   motion: NativeCameraMotion;
+  /** Where this flight says it has taken its row over; see `playerRow`. */
+  playerRow: SharedValue<string | null>;
   lensMix: SharedValue<number>;
   flight: PlacementFlight;
   clock: SharedValue<number>;
@@ -3571,8 +3610,38 @@ function NativePlacementFlight({
   const rowMetaOpacity = useDerivedValue(
     () => owner.value * written.value * rowMetaInk.value,
   );
+  /*
+   * Live: take the row over from the batch. The reaction's first run is on the
+   * UI thread, after this flight's own mappers are installed, so from that
+   * frame on everything below is drawn from the live camera. Released on
+   * unmount — by then the camera is at row distance and neither owner is
+   * drawing anything the other is not.
+   */
+  const rowKey = flight.targetPlacementKey;
+  useAnimatedReaction(
+    () => rowKey,
+    key => {
+      playerRow.value = key;
+    },
+    [rowKey],
+  );
+  useEffect(
+    () => () => {
+      if (playerRow.value === rowKey) playerRow.value = null;
+    },
+    [playerRow, rowKey],
+  );
+  /**
+   * Drawn only while it owns the row, and only once live. At row distance the
+   * batch draws it, as it draws every other row; see `owned` and `playerRow`.
+   */
+  const flightOpacity = useDerivedValue(() =>
+    isPlayer && playerRow.value !== rowKey
+      ? 0
+      : motion.fieldFade.value * (isPlayer ? motion.owned.value : 1),
+  );
   return (
-    <SkiaGroup opacity={motion.fieldFade} transform={transform}>
+    <SkiaGroup opacity={flightOpacity} transform={transform}>
       {/*
         The name arrives by being written; the facts about it arrive by fading.
         A row is one name and two pieces of metadata, and writing all three at

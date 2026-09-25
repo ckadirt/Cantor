@@ -49,7 +49,13 @@ function fixture(): NativeRowFlight {
     },
   };
 }
-function ink(row: NativeRowFlight, written = 1, cameraX = 0, progress = 1) {
+function ink(
+  row: NativeRowFlight,
+  written = 1,
+  cameraX = 0,
+  progress = 1,
+  yieldKey: string | null = null,
+) {
   const surface = Skia.Surface.Make(400, 400)!;
   const canvas = surface.getCanvas();
   canvas.clear(Skia.Color('white'));
@@ -64,6 +70,7 @@ function ink(row: NativeRowFlight, written = 1, cameraX = 0, progress = 1) {
     1,
     { title: font, mono: font },
     createRowPaints('black', '#666666', 0.7),
+    yieldKey,
   );
   surface.flush();
   const snapshot = surface.makeImageSnapshot();
@@ -98,6 +105,12 @@ it('removes folded owners and off-screen rows', () => {
     }).total,
   ).toBe(0);
   expect(ink(row, 1, 1000).total).toBe(0);
+});
+
+it('leaves out only the row the player is drawing this frame', () => {
+  const row = fixture();
+  expect(ink(row, 1, 0, 1, row.flight.targetPlacementKey).total).toBe(0);
+  expect(ink(row, 1, 0, 1, 'another-placement').total).toBe(ink(row).total);
 });
 
 it('keeps unchanged group names visible throughout their regrouping flight', () => {
