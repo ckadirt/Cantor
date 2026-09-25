@@ -21,8 +21,8 @@ import type { Placement, Point } from './types';
  *
  * Offsets are in **world** units so `fit` can frame the bloomed cluster; the
  * blend between the poses is a function of *screen* scale and is computed at
- * draw time in `recordFieldPicture`, never in React state. Putting it in
- * `useFieldCamera` would rebuild every placement on every pinch frame.
+ * draw time on the UI thread (`gatherFraction`), never in React state. Putting
+ * it in `useFieldCamera` would rebuild every placement on every pinch frame.
  */
 
 /** KNOBS — the packing, and the scale window the cluster closes over. */

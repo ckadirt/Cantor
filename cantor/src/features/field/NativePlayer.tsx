@@ -961,28 +961,6 @@ function buildLineMorph(
   return morphs;
 }
 
-/**
- * The player with nothing to have come from: every seat, no morph.
- *
- * A morph interpolates the *row's* line into the player's, so it needs a row —
- * and there is only a row where the name lens is drawing one natively. Every
- * other lens draws its own song at every distance and has no such line, so the
- * honest gesture there is the fallback `NativeSongModel` already carries for a
- * runtime with no glyph outlines: two strings, faded on the same arrival.
- *
- * Split out rather than built by passing the same string twice, because
- * `buildLineMorph` would still sample two fonts and interpolate a path per
- * letter to arrive at a morph from a line to itself.
- */
-export function playerChromeModel(
-  presentation: FieldPresentation,
-  viewport: PoseViewport,
-  fonts: Readonly<{ songTitle: SkFont; songMeta: SkFont }>,
-): NativeSongModel {
-  const seats = playerSeats(presentation, viewport, fonts);
-  return { ...seats, titleMorph: null, metaMorph: null };
-}
-
 /** What both models share: the strings, where they sit, and what is in the foot. */
 function playerSeats(
   presentation: FieldPresentation,

@@ -27,7 +27,6 @@ import {
   createPicture,
   Group as SkiaGroup,
   LinearGradient,
-  Paint,
   PaintStyle,
   Path,
   Picture,
@@ -39,7 +38,6 @@ import {
   type SkColor,
   type SkPaint,
   type SkPath,
-  type SkPicture,
   type Transforms3d,
 } from '@shopify/react-native-skia';
 import {
@@ -61,19 +59,13 @@ import {
   BROWSE_KNOBS,
   faceArrival,
   gatherFraction,
-  isNativeDrawnDistance,
-  placementPoint,
   nameArrival,
   songNameArrival,
   songShapeArrival,
-  representationAlphas,
-  shelfLabelAlpha,
   smootherstep,
-  worldToScreen,
   type Camera,
   type FieldLayout,
   type Group,
-  type Placement,
   type FlightOwnership,
   type PlacementFlight,
   type Point,
@@ -87,10 +79,8 @@ import {
   availabilityLine,
   availabilityOf,
   fitText,
-  lensByKey,
   nameLensFacePath,
   nameLensRingRadius,
-  neutralAnalysis,
   SEAL_KNOBS,
   SEAL_PLAYER_KNOBS,
   sealDotRadius,
@@ -121,8 +111,6 @@ import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
 import {
   captureLabelMorph,
   captureLabelText,
-  drawLabelMorph,
-  drawSettledLabel,
   labelFlightAlpha,
   planShelfLabels,
   retargetCapturedLabel,
@@ -134,9 +122,7 @@ import {
 import {
   NativePlayerParts,
   PLAYER_RING_KNOBS,
-  PlayerRing,
   nativeSongModel,
-  playerChromeModel,
   type NativeSongModel,
 } from './NativePlayer';
 import {
@@ -144,9 +130,7 @@ import {
   facePoseAt,
   lineOwnedByPlayer,
   playerRadiusPx,
-  playerRisePx,
 } from './songPose';
-import { shelfLabel } from './shelfLabels';
 import type { FieldPresentation, JobPresentation } from './useFieldController';
 import { FIELD_CAMERA_KNOBS, type FieldRecutModel } from './useFieldCamera';
 
@@ -268,8 +252,6 @@ const ROW_RING_RADIUS_PX = nameLensRingRadius(
 
 type Props = {
   layout: FieldLayout;
-  placements: readonly Placement[];
-  camera: Camera;
   cameraShared: SharedValue<Camera>;
   /**
    * FIT on the UI thread.
@@ -320,24 +302,20 @@ type Props = {
   transportLights?: SharedValue<number[]> | null;
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
-  /** How far through the playing song we are, 0..1. */
-  playingProgress?: number | null;
-  /** The resolved audio window at L3, or null at every other distance. */
   /**
-   * The decoded L3 window on the UI thread. Separate from `grain` because the
-   * native path may not take it through React: see `NativeFieldContentProps`.
+   * The decoded L3 window on the UI thread, never through React: see
+   * `NativeFieldContentProps`.
    *
    * Optional, and empty when absent: a canvas nobody is feeding samples to has
    * no detail to resolve, which is the honest answer and the one every test
    * that is not about L3 wants.
    */
   grainShared?: SharedValue<GrainBars | null>;
-  grain?: GrainRender | null;
   activeLensKey?: string;
   /**
    * What the phone thinks the time is, so a week can read as `THIS WEEK`.
-   * Passed rather than read here: a Picture must be a pure function of its
-   * inputs or the memo below would hand back a stale one at midnight.
+   * Passed rather than read here: the label plan is a memo, and would hand
+   * back a stale one at midnight.
    */
   nowMs: number;
   /** Groups visibly owned before this born re-cut generation. */
@@ -348,85 +326,11 @@ type Props = {
    * together rather than as three overlapping animations.
    */
   relayoutLinear?: number;
-  /** FIT interpolated with the camera, used by every scale-derived band. */
-  renderFitScale?: number;
   /** Born transition identity used to capture interrupted label geometry. */
   transitionGeneration?: number;
-  /** Static endpoints for the native-clock L0 renderer. */
+  /** The re-cut being drawn: flights, camera endpoints, generation. */
   recut?: FieldRecutModel | null;
 };
-
-/**
- * The camera the field is actually being *shown* at, right now.
- *
- * `camera` and `cameraShared` are the same quantity sampled at different times:
- * React's copy is whatever the last mirrored frame carried, and the shared one
- * is what the UI thread is drawing from this instant. Recording against React's
- * copy bakes React's commit latency into the transform — and that latency is
- * not constant, so it does not read as a lag, it reads as a *flicker*: every
- * fresh recording is one element, Skia repaints the tree from the JS thread's
- * last transform, and the difference between that and the live one is however
- * long React happened to take. Recording against the live camera instead makes
- * the transform ≈ identity at the moment of recording, so the repainted frame
- * and the animated frame agree to within one frame of motion.
- *
- * The guard is for the one case where the two are not the same quantity: before
- * the first camera is published, React holds the fitted camera and the shared
- * value still holds its placeholder. A disagreement wider than the screen is
- * not latency, so React's is the one to believe.
- */
-function drawCamera(
-  camera: Camera,
-  cameraShared: SharedValue<Camera>,
-  viewport: Viewport,
-): Camera {
-  const live = cameraShared.value;
-  if (!(live.scale > 0)) return camera;
-  const dx = (live.x - camera.x) * live.scale;
-  const dy = (live.y - camera.y) * live.scale;
-  const reach = viewport.width + viewport.height;
-  if (dx * dx + dy * dy > reach * reach) return camera;
-  return live;
-}
-
-/**
- * The map from a picture recorded at one camera to the screen at another.
- *
- * A recorded picture is baked in *screen* coordinates, so moving the camera has
- * always meant recording it again. It does not have to: for a picture recorded
- * at `N` and shown at `M`, screen points are related by one affine map.
- *
- *     p_M = (p_N − V/2)·(M.scale/N.scale) + (N.xy − M.xy)·M.scale + V/2
- *
- * Returned in canvas-operation order, which is the order Skia's `transform`
- * prop applies: translate to where the centre goes, scale about it, then bring
- * the centre back. For a pan the scale factor is exactly 1, so the map is a
- * pure translation and nothing is approximated — text stays crisp and a row
- * keeps its 240×30 screen box however far the finger travels.
- *
- * Defined above the component on purpose: the worklets plugin captures a
- * `'worklet'` declaration into a calling worklet's closure where that caller is
- * defined, so a helper further down the file arrives as `undefined`.
- */
-export function pictureTransformFor(
-  recorded: Camera,
-  live: Camera,
-  viewport: Viewport,
-): Transforms3d {
-  'worklet';
-  const halfWidth = viewport.width / 2;
-  const halfHeight = viewport.height / 2;
-  if (!(live.scale > 0) || !(recorded.scale > 0)) {
-    return [{ translateX: 0 }, { translateY: 0 }];
-  }
-  return [
-    { translateX: halfWidth + (recorded.x - live.x) * live.scale },
-    { translateY: halfHeight + (recorded.y - live.y) * live.scale },
-    { scale: live.scale / recorded.scale },
-    { translateX: -halfWidth },
-    { translateY: -halfHeight },
-  ];
-}
 
 /**
  * The paper the shelf is read on, over the chrome's own ground.
@@ -440,11 +344,10 @@ export function pictureTransformFor(
  * UI thread. That is deliberate and it is the whole rule: the box is there for
  * exactly as long as there are names to read, so it writes itself on as the
  * rows resolve out of their dots and off again as they hand over to the player.
- * No level test, nothing to keep in step with the bands, and nothing to pop at
- * the point where the picture takes the field back from the native renderer —
- * which happens mid-row-band, with the veil at full strength on both sides.
+ * No level test, and nothing to keep in step with the bands.
  *
- * Held by identity and fed only shared values, for the reason `scene` gives.
+ * Held by identity and fed only shared values, for the reason `nativeScene`
+ * gives.
  */
 const ShelfVeil = React.memo(function ShelfVeilImpl({
   cameraShared,
@@ -518,13 +421,15 @@ function clearPaper(colour: string): SkColor {
 }
 
 /**
- * The only field canvas. Each React render records one immediate-mode Picture,
- * culls before lens work, then lets Skia replay that picture in one view.
+ * The field's one canvas.
+ *
+ * Everything on it is drawn by `NativeFieldContent` on the UI thread, from the
+ * re-cut and shared values; React only decides what exists. This component
+ * prepares that — the fonts, the label plan, the born clock, the jobs' marks —
+ * and hands the canvas one element that changes only when the re-cut does.
  */
 function FieldCanvasImpl({
   layout,
-  placements,
-  camera,
   cameraShared,
   fitScaleShared,
   viewport,
@@ -538,21 +443,18 @@ function FieldCanvasImpl({
   transportArriving = null,
   transportLights = null,
   analyses,
-  playingProgress = null,
-  grain = null,
   grainShared = undefined,
   activeLensKey = 'name',
   nowMs,
   labelFromGroups = [],
   relayoutLinear = 1,
-  renderFitScale = layout.fitScale,
   transitionGeneration = 0,
   recut = null,
 }: Props) {
   // Removed songs still own ink in the outgoing placement flights. Keep only
   // that drawing data until the flight family is replaced; it never re-enters
   // the controller's library or hit targets. Dropping it at the data commit
-  // both erases the exit early and strands this generation on the JS picture.
+  // erases the exit early.
   // Progress updates rebuild the controller projection without changing songs.
   // Retain the drawing map so those updates cannot restart Skia's song mapper.
   const previousPresentations = useRef(currentPresentations);
@@ -590,10 +492,6 @@ function FieldCanvasImpl({
     // L1 has title plus metadata in every row; this leaves each row legible
     // at the prototype's 26-world-unit song spacing.
     fontSize: FIELD_CANVAS_KNOBS.NAME_LENS_TITLE_SIZE_PX,
-  });
-  const bodyFont = useMorphFont({
-    fontFamily: font.text,
-    fontSize: textType.small.fontSize,
   });
   const monoFont = useMorphFont({
     fontFamily: font.mono,
@@ -648,9 +546,7 @@ function FieldCanvasImpl({
     // A settled field is the ordinary case, and `planShelfLabels` answers null
     // for it — nothing moved and nothing was renamed. The native renderer
     // draws only flights, so without a standing-still one to draw it would
-    // have no names and the canvas would fall back to the picture for want of
-    // a label. The picture is unaffected: it keeps using its own settled path
-    // once the relayout tween has finished.
+    // have no names.
     const planned =
       labelFromGroups.length === 0
         ? null
@@ -690,26 +586,6 @@ function FieldCanvasImpl({
   }
   lastLabelLinear.current = relayoutLinear;
   const labelFlights = labelPlan.current?.flights ?? semanticLabelFlights;
-  /**
-   * The camera the picture is *recorded* at, which is not the camera it is
-   * *shown* at.
-   *
-   * Once the transform below exists, re-recording for every camera frame stops
-   * being what makes the field move and becomes only what keeps the culling
-   * honest — so it can happen far less often. That matters for more than the
-   * frame budget: a new picture is a new element, and the note below this one
-   * explains what a new element costs. Holding the recording still through a
-   * pan is what keeps the canvas from being re-rendered behind the animation.
-   *
-   * A re-record is owed when the camera has drifted far enough that the
-   * overscan margin might no longer cover what has come on screen, or when the
-   * scale has moved enough for the representation bands to be visibly wrong.
-   */
-  const recordCamera = useRecordCamera(
-    drawCamera(camera, cameraShared, viewport),
-    viewport,
-  );
-
   /*
    * The lens clock: 0 on the circle, 1 on the seal, linear, eased once by
    * whoever draws from it. Retained across re-cuts on purpose — it lives out
@@ -726,24 +602,6 @@ function FieldCanvasImpl({
     });
   }, [activeLensKey, lensMix]);
 
-  const nativeField =
-    recut !== null &&
-    isNativeDrawnDistance(recut.fromCamera.scale, recut.fromFitScale) &&
-    isNativeDrawnDistance(recut.toCamera.scale, recut.toFitScale) &&
-    isNativeDrawnDistance(recordCamera.scale, renderFitScale) &&
-    nativeClock !== null &&
-    monoFont !== null &&
-    displayFont !== null &&
-    songTitleFont !== null &&
-    songMetaFont !== null &&
-    labelFlights !== null &&
-    recut.flights.every(
-      flight =>
-        flight.targetPlacementKey === null ||
-        presentations.has(flight.entityKey) ||
-        jobs?.has(flight.entityKey),
-    );
-  const paints = useMemo(() => createPaints(palette), [palette]);
   // Native shared values are stable; the Jest mock is not, so the fallback is
   // held by ref the way `useFieldCamera` holds its own candidates.
   const grainFallback = useSharedValue<GrainBars | null>(null);
@@ -789,105 +647,6 @@ function FieldCanvasImpl({
     for (const [key, entry] of next) marks[key] = entry.mark;
     jobMarks.value = marks;
   }, [jobMarks, jobs, monoFont, palette, recut]);
-  /**
-   * The camera the next picture will be recorded at.
-   *
-   * Written inside the memo rather than from an effect, and read only by the
-   * worklet below. An effect would run *after* the commit that painted the new
-   * picture, so for one frame the transform would be measured from the camera
-   * of the picture before it — the whole field jumping by exactly the distance
-   * the pan had covered since the last re-record.
-   *
-   * And written *before* the early return, not after it, which is the L0→L1
-   * crossing. While the native path owns the canvas there is no picture to
-   * correct — but Skia's redraw plays its first frame from the values the JS
-   * thread holds and only then starts the mapper, so the frame that introduces
-   * the picture is painted at whatever this last said. Left behind at the
-   * camera of the last picture recorded, that is wherever the field was the
-   * last time you were at L1: the first frame of the crossing lands at the
-   * previous shelf and the next one snaps back. Kept level with the record
-   * camera, the transform is identity the instant the picture appears, which
-   * is the whole point of recording against the live camera.
-   */
-  const pictureCamera = useSharedValue<Camera>(camera);
-  const picture = useMemo(() => {
-    pictureCamera.value = recordCamera;
-    if (
-      nativeField ||
-      displayFont === null ||
-      bodyFont === null ||
-      monoFont === null
-    ) {
-      return null;
-    }
-    return recordFieldPicture({
-      layout,
-      placements,
-      camera: recordCamera,
-      viewport,
-      presentations,
-      jobs,
-      palette,
-      playingKey,
-      focusKey,
-      analyses,
-      playingProgress,
-      grain,
-      lensKey: activeLensKey,
-      nowMs,
-      labelFlights,
-      relayoutLinear,
-      renderFitScale,
-      fonts: { display: displayFont, body: bodyFont, mono: monoFont },
-      paints,
-    });
-  }, [
-    activeLensKey,
-    analyses,
-    bodyFont,
-    displayFont,
-    grain,
-    jobs,
-    labelFlights,
-    layout,
-    monoFont,
-    nowMs,
-    nativeField,
-    relayoutLinear,
-    renderFitScale,
-    paints,
-    palette,
-    placements,
-    focusKey,
-    playingKey,
-    playingProgress,
-    pictureCamera,
-    presentations,
-    recordCamera,
-    viewport,
-  ]);
-
-  /**
-   * The camera's motion, carried on the UI thread.
-   *
-   * Why panning at L1 was coarser than at L0: L0 has `NativeFieldContent`
-   * reading `cameraShared` directly, and every level closer fell back to a
-   * picture that could only move by being recorded again — on the JS thread,
-   * once per React commit, throttled by `mirrorBusy`. `pictureTransformFor` is
-   * what replaces that. Identity is stable across renders on purpose; the note
-   * on `scene` explains what a fresh element would cost here.
-   */
-  const pictureTransform = useDerivedValue(
-    () =>
-      pictureTransformFor(pictureCamera.value, cameraShared.value, viewport),
-    // Explicit, and all three stable: the two shared values are refs and the
-    // viewport only changes on a rotation. Left implicit, the plugin would
-    // infer the same list — but the identity of this value is what holds the
-    // scene element still, so it is worth saying out loud rather than
-    // inheriting from whatever the closure happened to capture.
-    [cameraShared, pictureCamera, viewport],
-  );
-
   /**
    * The box the shelf is read inside, held by identity like everything else on
    * this canvas that outlives a camera frame.
@@ -1007,186 +766,9 @@ function FieldCanvasImpl({
     viewport,
   ]);
 
-  /**
-   * The one thing on this canvas that moves without the camera moving.
-   *
-   * Held by identity and fed only shared values, for the reason the note above
-   * gives: an element that changes on a React render repaints every node from
-   * whatever the JS thread last held.
-   */
-  const playhead = useMemo(() => {
-    if (
-      positionSeconds === null ||
-      focusKey === null ||
-      viewport === null ||
-      renderFitScale === undefined ||
-      renderFitScale <= 0
-    ) {
-      return null;
-    }
-    const held = placements.find(placement => placement.key === focusKey);
-    if (held === undefined) return null;
-    const presentation = presentations.get(held.entityKey);
-    if (presentation === undefined) return null;
-    return (
-      <NativePlayhead
-        cameraShared={cameraShared}
-        colour={palette.ink}
-        durationSeconds={presentation.song.duration_ms / 1000}
-        fitScale={renderFitScale}
-        lensMix={lensMix}
-        positionSeconds={positionSeconds}
-        viewport={viewport}
-      />
-    );
-  }, [
-    cameraShared,
-    focusKey,
-    lensMix,
-    palette.ink,
-    placements,
-    positionSeconds,
-    presentations,
-    renderFitScale,
-    viewport,
-  ]);
-
-  /**
-   * The player's words, for the lenses the native field does not draw.
-   *
-   * `NativePlayerParts` lives inside `NativePlacementFlight`, which is inside
-   * the native tree, which is gated on the *name* lens — because that is the
-   * lens whose faces and rows the native path draws. The player's name, its
-   * recipe, its transport and its quiet line are not that lens's business:
-   * they are laid out from `songPose` and the viewport, and a lens draws a
-   * song's picture, not the chrome around it. They went missing anyway. On the
-   * old wave lens you could start a song on `circle`, switch lens, and be left
-   * looking at a waveform with no name, no recipe and no way to pause it.
-   *
-   * So it is mounted here, on the picture path, which is exactly the complement
-   * of the native one — `scene` is only ever rendered when `nativeField` is
-   * false. One owner draws these glyphs at any instant, which is the Flicker
-   * Law's first rule and the reason this is a complement rather than a second
-   * copy with a condition of its own.
-   *
-   * No morphs and no ring. A morph interpolates the row's line into the
-   * player's and there is no native row to come from here; the ring is
-   * `playhead`, mounted beside this and already lens-independent, so
-   * `positionSeconds` is passed null to keep `NativePlayerParts` from drawing
-   * a second one over the lens's own drawing.
-   */
-  const playerChrome = useMemo(() => {
-    if (
-      focusKey === null ||
-      viewport === null ||
-      songTitleFont === null ||
-      songMetaFont === null
-    ) {
-      return null;
-    }
-    const held = placements.find(placement => placement.key === focusKey);
-    if (held === undefined) return null;
-    const presentation = presentations.get(held.entityKey);
-    if (presentation === undefined) return null;
-    return (
-      <PlayerChrome
-        cameraShared={cameraShared}
-        colour={palette.ink}
-        fitScaleShared={fitScaleShared}
-        model={playerChromeModel(presentation, viewport, {
-          songMeta: songMetaFont,
-          songTitle: songTitleFont,
-        })}
-        mutedColour={palette.muted}
-        songMetaFont={songMetaFont}
-        songTitleFont={songTitleFont}
-        transportPlaying={transportPlaying}
-        transportArriving={transportArriving}
-        transportLights={transportLights}
-        viewport={viewport}
-      />
-    );
-  }, [
-    cameraShared,
-    fitScaleShared,
-    focusKey,
-    palette.ink,
-    palette.muted,
-    placements,
-    presentations,
-    songMetaFont,
-    songTitleFont,
-    transportPlaying,
-    transportArriving,
-    transportLights,
-    viewport,
-  ]);
-
-  /**
-   * The picture, its paper and its playhead as one element held by identity.
-   *
-   * This is the whole point of the transform above. Skia re-renders its
-   * children through `root.render(children)` keyed on the *element*, so a fresh
-   * one on every camera frame would re-record the node tree from JS-thread
-   * values and repaint it — which is the flicker the note above describes, and
-   * which a `transform` fed by a shared value would walk straight into. While
-   * the camera is only moving, `picture` is the same object, `pictureTransform`
-   * has stable identity, and this memo hands back the same element: nothing
-   * re-renders, and the UI thread carries the motion alone. Exactly how L0 has
-   * always worked, now for every level.
-   */
-  const scene = useMemo(
-    () => (
-      <>
-        {/*
-          Under the picture rather than inside it. The recording's own
-          `drawColor` fills its bounds, which are the viewport — so the moment
-          the picture is translated, the paper would move with it and leave the
-          canvas showing through at the edge it came from.
-        */}
-        <Fill color={palette.bg} />
-        {picture === null ? null : grain !== null ? (
-          // L3 is drawn from the viewport, not from the camera: the grain
-          // fills the screen and the camera decides which *samples* it holds,
-          // not where they sit. Transforming it would slide the waveform under
-          // a pan that is supposed to be scrubbing through it.
-          <Picture picture={picture} />
-        ) : (
-          <SkiaGroup transform={pictureTransform}>
-            <Picture picture={picture} />
-          </SkiaGroup>
-        )}
-        {playhead}
-        {playerChrome}
-        {veil}
-      </>
-    ),
-    [
-      grain,
-      palette.bg,
-      picture,
-      pictureTransform,
-      playerChrome,
-      playhead,
-      veil,
-    ],
-  );
-
-  if (nativeField) {
-    return (
-      <>
-        <Canvas
-          importantForAccessibility="no-hide-descendants"
-          opaque
-          pointerEvents="none"
-          style={StyleSheet.absoluteFill}
-        >
-          {nativeScene}
-        </Canvas>
-      </>
-    );
-  }
-
+  // Paper until the fonts the field is written in have loaded — a frame or
+  // two at launch. There is no second way to draw the field.
+  const paper = useMemo(() => <Fill color={palette.bg} />, [palette.bg]);
   return (
     <Canvas
       importantForAccessibility="no-hide-descendants"
@@ -1194,255 +776,15 @@ function FieldCanvasImpl({
       pointerEvents="none"
       style={StyleSheet.absoluteFill}
     >
-      {scene}
+      {nativeScene ?? paper}
     </Canvas>
   );
 }
-
-/**
- * How far the camera may drift before the picture owes a re-recording.
- *
- * The translation threshold is well inside `OVERSCAN_PX`, so a mark that comes
- * on screen was already recorded before it was needed. The scale threshold is
- * the point where holding the representation bands still would start to read as
- * the wrong drawing rather than as a slightly early one.
- */
-const RECORD_DRIFT = {
-  TRANSLATION_PX: FIELD_CANVAS_KNOBS.OVERSCAN_PX / 2,
-  /**
-   * Tight, and it has to be — much tighter than the translation threshold.
-   *
-   * The transform can carry a *position*, exactly. What it cannot carry is
-   * anything the recording computed **from** the scale: the gather between a
-   * bloomed cluster and its column, and the representation bands that fade a
-   * dot into a row. Those step once per recording while the frame around them
-   * scales continuously, and relative motion is far more visible than slow
-   * motion — a mark that jumps 19 px against a smoothly moving background
-   * reads as a flicker, which is what 3% bought at the L1→L0 gather.
-   *
-   * At 0.5% that jump is under 3 px, and the cost is only paid where the scale
-   * is actually moving. A pan does not move it at all, which is the case this
-   * whole transform exists for: recordings there stay as rare as the
-   * translation threshold allows.
-   */
-  SCALE_RATIO: 1.005,
-} as const;
-
-/**
- * The camera to record at: the last one recorded, until it is too far away.
- *
- * Returned by identity, so a caller's `useMemo` naturally does nothing while
- * the camera is only moving. The comparison is in *screen* pixels — a world
- * distance means nothing without a scale to read it at.
- */
-function useRecordCamera(camera: Camera, viewport: Viewport): Camera {
-  const held = useRef<{ camera: Camera; viewport: Viewport }>({
-    camera,
-    viewport,
-  });
-  const previous = held.current;
-  // A rotation changes what the overscan covers, so a recording made for the
-  // other orientation is stale however still the camera has been.
-  const resized =
-    previous.viewport.width !== viewport.width ||
-    previous.viewport.height !== viewport.height;
-  const drifted =
-    resized ||
-    !(previous.camera.scale > 0) ||
-    !(camera.scale > 0) ||
-    Math.abs(camera.x - previous.camera.x) * camera.scale >
-      RECORD_DRIFT.TRANSLATION_PX ||
-    Math.abs(camera.y - previous.camera.y) * camera.scale >
-      RECORD_DRIFT.TRANSLATION_PX ||
-    camera.scale > previous.camera.scale * RECORD_DRIFT.SCALE_RATIO ||
-    camera.scale * RECORD_DRIFT.SCALE_RATIO < previous.camera.scale;
-  if (drifted) {
-    held.current = { camera, viewport };
-  }
-  return held.current.camera;
-}
-
-/**
- * The playhead: an arc that fills and a hand that sweeps, both at frame rate.
- *
- * Progress *is* the ring, so it has to move like one. The waveform behind it is
- * recorded once per camera change and never re-recorded for time; only these
- * two paths answer to the clock, and they answer on the UI thread — the arc by
- * trimming a circle it never rebuilds, the hand by rotating a line it never
- * rebuilds. Nothing here is a function of a React render.
- */
 
 /** The measured loudness as plain numbers; a worklet cannot hold a typed array. */
 function levelsOf(analysis: SongAnalysis | undefined): readonly number[] {
   if (analysis === undefined) return [];
   return Array.from(analysis.rms);
-}
-
-function NativePlayhead({
-  cameraShared,
-  positionSeconds,
-  viewport,
-  fitScale,
-  durationSeconds,
-  colour,
-  lensMix,
-}: {
-  lensMix: SharedValue<number>;
-  cameraShared: SharedValue<Camera>;
-  positionSeconds: SharedValue<number>;
-  viewport: Viewport;
-  fitScale: number;
-  durationSeconds: number;
-  colour: string;
-}) {
-  /**
-   * The picture path's anchor: the middle of the view.
-   *
-   * The native path hangs the same ring off the song's own mark instead, which
-   * is the truer answer and the one that stays concentric with the face on the
-   * way in. Here there is no mark to hang it off — a recording knows where
-   * things were when it was made, not where they are — so it is drawn where
-   * arriving at a song puts them, and this path only runs where the native one
-   * cannot: a lens other than the name, or a font that has not loaded.
-   */
-  const centre = useMemo<Transforms3d>(
-    () => [
-      { translateX: viewport.width / 2 },
-      {
-        translateY: viewport.height / 2 - playerRisePx(viewport.height, 1),
-      },
-    ],
-    [viewport.height, viewport.width],
-  );
-
-  // The song band, inlined: `representationAlphas` is not a worklet, and the
-  // player's own opacity must not come through React either.
-  const [fadeIn, holdFrom, holdTo, fadeOut] = REPRESENTATION_WINDOWS.song;
-  const opacity = useDerivedValue(() => {
-    const ratio = cameraShared.value.scale / fitScale;
-    if (ratio <= fadeIn || ratio >= fadeOut) return 0;
-    const ease = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
-    if (ratio < holdFrom) return ease((ratio - fadeIn) / (holdFrom - fadeIn));
-    if (ratio > holdTo) return 1 - ease((ratio - holdTo) / (fadeOut - holdTo));
-    return 1;
-  }, [fadeIn, fadeOut, fitScale, holdFrom, holdTo]);
-
-  return (
-    <SkiaGroup opacity={opacity} transform={centre}>
-      <PlayerRing
-        colour={colour}
-        durationSeconds={durationSeconds}
-        lensMix={lensMix}
-        positionSeconds={positionSeconds}
-        radius={playerRadiusPx(viewport.width)}
-      />
-    </SkiaGroup>
-  );
-}
-
-/**
- * The player's name, recipe, transport and quiet line, on the picture path.
- *
- * The same `NativePlayerParts` the native path mounts, given the two numbers it
- * asks for and nothing else. Those numbers are pure functions of the camera —
- * `useNativeCameraMotion` derives them the same way, from a scale that a re-cut
- * clock may be carrying — so here, where there is no native re-cut, they come
- * straight off `cameraShared`. That is what keeps this chrome on the camera's
- * own clock rather than on React's copy of it, which is the whole reason the
- * player was drawn on the canvas in the first place.
- *
- * `arrived` is the song band, `named` the name's arrival. The band says how
- * *present* the player is and the arrival says where its words *are* — never
- * the other way round; see `SONG_ARRIVAL`.
- */
-function PlayerChrome({
-  cameraShared,
-  fitScaleShared,
-  model,
-  transportPlaying,
-  transportArriving,
-  transportLights,
-  viewport,
-  colour,
-  mutedColour,
-  songTitleFont,
-  songMetaFont,
-}: {
-  cameraShared: SharedValue<Camera>;
-  fitScaleShared: SharedValue<number>;
-  model: NativeSongModel;
-  transportPlaying: SharedValue<number> | null;
-  transportArriving: SharedValue<number> | null;
-  transportLights: SharedValue<number[]> | null;
-  viewport: Viewport;
-  colour: string;
-  mutedColour: string;
-  songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
-  songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
-}) {
-  const arrived = useDerivedValue(() =>
-    bandAlphaAt(
-      cameraShared.value.scale,
-      fitScaleShared.value,
-      REPRESENTATION_WINDOWS.song,
-    ),
-  );
-  const named = useDerivedValue(() =>
-    songNameArrival(cameraShared.value.scale, fitScaleShared.value),
-  );
-  /**
-   * Nowhere, because nothing hangs off it here.
-   *
-   * `anchor` places the ring, and the ring is `playhead` on this path — see
-   * `positionSeconds` below, which is null for exactly that reason. Passed as a
-   * held identity rather than left undefined because it is a required prop and
-   * a fresh array every render would repaint the group it transforms.
-   */
-  const anchor = useDerivedValue<Transforms3d>(() => [
-    { translateX: 0 },
-    { translateY: 0 },
-  ]);
-  /**
-   * The mark's own point, which at L2 is the middle of the view.
-   *
-   * Everything `songPose` returns is measured from the mark — `footRowPx` is
-   * `viewport.height / 2 - bottomPx` — because on the native path the whole
-   * player rides the flight transform that carries its mark. There is no such
-   * transform on a recording, so the translation is made here, and it is the
-   * one `playerFootScreenPx` and `transportScreenPx` already make for the touch
-   * layer: half the viewport in each axis. Without it the foot lays itself out
-   * from the top-left corner and the name runs off the left edge.
-   *
-   * `NativePlayhead` states the same translation for the ring, and states it
-   * separately: the ring is lifted by `playerRisePx` and these rows are not.
-   */
-  const centre = useMemo<Transforms3d>(
-    () => [
-      { translateX: viewport.width / 2 },
-      { translateY: viewport.height / 2 },
-    ],
-    [viewport.height, viewport.width],
-  );
-  return (
-    <SkiaGroup transform={centre}>
-      <NativePlayerParts
-        anchor={anchor}
-        arrived={arrived}
-        colour={colour}
-        durationSeconds={0}
-        model={model}
-        mutedColour={mutedColour}
-        named={named}
-        positionSeconds={null}
-        songMetaFont={songMetaFont}
-        songTitleFont={songTitleFont}
-        transportPlaying={transportPlaying}
-        arriving={transportArriving}
-        lights={transportLights}
-        viewport={viewport}
-      />
-    </SkiaGroup>
-  );
 }
 
 /**
@@ -1629,7 +971,7 @@ type NativeFieldContentProps = Readonly<{
    * It changes every time the camera resolves a new span, and this element is
    * held by identity — a decode landing as a prop would hand `Canvas` a fresh
    * element mid-zoom and re-record the whole root. See the Flicker Law note on
-   * `scene`.
+   * `nativeScene`.
    */
   grainShared: SharedValue<GrainBars | null>;
   /**
@@ -3688,169 +3030,6 @@ function NativePlacementFlight({
 /** Resolved samples and the label for the L3 span. */
 export type GrainRender = Readonly<{ window: SampleWindow; label: string }>;
 
-type PictureRequest = Readonly<{
-  layout: FieldLayout;
-  placements: readonly Placement[];
-  camera: Camera;
-  viewport: Viewport;
-  presentations: ReadonlyMap<string, FieldPresentation>;
-  jobs?: ReadonlyMap<string, JobPresentation>;
-  palette: Palette;
-  playingKey?: string | null;
-  /** The placement the camera arrived at; the only one drawn as a player. */
-  focusKey?: string | null;
-  analyses?: ReadonlyMap<string, SongAnalysis>;
-  playingProgress?: number | null;
-  grain?: GrainRender | null;
-  lensKey: string;
-  nowMs: number;
-  labelFlights?: ShelfLabelFlights | null;
-  relayoutLinear?: number;
-  renderFitScale?: number;
-  fonts: LensFonts;
-  paints: LensPaints;
-}>;
-
-export function recordFieldPicture(request: PictureRequest): SkPicture {
-  const recorder = Skia.PictureRecorder();
-  const canvas = recorder.beginRecording(
-    Skia.XYWHRect(0, 0, request.viewport.width, request.viewport.height),
-  );
-  canvas.drawColor(Skia.Color(request.palette.bg));
-
-  const alpha = representationAlphas(
-    request.camera.scale,
-    request.renderFitScale ?? request.layout.fitScale,
-  );
-  // Where each cluster is between its two poses. Once per picture, from the
-  // camera's scale — never in React state, which would rebuild every placement
-  // on every pinch frame and lose the measured pan baseline.
-  const gather = gatherFraction(
-    request.camera.scale,
-    request.renderFitScale ?? request.layout.fitScale,
-  );
-  drawShelfLabels(
-    canvas,
-    request,
-    shelfLabelAlpha(
-      request.camera.scale,
-      request.renderFitScale ?? request.layout.fitScale,
-    ),
-    gather,
-  );
-  // At L3 the field gives way to one song's samples entirely.
-  if (request.grain != null) {
-    drawGrain(canvas, request, request.grain);
-    return recorder.finishRecordingAsPicture();
-  }
-
-  const lens = lensByKey(request.lensKey);
-  if (lens === null) return recorder.finishRecordingAsPicture();
-
-  for (const placement of request.placements) {
-    const placementOpacity = placement.opacity ?? 1;
-    if (placementOpacity <= 0.01) continue;
-    const point = worldToScreen(
-      placementPoint(placement, gather),
-      request.camera,
-      request.viewport,
-    );
-    if (!withinOverscan(point, request.viewport)) continue;
-    const presentation = request.presentations.get(placement.entityKey);
-    if (presentation === undefined) {
-      const pending = request.jobs?.get(placement.entityKey);
-      if (pending !== undefined) {
-        drawJobMark(canvas, request, point, pending, {
-          dot: alpha.dot * placementOpacity,
-          row: alpha.row * placementOpacity,
-          song: alpha.song * placementOpacity,
-          grain: alpha.grain * placementOpacity,
-        });
-      }
-      continue;
-    }
-    const song = {
-      key: presentation.entity.key,
-      id: presentation.entity.entityId,
-      seed: presentation.song.seed,
-      title: presentation.song.title,
-      createdAtMs: presentation.entity.createdAtMs,
-      durationMs: presentation.song.duration_ms,
-      model: presentation.song.model,
-      nodeLabel: presentation.nodeLabels[0] ?? presentation.backend.petname,
-      audioState: presentation.localAudio.state,
-      arriving: arrivingFraction(
-        presentation.localAudio.bytes,
-        presentation.delivery?.byte_length,
-      ),
-      byteLength: presentation.delivery?.byte_length ?? null,
-      playing: presentation.entity.key === request.playingKey,
-      analysis:
-        request.analyses?.get(presentation.entity.key) ?? neutralAnalysis(),
-      progress:
-        presentation.entity.key === request.playingKey
-          ? request.playingProgress ?? null
-          : null,
-    } as const;
-    if (alpha.dot > 0.01) {
-      lens.draw(
-        canvas,
-        { kind: 'mark', x: point.x, y: point.y, width: 0, height: 0 },
-        song,
-        {
-          alpha: alpha.dot * placementOpacity,
-          fonts: request.fonts,
-          paints: request.paints,
-        },
-      );
-    }
-    if (alpha.row > 0.01) {
-      lens.draw(
-        canvas,
-        {
-          kind: 'row',
-          x: point.x,
-          y: point.y,
-          width: FIELD_CANVAS_KNOBS.ROW_WIDTH_PX,
-          height: FIELD_CANVAS_KNOBS.ROW_HEIGHT_PX,
-        },
-        song,
-        {
-          alpha: alpha.row * placementOpacity,
-          fonts: request.fonts,
-          paints: request.paints,
-        },
-      );
-    }
-    // L2. The player is the same lens with the room to be one, drawn at the
-    // mark's own point — which at this distance is the middle of the view,
-    // because that is what arriving at a song means.
-    if (alpha.song > 0.01 && placement.key === request.focusKey) {
-      lens.draw(
-        canvas,
-        {
-          kind: 'song',
-          x: point.x,
-          y:
-            point.y -
-            request.viewport.height *
-              FIELD_CANVAS_KNOBS.SONG_RISE_RATIO *
-              alpha.song,
-          width: request.viewport.width * FIELD_CANVAS_KNOBS.SONG_BOX_RATIO,
-          height: request.viewport.width * FIELD_CANVAS_KNOBS.SONG_BOX_RATIO,
-        },
-        song,
-        {
-          alpha: alpha.song * placementOpacity,
-          fonts: request.fonts,
-          paints: request.paints,
-        },
-      );
-    }
-  }
-  return recorder.finishRecordingAsPicture();
-}
-
 function createPaints(palette: Palette): LensPaints {
   return {
     ink: paint(palette.ink),
@@ -3905,7 +3084,7 @@ function recordJobMark(
   return { dot: record(false), row: record(true) };
 }
 
-function drawJobMark(
+export function drawJobMark(
   canvas: SkCanvas,
   request: { paints: LensPaints; fonts: Pick<LensFonts, 'mono'> },
   point: Point,
@@ -4025,258 +3204,6 @@ function stageGlyphPath(symbol: SymbolName, size: number): SkPath {
   }
   stageGlyphCache.set(key, path);
   return path;
-}
-
-/**
- * One song's samples, filling the viewport, with a fixed centre playhead.
- *
- * The playhead does not move: at this level the audio moves past it, which is
- * what makes zoom and drag mean scrubbing rather than panning a picture.
- */
-function drawGrain(
-  canvas: SkCanvas,
-  request: PictureRequest,
-  grain: GrainRender,
-): void {
-  const { width, height } = request.viewport;
-  const midY = height / 2;
-  const halfHeight = height * FIELD_CANVAS_KNOBS.GRAIN_HEIGHT_RATIO;
-  const paint = request.paints.ink;
-  const channel = grain.window.channels[0];
-
-  if (channel !== undefined && grain.window.buckets > 0) {
-    paint.setAlphaf(1);
-    const columns = Math.min(grain.window.buckets, Math.floor(width));
-    const step = width / columns;
-    for (let column = 0; column < columns; column += 1) {
-      const bucket = Math.floor((column * grain.window.buckets) / columns);
-      const low = channel.min[bucket] ?? 0;
-      const high = channel.max[bucket] ?? 0;
-      const top = midY - high * halfHeight;
-      const bottom = midY - low * halfHeight;
-      canvas.drawRect(
-        {
-          x: column * step,
-          y: Math.min(top, bottom),
-          width: Math.max(0.7, step * 0.85),
-          height: Math.max(0.7, Math.abs(bottom - top)),
-        },
-        paint,
-      );
-    }
-  } else {
-    // No samples: a flat line is honest about having nothing to show.
-    request.paints.faint.setAlphaf(1);
-    canvas.drawRect({ x: 0, y: midY, width, height: 1 }, request.paints.faint);
-  }
-
-  paint.setAlphaf(1);
-  canvas.drawRect(
-    {
-      x: width / 2 - FIELD_CANVAS_KNOBS.GRAIN_PLAYHEAD_WIDTH_PX / 2,
-      y: 0,
-      width: FIELD_CANVAS_KNOBS.GRAIN_PLAYHEAD_WIDTH_PX,
-      height,
-    },
-    paint,
-  );
-
-  request.paints.muted.setAlphaf(1);
-  canvas.drawText(
-    grain.label,
-    FIELD_CANVAS_KNOBS.GRAIN_LABEL_OFFSET_PX,
-    FIELD_CANVAS_KNOBS.GRAIN_LABEL_OFFSET_PX,
-    request.paints.muted,
-    request.fonts.mono,
-  );
-}
-
-/**
- * The name over each cluster.
- *
- * While a re-cut is running the labels are *flights* rather than group
- * properties: one label can leave a cluster that no longer exists, and two can
- * leave the same one. Each is drawn between the seat it came from and the seat
- * it is going to, so a month splitting into playlists sends a copy of its name
- * out to every one of them.
- */
-function drawShelfLabels(
-  canvas: SkCanvas,
-  request: PictureRequest,
-  alpha: number,
-  gather: number,
-): void {
-  if (alpha <= 0.01) return;
-  // In world units, and without building a point per placement. This runs over
-  // every placement in the field on every recorded frame — the one loop here
-  // that is not culled — so the two allocations `placementPoint` and
-  // `worldToScreen` would each make are the whole of its cost at 500 songs.
-  // One conversion per *group* at the end says the same thing.
-  const bloom = 1 - (gather < 0 ? 0 : gather > 1 ? 1 : gather);
-  const topWorldByGroup = new Map<string, number>();
-  for (const placement of request.placements) {
-    const y = placement.y + placement.bloomY * bloom;
-    const previous = topWorldByGroup.get(placement.groupKey);
-    if (previous === undefined || y < previous) {
-      topWorldByGroup.set(placement.groupKey, y);
-    }
-  }
-  const topYByGroup = new Map<string, number>();
-  for (const [groupKey, worldY] of topWorldByGroup) {
-    topYByGroup.set(
-      groupKey,
-      (worldY - request.camera.y) * request.camera.scale +
-        request.viewport.height / 2,
-    );
-  }
-  request.paints.faint.setAlphaf(alpha);
-  request.paints.muted.setAlphaf(alpha);
-
-  /** A world point lifted to where a name sits above it. */
-  const above = (point: { x: number; y: number }) => ({
-    x: point.x,
-    y: point.y - FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
-  });
-
-  /** Where a cluster's label sits once everything has settled. */
-  const seatOf = (group: (typeof request.layout.groups)[number]) => {
-    const groupPoint = worldToScreen(
-      { x: group.cx, y: group.cy },
-      request.camera,
-      request.viewport,
-    );
-    return {
-      x: groupPoint.x,
-      y:
-        (topYByGroup.get(group.key) ?? groupPoint.y) -
-        FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
-    };
-  };
-
-  const progress = request.relayoutLinear ?? 1;
-  // Two clocks, one tween. The glyphs morph on the raw ramp because the motion
-  // engine eases inside its own windows; the seat travels on the same eased
-  // curve the marks use, so a label and its cluster move at one rate.
-  const travel = smootherstep(progress);
-  const flights = progress < 1 ? request.labelFlights ?? null : null;
-  if (flights !== null) {
-    for (const flight of flights) {
-      const ownerAlpha = alpha * labelFlightAlpha(flight, travel);
-      if (ownerAlpha <= 0.01) continue;
-      // A name travels seat to seat: the top of the cluster it leaves to the
-      // top of the one it lands on, both in world units, projected once. Both
-      // ends being the same quantity is what makes a re-cut that does not move
-      // a cluster — one month becoming one year — morph in place instead of
-      // swooping. Anchoring on the destination and lerping an *offset between
-      // centres* into it steps by the difference between the two clusters'
-      // heights on the first frame, because a cluster's centre is not where
-      // its name sits.
-      // Each end is two seats, and the gather picks between them — the same
-      // blend `NativeShelfLabel` makes, because the two renderers hand over at
-      // 12·FIT where the clusters are long since closed and a label drawn at
-      // the bloomed top by one of them would step on the way past.
-      const fromTop =
-        flight.fromTop + (flight.fromTopGathered - flight.fromTop) * gather;
-      const toTop =
-        flight.toTop + (flight.toTopGathered - flight.toTop) * gather;
-      const point = above(
-        worldToScreen(
-          {
-            x: flight.from.x + (flight.to.x - flight.from.x) * travel,
-            y: fromTop + (toTop - fromTop) * travel,
-          },
-          request.camera,
-          request.viewport,
-        ),
-      );
-      if (!withinOverscan(point, request.viewport)) continue;
-      if (flight.primary !== null) {
-        drawLabelMorph(
-          canvas,
-          flight.primary,
-          point.x,
-          point.y,
-          progress,
-          request.paints.muted,
-          ownerAlpha,
-          request.fonts.mono,
-        );
-      } else if (flight.primaryTo.length > 0) {
-        request.paints.muted.setAlphaf(ownerAlpha);
-        drawSettledLabel(
-          canvas,
-          flight.primaryTo,
-          point.x,
-          point.y,
-          request.paints.muted,
-          request.fonts.mono,
-        );
-      }
-      if (flight.secondary !== null) {
-        drawLabelMorph(
-          canvas,
-          flight.secondary,
-          point.x,
-          point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
-          progress,
-          request.paints.faint,
-          ownerAlpha,
-          request.fonts.mono,
-        );
-      } else if (flight.secondaryTo.length > 0) {
-        request.paints.faint.setAlphaf(ownerAlpha);
-        drawSettledLabel(
-          canvas,
-          flight.secondaryTo,
-          point.x,
-          point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
-          request.paints.faint,
-          request.fonts.mono,
-        );
-      }
-    }
-    request.paints.faint.setAlphaf(alpha);
-    request.paints.muted.setAlphaf(alpha);
-    return;
-  }
-
-  for (const group of request.layout.groups) {
-    const point = seatOf(group);
-    if (!withinOverscan(point, request.viewport)) continue;
-    // The axis hands over its key; the surface says it out loud, and keeps the
-    // key underneath so the grouping is never a mystery.
-    const read = shelfLabel(group.label, request.nowMs);
-    drawSettledLabel(
-      canvas,
-      read.primary.toUpperCase(),
-      point.x,
-      point.y,
-      request.paints.muted,
-      request.fonts.mono,
-    );
-    if (read.secondary !== null) {
-      drawSettledLabel(
-        canvas,
-        read.secondary,
-        point.x,
-        point.y + FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
-        request.paints.faint,
-        request.fonts.mono,
-      );
-    }
-  }
-}
-
-function withinOverscan(
-  point: { x: number; y: number },
-  viewport: Viewport,
-): boolean {
-  return (
-    point.x >= -FIELD_CANVAS_KNOBS.OVERSCAN_PX &&
-    point.x <= viewport.width + FIELD_CANVAS_KNOBS.OVERSCAN_PX &&
-    point.y >= -FIELD_CANVAS_KNOBS.OVERSCAN_PX &&
-    point.y <= viewport.height + FIELD_CANVAS_KNOBS.OVERSCAN_PX
-  );
 }
 
 type CapturedShelfFlight = Readonly<{

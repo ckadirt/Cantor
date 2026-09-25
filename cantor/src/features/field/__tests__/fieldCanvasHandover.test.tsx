@@ -25,7 +25,7 @@ import {
   type FieldEntity,
   type FieldLayout,
 } from '../../../field';
-import { FieldCanvas, pictureTransformFor } from '../FieldCanvas';
+import { FieldCanvas } from '../FieldCanvas';
 import type { FieldPresentation } from '../useFieldController';
 import type { FieldRecutModel } from '../useFieldCamera';
 
@@ -153,7 +153,6 @@ async function drawnTextAt(
   await ReactTestRenderer.act(async () => {
     renderer = ReactTestRenderer.create(
       <FieldCanvas
-        camera={camera}
         cameraShared={cameraShared as never}
         fitScaleShared={fitScaleShared as never}
         focusKey={focusKey}
@@ -161,11 +160,9 @@ async function drawnTextAt(
         labelFromGroups={recut.fromGroups}
         nowMs={Date.UTC(2026, 7, 30)}
         palette={palette}
-        placements={recut.layout.placements}
         positionSeconds={positionSeconds as never}
         presentations={presentations}
         recut={recut}
-        renderFitScale={recut.toFitScale}
         transitionGeneration={recut.generation}
         viewport={viewport}
       />,
@@ -275,11 +272,10 @@ describe('field canvas L0 to L1 handover', () => {
       cameraShared.value = camera;
       fitScaleShared.value = recut.toFitScale;
       return <FieldCanvas
-        camera={camera} cameraShared={cameraShared as never}
+        cameraShared={cameraShared as never} nowMs={Date.UTC(2026, 7, 30)}
         fitScaleShared={fitScaleShared as never} layout={recut.layout}
         labelFromGroups={recut.fromGroups} palette={palette}
-        placements={recut.layout.placements} nowMs={Date.UTC(2026, 7, 30)}
-        recut={recut} renderFitScale={recut.toFitScale}
+        recut={recut}
         transitionGeneration={recut.generation} presentations={data}
         focusKey={recut.layout.placements[0].key} viewport={viewport}
       />;
@@ -330,16 +326,13 @@ describe('field canvas L0 to L1 handover', () => {
     await ReactTestRenderer.act(async () => {
       renderer = ReactTestRenderer.create(
         <FieldCanvas
-          camera={inRowBand}
           cameraShared={cameraShared as never}
           fitScaleShared={fitScaleShared as never}
           layout={year}
           labelFromGroups={recut.fromGroups}
           palette={palette}
-          placements={year.placements}
           nowMs={Date.UTC(2026, 7, 30)}
           recut={recut}
-          renderFitScale={year.fitScale}
           transitionGeneration={recut.generation}
           presentations={presentations}
           viewport={viewport}
@@ -463,16 +456,13 @@ describe('field canvas L0 to L1 handover', () => {
     await ReactTestRenderer.act(async () => {
       renderer = ReactTestRenderer.create(
         <FieldCanvas
-          camera={inRowBand}
           cameraShared={{ value: inRowBand } as never}
           fitScaleShared={{ value: year.fitScale } as never}
           layout={year}
           labelFromGroups={recut.fromGroups}
           palette={palette}
-          placements={year.placements}
           nowMs={Date.UTC(2026, 7, 30)}
           recut={recut}
-          renderFitScale={year.fitScale}
           transitionGeneration={recut.generation}
           presentations={presentations}
           viewport={viewport}
@@ -489,80 +479,5 @@ describe('field canvas L0 to L1 handover', () => {
     expect(
       rowText(),
     ).toContain('Song song-a');
-  });
-
-  it('holds the record camera level with the live one while L0 owns the canvas', async () => {
-    // A cut whose clusters are renamed, because the native path is only taken
-    // while there are label flights to carry: month into year is the L0 move
-    // the arrangement dial makes.
-    const recut: FieldRecutModel = {
-      generation: 1,
-      layout: year,
-      flights: planPlacementFlights(month.placements, year.placements, 1),
-      fromFitScale: month.fitScale,
-      toFitScale: year.fitScale,
-      fromCamera: cameraFor(month),
-      toCamera: cameraFor(year),
-      fromGroups: month.groups,
-      animate: true,
-      nativeDriven: true,
-    };
-    const cameraShared = { value: cameraFor(year) };
-    const fitScaleShared = { value: year.fitScale };
-    const canvas = (camera: Camera) => (
-      <FieldCanvas
-        camera={camera}
-        cameraShared={cameraShared as never}
-        fitScaleShared={fitScaleShared as never}
-        layout={year}
-        labelFromGroups={recut.fromGroups}
-        palette={palette}
-        placements={year.placements}
-        nowMs={Date.UTC(2026, 7, 30)}
-        recut={recut}
-        renderFitScale={year.fitScale}
-        transitionGeneration={recut.generation}
-        presentations={presentations}
-        viewport={viewport}
-      />
-    );
-
-    let renderer!: ReactTestRenderer.ReactTestRenderer;
-    await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(canvas(cameraFor(year)));
-    });
-    // The native path is the premise: at FIT there is no picture at all, which
-    // is what leaves its camera free to go stale.
-    expect(recordedPictures(renderer)).toHaveLength(0);
-    const cameraValues = sharedValues.filter(shared =>
-      typeof shared.value === 'object' && shared.value !== null &&
-      'scale' in shared.value,
-    );
-    expect(cameraValues).toHaveLength(1);
-    const pictureCamera = cameraValues[0];
-
-    // A pan well past the re-record threshold, mirrored into React the way the
-    // camera hook mirrors one.
-    const panned = {
-      ...cameraFor(year),
-      x: cameraFor(year).x + 2000 / year.fitScale,
-    };
-    cameraShared.value = panned;
-    await ReactTestRenderer.act(async () => {
-      renderer.update(canvas(panned));
-    });
-    expect(recordedPictures(renderer)).toHaveLength(0);
-
-    // Whatever the crossing paints its first frame with is this transform, and
-    // at the moment the picture appears it has to be identity.
-    expect(
-      pictureTransformFor(pictureCamera.value as Camera, panned, viewport),
-    ).toEqual([
-      { translateX: viewport.width / 2 },
-      { translateY: viewport.height / 2 },
-      { scale: 1 },
-      { translateX: -viewport.width / 2 },
-      { translateY: -viewport.height / 2 },
-    ]);
   });
 });

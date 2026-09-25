@@ -303,15 +303,11 @@ export function FieldScreen({ identity }: Props) {
     });
   }, []);
   const [dateResolution, setDateResolution] = useState<DateResolution>('week');
-  const [grain, setGrain] = useState<GrainRender | null>(null);
   /**
-   * The same window, on the UI thread.
+   * The decoded L3 window, on the UI thread.
    *
-   * The native path may not take this through React: a decode lands while the
-   * camera is moving, and a prop change there hands `Canvas` a fresh element
-   * and re-records the whole root. The React copy above is still what the
-   * recorded picture draws from, which is the path every lens but the name
-   * still takes.
+   * Never through React: a decode lands while the camera is moving, and a prop
+   * change there hands `Canvas` a fresh element and re-records the whole root.
    */
   const grainShared = useSharedValue<GrainBars | null>(null);
   /**
@@ -782,27 +778,6 @@ export function FieldScreen({ identity }: Props) {
       ? `${currentTrack.nodeKey}:${currentTrack.songId}`
       : null;
   const playingKey = heldKey;
-  /**
-   * How far through the held song, for the recorded picture only.
-   *
-   * The native canvas draws every ring from the visual clock on the UI thread;
-   * this number reaches only `recordFieldPicture`, the fallback that draws a
-   * frame or two while fonts load. It used to be sampled from the visual clock
-   * every 160 ms, which re-rendered this whole screen six times a second for as
-   * long as anything played. Read from the snapshot's resync point instead: a
-   * fallback frame shows where the song was at its last pause or seek.
-   */
-  const playingProgress =
-    transport.snapshot.durationSeconds > 0
-      ? Math.min(
-          Math.max(
-            transport.snapshot.positionSeconds /
-              transport.snapshot.durationSeconds,
-            0,
-          ),
-          1,
-        )
-      : null;
   const focusedIsCurrent =
     focused !== null &&
     currentTrack !== null &&
@@ -1363,7 +1338,6 @@ export function FieldScreen({ identity }: Props) {
       focused === null ||
       viewport === null
     ) {
-      setGrain(null);
       grainShared.value = null;
       return;
     }
@@ -1372,7 +1346,6 @@ export function FieldScreen({ identity }: Props) {
       focused.localAudio.state === 'cached' ||
       focused.localAudio.state === 'pinned';
     if (artifact === undefined || !onPhone) {
-      setGrain(null);
       grainShared.value = null;
       return;
     }
@@ -1411,12 +1384,10 @@ export function FieldScreen({ identity }: Props) {
             2,
           )}s VISIBLE · ${window.centerSeconds.toFixed(2)}s`,
         };
-        setGrain(rendered);
         grainShared.value = grainBarsOf(rendered);
       } catch (error) {
         if (active) {
-          setGrain(null);
-          grainShared.value = null;
+              grainShared.value = null;
         }
         console.warn('grain window failed', readError(error));
       }
@@ -1656,16 +1627,13 @@ export function FieldScreen({ identity }: Props) {
           <GestureDetector gesture={fieldCamera.gesture}>
             <View collapsable={false} style={styles.field}>
               <FieldCanvas
-                camera={fieldCamera.camera}
                 cameraShared={fieldCamera.cameraShared}
                 fitScaleShared={fieldCamera.fitScaleShared}
                 layout={layout}
                 labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}
-                placements={fieldCamera.visualPlacements}
                 activeLensKey={lensKey}
                 analyses={analyses}
-                grain={grain}
                 grainShared={grainShared}
                 jobs={controller.jobs}
                 // The player's focus, not the tap's: entering a shelf must
@@ -1679,9 +1647,7 @@ export function FieldScreen({ identity }: Props) {
                 }
                 transportLights={transportLights}
                 nowMs={nowMs}
-                playingProgress={playingProgress}
                 relayoutLinear={fieldCamera.relayoutLinear}
-                renderFitScale={fieldCamera.renderFitScale}
                 transitionGeneration={fieldCamera.transitionGeneration}
                 recut={fieldCamera.recut}
                 presentations={controller.presentations}

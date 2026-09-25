@@ -94,11 +94,8 @@ export function FieldGroupLab() {
               viewport={viewport}
               presentations={presentations}
               palette={palette}
-              camera={fieldCamera.camera}
               cameraShared={fieldCamera.cameraShared}
               fitScaleShared={fieldCamera.fitScaleShared}
-              placements={fieldCamera.visualPlacements}
-              renderFitScale={fieldCamera.renderFitScale}
               recut={fieldCamera.recut}
               labelFromGroups={fieldCamera.labelFromGroups}
               relayoutLinear={fieldCamera.relayoutLinear}
