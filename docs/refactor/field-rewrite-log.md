@@ -64,7 +64,7 @@ doubles every number — never measure on it (see Traps).
 | Scenario | Before | Now | Notes |
 | --- | --- | --- | --- |
 | L0 idle | 11.6 | — | 0 React commits/s; mostly RN's own per-frame callbacks |
-| L0, a generation running on the node | — | 30.3 | measured after phase 2; main thread in Choreographer/Fabric frame callbacks and `HybridData.<init>` → something draws every frame while a job is live (job canvas?) |
+| L0, a generation running on the node | — | 17.6 | vs 11.6 idle. (An earlier 30.3 included the composer's submit animation.) The node sends progress ≤1/s (`PROGRESS_INTERVAL`); each update re-renders `FieldScreen` and re-records the job mark (~60 ms CPU) → phase 4 |
 | L2 playing | 102 | 80 | R1: canvas now redraws at 20 fps (1 px playhead step) instead of 120; each redraw still costs ~20 ms of CPU → R5 |
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
@@ -93,9 +93,13 @@ doubles every number — never measure on it (see Traps).
   of it `readSamples`' JS loop over every sample (`player/createAudioApiPlayer.ts`).
   Fine per song, not fine for 300 imported songs. Move the reduction to native
   (or decode at a lower rate) before import.
-- **2026-09-25 — Live job ≈ +19 points at L0** (see table). Suspect the job
-  scene (`NativeJobFlight` on its own transparent canvas) redrawing per frame.
-  Fold into the renderer's job layer; check it draws only when progress moves.
+- **2026-09-25 — Live job ≈ +6 points at L0, not +19.** Nothing animates per
+  frame: the canvas is still and the main window posts one short burst per
+  progress update (≤1/s from the node). The cost is breadth — each update
+  re-renders the whole `FieldScreen` and re-records `NativeJobFlight`'s
+  pictures. Fix with the UI stores (phase 4) so progress re-renders only the
+  job layer. The job canvas is transparent, so it composites into the main
+  window rather than getting its own SurfaceView.
 - **2026-09-24 — Flicker A (L1→L2, ticks pop in late)**: reveal clock driven by
   the camera only; analysis decoded on descent, in memory only. **Fixed** in
   `d8f9588` (late levels restart the draw-in; analysis persisted and
