@@ -208,8 +208,9 @@ describe('generation as marks', () => {
   });
 
   it('admits it has no caption rather than inventing one', () => {
-    expect(build([job('job-1', 'running')]).jobs.get('node-a:job-1')?.caption)
-      .toBeNull();
+    expect(
+      build([job('job-1', 'running')]).jobs.get('node-a:job-1')?.caption,
+    ).toBeNull();
   });
 
   it('takes the words from the node when it sends them, outbox or not', () => {
@@ -227,5 +228,58 @@ describe('generation as marks', () => {
         outboxEntry('node-a', 'job-1', 'stale local copy'),
       ).jobs.get('node-a:job-1')?.caption,
     ).toBe('una cumbia lenta');
+  });
+});
+
+describe('reusing the last projection', () => {
+  const node = backend('node-a', 'Studio');
+  const songs = [
+    song('song-1', '2026-08-01T00:00:00Z'),
+    song('song-2', '2026-08-02T00:00:00Z'),
+  ];
+
+  function build(
+    jobs: JobView[],
+    previous: ReturnType<typeof buildFieldController> | null,
+  ) {
+    return buildFieldController(
+      {
+        backends: [node],
+        snapshots: { 'node-a': snapshot(songs, 'ready', jobs) },
+        localAudio: {},
+        outbox: {},
+      },
+      previous,
+    );
+  }
+
+  it('hands back the same controller when nothing changed', () => {
+    const first = build([job('job-1', 'running')], null);
+    expect(build([job('job-1', 'running')], first).presentations).toBe(
+      first.presentations,
+    );
+    const running = first.jobs.get('node-a:job-1')!.job;
+    const again = buildFieldController(
+      {
+        backends: [node],
+        snapshots: { 'node-a': snapshot(songs, 'ready', [running]) },
+        localAudio: {},
+        outbox: {},
+      },
+      first,
+    );
+    expect(again).toBe(first);
+  });
+
+  it('rebuilds only the job that moved, and keeps what the layout reads', () => {
+    const first = build([job('job-1', 'running')], null);
+    const moved = { ...job('job-1', 'running'), revision: 2 };
+    const next = build([moved], first);
+
+    expect(next).not.toBe(first);
+    expect(next.presentations).toBe(first.presentations);
+    expect(next.jobs.get('node-a:job-1')?.job).toBe(moved);
+    // Same entities in the same order: the layout has nothing to redo.
+    expect(next.entities).toBe(first.entities);
   });
 });
