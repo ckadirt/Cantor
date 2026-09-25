@@ -295,15 +295,19 @@ The Ledger uses a compact dial whose tick sits near its text while retaining a
 
 ### Live jobs on the field
 
-A live job must not force the song field into the JavaScript picture fallback.
-`FieldCanvas` draws job progress in a separate transparent canvas, with camera
-and placement motion driven by the same UI-thread values as the songs. Progress
-may replace the job picture, but must retain the song scene element and its
-presentation map when song data is unchanged. Job flight subtrees are keyed by
-re-cut generation so outgoing mappers never read a newborn clock.
+Jobs are a layer of the one field canvas (`nativeJobs.ts`), not a canvas of
+their own. `FieldCanvas` records each job's mark (`JobMark`: the ring for the
+map, the ring and its words for the shelf) when that job's presentation is a
+new object, and publishes the marks through the `jobMarks` shared value; the
+native scene draws every non-song flight from it on the UI thread. A progress
+update therefore never hands `Canvas` a new element — it re-records one job's
+pictures and wakes the canvas's mapper once. A job that leaves keeps its mark
+while its outgoing flight is in the air. Being native, jobs no longer keep a
+re-cut in React (`nativeRelayout` in `FieldScreen`).
 
-`fieldCanvasClock.test.tsx` checks that a live job preserves the native song
-scene across progress updates, including fresh controller projection objects.
+`fieldCanvasClock.test.tsx` checks that a live job keeps one canvas and the same
+scene element across progress updates, and records nothing for a render with
+nothing new.
 
 ### Group layout stress checks
 
@@ -352,6 +356,5 @@ owner; the batch excludes that placement. Title tracing, label crossfade windows
 flight ownership and the 850 ms re-cut remain unchanged. Cull off-screen row
 text before tracing it, and return immediately when the row has not arrived.
 
-The transparent job canvas includes the same live map/shelf veils as the song
-canvas. A veil below that canvas cannot protect the header from failed jobs.
-Keep the job scene memoized so camera mirrors do not recreate its children.
+Jobs are drawn inside the native scene, under the map/shelf veils, so the veils
+protect the header from failed jobs as they do from songs.
