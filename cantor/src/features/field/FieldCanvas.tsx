@@ -2778,6 +2778,29 @@ function NativeSongDetail({
       }
     },
   );
+  /*
+   * A measurement that lands after the reveal draws itself in, rather than
+   * appearing at whatever ink the reveal had already reached.
+   *
+   * The reveal is started by the camera, and the camera often arrives before
+   * the decode does — so without this the ticks popped in, whole, seconds
+   * after the descent. Declared ahead of the picture below on purpose: the
+   * clock is back at zero before the picture's mapper is rebuilt around the
+   * new levels, so no frame shows them at full ink first.
+   */
+  const hasLevels = (model?.levels.length ?? 0) > 0;
+  const hadLevels = useRef(hasLevels);
+  useEffect(() => {
+    const arrived = hasLevels && !hadLevels.current;
+    hadLevels.current = hasLevels;
+    if (!arrived || phase.value === 'hidden') return;
+    cancelAnimation(drawn);
+    drawn.value = 0;
+    drawn.value = withTiming(1, {
+      duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
+      easing: easeSmoother,
+    });
+  }, [drawn, hasLevels, phase]);
   /** How much of the decoded detail has resolved into the coarse ticks. */
   const resolved = useSharedValue(0);
   useAnimatedReaction(

@@ -1,6 +1,5 @@
 import type { SampleWindow } from '../../player';
 import {
-  AnalysisCache,
   analyseWindow,
   analysisCacheKey,
   neutralAnalysis,
@@ -107,47 +106,9 @@ describe('analyseWindow', () => {
   });
 });
 
-describe('AnalysisCache', () => {
-  it('returns what it was given', () => {
-    const cache = new AnalysisCache();
-    const analysis = analyseWindow(window(() => 0.5));
-    cache.put(key, analysis);
-
-    expect(cache.get(key)).toBe(analysis);
-  });
-
-  it('treats a replaced artifact as a different song', () => {
-    const cache = new AnalysisCache();
-    cache.put(key, analyseWindow(window(() => 0.5)));
-
-    // Same song, new delivery bytes: the old analysis describes the old sound.
-    expect(cache.get({ ...key, artifactDigest: 'b'.repeat(64) })).toBeNull();
-  });
-
-  it('separates resolutions, nodes and songs', () => {
-    const cache = new AnalysisCache();
-    cache.put(key, analyseWindow(window(() => 0.5)));
-
-    expect(cache.get({ ...key, resolution: 512 })).toBeNull();
-    expect(cache.get({ ...key, nodePublicKey: 'node-b' })).toBeNull();
-    expect(cache.get({ ...key, songId: 'song-b' })).toBeNull();
-  });
-
-  it('stays bounded while a long session browses a large library', () => {
-    const cache = new AnalysisCache();
-    for (let i = 0; i < 500; i += 1) {
-      cache.put({ ...key, songId: `song-${i}` }, neutralAnalysis());
-    }
-
-    expect(cache.size).toBeLessThanOrEqual(64);
-    expect(cache.get({ ...key, songId: 'song-499' })).not.toBeNull();
-    expect(cache.get({ ...key, songId: 'song-0' })).toBeNull();
-  });
-
+describe('analysisCacheKey', () => {
   it('builds a key that cannot collide across its parts', () => {
-    expect(analysisCacheKey(key)).toBe(
-      `node-a:song-a:${'a'.repeat(64)}:256`,
-    );
+    expect(analysisCacheKey(key)).toBe(`node-a:song-a:${'a'.repeat(64)}:256`);
   });
 });
 
