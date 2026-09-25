@@ -75,6 +75,29 @@ doubles every number — never measure on it (see Traps).
 
 ## Findings
 
+- **2026-09-25 — Tried and reverted: a separate playhead canvas (R5a).** Moved
+  the ring's hand/arc and the detail ticks to their own transparent
+  `<Canvas>` so a playhead step re-records only them. It worked as designed —
+  a probe in RN Skia's mapper showed only that canvas moving — but L2 playing
+  went 80 → 77% only: a transparent canvas is a TextureView, so every step
+  now re-composites the whole app window on HWUI's RenderThread (~20% of
+  samples), eating the saving; and it adds a second surface that can land a
+  frame apart from the field during camera flights. Not worth it. Recoverable
+  from this log's description if the trade changes (e.g. with an opaque
+  SurfaceView overlay, which RN Skia does not offer).
+- **2026-09-25 — Tried and reverted: driving the visual clock from a 30 Hz JS
+  interval instead of a whole-song `withTiming`.** Worse everywhere: L2 77 →
+  82%, L0 33 → 43%, screen off 28 → 30%. Each JS-side write to a shared value
+  is a scheduled hop onto the UI runtime; thirty of those a second cost more
+  than Reanimated stepping one animation per frame.
+- **2026-09-25 — Where L2 playback goes now (profile with call graph, R2
+  build):** ~73% of the main thread is inside Reanimated's frame loop
+  (`AnimationFrameCallback::onAnimationFrame`); of that ~30 points are RN
+  Skia actually rendering the canvas (`RNSkOpenGLCanvasProvider::renderToCanvas`,
+  ~6 ms of fixed GL work per redraw), `applyUpdates`/`play` only ~2% each. The
+  lever left is **how often** the canvas redraws: 20/s → 80%, 5/s → 51%
+  (≈2 points per redraw per second). A product call — see "Open questions".
+
 - **2026-09-25 — Why a redraw costs ~20 ms: RN Skia re-records the whole canvas
   for any change.** `sksg/Container.native.ts` (RN Skia 2.6.9) installs *one*
   Reanimated mapper per `<Canvas>` over every shared value the scene uses; when
@@ -181,7 +204,20 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 - **R6 — Lens contract.** Circle and seal ported onto `identity / sound /
   poses / morphs / hit`, so tree needs no renderer change.
 
+## Open questions (for Cesar)
+
+- **Playhead smoothness vs heat at L2.** The hand steps one physical pixel
+  (~18 redraws/s on a 2-minute song) → ~80% of a core while the player is on
+  screen. Two pixels ≈ 10/s ≈ 60%; four ≈ 5/s ≈ 51%. Knob: the divisor in
+  `playheadStepSeconds` (`FieldScreen.tsx`).
+
 ## Traps (learned the hard way)
+
+- **Instrumenting RN Skia:** Metro bundles it from `src/` (the package's
+  `react-native` field), so a probe goes in
+  `node_modules/@shopify/react-native-skia/src/sksg/Container.native.ts`;
+  `console.warn` from that worklet reaches logcat on the release build. Restore
+  the file afterwards.
 
 - **A React prop in a picture's closure is stale for a while after the
   commit.** First R2 attempt read `focusKey` inside `rowsPicture`: at the start
