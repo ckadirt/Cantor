@@ -11,6 +11,7 @@ import {
   type SharedValue,
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
+import { cameraSummary, type OriginFrame } from './cameraSummary';
 import { CURTAIN_KNOBS, releaseTarget, unrollMs } from '../curtain';
 import {
   inBrowseFrame,
@@ -307,6 +308,12 @@ export function useFieldCamera({
   const fitScaleSharedCandidate = useSharedValue(EMPTY_CAMERA.scale);
   const layoutFitSharedCandidate = useSharedValue(0);
   const mirrorBusyCandidate = useSharedValue(false);
+  /** The summary React last heard; see `cameraSummary`. */
+  const summarySharedCandidate = useSharedValue('');
+  const originSharedCandidate = useSharedValue<OriginFrame>({
+    centerX: 0,
+    groupCount: 0,
+  });
   /**
    * Every cluster's column, in world units, for the UI thread.
    *
@@ -356,6 +363,8 @@ export function useFieldCamera({
   /** The live layout's terminal FIT, which is what the pinch clamps against. */
   const layoutFitShared = useRef(layoutFitSharedCandidate).current;
   const mirrorBusy = useRef(mirrorBusyCandidate).current;
+  const summaryShared = useRef(summarySharedCandidate).current;
+  const originShared = useRef(originSharedCandidate).current;
   const pullShared = useRef(pullSharedCandidate).current;
   const pullDestination = useRef(pullDestinationCandidate).current;
   const shelfSeatsShared = useRef(shelfSeatsSharedCandidate).current;
@@ -370,15 +379,32 @@ export function useFieldCamera({
   );
   useEffect(() => {
     shelfSeatsShared.value = seats;
-  }, [seats, shelfSeatsShared]);
+    originShared.value = {
+      centerX: layout?.fieldCenter.x ?? 0,
+      groupCount: layout?.groups.length ?? 0,
+    };
+  }, [layout, originShared, seats, shelfSeatsShared]);
 
   const commitCamera = useCallback(
     (next: Camera) => {
       cameraRef.current = next;
       cameraShared.value = next;
+      // React is being handed this camera, so this is what it has heard.
+      summaryShared.value = cameraSummary(
+        next,
+        fitScaleShared.value,
+        shelfSeatsShared.value,
+        originShared.value,
+      );
       setCameraState(next);
     },
-    [cameraShared],
+    [
+      cameraShared,
+      fitScaleShared,
+      originShared,
+      shelfSeatsShared,
+      summaryShared,
+    ],
   );
   /**
    * Copy a UI-thread camera frame into React.
@@ -416,6 +442,59 @@ export function useFieldCamera({
   useEffect(() => {
     mirrorBusy.value = false;
   }, [camera, mirrorBusy]);
+  /**
+   * Tell React about a moving camera only when something React shows of it
+   * has changed — see `cameraSummary`. Everything drawn from the camera reads
+   * `cameraShared` on the UI thread; what React holds is for the chrome, which
+   * changes at thresholds, and for hit tests, which read it once a gesture has
+   * ended (`mirrorNow`). A summary React could not take yet is left unsent
+   * rather than recorded, so the next frame asks again.
+   */
+  const mirrorOnChange = useCallback(
+    (next: Camera) => {
+      'worklet';
+      const summary = cameraSummary(
+        next,
+        fitScaleShared.value,
+        shelfSeatsShared.value,
+        originShared.value,
+      );
+      if (summary === summaryShared.value || mirrorBusy.value) return;
+      summaryShared.value = summary;
+      mirrorBusy.value = true;
+      runOnJS(mirrorCamera)(next);
+    },
+    [
+      fitScaleShared,
+      mirrorBusy,
+      mirrorCamera,
+      originShared,
+      shelfSeatsShared,
+      summaryShared,
+    ],
+  );
+  /** Hand React this camera now: a gesture has ended or a flight landed. */
+  const mirrorNow = useCallback(
+    (next: Camera) => {
+      'worklet';
+      summaryShared.value = cameraSummary(
+        next,
+        fitScaleShared.value,
+        shelfSeatsShared.value,
+        originShared.value,
+      );
+      mirrorBusy.value = true;
+      runOnJS(mirrorCamera)(next);
+    },
+    [
+      fitScaleShared,
+      mirrorBusy,
+      mirrorCamera,
+      originShared,
+      shelfSeatsShared,
+      summaryShared,
+    ],
+  );
   useEffect(() => {
     layoutFitShared.value = layout?.fitScale ?? 0;
   }, [layout, layoutFitShared]);
@@ -525,8 +604,7 @@ export function useFieldCamera({
           if (finished !== true) return;
           const landed = flightTo.value;
           cameraShared.value = landed;
-          mirrorBusy.value = true;
-          runOnJS(mirrorCamera)(landed);
+          mirrorNow(landed);
           // Queued after the mirror, so whatever runs on landing already
           // reads the camera the flight arrived at.
           runOnJS(landFlight)();
@@ -541,8 +619,7 @@ export function useFieldCamera({
       flightProgress,
       flightTo,
       landFlight,
-      mirrorBusy,
-      mirrorCamera,
+      mirrorNow,
       reducedMotion,
     ],
   );
@@ -571,8 +648,7 @@ export function useFieldCamera({
       if (progress >= 1) {
         const landed = flightTo.value;
         cameraShared.value = landed;
-        mirrorBusy.value = true;
-        runOnJS(mirrorCamera)(landed);
+        mirrorNow(landed);
         return;
       }
       const from = flightFrom.value;
@@ -589,9 +665,7 @@ export function useFieldCamera({
         ),
       };
       cameraShared.value = next;
-      if (mirrorBusy.value) return;
-      mirrorBusy.value = true;
-      runOnJS(mirrorCamera)(next);
+      mirrorOnChange(next);
     },
   );
 
@@ -612,7 +686,7 @@ export function useFieldCamera({
       lastRenderFitScale.current ?? previous?.toFitScale ?? layout.fitScale;
     const fromCamera = firstLayout
       ? levelCameraTarget('field', layout) ?? EMPTY_CAMERA
-      : cameraRef.current;
+      : cameraShared.value;
     /*
      * The song you are standing in can leave the field under you: forgetting
      * an engine takes its songs while you may be reading one.
@@ -896,7 +970,7 @@ export function useFieldCamera({
       const field = layoutRef.current;
       if (field === null) return;
       const current = levelOf(
-        cameraRef.current.scale,
+        cameraShared.value.scale,
         lastRenderFitScale.current ?? field.fitScale,
       );
       // Where the descent stops is `GRAIN_ENABLED`'s to say: with L3 closed a
@@ -943,7 +1017,7 @@ export function useFieldCamera({
       pendingDescent.current = target;
       setDescentTicket(ticket => ticket + 1);
     },
-    [commitFocus, flyTo],
+    [cameraShared, commitFocus, flyTo],
   );
   /*
    * Ticket rather than the focus itself: descending from a song into its grain
@@ -998,7 +1072,7 @@ export function useFieldCamera({
     const field = layoutRef.current;
     if (field === null) return false;
     const current = levelOf(
-      cameraRef.current.scale,
+      cameraShared.value.scale,
       lastRenderFitScale.current ?? field.fitScale,
     );
     if (current === 'field') return false;
@@ -1020,7 +1094,7 @@ export function useFieldCamera({
     const target = levelCameraTarget('field', field);
     if (target) flyTo(target);
     return true;
-  }, [commitFocus, flyTo, shelfAround]);
+  }, [cameraShared, commitFocus, flyTo, shelfAround]);
   const step = useCallback(
     (placement: Placement) => {
       // Still folding back into the row: retarget where it goes down again.
@@ -1034,7 +1108,7 @@ export function useFieldCamera({
         return;
       }
       const current = levelOf(
-        cameraRef.current.scale,
+        cameraShared.value.scale,
         lastRenderFitScale.current ?? field.fitScale,
       );
       if (current !== 'song' && current !== 'grain') return;
@@ -1057,7 +1131,7 @@ export function useFieldCamera({
       // After `flyTo`, which drops any earlier step's target with its flight.
       stepTarget.current = placement;
     },
-    [commitFocus, flyTo, shelfAround],
+    [cameraShared, commitFocus, flyTo, shelfAround],
   );
   const stepping = useCallback(() => stepTarget.current, []);
   const home = useCallback(() => {
@@ -1076,20 +1150,20 @@ export function useFieldCamera({
       const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
       if (
         field.browseBounds &&
-        levelOf(cameraRef.current.scale, hitFitScale) === 'field' &&
+        levelOf(cameraShared.value.scale, hitFitScale) === 'field' &&
         !inBrowseFrame(point, size)
       )
         return null;
       return hitTestPlacement(
         renderedPlacements,
-        cameraRef.current,
+        cameraShared.value,
         size,
         point,
-        levelOf(cameraRef.current.scale, hitFitScale),
+        levelOf(cameraShared.value.scale, hitFitScale),
         hitFitScale,
       );
     },
-    [renderedPlacements, viewport],
+    [cameraShared, renderedPlacements, viewport],
   );
 
   const holdAt = useCallback(
@@ -1106,7 +1180,7 @@ export function useFieldCamera({
       const size = viewport;
       if (field === null || size === null) return;
       const hitFitScale = lastRenderFitScale.current ?? field.fitScale;
-      const hitLevel = levelOf(cameraRef.current.scale, hitFitScale);
+      const hitLevel = levelOf(cameraShared.value.scale, hitFitScale);
       if (
         field.browseBounds &&
         hitLevel === 'field' &&
@@ -1117,7 +1191,7 @@ export function useFieldCamera({
       // song you are not opening does not also open it.
       const actionRow = hitTestRowAction(
         renderedPlacements,
-        cameraRef.current,
+        cameraShared.value,
         size,
         point,
         hitLevel,
@@ -1126,7 +1200,7 @@ export function useFieldCamera({
       if (actionRow !== null && onRowAction?.(actionRow) === true) return;
       const hit = hitTestPlacement(
         renderedPlacements,
-        cameraRef.current,
+        cameraShared.value,
         size,
         point,
         hitLevel,
@@ -1138,7 +1212,14 @@ export function useFieldCamera({
       if (onClaimTap?.(hit) === true) return;
       descend(hit);
     },
-    [descend, onClaimTap, onRowAction, renderedPlacements, viewport],
+    [
+      cameraShared,
+      descend,
+      onClaimTap,
+      onRowAction,
+      renderedPlacements,
+      viewport,
+    ],
   );
 
   /**
@@ -1155,7 +1236,7 @@ export function useFieldCamera({
       if (size === null) return;
       const seat = seats[seatIndex];
       if (seat === undefined) return;
-      const current = cameraRef.current;
+      const current = cameraShared.value;
       const bounds = seatCameraBounds(seat, size, current.scale);
       const target: Camera = {
         scale: current.scale,
@@ -1171,7 +1252,7 @@ export function useFieldCamera({
       }
       flyTo(target, FIELD_CAMERA_KNOBS.SEAT_SETTLE_MS);
     },
-    [flyTo, seats, viewport],
+    [cameraShared, flyTo, seats, viewport],
   );
 
   /** Leaving the field by an edge pull, which is a JS-side navigation. */
@@ -1198,15 +1279,12 @@ export function useFieldCamera({
     const publish = (next: Camera) => {
       'worklet';
       cameraShared.value = next;
-      if (mirrorBusy.value) return;
-      mirrorBusy.value = true;
-      runOnJS(mirrorCamera)(next);
+      mirrorOnChange(next);
     };
     /** A gesture always ends with React holding the camera it ended on. */
     const settle = () => {
       'worklet';
-      mirrorBusy.value = true;
-      runOnJS(mirrorCamera)(cameraShared.value);
+      mirrorNow(cameraShared.value);
     };
     const pinch = Gesture.Pinch()
       .onStart(event => {
@@ -1485,8 +1563,8 @@ export function useFieldCamera({
     cancelCameraFlight,
     completePull,
     layoutFitShared,
-    mirrorBusy,
-    mirrorCamera,
+    mirrorNow,
+    mirrorOnChange,
     panStart,
     pinchStart,
     pinching,

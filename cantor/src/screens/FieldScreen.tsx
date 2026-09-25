@@ -58,6 +58,7 @@ import {
   PLAYER_VERB_POSE,
 } from '../features/field/NativePlayer';
 import { JobSheet, JOB_SHEET_KNOBS } from '../features/field/JobSheet';
+import { CAMERA_SUMMARY_KNOBS } from '../features/field/cameraSummary';
 import { jobStateLabel } from '../jobs/policy';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
@@ -1394,7 +1395,7 @@ export function FieldScreen({ identity }: Props) {
         grainShared.value = grainBarsOf(rendered);
       } catch (error) {
         if (active) {
-              grainShared.value = null;
+          grainShared.value = null;
         }
         console.warn('grain window failed', readError(error));
       }
@@ -1681,7 +1682,8 @@ export function FieldScreen({ identity }: Props) {
             />
           </>
         ) : null}
-        {(songAlpha > 0.01 || fieldCamera.playerFocus !== null) &&
+        {(songAlpha > CAMERA_SUMMARY_KNOBS.SONG_MOUNT_ALPHA ||
+          fieldCamera.playerFocus !== null) &&
         focused !== null &&
         viewport !== null ? (
           <View
@@ -1706,7 +1708,11 @@ export function FieldScreen({ identity }: Props) {
              * lag on a touch target is invisible, and a commit of lag on a fade
              * is the seam.
              */
-            pointerEvents={songAlpha > 0.6 ? 'box-none' : 'none'}
+            pointerEvents={
+              songAlpha > CAMERA_SUMMARY_KNOBS.SONG_TOUCH_ALPHA
+                ? 'box-none'
+                : 'none'
+            }
             style={StyleSheet.absoluteFill}
           >
             <SongSurface
