@@ -75,6 +75,31 @@ doubles every number — never measure on it (see Traps).
 
 ## Findings
 
+- **2026-09-25 — Why a redraw costs ~20 ms: RN Skia re-records the whole canvas
+  for any change.** `sksg/Container.native.ts` (RN Skia 2.6.9) installs *one*
+  Reanimated mapper per `<Canvas>` over every shared value the scene uses; when
+  any of them changes it calls `applyUpdates(allSharedValues)` — re-reading
+  and converting every animated prop (`processPath` for every animated path) —
+  then `recorder.play()` re-records the entire scene, and the view rasters it
+  all. Cost ∝ size of the canvas, not size of the change. Attribution at L2
+  playing (80%): removing the detail ticks → 68, the ring → 71, the morphing
+  title/meta glyphs (static during playback!) → 67. Consequences for the
+  renderer, replacing "one canvas, one draw function" in the design doc:
+  **one canvas per rate of change** (static field / playhead / jobs), and
+  inside a canvas **few `<Picture>` nodes fed by derived values**, not many
+  animated declarative props.
+- **2026-09-25 — `<Canvas opaque>` is a SurfaceView; otherwise a TextureView.**
+  (`SkiaBaseView.java`.) A SurfaceView composites apart from the app window,
+  a TextureView inside it. Two canvases that must move together on one camera
+  should be the same kind — a TextureView overlay on the opaque field can land
+  a frame apart during motion. The job canvas is exactly that today.
+- **2026-09-25 — Playback floor ~28% with the screen off** is mostly the audio
+  library: `AudioTrack` thread ~33% of samples, JS thread ~28% — the `<Audio>`
+  component does a React `setCurrentTime` on every position event, every
+  100 ms by default (`onPositionChangedInterval`, not exposed as a prop).
+  Follow-up: patch the interval or drive `AudioFileSourceNode` directly
+  (our clock only needs a resync every 250 ms).
+
 - **2026-09-25 — A canvas redraw at L2 costs ~20 ms of CPU.** Measured by
   stepping the playhead: 20 redraws/s → 80%, 5/s → 51%, so ≈2 points per
   redraw/s and ~41% with none. Skia time is spread across per-call overhead:
