@@ -12,7 +12,12 @@ import {
   type Availability,
 } from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
-import type { LensIdentity, MarkPaints } from './contract';
+import type {
+  LensIdentity,
+  LensPlayer,
+  MarkPaints,
+  PlayerPaints,
+} from './contract';
 import type { Lens, LensPaints, LensSong } from './types';
 
 /**
@@ -178,12 +183,52 @@ function drawCircleMark(
   canvas.restore();
 }
 
+/**
+ * The circle as the player is its mark, grown: one contour at every distance
+ * (`cantor/AGENTS.md`, "one drawing, three poses"). Its sound is the ring of
+ * ticks round it (`ringTicks`) and its clock the arc and hand, which the
+ * renderer draws.
+ */
+function drawCirclePlayer(
+  canvas: SkCanvas,
+  _player: LensPlayer | null,
+  identity: LensIdentity,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  _soundIn: number,
+  _heard: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  drawCircleMark(
+    canvas,
+    identity,
+    size,
+    alpha,
+    weight,
+    fill,
+    arrived,
+    hairlinePx,
+    paints,
+  );
+}
+
 export const nameLens: Lens = {
   key: 'name',
   // The contour at the mark's radius. Every other size is this path scaled:
   // `nameLensFacePath` is exactly linear in its radius.
   identity: recipe => nameLensFacePath(recipe, NAME_LENS_KNOBS.MARK_RADIUS_PX),
-  ui: { drawMark: drawCircleMark },
+  player: () => null,
+  ui: {
+    drawMark: drawCircleMark,
+    drawPlayer: drawCirclePlayer,
+    ringTicks: 1,
+    hearsPlayhead: 0,
+  },
   /*
    * `Circle`, not `Name`.
    *

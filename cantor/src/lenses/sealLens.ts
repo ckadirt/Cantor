@@ -9,7 +9,13 @@ import {
   drawRowWords,
 } from './nameLens';
 import { SEAL_KNOBS, sealDotRadius, sealModel } from './seal';
-import type { LensIdentity, MarkPaints } from './contract';
+import type {
+  LensIdentity,
+  LensPlayer,
+  MarkPaints,
+  PlayerPaints,
+} from './contract';
+import { drawSealPlayer, sealPlayerOf, type SealPlayer } from './sealPlayer';
 import type { Lens, LensPaints, LensSong } from './types';
 
 /**
@@ -137,13 +143,58 @@ function drawSealMark(
   canvas.restore();
 }
 
+/** The seal at the mark's size: every size it is drawn at is this, scaled. */
+const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
+
+/**
+ * The seal as the player: its dust at the deepest level, the mark's dots
+ * splitting into their children as it arrives, and the sound rising into it
+ * once measured — see `drawSealPlayer`.
+ */
+function drawSealAsPlayer(
+  canvas: SkCanvas,
+  player: LensPlayer | null,
+  _identity: LensIdentity,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  soundIn: number,
+  heard: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  if (player === null) return;
+  drawSealPlayer(
+    canvas,
+    player as SealPlayer,
+    paints,
+    SEAL_MARK_SIDE_PX * size,
+    alpha,
+    // A dot's ink: its outline's weight, filling to full as the song is kept.
+    weight + (1 - weight) * fill,
+    fill,
+    arrived,
+    soundIn,
+    heard,
+    hairlinePx,
+  );
+}
+
 export const sealLens: Lens = {
   key: 'seal',
   label: 'Seal',
   // The dust at the mark's size, the face's own room through `sealSidePx`.
-  identity: recipe =>
-    sealMarkPath(recipe, sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX)),
-  ui: { drawMark: drawSealMark },
+  identity: recipe => sealMarkPath(recipe, SEAL_MARK_SIDE_PX),
+  player: sealPlayerOf,
+  ui: {
+    drawMark: drawSealMark,
+    drawPlayer: drawSealAsPlayer,
+    ringTicks: 0,
+    hearsPlayhead: 1,
+  },
   draw(canvas, box, song, options) {
     const { alpha, fonts, paints } = options;
     if (alpha <= 0) return;

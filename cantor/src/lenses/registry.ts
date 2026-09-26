@@ -1,6 +1,7 @@
 import { nameLens } from './nameLens';
 import { sealLens } from './sealLens';
-import type { LensUi } from './contract';
+import type { LensPairUi, LensUi } from './contract';
+import { PAIR_MORPHS } from './pairs';
 import type { Lens } from './types';
 
 /**
@@ -40,3 +41,17 @@ for (const lens of LENSES) {
 export function lensByKey(key: string): Lens | null {
   return LENSES.find(lens => lens.key === key) ?? null;
 }
+
+/**
+ * Every hand-written player morph, by `LENSES` position — the form a worklet
+ * can capture. A pair naming a lens that is not registered is a mistake made
+ * at load, so it throws here rather than never running.
+ */
+export const LENS_PAIRS: readonly LensPairUi[] = PAIR_MORPHS.map(pair => {
+  const a = lensIndex(pair.a);
+  const b = lensIndex(pair.b);
+  if (a < 0 || b < 0) {
+    throw new Error(`Pair morph names an unknown lens: ${pair.a}, ${pair.b}`);
+  }
+  return { a, b, drawPlayer: pair.drawPlayer };
+});

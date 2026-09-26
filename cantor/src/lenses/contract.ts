@@ -39,6 +39,17 @@ export type LensIdentity = unknown;
  */
 export type MarkPaints = Readonly<{ fill: SkPaint; stroke: SkPaint }>;
 
+/** A player's paints: a mark's, and the ground, for anything cut out of ink. */
+export type PlayerPaints = MarkPaints & Readonly<{ paper: SkPaint }>;
+
+/**
+ * What a lens's player draws from, prepared on the JS thread for the one song
+ * the camera is in (`Lens.player`). Its shape is the lens's own; the renderer
+ * reads only `sound`, which is null until the song has been measured — so it
+ * knows when a sound has arrived and should rise rather than appear.
+ */
+export type LensPlayer = Readonly<{ sound: unknown }>;
+
 export type LensUi = Readonly<{
   /**
    * The song as a mark (L0) or the face beside a row (L1).
@@ -68,4 +79,84 @@ export type LensUi = Readonly<{
     hairlinePx: number,
     paints: MarkPaints,
   ) => void;
+  /**
+   * The song as the player (L2), from where it leaves its row onwards.
+   *
+   * `player` is what `Lens.player` built, or null for a lens whose player is
+   * its mark grown (the circle's). `size`, `alpha`, `weight`, `fill`,
+   * `arrived` and `hairlinePx` are `drawMark`'s. `soundIn` is how far the
+   * song's sound has risen into the drawing (0 until it is measured and the
+   * camera has arrived); `heard` is the playhead, 0..1, or -1 when nothing
+   * this lens draws needs it (see `hearsPlayhead`).
+   */
+  drawPlayer: (
+    canvas: SkCanvas,
+    player: LensPlayer | null,
+    identity: LensIdentity,
+    size: number,
+    alpha: number,
+    weight: number,
+    fill: number,
+    arrived: number,
+    soundIn: number,
+    heard: number,
+    hairlinePx: number,
+    paints: PlayerPaints,
+  ) => void;
+  /**
+   * 1 if this lens shows the song's measurement as the ring of ticks the
+   * renderer draws round the player (`drawSongDetail`), 0 if not.
+   *
+   * A number, not a drawing, because the ring is not the lens's to draw: it is
+   * the grain's coarse layer (it opens out into L3) and it moves with the
+   * playhead, which the faces' picture must never read. The circle's sound
+   * *is* that ring; the seal's lives in its dots.
+   */
+  ringTicks: number;
+  /**
+   * 1 if `drawPlayer` reads `heard`, 0 if not. The faces' picture reads the
+   * playhead only while a lens that draws it is showing — otherwise every
+   * frame of playback would re-record the whole field for nothing.
+   */
+  hearsPlayhead: number;
 }>;
+
+/**
+ * A hand-written change between two lenses' players, used instead of the
+ * generic two beats — the circle's dots walking out into the seal, say. Only
+ * the player has one; marks and rows always take the beats.
+ *
+ * Keyed by lens key in `lenses/pairs.ts`; the registry resolves the keys to
+ * positions (`LENS_PAIRS`). `t` runs 0 → 1 toward `b`, whichever way the change
+ * is going, and at `t` 0 the morph must look like `a`'s own player — the
+ * renderer draws `a` itself there (see `drawFieldFaces`).
+ */
+export type LensPairMorph = Readonly<{
+  a: string;
+  b: string;
+  drawPlayer: PairDraw;
+}>;
+
+export type LensPairUi = Readonly<{
+  a: number;
+  b: number;
+  drawPlayer: PairDraw;
+}>;
+
+type PairDraw = (
+  canvas: SkCanvas,
+  aIdentity: LensIdentity,
+  aPlayer: LensPlayer | null,
+  bIdentity: LensIdentity,
+  bPlayer: LensPlayer | null,
+  t: number,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  soundIn: number,
+  heard: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+) => void;
