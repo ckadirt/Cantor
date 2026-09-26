@@ -1,13 +1,5 @@
 import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
-import { availabilityOf } from './availability';
-import {
-  FACE_FILL_ALPHA,
-  FACE_STROKE_ALPHA,
-  NAME_LENS_KNOBS,
-  drawArrivingArc,
-  drawPlayingRing,
-  drawRowWords,
-} from './nameLens';
+import { NAME_LENS_KNOBS } from './nameLens';
 import { ringTurnAt } from './ring';
 import {
   SEAL_KNOBS,
@@ -23,7 +15,7 @@ import type {
   PlayerPaints,
 } from './contract';
 import { drawSealPlayer, sealPlayerOf, type SealPlayer } from './sealPlayer';
-import type { Lens, LensPaints, LensSong } from './types';
+import type { Lens, LensSong } from './types';
 
 /**
  * The seal's side for a face drawn at `radius`.
@@ -71,40 +63,6 @@ export function sealMarkPath(
   }
   sealPathCache.set(key, path);
   return path;
-}
-
-/**
- * The seal, weighted by what the song promises about its audio.
- *
- * The face's own convention, carried over exactly: a song on this phone for
- * good is filled dots, one cached here is firm rings, one elsewhere is faint
- * rings — and a song still arriving gains the same arc the face does.
- */
-function drawAvailableSeal(
-  canvas: Parameters<Lens['draw']>[0],
-  song: LensSong,
-  cx: number,
-  cy: number,
-  radius: number,
-  alpha: number,
-  paints: LensPaints,
-  depth: number = SEAL_KNOBS.MARK_DEPTH,
-): void {
-  const availability = availabilityOf(song.audioState);
-  const path = sealMarkPath(song, sealSidePx(radius), depth);
-  canvas.save();
-  canvas.translate(cx, cy);
-  if (FACE_FILL_ALPHA[availability] > 0) {
-    paints.ink.setAlphaf(alpha * FACE_FILL_ALPHA[availability]);
-    canvas.drawPath(path, paints.ink);
-  } else {
-    paints.outline.setAlphaf(alpha * FACE_STROKE_ALPHA[availability]);
-    canvas.drawPath(path, paints.outline);
-  }
-  canvas.restore();
-  if (availability === 'arriving') {
-    drawArrivingArc(canvas, song.arriving, cx, cy, radius, alpha, paints);
-  }
 }
 
 /**
@@ -254,72 +212,5 @@ export const sealLens: Lens = {
       tickPx: SEAL_PLAYER_KNOBS.RIM_TICK_PX,
       knobRadiusPx: SEAL_PLAYER_KNOBS.KNOB_RADIUS_PX,
     },
-  },
-  draw(canvas, box, song, options) {
-    const { alpha, fonts, paints } = options;
-    if (alpha <= 0) return;
-    if (box.kind === 'mark') {
-      drawAvailableSeal(
-        canvas,
-        song,
-        box.x,
-        box.y,
-        NAME_LENS_KNOBS.MARK_RADIUS_PX,
-        alpha,
-        paints,
-      );
-      if (song.playing) {
-        drawPlayingRing(
-          canvas,
-          box.x,
-          box.y,
-          NAME_LENS_KNOBS.MARK_RADIUS_PX,
-          alpha,
-          paints,
-        );
-      }
-      return;
-    }
-
-    if (box.kind === 'song') {
-      // The identity at its deepest, where the player stands. The sound is
-      // drawn beside this on the native path, never recorded into a picture:
-      // it moves with the song.
-      const radius =
-        (Math.min(box.width, box.height) / 2) * NAME_LENS_KNOBS.SONG_FACE_RATIO;
-      drawAvailableSeal(
-        canvas,
-        song,
-        box.x,
-        box.y,
-        radius,
-        alpha,
-        paints,
-        SEAL_KNOBS.SONG_DEPTH,
-      );
-      return;
-    }
-
-    const sealX = box.x - NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX;
-    drawAvailableSeal(
-      canvas,
-      song,
-      sealX,
-      box.y,
-      NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
-      alpha,
-      paints,
-    );
-    if (song.playing) {
-      drawPlayingRing(
-        canvas,
-        sealX,
-        box.y,
-        NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
-        alpha,
-        paints,
-      );
-    }
-    drawRowWords(canvas, box, song, alpha, fonts, paints);
   },
 };

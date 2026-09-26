@@ -1,23 +1,7 @@
-import type { SkCanvas, SkFont, SkPaint } from '@shopify/react-native-skia';
+import type { SkFont, SkPaint } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
 import type { LensIdentity, LensPlayer, LensTouchUi, LensUi } from './contract';
 import type { FaceRecipe } from './face';
-
-export type LensBox = Readonly<{
-  /**
-   * How much room the lens has, and therefore what it is drawing.
-   *
-   * `song` is the player itself: the same lens at the distance where one song
-   * fills the view. `alpha.song` was computed by `representationAlphas` from
-   * the beginning and read by nothing, which is why the player used to cut in
-   * rather than grow out of its row.
-   */
-  kind: 'mark' | 'row' | 'song';
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}>;
 
 /** Renderer-ready facts about a song. Runtime objects are never imported here. */
 export type LensSong = Readonly<{
@@ -83,17 +67,8 @@ export type LensPaints = Readonly<{
   outline: SkPaint;
 }>;
 
-export type LensOptions = Readonly<{
-  alpha: number;
-  fonts: LensFonts;
-  paints: LensPaints;
-}>;
-
 /**
- * A lens: its name in the picker, and its two halves (see `contract.ts`).
- *
- * `draw` is the old whole-lens drawing, which since R4 only tests run; it goes
- * at R6g, once everything it covers is under the contract.
+ * A lens: its name in the picker, and its halves (see `contract.ts`).
  */
 export type Lens = Readonly<{
   key: string;
@@ -113,10 +88,4 @@ export type Lens = Readonly<{
   ui: LensUi;
   /** JS thread: what a finger on the player means. */
   touch: LensTouchUi;
-  draw: (
-    canvas: SkCanvas,
-    box: LensBox,
-    song: LensSong,
-    options: LensOptions,
-  ) => void;
 }>;

@@ -1,7 +1,8 @@
 import { PaintStyle, Skia } from '@shopify/react-native-skia';
-import { FACE_MAX_EXTENT } from '../face';
 import { fitText } from '../nameLens';
 import {
+  FACE_FILL_ALPHA,
+  FACE_STROKE_ALPHA,
   arrivingFraction,
   availabilityAction,
   availabilityLine,
@@ -9,7 +10,7 @@ import {
   formatBytes,
   nameLens,
   neutralAnalysis,
-  type LensPaints,
+  type Lens,
   type LensSong,
 } from '..';
 
@@ -105,106 +106,76 @@ describe('what a row says and offers', () => {
 /**
  * The design's one non-negotiable here: cached and downloaded must never look
  * alike. Weight is not a number in a table until it reaches pixels, so this
- * draws the four marks and measures how much ink each one puts down.
+ * draws the circle's marks through its `drawMark` — what the field calls — and
+ * measures how much ink each puts down.
+ *
+ * The circle only, as before R6: the seal does not keep "more ink, stronger
+ * promise" — at mark size its filled dots (downloaded) put down less ink than
+ * its hairline rings (cached), about as much as a song not on the phone. Found
+ * at R6g, older than R6; see the rewrite log's Findings.
+ *
+ * The arc round a song still arriving is not here: only the picture fallback
+ * drew it, and that went at R4 (see the rewrite log's Findings). The ring
+ * round the playing song is the renderer's, not a lens's (`fieldFaces.test`).
  */
 describe('the four marks are four different marks', () => {
   const SIZE = 64;
-  const CENTRE = SIZE / 2;
-  /** Radius the mark's face is drawn at; its lobes reach `FACE_MAX_EXTENT` of it. */
-  const FACE_RADIUS_PX = 7.5;
-  /** Clear of the furthest lobe and its antialiasing: only a ring reaches here. */
-  const OUTSIDE_THE_FACE_PX = FACE_RADIUS_PX * FACE_MAX_EXTENT + 1;
 
-  function paints(): LensPaints {
+  function paints() {
     const make = (color: string) => {
       const value = Skia.Paint();
       value.setAntiAlias(true);
       value.setColor(Skia.Color(color));
       return value;
     };
-    const outline = make('#000000');
-    outline.setStyle(PaintStyle.Stroke);
-    outline.setStrokeWidth(1);
-    return {
-      ink: make('#000000'),
-      muted: make('#666666'),
-      faint: make('#A6A6A6'),
-      outline,
-    };
+    const stroke = make('#000000');
+    stroke.setStyle(PaintStyle.Stroke);
+    return { fill: make('#000000'), stroke };
   }
 
-  /** Every pixel's darkness against white paper, summed; ink laid down. */
-  function draw(value: LensSong): { total: number; ring: number } {
+  /** Every pixel's darkness against white paper, summed: ink laid down. */
+  function ink(lens: Lens, state: LensSong['audioState']): number {
     const surface = Skia.Surface.Make(SIZE, SIZE);
     if (surface === null) throw new Error('no surface');
     const canvas = surface.getCanvas();
     canvas.clear(Skia.Color('#FFFFFF'));
-    nameLens.draw(
+    canvas.translate(SIZE / 2, SIZE / 2);
+    const availability = availabilityOf(state);
+    lens.ui.drawMark(
       canvas,
-      { kind: 'mark', x: CENTRE, y: CENTRE, width: 0, height: 0 },
-      value,
-      {
-        alpha: 1,
-        fonts: {
-          display: Skia.Font(undefined, 20),
-          body: Skia.Font(undefined, 20),
-          mono: Skia.Font(undefined, 9),
-        },
-        paints: paints(),
-      },
+      lens.identity({
+        seed: 41822,
+        id: 'song-a',
+        model: 'acestep:1.5-fast',
+        durationMs: 141_000,
+      }),
+      1,
+      1,
+      FACE_STROKE_ALPHA[availability],
+      FACE_FILL_ALPHA[availability],
+      0,
+      1,
+      paints(),
     );
     surface.flush();
     const pixels = surface.makeImageSnapshot().readPixels();
     if (pixels === null) throw new Error('no pixels');
     let total = 0;
-    let ring = 0;
-    for (let y = 0; y < SIZE; y += 1) {
-      for (let x = 0; x < SIZE; x += 1) {
-        const darkness = 255 - (pixels[(y * SIZE + x) * 4] as number);
-        total += darkness;
-        // Outside the face's own lobes, where only a ring can reach.
-        const distance = Math.hypot(x - CENTRE, y - CENTRE);
-        if (distance > OUTSIDE_THE_FACE_PX) ring += darkness;
-      }
+    for (let index = 0; index < SIZE * SIZE; index += 1) {
+      total += 255 - (pixels[index * 4] as number);
     }
-    return { total, ring };
+    return total;
   }
 
-  it('draws more of the face the stronger the promise', () => {
-    const notSynced = draw(song({ audioState: 'remote' })).total;
-    const cached = draw(song({ audioState: 'cached' })).total;
-    const downloaded = draw(song({ audioState: 'pinned' })).total;
+  it('draws more of the circle the stronger the promise', () => {
+    const notSynced = ink(nameLens, 'remote');
+    const cached = ink(nameLens, 'cached');
+    const downloaded = ink(nameLens, 'pinned');
 
     expect(notSynced).toBeGreaterThan(0);
     expect(cached).toBeGreaterThan(notSynced * 1.5);
     // Filled, not merely firmer: a full face is several times its own outline.
     expect(downloaded).toBeGreaterThan(cached * 2);
-  });
-
-  it('puts a ring around a song that is arriving, and none around one that is here', () => {
-    const arriving = draw(song({ audioState: 'partial', arriving: 0.5 }));
-    const cached = draw(song({ audioState: 'cached' }));
-
-    expect(cached.ring).toBe(0);
-    expect(arriving.ring).toBeGreaterThan(0);
-  });
-
-  it('draws the arc as far as the bytes have come', () => {
-    const early = draw(song({ audioState: 'partial', arriving: 0.15 })).ring;
-    const late = draw(song({ audioState: 'partial', arriving: 0.9 })).ring;
-    const unknown = draw(song({ audioState: 'partial', arriving: null })).ring;
-
-    expect(late).toBeGreaterThan(early * 2);
-    // An unknown total is a sweep, not a claim: shorter than a nearly-finished
-    // download and never a full circle.
-    expect(unknown).toBeGreaterThan(0);
-    expect(unknown).toBeLessThan(late);
-  });
-
-  it('keeps the playing ring off the face it belongs to', () => {
-    const playing = draw(song({ audioState: 'cached', playing: true }));
-
-    expect(playing.ring).toBeGreaterThan(0);
   });
 });
 

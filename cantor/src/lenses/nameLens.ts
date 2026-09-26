@@ -1,16 +1,5 @@
-import {
-  PaintStyle,
-  Skia,
-  type SkCanvas,
-  type SkPaint,
-  type SkPath,
-} from '@shopify/react-native-skia';
-import {
-  availabilityAction,
-  availabilityLine,
-  availabilityOf,
-  type Availability,
-} from './availability';
+import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
+import type { Availability } from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
 import { ringTurnAt } from './ring';
 import { SEAL_PLAYER_KNOBS } from './seal';
@@ -20,7 +9,7 @@ import type {
   MarkPaints,
   PlayerPaints,
 } from './contract';
-import type { Lens, LensPaints, LensSong } from './types';
+import type { Lens, LensSong } from './types';
 
 /**
  * KNOBS — pixel measurements match the verified name-lens prototype.
@@ -302,116 +291,7 @@ export const nameLens: Lens = {
    * chosen lens is remembered as and a stored key is not a label.
    */
   label: 'Circle',
-  draw(canvas, box, song, options) {
-    const { alpha, fonts, paints } = options;
-    if (alpha <= 0) return;
-    if (box.kind === 'mark') {
-      drawAvailableFace(
-        canvas,
-        song,
-        box.x,
-        box.y,
-        NAME_LENS_KNOBS.MARK_RADIUS_PX,
-        alpha,
-        paints,
-      );
-      if (song.playing) {
-        drawPlayingRing(
-          canvas,
-          box.x,
-          box.y,
-          NAME_LENS_KNOBS.MARK_RADIUS_PX,
-          alpha,
-          paints,
-        );
-      }
-      return;
-    }
-
-    if (box.kind === 'song') {
-      drawPlayer(canvas, box, song, alpha, paints);
-      return;
-    }
-
-    const faceX = box.x - NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX;
-    drawAvailableFace(
-      canvas,
-      song,
-      faceX,
-      box.y,
-      NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
-      alpha,
-      paints,
-    );
-    if (song.playing) {
-      drawPlayingRing(
-        canvas,
-        faceX,
-        box.y,
-        NAME_LENS_KNOBS.ROW_FACE_RADIUS_PX,
-        alpha,
-        paints,
-      );
-    }
-    drawRowWords(canvas, box, song, alpha, fonts, paints);
-  },
 };
-
-/**
- * A row's words: the title, the availability line and the action word.
- *
- * Shared by every lens, because a lens draws a song's picture and the row's
- * words are not the picture — the seal's row says exactly what the circle's
- * does.
- */
-export function drawRowWords(
-  canvas: Parameters<Lens['draw']>[0],
-  box: Parameters<Lens['draw']>[1],
-  song: LensSong,
-  alpha: number,
-  fonts: Parameters<Lens['draw']>[3]['fonts'],
-  paints: LensPaints,
-): void {
-  // The action word is right-aligned against the row's edge, and the title
-  // is cut to whatever is left. Measuring both keeps a long title from
-  // running under the word that acts on it.
-  const availability = availabilityOf(song.audioState);
-  const action = availabilityAction(availability);
-  const titleLeft = box.x - NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
-  const rowRight = box.x + NAME_LENS_KNOBS.ROW_RIGHT_PX;
-  let titleRight = rowRight;
-  if (action !== null) {
-    const width = textWidth(action, fonts.mono);
-    paints.muted.setAlphaf(alpha * NAME_LENS_KNOBS.ROW_ACTION_ALPHA);
-    canvas.drawText(
-      action,
-      rowRight - width,
-      box.y + NAME_LENS_KNOBS.ROW_ACTION_BASELINE_PX,
-      paints.muted,
-      fonts.mono,
-    );
-    titleRight = rowRight - width - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
-  }
-  paints.ink.setAlphaf(alpha * TITLE_ALPHA[availability]);
-  paints.muted.setAlphaf(alpha);
-  paints.faint.setAlphaf(alpha);
-  canvas.drawText(
-    fitText(song.title, fonts.display, titleRight - titleLeft),
-    titleLeft,
-    box.y + NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX,
-    paints.ink,
-    fonts.display,
-  );
-  canvas.drawText(
-    // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
-    // the longest line here and it must not run under the action word.
-    fitText(availabilityLine(song), fonts.mono, titleRight - titleLeft),
-    titleLeft,
-    box.y + NAME_LENS_KNOBS.ROW_META_BASELINE_PX,
-    paints.muted,
-    fonts.mono,
-  );
-}
 
 /**
  * The part of `SkFont` this file needs.
@@ -423,47 +303,6 @@ export type MeasuredFont = Readonly<{
   getSize: () => number;
   measureText: (text: string) => { width: number };
 }>;
-
-/**
- * The player: the recipe's face gone quiet, and the audio it produced on the
- * ring around it.
- *
- * This is the seam the whole zoom model rests on — *the mark is a promise and
- * the player is the measurement*. The same contour that identified the song as
- * a seven-pixel dot is still here, receded to a contour, while the waveform
- * that only exists once the audio is on the phone takes the weight. A song with
- * no measurement draws its skeleton, which is honest: it says the shape of the
- * sound is not known yet rather than drawing a shape that is not the song's.
- */
-function drawPlayer(
-  canvas: Parameters<Lens['draw']>[0],
-  box: Parameters<Lens['draw']>[1],
-  song: LensSong,
-  alpha: number,
-  paints: LensPaints,
-): void {
-  const radius = Math.min(box.width, box.height) / 2;
-  if (radius <= 0) return;
-  const knobs = NAME_LENS_KNOBS;
-
-  // The face first and faintest: identity underneath the measurement, not
-  // competing with it.
-  paints.outline.setAlphaf(alpha * knobs.SONG_FACE_ALPHA);
-  drawFace(
-    canvas,
-    song,
-    box.x,
-    box.y,
-    radius * knobs.SONG_FACE_RATIO,
-    paints.outline,
-  );
-
-  // The measurement is not drawn here. It answers to the clock — the bars lift
-  // as the playhead passes them — so it is built per frame beside this picture
-  // rather than recorded into it; see `NativePlayhead`. What stays is the face:
-  // identity does not move.
-  paints.ink.setStyle(PaintStyle.Fill);
-}
 
 const textWidthCache = new Map<string, number>();
 const fitTextCache = new Map<string, string>();
@@ -527,32 +366,6 @@ function remember<T>(cache: Map<string, T>, key: string, value: T): void {
   cache.set(key, value);
 }
 
-/**
- * The song's face, drawn at `radius` with whatever paint the caller hands in.
- *
- * The geometry is a pure function of the recipe, so this is the same silhouette
- * the row and the player draw — only `radius` changes. Stroking rather than
- * filling is what carries availability: outline is a song on the node, filled
- * is one on this phone. `drawAvailableFace` decides which.
- */
-function drawFace(
-  canvas: Parameters<Lens['draw']>[0],
-  song: LensSong,
-  cx: number,
-  cy: number,
-  radius: number,
-  paint: SkPaint,
-): void {
-  // The contour is identity, not animation state. Build each of the two drawn
-  // sizes once, then translate it. Rebuilding 96 points (and all their trig)
-  // for every transition frame starves the UI thread. Scaling the canvas is
-  // intentionally avoided because it would also scale the hairline stroke.
-  canvas.save();
-  canvas.translate(cx, cy);
-  canvas.drawPath(nameLensFacePath(song, radius), paint);
-  canvas.restore();
-}
-
 const FACE_PATH_CACHE_LIMIT = 512;
 const facePathCache = new Map<string, SkPath>();
 
@@ -593,92 +406,3 @@ export function nameLensFacePath(
   return path;
 }
 
-/**
- * The face, weighted by what the song promises about its audio.
- *
- * Three states, three promises, and cached and downloaded never look alike: a
- * faint contour is a song that will not play offline, a firm one is a loan the
- * budget may reclaim, and a filled one is here until you remove it. A song
- * still arriving keeps the faint contour and gains the arc.
- */
-function drawAvailableFace(
-  canvas: Parameters<Lens['draw']>[0],
-  song: LensSong,
-  cx: number,
-  cy: number,
-  radius: number,
-  alpha: number,
-  paints: LensPaints,
-): void {
-  const availability = availabilityOf(song.audioState);
-  const fill = FACE_FILL_ALPHA[availability];
-  if (fill > 0) {
-    paints.ink.setAlphaf(alpha * fill);
-    drawFace(canvas, song, cx, cy, radius, paints.ink);
-  }
-  paints.outline.setAlphaf(alpha * FACE_STROKE_ALPHA[availability]);
-  drawFace(canvas, song, cx, cy, radius, paints.outline);
-  if (availability === 'arriving') {
-    drawArrivingArc(canvas, song.arriving, cx, cy, radius, alpha, paints);
-  }
-}
-
-/**
- * The wait, drawn: the same ring a generating job traces, around the face the
- * bytes are on their way to.
- *
- * Pressing play on a song that is not here is a full download with a silence in
- * front of it — `playFocused` fetches the whole delivery artifact before it
- * opens anything — so the arrival has to be visible rather than implied.
- *
- * Restores the paint's fill style afterwards; paints are shared across the
- * whole picture, so leaving one stroked would silently outline everything drawn
- * after it.
- */
-export function drawArrivingArc(
-  canvas: Parameters<Lens['draw']>[0],
-  fraction: number | null,
-  cx: number,
-  cy: number,
-  radius: number,
-  alpha: number,
-  paints: LensPaints,
-): void {
-  const ringRadius = nameLensRingRadius(radius);
-  const box = Skia.XYWHRect(
-    cx - ringRadius,
-    cy - ringRadius,
-    ringRadius * 2,
-    ringRadius * 2,
-  );
-  paints.ink.setAlphaf(alpha);
-  paints.ink.setStyle(PaintStyle.Stroke);
-  paints.ink.setStrokeWidth(NAME_LENS_KNOBS.ARRIVING_RING_WIDTH_PX);
-  const sweep =
-    fraction === null
-      ? NAME_LENS_KNOBS.ARRIVING_INDETERMINATE_SWEEP_DEG
-      : 360 * Math.min(1, Math.max(0, fraction));
-  canvas.drawArc(box, -90, sweep, false, paints.ink);
-  paints.ink.setStyle(PaintStyle.Fill);
-}
-
-/**
- * The playing indicator: a ring around the mark, drawn at every level.
- *
- * Restores the paint's fill style afterwards, for the same reason the arriving
- * arc does.
- */
-export function drawPlayingRing(
-  canvas: Parameters<Lens['draw']>[0],
-  x: number,
-  y: number,
-  radius: number,
-  alpha: number,
-  paints: LensPaints,
-): void {
-  paints.ink.setAlphaf(alpha);
-  paints.ink.setStyle(PaintStyle.Stroke);
-  paints.ink.setStrokeWidth(NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX);
-  canvas.drawCircle(x, y, nameLensRingRadius(radius), paints.ink);
-  paints.ink.setStyle(PaintStyle.Fill);
-}

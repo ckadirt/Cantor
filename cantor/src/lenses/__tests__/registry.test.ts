@@ -1,10 +1,9 @@
-import { Skia } from '@shopify/react-native-skia';
+import { PaintStyle, Skia } from '@shopify/react-native-skia';
 import {
   DEFAULT_LENS_KEY,
   LENSES,
   analyseWindow,
   lensByKey,
-  neutralAnalysis,
   type LensSong,
 } from '..';
 
@@ -13,26 +12,6 @@ function paint(color: string) {
   value.setAntiAlias(true);
   value.setColor(Skia.Color(color));
   return value;
-}
-
-function song(overrides: Partial<LensSong> = {}): LensSong {
-  return {
-    key: 'node-a:song-a',
-    id: 'song-a',
-    seed: 41822,
-    title: 'A song with a fairly long title',
-    createdAtMs: Date.parse('2026-08-10T00:00:00Z'),
-    durationMs: 141_000,
-    model: 'acestep:1.5-fast',
-    nodeLabel: 'Studio',
-    audioState: 'remote',
-    arriving: null,
-    byteLength: 3_400_000,
-    playing: false,
-    analysis: neutralAnalysis(),
-    progress: null,
-    ...overrides,
-  };
 }
 
 function measured(): LensSong['analysis'] {
@@ -78,87 +57,107 @@ describe('the lens registry', () => {
   });
 });
 
+/**
+ * Every lens draws every state a song can be in, through the contract the
+ * renderer calls — marks and players, unmeasured, measured and silent, at
+ * every ink — and hands the shared paints back as it found them. What each
+ * draws is pinned by `features/field/__tests__/lensGoldens.test.ts`.
+ */
 describe('every lens draws', () => {
-  const ink = paint('#000000');
-  const paints = {
-    ink,
-    muted: paint('#666666'),
-    faint: paint('#A6A6A6'),
-    outline: paint('#000000'),
+  const recipe = {
+    seed: 41822,
+    id: 'song-a',
+    model: 'acestep:1.5-fast',
+    durationMs: 141_000,
   };
-  const display = Skia.Font(undefined, 20);
-  const fonts = { display, body: display, mono: Skia.Font(undefined, 9) };
-
-  const boxes = [
-    { kind: 'mark' as const, x: 120, y: 200, width: 0, height: 0 },
-    { kind: 'row' as const, x: 200, y: 300, width: 240, height: 30 },
+  const analyses: Array<[string, LensSong['analysis'] | undefined]> = [
+    ['unmeasured', undefined],
+    ['measured', measured()],
+    ['silent', analyseWindow(silence())],
+  ];
+  const inks: Array<[string, number, number]> = [
+    ['on the node', 0.38, 0],
+    ['cached', 0.85, 0],
+    ['downloaded', 1, 1],
+    ['filling in', 0.6, 0.5],
   ];
 
-  const songs: Array<[string, LensSong]> = [
-    ['a song with no audio yet', song()],
-    ['a measured song', song({ audioState: 'cached', analysis: measured() })],
-    ['the playing song', song({ playing: true, progress: 0.42 })],
-    ['a song at its very end', song({ playing: true, progress: 1 })],
-    ['a silent song', song({ analysis: analyseWindow(silence()) })],
-    // The four availability marks: every lens has to survive all of them, and
-    // the name lens has to tell the last two apart.
-    ['a song still on the node', song({ audioState: 'remote' })],
-    ['a song arriving', song({ audioState: 'partial', arriving: 0.4 })],
-    [
-      'a song arriving with no known total',
-      song({ audioState: 'partial', arriving: null }),
-    ],
-    ['a downloaded song', song({ audioState: 'pinned' })],
-    [
-      'a downloaded song that is playing',
-      song({ audioState: 'pinned', playing: true, progress: 0.2 }),
-    ],
-  ];
+  function paints() {
+    const stroke = paint('#000000');
+    stroke.setStyle(PaintStyle.Stroke);
+    return { fill: paint('#000000'), stroke, paper: paint('#FFFFFF') };
+  }
 
   for (const lens of LENSES) {
-    for (const box of boxes) {
-      for (const [label, value] of songs) {
-        it(`${lens.key} draws ${label} as a ${box.kind}`, () => {
+    for (const [soundLabel, analysis] of analyses) {
+      for (const [inkLabel, weight, fill] of inks) {
+        it(`${lens.key} draws a ${soundLabel} song ${inkLabel}`, () => {
+          const shared = paints();
+          const restyled = [
+            jest.spyOn(shared.fill, 'setStyle'),
+            jest.spyOn(shared.stroke, 'setStyle'),
+            jest.spyOn(shared.paper, 'setStyle'),
+          ];
           const recorder = Skia.PictureRecorder();
           const canvas = recorder.beginRecording(Skia.XYWHRect(0, 0, 400, 800));
-
-          expect(() =>
-            lens.draw(canvas, box, value, { alpha: 1, fonts, paints }),
-          ).not.toThrow();
+          const identity = lens.identity(recipe);
+          const player = lens.player(recipe, analysis);
+          expect(() => {
+            lens.ui.drawMark(
+              canvas,
+              identity,
+              1.2,
+              1,
+              weight,
+              fill,
+              0,
+              1,
+              shared,
+            );
+            for (const arrived of [0, 0.5, 1]) {
+              lens.ui.drawPlayer(
+                canvas,
+                player,
+                identity,
+                12,
+                1,
+                weight,
+                fill,
+                arrived,
+                1,
+                0.4,
+                1,
+                shared,
+              );
+            }
+          }).not.toThrow();
           expect(recorder.finishRecordingAsPicture()).toBeTruthy();
+          // Paints are shared across the whole field: a lens that restyled
+          // one would change everything drawn after it.
+          for (const spy of restyled) expect(spy).not.toHaveBeenCalled();
         });
       }
     }
 
-    it(`${lens.key} draws nothing at zero alpha`, () => {
-      const recorder = Skia.PictureRecorder();
-      const canvas = recorder.beginRecording(Skia.XYWHRect(0, 0, 400, 800));
-
-      lens.draw(canvas, boxes[0], song(), { alpha: 0, fonts, paints });
-
-      expect(recorder.finishRecordingAsPicture()).toBeTruthy();
-    });
-
-    it(`${lens.key} hands the shared paint back as a fill`, () => {
-      const styles: number[] = [];
-      const original = ink.setStyle.bind(ink);
-      ink.setStyle = (style: number) => {
-        styles.push(style);
-        original(style);
-      };
-      const recorder = Skia.PictureRecorder();
-      const canvas = recorder.beginRecording(Skia.XYWHRect(0, 0, 400, 800));
-
-      lens.draw(canvas, boxes[1], song({ playing: true }), {
-        alpha: 1,
-        fonts,
-        paints,
-      });
-      ink.setStyle = original;
-
-      // Paints are shared across the whole picture: a lens that left one
-      // stroked would outline everything drawn after it.
-      if (styles.length > 0) expect(styles[styles.length - 1]).toBe(0);
+    it(`${lens.key} puts down no ink at zero alpha`, () => {
+      const surface = Skia.Surface.Make(64, 64)!;
+      const canvas = surface.getCanvas();
+      canvas.clear(Skia.Color('#FFFFFF'));
+      canvas.translate(32, 32);
+      lens.ui.drawMark(
+        canvas,
+        lens.identity(recipe),
+        2,
+        0,
+        1,
+        1,
+        0,
+        1,
+        paints(),
+      );
+      surface.flush();
+      const pixels = surface.makeImageSnapshot().readPixels() as Uint8Array;
+      expect(pixels.every(value => value === 255)).toBe(true);
     });
   }
 });
