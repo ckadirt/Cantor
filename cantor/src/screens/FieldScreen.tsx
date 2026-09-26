@@ -22,9 +22,12 @@ import {
   FieldCanvas,
   FieldOverlay,
   OriginMark,
-  buildFieldController,
   useFieldCamera,
 } from '../features/field';
+import {
+  createFieldControllerStore,
+  type FieldControllerStore,
+} from '../features/field/fieldControllerStore';
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
 import { Curtain } from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
@@ -42,7 +45,10 @@ import {
   type GrainBars,
   type GrainRender,
 } from '../features/field/FieldCanvas';
-import type { FieldPresentation } from '../features/field/useFieldController';
+import type {
+  FieldController,
+  FieldPresentation,
+} from '../features/field/useFieldController';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
 import { LensPicker } from '../features/song/LensPicker';
@@ -107,7 +113,9 @@ import {
 import { AnalysisStore, type AnalysisRef } from '../lenses/analysisStore';
 import { createAsyncStorage } from '@react-native-async-storage/async-storage';
 import type { ArtifactView } from '../../../protocol/ArtifactView';
-import { useStore } from '../core/useStore';
+import { shallowEqual, useStore } from '../core/useStore';
+import type { Store } from '../core/store';
+import type { BackendRuntimeState } from '../runtime/backendRuntime';
 import {
   DEFAULT_AUDIO_CACHE_BYTES,
   loadAudioBudget,
@@ -124,7 +132,7 @@ import {
   usePlayer,
   type AfterSong,
 } from '../player';
-import { useBackendRuntime } from '../runtime';
+import { useRuntime } from '../runtime';
 import { readError } from '../core/errors';
 import { space, usePalette } from '../theme/tokens';
 
@@ -177,6 +185,61 @@ function analysisRefOf(
   };
 }
 
+/**
+ * The field canvas with the jobs it draws, read here rather than in
+ * `FieldScreen`: a job's progress re-renders this, and the canvas takes the
+ * new mark through a shared value (`jobMarks`), not the screen around it.
+ */
+function LiveFieldCanvas({
+  controllerStore,
+  ...props
+}: Omit<React.ComponentProps<typeof FieldCanvas>, 'jobs'> & {
+  controllerStore: FieldControllerStore;
+}) {
+  const jobs = useStore(controllerStore.store, jobsOf);
+  return <FieldCanvas {...props} jobs={jobs} />;
+}
+
+function jobsOf(controller: FieldController) {
+  return controller.jobs;
+}
+
+/**
+ * The engines sheet with each node's live snapshot — while it is open. It
+ * stays mounted closed, and a closed sheet has no reason to re-render on
+ * every job tick; opening it reads the snapshots as they are then.
+ */
+function LiveEnginesSheet({
+  runtimeStore,
+  ...props
+}: Omit<React.ComponentProps<typeof EnginesSheet>, 'snapshots'> & {
+  runtimeStore: Store<BackendRuntimeState>;
+}) {
+  const snapshots = useStore(
+    runtimeStore,
+    state => state.snapshots,
+    (left, right) => !props.open || left === right,
+  );
+  return <EnginesSheet {...props} snapshots={snapshots} />;
+}
+
+/** Each paired node's connection phase: what readiness is read from. */
+function phasesOf(state: BackendRuntimeState): Record<string, string> {
+  const phases: Record<string, string> = {};
+  for (const [key, snapshot] of Object.entries(state.snapshots)) {
+    phases[key] = snapshot.phase;
+  }
+  return phases;
+}
+
+/** What of the controller changes with the library, not with a job's progress. */
+function songsOf(controller: FieldController) {
+  return {
+    entities: controller.entities,
+    presentations: controller.presentations,
+  };
+}
+
 function everything<T>(state: T): T {
   return state;
 }
@@ -184,16 +247,24 @@ function everything<T>(state: T): T {
 /** The post-onboarding surface: one field, no parallel console navigation. */
 export function FieldScreen({ identity }: Props) {
   const pal = usePalette();
-  const { state, commands } = useBackendRuntime(identity);
-  const {
-    backends,
-    snapshots,
-    localAudio,
-    downloading,
-    outbox,
-    pairing,
-    storageError,
-  } = state;
+  /*
+   * The runtime, and only the parts of it this screen shows.
+   *
+   * Read whole, every change it published re-rendered the whole screen — a
+   * running job's progress about once a second. So each part is selected on
+   * its own, and what changes with a job (its snapshot, its mark) is read by
+   * the components that draw it: `LiveFieldCanvas`, the job sheet's selector,
+   * `LiveEnginesSheet`.
+   */
+  const runtime = useRuntime(identity);
+  const commands = runtime.commands;
+  const backends = useStore(runtime.store, state => state.backends);
+  const phases = useStore(runtime.store, phasesOf, shallowEqual);
+  const pairing = useStore(runtime.store, state => state.pairing);
+  const storageError = useStore(runtime.store, state => state.storageError);
+  const refreshing = useStore(runtime.store, state =>
+    Object.values(state.snapshots).some(snapshot => snapshot.librarySyncing),
+  );
   const [viewport, setViewport] = useState<Viewport | null>(null);
   // One player for the life of the screen. A second one would be a second
   // element and a second audio session.
@@ -360,20 +431,15 @@ export function FieldScreen({ identity }: Props) {
   );
   useEffect(() => () => analysisStore.dispose(), [analysisStore]);
   const analyses = useStore(analysisStore.store, everything);
-  // The last projection, so an unchanged song keeps the presentation the
-  // canvas already drew from.
-  const lastController = useRef<ReturnType<typeof buildFieldController> | null>(
-    null,
+  /*
+   * The field's projection of the runtime: songs and entities here, which a
+   * job's progress leaves as the same objects; the jobs where they are drawn.
+   */
+  const [controllerStore] = useState(() =>
+    createFieldControllerStore(runtime.store),
   );
-  const controller = useMemo(
-    () =>
-      buildFieldController(
-        { backends, snapshots, localAudio, outbox },
-        lastController.current,
-      ),
-    [backends, localAudio, outbox, snapshots],
-  );
-  lastController.current = controller;
+  useEffect(() => controllerStore.connect(), [controllerStore]);
+  const controller = useStore(controllerStore.store, songsOf, shallowEqual);
   /**
    * What the phone thinks the time is, for labels that read relatively.
    *
@@ -420,18 +486,17 @@ export function FieldScreen({ identity }: Props) {
   const composerTargets = useMemo<readonly ComposerTarget[]>(
     () =>
       (backends ?? []).map(backend => {
-        const snapshot = snapshots[backend.nodePubkey];
         const info = backend.lastNodeInfo;
         return {
           nodePublicKey: backend.nodePubkey,
           label:
             backend.petname || info?.name || backend.nodePubkey.slice(0, 8),
-          ready: snapshot?.phase === 'ready',
+          ready: phases[backend.nodePubkey] === 'ready',
           models: info?.models ?? [],
           limits: info?.limits ?? null,
         };
       }),
-    [backends, snapshots],
+    [backends, phases],
   );
 
   /**
@@ -607,13 +672,16 @@ export function FieldScreen({ identity }: Props) {
   /** A generating mark opens what it is doing; it has no inside to descend to. */
   const onClaimTap = useCallback(
     (placement: Placement): boolean => {
-      if (!controller.jobs.has(placement.entityKey)) return false;
+      // Read at the tap: the screen does not re-render for jobs.
+      if (!controllerStore.store.get().jobs.has(placement.entityKey)) {
+        return false;
+      }
       setJobError(null);
       setJobKey(placement.entityKey);
       setJobOpen(true);
       return true;
     },
-    [controller.jobs],
+    [controllerStore],
   );
 
   /** Hold acts: everything about a song that is not the act of listening. */
@@ -684,9 +752,8 @@ export function FieldScreen({ identity }: Props) {
   );
 
   /** The generation its sheet is open on, if the field still knows about it. */
-  const pendingJob = useMemo(
-    () => (jobKey === null ? null : controller.jobs.get(jobKey) ?? null),
-    [controller.jobs, jobKey],
+  const pendingJob = useStore(controllerStore.store, current =>
+    jobKey === null ? null : current.jobs.get(jobKey) ?? null,
   );
 
   /** The song the sheet is open on, if the field still knows about it. */
@@ -861,15 +928,18 @@ export function FieldScreen({ identity }: Props) {
    * looks exactly like a hang. The arc still draws from the bytes, because
    * "you have this much" is true whether or not anything is moving.
    */
-  const focusedArriving =
-    focused?.delivery !== undefined &&
-    downloading.has(
-      audioKey(
-        focused.entity.nodePublicKey,
-        focused.entity.entityId,
-        focused.delivery.sha256,
+  const focusedArriving = useStore(
+    runtime.store,
+    state =>
+      focused?.delivery !== undefined &&
+      state.downloading.has(
+        audioKey(
+          focused.entity.nodePublicKey,
+          focused.entity.entityId,
+          focused.delivery.sha256,
+        ),
       ),
-    );
+  );
   useEffect(() => {
     const target = focusedArriving
       ? PLAYER_VERB_POSE.waiting
@@ -1264,15 +1334,18 @@ export function FieldScreen({ identity }: Props) {
    * is not a position to fly to, and guessing one would land the caption
    * somewhere the mark is not.
    */
+  const condenseKey = useStore(controllerStore.store, current =>
+    condensing === null
+      ? null
+      : condensing.jobKey ??
+        [...current.jobs.keys()].find(candidate =>
+          candidate.startsWith(`${condensing.nodePublicKey}:`),
+        ) ??
+        null,
+  );
   const condenseTarget = useMemo(() => {
-    if (condensing === null || viewport === null) return null;
-    const key =
-      condensing.jobKey ??
-      [...controller.jobs.keys()].find(candidate =>
-        candidate.startsWith(`${condensing.nodePublicKey}:`),
-      ) ??
-      null;
-    if (key === null) return null;
+    if (condenseKey === null || viewport === null) return null;
+    const key = condenseKey;
     const placement = fieldCamera.renderedPlacements.find(
       candidate => candidate.entityKey === key,
     );
@@ -1288,8 +1361,7 @@ export function FieldScreen({ identity }: Props) {
       viewport,
     );
   }, [
-    condensing,
-    controller.jobs,
+    condenseKey,
     fieldCamera.camera,
     fieldCamera.renderedPlacements,
     fieldCamera.renderFitScale,
@@ -1614,10 +1686,7 @@ export function FieldScreen({ identity }: Props) {
   const offline =
     backends !== null &&
     backends.length > 0 &&
-    !backends.some(backend => snapshots[backend.nodePubkey]?.phase === 'ready');
-  const refreshing = Object.values(snapshots).some(
-    snapshot => snapshot.librarySyncing,
-  );
+    !backends.some(backend => phases[backend.nodePubkey] === 'ready');
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: pal.bg }]}>
@@ -1625,7 +1694,8 @@ export function FieldScreen({ identity }: Props) {
         {layout !== null && viewport !== null ? (
           <GestureDetector gesture={fieldCamera.gesture}>
             <View collapsable={false} style={styles.field}>
-              <FieldCanvas
+              <LiveFieldCanvas
+                controllerStore={controllerStore}
                 cameraShared={fieldCamera.cameraShared}
                 fitScaleShared={fieldCamera.fitScaleShared}
                 layout={layout}
@@ -1634,7 +1704,6 @@ export function FieldScreen({ identity }: Props) {
                 activeLensKey={lensKey}
                 analyses={analyses}
                 grainShared={grainShared}
-                jobs={controller.jobs}
                 // The player's focus, not the tap's: entering a shelf must
                 // not re-record this canvas. See `commitFocus`.
                 focusKey={fieldCamera.playerFocus?.key ?? null}
@@ -1813,7 +1882,8 @@ export function FieldScreen({ identity }: Props) {
           title="ENGINES"
           viewportHeight={viewport.height}
         >
-          <EnginesSheet
+          <LiveEnginesSheet
+            runtimeStore={runtime.store}
             backends={backends}
             open={enginesOpen}
             onClose={closeEngines}
@@ -1831,7 +1901,6 @@ export function FieldScreen({ identity }: Props) {
               void forgetEngine(nodePublicKey);
             }}
             onRename={commands.renameBackend}
-            snapshots={snapshots}
           />
         </Curtain>
       ) : null}
