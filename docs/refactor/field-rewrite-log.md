@@ -18,11 +18,10 @@ decides when to push.
 **Next:** nothing is queued. Candidates, for Cesar to choose: C3b (only if a
 measurement says so), phase 5 (device import — before alpha), the two
 Findings from R6g (the seal's downloaded ink, the missing arriving arc), the
-L2 playback cost finding, and the tree lens on the contract (after alpha) — the lens contract; the agreed plan and port
-order are under R6 in "Phase 3 plan". Every R6 step must keep
-`lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
-regenerated with `-u` and the reason logged. Check "Open questions"
-first: two things wait on Cesar.
+L2 playback cost finding, and the tree lens on the contract (after alpha).
+Any step touching a lens keeps `lensGoldens.test.ts` and
+`playerRingGoldens.test.tsx` passing unchanged; a golden changed on purpose
+is regenerated with `-u` and the reason logged.
 
 **How a step is done here** — every step so far followed this, and the
 entries below assume it:
@@ -74,7 +73,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **done** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`, R6g `2c7477a` — **R6 done**; phase 3 done except R5 (shelved) see "Phase 3 plan" |
+| 3. Renderer | **done** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 (lens contract) R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`, R6g `2c7477a`; see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -885,6 +884,7 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `0395c1d` docs: R6 done; the lens contract in the guides
 - `2c7477a` lenses: the old lens drawing is gone
 - `580059f` docs: R6f in the log
 - `f60a6ab` lenses: a touch on the player asks the lens what it means
