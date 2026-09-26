@@ -1828,6 +1828,8 @@ export function FieldScreen({ identity }: Props) {
         ) : null}
         <FieldOverlay
           arrangementKey={arrangementKey}
+          cameraShared={fieldCamera.cameraShared}
+          fitScaleShared={fieldCamera.fitScaleShared}
           dateResolution={dateResolution}
           groupCount={layout?.groups.length ?? 0}
           groupLabel={focusedGroupLabel}

@@ -1,12 +1,19 @@
 import React, { useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import Animated, {
+  useAnimatedStyle,
+  type SharedValue,
+} from 'react-native-reanimated';
 import { TransformText, WriteText } from '../../motion';
 import { Dial, Reveal } from '../controls';
 import {
   ARRANGEMENTS,
   DATE_RESOLUTIONS,
   SONG_ORDERS,
+  REPRESENTATION_WINDOWS,
+  bandAlphaAt,
   byTime,
+  type Camera,
   type DateResolution,
   type Level,
 } from '../../field';
@@ -14,6 +21,13 @@ import { space, type, usePalette } from '../../theme/tokens';
 
 type Props = {
   level: Level;
+  /**
+   * The live camera and the fit it is measured against, for the one thing
+   * here that moves with them: how much of the header and the foot is drawn
+   * while the player arrives. See `CHROME_AWAY_WINDOW`.
+   */
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
   offline: boolean;
   storageError: string | null;
   onOpenEngines: () => void;
@@ -182,6 +196,26 @@ export const OVERLAY_KNOBS = {
   HEADER_CHANGE_MS: 700,
 } as const;
 
+/**
+ * KNOB — where the header and the foot give the screen to the player, in
+ * multiples of FIT: they leave across exactly the span the song band opens on
+ * (`REPRESENTATION_WINDOWS.song`, 12→27), and stay gone at every distance past
+ * it, the grain included.
+ *
+ * They used to be hidden outright on the commit React's level became `song` —
+ * a cut at 13·FIT, a commit late, while the camera was still moving and the
+ * player had barely begun to arrive. React hears the camera only at
+ * thresholds, so nothing that moves with it can be faded from React state
+ * (`cantor/AGENTS.md`); this is read from the live camera on the UI thread,
+ * the same number `SongSurface` fades the player's readout in on.
+ */
+export const CHROME_AWAY_WINDOW = [
+  REPRESENTATION_WINDOWS.song[0],
+  REPRESENTATION_WINDOWS.song[1],
+  Number.POSITIVE_INFINITY,
+  Number.POSITIVE_INFINITY,
+] as const;
+
 /*
  * Char styles for the animated lines, hoisted to module scope — house rule 3.
  * A fresh style object every render defeats the components' memo and re-records
@@ -229,6 +263,8 @@ const CLUSTER_NOUN: Record<DateResolution, string> = {
 
 function FieldOverlayImpl({
   level,
+  cameraShared,
+  fitScaleShared,
   offline,
   storageError,
   onOpenEngines,
@@ -275,7 +311,21 @@ function FieldOverlayImpl({
   if (showHeader) shown.current = live;
   const h = shown.current;
   const onDateAxis = h.arrangementKey === byTime.key;
+  // `away` decides touches, the screen reader and the frozen words; how much
+  // is drawn follows the camera itself.
   const away = !showHeader;
+  const present = useAnimatedStyle(
+    () => ({
+      opacity:
+        1 -
+        bandAlphaAt(
+          cameraShared.value.scale,
+          fitScaleShared.value,
+          CHROME_AWAY_WINDOW,
+        ),
+    }),
+    [cameraShared, fitScaleShared],
+  );
   return (
     <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
       <EdgeTab
@@ -289,11 +339,12 @@ function FieldOverlayImpl({
         box-none, not none: the count is not touchable but the shelf action
         beside it is, and it is the only thing in this corner that is.
       */}
-      <View
+      <Animated.View
         accessibilityElementsHidden={away}
         importantForAccessibility={away ? 'no-hide-descendants' : 'auto'}
         pointerEvents={away ? 'none' : 'box-none'}
-        style={[styles.header, away && styles.hidden]}
+        style={[styles.header, present]}
+        testID="field-header"
       >
         {/*
             The header is one object at every level, not a different header per
@@ -414,7 +465,7 @@ function FieldOverlayImpl({
             />
           </View>
         </Reveal>
-      </View>
+      </Animated.View>
 
       {/* An alert clears the player's transport as well as the dial. */}
       {storageError ? (
@@ -425,11 +476,12 @@ function FieldOverlayImpl({
           {storageError}
         </Text>
       ) : null}
-      <View
+      <Animated.View
         accessibilityElementsHidden={away}
         importantForAccessibility={away ? 'no-hide-descendants' : 'auto'}
         pointerEvents={away ? 'none' : 'box-none'}
-        style={[styles.foot, away && styles.hidden]}
+        style={[styles.foot, present]}
+        testID="field-foot"
       >
         {/*
           The dial is a property of the map, so it is drawn on the map. At L1
@@ -499,7 +551,7 @@ function FieldOverlayImpl({
           color={pal.faint}
           style={styles.hintSlot}
         />
-      </View>
+      </Animated.View>
       <EdgeTab
         accessibilityLabel="Open engines"
         colour={pal.faint}
@@ -623,8 +675,6 @@ function EdgeTab({
 }
 
 const styles = StyleSheet.create({
-  /** At L2 and L3: still mounted, drawn nowhere and touched by nothing. */
-  hidden: { opacity: 0 },
   header: {
     left: space.lg,
     position: 'absolute',
