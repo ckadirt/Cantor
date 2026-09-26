@@ -11,11 +11,11 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–e done; R6f next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–f done; R6g next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** R6f, then R6g — the lens contract; the agreed plan and port
+**Next:** R6g (the last R6 step) — the lens contract; the agreed plan and port
 order are under R6 in "Phase 3 plan". Every R6 step must keep
 `lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
 regenerated with `-u` and the reason logged. Check "Open questions"
@@ -71,7 +71,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`); see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`); see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -624,6 +624,39 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     cover it.
   - **R6f — touch.** `seekBoxPx`/`seekGesture` ask the lens (`reach`,
     `touchAt`) instead of `lensKey === 'seal'`.
+    **Plan (2026-09-26):** touch is the lens's *JS* half, not `LensUi` —
+    the scrub gesture runs on the JS thread (`runOnJS(true)`), so there is
+    nothing to capture into a worklet. `Lens.touch`: `reachRatio` (the touch
+    box's half-size, of the player's radius), `landAt(recipe, dx, dy,
+    radius)` → `{ kind: 'seek', fraction | null }` (a drag that keeps
+    seeking through `seekAt`) or `{ kind: 'tap', fraction | null }` (jump on
+    release unless the finger wanders past `TAP_SLOP_PX`) or null (not this
+    lens's: ignore the gesture), and `seekAt(dx, dy, radius)` for the drag.
+    Coordinates are relative to the player's centre, so a lens never needs
+    `songPose`. One angle helper, `ringTurnAt(dx, dy, inner, outer)` in
+    `lenses/ring.ts`, serves both lenses and `songPose`'s screen-space
+    `seekFractionAt`/`sealRimFraction`. The seek knobs move to the circle
+    (`NAME_LENS_KNOBS.CLOCK_SEEK_*`, which `PLAYER_POSE_KNOBS` points at);
+    the tap slop to `SONG_SURFACE_KNOBS` (the gesture's, not the seal's).
+    `seekGesture(viewport, seconds, onSeek, onSeekEnd, lens, recipe)` and
+    `seekBoxPx(viewport, lens)` take a `Lens`; the existing seal and circle
+    gesture tests are the guard (their harness passes `sealLens` and a
+    recipe instead of `'seal'` and a model), plus a new test driving the
+    gesture with a made-up lens, which is what "no renderer change for the
+    tree" means here.
+    **Done (`f60a6ab`).** As planned. `songPose`'s `sealRimFraction`,
+    `sealTouchAt` and `SealTouch` are gone (only the gesture used them);
+    `seekFractionAt` stays as the circle's screen-space check over
+    `ringTurnAt`; `SEAL_PLAYER_KNOBS.TAP_SLOP_PX` became
+    `SONG_SURFACE_KNOBS.TAP_SLOP_PX` (10). `SongSurface` resolves its
+    `lensKey` to a `Lens` (`lensByKey`, falling back to the circle) and
+    passes the song's recipe; its own `lens` prop is the picker, so the
+    resolved one is `drawnLens`. The circle and seal gesture tests pass with
+    only the harness changed; new: "seeking on a lens the gesture has never
+    seen". Verified on the Xiaomi (paused, song loaded): taps at 3 and 6
+    o'clock on the circle's ring move the hand and heard arc there; on the
+    seal a tap on an unheard dot jumps forward to it (bead, heard ink and
+    knob move there) and a tap on the first dot jumps back to the start.
   - **R6g — delete the old registry.** `Lens.draw`, `nameLens.draw`,
     `sealLens.draw`, `drawRowWords` if nothing else reads it; their tests are
     replaced by R6a's goldens. Update `cantor/AGENTS.md` ("Lenses share the
@@ -737,6 +770,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Known leftovers (not scheduled)
 
+- The L2 elapsed readout does not follow a seek while paused: it samples the
+  position only while playing, and once when play/pause changes
+  (`useElapsedLabel` in `SongSurface.tsx`). Seen during R6f; older than R6.
 - Analysis decode is ~1.5 s of a core per song on the JS thread
   (`readSamples` in `player/createAudioApiPlayer.ts`); must move to native or
   a lower rate before importing hundreds of songs (phase 5).
@@ -788,6 +824,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `f60a6ab` lenses: a touch on the player asks the lens what it means
+- `55ed357` docs: R6e in the log
 - `96410f4` lenses: the player's clock is numbers each lens gives
 - `047b663` field: golden strokes for the player's clock
 - `d8b40e9` docs: R6d in the log; L2 playback cost
