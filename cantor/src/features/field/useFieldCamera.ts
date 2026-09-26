@@ -19,22 +19,26 @@ import {
   GRAIN_KNOBS,
   LAYOUT_KNOBS,
   containToSeat,
+  gatherFraction,
   hitTestPlacement,
   hitTestRowAction,
   interpolatePositiveScale,
   isShelfDistance,
   isSongDistance,
+  LEVEL_BOUNDARIES,
   LEVEL_SCALE_RATIOS,
   levelCameraTarget,
   levelOf,
   nearestSeat,
   placementFlightAt,
+  placementPoint,
   planPlacementFlights,
   seatAfterRelease,
   seatCameraAround,
   seatCameraBounds,
   shelfSeats,
   smootherstep,
+  worldToScreen,
   zoomAroundFocalPoint,
   type Camera,
   type FieldLayout,
@@ -265,6 +269,16 @@ export function useFieldCamera({
   const [playerKey, setPlayerKey] = useState<string | null>(null);
   /** A descent held until the commit that mounts its player has landed. */
   const pendingDescent = useRef<Camera | null>(null);
+  /*
+   * Whether a camera flight is in the air, and the re-cut that took one over.
+   * A re-cut born mid-flight plans from where the flight was going, and the
+   * flight is cancelled when the re-cut starts — two tweens writing
+   * `cameraShared` at once is the one thing this hook is built not to do, and
+   * a regroup used to ignore a flight home and leave the camera wherever the
+   * flight had got to (see C5 in the rewrite log).
+   */
+  const cameraFlying = useRef(false);
+  const absorbedFlight = useRef<number | null>(null);
   /** What to do when the current flight lands; dropped with the flight. */
   const flightThen = useRef<(() => void) | null>(null);
   /** A step's second leg, waiting for the commit that mounts its player. */
@@ -574,9 +588,11 @@ export function useFieldCamera({
     pendingStepLeg.current = null;
     stepTarget.current = null;
     flightThen.current = null;
+    cameraFlying.current = false;
     cancelAnimation(flightProgress);
   }, [flightProgress]);
   const landFlight = useCallback(() => {
+    cameraFlying.current = false;
     const then = flightThen.current;
     flightThen.current = null;
     then?.();
@@ -614,6 +630,7 @@ export function useFieldCamera({
         return;
       }
       flightThen.current = then;
+      cameraFlying.current = true;
       // From the *live* camera, not React's copy of it. A flight that begins
       // where the last mirrored frame happened to land would start with a jump
       // back to it — the exact distance the gesture covered after React's last
@@ -745,20 +762,49 @@ export function useFieldCamera({
         placement => placement.entityKey === held.entityKey,
       );
     if (stranded) standing.current = null;
+    /*
+     * Where the camera is headed, not only where it is: a flight in the air
+     * is an intention, and a regroup that planned from the flight's midpoint
+     * stranded it there. A flight to the old field's home is a flight home.
+     */
+    const flying = !firstLayout && cameraFlying.current;
+    const heading = flying ? flightTo.value : fromCamera;
+    const oldHome =
+      previous === null ? null : levelCameraTarget('field', previous.layout);
+    const flyingHome =
+      flying && oldHome !== null && sameCamera(heading, oldHome);
+    const newHome = levelCameraTarget('field', layout);
     const fitCorrected = {
-      ...fromCamera,
+      ...heading,
       scale: clampScale(
-        (fromCamera.scale / fromFitScale) * layout.fitScale,
+        (heading.scale / fromFitScale) * layout.fitScale,
         layout,
       ),
     };
-    const toCamera = firstLayout
+    let toCamera = firstLayout
       ? fromCamera
       : stranded
-      ? levelCameraTarget('shelf', layout, held) ??
-        levelCameraTarget('field', layout) ??
-        fitCorrected
+      ? levelCameraTarget('shelf', layout, held) ?? newHome ?? fitCorrected
+      : flyingHome
+      ? newHome ?? fitCorrected
       : fitCorrected;
+    /*
+     * At the map, a regroup that would leave the camera over space the new
+     * layout does not fill goes home instead: groups move when the field is
+     * re-cut, and the camera standing where one used to be showed an empty
+     * field with nothing to say why.
+     */
+    if (
+      !firstLayout &&
+      !stranded &&
+      newHome !== null &&
+      viewport !== null &&
+      toCamera.scale / layout.fitScale < LEVEL_BOUNDARIES.field &&
+      !anyPlacementInView(layout, toCamera, viewport)
+    ) {
+      toCamera = newHome;
+    }
+    if (flying) absorbedFlight.current = generation;
     const sources = firstLayout
       ? layout.placements
       : liveCapture().filter(stillDrawn);
@@ -890,6 +936,10 @@ export function useFieldCamera({
     const model = recutModel.current;
     if (model === null) return;
     const generation = model.generation;
+    if (absorbedFlight.current === generation) {
+      absorbedFlight.current = null;
+      cancelCameraFlight();
+    }
     cancelRelayout();
     if (!model.animate) {
       nativeFlight.current = null;
@@ -921,6 +971,7 @@ export function useFieldCamera({
     );
   }, [
     activeRecut?.generation,
+    cancelCameraFlight,
     cancelRelayout,
     commitCamera,
     fitScaleShared,
@@ -1765,4 +1816,33 @@ function flightsMove(flights: readonly PlacementFlight[]): boolean {
 
 function camerasDiffer(left: Camera, right: Camera): boolean {
   return left.x !== right.x || left.y !== right.y || left.scale !== right.scale;
+}
+
+/** The same camera, to within float noise. */
+function sameCamera(a: Camera, b: Camera): boolean {
+  const near = (x: number, y: number) =>
+    Math.abs(x - y) <= 1e-6 * Math.max(1, Math.abs(x), Math.abs(y));
+  return near(a.x, b.x) && near(a.y, b.y) && near(a.scale, b.scale);
+}
+
+/** Whether any of a layout's marks would be on screen from `camera`. */
+function anyPlacementInView(
+  layout: FieldLayout,
+  camera: Camera,
+  viewport: Viewport,
+): boolean {
+  const gather = gatherFraction(camera.scale, layout.fitScale);
+  return layout.placements.some(placement => {
+    const point = worldToScreen(
+      placementPoint(placement, gather),
+      camera,
+      viewport,
+    );
+    return (
+      point.x >= 0 &&
+      point.x <= viewport.width &&
+      point.y >= 0 &&
+      point.y <= viewport.height
+    );
+  });
 }
