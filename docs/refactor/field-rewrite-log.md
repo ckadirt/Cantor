@@ -11,14 +11,15 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–3 done (R5 shelved; R6, the lens contract, done); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–4 done (R5 shelved; R6, the lens contract, and R7 done; C3b measured and not built). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** nothing is queued. Candidates, for Cesar to choose: C3b (only if a
-measurement says so), phase 5 (device import — before alpha), the L2
-playback cost finding, and the tree lens on the contract (after alpha).
-Cesar's order (2026-09-26): finish phase 4, then import. The "how the app is
+**Next:** phase 5, device import (Cesar's order, 2026-09-26). Its design is
+in `field-redesign.html` § "Songs, homes and copies"; two design calls wait
+on Cesar when they come up (what an imported mark looks like; how imported
+songs are grouped). Also open: the L2 playback cost finding, and the tree
+lens on the contract (after alpha). The "how the app is
 built" walkthrough waits until the rewrite is finished.
 Any step touching a lens keeps `lensGoldens.test.ts` and
 `playerRingGoldens.test.tsx` passing unchanged; a golden changed on purpose
@@ -76,7 +77,7 @@ motion rules, required before touching motion or Skia code.
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
 | 3. Renderer | **done** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 (lens contract) R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`, R6g `2c7477a`; R7 (every lens keeps the availability reading) `b0b5632`; see "Phase 3 plan" |
-| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
+| 4. Camera events, chrome, UI stores | **done** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e`, C5 `04ea31e`, runtime persist-on-change `706514c`, `keep` `b4d095d`; C3b measured, not built; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
@@ -281,7 +282,7 @@ doubles every number — never measure on it (see Traps).
   `5218cf7` (R2). Burst capture shows one name through descent and ascent on
   three runs; a one-frame gap is below burst resolution, so Cesar's eye is the
   final check.
-- **2026-09-24 — Empty field after a regroup** (seen in the lab): regroup +
+- **2026-09-24 — Resolved by C5: empty field after a regroup** (seen in the lab): regroup +
   flight home on one tap while the camera was far away settled on an empty
   canvas while React's camera read home; FIT MAP recovered. Same category as
   flicker B (two copies of the camera). **Unverified** since C1/C2b removed
@@ -912,6 +913,51 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   composer closed (uiautomator: no `COMPOSE`) before sampling, or the
   sample measures an open composer (one invalid 7.5% sample was that).
 
+  **Downloads and sheets (measured, not built).** A download from agentbox
+  re-renders `FieldScreen` about once per 0.8 s (the runtime's
+  `ARRIVING_SAMPLE_MS`), 7–9 ms a render plus a 0–1 ms face rebuild — ~1%
+  of the JS thread while bytes land. Opening the engines sheet: one screen
+  render of 127 ms, closing 12 ms; the song sheet: 95 + 26 ms open, 12 + 2
+  ms close — almost all of it the sheet's own mount, one-off per open, and
+  the blind's motion runs on the UI thread. **C3b is not built:** neither a
+  download store nor a UI store would buy anything a person can feel.
+  Found on the way: `GET` was two runtime acts (download, then pin), so a
+  kept song read "cached" for a beat between its full arc (or filled-in
+  seal) and its filled mark. **Fixed (`b4d095d`):** `AudioAction` `keep` —
+  download if needed and pin in one command, progress published as
+  `partial` until the pin; the row's `GET` (and `DOWNLOAD ALL`, which goes
+  through it) uses it. Test: "keeps a song without ever publishing it as
+  merely cached". Verified on the Xiaomi, circle lens: 0 → 23 → 46 → 68 →
+  100% → downloaded, no cached step; seal lens earlier the same day showed
+  the fill-in 22 → 43 → 65 → 86% (then the cached dip, now gone).
+- **C5 — a regroup never lands on nothing. Done (`04ea31e`).** The "empty field
+  after a regroup" finding reproduces in the lab (release build, gate
+  lifted temporarily): drag far, `SHOW MONTHS` (regroup + `home()` in one
+  tap) → the camera does not move and the field is empty; `FIT MAP` alone
+  works. Cause, in `useFieldCamera`'s re-cut planning: the target is the
+  current camera, fit-corrected, unless a song left under you — so (a) a
+  camera flight in the air when the re-cut is born is ignored, and nothing
+  cancels it, so two tweens write `cameraShared` at once; (b) at L0 a
+  regroup can leave the camera over space the new layout does not fill.
+  Production can hit both: the origin mark's flight home then a dial tap,
+  or a dial tap at L0 after panning toward an edge. **Plan:** track whether
+  a camera flight is in the air; if so the re-cut plans from the flight's
+  destination (the new layout's home when it was flying to the old home)
+  and absorbs the flight (cancelled when the re-cut starts; it still
+  starts from the live camera, so nothing jumps). At field distance, if no
+  placement of the new layout would be on screen at the target, the target
+  is home. Tests for both, then the lab and the dial on the phone.
+  **As built:** `cameraFlying` / `absorbedFlight` refs and the planning in
+  `useFieldCamera.ts` (`sameCamera`, `anyPlacementInView` at the bottom);
+  the re-cut effect cancels an absorbed flight before it starts. Tests "a
+  regroup never lands on nothing" (both fail on the old code). Verified on
+  the Xiaomi, production screen: drag the map far off, tap MONTH → home in
+  months; drag off again, tap the origin mark then WEEK 0.25 s later → home
+  in weeks.
+- **Phase 4 — done (2026-09-26).** C1, C2, C2b, C3a, C4, C5, the runtime's
+  persist-on-change (`706514c`) and `keep` (`b4d095d`); C3b measured and
+  not built.
+
 ## Open questions (for Cesar)
 
 - **Does an interrupted regroup glide now?** (`671af18`.) Tap MONTH then
@@ -992,6 +1038,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `04ea31e` field: a regroup never lands on nothing
+- `b4d095d` runtime: GET keeps a song in one act
+- `4f10540` docs: what a running job costs, and the fix
 - `706514c` runtime: a job's progress writes nothing to storage
 - `834bae8` docs: R7 in the log
 - `b0b5632` lenses: every lens shows what the phone holds and what is arriving
