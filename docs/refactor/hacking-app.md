@@ -36,7 +36,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
-| `src/lenses/` | how a song is drawn (circle, seal), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them |
+| `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`) and the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
 
 ## The rules that are not obvious
@@ -91,6 +91,27 @@ keepalive, deliver messages, report closure, or schedule a retry.
    the runtime with `useRuntime` and select what it shows with `useStore`.
 3. Wire navigation in `MainScreen`. Do not reach around the runtime to open a
    connection.
+
+### Add a lens
+
+1. Write it in `src/lenses/<name>Lens.ts` as a `Lens` (`types.ts`): `key`,
+   `label`, `identity(recipe)` (JS, cached per recipe — from the recipe alone,
+   which is the two-layer rule), `player(recipe, analysis)` (JS; null if its
+   player is its mark grown), `touch` (JS: `reachRatio`, `landAt`, `seekAt`, in
+   coordinates about the player's centre), and `ui` — worklets and numbers only
+   (`drawMark`, `drawPlayer`, `ringTicks`, `hearsPlayhead`, `clock`), because it
+   is captured onto the UI thread.
+2. Add it to `LENSES` in `registry.ts`. The picker lists it, the renderer draws
+   it, and a change to or from it takes the generic two beats.
+3. For a hand-written player morph with another lens, add a `LensPairMorph` to
+   `pairs.ts`; at `t` 0 it must look like its `a` lens's own player.
+4. Extend `lensGoldens.test.ts` and `playerRingGoldens.test.tsx` with frames
+   of the new lens, and check it on the phone at L0, L1 and L2 and through a
+   change each way.
+
+Nothing under `features/field/` should need to change. If it does, the contract
+is missing something — add it to `contract.ts` rather than special-casing the
+lens in the renderer.
 
 ### Add a feature component
 
@@ -187,22 +208,24 @@ running before the drag. `SongSurface` finalizes on gesture completion and
 unmount. Track replacement cancels ownership so a late release cannot seek the
 next song. Ordinary seeks also reconcile the visual clock after native seek.
 
-Circle and Seal share `NativeFieldContent`. Lens changes drive one retained
-linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS = 420`) that `drawFieldFaces`
-reads in two beats for marks and rows: the face scales in to its centre, then
-the seal scales out. The player's face morphs instead: its dots walk out of the
-contour in time order and the contour becomes the Peano thread, while
-`PlayerRing` widens the circle's arc out to the seal's rim.
+Circle and Seal share `NativeFieldContent` through the lens contract
+(`lenses/contract.ts`; the recipe for a new lens is below). A lens change is
+`(from, to, t)` on one retained linear clock (`features/field/lensClock.ts`,
+`SEAL_PLAYER_KNOBS.LENS_MORPH_MS = 420`) that `drawFieldFaces` reads in two
+beats for marks and rows: the lens being left scales in to its centre, then the
+one arriving scales out. The player uses a pair morph where one is registered
+(`lenses/pairs.ts`): circle ↔ seal walks the dots out of the contour in time
+order and the contour becomes the Peano thread, while `PlayerRing` mixes the two
+lenses' `ClockShape`s, widening the circle's arc out to the seal's rim.
 The seal's geometry is pure and Skia-free in `lenses/seal.ts` (masks, Peano
-order, per-dot sound, `sealDotAt`); `lenses/sealLens.ts` builds one cached path
-per song for L0/L1 (its `draw`, like the other lenses', now runs only in tests;
-the lens contract is phase 3's R6 in `field-rewrite-log.md`). The player's seal is drawn a
-dot at a time by `drawSealPlayer`: mark dots split into their children as
+order, per-dot sound, `sealDotAt`); its identity is one cached path per song
+(`sealMarkPath`); its player is drawn a dot at a time by `drawSealPlayer`
+(`lenses/sealPlayer.ts`): mark dots split into their children as
 `songShapeArrival` runs, and the sound rises on a born clock
-(`SEAL_PLAYER_KNOBS.SOUND_MS`) when a measurement lands. `PlayerRing` draws both
-clocks — the circle's arc and hand, the seal's rim and knob — on the same lens
-clock. `seekGesture` scrubs the seal by rim angle (`sealRimFraction`) and treats
-a touch that starts on the dust as a tap (`sealTouchAt`, `sealDotAt`).
+(`SEAL_PLAYER_KNOBS.SOUND_MS`) when a measurement lands. `seekGesture` asks the
+lens drawn at the player what a touch means (`Lens.touch`): the circle scrubs by
+angle; the seal scrubs by rim angle and treats a touch that starts on the dust
+as a tap that jumps to the dot under it.
 `analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
 (side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
 `features/field/songDetailPhase.ts` separates reveal, hold, and hidden states:
