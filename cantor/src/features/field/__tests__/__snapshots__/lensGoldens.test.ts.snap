@@ -1,17 +1,39 @@
 // Jest Snapshot v1, https://goo.gl/fbAQLP
 
+exports[`golden pixels: downloads landing marks and rows, circle and seal 1`] = `
+{
+  "L0 lens 0": "49601 4c73811c27ba47f3",
+  "L0 lens 1": "34158 48eb8645bc2ab9ba",
+  "L1 lens 0": "60023 29064b48e9c15c7f",
+  "L1 lens 1": "49968 720d04a3d81e691c",
+}
+`;
+
+exports[`golden pixels: downloads landing the descent into a song still landing 1`] = `
+{
+  "ratio 12.5 lens 0": "44952 9cea61977ea61e90",
+  "ratio 12.5 lens 1": "1026696 c665a9efa52b85cc",
+  "ratio 18 lens 0": "32382 c320b7affa798dd8",
+  "ratio 18 lens 1": "918749 caeb8124d9d672eb",
+  "ratio 30 lens 0": "24505 13ef4c5234cf82e5",
+  "ratio 30 lens 1": "909102 0b2809d9b3691bba",
+  "ratio 5 lens 0": "60023 29064b48e9c15c7f",
+  "ratio 5 lens 1": "49968 720d04a3d81e691c",
+}
+`;
+
 exports[`golden pixels: faces L0, every lens step, and reduced motion 1`] = `
 {
   "arriving lens 0": "79266 8119f70953563a56",
-  "arriving lens 1": "41137 ecf21f3ad8e7bc05",
+  "arriving lens 1": "37780 9078792f81e3424c",
   "lens 0": "61943 a07f07e0264702e3",
   "lens 0.25": "19285 fb7281b4b25dd03f",
   "lens 0.5": "0 1dbdb8459dbc8106",
-  "lens 0.75": "14592 9c7dc33f1172b240",
-  "lens 1": "39108 6fc75b2b10a4bad4",
+  "lens 0.75": "6489 c215263c7a8f030f",
+  "lens 1": "30574 441ae1956eb9c962",
   "playing lens 0": "89451 bf61a2e27c20675d",
-  "playing lens 1": "66616 14c7b89dc18252d6",
-  "reduced lens 0.5": "52473 b82a4a16215fa925",
+  "playing lens 1": "58082 a5181aa7175c6cac",
+  "reduced lens 0.5": "43700 223831cf40712354",
 }
 `;
 
@@ -20,21 +42,21 @@ exports[`golden pixels: faces L1, the row faces, every lens step 1`] = `
   "lens 0": "85651 39354b087e791dfb",
   "lens 0.25": "26018 e77be3b113b3ebc6",
   "lens 0.5": "0 1dbdb8459dbc8106",
-  "lens 0.75": "18697 4be2b5162242a151",
-  "lens 1": "51641 b95377e46aaa6663",
+  "lens 0.75": "10349 600ca59030d53867",
+  "lens 1": "45332 038b0ae7e8d92578",
 }
 `;
 
 exports[`golden pixels: faces the descent and the player, unmeasured 1`] = `
 {
   "ratio 12.5 lens 0": "298112 989b1ae9af12c5fe",
-  "ratio 12.5 lens 0.3": "277209 a168c062ed7c2ea5",
-  "ratio 12.5 lens 0.7": "732741 b584bc08c3274483",
-  "ratio 12.5 lens 1": "1097676 614565c30bcc7238",
+  "ratio 12.5 lens 0.3": "277686 556215590f91874a",
+  "ratio 12.5 lens 0.7": "751344 7330cd351b78ce32",
+  "ratio 12.5 lens 1": "1122074 5040fe9d2290e866",
   "ratio 18 lens 0": "31948 fcc8da311579787a",
   "ratio 18 lens 0.3": "40132 02ffc6478a1680f0",
-  "ratio 18 lens 0.7": "621498 97df10d58b32bc06",
-  "ratio 18 lens 1": "1013651 1ee081124dba8491",
+  "ratio 18 lens 0.7": "617515 dedfed849af9915b",
+  "ratio 18 lens 1": "1001175 c6612e604d17547b",
   "ratio 30 lens 0": "24505 13ef4c5234cf82e5",
   "ratio 30 lens 0.3": "37914 9bee373d181625c6",
   "ratio 30 lens 0.7": "616434 dcda173be8ede92c",
@@ -45,7 +67,7 @@ exports[`golden pixels: faces the descent and the player, unmeasured 1`] = `
 
 exports[`golden pixels: faces the player, measured, rising and heard 1`] = `
 {
-  "descending lens 1 heard 0.4": "701563 e74e70ee6ed52991",
+  "descending lens 1 heard 0.4": "689087 80e14c4cdaf3957b",
   "lens 0 sound 0.5 heard -1": "24505 13ef4c5234cf82e5",
   "lens 0 sound 1 heard -1": "24505 13ef4c5234cf82e5",
   "lens 0 sound 1 heard 0.4": "24505 13ef4c5234cf82e5",

@@ -1,7 +1,10 @@
 import { PaintStyle, Skia } from '@shopify/react-native-skia';
 import { fitText } from '../nameLens';
 import {
+  ARRIVING_NONE,
+  ARRIVING_UNKNOWN,
   FACE_FILL_ALPHA,
+  LENSES,
   FACE_STROKE_ALPHA,
   arrivingFraction,
   availabilityAction,
@@ -105,18 +108,14 @@ describe('what a row says and offers', () => {
 
 /**
  * The design's one non-negotiable here: cached and downloaded must never look
- * alike. Weight is not a number in a table until it reaches pixels, so this
- * draws the circle's marks through its `drawMark` — what the field calls — and
+ * alike, and every lens keeps the circle's reading in its own form — on the
+ * node lightest, cached firmer, downloaded heaviest, and a download visibly
+ * landing. Weight is not a number in a table until it reaches pixels, so this
+ * draws the marks through each lens's `drawMark` — what the field calls — and
  * measures how much ink each puts down.
  *
- * The circle only, as before R6: the seal does not keep "more ink, stronger
- * promise" — at mark size its filled dots (downloaded) put down less ink than
- * its hairline rings (cached), about as much as a song not on the phone. Found
- * at R6g, older than R6; see the rewrite log's Findings.
- *
- * The arc round a song still arriving is not here: only the picture fallback
- * drew it, and that went at R4 (see the rewrite log's Findings). The ring
- * round the playing song is the renderer's, not a lens's (`fieldFaces.test`).
+ * The ring round the playing song is the renderer's, not a lens's
+ * (`fieldFaces.test`).
  */
 describe('the four marks are four different marks', () => {
   const SIZE = 64;
@@ -134,7 +133,11 @@ describe('the four marks are four different marks', () => {
   }
 
   /** Every pixel's darkness against white paper, summed: ink laid down. */
-  function ink(lens: Lens, state: LensSong['audioState']): number {
+  function ink(
+    lens: Lens,
+    state: LensSong['audioState'],
+    arriving: number = ARRIVING_NONE,
+  ): number {
     const surface = Skia.Surface.Make(SIZE, SIZE);
     if (surface === null) throw new Error('no surface');
     const canvas = surface.getCanvas();
@@ -154,6 +157,7 @@ describe('the four marks are four different marks', () => {
       FACE_STROKE_ALPHA[availability],
       FACE_FILL_ALPHA[availability],
       0,
+      arriving,
       1,
       paints(),
     );
@@ -176,6 +180,36 @@ describe('the four marks are four different marks', () => {
     expect(cached).toBeGreaterThan(notSynced * 1.5);
     // Filled, not merely firmer: a full face is several times its own outline.
     expect(downloaded).toBeGreaterThan(cached * 2);
+  });
+
+  /**
+   * The seal failed this before R7: its filled dots were smaller than the
+   * hairline rings of a cached seal, so a downloaded seal read lighter than a
+   * cached one and about as light as one not on the phone.
+   */
+  it('draws more of every lens the stronger the promise', () => {
+    for (const lens of LENSES) {
+      const notSynced = ink(lens, 'remote');
+      const cached = ink(lens, 'cached');
+      const downloaded = ink(lens, 'pinned');
+      expect(notSynced).toBeGreaterThan(0);
+      expect(cached).toBeGreaterThan(notSynced * 1.5);
+      expect(downloaded).toBeGreaterThan(cached * 1.3);
+    }
+  });
+
+  it('shows a download landing, as far as the bytes have come, in every lens', () => {
+    for (const lens of LENSES) {
+      const waiting = ink(lens, 'remote');
+      const early = ink(lens, 'partial', 0.15);
+      const late = ink(lens, 'partial', 0.9);
+      const unknown = ink(lens, 'partial', ARRIVING_UNKNOWN);
+      expect(early).toBeGreaterThan(waiting);
+      expect(late).toBeGreaterThan(early);
+      // An unknown total is a fixed share, not a claim: never nearly done.
+      expect(unknown).toBeGreaterThan(waiting);
+      expect(unknown).toBeLessThan(late);
+    }
   });
 });
 
