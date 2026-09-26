@@ -11,13 +11,14 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 not
-started; phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a done, R6b next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** R6, the lens contract (see "Phase 3 plan" — it has a starting
-map). Check "Open questions"
+**Next:** R6b, then R6c–g — the lens contract; the agreed plan and port
+order are under R6 in "Phase 3 plan". Every R6 step must keep
+`lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
+regenerated with `-u` and the reason logged. Check "Open questions"
 first: two things wait on Cesar.
 
 **How a step is done here** — every step so far followed this, and the
@@ -70,7 +71,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 after phase 4; see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`); see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -343,7 +344,7 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   order here, and agree it with Cesar before moving code — it is the largest
   remaining change and touches motion (Flicker Law applies).
 
-  **R6 plan (2026-09-26, proposed — waiting for Cesar's OK; no code moved).**
+  **R6 plan (2026-09-26, agreed with Cesar the same day).**
 
   *What the code does today.* Two lenses are hard-wired as a pair, on one
   number: `lensMix` (0 = circle, 1 = seal, a `withTiming` over
@@ -408,6 +409,14 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   purpose: the row's words (`nativeRows`, lens-free), the playing ring round
   a mark (generic), and the grain (L3, a layer of its own).
 
+  *Two halves, as objects (decided at R6a).* A worklet that captures an
+  object copies it to the UI thread; a plain JS function inside it becomes
+  something the UI thread cannot call. So the registry keeps each lens's
+  UI-thread half (`drawMark`, `drawPlayer`, `touchAt`, `reach`, `clock`) as
+  its own object of worklets only, and the renderer captures just the array
+  of those (indexed by lens position in `LENSES`); `identity`/`sound` stay
+  on the JS side.
+
   *Preparing identities:* every registered lens's identity for every face,
   cached by recipe as `nameLensFacePath`/`sealMarkPath` are now. With 2–3
   lenses that is 2–3 cached paths per song, and it means a lens change hands
@@ -427,6 +436,20 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     nothing measurable panning at L0). If it does not hold, the fallback is a
     `switch` on the lens index inside one worklet — same contract, uglier
     dispatch.
+    **Done (`6967a9a`):** `features/field/__tests__/lensGoldens.test.ts`
+    and its snapshot — 53 frames: L0 and L1 at five lens steps, reduced
+    motion, the playing ring, a fill arriving; the descent (12.5, 18, 30·FIT)
+    × four lens steps; the measured player × lens × sound clock × heard; the
+    ring, its sweep, the unroll and the grain at each lens step. Each frame is
+    `"<ink> <hash>"` (ink = summed darkness, so a diff says *more* or *less*
+    ink, not just "different"). Rasterised with real CanvasKit; stable across
+    runs (`--ci`). Hash is FNV-1a ×2 in the test, since the app has no Node
+    types. Eyeballed three frames as PNGs (row faces in three inks, the morph
+    mid-walk, the heard seal) so the goldens are known to pin real drawings.
+    Not covered: `PlayerRing` (declarative nodes, not a draw function) — R6e
+    gets its own guard; touch is pure functions already under test.
+    The spike moved into R6b: it is the first real code that runs on the
+    phone, and a throwaway spike would be written twice.
   - **R6b — identity and `drawMark`.** `circleLens`/`sealLens` implement
     both from what exists (`nameLensFacePath`, `sealMarkPath`); `FaceFlight`
     carries `identities` instead of `markPath`/`sealPath`; the non-player
@@ -606,6 +629,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `6967a9a` field: golden pixels for everything a lens draws
+- `b072a40` docs: R6 plan in the log
+- `f4388b9` docs: C4 in the log
 - `ea9657e` field: the header and foot leave on the song band, not on the level
 - `4007b5e` field: a job's progress re-renders what draws it, not the screen
 - `8d216c9` docs: the label retarget fix in the log
