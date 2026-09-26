@@ -11,6 +11,12 @@ jest.mock('react-native-reanimated', () => ({
     require('react').useMemo(() => ({ value: updater() }), dependencies ?? [updater]),
 }));
 
+/** The heard arc: the one mark trimmed to the playhead. */
+const heardArc = (renderer: ReactTestRenderer.ReactTestRenderer) =>
+  renderer.root
+    .findAllByType(Path)
+    .find(path => path.props.end !== undefined)!;
+
 it('rebinds the playhead when an idle song becomes the playing track', () => {
   const idle = { value: 0 };
   const playing = { value: 60 };
@@ -19,9 +25,9 @@ it('rebinds the playhead when an idle song becomes the playing track', () => {
   );
   let renderer!: ReactTestRenderer.ReactTestRenderer;
   ReactTestRenderer.act(() => { renderer = ReactTestRenderer.create(ring(idle)); });
-  expect(renderer.root.findAllByType(Path)[0].props.end.value).toBe(0);
+  expect(heardArc(renderer).props.end.value).toBe(0);
   ReactTestRenderer.act(() => { renderer.update(ring(playing)); });
-  expect(renderer.root.findAllByType(Path)[0].props.end.value).toBe(0.5);
+  expect(heardArc(renderer).props.end.value).toBe(0.5);
   ReactTestRenderer.act(() => { renderer.update(ring(idle)); });
-  expect(renderer.root.findAllByType(Path)[0].props.end.value).toBe(0);
+  expect(heardArc(renderer).props.end.value).toBe(0);
 });

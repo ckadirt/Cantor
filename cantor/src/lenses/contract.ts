@@ -50,6 +50,32 @@ export type PlayerPaints = MarkPaints & Readonly<{ paper: SkPaint }>;
  */
 export type LensPlayer = Readonly<{ sound: unknown }>;
 
+/**
+ * A lens's clock at the player, as numbers — what the renderer's one clock
+ * (`PlayerRing`) is drawn from, and interpolates between two lenses when the
+ * lens changes. The circle's arc and hand and the seal's rim and knob are the
+ * same clock at two shapes; a lens that lacks a part gives it no ink, and keeps
+ * the other lens's width for it, so nothing but its ink changes size.
+ */
+export type ClockShape = Readonly<{
+  /** Where the clock runs, as a fraction of the player's radius. */
+  ratio: number;
+  /** The heard part of the ring, from twelve o'clock to the playhead. */
+  heardWidthPx: number;
+  /** The hand's two ends, as fractions of the radius; equal is no hand. */
+  handInnerRatio: number;
+  handOuterRatio: number;
+  handWidthPx: number;
+  /** The whole ring under the heard part. */
+  rimAlpha: number;
+  rimWidthPx: number;
+  /** Twelve, three, six and nine, pointing in from the ring. */
+  tickAlpha: number;
+  tickPx: number;
+  /** The knob at the playhead, on the ring; 0 is none. */
+  knobRadiusPx: number;
+}>;
+
 export type LensUi = Readonly<{
   /**
    * The song as a mark (L0) or the face beside a row (L1).
@@ -119,6 +145,8 @@ export type LensUi = Readonly<{
    * frame of playback would re-record the whole field for nothing.
    */
   hearsPlayhead: number;
+  /** The player's clock; see `ClockShape`. */
+  clock: ClockShape;
 }>;
 
 /**

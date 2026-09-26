@@ -12,6 +12,7 @@ import {
   type Availability,
 } from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
+import { SEAL_PLAYER_KNOBS } from './seal';
 import type {
   LensIdentity,
   LensPlayer,
@@ -78,6 +79,18 @@ export const NAME_LENS_KNOBS = {
   SONG_FACE_RATIO: 0.62,
   /** How much of the recipe's contour is left once the measurement arrives. */
   SONG_FACE_ALPHA: 0.16,
+  /*
+   * The circle's clock at the player: an arc that fills inside the face and a
+   * hand that sweeps across it. The measurement's tick ring stands on the same
+   * radius (`PLAYER_POSE_KNOBS.SONG_ARC_RATIO` is this).
+   */
+  /** Where the arc runs, as a fraction of the player's radius. */
+  CLOCK_ARC_RATIO: 0.5,
+  CLOCK_ARC_WIDTH_PX: 1.5,
+  /** The hand, from near the centre out to the arc. */
+  CLOCK_HAND_INNER_RATIO: 0.12,
+  CLOCK_HAND_OUTER_RATIO: 0.5,
+  CLOCK_HAND_WIDTH_PX: 1,
   /** Where the waveform's baseline sits, as a fraction of the radius. */
   SONG_WAVE_INNER_RATIO: 0.5,
   /** How far a full-amplitude sample reaches past that baseline. */
@@ -228,6 +241,19 @@ export const nameLens: Lens = {
     drawPlayer: drawCirclePlayer,
     ringTicks: 1,
     hearsPlayhead: 0,
+    clock: {
+      ratio: NAME_LENS_KNOBS.CLOCK_ARC_RATIO,
+      heardWidthPx: NAME_LENS_KNOBS.CLOCK_ARC_WIDTH_PX,
+      handInnerRatio: NAME_LENS_KNOBS.CLOCK_HAND_INNER_RATIO,
+      handOuterRatio: NAME_LENS_KNOBS.CLOCK_HAND_OUTER_RATIO,
+      handWidthPx: NAME_LENS_KNOBS.CLOCK_HAND_WIDTH_PX,
+      // No rim, ticks or knob: the face's own contour is the ring.
+      rimAlpha: 0,
+      rimWidthPx: SEAL_PLAYER_KNOBS.RIM_WIDTH_PX,
+      tickAlpha: 0,
+      tickPx: SEAL_PLAYER_KNOBS.RIM_TICK_PX,
+      knobRadiusPx: 0,
+    },
   },
   /*
    * `Circle`, not `Name`.

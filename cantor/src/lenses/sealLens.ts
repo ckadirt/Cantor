@@ -8,7 +8,12 @@ import {
   drawPlayingRing,
   drawRowWords,
 } from './nameLens';
-import { SEAL_KNOBS, sealDotRadius, sealModel } from './seal';
+import {
+  SEAL_KNOBS,
+  SEAL_PLAYER_KNOBS,
+  sealDotRadius,
+  sealModel,
+} from './seal';
 import type {
   LensIdentity,
   LensPlayer,
@@ -194,6 +199,19 @@ export const sealLens: Lens = {
     drawPlayer: drawSealAsPlayer,
     ringTicks: 0,
     hearsPlayhead: 1,
+    clock: {
+      ratio: SEAL_PLAYER_KNOBS.RIM_RATIO,
+      heardWidthPx: SEAL_PLAYER_KNOBS.RIM_HEARD_WIDTH_PX,
+      // No hand: both ends on the rim, where the knob stands instead.
+      handInnerRatio: SEAL_PLAYER_KNOBS.RIM_RATIO,
+      handOuterRatio: SEAL_PLAYER_KNOBS.RIM_RATIO,
+      handWidthPx: NAME_LENS_KNOBS.CLOCK_HAND_WIDTH_PX,
+      rimAlpha: SEAL_PLAYER_KNOBS.RIM_ALPHA,
+      rimWidthPx: SEAL_PLAYER_KNOBS.RIM_WIDTH_PX,
+      tickAlpha: SEAL_PLAYER_KNOBS.RIM_TICK_ALPHA,
+      tickPx: SEAL_PLAYER_KNOBS.RIM_TICK_PX,
+      knobRadiusPx: SEAL_PLAYER_KNOBS.KNOB_RADIUS_PX,
+    },
   },
   draw(canvas, box, song, options) {
     const { alpha, fonts, paints } = options;
