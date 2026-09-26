@@ -12,12 +12,12 @@ finding, decision, trap and commit.
 ## Start here (handoff)
 
 State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 not
-started; phase 4 C1, C2, C2b, C3a done, C3b and C4 not started. None of the
+started; phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next, in order:** C4 (small; see "Phase 4 plan"), then R6, the lens
-contract (see "Phase 3 plan" — it has a starting map). Check "Open questions"
+**Next:** R6, the lens contract (see "Phase 3 plan" — it has a starting
+map). Check "Open questions"
 first: two things wait on Cesar.
 
 **How a step is done here** — every step so far followed this, and the
@@ -71,7 +71,7 @@ motion rules, required before touching motion or Skia code.
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
 | 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 after phase 4; see "Phase 3 plan" |
-| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e` done; see "Phase 4 plan" |
+| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
@@ -401,7 +401,7 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   a download's progress (it changes that song's presentation), and the
   screen's ~30 `useState`s (sheets, errors, targets). Worth it only if a
   measurement says so; `FieldCanvas` and most children are memoised.
-- **C4 — chrome fades on shared values. Not started.** Audit what still fades
+- **C4 — done (`ea9657e`). Chrome fades on shared values.** Audit what still fades
   or steps from React state that moves with the camera or a clock (the rule
   in `cantor/AGENTS.md`, "Nothing that moves with the camera may be laid out
   in React"): start with `FieldOverlay.tsx`, `OriginMark.tsx`,
@@ -409,6 +409,29 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   in `FieldScreen.tsx`. React's camera now changes only at thresholds
   (C1), so anything faded from it steps. Expected to be small; if the audit
   finds nothing, record that and close it.
+  **Audit (2026-09-26):** `SongSurface` already fades its readout and lens
+  picker from `cameraShared` (`readout`), and only its mount and touch read
+  React's `songAlpha` — decisions, not fades, which is right. `OriginMark`'s
+  lit run is a discrete breadcrumb (a step by design). `FieldA11yList` draws
+  nothing. The header's morphs and the dials' `Reveal`s are triggered by a
+  level threshold but run on their own clocks (`HEADER_CHANGE_MS`), which is
+  the "text change = morph" rule, not a camera fade. **One real case:**
+  `FieldOverlay` hides the header and the foot with `opacity: 0` the commit
+  React's level becomes `song` — a cut at 13·FIT, a commit late, while the
+  camera is still moving and the player is only starting to arrive (the song
+  band opens 12→27·FIT). On the way back it cuts in at 13·FIT. **Plan:** the
+  header's and foot's opacity become `1 − song band`, read from
+  `cameraShared`/`fitScaleShared` in a `useAnimatedStyle` — the same number
+  `SongSurface` fades in on, so the chrome leaves as the player arrives, on
+  the canvas's frame. `away` keeps deciding touches, accessibility and the
+  frozen text, as now. Test: at a camera inside the song band the header is
+  partly drawn (fails on the old code, which drew it at 0).
+  **As built:** `CHROME_AWAY_WINDOW` in `FieldOverlay.tsx` — the song band's
+  opening (12→27·FIT) that never closes, so the chrome stays gone at the
+  grain where the song band itself closes again. Test:
+  `fieldOverlay.test.tsx`. Verified on the Xiaomi by burst: mid-descent into a
+  song the header and the hint are drawn part-way under the arriving player,
+  and part-way again on the climb back out.
 
 ## Open questions (for Cesar)
 
@@ -476,6 +499,7 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `ea9657e` field: the header and foot leave on the song band, not on the level
 - `4007b5e` field: a job's progress re-renders what draws it, not the screen
 - `8d216c9` docs: the label retarget fix in the log
 - `671af18` field: an interrupted re-cut resumes its names from where they were drawn
