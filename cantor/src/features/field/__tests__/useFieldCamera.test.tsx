@@ -1265,6 +1265,96 @@ describe('useFieldCamera', () => {
     expect(latest.camera.y).toBeCloseTo(shelfGone.fieldCenter.y, 6);
   });
 
+  /*
+   * C5: a regroup never lands on nothing. Groups move when the field is
+   * re-cut; a camera left standing where one used to be showed an empty field,
+   * and a regroup during a flight home used to strand the camera mid-way.
+   */
+  describe('a regroup never lands on nothing', () => {
+    const DAY = 24 * 3600 * 1000;
+    const spread: FieldEntity[] = Array.from({ length: 24 }, (_, index) => ({
+      ...entities[0],
+      key: `node-a:song-${index}`,
+      entityId: `song-${index}`,
+      createdAtMs: Date.UTC(2026, 5, 1) + index * 4 * DAY,
+    }));
+    const weeks = layoutField({
+      entities: spread,
+      arrangement: byDate('week'),
+      viewport,
+    });
+    const months = layoutField({
+      entities: spread,
+      arrangement: byDate('month'),
+      viewport,
+    });
+
+    function RegroupProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+
+    async function panFarAway() {
+      const [, pan] = gestures();
+      await ReactTestRenderer.act(async () => {
+        pan.onBegin({ x: 190, y: 400 });
+        pan.onUpdate({ translationX: -6000, translationY: -6000 });
+        pan.onEnd({});
+      });
+    }
+
+    it('flies home when nothing of the new layout would be on screen', async () => {
+      mockReducedMotion = true;
+      let renderer!: ReactTestRenderer.ReactTestRenderer;
+      await ReactTestRenderer.act(async () => {
+        renderer = ReactTestRenderer.create(<RegroupProbe field={weeks} />);
+      });
+      await panFarAway();
+      expect(latest.level).toBe('field');
+      await ReactTestRenderer.act(async () => {
+        renderer.update(<RegroupProbe field={months} />);
+      });
+      expect(latest.camera.x).toBeCloseTo(months.fieldCenter.x, 6);
+      expect(latest.camera.y).toBeCloseTo(months.fieldCenter.y, 6);
+      expect(latest.camera.scale).toBeCloseTo(months.fitScale, 6);
+    });
+
+    it('keeps flying home through a regroup that interrupts the flight', async () => {
+      mockReducedMotion = false;
+      // Hold the camera flight mid-air; the re-cut itself lands at once.
+      const reanimated = require('react-native-reanimated');
+      const actual = reanimated.withTiming;
+      jest
+        .spyOn(reanimated, 'withTiming')
+        .mockImplementation((...args: unknown[]) => {
+          const config = args[1] as { duration?: number } | undefined;
+          if (config?.duration === FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS) {
+            return 0.5;
+          }
+          return actual(...args);
+        });
+      let renderer!: ReactTestRenderer.ReactTestRenderer;
+      await ReactTestRenderer.act(async () => {
+        renderer = ReactTestRenderer.create(<RegroupProbe field={weeks} />);
+      });
+      await panFarAway();
+      await ReactTestRenderer.act(async () => {
+        latest.home();
+      });
+      await ReactTestRenderer.act(async () => {
+        renderer.update(<RegroupProbe field={months} />);
+      });
+      expect(latest.camera.x).toBeCloseTo(months.fieldCenter.x, 6);
+      expect(latest.camera.y).toBeCloseTo(months.fieldCenter.y, 6);
+      expect(latest.camera.scale).toBeCloseTo(months.fitScale, 6);
+    });
+  });
+
   /** Re-arranging re-keys every placement without one song leaving the field. */
   it('does not throw the camera out of a song the field merely re-arranged', async () => {
     mockReducedMotion = true;
