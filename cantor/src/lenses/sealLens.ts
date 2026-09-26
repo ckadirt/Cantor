@@ -1,4 +1,4 @@
-import { Skia, type SkPath } from '@shopify/react-native-skia';
+import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
 import { availabilityOf } from './availability';
 import {
   FACE_FILL_ALPHA,
@@ -9,6 +9,7 @@ import {
   drawRowWords,
 } from './nameLens';
 import { SEAL_KNOBS, sealDotRadius, sealModel } from './seal';
+import type { LensIdentity, MarkPaints } from './contract';
 import type { Lens, LensPaints, LensSong } from './types';
 
 /**
@@ -101,9 +102,48 @@ function drawAvailableSeal(
  * same paths at the same sizes, and adds what only it can: the sound, the
  * thread and the bead, which answer to the clock.
  */
+/**
+ * The seal as a mark or a row's face: its dust at the mark's depth, as one
+ * path. A song on the phone for good is filled dots, anything less is rings
+ * at its weight — the face's convention, carried over.
+ *
+ * `arrived` is not read: the seal that grows into the player is drawn a dot at
+ * a time by the renderer's player (`drawSealPlayer`), never by this.
+ */
+function drawSealMark(
+  canvas: SkCanvas,
+  identity: LensIdentity,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  _arrived: number,
+  hairlinePx: number,
+  paints: MarkPaints,
+): void {
+  'worklet';
+  const path = identity as SkPath;
+  canvas.save();
+  canvas.scale(size, size);
+  if (fill > 0) {
+    paints.fill.setAlphaf(alpha * fill);
+    canvas.drawPath(path, paints.fill);
+  }
+  if (fill < 1) {
+    paints.stroke.setAlphaf(alpha * weight * (1 - fill));
+    paints.stroke.setStrokeWidth(hairlinePx / size);
+    canvas.drawPath(path, paints.stroke);
+  }
+  canvas.restore();
+}
+
 export const sealLens: Lens = {
   key: 'seal',
   label: 'Seal',
+  // The dust at the mark's size, the face's own room through `sealSidePx`.
+  identity: recipe =>
+    sealMarkPath(recipe, sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX)),
+  ui: { drawMark: drawSealMark },
   draw(canvas, box, song, options) {
     const { alpha, fonts, paints } = options;
     if (alpha <= 0) return;

@@ -73,25 +73,28 @@ import {
   type Viewport,
 } from '../../field';
 import {
+  LENSES,
+  LENS_UI,
   NAME_LENS_KNOBS,
   arrivingFraction,
   availabilityAction,
   availabilityLine,
   availabilityOf,
   fitText,
+  lensIndex,
   nameLensFacePath,
   nameLensRingRadius,
   SEAL_KNOBS,
   SEAL_PLAYER_KNOBS,
   sealDotRadius,
   sealLoudness,
-  sealMarkPath,
   sealModel,
   sealSidePx,
   sealSound,
   textWidth,
   TITLE_ALPHA,
   type LensFonts,
+  type LensIdentity,
   type SealSound,
   type LensPaints,
   type SongAnalysis,
@@ -1022,9 +1025,12 @@ type NativeFieldContentProps = Readonly<{
  * `NativePlacementFlight`.
  */
 export type FaceFlight = Readonly<{
-  markPath: SkPath;
-  /** The same song as a seal, at the mark's size; see `sealMarkPath`. */
-  sealPath: SkPath;
+  /**
+   * The song as every lens draws it, in `LENSES` order: what each lens's
+   * `identity` built from the recipe (see `lenses/contract.ts`). Every lens,
+   * not just the one showing, so a lens change hands the canvas nothing new.
+   */
+  identities: readonly LensIdentity[];
   /** The seal at the player's depth, for the one face that is the player. */
   seal?: NativeSeal;
   fromX: number;
@@ -1087,6 +1093,14 @@ export type NativeSeal = Readonly<{
 const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
 
 /**
+ * The two lenses the lens clock still switches between (`lensMix`: 0 is the
+ * circle, 1 the seal), as positions in `LENSES`. R6c replaces the pair with a
+ * clock that runs from any lens to any other.
+ */
+const CIRCLE_LENS = lensIndex('name');
+const SEAL_LENS = lensIndex('seal');
+
+/**
  * The field's faces as plain rows, built once per re-cut on the JS thread.
  *
  * Every field here is a number, a boolean, or an `SkPath` — which is a host
@@ -1118,8 +1132,7 @@ export function faceFlightsOf(
     const isPlayer =
       focusKey !== null && flight.targetPlacementKey === focusKey;
     result.push({
-      markPath: nameLensFacePath(recipe, NAME_LENS_KNOBS.MARK_RADIUS_PX),
-      sealPath: sealMarkPath(recipe, SEAL_MARK_SIDE_PX),
+      identities: LENSES.map(lens => lens.identity(recipe)),
       seal: isPlayer
         ? nativeSealOf(recipe, analyses?.get(flight.entityKey))
         : undefined,
@@ -1541,7 +1554,9 @@ export function drawFieldFaces(
         paints.fill.setAlphaf(
           opacity * weight * fill * (1 - shapeArrived) * (1 - formed),
         );
-        canvas.drawPath(face.markPath, paints.fill);
+        // The circle's contour, read straight from its identity until this
+        // morph moves behind the contract as a pair morph (R6d).
+        canvas.drawPath(face.identities[CIRCLE_LENS] as SkPath, paints.fill);
         canvas.restore();
       }
       drawSealPlayer(
@@ -1561,22 +1576,17 @@ export function drawFieldFaces(
     } else {
       const faceSize = pose.scale * faceScale;
       if (faceInk > 0 && faceSize > 0.001) {
-        canvas.save();
-        canvas.scale(faceSize, faceSize);
-        if (fill > 0) {
-          paints.fill.setAlphaf(
-            opacity * faceInk * weight * fill * (1 - shapeArrived),
-          );
-          canvas.drawPath(face.markPath, paints.fill);
-        }
-        paints.stroke.setAlphaf(opacity * faceInk * faceLine);
-        // A hairline is a hairline at any size, so it is drawn back out of the
-        // scale the face is standing at.
-        paints.stroke.setStrokeWidth(
-          FIELD_CANVAS_KNOBS.FACE_STROKE_PX / faceSize,
+        LENS_UI[CIRCLE_LENS].drawMark(
+          canvas,
+          face.identities[CIRCLE_LENS],
+          faceSize,
+          opacity * faceInk,
+          weight,
+          fill,
+          shapeArrived,
+          FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+          paints,
         );
-        canvas.drawPath(face.markPath, paints.stroke);
-        canvas.restore();
       }
       const sealSize = pose.scale * sealScale;
       if (lens > 0 && sealInk > 0 && sealSize > 0.001) {
@@ -1594,20 +1604,17 @@ export function drawFieldFaces(
             heard,
           );
         } else {
-          canvas.save();
-          canvas.scale(sealSize, sealSize);
-          if (fill > 0) {
-            paints.fill.setAlphaf(opacity * sealInk * fill);
-            canvas.drawPath(face.sealPath, paints.fill);
-          }
-          if (fill < 1) {
-            paints.stroke.setAlphaf(opacity * sealInk * weight * (1 - fill));
-            paints.stroke.setStrokeWidth(
-              FIELD_CANVAS_KNOBS.FACE_STROKE_PX / sealSize,
-            );
-            canvas.drawPath(face.sealPath, paints.stroke);
-          }
-          canvas.restore();
+          LENS_UI[SEAL_LENS].drawMark(
+            canvas,
+            face.identities[SEAL_LENS],
+            sealSize,
+            opacity * sealInk,
+            weight,
+            fill,
+            0,
+            FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+            paints,
+          );
         }
       }
     }
