@@ -16,7 +16,7 @@ finding, decision, trap and commit.
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
 | 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 after phase 4; see "Phase 3 plan" |
-| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40` done; see "Phase 4 plan" |
+| 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e` done; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
@@ -307,9 +307,25 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   lands at once and runs no reactions. Verified on the Xiaomi: WEEK → MONTH
   → WEEK plain and interrupted 250 ms in, landing on the same camera each
   round trip.
-- **C3 — UI stores.** `FieldScreen`'s ~30 `useState`s into stores, so a job
-  progress tick or a sheet opening re-renders its reader, not the screen
-  (L0 with a live generation: 17.6 vs 11.6 idle).
+- **C3a — done (`4007b5e`). A job's progress re-renders what draws it.**
+  `FieldScreen` read `useBackendRuntime`'s whole state and built the
+  controller in render, so every runtime change — a running job's progress
+  about once a second, a download's bytes — re-rendered the whole screen.
+  Now `useRuntime` starts the runtime without subscribing;
+  `fieldControllerStore` follows it and builds the controller outside React
+  (ignoring pairing, errors and transfers); the screen selects backends, each
+  node's phase, pairing, errors, `refreshing` and the songs/entities (which a
+  job tick leaves as the same objects — tested). The jobs are read by
+  `LiveFieldCanvas`, the job sheet's selector, the condense target's key
+  selector and `LiveEnginesSheet` (only while open); a tap on a job reads the
+  store at the tap. Verified on the Xiaomi: the library loads, a tap on the
+  failed job opens its sheet, the engines sheet shows each node's live state.
+  **Not yet measured:** L0 with a live generation (17.6 before vs 11.6 idle)
+  — needs a real generation on a node, which is Cesar's call.
+- **C3b — the rest of the screen's state.** Still re-rendering `FieldScreen`:
+  a download's progress (it changes that song's presentation), and the
+  screen's ~30 `useState`s (sheets, errors, targets). Worth it only if a
+  measurement says so; `FieldCanvas` and most children are memoised.
 - **C4 — chrome fades on shared values** where anything still fades from
   React state.
 
@@ -360,6 +376,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `4007b5e` field: a job's progress re-renders what draws it, not the screen
+- `8d216c9` docs: the label retarget fix in the log
 - `671af18` field: an interrupted re-cut resumes its names from where they were drawn
 - `32e91de` docs: C2b in the log
 - `cd54f40` field: a re-cut's camera runs on the UI thread
