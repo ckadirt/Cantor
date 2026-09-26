@@ -11,11 +11,11 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a done, R6b next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a, R6b done; R6c next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** R6b, then R6c–g — the lens contract; the agreed plan and port
+**Next:** R6c, then R6d–g — the lens contract; the agreed plan and port
 order are under R6 in "Phase 3 plan". Every R6 step must keep
 `lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
 regenerated with `-u` and the reason logged. Check "Open questions"
@@ -71,7 +71,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`); see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`); see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -125,6 +125,7 @@ doubles every number — never measure on it (see Traps).
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
 | … the three above with the clock frozen (experiment) | 32 / 32 / 28 | — | proves the clock is ~70 points |
+| L0 panning, 38 songs, R6 method: `input swipe 300 1450 800 1450 500` and back, looped, 15 s | — | 62.8–65.7 (before R6b), 64.7–65.4 (R6b) | use this loop to compare R6 steps; it drags harder than whatever C1 used |
 | L0 panning, 35 songs | 78 | 54–59 (C1, 38 songs); 74 at R4 | 22% of samples on the JS thread: the camera mirror re-rendering `FieldScreen` |
 | … with faces, rows, labels and jobs drawing nothing (experiment) | — | 62–71 | the ceiling for any cached settled layer (R5): 5–10 points |
 | Lab, 2,280 songs idle / panning | 14.5 / 84 | — | culling holds; drawing cost barely grows |
@@ -454,6 +455,33 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     both from what exists (`nameLensFacePath`, `sealMarkPath`); `FaceFlight`
     carries `identities` instead of `markPath`/`sealPath`; the non-player
     branch of `drawFieldFaces` calls from/to through the registry.
+    **Plan (2026-09-26):** `lenses/contract.ts` holds `LensUi` (worklets
+    only; for now just `drawMark`) and `MarkPaints` (`fill`, `stroke` — the
+    lens must not import `FacePaints` from `features/`). `Lens` gains
+    `identity(recipe)` (JS) and `ui`; `registry.ts` exports `LENS_UI`, the
+    array the renderer captures, in `LENSES` order. `drawMark(canvas,
+    identity, size, alpha, weight, fill, arrived, hairlinePx, paints)`: the
+    circle's is today's face branch (fill fades with `arrived`, the line
+    firms to `SONG_FACE_ALPHA`), the seal's is today's non-player seal branch
+    (it ignores `arrived`). Paint alphas multiply in the same order as now,
+    so floats and pixels are identical. Stays in the renderer until later
+    steps: the lens clock (`lensMix`, R6c), the player seal and the morph,
+    which still reads the circle's identity directly (R6d). Device check:
+    this is the first time a worklet calls a lens through an array captured
+    from another module — L0, L1, L2 in both lenses and a lens change, on
+    the release build; then L0 panning cost against C1's 54–59%.
+    **Done (`5691bb3`).** As planned; `lenses/contract.ts` is the contract's
+    home and its header says how it grows. `Lens` now has `identity` and
+    `ui` beside the old `draw`. Goldens pixel-identical with no `-u`; new
+    `lenses/__tests__/contract.test.ts` (UI halves aligned with `LENSES`,
+    identities cached per recipe). **Spike answered:** a worklet calling a
+    lens's worklet through `LENS_UI` (an array of objects captured from
+    another module) works on the release build — L0/L1/L2 in both lenses,
+    the seal's rows (filled dots for downloaded, rings for cached), and a
+    burst frame caught the seal→circle player morph mid-walk. **Cost:** same
+    drag loop on the same phone, baseline (this step stashed) 65.7 / 62.8%,
+    R6b 65.4 / 65.1 / 64.7% — no difference. C1's 54–59% used a different
+    drag, so it is not comparable; the method is in Measurements.
   - **R6c — the clock becomes `(from, to, t)`.** `lensMix` goes; the
     retarget rules above, with tests (reverse is pixel-exact).
   - **R6d — `sound` and `drawPlayer`, and the pair morph.** `nativeSealOf` →
@@ -629,6 +657,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `5691bb3` lenses: marks draw through the lens contract
+- `734dd56` docs: R6a in the log
 - `6967a9a` field: golden pixels for everything a lens draws
 - `b072a40` docs: R6 plan in the log
 - `f4388b9` docs: C4 in the log
