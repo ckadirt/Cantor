@@ -1,6 +1,7 @@
 import {
   PaintStyle,
   Skia,
+  type SkCanvas,
   type SkPaint,
   type SkPath,
 } from '@shopify/react-native-skia';
@@ -11,6 +12,7 @@ import {
   type Availability,
 } from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
+import type { LensIdentity, MarkPaints } from './contract';
 import type { Lens, LensPaints, LensSong } from './types';
 
 /**
@@ -140,8 +142,48 @@ export function nameLensRingRadius(radius: number): number {
   return radius * FACE_MAX_EXTENT + NAME_LENS_KNOBS.RING_GAP_PX;
 }
 
+/**
+ * The circle as a mark or a row's face: its contour, filled as far as the
+ * song is on the phone, outlined at its weight.
+ *
+ * The one song growing into the player is still this drawing, larger: its
+ * fill gives way (`arrived`) and its line settles to `SONG_FACE_ALPHA`, the
+ * quiet contour the player's clock is drawn inside.
+ */
+function drawCircleMark(
+  canvas: SkCanvas,
+  identity: LensIdentity,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  hairlinePx: number,
+  paints: MarkPaints,
+): void {
+  'worklet';
+  const path = identity as SkPath;
+  canvas.save();
+  canvas.scale(size, size);
+  if (fill > 0) {
+    paints.fill.setAlphaf(alpha * weight * fill * (1 - arrived));
+    canvas.drawPath(path, paints.fill);
+  }
+  const line = weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived;
+  paints.stroke.setAlphaf(alpha * line);
+  // A hairline is a hairline at any size, so it is drawn back out of the
+  // scale the face is standing at.
+  paints.stroke.setStrokeWidth(hairlinePx / size);
+  canvas.drawPath(path, paints.stroke);
+  canvas.restore();
+}
+
 export const nameLens: Lens = {
   key: 'name',
+  // The contour at the mark's radius. Every other size is this path scaled:
+  // `nameLensFacePath` is exactly linear in its radius.
+  identity: recipe => nameLensFacePath(recipe, NAME_LENS_KNOBS.MARK_RADIUS_PX),
+  ui: { drawMark: drawCircleMark },
   /*
    * `Circle`, not `Name`.
    *

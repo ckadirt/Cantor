@@ -1,5 +1,7 @@
 import type { SkCanvas, SkFont, SkPaint } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
+import type { LensIdentity, LensUi } from './contract';
+import type { FaceRecipe } from './face';
 
 export type LensBox = Readonly<{
   /**
@@ -87,10 +89,19 @@ export type LensOptions = Readonly<{
   paints: LensPaints;
 }>;
 
-/** A lens draws into the shared field picture; it never owns a canvas. */
+/**
+ * A lens: its name in the picker, and its two halves (see `contract.ts`).
+ *
+ * `draw` is the old whole-lens drawing, which since R4 only tests run; it goes
+ * at R6g, once everything it covers is under the contract.
+ */
 export type Lens = Readonly<{
   key: string;
   label: string;
+  /** JS thread, once per song: what the UI half draws from. */
+  identity: (recipe: FaceRecipe) => LensIdentity;
+  /** UI thread: worklets only. */
+  ui: LensUi;
   draw: (
     canvas: SkCanvas,
     box: LensBox,
