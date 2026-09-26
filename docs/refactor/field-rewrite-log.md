@@ -11,11 +11,14 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–f done; R6g next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–3 done (R5 shelved; R6, the lens contract, done); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** R6g (the last R6 step) — the lens contract; the agreed plan and port
+**Next:** nothing is queued. Candidates, for Cesar to choose: C3b (only if a
+measurement says so), phase 5 (device import — before alpha), the two
+Findings from R6g (the seal's downloaded ink, the missing arriving arc), the
+L2 playback cost finding, and the tree lens on the contract (after alpha) — the lens contract; the agreed plan and port
 order are under R6 in "Phase 3 plan". Every R6 step must keep
 `lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
 regenerated with `-u` and the reason logged. Check "Open questions"
@@ -71,7 +74,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`); see "Phase 3 plan" |
+| 3. Renderer | **done** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`, R6g `2c7477a` — **R6 done**; phase 3 done except R5 (shelved) see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -133,6 +136,25 @@ doubles every number — never measure on it (see Traps).
 
 ## Findings
 
+- **2026-09-26 — The seal's downloaded mark has less ink than its cached
+  one.** Ink through `drawMark` at mark size, same song: circle not-on-phone
+  3,883 / cached 7,805 / downloaded 49,790 (strictly stronger, as designed);
+  seal 10,481 / 18,719 / 9,107. The seal's filled dots at mark size are
+  smaller than the 1 px hairline rings drawn round them when a song is
+  cached or remote, so a downloaded seal reads *lighter* than a cached one
+  and about as heavy as one not on the phone (they still differ in kind:
+  solid dots vs faint rings). Visible on the phone at L1 in the seal lens.
+  Older than R6 (the goldens prove R6 drew the same pixels). A design
+  question for Cesar — e.g. a thicker ring for cached is not the fix if
+  downloaded must be the heaviest; filled dots at a larger radius might be.
+- **2026-09-26 — The arc round a mark whose download is landing is not
+  drawn.** `drawArrivingArc` was only ever called by the lenses' old
+  `draw`, which the picture fallback used; the native renderer never drew
+  it, so since R4 (the fallback's deletion) a downloading song shows no arc
+  at L0/L1. Its row still says `ARRIVING n%`, and the L2 player has its own
+  `ArrivingRing`. R6g deleted the dead function and its tests. To bring it
+  back: the renderer draws it round a mark like the playing ring (it is not
+  a lens's), from `arrivingFraction` on the face flight.
 - **2026-09-26 — L2 playing measures ~80% of a core, not the 61% logged at
   R1/`c96cdef`, and not because of anything since `3c0e8ab`.** Same song
   (the 59 s "A flamenco spanish song…" after the downloaded one in This
@@ -661,6 +683,33 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     `sealLens.draw`, `drawRowWords` if nothing else reads it; their tests are
     replaced by R6a's goldens. Update `cantor/AGENTS.md` ("Lenses share the
     renderer") and `hacking-app.md`, plus a "how to add a lens" recipe.
+    **Plan (2026-09-26):** delete `Lens.draw`, `nameLens.draw`,
+    `sealLens.draw` and what only they called — `drawRowWords`, the old
+    `drawPlayer`, `drawFace`, `drawAvailableFace`, `drawArrivingArc`,
+    `drawPlayingRing`, `drawAvailableSeal` — and the `LensBox`/`LensOptions`
+    types. Kept: `LensSong` (availability's input type), `LensFonts`,
+    `LensPaints`, `fitText`/`textWidth`, the ink tables. Tests: the registry
+    test's "every lens draws" section goes (the contract test and goldens
+    cover it); `harness.test.ts` sweeps every lens's `drawMark`/`drawPlayer`
+    over every arrangement and a 500-song field instead of `draw`;
+    `availability.test.ts`'s "four marks are four different marks" measures
+    ink through each lens's `drawMark` (both lenses now, not just the
+    circle). Its two arriving-arc tests go: they tested a drawing the app
+    no longer makes (see Findings).
+    **Done (`2c7477a`).** As planned; `nameLens.ts` 673 → 408 lines,
+    `sealLens.ts` → 216. Tests 1,031 → 1,010: the old `draw` sweep (44
+    cases) became a 26-case sweep through the contract (every lens × sound
+    unmeasured/measured/silent × four inks, marks and players, and a spy
+    that no lens restyles the shared paints), and three tests went with the
+    arriving arc and the playing ring they drew. The "four marks" test stays
+    circle-only, as it always was, because the seal fails it — see Findings.
+    `cantor/AGENTS.md` ("Lenses share the renderer, through one contract")
+    and `hacking-app.md` (module map, the lens section, a new "Add a lens"
+    recipe) describe the contract. Verified on the Xiaomi: L0 circle, L2
+    seal, L0 seal marks.
+  - **R6 — done.** Adding the tree lens is a new file in `lenses/` and one
+    entry in `LENSES` (plus a pair morph if it wants one); the renderer
+    names no lens. The gesture test drives a lens it has never seen.
 
   Done means: adding the tree lens is a new file in `lenses/` and one entry
   in `LENSES`, and no file in `features/field/` changes.
@@ -785,6 +834,18 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Traps (learned the hard way)
 
+- **Several files were never prettier-clean** (`NativePlayer.tsx`,
+  `nameLens.ts`, `seal.ts`, `face.ts`, `analysisStore.ts`, `SongSurface.tsx`,
+  `songPose.ts`, some tests). `prettier --write` on one rewrites code you did
+  not touch. Check first:
+  `git show HEAD:<path> | npx prettier --stdin-filepath <path> --check`;
+  format only files that were clean, and hand-format your lines elsewhere.
+- **Golden tests** (`lensGoldens.test.ts`, `playerRingGoldens.test.tsx`)
+  pin pixels/strokes. A refactor must pass them with no `-u`; a change that
+  is meant to look different regenerates them and logs why. Recording a
+  React Skia component to a picture does not work under Jest's CanvasKit
+  (`drawAsPicture` returns nothing drawable), which is why the clock's
+  goldens read the node tree instead.
 - **Instrumenting RN Skia:** Metro bundles it from `src/` (the package's
   `react-native` field), so a probe goes in
   `node_modules/@shopify/react-native-skia/src/sksg/Container.native.ts`;
@@ -824,6 +885,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `2c7477a` lenses: the old lens drawing is gone
+- `580059f` docs: R6f in the log
 - `f60a6ab` lenses: a touch on the player asks the lens what it means
 - `55ed357` docs: R6e in the log
 - `96410f4` lenses: the player's clock is numbers each lens gives

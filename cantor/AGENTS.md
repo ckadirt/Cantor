@@ -127,16 +127,27 @@ releases it. A new descent replaces that owner before starting its flight.
 Never clear the visible player at the start of an ascent: that removes its
 geometry at full size and produces a flash.
 
-**Lenses share the renderer.** Circle and Seal use `NativeFieldContent` and the
-same row/player text. A retained linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS`)
-switches them. Marks and rows take two beats: the face scales in to a point,
-then the seal opens out of it — scale, never a ghosted crossfade. The player
-morphs instead (`drawSealPlayer`'s `formed`): each dot leaves the face's contour
-where the circle's clock stands at its moment (`faceClockPoints`), the contour
-becomes the Peano thread, and `PlayerRing`'s arc and hand run out to the rim and
-knob. Reduced motion crossfades instead.
+**Lenses share the renderer, through one contract.** A lens decides only what a
+song looks like; the renderer decides where it is and how present
+(`src/lenses/contract.ts`). Each lens gives an `identity` (JS, from the recipe
+alone), a `player` model (JS, for the one song the camera is in, with its sound
+once measured), worklets to draw a mark and a player, its clock as numbers
+(`ClockShape`), and what a touch on the player means. Adding a lens is a new file
+in `src/lenses/` and one entry in `LENSES`; nothing in `features/field/` changes.
+A lens change is `(from, to, t)` (`features/field/lensClock.ts`) on a retained
+linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS`). Marks and rows take two beats:
+the lens being left scales in to a point, then the one arriving opens out of it
+— scale, never a ghosted crossfade. The player can have a hand-written pair
+morph instead (`src/lenses/pairs.ts`): circle ↔ seal walks each dot out of the
+face's contour where the circle's clock stands at its moment, the contour
+becomes the Peano thread, and `PlayerRing` mixes the two `ClockShape`s so the
+arc and hand run out to the rim and knob. Reduced motion crossfades instead.
+Reversing a change mid-way swaps `from`/`to` and takes `1 − t`, which draws the
+same frame; a third lens asked for mid-change waits for this one to land.
 Keep the lens clock outside the keyed re-cut generation so regrouping during a
-lens change preserves its current progress.
+lens change preserves its current progress. `lensGoldens.test.ts` and
+`playerRingGoldens.test.tsx` pin what the lenses draw; a change that is meant to
+look different regenerates them with `-u` and says why.
 
 **Every lens is two layers, like the circle.** *Identity* is a pure function of
 the recipe (`facePoints`'s inputs), so it exists at L0 for songs never on the
