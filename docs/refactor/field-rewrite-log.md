@@ -124,7 +124,7 @@ doubles every number — never measure on it (see Traps).
 | Scenario | Before | Now | Notes |
 | --- | --- | --- | --- |
 | L0 idle | 11.6 | 10 (C1; 13 on the R4 build) | 0 React commits/s; mostly RN's own per-frame callbacks |
-| L0, a generation running on the node | 17.6 | not re-measured | vs 11.6 idle then. (An earlier 30.3 included the composer's submit animation.) The node sends progress ≤1/s (`PROGRESS_INTERVAL`); each update re-rendered `FieldScreen` and re-recorded the job mark (~60 ms CPU). R4 + C3a address it — see Open questions |
+| L0, a generation running on the node | 17.6 | 7.8 vs 6.2 idle (`706514c`); 19.7–22.1 vs 11.4 idle before it (same afternoon) | vs 11.6 idle then. (An earlier 30.3 included the composer's submit animation.) The node sends progress ≤1/s (`PROGRESS_INTERVAL`); each update re-rendered `FieldScreen` and re-recorded the job mark (~60 ms CPU). R4 + C3a address it — see Open questions |
 | L2 playing | 102 | 61 | `PLAYHEAD_STEP_PX` 2 (80 at 1 px). R1: the canvas redraws per playhead step instead of 120/s; each redraw still costs ~20 ms of CPU |
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
@@ -862,15 +862,64 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   song the header and the hint are drawn part-way under the arriving player,
   and part-way again on the climb back out.
 
+- **Finishing phase 4 (2026-09-26, Cesar: "finish phase 4").** Plan:
+  1. *Measure* (release build, `perf-sample.sh`), each against L0 idle
+     taken the same session: L0 while a generation runs on agentbox (Cesar
+     allowed throwaway generations there, to keep); L0 while a download
+     from agentbox lands; opening and closing a sheet (how many
+     `FieldScreen` commits, and how long).
+  2. *C3b* only where a number says so: download progress into a store the
+     canvas and the row read (a byte tick should redraw one song, not
+     rebuild every face and re-render the screen); sheets/errors/lens/
+     arrangement into a UI store if opening a sheet is measurably costly.
+  3. *Close* the unverified "empty field after a regroup" finding in the lab.
+  **Measured (2026-09-26, agentbox, `acestep:1.5-fast`, 15 s songs; five
+  generations made, all kept: "a quiet piano at dawn perf measure", "soft
+  rain on glass …", "wind over a field …", "low bells in fog …", "distant
+  train at night …").** L0 idle 11.0–11.4%; L0 while a job runs 19.7–22.1%
+  (one update ≈ every 1–2 s). C3a holds: a progress update re-renders only
+  `LiveFieldCanvas`, never `FieldScreen` (render counters, 0 screen renders
+  across 17 updates). Neither the window nor the canvas animates while a
+  job runs (0 window frames, 2 canvas frames in 5 s). simpleperf, 15 s,
+  profileable release: idle 2.4 s of CPU, nearly all the UI thread's
+  per-frame RN callbacks; generating 4.7 s — UI thread +0.2 s, **JS thread
+  +1.3 s**, storage threads + GC +0.5 s. Timed per update: the snapshot
+  (6–22 ms), then three storage round trips that are redundant by logic:
+  `commitLibrary` rewrites the whole library blob at an *unchanged*
+  revision (60–210 ms wall), `loadOutbox` re-reads 47 entries with nothing
+  pending (46–107 ms), `mergeJobs` rewrites all 23 jobs for one job's
+  progress (60–190 ms). **Plan (C3b-runtime):** the runtime decides when
+  to persist — commit the library once per revision per connection (a
+  failed write forgets it, so the next snapshot retries); flush the outbox
+  when a node *becomes* ready or still had pending entries last time (set
+  on submit, cleared when a read finds none — keeps today's retry); persist
+  a job when it is new or its `state` changed (progress is live data; the
+  node resends it on reconnect). Stored shapes and keys unchanged. Tests
+  for each rule; then the same profile again. Keep it only if the JS
+  thread's share falls.
+  **Done (`706514c`).** As planned, in `backendRuntime.ts`
+  (`committedRevision`, `persistedJobs`, `outboxPending`). Five tests in
+  `backendRuntime.test.ts` "writes only what changed" — four fail on the old
+  runtime; the fifth (a failed send is retried) guards behaviour that had
+  to survive. **A/B in one session** (the phone's baseline had dropped
+  since the afternoon, so only same-session numbers compare), simpleperf 15
+  s: old — idle 0.77 s, generating 1.83 s (+1.06 s, JS 0.66 s); fixed —
+  idle 0.75 s, generating 0.97 s (+0.22 s). `perf-sample.sh`: idle 6.2%,
+  generating 7.8% (+1.6 points, from +8.7–10.7 before). Verified: the job
+  ran and landed as a song; failed jobs still show their typed words (the
+  outbox still loads). Trap: a composer "Make it" tapped while the
+  keyboard's autocorrect is rewriting the prompt does nothing — confirm the
+  composer closed (uiautomator: no `COMPOSE`) before sampling, or the
+  sample measures an open composer (one invalid 7.5% sample was that).
+
 ## Open questions (for Cesar)
 
 - **Does an interrupted regroup glide now?** (`671af18`.) Tap MONTH then
   WEEK quickly at L0: the week names should move back from where they were,
   not jump. A burst capture cannot see it; Cesar's eye can.
-- **May we run a throwaway generation to measure a live job?** C3a should
-  bring L0-with-a-generation from 17.6% toward the 11.6% idle, but measuring
-  it needs a real generation on one of Cesar's nodes, which adds a song to
-  his library. Ask; do not start one unasked.
+- **Answered 2026-09-26: throwaway generations and downloads are allowed on
+  agentbox** (the only node awake; RTX6000 and the rest sleep). Keep the
+  songs they make. Asked again for anything on another node.
 - Settled 2026-09-25: the playhead steps 2 px (`PLAYHEAD_STEP_PX` in
   `FieldScreen.tsx`, 61% of a core at L2 playing against 80 at 1 px); Cesar
   looked on the phone and it reads clean.
@@ -943,6 +992,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `706514c` runtime: a job's progress writes nothing to storage
+- `834bae8` docs: R7 in the log
 - `b0b5632` lenses: every lens shows what the phone holds and what is arriving
 - `445f68f` docs: the open questions pointer
 - `2e93f64` docs: the handoff after R6
