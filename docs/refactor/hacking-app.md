@@ -62,6 +62,15 @@ inspected once when it appears and every file again only after something that
 can evict (a finished download, an unpin); do not go back to inspecting on every
 snapshot.
 
+**Select the part you show, never the whole runtime.** `FieldScreen` starts the
+runtime with `useRuntime` (no subscription) and selects slices — backends, each
+node's phase, pairing, errors — and the field's songs from
+`fieldControllerStore` (`features/field/`), a store that follows the runtime and
+builds the controller outside React. A running job's progress changes only
+`jobs`, which is read by `LiveFieldCanvas`, the job sheet's selector and
+`LiveEnginesSheet` (while open); reading `useBackendRuntime`'s whole state
+re-renders the caller on every job tick.
+
 **Library sync is a pure reducer.** `library/sync/state.ts` returns
 `{state, effects}`. Keep decisions there and side effects at the caller, so
 reconnect, revision conflicts, and resume are testable without a socket.
@@ -78,8 +87,8 @@ keepalive, deliver messages, report closure, or schedule a retry.
 ### Add a screen
 
 1. Create the screen under `src/screens/`, composing feature components.
-2. Give it a feature controller hook only when it owns state; otherwise read
-   from `useBackendRuntime`.
+2. Give it a feature controller hook only when it owns state; otherwise start
+   the runtime with `useRuntime` and select what it shows with `useStore`.
 3. Wire navigation in `MainScreen`. Do not reach around the runtime to open a
    connection.
 
@@ -303,8 +312,9 @@ new object, and publishes the marks through the `jobMarks` shared value; the
 native scene draws every non-song flight from it on the UI thread. A progress
 update therefore never hands `Canvas` a new element — it re-records one job's
 pictures and wakes the canvas's mapper once. A job that leaves keeps its mark
-while its outgoing flight is in the air. Being native, jobs no longer keep a
-re-cut in React (`nativeRelayout` in `FieldScreen`).
+while its outgoing flight is in the air. The jobs map reaches the canvas through
+`LiveFieldCanvas` in `FieldScreen`, so a tick re-renders that wrapper and not
+the screen.
 
 `fieldCanvasClock.test.tsx` checks that a live job keeps one canvas and the same
 scene element across progress updates, and records nothing for a render with
