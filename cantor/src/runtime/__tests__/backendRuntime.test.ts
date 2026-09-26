@@ -4,6 +4,7 @@ import type { SongHeader } from '../../../../protocol/SongHeader';
 import type { LocalAudioStore } from '../../audio/localAudioStore';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import type { AppIdentity } from '../../identity/derive';
+import type { OutboxEntry } from '../../jobs/outbox';
 import {
   BackendRuntime,
   type BackendRuntimeConnection,
@@ -50,11 +51,11 @@ function song(id: string, digest: string): SongHeader {
   };
 }
 
-function job(revision: number): JobView {
+function job(revision: number, state: JobView['state'] = 'running'): JobView {
   return {
     id: 'job-a',
     revision,
-    state: 'running',
+    state,
     model: 'light',
     created_at: '2026-08-08T00:00:00Z',
     updated_at: '2026-08-08T00:01:00Z',
@@ -95,6 +96,9 @@ function setup() {
     restoreSong: jest.fn(),
     refreshLibrary: jest.fn(),
   };
+  const mergeJobs = jest.fn(async (_node: string, jobs: JobView[]) => jobs);
+  const commitLibrary = jest.fn().mockResolvedValue(undefined);
+  const loadOutbox = jest.fn().mockResolvedValue([] as OutboxEntry[]);
   const runtime = new BackendRuntime(identity, {
     createConnection: (_backend, _identity, _token, received) => {
       callbacks.push(received);
@@ -103,19 +107,27 @@ function setup() {
     loadBackends: jest.fn().mockResolvedValue([backend]),
     saveBackends: jest.fn().mockResolvedValue(undefined),
     loadJobs: jest.fn().mockResolvedValue([]),
-    mergeJobs: jest.fn(async (_node, jobs) => jobs),
+    mergeJobs,
     forgetJobs: jest.fn(),
     loadLibrary: jest.fn().mockResolvedValue({ revision: null, songs: [] }),
     loadLibraries: jest.fn().mockResolvedValue({}),
-    commitLibrary: jest.fn().mockResolvedValue(undefined),
-    loadOutbox: jest.fn().mockResolvedValue([]),
+    commitLibrary,
+    loadOutbox,
     forgetSubmission: jest.fn(),
     putPending: jest.fn(),
     markAccepted: jest.fn(),
     markRejected: jest.fn(),
     audioStore,
   });
-  return { runtime, callbacks, inspect };
+  return {
+    runtime,
+    callbacks,
+    inspect,
+    connection,
+    mergeJobs,
+    commitLibrary,
+    loadOutbox,
+  };
 }
 
 function snapshot(songs: SongHeader[], jobs: JobView[]): ConnectionSnapshot {
@@ -200,5 +212,122 @@ describe('BackendRuntime', () => {
     await flush();
     expect(runtime.store.get().backends).toBeNull();
     expect(callbacks).toHaveLength(0);
+  });
+
+  /*
+   * What a running job's progress is allowed to cost: nothing durable changes
+   * between two progress updates, so nothing is written. Each update used to
+   * rewrite the library cache and every job and re-read the outbox (rewrite
+   * log, phase 4).
+   */
+  describe('writes only what changed', () => {
+    function ready(
+      jobs: JobView[],
+      revision = 7,
+      songs: SongHeader[] = [],
+    ): ConnectionSnapshot {
+      return {
+        phase: 'ready',
+        error: null,
+        songs,
+        jobs,
+        libraryRevision: revision,
+        librarySyncing: false,
+      };
+    }
+
+    it('commits the library once per revision', async () => {
+      const f = setup();
+      f.runtime.start();
+      await flush();
+      f.callbacks[0].onSnapshot(ready([job(1)]));
+      f.callbacks[0].onSnapshot(ready([job(2)]));
+      f.callbacks[0].onSnapshot(ready([job(3)]));
+      await flush();
+      expect(f.commitLibrary).toHaveBeenCalledTimes(1);
+      f.callbacks[0].onSnapshot(ready([job(3)], 8));
+      await flush();
+      expect(f.commitLibrary).toHaveBeenCalledTimes(2);
+      expect(f.commitLibrary).toHaveBeenLastCalledWith('node-a', 8, []);
+    });
+
+    it('tries a library write again when it failed', async () => {
+      const f = setup();
+      f.commitLibrary.mockRejectedValueOnce(new Error('disk full'));
+      f.runtime.start();
+      await flush();
+      f.callbacks[0].onSnapshot(ready([]));
+      await flush();
+      f.callbacks[0].onSnapshot(ready([]));
+      await flush();
+      expect(f.commitLibrary).toHaveBeenCalledTimes(2);
+    });
+
+    it('persists a job when it appears or its state moves, not its progress', async () => {
+      const f = setup();
+      f.runtime.start();
+      await flush();
+      f.callbacks[0].onSnapshot(ready([job(1)]));
+      f.callbacks[0].onSnapshot(ready([job(2)]));
+      f.callbacks[0].onSnapshot(ready([job(3)]));
+      await flush();
+      expect(f.mergeJobs).toHaveBeenCalledTimes(1);
+      // The live view still has the latest progress.
+      expect(f.runtime.store.get().snapshots['node-a'].jobs[0].revision).toBe(
+        3,
+      );
+      f.callbacks[0].onSnapshot(ready([job(4, 'completed')]));
+      await flush();
+      expect(f.mergeJobs).toHaveBeenCalledTimes(2);
+      expect(f.mergeJobs).toHaveBeenLastCalledWith('node-a', [
+        job(4, 'completed'),
+      ]);
+    });
+
+    it('reads the outbox when the node becomes ready, not on every snapshot', async () => {
+      const f = setup();
+      f.runtime.start();
+      await flush();
+      const before = f.loadOutbox.mock.calls.length;
+      f.callbacks[0].onSnapshot(ready([job(1)]));
+      f.callbacks[0].onSnapshot(ready([job(2)]));
+      f.callbacks[0].onSnapshot(ready([job(3)]));
+      await flush();
+      expect(f.loadOutbox.mock.calls.length - before).toBe(1);
+    });
+
+    it('keeps retrying a pending submission until a read finds it sent', async () => {
+      const f = setup();
+      const pending: OutboxEntry = {
+        clientRequestId: 'request-a',
+        nodePublicKey: 'node-a',
+        model: 'light',
+        generation: { caption: 'A' },
+        requestHash: 'hash',
+        state: 'pending',
+        createdAt: '2026-08-08T00:00:00Z',
+        updatedAt: '2026-08-08T00:00:00Z',
+      };
+      f.loadOutbox.mockResolvedValue([pending]);
+      (f.connection.createJob as jest.Mock).mockRejectedValue(
+        new Error('socket hiccup'),
+      );
+      f.runtime.start();
+      await flush();
+      f.callbacks[0].onSnapshot(ready([job(1)]));
+      await flush();
+      f.callbacks[0].onSnapshot(ready([job(2)]));
+      await flush();
+      expect(f.connection.createJob).toHaveBeenCalledTimes(2);
+
+      // Sent: the next read finds nothing pending, and the reads stop.
+      f.loadOutbox.mockResolvedValue([{ ...pending, state: 'accepted' }]);
+      f.callbacks[0].onSnapshot(ready([job(3)]));
+      await flush();
+      const reads = f.loadOutbox.mock.calls.length;
+      f.callbacks[0].onSnapshot(ready([job(4)]));
+      await flush();
+      expect(f.loadOutbox.mock.calls.length).toBe(reads);
+    });
   });
 });
