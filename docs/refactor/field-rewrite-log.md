@@ -11,11 +11,11 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–c done; R6d next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–d done; R6e next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** R6d, then R6e–g — the lens contract; the agreed plan and port
+**Next:** R6e, then R6f–g — the lens contract; the agreed plan and port
 order are under R6 in "Phase 3 plan". Every R6 step must keep
 `lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
 regenerated with `-u` and the reason logged. Check "Open questions"
@@ -71,7 +71,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`); see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`); see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -133,6 +133,17 @@ doubles every number — never measure on it (see Traps).
 
 ## Findings
 
+- **2026-09-26 — L2 playing measures ~80% of a core, not the 61% logged at
+  R1/`c96cdef`, and not because of anything since `3c0e8ab`.** Same song
+  (the 59 s "A flamenco spanish song…" after the downloaded one in This
+  week), circle lens, playing from 0:00, `perf-sample.sh 12`, two runs per
+  build: `3c0e8ab` 77.8 / 81.8, R6c 77.2 / 82.1, R6d 83.2 / 79.7. Either
+  the 61% was taken on a cheaper song (fewer ticks drawn? no analysis?) or
+  something between `c96cdef` and `3c0e8ab` raised it. Not investigated —
+  bisect `c96cdef..3c0e8ab` with this song and method if it matters. Trap
+  for measuring playback: a short song ends inside the sample and the queue
+  steps to the next one, which is a camera flight (the first R6d sample,
+  95%, was that).
 - **2026-09-25 — Where L0 panning goes (R4 build, 38 songs, simpleperf 10 s,
   74% of a core).** By thread: UI 55% of samples, JS 25%, Hermes GC (`hades`)
   8%. On the UI thread nearly all of it runs inside the touch event
@@ -525,6 +536,49 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     circle↔seal morph; the circle's player is its face at the player pose, and
     its sound is the tick ring (the `coarse` part of `drawSongDetail`, which
     keeps the unroll into the grain).
+    **Plan (2026-09-26), refined after reading `drawSealPlayer`:** it
+    already *is* the morph (`formed` 1 = the seal alone), so this is mostly
+    a move. Contract additions: `Lens.player(recipe, analysis)` (JS, for
+    the one song the camera is in; returns a `LensPlayer` — any plain data
+    with a `sound` field, null until measured — or null when the lens's
+    player is its mark grown, as the circle's is); `LensUi.drawPlayer`;
+    two plain numbers on `LensUi`: `ringTicks` (1 if the lens shows the
+    song's measurement as the tick ring `drawSongDetail` draws — the
+    circle; the ring stays in `drawSongDetail` because it *is* the grain's
+    coarse layer and reads the playhead, which the faces picture must not)
+    and `hearsPlayhead` (1 if `drawPlayer` reads `heard` — the seal; gates
+    the faces picture's playhead read, as `lensMix <= 0` did). Pair morphs:
+    `LENS_PAIRS` (`lenses/pairs.ts`), worklets keyed by two `LENSES`
+    positions, run with t toward `b`; circle↔seal = the circle's fading
+    fill + `drawSealPlayer` at `formed` with the face's line. Moves:
+    `NativeSeal`/`nativeSealOf`/`drawSealPlayer` → `lenses/sealPlayer.ts`
+    (`SealPlayer`, `sealPlayerOf`), with the hairline passed in. A face's
+    `seal` → `players` (every lens's, for the player's face only). The
+    renderer: player face → pair morph if one exists for the change and
+    motion is not reduced, else each lens's `drawPlayer` on the generic
+    beats. At rest the seal now draws through its own `drawPlayer`, not the
+    morph at formed 1 — the same pixels (smootherstep(1) is exactly 1, and
+    the morph's only other draw is the circle's fill at alpha 0).
+    `rising`/`sealPhase`/`sealDrawn` ask "does any lens's player have
+    sound" and are renamed `sound…` — they were already generic.
+    **Done (`dbbb48d`).** As planned. The morph is used only while it stands
+    past `a` (`towardB > 0`): at exactly 0 the circle↔seal morph draws the
+    face as a polyline through the dots' start points, not the circle's
+    cached contour, so `a` draws itself there (this kept the golden "lens 0"
+    player frames). `lensesShowing(ringTicks | hearsPlayhead, …)` in
+    `FieldCanvas` is `Σ weight × flag` over the two lenses in play; for
+    circle/seal it is exactly the old `weight(circle)` / `weight(seal)`.
+    `FieldCanvas.tsx` 3,325 → 3,108 lines; the seal's player now lives in
+    `lenses/sealPlayer.ts`, the morph in `lenses/pairs.ts`. Goldens
+    pixel-identical without `-u`, reversed-clock frames too; contract test
+    grew (every lens has a player half; a player has no sound until
+    measured; every pair resolves). Verified on the Xiaomi: the circle
+    player on a pinned song, the seal at rest with its sound, playing (heard
+    dots, thread, bead and rim arc advancing — the playhead gate works
+    through `hearsPlayhead`), and seal → circle during playback. Cost at L2
+    playing, same 59 s song, same method: R6d 83.2 / 79.7%, R6c 77.2 /
+    82.1%, session start (`3c0e8ab`) 77.8 / 81.8% — no change from R6d or
+    from anything in this session. See the Findings entry on L2 playback.
   - **R6e — the clock as numbers.** `PlayerRing` interpolates two
     `ClockShape`s instead of reading `lensMix`.
   - **R6f — touch.** `seekBoxPx`/`seekGesture` ask the lens (`reach`,
@@ -693,6 +747,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `dbbb48d` lenses: the player draws through the lens contract
+- `b77448d` docs: R6c in the log
 - `cc27a36` field: a lens change runs from any lens to any other
 - `23fccc1` docs: R6b in the log
 - `5691bb3` lenses: marks draw through the lens contract
