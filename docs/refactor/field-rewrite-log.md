@@ -11,11 +11,11 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–d done; R6e next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–e done; R6f next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** R6e, then R6f–g — the lens contract; the agreed plan and port
+**Next:** R6f, then R6g — the lens contract; the agreed plan and port
 order are under R6 in "Phase 3 plan". Every R6 step must keep
 `lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
 regenerated with `-u` and the reason logged. Check "Open questions"
@@ -71,7 +71,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`); see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`); see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -581,6 +581,47 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     from anything in this session. See the Findings entry on L2 playback.
   - **R6e — the clock as numbers.** `PlayerRing` interpolates two
     `ClockShape`s instead of reading `lensMix`.
+    **Guard first (`047b663`):** `playerRingGoldens.test.tsx` — `PlayerRing`
+    is React Skia nodes, and recording a component to a picture does not
+    work under Jest's CanvasKit (the offscreen recorder returns nothing), so
+    it pins every *visible* mark the nodes describe: style, width, alpha
+    (own × group), trimmed span, bounds and a hash of the path's SVG. Sorted,
+    because every mark is one colour and same-colour marks composite the
+    same in any order. Circle → seal at five steps, reduced motion at three,
+    and a reversed clock equal to the forward one.
+    **Plan (2026-09-26):** `ClockShape` on `LensUi.clock` — `ratio` (where
+    the ring runs, of the player's radius), `heardWidthPx`, `handInnerRatio`
+    / `handOuterRatio` (equal = no hand) / `handWidthPx`, `rimAlpha` /
+    `rimWidthPx`, `tickAlpha` / `tickPx`, `knobRadiusPx`. Circle: 0.5, 1.5,
+    0.12/0.5/1, rim 0, ticks 0, knob 0; seal: 0.93, 1.5, hand collapsed onto
+    the rim, rim 0.16, ticks 0.4 × 5 px, knob 3.6. Where a lens has none of
+    a part, its width/length is the other lens's so nothing but the ink
+    changes size. The circle's clock knobs move from `PLAYER_RING_KNOBS` into
+    `NAME_LENS_KNOBS` (`CLOCK_*`); `PLAYER_POSE_KNOBS.SONG_ARC_RATIO` and
+    `PLAYER_RING_KNOBS.SONG_ARC_WIDTH_PX` point at them (the tick ring and
+    the arriving ring use the same radius). `PlayerRing` draws one
+    `ClockDrawing` between the two lenses in play, always interpolated from
+    the lower `LENSES` position to the higher with `smootherstep(weight of
+    the higher)` — the same order and arithmetic as before, so the strokes
+    are the same to the last digit; radii are scaled by the player's radius
+    before they are mixed, as `dial` did. Reduced motion: two drawings at
+    mix 0 and 1, crossfaded. The dead `SONG_ARC_WIDTH_PX`/`SONG_HAND_*`
+    copies in `FIELD_CANVAS_KNOBS` (read by nothing) go.
+    **Done (`96410f4`).** As planned; `PlayerRing` + `ClockDrawing` in
+    `NativePlayer.tsx`, `ClockShape` in `lenses/contract.ts`. Stroke goldens
+    unchanged without `-u`, faces goldens too. `playerClock.test.tsx` found
+    the heard arc as "the first `Path`"; the rim is drawn first now, so it
+    finds the one trimmed to the playhead instead (same assertion). Contract
+    test: every lens's clock is drawable. Trap: `NativePlayer.tsx` (like
+    `nameLens.ts`, `seal.ts`, `face.ts`, `analysisStore.ts`) was never
+    prettier-clean — do not run `prettier --write` on a whole file that was
+    not clean before, it rewrites code you did not touch; check with
+    `git show HEAD:<file> | npx prettier --stdin-filepath x.tsx --check`.
+    Verified on the Xiaomi, playing: circle clock (arc, hand) → seal (rim,
+    ticks, knob, heard arc on the rim) → circle, the playhead moving through
+    both changes. Reduced motion not checked on the phone (it needs the
+    system's "remove animations", a device setting) — the stroke goldens
+    cover it.
   - **R6f — touch.** `seekBoxPx`/`seekGesture` ask the lens (`reach`,
     `touchAt`) instead of `lensKey === 'seal'`.
   - **R6g — delete the old registry.** `Lens.draw`, `nameLens.draw`,
@@ -747,6 +788,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `96410f4` lenses: the player's clock is numbers each lens gives
+- `047b663` field: golden strokes for the player's clock
+- `d8b40e9` docs: R6d in the log; L2 playback cost
 - `dbbb48d` lenses: the player draws through the lens contract
 - `b77448d` docs: R6c in the log
 - `cc27a36` field: a lens change runs from any lens to any other
