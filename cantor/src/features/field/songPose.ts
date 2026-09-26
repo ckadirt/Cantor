@@ -51,8 +51,11 @@ export const PLAYER_POSE_KNOBS = {
    * rises into its seat rather than jumping to it.
    */
   SONG_RISE_RATIO: 0.09,
-  /** Where the sweeping arc sits, as a fraction of the player's radius. */
-  SONG_ARC_RATIO: 0.5,
+  /**
+   * Where the sweeping arc sits, as a fraction of the player's radius — the
+   * circle's clock, whose knob it is (`NAME_LENS_KNOBS.CLOCK_ARC_RATIO`).
+   */
+  SONG_ARC_RATIO: NAME_LENS_KNOBS.CLOCK_ARC_RATIO,
   /** The song's name at L2 — `type.title`, the largest type after the field's own. */
   SONG_TITLE_SIZE_PX: 26,
   /**

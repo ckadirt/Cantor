@@ -68,6 +68,27 @@ describe('the lens contract', () => {
     expect(LENSES[lensIndex('name')].player(recipe, undefined)).toBeNull();
   });
 
+  it('gives every lens a clock the player can draw', () => {
+    for (const lens of LENSES) {
+      const clock = lens.ui.clock;
+      expect(clock.ratio).toBeGreaterThan(0);
+      expect(clock.handInnerRatio).toBeLessThanOrEqual(clock.handOuterRatio);
+      for (const alpha of [clock.rimAlpha, clock.tickAlpha]) {
+        expect(alpha).toBeGreaterThanOrEqual(0);
+        expect(alpha).toBeLessThanOrEqual(1);
+      }
+      for (const size of [
+        clock.heardWidthPx,
+        clock.handWidthPx,
+        clock.rimWidthPx,
+        clock.tickPx,
+        clock.knobRadiusPx,
+      ]) {
+        expect(size).toBeGreaterThanOrEqual(0);
+      }
+    }
+  });
+
   it('resolves every pair morph to two registered lenses', () => {
     expect(LENS_PAIRS.length).toBeGreaterThan(0);
     for (const pair of LENS_PAIRS) {

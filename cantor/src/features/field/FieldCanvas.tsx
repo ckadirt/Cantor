@@ -209,11 +209,6 @@ const FIELD_CANVAS_KNOBS = {
    */
   SONG_PULSE_WINDOW: 0.5,
   SONG_PULSE_GAIN: 1.6,
-  SONG_ARC_WIDTH_PX: 1.5,
-  /** The hand, from near the centre out to the waveform's baseline. */
-  SONG_HAND_INNER_RATIO: 0.12,
-  SONG_HAND_OUTER_RATIO: 0.5,
-  SONG_HAND_WIDTH_PX: 1,
   JOB_ROW_LABEL_OFFSET_PX: 42,
   // A face is an outline, not a blob: hairline everywhere, per the house rule.
   FACE_STROKE_PX: 1,

@@ -1,5 +1,4 @@
 import { smootherstep } from '../../field/bands';
-import { SEAL_PLAYER_KNOBS } from '../../lenses/seal';
 import React, { useMemo } from 'react';
 import {
   Group as SkiaGroup,
@@ -21,7 +20,7 @@ import {
   type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
-import { NAME_LENS_KNOBS, fitText, lensIndex } from '../../lenses';
+import { LENS_UI, NAME_LENS_KNOBS, fitText, lensIndex } from '../../lenses';
 import { buildGlyphMorphPaths } from '../../motion/glyphs';
 import { useSeededPathInterpolation } from '../../motion/MorphText';
 import { layoutText } from '../../motion/text';
@@ -42,8 +41,8 @@ import {
 import type { FieldPresentation } from './useFieldController';
 import { lensWeight, type LensClock } from './lensClock';
 
-/** The seal's position in `LENSES`, which the player's clock morphs toward. */
-const SEAL_LENS = lensIndex('seal');
+/** Where a clock with nothing to say rests: the circle's position in `LENSES`. */
+const CIRCLE_LENS = lensIndex('name');
 
 /** KNOBS — the ring, in fractions of the player's own radius. */
 export const PLAYER_RING_KNOBS = {
@@ -69,11 +68,8 @@ export const PLAYER_RING_KNOBS = {
    */
   SONG_PULSE_WINDOW: 0.5,
   SONG_PULSE_GAIN: 1.6,
-  SONG_ARC_WIDTH_PX: 1.5,
-  /** The hand, from near the centre out to the waveform's baseline. */
-  SONG_HAND_INNER_RATIO: 0.12,
-  SONG_HAND_OUTER_RATIO: 0.5,
-  SONG_HAND_WIDTH_PX: 1,
+  /** The arriving ring's width: the circle's clock's (`ArrivingRing`). */
+  SONG_ARC_WIDTH_PX: NAME_LENS_KNOBS.CLOCK_ARC_WIDTH_PX,
   /**
    * How long the measurement takes to draw itself on, once you have arrived.
    *
@@ -580,13 +576,18 @@ function handPath(inner: number, outer: number, fraction: number): SkPath {
   return builder.detach();
 }
 
-/** A whole turn from twelve o'clock, at a radius `t` of the way from `from` to `to`. */
-function dial(from: number, to: number, t: number): SkPath {
+/** A whole turn from twelve o'clock, at radius `r`. */
+function ringPath(r: number): SkPath {
   'worklet';
-  const r = from + (to - from) * t;
   const builder = Skia.PathBuilder.Make();
   builder.addArc(Skia.XYWHRect(-r, -r, r * 2, r * 2), -90, 360);
   return builder.detach();
+}
+
+/** `from` at 0, `to` at 1. */
+function mixed(from: number, to: number, t: number): number {
+  'worklet';
+  return from + (to - from) * t;
 }
 
 /**
@@ -597,11 +598,17 @@ function dial(from: number, to: number, t: number): SkPath {
  * is drawn, so the clock goes round it rather than through it — with a knob
  * where the hand would be. Both answer to one fraction on the UI thread.
  *
- * They are one clock at two sizes, so the lens clock morphs one into the other
- * rather than trading them: the heard arc widens out to the rim, the rest of
- * the rim and its ticks ink in along with it, and the hand draws itself up
- * into the knob, which grows where its tip stands. A lens change mid-song
- * never loses the playhead. Reduced motion crossfades the two, as the faces do.
+ * They are one clock at two shapes — each lens gives its own as numbers
+ * (`LensUi.clock`, a `ClockShape`) — so a lens change morphs one into the
+ * other rather than trading them: the heard arc widens out to the rim, the
+ * rest of the rim and its ticks ink in along with it, and the hand draws
+ * itself up into the knob, which grows where its tip stands. A lens change
+ * mid-song never loses the playhead. Reduced motion crossfades the two, as the
+ * faces do.
+ *
+ * The two lenses in play are always mixed from the lower `LENSES` position to
+ * the higher, whichever way the change runs, so a change and its reversal are
+ * the same arithmetic (`playerRingGoldens.test.tsx`).
  */
 export function PlayerRing({
   radius,
@@ -616,10 +623,6 @@ export function PlayerRing({
   positionSeconds: SharedValue<number>;
   colour: string;
 }) {
-  const knobs = PLAYER_RING_KNOBS;
-  const seal = SEAL_PLAYER_KNOBS;
-  const arcRadius = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
-  const rimRadius = radius * seal.RIM_RATIO;
   const reducedMotion = useReducedMotion();
 
   const fraction = useDerivedValue(() => {
@@ -628,130 +631,161 @@ export function PlayerRing({
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }, [durationSeconds, positionSeconds]);
 
-  /**
-   * How far the circle's clock has become the seal's: eased once, here. R6e
-   * replaces the pair with a clock drawn from each lens's own numbers.
-   */
+  /** The two lenses in play, lower position first; one twice at rest. */
+  const lenses = useDerivedValue(() => {
+    const from = lensClock?.from.value ?? CIRCLE_LENS;
+    const to = lensClock?.to.value ?? CIRCLE_LENS;
+    return from < to ? [from, to] : [to, from];
+  });
+  /** How far the clock has become the second of them: eased once, here. */
   const formed = useDerivedValue(() =>
     smootherstep(
       lensClock === undefined
-        ? 0
+        ? 1
         : lensWeight(
-            SEAL_LENS,
+            lenses.value[1],
             lensClock.from.value,
             lensClock.to.value,
             lensClock.t.value,
           ),
     ),
   );
-  const circleOpacity = useDerivedValue(() =>
-    reducedMotion ? 1 - formed.value : 1,
-  );
-  const sealOpacity = useDerivedValue(() => (reducedMotion ? formed.value : 1));
-  // With reduced motion each clock keeps its own size and only the ink moves.
-  const circleShape = useDerivedValue(() => (reducedMotion ? 0 : formed.value));
-  const sealShape = useDerivedValue(() => (reducedMotion ? 1 : formed.value));
+  const whole = useDerivedValue(() => 1);
+  const leaving = useDerivedValue(() => 1 - formed.value);
 
-  const heardArc = useDerivedValue(() =>
-    dial(arcRadius, rimRadius, circleShape.value),
+  if (!reducedMotion) {
+    return (
+      <ClockDrawing
+        colour={colour}
+        fraction={fraction}
+        lenses={lenses}
+        mix={formed}
+        opacity={whole}
+        radius={radius}
+      />
+    );
+  }
+  // With reduced motion each clock keeps its own shape and only the ink moves.
+  return (
+    <>
+      <ClockDrawing
+        colour={colour}
+        fraction={fraction}
+        lenses={lenses}
+        mix={0}
+        opacity={leaving}
+        radius={radius}
+      />
+      <ClockDrawing
+        colour={colour}
+        fraction={fraction}
+        lenses={lenses}
+        mix={1}
+        opacity={formed}
+        radius={radius}
+      />
+    </>
   );
-  const heardWidth = useDerivedValue(
-    () =>
-      knobs.SONG_ARC_WIDTH_PX +
-      (seal.RIM_HEARD_WIDTH_PX - knobs.SONG_ARC_WIDTH_PX) * circleShape.value,
-  );
-  const rim = useDerivedValue(() =>
-    dial(arcRadius, rimRadius, sealShape.value),
-  );
-  /** Twelve, three, six and nine, pointing in from the rim. */
-  const rimTicks = useDerivedValue(() => {
-    const r = arcRadius + (rimRadius - arcRadius) * sealShape.value;
+}
+
+/** One clock, `mix` of the way from the first lens's shape to the second's. */
+function ClockDrawing({
+  radius,
+  lenses,
+  mix,
+  opacity,
+  fraction,
+  colour,
+}: {
+  radius: number;
+  lenses: SharedValue<number[]>;
+  mix: SharedValue<number> | number;
+  opacity: SharedValue<number>;
+  fraction: SharedValue<number>;
+  colour: string;
+}) {
+  /*
+   * The shape in pixels. Radii are scaled by the player's before they are
+   * mixed, not after, which is the order the clock has always been drawn in.
+   */
+  const shape = useDerivedValue(() => {
+    const a = LENS_UI[lenses.value[0]].clock;
+    const b = LENS_UI[lenses.value[1]].clock;
+    const t = typeof mix === 'number' ? mix : mix.value;
+    return {
+      r: mixed(radius * a.ratio, radius * b.ratio, t),
+      heardWidth: mixed(a.heardWidthPx, b.heardWidthPx, t),
+      handInner: mixed(radius * a.handInnerRatio, radius * b.handInnerRatio, t),
+      handOuter: mixed(radius * a.handOuterRatio, radius * b.handOuterRatio, t),
+      handWidth: mixed(a.handWidthPx, b.handWidthPx, t),
+      rimAlpha: mixed(a.rimAlpha, b.rimAlpha, t),
+      rimWidth: mixed(a.rimWidthPx, b.rimWidthPx, t),
+      tickAlpha: mixed(a.tickAlpha, b.tickAlpha, t),
+      tickPx: mixed(a.tickPx, b.tickPx, t),
+      knob: mixed(a.knobRadiusPx, b.knobRadiusPx, t),
+    };
+  });
+  const ring = useDerivedValue(() => ringPath(shape.value.r));
+  const heardWidth = useDerivedValue(() => shape.value.heardWidth);
+  const handWidth = useDerivedValue(() => shape.value.handWidth);
+  const rimAlpha = useDerivedValue(() => shape.value.rimAlpha);
+  const rimWidth = useDerivedValue(() => shape.value.rimWidth);
+  const tickAlpha = useDerivedValue(() => shape.value.tickAlpha);
+  /** Twelve, three, six and nine, pointing in from the ring. */
+  const ticks = useDerivedValue(() => {
+    const { r, tickPx } = shape.value;
     const builder = Skia.PathBuilder.Make();
     for (let quarter = 0; quarter < 4; quarter += 1) {
       const angle = (quarter * Math.PI) / 2;
       const x = Math.sin(angle);
       const y = -Math.cos(angle);
       builder.moveTo(x * r, y * r);
-      builder.lineTo(x * (r - seal.RIM_TICK_PX), y * (r - seal.RIM_TICK_PX));
+      builder.lineTo(x * (r - tickPx), y * (r - tickPx));
     }
     return builder.detach();
   });
-  const rimAlpha = useDerivedValue(() => seal.RIM_ALPHA * sealShape.value);
-  const tickAlpha = useDerivedValue(
-    () => seal.RIM_TICK_ALPHA * sealShape.value,
+  const hand = useDerivedValue(() =>
+    handPath(shape.value.handInner, shape.value.handOuter, fraction.value),
   );
-  // The hand's two ends both run out to the rim, so it shortens into the knob
-  // from the inside while the knob grows over its tip.
-  const hand = useDerivedValue(() => {
-    const t = circleShape.value;
-    const inner = radius * knobs.SONG_HAND_INNER_RATIO;
-    const outer = radius * knobs.SONG_HAND_OUTER_RATIO;
-    return handPath(
-      inner + (rimRadius - inner) * t,
-      outer + (rimRadius - outer) * t,
-      fraction.value,
-    );
-  });
   const knob = useDerivedValue(() => {
     const angle = fraction.value * Math.PI * 2 - Math.PI / 2;
-    const r = arcRadius + (rimRadius - arcRadius) * sealShape.value;
+    const { r } = shape.value;
     const builder = Skia.PathBuilder.Make();
     builder.addCircle(
       Math.cos(angle) * r,
       Math.sin(angle) * r,
-      seal.KNOB_RADIUS_PX * sealShape.value,
+      shape.value.knob,
     );
     return builder.detach();
   });
 
   return (
-    <>
-      <SkiaGroup opacity={circleOpacity}>
-        <Path
-          color={colour}
-          end={fraction}
-          path={heardArc}
-          start={0}
-          strokeWidth={heardWidth}
-          style="stroke"
-        />
-        <Path
-          color={colour}
-          path={hand}
-          strokeWidth={knobs.SONG_HAND_WIDTH_PX}
-          style="stroke"
-        />
-      </SkiaGroup>
-      <SkiaGroup opacity={sealOpacity}>
-        <Path
-          color={colour}
-          opacity={rimAlpha}
-          path={rim}
-          strokeWidth={seal.RIM_WIDTH_PX}
-          style="stroke"
-        />
-        <Path
-          color={colour}
-          opacity={tickAlpha}
-          path={rimTicks}
-          strokeWidth={seal.RIM_WIDTH_PX}
-          style="stroke"
-        />
-        {reducedMotion ? (
-          // Crossfading, the heard arc cannot travel out to the rim: the rim
-          // keeps its own.
-          <Path
-            color={colour}
-            end={fraction}
-            path={rim}
-            start={0}
-            strokeWidth={seal.RIM_HEARD_WIDTH_PX}
-            style="stroke"
-          />
-        ) : null}
-        <Path color={colour} path={knob} />
-      </SkiaGroup>
-    </>
+    <SkiaGroup opacity={opacity}>
+      <Path
+        color={colour}
+        opacity={rimAlpha}
+        path={ring}
+        strokeWidth={rimWidth}
+        style="stroke"
+      />
+      <Path
+        color={colour}
+        opacity={tickAlpha}
+        path={ticks}
+        strokeWidth={rimWidth}
+        style="stroke"
+      />
+      <Path
+        color={colour}
+        end={fraction}
+        path={ring}
+        start={0}
+        strokeWidth={heardWidth}
+        style="stroke"
+      />
+      <Path color={colour} path={hand} strokeWidth={handWidth} style="stroke" />
+      <Path color={colour} path={knob} />
+    </SkiaGroup>
   );
 }
 
