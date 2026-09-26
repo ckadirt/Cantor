@@ -12,6 +12,7 @@ import {
   type Availability,
 } from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
+import { ringTurnAt } from './ring';
 import { SEAL_PLAYER_KNOBS } from './seal';
 import type {
   LensIdentity,
@@ -91,6 +92,23 @@ export const NAME_LENS_KNOBS = {
   CLOCK_HAND_INNER_RATIO: 0.12,
   CLOCK_HAND_OUTER_RATIO: 0.5,
   CLOCK_HAND_WIDTH_PX: 1,
+  /*
+   * Seeking, which happens on the ring. There is no rule under the recipe:
+   * the ring *is* the timeline, and a bar drawn under it was the same fact
+   * told twice. So the circle is what you drag.
+   */
+  /** How near the centre a finger stops meaning an angle at all. */
+  CLOCK_SEEK_DEAD_RATIO: 0.18,
+  /**
+   * How far out a drag still counts, as a fraction of the player's radius.
+   *
+   * One, which is exactly the measurement's own reach: the ticks stand on the
+   * arc at `CLOCK_ARC_RATIO` and grow by `SONG_WAVE_REACH_RATIO` of the
+   * radius, so at full amplitude the drawing ends a shade inside this. A
+   * target that stopped short of the ticks would leave the loudest part of the
+   * circle unpressable, and one much past them is a control in blank space.
+   */
+  CLOCK_SEEK_REACH_RATIO: 1,
   /** Where the waveform's baseline sits, as a fraction of the radius. */
   SONG_WAVE_INNER_RATIO: 0.5,
   /** How far a full-amplitude sample reaches past that baseline. */
@@ -230,12 +248,31 @@ function drawCirclePlayer(
   );
 }
 
+/** The circle's ring under a finger: see `ringTurnAt`. */
+function circleSeekAt(dx: number, dy: number, radius: number): number | null {
+  return ringTurnAt(
+    dx,
+    dy,
+    radius * NAME_LENS_KNOBS.CLOCK_SEEK_DEAD_RATIO,
+    radius * NAME_LENS_KNOBS.CLOCK_SEEK_REACH_RATIO,
+  );
+}
+
 export const nameLens: Lens = {
   key: 'name',
   // The contour at the mark's radius. Every other size is this path scaled:
   // `nameLensFacePath` is exactly linear in its radius.
   identity: recipe => nameLensFacePath(recipe, NAME_LENS_KNOBS.MARK_RADIUS_PX),
   player: () => null,
+  // Anywhere on the ring is a moment, and a drag around it is the scrub.
+  touch: {
+    reachRatio: NAME_LENS_KNOBS.CLOCK_SEEK_REACH_RATIO,
+    landAt: (_recipe, dx, dy, radius) => ({
+      kind: 'seek',
+      fraction: circleSeekAt(dx, dy, radius),
+    }),
+    seekAt: (dx, dy, radius) => circleSeekAt(dx, dy, radius),
+  },
   ui: {
     drawMark: drawCircleMark,
     drawPlayer: drawCirclePlayer,

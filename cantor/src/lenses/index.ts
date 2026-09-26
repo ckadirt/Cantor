@@ -4,6 +4,7 @@ export * from './cantorIntervals';
 export * from './contract';
 export * from './nameLens';
 export * from './registry';
+export * from './ring';
 export * from './seal';
 export * from './sealLens';
 export * from './sealPlayer';

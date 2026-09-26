@@ -17,21 +17,19 @@ import {
   PLAYER_POSE_KNOBS,
   playerFootScreenPx,
   playerLensBottomPx,
-  playerSealScreenPx,
+  playerRadiusPx,
   playerSeekScreenPx,
-  sealRimFraction,
-  sealTouchAt,
-  seekFractionAt,
   modeScreenPx,
   transportScreenPx,
 } from '../field/songPose';
 import { REPRESENTATION_WINDOWS, bandAlphaAt, type Camera } from '../../field';
 import {
-  SEAL_PLAYER_KNOBS,
-  sealDotAt,
-  sealModel,
-  type SealModel,
+  DEFAULT_LENS_KEY,
+  lensByKey,
+  type Lens,
+  type LensTouch,
 } from '../../lenses';
+import type { FaceRecipe } from '../../lenses/face';
 import { useMorphFont } from '../../motion/fonts';
 import {
   afterSongChoice,
@@ -40,10 +38,26 @@ import {
 } from '../../player';
 import { font, space, touch, type, usePalette } from '../../theme/tokens';
 
+/** The lens a surface with no lens named draws: the circle. */
+const DEFAULT_LENS = lensByKey(DEFAULT_LENS_KEY)!;
+
+/**
+ * No song, for a gesture built without one — the circle's touch never reads
+ * the recipe, and every caller that draws a seal passes the song's.
+ */
+const NO_RECIPE: FaceRecipe = {
+  seed: undefined,
+  id: '',
+  model: '',
+  durationMs: 0,
+};
+
 /** KNOBS — what is left of L2 in React, in real units. */
 const SONG_SURFACE_KNOBS = {
   /** How finely a drag around the ring seeks. */
   SEEK_STEP_SECONDS: 1,
+  /** How far a tap on the player may wander before it is not a tap. */
+  TAP_SLOP_PX: 10,
   ELAPSED_SAMPLE_MS: 500, // how often the clock label reads the visual clock
   /** Where the clock sits: above the ring, which is centred on the view. */
   ELAPSED_TOP_RATIO_PCT: '13%',
@@ -220,21 +234,19 @@ function SongSurfaceImpl({
     return last === undefined ? 0 : last.x + last.width;
   }, [words]);
 
-  const seal = useMemo(
-    () =>
-      lensKey === 'seal'
-        ? sealModel({
-            seed: song.seed,
-            id: song.id,
-            model: song.model,
-            durationMs: song.durationMs,
-          })
-        : null,
-    [lensKey, song.durationMs, song.id, song.model, song.seed],
+  const drawnLens = lensByKey(lensKey) ?? DEFAULT_LENS;
+  const recipe = useMemo<FaceRecipe>(
+    () => ({
+      seed: song.seed,
+      id: song.id,
+      model: song.model,
+      durationMs: song.durationMs,
+    }),
+    [song.durationMs, song.id, song.model, song.seed],
   );
   const seekBox = useMemo(
-    () => seekBoxPx({ width, height }, lensKey),
-    [height, width, lensKey],
+    () => seekBoxPx({ width, height }, drawnLens),
+    [height, width, drawnLens],
   );
   const scrub = useMemo(
     () =>
@@ -243,10 +255,10 @@ function SongSurfaceImpl({
         durationSeconds,
         onSeek,
         onSeekEnd,
-        lensKey,
-        seal,
+        drawnLens,
+        recipe,
       ),
-    [durationSeconds, height, onSeek, onSeekEnd, width, lensKey, seal],
+    [durationSeconds, height, onSeek, onSeekEnd, width, drawnLens, recipe],
   );
 
   useEffect(() => () => onSeekEnd?.(), [onSeekEnd]);
@@ -355,19 +367,19 @@ function SongSurfaceImpl({
 }
 
 /**
- * The square the seek gesture listens over: the ring's own reach, squared off.
+ * The box the scrub listens over: square, centred on the ring, and as far out
+ * as the lens drawn there says its touch reaches (`Lens.touch.reachRatio`).
  *
  * Exported with the gesture below because the two are one measurement — the
  * gesture receives coordinates in this box's space and has to put them back
- * into the viewport's before `seekFractionAt` can read an angle from them.
+ * about the player's centre before the lens can read them.
  */
 export function seekBoxPx(
   viewport: Readonly<{ width: number; height: number }>,
-  lensKey = 'name',
+  lens: Lens = DEFAULT_LENS,
 ): Readonly<{ left: number; top: number; size: number }> {
   const ring = playerSeekScreenPx(viewport);
-  const reach =
-    lensKey === 'seal' ? playerSealScreenPx(viewport).outer : ring.outer;
+  const reach = playerRadiusPx(viewport.width) * lens.touch.reachRatio;
   return {
     left: ring.cx - reach,
     top: ring.cy - reach,
@@ -376,18 +388,15 @@ export function seekBoxPx(
 }
 
 /**
- * Seeking, as an angle about the ring.
+ * Seeking, by whatever the lens drawn at the player says a finger means.
  *
- * The ring is the timeline, so a drag around it is the scrub — one control for
- * one fact, instead of a circle that shows the position and a bar underneath
- * that sets it.
- *
- * The seal keeps that gesture and moves it outward: its clock is a rim around
- * the dust, so a drag that starts off the dust is the same angle, measured the
- * same way. A drag across the dust itself cannot be a scrub — the Peano order
- * walks smoothly through space as time passes, but two neighbouring dots can be
- * a third of the song apart — so a touch that starts on the dust is a *tap*: it
- * jumps to the dot under the finger when it lifts, and wandering off abandons it.
+ * The ring is the timeline, so on the circle a drag around it is the scrub —
+ * one control for one fact. Another lens may mean something else by a touch:
+ * the seal scrubs on a rim outside its dust and treats a touch on the dust as
+ * a tap that jumps to the dot under the finger. The gesture does not know
+ * which; it asks the lens where the finger lands (`landAt`) and follows the
+ * answer — a seek that a drag carries on (`seekAt`), a tap taken on release
+ * unless the finger wanders past `TAP_SLOP_PX`, or nothing at all.
  *
  * A pure builder rather than a hook body, because the one thing about it that
  * has to be guaranteed is a piece of *configuration*, and configuration is only
@@ -399,69 +408,48 @@ export function seekGesture(
   durationSeconds: number,
   onSeek: (seconds: number) => void,
   onSeekEnd: () => void = () => {},
-  lensKey = 'name',
-  seal: SealModel | null = null,
+  lens: Lens = DEFAULT_LENS,
+  recipe: FaceRecipe = NO_RECIPE,
 ) {
-  const box = seekBoxPx(viewport, lensKey);
+  const box = seekBoxPx(viewport, lens);
+  const ring = playerSeekScreenPx(viewport);
+  const radius = playerRadiusPx(viewport.width);
   const step = SONG_SURFACE_KNOBS.SEEK_STEP_SECONDS;
   const seekFraction = (fraction: number) =>
     onSeek(Math.round((fraction * durationSeconds) / step) * step);
   /*
-   * The gesture's coordinates are the box's and `seekFractionAt` wants the
-   * viewport's, so the box's origin goes back on here. Laying the box out at
-   * the ring's own bounds instead would put that offset in two places, agreeing
-   * only until one of them changed.
-   *
-   * A touch in the dead centre or past the ring answers null and is ignored
-   * rather than clamped: at the centre one pixel of travel sweeps half the
-   * song, so an angle there is noise wearing the shape of an intention.
+   * The gesture's coordinates are the box's; a lens reads them about the
+   * player's centre. Laying the box out at the ring's own bounds instead would
+   * put that offset in two places, agreeing only until one of them changed.
    */
-  const seekTo = (x: number, y: number) => {
-    const fraction = seekFractionAt(viewport, box.left + x, box.top + y);
-    if (fraction !== null) seekFraction(fraction);
-  };
-  /** What the current touch on a seal is doing, decided where it lands. */
-  let sealTouch:
-    | { kind: 'rim' }
-    | { kind: 'dot'; x: number; y: number; startX: number; startY: number }
-    | null = null;
+  const dxOf = (x: number) => box.left + x - ring.cx;
+  const dyOf = (y: number) => box.top + y - ring.cy;
+  /** What the current touch is doing, decided where it landed. */
+  let held: (LensTouch & { startX: number; startY: number }) | null = null;
   const begin = (x: number, y: number) => {
-    if (seal === null) {
-      seekTo(x, y);
-      return;
-    }
-    const landed = sealTouchAt(viewport, box.left + x, box.top + y);
-    if (landed === null) {
-      sealTouch = null;
-    } else if (landed.kind === 'rim') {
-      sealTouch = { kind: 'rim' };
+    const landed = lens.touch.landAt(recipe, dxOf(x), dyOf(y), radius);
+    held = landed === null ? null : { ...landed, startX: x, startY: y };
+    if (landed?.kind === 'seek' && landed.fraction !== null) {
       seekFraction(landed.fraction);
-    } else {
-      sealTouch = { ...landed, startX: x, startY: y };
     }
   };
   const update = (x: number, y: number) => {
-    if (seal === null) {
-      seekTo(x, y);
-      return;
-    }
-    if (sealTouch?.kind === 'rim') {
-      const rim = sealRimFraction(viewport, box.left + x, box.top + y);
-      if (rim !== null) seekFraction(rim.fraction);
+    if (held?.kind === 'seek') {
+      const fraction = lens.touch.seekAt(dxOf(x), dyOf(y), radius);
+      if (fraction !== null) seekFraction(fraction);
     } else if (
-      sealTouch?.kind === 'dot' &&
-      Math.hypot(x - sealTouch.startX, y - sealTouch.startY) >
-        SEAL_PLAYER_KNOBS.TAP_SLOP_PX
+      held?.kind === 'tap' &&
+      Math.hypot(x - held.startX, y - held.startY) >
+        SONG_SURFACE_KNOBS.TAP_SLOP_PX
     ) {
-      sealTouch = null;
+      held = null;
     }
   };
   const finish = () => {
-    if (seal !== null && sealTouch?.kind === 'dot') {
-      const at = sealDotAt(seal, sealTouch.x, sealTouch.y);
-      if (at !== null) seekFraction(at / seal.order.length);
+    if (held?.kind === 'tap' && held.fraction !== null) {
+      seekFraction(held.fraction);
     }
-    sealTouch = null;
+    held = null;
     onSeekEnd();
   };
   return (
