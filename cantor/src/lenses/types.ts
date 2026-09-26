@@ -1,6 +1,6 @@
 import type { SkCanvas, SkFont, SkPaint } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
-import type { LensIdentity, LensPlayer, LensUi } from './contract';
+import type { LensIdentity, LensPlayer, LensTouchUi, LensUi } from './contract';
 import type { FaceRecipe } from './face';
 
 export type LensBox = Readonly<{
@@ -111,6 +111,8 @@ export type Lens = Readonly<{
   ) => LensPlayer | null;
   /** UI thread: worklets only. */
   ui: LensUi;
+  /** JS thread: what a finger on the player means. */
+  touch: LensTouchUi;
   draw: (
     canvas: SkCanvas,
     box: LensBox,

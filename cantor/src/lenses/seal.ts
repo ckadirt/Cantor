@@ -107,8 +107,6 @@ export const SEAL_PLAYER_KNOBS = {
    * rather than the whole face.
    */
   SEEK_REACH_RATIO: 1.18,
-  /** How far a tap on a dot may wander and still be a tap, in pixels. */
-  TAP_SLOP_PX: 10,
   /** How long switching lens takes; one clock for both directions. */
   LENS_MORPH_MS: 420,
   /** How long the sound takes to rise into the dust once it is measured. */

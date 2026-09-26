@@ -8,9 +8,11 @@ import {
   drawPlayingRing,
   drawRowWords,
 } from './nameLens';
+import { ringTurnAt } from './ring';
 import {
   SEAL_KNOBS,
   SEAL_PLAYER_KNOBS,
+  sealDotAt,
   sealDotRadius,
   sealModel,
 } from './seal';
@@ -188,12 +190,52 @@ function drawSealAsPlayer(
   );
 }
 
+/** The seal's rim under a finger: the circle's dead centre, a longer reach. */
+export function sealRimAt(
+  dx: number,
+  dy: number,
+  radius: number,
+): number | null {
+  'worklet';
+  return ringTurnAt(
+    dx,
+    dy,
+    radius * NAME_LENS_KNOBS.CLOCK_SEEK_DEAD_RATIO,
+    radius * SEAL_PLAYER_KNOBS.SEEK_REACH_RATIO,
+  );
+}
+
 export const sealLens: Lens = {
   key: 'seal',
   label: 'Seal',
   // The dust at the mark's size, the face's own room through `sealSidePx`.
   identity: recipe => sealMarkPath(recipe, SEAL_MARK_SIDE_PX),
   player: sealPlayerOf,
+  /*
+   * The seal keeps the circle's gesture and moves it outward: its clock is a
+   * rim around the dust, so a drag that starts off the dust is the same angle,
+   * measured the same way. A drag across the dust cannot be a scrub — the
+   * Peano order walks smoothly through space as time passes, but two
+   * neighbouring dots can be a third of the song apart — so a touch that
+   * starts on the dust is a tap: it jumps to the dot under the finger.
+   */
+  touch: {
+    reachRatio: SEAL_PLAYER_KNOBS.SEEK_REACH_RATIO,
+    landAt: (recipe, dx, dy, radius) => {
+      const side = sealSidePx(radius * NAME_LENS_KNOBS.SONG_FACE_RATIO);
+      if (Math.abs(dx) <= side / 2 && Math.abs(dy) <= side / 2) {
+        const model = sealModel(recipe);
+        const dot = sealDotAt(model, dx / side, dy / side);
+        return {
+          kind: 'tap',
+          fraction: dot === null ? null : dot / model.order.length,
+        };
+      }
+      const fraction = sealRimAt(dx, dy, radius);
+      return fraction === null ? null : { kind: 'seek', fraction };
+    },
+    seekAt: (dx, dy, radius) => sealRimAt(dx, dy, radius),
+  },
   ui: {
     drawMark: drawSealMark,
     drawPlayer: drawSealAsPlayer,

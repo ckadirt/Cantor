@@ -1,4 +1,5 @@
 import type { SkCanvas, SkPaint } from '@shopify/react-native-skia';
+import type { FaceRecipe } from './face';
 
 /**
  * The lens contract: what the field's renderer may ask of a lens.
@@ -147,6 +148,40 @@ export type LensUi = Readonly<{
   hearsPlayhead: number;
   /** The player's clock; see `ClockShape`. */
   clock: ClockShape;
+}>;
+
+/**
+ * What a finger landing on the player means, to the lens drawn there.
+ *
+ * - `seek`: a moment on a ring, and a drag from here keeps seeking
+ *   (`LensTouchUi.seekAt`). `fraction` is null where the landing point itself
+ *   names no moment — the dead centre of the circle — but the drag still
+ *   counts once it reaches the ring.
+ * - `tap`: a moment to jump to when the finger lifts, abandoned if it wanders
+ *   off first; null if the point under it names nothing.
+ */
+export type LensTouch = Readonly<
+  | { kind: 'seek'; fraction: number | null }
+  | { kind: 'tap'; fraction: number | null }
+>;
+
+/**
+ * A lens's answer to a finger on the player. On the JS half, because the scrub
+ * gesture runs on the JS thread. Coordinates are relative to the player's
+ * centre and sizes to its radius, so a lens never needs the renderer's poses.
+ */
+export type LensTouchUi = Readonly<{
+  /** How far from the centre the touch box reaches, of the player's radius. */
+  reachRatio: number;
+  /** What a finger landing here means, or null for "not this lens's". */
+  landAt: (
+    recipe: FaceRecipe,
+    dx: number,
+    dy: number,
+    radius: number,
+  ) => LensTouch | null;
+  /** Where a seeking drag is now, or null to skip this point. */
+  seekAt: (dx: number, dy: number, radius: number) => number | null;
 }>;
 
 /**

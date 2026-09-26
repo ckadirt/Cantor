@@ -1,4 +1,10 @@
-import { SEAL_PLAYER_KNOBS, sealModel } from '../../../lenses';
+import {
+  SEAL_PLAYER_KNOBS,
+  nameLens,
+  sealLens,
+  sealModel,
+  type Lens,
+} from '../../../lenses';
 import {
   playerRadiusPx,
   playerSealScreenPx,
@@ -105,12 +111,13 @@ describe('seeking over the ring', () => {
 
 
 describe('seeking on a seal', () => {
-  const seal = sealModel({
+  const recipe = {
     seed: 1000,
     id: 'song-a',
     model: 'acestep-1.5-quality',
     durationMs: 120000,
-  });
+  };
+  const seal = sealModel(recipe);
 
   function sealGesture(onSeek = jest.fn(), onSeekEnd = jest.fn()) {
     return seekGesture(
@@ -118,8 +125,8 @@ describe('seeking on a seal', () => {
       120,
       onSeek,
       onSeekEnd,
-      'seal',
-      seal,
+      sealLens,
+      recipe,
     ) as unknown as {
       handlers: Record<string, (event: { x: number; y: number }) => void>;
     };
@@ -128,7 +135,7 @@ describe('seeking on a seal', () => {
   /** A point on the rim, in the gesture's own coordinates. */
   function onRim(fraction: number) {
     const placed = playerSealScreenPx(viewport);
-    const box = seekBoxPx(viewport, 'seal');
+    const box = seekBoxPx(viewport, sealLens);
     const rim = playerRadiusPx(viewport.width) * SEAL_PLAYER_KNOBS.RIM_RATIO;
     const radians = fraction * Math.PI * 2 - Math.PI / 2;
     return {
@@ -138,7 +145,7 @@ describe('seeking on a seal', () => {
   }
 
   it('listens over the rim, which reaches past the circle\'s own ring', () => {
-    const box = seekBoxPx(viewport, 'seal');
+    const box = seekBoxPx(viewport, sealLens);
     const placed = playerSealScreenPx(viewport);
     expect(box.size).toBeCloseTo(placed.outer * 2);
     expect(placed.outer).toBeGreaterThan(playerSeekScreenPx(viewport).outer);
@@ -167,7 +174,7 @@ describe('seeking on a seal', () => {
     const seek = jest.fn();
     const gesture = sealGesture(seek);
     const placed = playerSealScreenPx(viewport);
-    const box = seekBoxPx(viewport, 'seal');
+    const box = seekBoxPx(viewport, sealLens);
     const deepest = seal.levels[3];
     const k = 40;
     const dot = seal.order[k];
@@ -187,7 +194,7 @@ describe('seeking on a seal', () => {
     const finish = jest.fn();
     const gesture = sealGesture(seek, finish);
     const placed = playerSealScreenPx(viewport);
-    const box = seekBoxPx(viewport, 'seal');
+    const box = seekBoxPx(viewport, sealLens);
     const start = { x: placed.cx - box.left, y: placed.cy - box.top };
     gesture.handlers.onBegin(start);
     gesture.handlers.onUpdate({ x: start.x + 40, y: start.y });
@@ -196,3 +203,46 @@ describe('seeking on a seal', () => {
     expect(finish).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * The gesture knows no lens by name: it asks the one drawn where the finger
+ * lands. A lens it has never seen — here, one whose touch box is half the
+ * player and whose every touch is a tap on the song's middle — is driven by
+ * the same code, which is what adding the tree will need.
+ */
+describe('seeking on a lens the gesture has never seen', () => {
+  const halfway: Lens = {
+    ...nameLens,
+    key: 'test-halfway',
+    touch: {
+      reachRatio: 0.5,
+      landAt: () => ({ kind: 'tap', fraction: 0.5 }),
+      seekAt: () => null,
+    },
+  };
+
+  it('listens as far out as the lens says', () => {
+    expect(seekBoxPx(viewport, halfway).size).toBeCloseTo(
+      playerRadiusPx(viewport.width),
+    );
+  });
+
+  it('does what the lens says a touch means', () => {
+    const seek = jest.fn();
+    const gesture = seekGesture(
+      viewport,
+      120,
+      seek,
+      () => {},
+      halfway,
+    ) as unknown as {
+      handlers: Record<string, (event: { x: number; y: number }) => void>;
+    };
+    gesture.handlers.onBegin({ x: 10, y: 10 });
+    gesture.handlers.onUpdate({ x: 12, y: 10 });
+    expect(seek).not.toHaveBeenCalled();
+    gesture.handlers.onFinalize({ x: 12, y: 10 });
+    expect(seek).toHaveBeenCalledWith(60);
+  });
+});
+

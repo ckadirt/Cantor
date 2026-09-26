@@ -1,6 +1,7 @@
 import {
   NAME_LENS_KNOBS,
   SEAL_PLAYER_KNOBS,
+  ringTurnAt,
   sealSidePx,
 } from '../../lenses';
 
@@ -155,25 +156,12 @@ export const PLAYER_POSE_KNOBS = {
    */
   SONG_TRANSPORT_HIT_PX: 48,
   /**
-   * KNOBS — seeking, which happens on the ring.
-   *
-   * There is no rule under the recipe any more. The ring *is* the timeline —
-   * the design says so outright — and a straight bar drawn under it was the
-   * same fact told twice, in a place where it read as a divider rather than as
-   * a control. So the circle is what you drag.
+   * Seeking, on the ring: where a finger stops meaning an angle, and how far
+   * out a drag still counts. The circle's, since the clock is (see
+   * `NAME_LENS_KNOBS.CLOCK_SEEK_*`, where the reasons are written).
    */
-  /** How near the centre a finger stops meaning an angle at all. */
-  SONG_SEEK_DEAD_ZONE_RATIO: 0.18,
-  /**
-   * How far out a drag still counts, as a fraction of the player's radius.
-   *
-   * One, which is exactly the measurement's own reach: the ticks stand on the
-   * arc at `SONG_ARC_RATIO` and grow by `SONG_WAVE_REACH_RATIO` of the radius,
-   * so at full amplitude the drawing ends a shade inside this. A target that
-   * stopped short of the ticks would leave the loudest part of the circle
-   * unpressable, and one much past them is a control in blank space.
-   */
-  SONG_SEEK_REACH_RATIO: 1,
+  SONG_SEEK_DEAD_ZONE_RATIO: NAME_LENS_KNOBS.CLOCK_SEEK_DEAD_RATIO,
+  SONG_SEEK_REACH_RATIO: NAME_LENS_KNOBS.CLOCK_SEEK_REACH_RATIO,
 } as const;
 
 export type PoseViewport = Readonly<{ width: number; height: number }>;
@@ -515,12 +503,7 @@ export function seekFractionAt(
 ): number | null {
   'worklet';
   const ring = playerSeekScreenPx(viewport);
-  const dx = x - ring.cx;
-  const dy = y - ring.cy;
-  const reach = Math.sqrt(dx * dx + dy * dy);
-  if (reach < ring.inner || reach > ring.outer) return null;
-  const turn = (Math.atan2(dy, dx) + Math.PI / 2) / (Math.PI * 2);
-  return turn - Math.floor(turn);
+  return ringTurnAt(x - ring.cx, y - ring.cy, ring.inner, ring.outer);
 }
 
 /**
@@ -548,50 +531,6 @@ export function playerSealScreenPx(viewport: PoseViewport): Readonly<{
     inner: ring.inner,
     outer: radius * SEAL_PLAYER_KNOBS.SEEK_REACH_RATIO,
   };
-}
-
-/** The rim's angle under a finger, or null in the dead centre or past reach. */
-export function sealRimFraction(
-  viewport: PoseViewport,
-  x: number,
-  y: number,
-): Readonly<{ kind: 'rim'; fraction: number }> | null {
-  'worklet';
-  const seal = playerSealScreenPx(viewport);
-  const dx = x - seal.cx;
-  const dy = y - seal.cy;
-  const reach = Math.sqrt(dx * dx + dy * dy);
-  if (reach < seal.inner || reach > seal.outer) return null;
-  const turn = (Math.atan2(dy, dx) + Math.PI / 2) / (Math.PI * 2);
-  return { kind: 'rim', fraction: turn - Math.floor(turn) };
-}
-
-/**
- * What a finger that lands at `x, y` on the seal is reaching for.
- *
- * On the dust it is a dot — a moment, to jump to — and its position comes back
- * in the seal's unit square for `sealDotAt`. Anywhere else in reach it is the
- * rim, and the answer is the angle, from twelve o'clock clockwise, exactly as
- * `seekFractionAt` measures the circle's. The dead centre and the far outside
- * answer null.
- */
-export type SealTouch =
-  | Readonly<{ kind: 'dot'; x: number; y: number }>
-  | Readonly<{ kind: 'rim'; fraction: number }>;
-
-export function sealTouchAt(
-  viewport: PoseViewport,
-  x: number,
-  y: number,
-): SealTouch | null {
-  'worklet';
-  const seal = playerSealScreenPx(viewport);
-  const dx = x - seal.cx;
-  const dy = y - seal.cy;
-  if (Math.abs(dx) <= seal.side / 2 && Math.abs(dy) <= seal.side / 2) {
-    return { kind: 'dot', x: dx / seal.side, y: dy / seal.side };
-  }
-  return sealRimFraction(viewport, x, y);
 }
 
 /**
