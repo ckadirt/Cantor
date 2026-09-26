@@ -14,12 +14,19 @@ import {
   type Camera,
   type FieldEntity,
 } from '../../../field';
-import { analyseWindow, sealModel, type SongAnalysis } from '../../../lenses';
+import {
+  analyseWindow,
+  lensIndex,
+  sealModel,
+  type SongAnalysis,
+} from '../../../lenses';
 import { drawFieldFaces, faceFlightsOf, type FaceFlight } from '../FieldCanvas';
 import { playerFaceScale } from '../songPose';
 import type { FieldPresentation } from '../useFieldController';
 
 const viewport = { width: 380, height: 800 };
+const CIRCLE = lensIndex('name');
+const SEAL = lensIndex('seal');
 
 const entities: FieldEntity[] = ['song-a', 'song-b', 'song-c'].map(
   (entityId, index) => ({
@@ -147,6 +154,9 @@ function drawAt(
     { value: camera } as never,
     { value: layout.fitScale } as never,
     viewport,
+    // `lens` is how far the change from the circle to the seal has got.
+    CIRCLE,
+    SEAL,
     lens,
     false,
     1,

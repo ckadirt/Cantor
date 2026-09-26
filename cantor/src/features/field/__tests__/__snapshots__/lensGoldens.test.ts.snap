@@ -2,76 +2,76 @@
 
 exports[`golden pixels: faces L0, every lens step, and reduced motion 1`] = `
 {
-  "arriving lens 0": "79266 7f7309db3d59d7e4",
-  "arriving lens 1": "41137 f7d60d703f7a0ed7",
-  "lens 0": "61943 f115461a253fb8d9",
-  "lens 0.25": "19285 da3dce0c7f7b126b",
-  "lens 0.5": "0 b35693c5bdfe6a06",
-  "lens 0.75": "14592 fb572421081995f2",
-  "lens 1": "39108 3a09528735a296b8",
-  "playing lens 0": "89451 8dd1968022310967",
-  "playing lens 1": "66616 bf0817190d46a0b2",
-  "reduced lens 0.5": "52473 6a4f93c8cef1cbf7",
+  "arriving lens 0": "79266 8119f70953563a56",
+  "arriving lens 1": "41137 ecf21f3ad8e7bc05",
+  "lens 0": "61943 a07f07e0264702e3",
+  "lens 0.25": "19285 fb7281b4b25dd03f",
+  "lens 0.5": "0 1dbdb8459dbc8106",
+  "lens 0.75": "14592 9c7dc33f1172b240",
+  "lens 1": "39108 6fc75b2b10a4bad4",
+  "playing lens 0": "89451 bf61a2e27c20675d",
+  "playing lens 1": "66616 14c7b89dc18252d6",
+  "reduced lens 0.5": "52473 b82a4a16215fa925",
 }
 `;
 
 exports[`golden pixels: faces L1, the row faces, every lens step 1`] = `
 {
-  "lens 0": "85651 766b80405a86246f",
-  "lens 0.25": "26018 2fea9cf9bca4b8aa",
-  "lens 0.5": "0 b35693c5bdfe6a06",
-  "lens 0.75": "18697 0b027cd02c98e1c7",
-  "lens 1": "51641 45746ed2003c0af1",
+  "lens 0": "85651 39354b087e791dfb",
+  "lens 0.25": "26018 e77be3b113b3ebc6",
+  "lens 0.5": "0 1dbdb8459dbc8106",
+  "lens 0.75": "18697 4be2b5162242a151",
+  "lens 1": "51641 b95377e46aaa6663",
 }
 `;
 
 exports[`golden pixels: faces the descent and the player, unmeasured 1`] = `
 {
-  "ratio 12.5 lens 0": "298112 88a9bfa165dff8a2",
-  "ratio 12.5 lens 0.3": "277209 a2dc7ae229c09661",
-  "ratio 12.5 lens 0.7": "732741 675fd8e65a567de5",
-  "ratio 12.5 lens 1": "1097676 a5ef0b6f4eb78b90",
-  "ratio 18 lens 0": "31948 275c663f000e0698",
-  "ratio 18 lens 0.3": "40132 55bcb2cf8a29be90",
-  "ratio 18 lens 0.7": "621498 802c40f58283f9b6",
-  "ratio 18 lens 1": "1013651 adb9a87022318d97",
-  "ratio 30 lens 0": "24505 af42d5ec6dd39d63",
-  "ratio 30 lens 0.3": "37914 791de64fc362b148",
-  "ratio 30 lens 0.7": "616434 73c98543f75963c4",
-  "ratio 30 lens 1": "990213 3adc65d68f69d19d",
-  "reduced lens 0.5": "505339 f3c04848d98bd40f",
+  "ratio 12.5 lens 0": "298112 989b1ae9af12c5fe",
+  "ratio 12.5 lens 0.3": "277209 a168c062ed7c2ea5",
+  "ratio 12.5 lens 0.7": "732741 b584bc08c3274483",
+  "ratio 12.5 lens 1": "1097676 614565c30bcc7238",
+  "ratio 18 lens 0": "31948 fcc8da311579787a",
+  "ratio 18 lens 0.3": "40132 02ffc6478a1680f0",
+  "ratio 18 lens 0.7": "621498 97df10d58b32bc06",
+  "ratio 18 lens 1": "1013651 1ee081124dba8491",
+  "ratio 30 lens 0": "24505 13ef4c5234cf82e5",
+  "ratio 30 lens 0.3": "37914 9bee373d181625c6",
+  "ratio 30 lens 0.7": "616434 dcda173be8ede92c",
+  "ratio 30 lens 1": "990213 f68738d067701b5b",
+  "reduced lens 0.5": "505339 6254fbdc03a571a7",
 }
 `;
 
 exports[`golden pixels: faces the player, measured, rising and heard 1`] = `
 {
-  "descending lens 1 heard 0.4": "701563 d6fc678e7e86a895",
-  "lens 0 sound 0.5 heard -1": "24505 af42d5ec6dd39d63",
-  "lens 0 sound 1 heard -1": "24505 af42d5ec6dd39d63",
-  "lens 0 sound 1 heard 0.4": "24505 af42d5ec6dd39d63",
-  "lens 0.3 sound 0.5 heard -1": "37702 736cd8479513b780",
-  "lens 0.3 sound 1 heard -1": "38484 4fcd27d3719fa37c",
-  "lens 0.3 sound 1 heard 0.4": "41838 30641a5b6406027c",
-  "lens 0.7 sound 0.5 heard -1": "586261 a40fa770db879237",
-  "lens 0.7 sound 1 heard -1": "574923 ad611e94727a3e7b",
-  "lens 0.7 sound 1 heard 0.4": "442261 90f48e7e4491d0cd",
-  "lens 1 sound 0.5 heard -1": "900933 dd236ed03a671507",
-  "lens 1 sound 1 heard -1": "885560 1e78621b79eb0974",
-  "lens 1 sound 1 heard 0.4": "655755 34cee626a8e7bb85",
+  "descending lens 1 heard 0.4": "701563 e74e70ee6ed52991",
+  "lens 0 sound 0.5 heard -1": "24505 13ef4c5234cf82e5",
+  "lens 0 sound 1 heard -1": "24505 13ef4c5234cf82e5",
+  "lens 0 sound 1 heard 0.4": "24505 13ef4c5234cf82e5",
+  "lens 0.3 sound 0.5 heard -1": "37702 261376eb0728ce24",
+  "lens 0.3 sound 1 heard -1": "38484 186ef7ff5a5fec70",
+  "lens 0.3 sound 1 heard 0.4": "41838 ea8e27f3526f8ff0",
+  "lens 0.7 sound 0.5 heard -1": "586261 e01309ce90881805",
+  "lens 0.7 sound 1 heard -1": "574923 3ce63d749b7a0f3f",
+  "lens 0.7 sound 1 heard 0.4": "442261 bd118758412b7d5b",
+  "lens 1 sound 0.5 heard -1": "900933 a528f42c4395715f",
+  "lens 1 sound 1 heard -1": "885560 cfa2987f4c733828",
+  "lens 1 sound 1 heard 0.4": "655755 0aff61724c6c6179",
 }
 `;
 
 exports[`golden pixels: the measurement the ring at every lens step, sweeping, and unrolling 1`] = `
 {
-  "grain lens 0": "18095166 8c0d5553603cf454",
-  "grain lens 1": "18095166 8c0d5553603cf454",
-  "ring half drawn": "454264 b28e69db71be7024",
-  "ring lens 0": "897886 f9f95a2bf996ac6c",
-  "ring lens 0.25": "805275 69c77bccb88baa93",
-  "ring lens 0.5": "449003 e8e0509888533fef",
-  "ring lens 0.75": "93190 d9f98a0fe2791960",
-  "ring lens 1": "0 b35693c5bdfe6a06",
-  "unrolling lens 0": "2056471 34be127ee5e170cd",
-  "unrolling lens 1": "399500 aae612175a93b0b0",
+  "grain lens 0": "18095166 d5e7dc61901fd046",
+  "grain lens 1": "18095166 d5e7dc61901fd046",
+  "ring half drawn": "454264 1ee3799be6837750",
+  "ring lens 0": "897886 3b1f759d7a1ffd86",
+  "ring lens 0.25": "805275 d321cc6c4ff0f0ff",
+  "ring lens 0.5": "449003 3259e8cea417a951",
+  "ring lens 0.75": "93190 e9de5f6536c3862a",
+  "ring lens 1": "0 1dbdb8459dbc8106",
+  "unrolling lens 0": "2056471 d2ad1f22d2a78ba5",
+  "unrolling lens 1": "399500 012ddd239841a194",
 }
 `;

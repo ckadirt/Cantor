@@ -18,6 +18,7 @@ import {
   type NativeRowModel,
 } from './nativeRows';
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
+import { lensWeight, useLensClock, type LensClock } from './lensClock';
 import React, { useEffect, useMemo, useRef } from 'react';
 import { faceClockPoints } from '../../lenses/face';
 import { StyleSheet } from 'react-native';
@@ -588,20 +589,13 @@ function FieldCanvasImpl({
   }
   const labelFlights = labelPlan.current?.flights ?? semanticLabelFlights;
   /*
-   * The lens clock: 0 on the circle, 1 on the seal, linear, eased once by
-   * whoever draws from it. Retained across re-cuts on purpose — it lives out
-   * here rather than in the keyed native scene, so regrouping mid-switch keeps
-   * the switch where it was.
+   * The lens clock — from which lens, to which, how far — retained across
+   * re-cuts on purpose: it lives out here rather than in the keyed native
+   * scene, so regrouping mid-change keeps the change where it was. See
+   * `lensClock.ts`.
    */
-  const lensMixCandidate = useSharedValue(activeLensKey === 'seal' ? 1 : 0);
-  const lensMix = useRef(lensMixCandidate).current;
+  const lensClock = useLensClock(Math.max(0, lensIndex(activeLensKey)));
   const reducedMotion = useReducedMotion();
-  useEffect(() => {
-    lensMix.value = withTiming(activeLensKey === 'seal' ? 1 : 0, {
-      duration: SEAL_PLAYER_KNOBS.LENS_MORPH_MS,
-      easing: Easing.linear,
-    });
-  }, [activeLensKey, lensMix]);
 
   // Native shared values are stable; the Jest mock is not, so the fallback is
   // held by ref the way `useFieldCamera` holds its own candidates.
@@ -714,7 +708,7 @@ function FieldCanvasImpl({
         <NativeFieldContent
           key={recut.generation}
           recut={recut}
-          lensMix={lensMix}
+          lensClock={lensClock}
           reducedMotion={reducedMotion}
           clock={nativeClock}
           cameraShared={cameraShared}
@@ -751,7 +745,7 @@ function FieldCanvasImpl({
     labelFlights,
     monoFont,
     nativeClock,
-    lensMix,
+    lensClock,
     reducedMotion,
     palette,
     playingKey,
@@ -949,7 +943,7 @@ function useNativeCameraMotion(
 type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 
 type NativeFieldContentProps = Readonly<{
-  lensMix: SharedValue<number>;
+  lensClock: LensClock;
   reducedMotion: boolean;
   recut: FieldRecutModel;
   clock: SharedValue<number>;
@@ -1093,9 +1087,9 @@ export type NativeSeal = Readonly<{
 const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
 
 /**
- * The two lenses the lens clock still switches between (`lensMix`: 0 is the
- * circle, 1 the seal), as positions in `LENSES`. R6c replaces the pair with a
- * clock that runs from any lens to any other.
+ * The circle and the seal, as positions in `LENSES`: the pair whose player
+ * morph, clock and sound the renderer still draws itself, until R6d and R6e
+ * move them behind the lens contract.
  */
 const CIRCLE_LENS = lensIndex('name');
 const SEAL_LENS = lensIndex('seal');
@@ -1436,7 +1430,10 @@ export function drawFieldFaces(
   cameraShared: SharedValue<Camera>,
   fitScaleShared: SharedValue<number>,
   viewport: Viewport,
-  lensProgress = 0,
+  /** The lens clock, read by the caller: see `lensClock.ts`. */
+  lensFrom = CIRCLE_LENS,
+  lensTo = CIRCLE_LENS,
+  lensT = 1,
   reducedMotion = false,
   soundProgress = 1,
   heard = -1,
@@ -1445,21 +1442,34 @@ export function drawFieldFaces(
 ): void {
   'worklet';
   /*
-   * Switching lens, in two beats: the face draws itself in to a point, then
-   * the seal opens out of that point. Scale, not opacity, so neither drawing
-   * is ever a ghost of itself — and the lens clock is linear, so running it
-   * backwards plays the same two beats the other way. Reduced motion
-   * crossfades instead, as the rest of the canvas does.
+   * Changing lens, in two beats: the lens being left draws itself in to a
+   * point, then the one arriving opens out of that point. Scale, not opacity,
+   * so neither drawing is ever a ghost of itself — and the lens clock is
+   * linear, so running it backwards plays the same two beats the other way.
+   * Reduced motion crossfades instead, as the rest of the canvas does.
    */
-  const lens = Math.min(Math.max(lensProgress, 0), 1);
-  const faceScale = reducedMotion
+  const lensAt = Math.min(Math.max(lensT, 0), 1);
+  const leavingScale = reducedMotion
     ? 1
-    : 1 - smootherstep(Math.min(Math.max(lens * 2, 0), 1));
-  const faceInk = reducedMotion ? 1 - smootherstep(lens) : 1;
-  const sealScale = reducedMotion
+    : 1 - smootherstep(Math.min(Math.max(lensAt * 2, 0), 1));
+  const leavingInk = reducedMotion ? 1 - smootherstep(lensAt) : 1;
+  const comingScale = reducedMotion
     ? 1
-    : smootherstep(Math.min(Math.max(lens * 2 - 1, 0), 1));
-  const sealInk = reducedMotion ? smootherstep(lens) : 1;
+    : smootherstep(Math.min(Math.max(lensAt * 2 - 1, 0), 1));
+  const comingInk = reducedMotion ? smootherstep(lensAt) : 1;
+  // Both lenses in play, in `LENSES` order so the draw order never depends
+  // on the direction of the change; one when the clock is at rest.
+  const firstLens = lensFrom < lensTo ? lensFrom : lensTo;
+  const lastLens = lensFrom < lensTo ? lensTo : lensFrom;
+  /*
+   * The player's circle↔seal morph, which is the one pair morph so far: how
+   * far the pair stands toward the seal, and whether this change is between
+   * those two at all. It moves behind the contract as a pair morph in R6d.
+   */
+  const sealed = lensWeight(SEAL_LENS, lensFrom, lensTo, lensAt);
+  const circleSealPair =
+    (lensFrom === CIRCLE_LENS || lensFrom === SEAL_LENS) &&
+    (lensTo === CIRCLE_LENS || lensTo === SEAL_LENS);
   const p = Math.min(Math.max(progress, 0), 1);
   const live = p >= 1 ? cameraShared.value : null;
   const cameraX =
@@ -1545,9 +1555,9 @@ export function drawFieldFaces(
     const faceLine =
       weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * shapeArrived;
     const seal = face.seal;
-    if (seal !== undefined && !reducedMotion && lens > 0) {
+    if (seal !== undefined && !reducedMotion && circleSealPair && sealed > 0) {
       // The player morphs rather than trading places: see `drawSealPlayer`.
-      const formed = smootherstep(lens);
+      const formed = smootherstep(sealed);
       if (fill > 0 && shapeArrived < 1) {
         canvas.save();
         canvas.scale(pose.scale, pose.scale);
@@ -1574,29 +1584,22 @@ export function drawFieldFaces(
         faceLine,
       );
     } else {
-      const faceSize = pose.scale * faceScale;
-      if (faceInk > 0 && faceSize > 0.001) {
-        LENS_UI[CIRCLE_LENS].drawMark(
-          canvas,
-          face.identities[CIRCLE_LENS],
-          faceSize,
-          opacity * faceInk,
-          weight,
-          fill,
-          shapeArrived,
-          FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
-          paints,
-        );
-      }
-      const sealSize = pose.scale * sealScale;
-      if (lens > 0 && sealInk > 0 && sealSize > 0.001) {
-        if (face.seal !== undefined) {
+      const passes = firstLens === lastLens ? 1 : 2;
+      for (let pass = 0; pass < passes; pass++) {
+        const lens = pass === 0 ? firstLens : lastLens;
+        const coming = lens === lensTo;
+        const size = pose.scale * (coming ? comingScale : leavingScale);
+        const ink = coming ? comingInk : leavingInk;
+        if (ink <= 0 || size <= 0.001) continue;
+        if (lens === SEAL_LENS && seal !== undefined) {
+          // The seal as the player, a dot at a time: R6d moves it behind the
+          // contract as the seal's `drawPlayer`.
           drawSealPlayer(
             canvas,
-            face.seal,
+            seal,
             paints,
-            SEAL_MARK_SIDE_PX * sealSize,
-            opacity * sealInk,
+            SEAL_MARK_SIDE_PX * size,
+            opacity * ink,
             mix(weight, 1, fill),
             fill,
             shapeArrived,
@@ -1604,14 +1607,14 @@ export function drawFieldFaces(
             heard,
           );
         } else {
-          LENS_UI[SEAL_LENS].drawMark(
+          LENS_UI[lens].drawMark(
             canvas,
-            face.identities[SEAL_LENS],
-            sealSize,
-            opacity * sealInk,
+            face.identities[lens],
+            size,
+            opacity * ink,
             weight,
             fill,
-            0,
+            shapeArrived,
             FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
             paints,
           );
@@ -2007,7 +2010,7 @@ export function drawSongDetail(
  * not hand `Canvas` a fresh element.
  */
 function NativeSongDetail({
-  lensMix,
+  lensClock,
   model,
   clock,
   recut,
@@ -2018,7 +2021,7 @@ function NativeSongDetail({
   palette,
   viewport,
 }: {
-  lensMix: SharedValue<number>;
+  lensClock: LensClock;
   model: SongDetailModel | null;
   clock: SharedValue<number>;
   recut: NativeRecut;
@@ -2108,7 +2111,14 @@ function NativeSongDetail({
           resolved.value,
           drawn.value,
           viewport,
-          lensMix.value,
+          // The circle's tick ring is its sound; it leaves as the circle does.
+          1 -
+            lensWeight(
+              CIRCLE_LENS,
+              lensClock.from.value,
+              lensClock.to.value,
+              lensClock.t.value,
+            ),
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -2146,7 +2156,7 @@ function songDetailOf(
 }
 
 const NativeFieldContent = React.memo(function NativeFieldContent({
-  lensMix,
+  lensClock,
   reducedMotion,
   recut,
   clock,
@@ -2322,7 +2332,12 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    */
   const heard = useDerivedValue(() => {
     if (
-      lensMix.value <= 0 ||
+      lensWeight(
+        SEAL_LENS,
+        lensClock.from.value,
+        lensClock.to.value,
+        lensClock.t.value,
+      ) <= 0 ||
       positionSeconds === null ||
       faces.playerSeconds <= 0
     ) {
@@ -2342,7 +2357,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           cameraShared,
           fitScaleShared,
           viewport,
-          lensMix.value,
+          lensClock.from.value,
+          lensClock.to.value,
+          lensClock.t.value,
           reducedMotion,
           smootherstep(faces.soundClock?.value ?? 1) * sealDrawn.value,
           heard.value,
@@ -2506,7 +2523,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         drawn over, at either end of the crossing.
       */}
       <NativeSongDetail
-        lensMix={lensMix}
+        lensClock={lensClock}
         cameraShared={cameraShared}
         clock={clock}
         fitScaleShared={fitScaleShared}
@@ -2549,7 +2566,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           focusKey !== null && flight.targetPlacementKey === focusKey;
         return (
           <NativePlacementFlight
-            lensMix={lensMix}
+            lensClock={lensClock}
             key={flight.key}
             playerRow={playerRow}
             motion={motion}
@@ -2699,7 +2716,7 @@ function TracedTitle({
 function NativePlacementFlight({
   motion,
   playerRow,
-  lensMix,
+  lensClock,
   flight,
   clock,
   cameraShared,
@@ -2725,7 +2742,7 @@ function NativePlacementFlight({
   motion: NativeCameraMotion;
   /** Where this flight says it has taken its row over; see `playerRow`. */
   playerRow: SharedValue<string | null>;
-  lensMix: SharedValue<number>;
+  lensClock: LensClock;
   flight: PlacementFlight;
   clock: SharedValue<number>;
   cameraShared: SharedValue<Camera>;
@@ -3011,7 +3028,7 @@ function NativePlacementFlight({
       */}
       {song === null ? null : (
         <NativePlayerParts
-          lensMix={lensMix}
+          lensClock={lensClock}
           arrived={arrived}
           named={nameArrived}
           colour={color}

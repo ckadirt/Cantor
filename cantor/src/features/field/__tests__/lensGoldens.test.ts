@@ -24,7 +24,7 @@ import {
   type Camera,
   type FieldEntity,
 } from '../../../field';
-import { analyseWindow, type SongAnalysis } from '../../../lenses';
+import { analyseWindow, lensIndex, type SongAnalysis } from '../../../lenses';
 import {
   drawFieldFaces,
   drawSongDetail,
@@ -36,6 +36,8 @@ import {
 import type { FieldPresentation } from '../useFieldController';
 
 const viewport = { width: 380, height: 800 };
+const CIRCLE = lensIndex('name');
+const SEAL = lensIndex('seal');
 
 /** Three songs, one per way a song can be held: elsewhere, cached, pinned. */
 const STATES = ['remote', 'cached', 'pinned'] as const;
@@ -152,16 +154,24 @@ function paints() {
 }
 
 /**
- * FNV-1a over the pixels, twice with different offsets: 64 bits of hash with
- * no Node types in a React Native project.
+ * FNV-1a over the pixels, a 32-bit word at a time, twice with different
+ * offsets: 64 bits of hash with no Node types in a React Native project. Words
+ * through a view of the same buffer, not bytes one by one — a byte loop over
+ * CanvasKit's array took most of a second per frame.
  */
 /* eslint-disable no-bitwise -- a hash is inherently bitwise */
-function pixelHash(pixels: ArrayLike<number>): string {
+function pixelHash(pixels: Uint8Array): string {
+  const words = new Uint32Array(
+    pixels.buffer,
+    pixels.byteOffset,
+    pixels.byteLength >> 2,
+  );
   let a = 0x811c9dc5;
   let b = 0x01000193 ^ 0x5bd1e995;
-  for (let index = 0; index < pixels.length; index++) {
-    a = Math.imul(a ^ Number(pixels[index]), 0x01000193) >>> 0;
-    b = Math.imul(b ^ Number(pixels[index]), 0x01000193) >>> 0;
+  for (let index = 0; index < words.length; index++) {
+    const word = words[index];
+    a = Math.imul(a ^ word, 0x01000193) >>> 0;
+    b = Math.imul(b ^ word ^ index, 0x01000193) >>> 0;
   }
   return a.toString(16).padStart(8, '0') + b.toString(16).padStart(8, '0');
 }
@@ -175,7 +185,7 @@ function raster(draw: (canvas: SkCanvas) => void): string {
   draw(canvas);
   surface.flush();
   const image = surface.makeImageSnapshot();
-  const pixels = image.readPixels()!;
+  const pixels = image.readPixels() as Uint8Array;
   let ink = 0;
   for (let index = 0; index < pixels.length; index += 4) {
     ink += 255 - Number(pixels[index]);
@@ -190,6 +200,7 @@ type FaceFrame = Readonly<{
   faces: readonly FaceFlight[];
   camera: Camera;
   lens?: number;
+  reverse?: boolean;
   reducedMotion?: boolean;
   soundProgress?: number;
   heard?: number;
@@ -207,7 +218,12 @@ function faces(frame: FaceFrame): string {
       { value: frame.camera } as never,
       { value: fit } as never,
       viewport,
-      frame.lens ?? 0,
+      // `lens` is how far the change from the circle to the seal has got;
+      // `reverse` plays the same frame as the change back, which must draw
+      // the same pixels.
+      frame.reverse ? SEAL : CIRCLE,
+      frame.reverse ? CIRCLE : SEAL,
+      frame.reverse ? 1 - (frame.lens ?? 0) : frame.lens ?? 0,
       frame.reducedMotion ?? false,
       frame.soundProgress ?? 1,
       frame.heard ?? -1,
@@ -328,6 +344,51 @@ describe('golden pixels: faces', () => {
       heard: 0.4,
     });
     expect(frames).toMatchSnapshot();
+  });
+});
+
+/**
+ * The lens clock reverses by swapping `from` and `to` and taking `1 − t`
+ * (`retargetLens`). That is only free of a jump if the reversed clock draws
+ * the frame the forward one did — every mark's beats, the reduced-motion
+ * crossfade, and the player's morph, measured or not.
+ */
+describe('a reversed lens clock draws the same frame', () => {
+  const measuredFaces = facesFor(
+    held.key,
+    held.entityKey,
+    new Map([[held.entityKey, measured()]]),
+  );
+  const cases: Array<[string, FaceFrame]> = [];
+  for (const lens of [0.2, 0.5, 0.8]) {
+    cases.push([
+      `L0 ${lens}`,
+      { faces: facesFor(null), camera: atField, lens },
+    ]);
+    cases.push([
+      `L0 reduced ${lens}`,
+      { faces: facesFor(null), camera: atField, lens, reducedMotion: true },
+    ]);
+    cases.push([
+      `L1 ${lens}`,
+      {
+        faces: facesFor(null),
+        camera: heldSeat(LEVEL_SCALE_RATIOS.shelf),
+        lens,
+      },
+    ]);
+    cases.push([
+      `player ${lens}`,
+      {
+        faces: measuredFaces,
+        camera: heldSeat(LEVEL_SCALE_RATIOS.song),
+        lens,
+        heard: 0.4,
+      },
+    ]);
+  }
+  it.each(cases)('%s', (_, frame) => {
+    expect(faces({ ...frame, reverse: true })).toBe(faces(frame));
   });
 });
 

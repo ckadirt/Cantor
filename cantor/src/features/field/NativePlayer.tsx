@@ -21,7 +21,7 @@ import {
   type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
-import { NAME_LENS_KNOBS, fitText } from '../../lenses';
+import { NAME_LENS_KNOBS, fitText, lensIndex } from '../../lenses';
 import { buildGlyphMorphPaths } from '../../motion/glyphs';
 import { useSeededPathInterpolation } from '../../motion/MorphText';
 import { layoutText } from '../../motion/text';
@@ -40,6 +40,10 @@ import {
   type TransportSeat,
 } from './songPose';
 import type { FieldPresentation } from './useFieldController';
+import { lensWeight, type LensClock } from './lensClock';
+
+/** The seal's position in `LENSES`, which the player's clock morphs toward. */
+const SEAL_LENS = lensIndex('seal');
 
 /** KNOBS — the ring, in fractions of the player's own radius. */
 export const PLAYER_RING_KNOBS = {
@@ -601,13 +605,13 @@ function dial(from: number, to: number, t: number): SkPath {
  */
 export function PlayerRing({
   radius,
-  lensMix,
+  lensClock,
   durationSeconds,
   positionSeconds,
   colour,
 }: {
   radius: number;
-  lensMix?: SharedValue<number>;
+  lensClock?: LensClock;
   durationSeconds: number;
   positionSeconds: SharedValue<number>;
   colour: string;
@@ -624,8 +628,22 @@ export function PlayerRing({
     return value < 0 ? 0 : value > 1 ? 1 : value;
   }, [durationSeconds, positionSeconds]);
 
-  /** How far the circle's clock has become the seal's: eased once, here. */
-  const formed = useDerivedValue(() => smootherstep(lensMix?.value ?? 0));
+  /**
+   * How far the circle's clock has become the seal's: eased once, here. R6e
+   * replaces the pair with a clock drawn from each lens's own numbers.
+   */
+  const formed = useDerivedValue(() =>
+    smootherstep(
+      lensClock === undefined
+        ? 0
+        : lensWeight(
+            SEAL_LENS,
+            lensClock.from.value,
+            lensClock.to.value,
+            lensClock.t.value,
+          ),
+    ),
+  );
   const circleOpacity = useDerivedValue(() =>
     reducedMotion ? 1 - formed.value : 1,
   );
@@ -1333,7 +1351,7 @@ const VERB_POSE_STOPS = [
  */
 export function NativePlayerParts({
   model,
-  lensMix,
+  lensClock,
   arrived,
   named,
   anchor,
@@ -1349,7 +1367,7 @@ export function NativePlayerParts({
   songMetaFont,
 }: {
   model: NativeSongModel;
-  lensMix?: SharedValue<number>;
+  lensClock?: LensClock;
   /**
    * How present the player is: the crossfade band. Opacity, and nothing else —
    * where a thing *is* comes from the two arrivals, which move on the camera's
@@ -1416,7 +1434,7 @@ export function NativePlayerParts({
       <SkiaGroup opacity={arrived} transform={anchor}>
         {positionSeconds === null ? null : (
           <PlayerRing
-            lensMix={lensMix}
+            lensClock={lensClock}
             colour={colour}
             durationSeconds={durationSeconds}
             positionSeconds={positionSeconds}
