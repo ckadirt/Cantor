@@ -11,11 +11,11 @@ finding, decision, trap and commit.
 
 ## Start here (handoff)
 
-State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a, R6b done; R6c next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
+State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 in progress (R6a–c done; R6d next); phase 4 C1, C2, C2b, C3a, C4 done, C3b not started (measure first). None of the
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** R6c, then R6d–g — the lens contract; the agreed plan and port
+**Next:** R6d, then R6e–g — the lens contract; the agreed plan and port
 order are under R6 in "Phase 3 plan". Every R6 step must keep
 `lensGoldens.test.ts` passing unchanged; a golden changed on purpose is
 regenerated with `-u` and the reason logged. Check "Open questions"
@@ -71,7 +71,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`); see "Phase 3 plan" |
+| 3. Renderer | **in progress** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 in progress (R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`); see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -438,14 +438,15 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     `switch` on the lens index inside one worklet — same contract, uglier
     dispatch.
     **Done (`6967a9a`):** `features/field/__tests__/lensGoldens.test.ts`
-    and its snapshot — 53 frames: L0 and L1 at five lens steps, reduced
+    and its snapshot — 51 frames: L0 and L1 at five lens steps, reduced
     motion, the playing ring, a fill arriving; the descent (12.5, 18, 30·FIT)
     × four lens steps; the measured player × lens × sound clock × heard; the
     ring, its sweep, the unroll and the grain at each lens step. Each frame is
     `"<ink> <hash>"` (ink = summed darkness, so a diff says *more* or *less*
     ink, not just "different"). Rasterised with real CanvasKit; stable across
-    runs (`--ci`). Hash is FNV-1a ×2 in the test, since the app has no Node
-    types. Eyeballed three frames as PNGs (row faces in three inks, the morph
+    runs (`--ci`). Hash is FNV-1a ×2 over 32-bit words in the test, since
+    the app has no Node types (a byte-at-a-time loop cost ~1 s a frame;
+    replaced at R6c with the ink sums confirmed identical on all 51). Eyeballed three frames as PNGs (row faces in three inks, the morph
     mid-walk, the heard seal) so the goldens are known to pin real drawings.
     Not covered: `PlayerRing` (declarative nodes, not a draw function) — R6e
     gets its own guard; touch is pure functions already under test.
@@ -484,6 +485,41 @@ Each step ships alone, keeps tests green, and is checked on the phone.
     drag, so it is not comparable; the method is in Measurements.
   - **R6c — the clock becomes `(from, to, t)`.** `lensMix` goes; the
     retarget rules above, with tests (reverse is pixel-exact).
+    **Plan (2026-09-26):** `features/field/lensClock.ts` — `LensClock` is
+    three shared values: `from`, `to` (positions in `LENSES`) and `t`, the
+    only one animated (linear, `LENS_MORPH_MS`, as `lensMix` was). At rest
+    `from = to = current`, `t = 1`. `retargetLens` is a pure worklet:
+    landed → start `current → target`; target is `to` → keep going (and drop
+    any queued lens); target is `from` → reverse (`from ↔ to`, `t → 1 − t`);
+    a third lens mid-change → queued in `next`, started by a reaction when
+    `t` lands. `from`, `to` and `t` are written together on the UI thread
+    (`runOnUI`), so no frame reads a half-written clock. `lensWeight(lens,
+    …)` = how much of one lens is showing (`to`: t, `from`: 1 − t, both: 1).
+    `drawFieldFaces` takes `from, to, t`: marks do the generic two beats
+    (from shrinks over t 0→½, to grows over ½→1; reduced motion crossfades
+    on t), drawn in `LENSES` order so the circle is still drawn first. Until
+    R6d/R6e move them, the circle↔seal-only parts read `lensWeight(seal)`
+    where they read `lensMix` — the player morph, `heard`, `PlayerRing` —
+    and the tick ring reads `1 − lensWeight(circle)`. For circle↔seal these
+    are the old numbers exactly (smootherstep is symmetric), so the goldens
+    must not move; the test harness only changes how it passes the lens.
+    Tests: the retarget rules; a reversed clock draws the same pixels.
+    **Done (`cc27a36`).** As planned. `lensMix` → `lensClock` everywhere it
+    was passed (`NativeFieldContent`, `NativeSongDetail`,
+    `NativePlacementFlight`, `NativePlayerParts`, `PlayerRing`);
+    `drawFieldFaces(…, lensFrom, lensTo, lensT, …)`. The player's circle↔seal
+    morph now also checks that the change is between those two
+    (`circleSealPair`), so a future third lens gets the generic beats rather
+    than a wrong morph. Goldens unmoved (harnesses pass the old number as
+    circle → seal at `t`). New: `lensClock.test.ts` (rules, with a
+    hypothetical third lens), and in `lensGoldens.test.ts` "a reversed lens
+    clock draws the same frame" — L0, L0 reduced, L1, the measured player,
+    each at t 0.2/0.5/0.8, **pixel-identical** in both directions (not just
+    close: smootherstep's symmetry survives floating point here). Verified
+    on the Xiaomi: circle → seal at L2; seal → circle interrupted after
+    ~100 ms by SEAL again — a burst frame shows the morph partway, then it
+    settles back on the seal with no jump; seal rows and marks at L1/L0.
+    Not verifiable yet: the third-lens queue (only two lenses exist).
   - **R6d — `sound` and `drawPlayer`, and the pair morph.** `nativeSealOf` →
     `sealLens.identity/sound`; `drawSealPlayer` → `sealLens.drawPlayer` and the
     circle↔seal morph; the circle's player is its face at the player pose, and
@@ -657,6 +693,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `cc27a36` field: a lens change runs from any lens to any other
+- `23fccc1` docs: R6b in the log
 - `5691bb3` lenses: marks draw through the lens contract
 - `734dd56` docs: R6a in the log
 - `6967a9a` field: golden pixels for everything a lens draws
