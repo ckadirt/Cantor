@@ -260,6 +260,19 @@ export class BackendRuntime {
   private readonly connections = new Map<string, LiveConnection>();
   private readonly pairTokens = new Map<string, string>();
   private readonly outboxInFlight = new Set<string>();
+  /*
+   * What this runtime has already persisted, so a snapshot that changes
+   * nothing durable writes nothing. A running job's progress arrives about
+   * once a second, and each one used to rewrite the whole library cache, every
+   * job, and re-read the outbox — three storage round trips and ~1.3 s of the
+   * JS thread per 15 s of generation (see the rewrite log, phase 4).
+   */
+  /** The library revision committed per node, for this connection. */
+  private readonly committedRevision = new Map<string, number>();
+  /** Each node's jobs as last persisted: id → state. */
+  private readonly persistedJobs = new Map<string, Map<string, string>>();
+  /** Nodes whose outbox held pending entries when last read, or just got one. */
+  private readonly outboxPending = new Set<string>();
   /**
    * Audio keys whose file this runtime has already asked native about.
    *
@@ -561,6 +574,8 @@ export class BackendRuntime {
 
   private connect(backend: BackendRecord): void {
     const nodePublicKey = backend.nodePubkey;
+    // A new connection commits its library again once, whatever it had.
+    this.committedRevision.delete(nodePublicKey);
     const owns = () =>
       this.connections.get(nodePublicKey)?.connection === connection;
     const connection = this.deps.createConnection(
@@ -570,6 +585,8 @@ export class BackendRuntime {
       {
         onSnapshot: snapshot => {
           if (!owns()) return;
+          const wasReady =
+            this.state.snapshots[nodePublicKey]?.phase === 'ready';
           this.setSnapshots(previous => ({
             ...previous,
             [nodePublicKey]: {
@@ -591,9 +608,18 @@ export class BackendRuntime {
                 null,
             },
           }));
-          if (snapshot.jobs.length > 0) {
+          // A job is persisted when it is new or its state moved; progress is
+          // live data, and the node sends it again on the next connection.
+          const persisted =
+            this.persistedJobs.get(nodePublicKey) ?? new Map<string, string>();
+          const changedJobs = snapshot.jobs.filter(
+            job => persisted.get(job.id) !== job.state,
+          );
+          if (changedJobs.length > 0) {
+            for (const job of changedJobs) persisted.set(job.id, job.state);
+            this.persistedJobs.set(nodePublicKey, persisted);
             this.deps
-              .mergeJobs(nodePublicKey, snapshot.jobs)
+              .mergeJobs(nodePublicKey, changedJobs)
               .then(jobs =>
                 this.setSnapshots(previous => ({
                   ...previous,
@@ -608,29 +634,42 @@ export class BackendRuntime {
               )
               .catch(this.reportError);
           }
-          if (snapshot.libraryRevision !== null && !snapshot.librarySyncing) {
+          const revision = snapshot.libraryRevision;
+          if (
+            revision !== null &&
+            !snapshot.librarySyncing &&
+            this.committedRevision.get(nodePublicKey) !== revision
+          ) {
+            this.committedRevision.set(nodePublicKey, revision);
             this.deps
-              .commitLibrary(
-                nodePublicKey,
-                snapshot.libraryRevision,
-                snapshot.songs,
-              )
-              .catch(this.reportError);
+              .commitLibrary(nodePublicKey, revision, snapshot.songs)
+              .catch(error => {
+                // Not written, so the next snapshot tries again.
+                this.committedRevision.delete(nodePublicKey);
+                this.reportError(error);
+              });
           }
-          if (snapshot.phase === 'ready') {
+          // The outbox is flushed when the node becomes ready, and again while
+          // it still held something pending — which is how a submission whose
+          // send failed is retried without a reconnect.
+          if (
+            snapshot.phase === 'ready' &&
+            (!wasReady || this.outboxPending.has(nodePublicKey))
+          ) {
             this.deps
               .loadOutbox()
-              .then(entries =>
-                Promise.all(
-                  entries
-                    .filter(
-                      entry =>
-                        entry.nodePublicKey === nodePublicKey &&
-                        entry.state === 'pending',
-                    )
-                    .map(entry => this.sendOutbox(connection, entry)),
-                ),
-              )
+              .then(entries => {
+                const pending = entries.filter(
+                  entry =>
+                    entry.nodePublicKey === nodePublicKey &&
+                    entry.state === 'pending',
+                );
+                if (pending.length > 0) this.outboxPending.add(nodePublicKey);
+                else this.outboxPending.delete(nodePublicKey);
+                return Promise.all(
+                  pending.map(entry => this.sendOutbox(connection, entry)),
+                );
+              })
               .catch(this.reportError);
           }
         },
@@ -846,6 +885,8 @@ export class BackendRuntime {
   ): Promise<void> => {
     const connection = this.live(nodePublicKey, 'Backend is not connected.');
     const entry = await this.deps.putPending(nodePublicKey, model, generation);
+    // Until a read of the outbox finds it sent, snapshots keep retrying it.
+    this.outboxPending.add(nodePublicKey);
     await this.refreshOutbox();
     await this.sendOutbox(connection, entry);
   };
