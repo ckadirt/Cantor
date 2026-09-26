@@ -34,6 +34,30 @@ import type { FaceRecipe } from './face';
 export type LensIdentity = unknown;
 
 /**
+ * A song's download, as a lens is told it (`arriving`): a fraction 0..1 while
+ * the bytes land, or one of these. A lens draws its own indicator for it — the
+ * circle an arc round the face, the seal its dust filling in along its thread —
+ * because the reading must survive every lens, not its form (the circle's
+ * grey / black / filled hierarchy is the same rule; see `availability.ts`).
+ */
+export const ARRIVING_NONE = -1;
+/** Arriving, but the node offered no size, so progress is unknowable. */
+export const ARRIVING_UNKNOWN = -2;
+/**
+ * KNOB — how much of a download of unknown size a lens shows as landed: a
+ * fixed share that says "arriving" without claiming how far (the circle's
+ * 70° sweep).
+ */
+export const ARRIVING_UNKNOWN_SHARE = 70 / 360;
+
+/** How much of a download to show as landed, 0..1; see `ARRIVING_NONE`. */
+export function arrivedShare(arriving: number): number {
+  'worklet';
+  if (arriving === ARRIVING_UNKNOWN) return ARRIVING_UNKNOWN_SHARE;
+  return Math.min(1, Math.max(0, arriving));
+}
+
+/**
  * The two paints a mark is drawn with. Prepared once by the renderer and
  * mutated per draw — `drawPath` copies the paint's state into the display
  * list at the call, so one paint carries a different alpha for every song.
@@ -93,6 +117,7 @@ export type LensUi = Readonly<{
    *   arrival's clock.
    * - `arrived`: 0 for every mark; for the one song growing into the player,
    *   how far its shape has arrived (`songShapeArrival`).
+   * - `arriving`: the download, see `ARRIVING_NONE`.
    * - `hairlinePx`: the line width on screen, whatever `size` is.
    */
   drawMark: (
@@ -103,6 +128,7 @@ export type LensUi = Readonly<{
     weight: number,
     fill: number,
     arrived: number,
+    arriving: number,
     hairlinePx: number,
     paints: MarkPaints,
   ) => void;
@@ -111,7 +137,7 @@ export type LensUi = Readonly<{
    *
    * `player` is what `Lens.player` built, or null for a lens whose player is
    * its mark grown (the circle's). `size`, `alpha`, `weight`, `fill`,
-   * `arrived` and `hairlinePx` are `drawMark`'s. `soundIn` is how far the
+   * `arrived`, `arriving` and `hairlinePx` are `drawMark`'s. `soundIn` is how far the
    * song's sound has risen into the drawing (0 until it is measured and the
    * camera has arrived); `heard` is the playhead, 0..1, or -1 when nothing
    * this lens draws needs it (see `hearsPlayhead`).
@@ -125,6 +151,7 @@ export type LensUi = Readonly<{
     weight: number,
     fill: number,
     arrived: number,
+    arriving: number,
     soundIn: number,
     heard: number,
     hairlinePx: number,
@@ -218,6 +245,7 @@ type PairDraw = (
   weight: number,
   fill: number,
   arrived: number,
+  arriving: number,
   soundIn: number,
   heard: number,
   hairlinePx: number,

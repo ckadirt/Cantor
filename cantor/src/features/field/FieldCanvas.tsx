@@ -73,6 +73,8 @@ import {
   type Viewport,
 } from '../../field';
 import {
+  ARRIVING_NONE,
+  ARRIVING_UNKNOWN,
   LENSES,
   LENS_PAIRS,
   LENS_UI,
@@ -1042,6 +1044,11 @@ export type FaceFlight = Readonly<{
    */
   fromWeight: number;
   fromFill: number;
+  /**
+   * The song's download, as the lens draws it (`ARRIVING_NONE`, a fraction,
+   * or `ARRIVING_UNKNOWN` when the node offered no size).
+   */
+  arriving: number;
   /** The one placement the camera has arrived at, which grows into the player. */
   isPlayer: boolean;
   /** The one song making sound, which wears the ring. */
@@ -1144,6 +1151,13 @@ export function faceFlightsOf(
       fill: to.fill,
       fromWeight: from.stroke,
       fromFill: from.fill,
+      arriving:
+        presentation.localAudio.state === 'partial'
+          ? arrivingFraction(
+              presentation.localAudio.bytes,
+              presentation.delivery?.byte_length,
+            ) ?? ARRIVING_UNKNOWN
+          : ARRIVING_NONE,
       // The same two questions `NativePlacementFlight` asks, asked here so the
       // gate travels with the row rather than being chosen beside it. A pose
       // shared across the field is how every mark once grew into the player.
@@ -1330,6 +1344,7 @@ export function drawFieldFaces(
         weight,
         fill,
         shapeArrived,
+        face.arriving,
         soundProgress,
         heard,
         FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
@@ -1353,6 +1368,7 @@ export function drawFieldFaces(
             weight,
             fill,
             shapeArrived,
+            face.arriving,
             soundProgress,
             heard,
             FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
@@ -1367,6 +1383,7 @@ export function drawFieldFaces(
             weight,
             fill,
             shapeArrived,
+            face.arriving,
             FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
             paints,
           );

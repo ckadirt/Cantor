@@ -1,5 +1,7 @@
 import { PaintStyle, Skia } from '@shopify/react-native-skia';
 import {
+  ARRIVING_NONE,
+  ARRIVING_UNKNOWN,
   DEFAULT_LENS_KEY,
   LENSES,
   analyseWindow,
@@ -75,11 +77,13 @@ describe('every lens draws', () => {
     ['measured', measured()],
     ['silent', analyseWindow(silence())],
   ];
-  const inks: Array<[string, number, number]> = [
-    ['on the node', 0.38, 0],
-    ['cached', 0.85, 0],
-    ['downloaded', 1, 1],
-    ['filling in', 0.6, 0.5],
+  const inks: Array<[string, number, number, number]> = [
+    ['on the node', 0.38, 0, ARRIVING_NONE],
+    ['cached', 0.85, 0, ARRIVING_NONE],
+    ['downloaded', 1, 1, ARRIVING_NONE],
+    ['filling in', 0.6, 0.5, ARRIVING_NONE],
+    ['arriving', 0.38, 0, 0.4],
+    ['arriving at an unknown size', 0.38, 0, ARRIVING_UNKNOWN],
   ];
 
   function paints() {
@@ -90,7 +94,7 @@ describe('every lens draws', () => {
 
   for (const lens of LENSES) {
     for (const [soundLabel, analysis] of analyses) {
-      for (const [inkLabel, weight, fill] of inks) {
+      for (const [inkLabel, weight, fill, arriving] of inks) {
         it(`${lens.key} draws a ${soundLabel} song ${inkLabel}`, () => {
           const shared = paints();
           const restyled = [
@@ -111,6 +115,7 @@ describe('every lens draws', () => {
               weight,
               fill,
               0,
+              arriving,
               1,
               shared,
             );
@@ -124,6 +129,7 @@ describe('every lens draws', () => {
                 weight,
                 fill,
                 arrived,
+                arriving,
                 1,
                 0.4,
                 1,
@@ -152,6 +158,7 @@ describe('every lens draws', () => {
         1,
         1,
         0,
+        ARRIVING_NONE,
         1,
         paints(),
       );

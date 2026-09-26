@@ -7,7 +7,7 @@ import {
   worldToScreen,
   type FieldEntity,
 } from '../../field';
-import { LENSES } from '..';
+import { ARRIVING_NONE, LENSES } from '..';
 
 const viewport = { width: 380, height: 800 };
 
@@ -85,10 +85,10 @@ describe('lens harness', () => {
               canvas.save();
               canvas.translate(point.x, point.y);
               if (alpha.dot > 0) {
-                lens.ui.drawMark(canvas, identity, 1, alpha.dot, 0.38, 0, 0, 1, paints);
+                lens.ui.drawMark(canvas, identity, 1, alpha.dot, 0.38, 0, 0, ARRIVING_NONE, 1, paints);
               }
               if (alpha.row > 0) {
-                lens.ui.drawMark(canvas, identity, 1.2, alpha.row, 0.85, 0, 0, 1, paints);
+                lens.ui.drawMark(canvas, identity, 1.2, alpha.row, 0.85, 0, 0, 0.4, 1, paints);
               }
               if (alpha.song > 0) {
                 lens.ui.drawPlayer(
@@ -100,6 +100,7 @@ describe('lens harness', () => {
                   1,
                   1,
                   1,
+                  ARRIVING_NONE,
                   0,
                   -1,
                   1,
@@ -150,6 +151,7 @@ describe('lens harness', () => {
             0.85,
             0,
             0,
+            ARRIVING_NONE,
             1,
             paints,
           );

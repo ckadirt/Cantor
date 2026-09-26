@@ -2,18 +2,23 @@ import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
 import { NAME_LENS_KNOBS } from './nameLens';
 import { ringTurnAt } from './ring';
 import {
+  SEAL_FILLED_GROW,
   SEAL_KNOBS,
   SEAL_PLAYER_KNOBS,
   sealDotAt,
   sealDotRadius,
+  sealMarkRanks,
   sealModel,
 } from './seal';
-import type {
-  LensIdentity,
-  LensPlayer,
-  MarkPaints,
-  PlayerPaints,
+import {
+  ARRIVING_NONE,
+  arrivedShare,
+  type LensIdentity,
+  type LensPlayer,
+  type MarkPaints,
+  type PlayerPaints,
 } from './contract';
+import type { FaceRecipe } from './face';
 import { drawSealPlayer, sealPlayerOf, type SealPlayer } from './sealPlayer';
 import type { Lens, LensSong } from './types';
 
@@ -65,21 +70,75 @@ export function sealMarkPath(
   return path;
 }
 
+/** The seal at the mark's size: every size it is drawn at is this, scaled. */
+const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
+
 /**
- * The seal lens: a song as its own Cantor dust.
- *
- * This is the picture's drawing of it, which the field falls back to where the
- * native renderer does not run. The native one — `drawFieldFaces` — draws the
- * same paths at the same sizes, and adds what only it can: the sound, the
- * thread and the bead, which answer to the clock.
+ * The seal's identity at mark size: its dots as two cached paths — as they are
+ * and as they are when the song is on the phone for good — and the plain
+ * numbers to build anything in between on the UI thread: each dot's centre, in
+ * pixels at the mark's size, and its rank along the thread.
  */
+export type SealMark = Readonly<{
+  dots: SkPath;
+  filled: SkPath;
+  x: readonly number[];
+  y: readonly number[];
+  /** Each dot's place in time: where its first child falls on the thread. */
+  rank: readonly number[];
+  radius: number;
+}>;
+
+const SEAL_MARK_CACHE_LIMIT = 512;
+const sealMarkCache = new Map<string, SealMark>();
+
+export function sealMarkOf(recipe: FaceRecipe): SealMark {
+  const key = `${recipe.seed ?? ''}\u001f${recipe.id}\u001f${
+    recipe.model
+  }\u001f${recipe.durationMs}`;
+  const cached = sealMarkCache.get(key);
+  if (cached !== undefined) return cached;
+  const level = sealModel(recipe).levels[SEAL_KNOBS.MARK_DEPTH];
+  const side = SEAL_MARK_SIDE_PX;
+  const radius = sealDotRadius(SEAL_KNOBS.MARK_DEPTH) * side;
+  const x = Array.from(level.x, value => value * side);
+  const y = Array.from(level.y, value => value * side);
+  const at = (grow: number) => {
+    const builder = Skia.PathBuilder.Make();
+    for (let index = 0; index < x.length; index += 1) {
+      builder.addCircle(x[index], y[index], radius * grow);
+    }
+    return builder.detach();
+  };
+  const mark: SealMark = {
+    dots: sealMarkPath(recipe, side),
+    filled: at(SEAL_FILLED_GROW),
+    x,
+    y,
+    rank: sealMarkRanks(recipe),
+    radius,
+  };
+  if (sealMarkCache.size >= SEAL_MARK_CACHE_LIMIT) {
+    const oldest = sealMarkCache.keys().next().value;
+    if (oldest !== undefined) sealMarkCache.delete(oldest);
+  }
+  sealMarkCache.set(key, mark);
+  return mark;
+}
+
 /**
- * The seal as a mark or a row's face: its dust at the mark's depth, as one
- * path. A song on the phone for good is filled dots, anything less is rings
- * at its weight — the face's convention, carried over.
+ * The seal as a mark or a row's face, keeping the circle's reading in its own
+ * form: a song on the node is small grey dots, a cached one the same dots in
+ * ink, and one on the phone for good has its dots grown until they merge — the
+ * dust as one solid glyph, the seal's filled face. Fills only: at mark size a
+ * dot is smaller than a hairline, so a ring would be a bigger blob, not an
+ * outline.
+ *
+ * A download fills the dust in along its own thread: every dot whose moment
+ * has landed is drawn as downloaded, the rest as on the node.
  *
  * `arrived` is not read: the seal that grows into the player is drawn a dot at
- * a time by the renderer's player (`drawSealPlayer`), never by this.
+ * a time by `drawSealPlayer`, which starts from exactly this.
  */
 function drawSealMark(
   canvas: SkCanvas,
@@ -89,27 +148,51 @@ function drawSealMark(
   weight: number,
   fill: number,
   _arrived: number,
-  hairlinePx: number,
+  arriving: number,
+  _hairlinePx: number,
   paints: MarkPaints,
 ): void {
   'worklet';
-  const path = identity as SkPath;
+  const mark = identity as SealMark;
   canvas.save();
   canvas.scale(size, size);
-  if (fill > 0) {
-    paints.fill.setAlphaf(alpha * fill);
-    canvas.drawPath(path, paints.fill);
-  }
-  if (fill < 1) {
-    paints.stroke.setAlphaf(alpha * weight * (1 - fill));
-    paints.stroke.setStrokeWidth(hairlinePx / size);
-    canvas.drawPath(path, paints.stroke);
+  if (arriving !== ARRIVING_NONE) {
+    const landed = arrivedShare(arriving) * mark.rank.length;
+    const done = Skia.PathBuilder.Make();
+    const rest = Skia.PathBuilder.Make();
+    for (let index = 0; index < mark.x.length; index += 1) {
+      if (mark.rank[index] < landed) {
+        done.addCircle(
+          mark.x[index],
+          mark.y[index],
+          mark.radius * SEAL_FILLED_GROW,
+        );
+      } else {
+        rest.addCircle(mark.x[index], mark.y[index], mark.radius);
+      }
+    }
+    paints.fill.setAlphaf(alpha * weight);
+    canvas.drawPath(rest.detach(), paints.fill);
+    paints.fill.setAlphaf(alpha);
+    canvas.drawPath(done.detach(), paints.fill);
+  } else if (fill <= 0) {
+    paints.fill.setAlphaf(alpha * weight);
+    canvas.drawPath(mark.dots, paints.fill);
+  } else if (fill >= 1) {
+    paints.fill.setAlphaf(alpha);
+    canvas.drawPath(mark.filled, paints.fill);
+  } else {
+    // A download landing: the dots grow and darken on the ink's own clock.
+    const grow = 1 + (SEAL_FILLED_GROW - 1) * fill;
+    const builder = Skia.PathBuilder.Make();
+    for (let index = 0; index < mark.x.length; index += 1) {
+      builder.addCircle(mark.x[index], mark.y[index], mark.radius * grow);
+    }
+    paints.fill.setAlphaf(alpha * (weight + (1 - weight) * fill));
+    canvas.drawPath(builder.detach(), paints.fill);
   }
   canvas.restore();
 }
-
-/** The seal at the mark's size: every size it is drawn at is this, scaled. */
-const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
 
 /**
  * The seal as the player: its dust at the deepest level, the mark's dots
@@ -125,6 +208,7 @@ function drawSealAsPlayer(
   weight: number,
   fill: number,
   arrived: number,
+  arriving: number,
   soundIn: number,
   heard: number,
   hairlinePx: number,
@@ -142,6 +226,7 @@ function drawSealAsPlayer(
     weight + (1 - weight) * fill,
     fill,
     arrived,
+    arriving,
     soundIn,
     heard,
     hairlinePx,
@@ -167,7 +252,7 @@ export const sealLens: Lens = {
   key: 'seal',
   label: 'Seal',
   // The dust at the mark's size, the face's own room through `sealSidePx`.
-  identity: recipe => sealMarkPath(recipe, SEAL_MARK_SIDE_PX),
+  identity: sealMarkOf,
   player: sealPlayerOf,
   /*
    * The seal keeps the circle's gesture and moves it outward: its clock is a

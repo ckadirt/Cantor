@@ -1,12 +1,14 @@
 import { Skia, type SkCanvas } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
-import type { PlayerPaints } from './contract';
+import { ARRIVING_NONE, arrivedShare, type PlayerPaints } from './contract';
 import { faceClockPoints, type FaceRecipe } from './face';
 import {
+  SEAL_FILLED_GROW,
   SEAL_KNOBS,
   SEAL_PLAYER_KNOBS,
   sealDotRadius,
   sealLoudness,
+  sealMarkRanks,
   sealModel,
   sealSound,
   type SealSound,
@@ -48,6 +50,8 @@ export type SealPlayer = Readonly<{
    */
   contourX: readonly number[];
   contourY: readonly number[];
+  /** Each mark dot's place in time (`sealMarkRanks`), and how many there are. */
+  markRank: readonly number[];
   /** Null until the song has been measured: identity only. */
   sound: SealSound | null;
 }>;
@@ -72,6 +76,7 @@ export function sealPlayerOf(
     order: model.order,
     contourX: contour.map(point => point.x / SEAL_KNOBS.SIDE_RATIO),
     contourY: contour.map(point => point.y / SEAL_KNOBS.SIDE_RATIO),
+    markRank: sealMarkRanks(recipe),
     sound:
       slices === null || slices === undefined ? null : sealSound(model, slices),
   };
@@ -117,6 +122,8 @@ export function drawSealPlayer(
   /** 1 filled, 0 outlined, and in between while a download lands. */
   fill: number,
   arrived: number,
+  /** The download; see `ARRIVING_NONE`. */
+  arriving: number,
   soundProgress: number,
   heard: number,
   /** The line width on screen: the field's hairline. */
@@ -139,6 +146,31 @@ export function drawSealPlayer(
   const cell = side / 3 ** knobs.SONG_DEPTH;
   const count = seal.order.length;
   const head = heard < 0 ? -1 : Math.min(Math.max(heard, 0), 1) * count;
+  /*
+   * How kept each dot is. The whole song's `fill`, unless a download is
+   * landing: then a dot is kept once its mark parent's moment has landed —
+   * the same dots, at the same moment, as the mark fills in (`drawSealMark`),
+   * so the row hands over to the player with nothing to see.
+   */
+  const landed =
+    arriving === ARRIVING_NONE
+      ? -1
+      : arrivedShare(arriving) * seal.markRank.length;
+  const keptAt = (k: number): number =>
+    landed < 0
+      ? fill
+      : seal.markRank[seal.parent[seal.order[k]]] < landed
+      ? 1
+      : 0;
+  /*
+   * A dot's radius and solidity. At the mark (`arrived` 0) every dot is solid
+   * and a kept one is grown until the dots merge — exactly the mark. At the
+   * player a kept dot is solid at its own size and the rest are hairline
+   * rings, which there are big enough to read as outlines.
+   */
+  const grownAt = (kept: number): number =>
+    identityRadius * (1 + (SEAL_FILLED_GROW - 1) * kept * (1 - arrived));
+  const solidityAt = (kept: number): number => 1 - arrived * (1 - kept);
   /** The `k`-th dot in time order, on its way from the contour to its cell. */
   const at = (k: number, axis: 0 | 1): number => {
     const dot = seal.order[k];
@@ -197,7 +229,8 @@ export function drawSealPlayer(
 
   if (s <= 0) {
     /*
-     * The opening: every dot alike, so one path and one draw.
+     * The opening: one path per ink and one draw each — the kept dots and the
+     * rest, which differ only while a download is landing.
      *
      * This runs on every frame of the descent, and it is the whole cost of the
      * seal while the camera moves — a draw per dot here was three or four JSI
@@ -205,19 +238,22 @@ export function drawSealPlayer(
      * the circle's single cached contour never did.
      */
     if (identityRadius <= 0) return;
-    const dots = Skia.PathBuilder.Make();
+    const kept = Skia.PathBuilder.Make();
+    const rest = Skia.PathBuilder.Make();
     for (let k = 0; k < count; k++) {
-      dots.addCircle(at(k, 0), at(k, 1), identityRadius);
+      const keep = keptAt(k);
+      const outer = grownAt(keep);
+      const stroke = hairlinePx + (outer - hairlinePx) * solidityAt(keep);
+      const inner = outer - stroke;
+      const target = landed >= 0 && keep >= 1 ? kept : rest;
+      target.addCircle(at(k, 0), at(k, 1), outer);
+      if (inner > 0.05) target.addCircle(at(k, 0), at(k, 1), inner, true);
     }
-    const path = dots.detach();
-    if (fill > 0) {
-      paints.fill.setAlphaf(opacity * weight * fill);
-      canvas.drawPath(path, paints.fill);
-    }
-    if (fill < 1) {
-      paints.stroke.setAlphaf(opacity * weight * (1 - fill));
-      paints.stroke.setStrokeWidth(hairlinePx);
-      canvas.drawPath(path, paints.stroke);
+    paints.fill.setAlphaf(opacity * weight);
+    canvas.drawPath(rest.detach(), paints.fill);
+    if (landed >= 0) {
+      paints.fill.setAlphaf(opacity);
+      canvas.drawPath(kept.detach(), paints.fill);
     }
     return;
   }
@@ -231,7 +267,11 @@ export function drawSealPlayer(
   for (let k = 0; k < count; k++) {
     const x = at(k, 0);
     const y = at(k, 1);
-    let radius = identityRadius;
+    const keep = keptAt(k);
+    // From the dot the opening draws, so leaving the song (the sound still
+    // inked as the camera carries it out) meets the opening where it takes over.
+    const grown = grownAt(keep);
+    let radius = grown;
     let punch = 0;
     let width = 0;
     if (sound !== null) {
@@ -240,13 +280,14 @@ export function drawSealPlayer(
         (cell / 2) *
         (knobs.SOUND_MIN_FILL + knobs.SOUND_SPAN_FILL * loud) *
         formed;
-      radius = identityRadius + (measured - identityRadius) * s;
+      radius = grown + (measured - grown) * s;
       punch = (sound.punch[k] ?? 0) * s;
       width = (sound.width[k] ?? 0) * s;
     }
     // Identity: a filled dot, or a hairline ring for a song not kept here —
     // and a ring thickening into a dot while a download lands.
-    const identityStroke = hairlinePx + (radius - hairlinePx) * fill;
+    const identityStroke =
+      hairlinePx + (radius - hairlinePx) * solidityAt(keep);
     const soundStroke = radius * (1 - knobs.PUNCH_HOLLOW * punch);
     const stroke = identityStroke + (soundStroke - identityStroke) * s;
     const outer = Math.max(0.01, radius * (1 - knobs.WIDTH_SHRINK * width));

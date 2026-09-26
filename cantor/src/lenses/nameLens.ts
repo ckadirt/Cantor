@@ -3,11 +3,13 @@ import type { Availability } from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
 import { ringTurnAt } from './ring';
 import { SEAL_PLAYER_KNOBS } from './seal';
-import type {
-  LensIdentity,
-  LensPlayer,
-  MarkPaints,
-  PlayerPaints,
+import {
+  ARRIVING_NONE,
+  arrivedShare,
+  type LensIdentity,
+  type LensPlayer,
+  type MarkPaints,
+  type PlayerPaints,
 } from './contract';
 import type { Lens, LensSong } from './types';
 
@@ -56,8 +58,6 @@ export const NAME_LENS_KNOBS = {
   PLAYING_RING_WIDTH_PX: 1.2,
   /** The arriving arc, in the same hand as the ring a generating job draws. */
   ARRIVING_RING_WIDTH_PX: 1.4,
-  /** Swept when the artifact's byte length is unknown, so progress is unknowable. */
-  ARRIVING_INDETERMINATE_SWEEP_DEG: 70,
 
   /*
    * L2 — the player. One song filling the view, and the same lens that drew it
@@ -164,6 +164,7 @@ export const TITLE_ALPHA: Readonly<Record<Availability, number>> = {
  * React, and the two have to agree or the ring would jump size on landing.
  */
 export function nameLensRingRadius(radius: number): number {
+  'worklet';
   return radius * FACE_MAX_EXTENT + NAME_LENS_KNOBS.RING_GAP_PX;
 }
 
@@ -183,6 +184,7 @@ function drawCircleMark(
   weight: number,
   fill: number,
   arrived: number,
+  arriving: number,
   hairlinePx: number,
   paints: MarkPaints,
 ): void {
@@ -201,6 +203,27 @@ function drawCircleMark(
   paints.stroke.setStrokeWidth(hairlinePx / size);
   canvas.drawPath(path, paints.stroke);
   canvas.restore();
+  if (arriving !== ARRIVING_NONE && arrived < 1) {
+    /*
+     * A download landing: an arc round the face, from twelve o'clock as far as
+     * the bytes have come — or a fixed sweep when the size is unknown, which
+     * says "arriving" without claiming how far. Outside the face's scale,
+     * because the ring's radius is its extent plus a gap. It gives way as the
+     * song grows into the player, whose own ring takes the wait over
+     * (`ArrivingRing`).
+     */
+    const r = nameLensRingRadius(NAME_LENS_KNOBS.MARK_RADIUS_PX * size);
+    const share = arrivedShare(arriving);
+    paints.stroke.setAlphaf(alpha * (1 - arrived));
+    paints.stroke.setStrokeWidth(NAME_LENS_KNOBS.ARRIVING_RING_WIDTH_PX);
+    canvas.drawArc(
+      Skia.XYWHRect(-r, -r, r * 2, r * 2),
+      -90,
+      360 * share,
+      false,
+      paints.stroke,
+    );
+  }
 }
 
 /**
@@ -218,6 +241,7 @@ function drawCirclePlayer(
   weight: number,
   fill: number,
   arrived: number,
+  arriving: number,
   _soundIn: number,
   _heard: number,
   hairlinePx: number,
@@ -232,6 +256,7 @@ function drawCirclePlayer(
     weight,
     fill,
     arrived,
+    arriving,
     hairlinePx,
     paints,
   );

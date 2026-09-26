@@ -24,7 +24,12 @@ import {
   type Camera,
   type FieldEntity,
 } from '../../../field';
-import { analyseWindow, lensIndex, type SongAnalysis } from '../../../lenses';
+import {
+  ARRIVING_UNKNOWN,
+  analyseWindow,
+  lensIndex,
+  type SongAnalysis,
+} from '../../../lenses';
 import {
   drawFieldFaces,
   drawSongDetail,
@@ -343,6 +348,55 @@ describe('golden pixels: faces', () => {
       lens: 1,
       heard: 0.4,
     });
+    expect(frames).toMatchSnapshot();
+  });
+});
+
+/**
+ * Downloads landing (R7): every lens shows one in its own form — the circle an
+ * arc round the face, the seal its dust filling in along its thread — at the
+ * mark, the row, and through the descent into the player, where the seal's
+ * opening has to start exactly as its mark stands.
+ */
+describe('golden pixels: downloads landing', () => {
+  const landing = (flights: readonly FaceFlight[]) =>
+    flights.map((face, index) => ({
+      ...face,
+      arriving: index === 0 ? 0.4 : index === 1 ? ARRIVING_UNKNOWN : 0.85,
+      weight: 0.38,
+      fill: 0,
+      fromWeight: 0.38,
+      fromFill: 0,
+    }));
+
+  it('marks and rows, circle and seal', () => {
+    const frames: Record<string, string> = {};
+    for (const lens of [0, 1]) {
+      frames[`L0 lens ${lens}`] = faces({
+        faces: landing(facesFor(null)),
+        camera: atField,
+        lens,
+      });
+      frames[`L1 lens ${lens}`] = faces({
+        faces: landing(facesFor(null)),
+        camera: heldSeat(LEVEL_SCALE_RATIOS.shelf),
+        lens,
+      });
+    }
+    expect(frames).toMatchSnapshot();
+  });
+
+  it('the descent into a song still landing', () => {
+    const frames: Record<string, string> = {};
+    for (const ratio of [LEVEL_SCALE_RATIOS.shelf, 12.5, 18, 30]) {
+      for (const lens of [0, 1]) {
+        frames[`ratio ${ratio} lens ${lens}`] = faces({
+          faces: landing(facesFor(held.key)),
+          camera: heldSeat(ratio),
+          lens,
+        });
+      }
+    }
     expect(frames).toMatchSnapshot();
   });
 });

@@ -47,6 +47,13 @@ export const SEAL_KNOBS = {
   SIDE_RATIO: 1.9,
   /** A dot's diameter over its cell: air enough that neighbours stay apart. */
   DOT_FILL: 0.78,
+  /**
+   * The same, for a song on the phone for good: past 1, so neighbouring dots
+   * overlap and the dust reads as one solid glyph — the seal's filled face.
+   * At mark size a dot is well under a hairline across, so outline against
+   * fill (the circle's way) cannot carry "downloaded"; size and merging can.
+   */
+  FILLED_DOT_FILL: 1.15,
   /*
    * The sound, per dot, once the player is here.
    */
@@ -294,6 +301,34 @@ export function sealModel(recipe: FaceRecipe): SealModel {
   }
   sealCache.set(key, model);
   return model;
+}
+
+/** A downloaded dot's radius over an ordinary one's (`FILLED_DOT_FILL`). */
+export const SEAL_FILLED_GROW = SEAL_KNOBS.FILLED_DOT_FILL / SEAL_KNOBS.DOT_FILL;
+
+/**
+ * Where each of a level's dots first falls on the Peano thread, as a rank
+ * 0..n-1. The thread runs through the deepest dots; a mark dot is reached when
+ * the first of its children is, and the curve leaves a cell only once it has
+ * visited all of it, so this is the mark's own time order.
+ */
+export function sealMarkRanks(recipe: FaceRecipe): readonly number[] {
+  const model = sealModel(recipe);
+  const deep = model.levels[SEAL_KNOBS.SONG_DEPTH];
+  const count = model.levels[SEAL_KNOBS.MARK_DEPTH].x.length;
+  const first = new Array<number>(count).fill(Number.POSITIVE_INFINITY);
+  model.order.forEach((dot, time) => {
+    const parent = deep.parent[dot];
+    if (time < first[parent]) first[parent] = time;
+  });
+  const byTime = first
+    .map((time, dot) => ({ time, dot }))
+    .sort((a, b) => a.time - b.time);
+  const rank = new Array<number>(count).fill(0);
+  byTime.forEach(({ dot }, place) => {
+    rank[dot] = place;
+  });
+  return rank;
 }
 
 /** A dot's radius at `depth`, in the unit square the seal is drawn in. */

@@ -522,6 +522,20 @@ function quad(
  * from one array of numbers — that is the beat riding the playhead — and the
  * arc and the hand are a trim and a rotation of paths that are never rebuilt.
  */
+/** A whole turn from twelve o'clock, at radius `r`. */
+function ringPath(r: number): SkPath {
+  'worklet';
+  const builder = Skia.PathBuilder.Make();
+  builder.addArc(Skia.XYWHRect(-r, -r, r * 2, r * 2), -90, 360);
+  return builder.detach();
+}
+
+/** `from` at 0, `to` at 1. */
+function mixed(from: number, to: number, t: number): number {
+  'worklet';
+  return from + (to - from) * t;
+}
+
 /**
  * The wait, drawn on the player's own ring: the arc a row gets, at the pose the
  * press happened in.
@@ -535,21 +549,37 @@ export function ArrivingRing({
   radius,
   fraction,
   colour,
+  lensClock,
 }: {
   radius: number;
   fraction: SharedValue<number>;
   colour: string;
+  /** Whose ring the wait runs on: the lens's clock (`ClockShape.ratio`). */
+  lensClock?: LensClock;
 }) {
-  const arcRadius = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
-  const ring = useMemo(() => {
-    const builder = Skia.PathBuilder.Make();
-    builder.addArc(
-      Skia.XYWHRect(-arcRadius, -arcRadius, arcRadius * 2, arcRadius * 2),
-      -90,
-      360,
+  /*
+   * On the clock's own ring, whichever lens draws it — the circle's arc, the
+   * seal's rim — and mixed between two through a lens change exactly as
+   * `PlayerRing` mixes the clock, so the wait never leaves the ring it is on.
+   */
+  const ring = useDerivedValue(() => {
+    const from = lensClock?.from.value ?? CIRCLE_LENS;
+    const to = lensClock?.to.value ?? CIRCLE_LENS;
+    const a = from < to ? from : to;
+    const b = from < to ? to : from;
+    const formed = smootherstep(
+      lensClock === undefined
+        ? 1
+        : lensWeight(b, from, to, lensClock.t.value),
     );
-    return builder.detach();
-  }, [arcRadius]);
+    return ringPath(
+      mixed(
+        radius * LENS_UI[a].clock.ratio,
+        radius * LENS_UI[b].clock.ratio,
+        formed,
+      ),
+    );
+  });
   const end = useDerivedValue(() => {
     const value = fraction.value;
     return value < 0 ? 0 : value > 1 ? 1 : value;
@@ -574,20 +604,6 @@ function handPath(inner: number, outer: number, fraction: number): SkPath {
   builder.moveTo(Math.cos(angle) * inner, Math.sin(angle) * inner);
   builder.lineTo(Math.cos(angle) * outer, Math.sin(angle) * outer);
   return builder.detach();
-}
-
-/** A whole turn from twelve o'clock, at radius `r`. */
-function ringPath(r: number): SkPath {
-  'worklet';
-  const builder = Skia.PathBuilder.Make();
-  builder.addArc(Skia.XYWHRect(-r, -r, r * 2, r * 2), -90, 360);
-  return builder.detach();
-}
-
-/** `from` at 0, `to` at 1. */
-function mixed(from: number, to: number, t: number): number {
-  'worklet';
-  return from + (to - from) * t;
 }
 
 /**
@@ -1479,6 +1495,7 @@ export function NativePlayerParts({
           <ArrivingRing
             colour={mutedColour}
             fraction={arriving}
+            lensClock={lensClock}
             radius={radius}
           />
         )}
