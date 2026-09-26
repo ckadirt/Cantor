@@ -343,6 +343,113 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   order here, and agree it with Cesar before moving code — it is the largest
   remaining change and touches motion (Flicker Law applies).
 
+  **R6 plan (2026-09-26, proposed — waiting for Cesar's OK; no code moved).**
+
+  *What the code does today.* Two lenses are hard-wired as a pair, on one
+  number: `lensMix` (0 = circle, 1 = seal, a `withTiming` over
+  `LENS_MORPH_MS` in `FieldCanvas`). Every place that draws or touches a song
+  asks "circle or seal?" itself: `faceFlightsOf` prepares both a `markPath`
+  and a `sealPath` for every face, plus a `NativeSeal` for the player;
+  `drawFieldFaces` scales one in and the other out, or runs `drawSealPlayer`'s
+  dot walk for the player; `drawSongDetail` fades the circle's tick ring on
+  `lensMix`; `PlayerRing` morphs arc+hand into rim+knob on it;
+  `seekBoxPx`/`seekGesture` branch on `lensKey === 'seal'`. The old
+  `Lens.draw` (`nameLens`, `sealLens`) is a third copy that only tests run.
+  A third lens would mean editing all of them.
+
+  *Constraint that shapes the interface.* Drawing runs in worklets on the UI
+  thread; a worklet can only call other worklets and read plain data or host
+  objects (`SkPath`). So a lens is two halves: what the JS thread prepares
+  once (paths, arrays), and worklets that draw from it every frame.
+
+  *The contract* (`lenses/contract.ts`):
+
+  ```ts
+  type Lens<Identity, Sound> = {
+    key: string; label: string;                    // the picker, as now
+    // JS thread, once per song (cached): the recipe only — no analysis can
+    // reach it, so "identity exists for songs never on the phone" is a type.
+    identity(recipe: FaceRecipe): Identity;
+    // JS thread, for the player's song once measured; null until then.
+    sound(identity: Identity, analysis: SongAnalysis): Sound | null;
+    // UI thread. Mark (L0) and row face (L1) are one drawing at two scales
+    // (facePoseAt), so one function; `ink` is R3's weight/fill.
+    drawMark(canvas, identity, scale, ink, alpha, paints): void;
+    // UI thread. The player (L2): `arrived` = songShapeArrival, `soundIn`
+    // = the born sound clock, `heard` = the playhead fraction or -1.
+    drawPlayer(canvas, identity, sound, side, ink, alpha,
+               arrived, soundIn, heard, paints): void;
+    // The player's clock as numbers, not drawings: ring radius, heard-arc
+    // width, hand inner/outer (0 = none), knob radius, rim tick length and
+    // alpha. PlayerRing draws one clock and interpolates these between two
+    // lenses — which is exactly how arc+hand already becomes rim+knob.
+    clock: ClockShape;
+    // UI thread. What a finger at (x, y) on the player means:
+    // { seek, fraction } (drag scrubs) | { tap, fraction } (jumps on
+    // release) | null; plus how far the touch box reaches.
+    touchAt(viewport, identity, x, y): LensTouch | null;
+    reach(viewport): number;
+  };
+  // Optional, per unordered pair: a hand-written player morph that replaces
+  // the generic beats. circle↔seal = today's dot walk (`formed`); run with
+  // t or 1 − t depending on direction.
+  type PairMorph = { a: string; b: string; drawPlayer(…, t): void };
+  ```
+
+  *A lens change is `(from, to, t)`* — three shared values replacing
+  `lensMix`. Marks and rows always use the generic two beats (from scales to
+  a point over t 0→½, to scales out of it over ½→1 — today's
+  `faceScale`/`sealScale` exactly); the player uses the pair morph if one is
+  registered, else the same beats; reduced motion crossfades, as now.
+  Interruptions start from what is drawn: back to `from` reverses the clock
+  (from ↔ to, t → 1 − t, which draws the identical frame because smootherstep
+  is symmetric); a third lens mid-change reverses first and plays the next
+  change on landing, so nothing jumps. What stays outside the contract, on
+  purpose: the row's words (`nativeRows`, lens-free), the playing ring round
+  a mark (generic), and the grain (L3, a layer of its own).
+
+  *Preparing identities:* every registered lens's identity for every face,
+  cached by recipe as `nameLensFacePath`/`sealMarkPath` are now. With 2–3
+  lenses that is 2–3 cached paths per song, and it means a lens change hands
+  the canvas no new object (no commit on the change = no Flicker Law
+  exposure). Revisit if lenses multiply.
+
+  *Port order* — each ships alone, draws exactly what it drew before, and is
+  checked on the phone:
+
+  - **R6a — the guard, and a spike.** Golden images: render
+    `drawFieldFaces`, the player and `drawSongDetail` with real CanvasKit (as
+    `nativeRows.test.ts` already does) at a grid of camera distances × lens
+    t × ink, from today's code, and pin the pixels. Every later step must keep
+    them identical. Plus a spike on the Xiaomi, release build: a worklet
+    calling a lens's worklet through the registry array (Reanimated 4 should
+    capture an object of worklets; prove it, and that the indirection costs
+    nothing measurable panning at L0). If it does not hold, the fallback is a
+    `switch` on the lens index inside one worklet — same contract, uglier
+    dispatch.
+  - **R6b — identity and `drawMark`.** `circleLens`/`sealLens` implement
+    both from what exists (`nameLensFacePath`, `sealMarkPath`); `FaceFlight`
+    carries `identities` instead of `markPath`/`sealPath`; the non-player
+    branch of `drawFieldFaces` calls from/to through the registry.
+  - **R6c — the clock becomes `(from, to, t)`.** `lensMix` goes; the
+    retarget rules above, with tests (reverse is pixel-exact).
+  - **R6d — `sound` and `drawPlayer`, and the pair morph.** `nativeSealOf` →
+    `sealLens.identity/sound`; `drawSealPlayer` → `sealLens.drawPlayer` and the
+    circle↔seal morph; the circle's player is its face at the player pose, and
+    its sound is the tick ring (the `coarse` part of `drawSongDetail`, which
+    keeps the unroll into the grain).
+  - **R6e — the clock as numbers.** `PlayerRing` interpolates two
+    `ClockShape`s instead of reading `lensMix`.
+  - **R6f — touch.** `seekBoxPx`/`seekGesture` ask the lens (`reach`,
+    `touchAt`) instead of `lensKey === 'seal'`.
+  - **R6g — delete the old registry.** `Lens.draw`, `nameLens.draw`,
+    `sealLens.draw`, `drawRowWords` if nothing else reads it; their tests are
+    replaced by R6a's goldens. Update `cantor/AGENTS.md` ("Lenses share the
+    renderer") and `hacking-app.md`, plus a "how to add a lens" recipe.
+
+  Done means: adding the tree lens is a new file in `lenses/` and one entry
+  in `LENSES`, and no file in `features/field/` changes.
+
 ## Phase 4 plan (camera events, chrome, UI stores)
 
 - **C1 — done (`b1a72aa`). React hears the camera at thresholds.** The pan
