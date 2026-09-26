@@ -9,6 +9,61 @@ whoever picks this up next, including a new chat: read this first, then
 Newest entries at the top of each section. Update it as you go: every
 finding, decision, trap and commit.
 
+## Start here (handoff)
+
+State on 2026-09-26: phases 1–2 done; phase 3 R1–R4 done, R5 shelved, R6 not
+started; phase 4 C1, C2, C2b, C3a done, C3b and C4 not started. None of the
+field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
+decides when to push.
+
+**Next, in order:** C4 (small; see "Phase 4 plan"), then R6, the lens
+contract (see "Phase 3 plan" — it has a starting map). Check "Open questions"
+first: two things wait on Cesar.
+
+**How a step is done here** — every step so far followed this, and the
+entries below assume it:
+
+1. Read the code the step touches and write down what it will change, in
+   this log, before editing. If a measurement could show the step is not
+   worth it, measure first (R5 was shelved that way).
+2. Change the code; match the comment density and voice around it (long
+   "why" comments, knobs as named constants with real units, see
+   `cantor/AGENTS.md` § How Cesar prefers to work).
+3. `cd cantor && npx tsc --noEmit -p . && npx jest && npm run lint` — all
+   green, no new lint warnings (34 pre-existing warnings, 0 errors).
+   Behaviour that changed gets a test; a fix gets a test that fails on the
+   old code.
+4. Build a release and install it (keeps the app's data):
+   `cd cantor/android && ./gradlew assembleRelease -q` — the first run often
+   fails in `:app:packageRelease`; run it again — then
+   `adb install -r app/build/outputs/apk/release/app-release.apk`,
+   `adb shell am force-stop com.cantor.app`,
+   `adb shell am start -n com.cantor.app/.MainActivity`, wait ~10 s.
+5. Verify on the Xiaomi (`6b1f6ba8629c`) with `adb exec-out screencap -p`
+   (bursts for motion; see Traps for their limits). Useful taps at L0 on the
+   home camera (screenshot first — positions drift after any pan): the dial's
+   WEEK `102 1944`, MONTH `233 1944`; ENGINES `540 2196`; a sheet's CLOSE
+   `954 297`; the This Week cluster ~`129 678`, and at L1 the first row
+   `600 670`, play at L2 `538 1858`. BACK climbs a level (and leaves the app
+   at L0). Pinch cannot be synthesised on this phone.
+6. Measure cost with `cantor/scripts/perf-sample.sh 15 "label"` when the step
+   is about cost; add the row to "Measurements".
+7. Commit on `main` (never branch), short code-only subject, no AI
+   attribution trailer; then a separate `docs:` commit updating this log
+   (the step's entry, "Where we are", "Commits").
+8. Tell Cesar in plain terms what changed and what to look at on the phone.
+   He is new to React Native: say what a thing does before what it is called.
+   Anything outward — starting a generation on his nodes, pushing, touching
+   his library (KEEP/REMOVE/Delete) — ask first.
+
+Where the field lives: `cantor/src/features/field/` (`FieldCanvas.tsx` is the
+renderer — `NativeFieldContent` draws everything; `useFieldCamera.ts` owns
+the camera, gestures and re-cuts), `cantor/src/field/` (pure geometry:
+layout, bands, camera, shelf), `cantor/src/lenses/` (circle and seal),
+`cantor/src/screens/FieldScreen.tsx` (composition). `docs/refactor/hacking-app.md`
+is the module map and rules; `cantor/AGENTS.md` has the Flicker Law and the
+motion rules, required before touching motion or Skia code.
+
 ## Where we are
 
 | Phase | State |
@@ -64,8 +119,8 @@ doubles every number — never measure on it (see Traps).
 | Scenario | Before | Now | Notes |
 | --- | --- | --- | --- |
 | L0 idle | 11.6 | 10 (C1; 13 on the R4 build) | 0 React commits/s; mostly RN's own per-frame callbacks |
-| L0, a generation running on the node | — | 17.6 | vs 11.6 idle. (An earlier 30.3 included the composer's submit animation.) The node sends progress ≤1/s (`PROGRESS_INTERVAL`); each update re-renders `FieldScreen` and re-records the job mark (~60 ms CPU) → phase 4 |
-| L2 playing | 102 | 61 | `PLAYHEAD_STEP_PX` 2 (80 at 1 px). R1: canvas now redraws at 20 fps (1 px playhead step) instead of 120; each redraw still costs ~20 ms of CPU → R5 |
+| L0, a generation running on the node | 17.6 | not re-measured | vs 11.6 idle then. (An earlier 30.3 included the composer's submit animation.) The node sends progress ≤1/s (`PROGRESS_INTERVAL`); each update re-rendered `FieldScreen` and re-recorded the job mark (~60 ms CPU). R4 + C3a address it — see Open questions |
+| L2 playing | 102 | 61 | `PLAYHEAD_STEP_PX` 2 (80 at 1 px). R1: the canvas redraws per playhead step instead of 120/s; each redraw still costs ~20 ms of CPU |
 | L0 playing | 105 | 33 | R1: canvas gets a still playhead when it has no player |
 | Screen off, playing | 71 | 28 | R1: visual clock held while not `active` |
 | … the three above with the clock frozen (experiment) | 32 / 32 / 28 | — | proves the clock is ~70 points |
@@ -125,7 +180,7 @@ doubles every number — never measure on it (see Traps).
   Skia actually rendering the canvas (`RNSkOpenGLCanvasProvider::renderToCanvas`,
   ~6 ms of fixed GL work per redraw), `applyUpdates`/`play` only ~2% each. The
   lever left is **how often** the canvas redraws: 20/s → 80%, 5/s → 51%
-  (≈2 points per redraw per second). A product call — see "Open questions".
+  (≈2 points per redraw per second). Settled: the playhead steps 2 px (61%).
 
 - **2026-09-25 — Why a redraw costs ~20 ms: RN Skia re-records the whole canvas
   for any change.** `sksg/Container.native.ts` (RN Skia 2.6.9) installs *one*
@@ -144,7 +199,8 @@ doubles every number — never measure on it (see Traps).
   (`SkiaBaseView.java`.) A SurfaceView composites apart from the app window,
   a TextureView inside it. Two canvases that must move together on one camera
   should be the same kind — a TextureView overlay on the opaque field can land
-  a frame apart during motion. The job canvas is exactly that today.
+  a frame apart during motion. (The job canvas was exactly that; R4 removed
+  it.)
 - **2026-09-25 — Playback floor ~28% with the screen off** is mostly the audio
   library: `AudioTrack` thread ~33% of samples, JS thread ~28% — the `<Audio>`
   component does a React `setCurrentTime` on every position event, every
@@ -157,10 +213,11 @@ doubles every number — never measure on it (see Traps).
   redraw/s and ~41% with none. Skia time is spread across per-call overhead:
   `Recorder::playGroup`/`applyUpdates` (declarative scene replay),
   `processPath`, and one JSI call per line in `drawSongDetail`'s tick loop.
-  R5 must make a redraw re-record only what moves.
+  (R5 was to make a redraw re-record only what moves; shelved — see R5.)
 - **2026-09-25 — L2 playing without any redraw still costs ~41%** vs 33% at L0
   playing and 11% at L2 paused: per-frame UI-thread work that is not drawing
-  (the visual clock's `withTiming`, reactions, SongSurface). Investigate in R5.
+  (the visual clock's `withTiming`, reactions, SongSurface). Not yet
+  investigated.
 - **2026-09-25 — Reanimated wakes nothing for a same-value write.**
   `valueSetter` returns early when a plain value equals `_value`; a derived
   value that settles on a constant stops every mapper downstream of it. This
@@ -172,11 +229,10 @@ doubles every number — never measure on it (see Traps).
   (or decode at a lower rate) before import.
 - **2026-09-25 — Live job ≈ +6 points at L0, not +19.** Nothing animates per
   frame: the canvas is still and the main window posts one short burst per
-  progress update (≤1/s from the node). The cost is breadth — each update
-  re-renders the whole `FieldScreen` and re-records `NativeJobFlight`'s
-  pictures. Fix with the UI stores (phase 4) so progress re-renders only the
-  job layer. The job canvas is transparent, so it composites into the main
-  window rather than getting its own SurfaceView.
+  progress update (≤1/s from the node). The cost was breadth — each update
+  re-rendered the whole `FieldScreen` and re-recorded the job's pictures.
+  Addressed by R4 (jobs on the one canvas, marks via a shared value) and C3a
+  (a tick re-renders only `LiveFieldCanvas`); not re-measured yet.
 - **2026-09-24 — Flicker A (L1→L2, ticks pop in late)**: reveal clock driven by
   the camera only; analysis decoded on descent, in memory only. **Fixed** in
   `d8f9588` (late levels restart the draw-in; analysis persisted and
@@ -192,7 +248,9 @@ doubles every number — never measure on it (see Traps).
 - **2026-09-24 — Empty field after a regroup** (seen in the lab): regroup +
   flight home on one tap while the camera was far away settled on an empty
   canvas while React's camera read home; FIT MAP recovered. Same category as
-  flicker B (two copies of the camera). **Open** — phase 3/4.
+  flicker B (two copies of the camera). **Unverified** since C1/C2b removed
+  React's per-frame camera and the React re-cut path; reproduce in the lab
+  (`FIELD_GROUP_LAB` in `App.tsx`) before calling it fixed.
 - **2026-09-24 — Startup pop**: downloaded marks draw as outlines, then snap to
   filled once local audio is inspected. **Fixed** in `82dc931` (R3, ink
   arrivals).
@@ -265,8 +323,25 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   jobs drawing nothing, L0 panning still costs 62–71% of a core against 74%
   drawn, so the cache's ceiling is 5–10 points — see Findings. Revisit only if
   imported libraries make drawing grow; culling keeps it flat today.
-- **R6 — Lens contract.** Circle and seal ported onto `identity / sound /
-  poses / morphs / hit`, so tree needs no renderer change.
+- **R6 — Lens contract. Not started.** Goal: circle and seal behind one
+  interface the renderer calls — `identity(song)`, `sound(analysis)`, draw at
+  the mark / row / player poses, `hit`/seek at the player, and a lens change
+  as `(from, to, t)` with a generic scale-out/scale-in and optional
+  hand-written pair morphs (circle → seal keeps its dot walk) — so the tree
+  lens (next after seal; memory "Lens direction: Seal then Tree") needs no
+  renderer change. Design: `field-redesign.html` § 2½ ("Exactly two lenses")
+  and the two-layer rule in `cantor/AGENTS.md` ("Every lens is two layers").
+  Where the two lenses are woven in today (occurrences of lens/seal code):
+  `FieldCanvas.tsx` ~100 (`drawFieldFaces` blends both on `lensMix`,
+  `drawSealPlayer`, `faceFlightsOf`'s `sealPath`/`seal`, `heard`,
+  `drawSongDetail`), `NativePlayer.tsx` ~25 (`PlayerRing`), `SongSurface.tsx`
+  ~31 (seek: `seekFractionAt`, `sealRimFraction`, `sealTouchAt`),
+  `songPose.ts` ~22, and `lenses/` (`face.ts`, `seal.ts` pure geometry;
+  `nameLens.ts`/`sealLens.ts`/`registry.ts` — the old JS `Lens.draw` registry,
+  which since R4 runs only in tests and should be replaced, not kept beside
+  the contract). First step: read those, write the interface and the port
+  order here, and agree it with Cesar before moving code — it is the largest
+  remaining change and touches motion (Flicker Law applies).
 
 ## Phase 4 plan (camera events, chrome, UI stores)
 
@@ -326,14 +401,39 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   a download's progress (it changes that song's presentation), and the
   screen's ~30 `useState`s (sheets, errors, targets). Worth it only if a
   measurement says so; `FieldCanvas` and most children are memoised.
-- **C4 — chrome fades on shared values** where anything still fades from
-  React state.
+- **C4 — chrome fades on shared values. Not started.** Audit what still fades
+  or steps from React state that moves with the camera or a clock (the rule
+  in `cantor/AGENTS.md`, "Nothing that moves with the camera may be laid out
+  in React"): start with `FieldOverlay.tsx`, `OriginMark.tsx`,
+  `SongSurface.tsx`, `FieldA11yList.tsx`, and every `level`/`songAlpha` read
+  in `FieldScreen.tsx`. React's camera now changes only at thresholds
+  (C1), so anything faded from it steps. Expected to be small; if the audit
+  finds nothing, record that and close it.
 
 ## Open questions (for Cesar)
 
-- None open. (Settled 2026-09-25: the playhead steps 2 px — `PLAYHEAD_STEP_PX`
-  in `FieldScreen.tsx`, 61% of a core at L2 playing against 80 at 1 px —
-  Cesar looked on the phone and it reads clean.)
+- **Does an interrupted regroup glide now?** (`671af18`.) Tap MONTH then
+  WEEK quickly at L0: the week names should move back from where they were,
+  not jump. A burst capture cannot see it; Cesar's eye can.
+- **May we run a throwaway generation to measure a live job?** C3a should
+  bring L0-with-a-generation from 17.6% toward the 11.6% idle, but measuring
+  it needs a real generation on one of Cesar's nodes, which adds a song to
+  his library. Ask; do not start one unasked.
+- Settled 2026-09-25: the playhead steps 2 px (`PLAYHEAD_STEP_PX` in
+  `FieldScreen.tsx`, 61% of a core at L2 playing against 80 at 1 px); Cesar
+  looked on the phone and it reads clean.
+
+## Known leftovers (not scheduled)
+
+- Analysis decode is ~1.5 s of a core per song on the JS thread
+  (`readSamples` in `player/createAudioApiPlayer.ts`); must move to native or
+  a lower rate before importing hundreds of songs (phase 5).
+- The audio library posts a position event every 100 ms to React
+  (`onPositionChangedInterval`); most of the 28% screen-off playback floor.
+- 300 songs in one date group make one tall column; import needs a better
+  grouping.
+- A rename swaps the row's text instead of morphing it.
+- L2 playing costs ~41% even with no redraw; not investigated.
 
 ## Traps (learned the hard way)
 
