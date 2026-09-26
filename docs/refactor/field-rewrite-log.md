@@ -16,9 +16,10 @@ field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
 **Next:** nothing is queued. Candidates, for Cesar to choose: C3b (only if a
-measurement says so), phase 5 (device import — before alpha), the two
-Findings from R6g (the seal's downloaded ink, the missing arriving arc), the
-L2 playback cost finding, and the tree lens on the contract (after alpha).
+measurement says so), phase 5 (device import — before alpha), the L2
+playback cost finding, and the tree lens on the contract (after alpha).
+Cesar's order (2026-09-26): finish phase 4, then import. The "how the app is
+built" walkthrough waits until the rewrite is finished.
 Any step touching a lens keeps `lensGoldens.test.ts` and
 `playerRingGoldens.test.tsx` passing unchanged; a golden changed on purpose
 is regenerated with `-u` and the reason logged. Check "Open questions"
@@ -74,7 +75,7 @@ motion rules, required before touching motion or Skia code.
 | --- | --- |
 | 1. Measure | **done** — `d76f4ee` |
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
-| 3. Renderer | **done** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 (lens contract) R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`, R6g `2c7477a`; see "Phase 3 plan" |
+| 3. Renderer | **done** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 (lens contract) R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`, R6g `2c7477a`; R7 (every lens keeps the availability reading) `b0b5632`; see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **in progress** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e` done; C3b only if measured; see "Phase 4 plan" |
 | 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
@@ -136,8 +137,8 @@ doubles every number — never measure on it (see Traps).
 
 ## Findings
 
-- **2026-09-26 — The seal's downloaded mark has less ink than its cached
-  one.** Ink through `drawMark` at mark size, same song: circle not-on-phone
+- **2026-09-26 — Resolved by R7: the seal's downloaded mark had less ink
+  than its cached one.** Ink through `drawMark` at mark size, same song: circle not-on-phone
   3,883 / cached 7,805 / downloaded 49,790 (strictly stronger, as designed);
   seal 10,481 / 18,719 / 9,107. The seal's filled dots at mark size are
   smaller than the 1 px hairline rings drawn round them when a song is
@@ -147,8 +148,8 @@ doubles every number — never measure on it (see Traps).
   Older than R6 (the goldens prove R6 drew the same pixels). A design
   question for Cesar — e.g. a thicker ring for cached is not the fix if
   downloaded must be the heaviest; filled dots at a larger radius might be.
-- **2026-09-26 — The arc round a mark whose download is landing is not
-  drawn.** `drawArrivingArc` was only ever called by the lenses' old
+- **2026-09-26 — Resolved by R7 (circle arc restored, seal fills in): the
+  arc round a mark whose download is landing was not drawn.** `drawArrivingArc` was only ever called by the lenses' old
   `draw`, which the picture fallback used; the native renderer never drew
   it, so since R4 (the fallback's deletion) a downloading song shows no arc
   at L0/L1. Its row still says `ARRIVING n%`, and the L2 player has its own
@@ -714,6 +715,63 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   Done means: adding the tree lens is a new file in `lenses/` and one entry
   in `LENSES`, and no file in `features/field/` changes.
 
+- **R7 — every lens keeps the availability reading. Done (`b0b5632`).** Cesar,
+  2026-09-26, on the two R6g findings: the circle's marks have a hierarchy —
+  grey on the node, black cached, filled downloaded — and an arc while a
+  download lands; every lens must keep that reading *in its own form*, not a
+  copy (memory "Lens indicators adapt"). **Plan:**
+  - *Seal marks.* At mark size a seal dot is ~0.6 dp and the hairline 1 dp,
+    so outline-vs-fill cannot carry it (a ring *is* a bigger blob than a
+    dot). The seal's version: on the node = small grey dots (the ink weight
+    as alpha), cached = the same dots black, downloaded = the dots grow until
+    their cells merge (`SEAL_KNOBS.FILLED_DOT_FILL`, diameter over cell, vs
+    `DOT_FILL` 0.78) — the dust becomes one solid glyph, the seal's filled
+    face. Everything a fill (no strokes at mark size); radius and alpha both
+    follow the ink arrival's `fill`, so a download landing grows the dots.
+  - *Arriving.* `drawMark` gains `arriving` (0..1, or `ARRIVING_NONE` /
+    `ARRIVING_UNKNOWN` from `contract.ts`); `FaceFlight` carries it
+    (`arrivingFraction` of the presentation while `partial`). Circle: the old
+    arc round the face, restored as a worklet (ring radius in pixels, not
+    scaled). Seal: the dust fills in along its own time order — the mark's
+    dots ranked by the Peano thread (a parent's rank is where its first
+    child falls in time) — up to the fraction, each filled dot drawn as
+    downloaded, the rest as on the node. Unknown total: the circle's 70°
+    sweep, as a fraction, for both.
+  - *Player handover.* `drawSealPlayer`'s opening must equal the mark at
+    `arrived` 0 (it did, to the pixel, and must still): one annulus
+    primitive whose solidity is `1 − arrived·(1 − fill)` (solid at the mark,
+    the player's ring-or-dot at full arrival) and whose radius grows with
+    `fill·(1 − arrived)`; an arriving song fills per mark-parent rank.
+  - *L2.* `ArrivingRing` draws on the lens clock's ring (`ClockShape.ratio`
+    mixed as `PlayerRing` does), so the seal's wait runs on its rim.
+  - *Goldens.* Seal frames and the seal player's opening change on purpose
+    and are regenerated with `-u`; circle-only frames must not move (checked
+    in the snapshot diff). New frames for arriving marks. Tests: "more ink,
+    stronger promise" for every lens (fails on the old seal), progress adds
+    ink for every lens.
+  **As built.** As planned, with: `ARRIVING_UNKNOWN_SHARE` (70/360) and
+  `arrivedShare` live in `contract.ts` (the circle's
+  `ARRIVING_INDETERMINATE_SWEEP_DEG` knob is gone); `sealMarkRanks` and
+  `SEAL_FILLED_GROW` in `seal.ts`; the seal's identity is a `SealMark`
+  (`sealMarkOf`: cached dots and filled paths plus centres and ranks, built
+  per frame only while a download or an ink arrival is under way);
+  `SealPlayer.markRank`. `FILLED_DOT_FILL` 1.15. The circle's arc fades as
+  the song grows into the player (`1 − arrived`), where `ArrivingRing`
+  takes the wait over — now on the lens clock's ring (the seal's rim).
+  Ink at mark size, same song (on node / cached / downloaded; landing 15%
+  / 90% / unknown): circle 3,883 / 7,805 / 49,790; 8,052 / 27,576 / 9,348 —
+  seal before 10,481 / 18,719 / 9,107, now 3,456 / 7,736 / 22,308; 6,602 /
+  20,798 / 7,203. Goldens: 13 frames changed on purpose, every one drawing
+  the seal (lens ≥ 0.75, reduced-motion crossfade, the seal opening during
+  the descent); all 38 circle-only, fully-arrived-player and ring frames
+  unchanged; 12 new download frames. Verified on the Xiaomi (seal lens): L0
+  and L1 read grey dots / black dots / merged solid glyph; burst of the
+  descent into a downloaded seal and back up — the glyph grows into the
+  player's solid dots and back with no jump. **Not seen on the phone yet:**
+  a download landing (circle arc, seal filling in) — it needs a download
+  started on a song not on the phone, which may evict cached copies under
+  the audio budget; asked Cesar. Covered by goldens and the ink tests.
+
 ## Phase 4 plan (camera events, chrome, UI stores)
 
 - **C1 — done (`b1a72aa`). React hears the camera at thresholds.** The pan
@@ -885,6 +943,9 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `b0b5632` lenses: every lens shows what the phone holds and what is arriving
+- `445f68f` docs: the open questions pointer
+- `2e93f64` docs: the handoff after R6
 - `0395c1d` docs: R6 done; the lens contract in the guides
 - `2c7477a` lenses: the old lens drawing is gone
 - `580059f` docs: R6f in the log
