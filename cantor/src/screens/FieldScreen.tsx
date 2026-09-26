@@ -580,7 +580,8 @@ export function FieldScreen({ identity }: Props) {
    * Both compound verbs are compositions rather than new commands: native
    * storage refuses to delete a pinned artifact outright — `removeCached` says
    * *"Unpin this artifact before removing it"* — so `REMOVE` unpins first, and
-   * pinning requires a verified cached file, so `GET` downloads first.
+   * pinning requires a verified cached file, so `GET` downloads first — as one
+   * runtime act (`keep`), so the row never reads "cached" on its way to kept.
    */
   const runRowAudio = useCallback(
     async (presentation: FieldPresentation, action: AvailabilityAction) => {
@@ -601,8 +602,7 @@ export function FieldScreen({ identity }: Props) {
         );
       try {
         if (action === 'GET') {
-          await run('download');
-          await run('pin');
+          await run('keep');
         } else if (action === 'KEEP') {
           await run('pin');
         } else {

@@ -59,7 +59,13 @@ export const DEFAULT_BACKEND_SNAPSHOT: ConnectionSnapshot = {
  * Runtime owns getting bytes onto the phone and keeping them there. Making
  * sound is the player's job, reached through `audioPath`.
  */
-export type AudioAction = 'download' | 'pin' | 'unpin' | 'remove';
+/**
+ * What can be done to a song's audio on the phone. `keep` is download-and-pin
+ * as one act — `GET` — so the song is never published as merely cached on the
+ * way to being kept: the mark would step back from a full arc (or a filled-in
+ * seal) to "cached" for a beat before filling.
+ */
+export type AudioAction = 'download' | 'keep' | 'pin' | 'unpin' | 'remove';
 
 /** The floor between two published download-progress samples. */
 const ARRIVING_SAMPLE_MS = 100;
@@ -974,7 +980,7 @@ export class BackendRuntime {
     const key = audioKey(nodeKey, song.id, artifact.sha256);
     const identify = () => this.deps.audioStore.inspect(ref);
     let evicts = false;
-    if (action === 'download') {
+    if (action === 'download' || action === 'keep') {
       const connection = this.live(nodeKey, 'Song node is not connected.');
       const before = await identify();
       if (before.state !== 'cached' && before.state !== 'pinned') {
@@ -1001,7 +1007,8 @@ export class BackendRuntime {
               if (!done && now - lastSampleMs < ARRIVING_SAMPLE_MS) return;
               lastSampleMs = now;
               this.setLocalAudio(key, {
-                state: done ? 'cached' : 'partial',
+                // A song being kept is still arriving until it is pinned.
+                state: done && action === 'download' ? 'cached' : 'partial',
                 bytes,
               });
             },
@@ -1012,6 +1019,7 @@ export class BackendRuntime {
           this.markDownloading(key, false);
         }
       }
+      if (action === 'keep') await this.deps.audioStore.pin(ref);
     } else if (action === 'pin') {
       await this.deps.audioStore.pin(ref);
     } else if (action === 'unpin') {

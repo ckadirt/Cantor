@@ -69,6 +69,7 @@ async function flush(): Promise<void> {
 function setup() {
   const callbacks: BackendRuntimeConnectionCallbacks[] = [];
   const inspect = jest.fn().mockResolvedValue({ state: 'remote', bytes: 0 });
+  const pin = jest.fn().mockResolvedValue(undefined);
   const audioStore: LocalAudioStore = {
     inspect,
     localPath: jest.fn(),
@@ -77,7 +78,7 @@ function setup() {
       append: async () => 10,
       finalize: async () => undefined,
     }),
-    pin: jest.fn(),
+    pin,
     unpin: jest.fn().mockResolvedValue({ state: 'cached', bytes: 10 }),
     remove: jest.fn(),
   };
@@ -123,6 +124,7 @@ function setup() {
     runtime,
     callbacks,
     inspect,
+    pin,
     connection,
     mergeJobs,
     commitLibrary,
@@ -212,6 +214,35 @@ describe('BackendRuntime', () => {
     await flush();
     expect(runtime.store.get().backends).toBeNull();
     expect(callbacks).toHaveLength(0);
+  });
+
+  /*
+   * `GET` is one act. Published as download-then-pin, the song read "cached"
+   * for a beat between its arc (or its filling-in seal) and its filled mark.
+   */
+  it('keeps a song without ever publishing it as merely cached', async () => {
+    const f = setup();
+    f.runtime.start();
+    await flush();
+    const target = song('song-a', 'a');
+    f.callbacks[0].onSnapshot(snapshot([target], []));
+    await flush();
+    f.inspect.mockReset();
+    f.inspect.mockResolvedValueOnce({ state: 'remote', bytes: 0 });
+    f.inspect.mockResolvedValue({ state: 'pinned', bytes: 10 });
+    const seen: string[] = [];
+    f.runtime.store.subscribe(() => {
+      const audio = Object.values(f.runtime.store.get().localAudio);
+      for (const entry of audio) seen.push(entry.state);
+    });
+
+    await f.runtime.commands.audio('node-a', target, artifact('a'), 'keep');
+    await flush();
+
+    expect(seen).toContain('partial');
+    expect(seen).not.toContain('cached');
+    expect(seen[seen.length - 1]).toBe('pinned');
+    expect(f.pin).toHaveBeenCalledTimes(1);
   });
 
   /*
