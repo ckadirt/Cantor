@@ -21,7 +21,8 @@ Findings from R6g (the seal's downloaded ink, the missing arriving arc), the
 L2 playback cost finding, and the tree lens on the contract (after alpha).
 Any step touching a lens keeps `lensGoldens.test.ts` and
 `playerRingGoldens.test.tsx` passing unchanged; a golden changed on purpose
-is regenerated with `-u` and the reason logged.
+is regenerated with `-u` and the reason logged. Check "Open questions"
+first: two things still wait on Cesar.
 
 **How a step is done here** — every step so far followed this, and the
 entries below assume it:
