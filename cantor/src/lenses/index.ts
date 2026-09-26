@@ -6,4 +6,5 @@ export * from './nameLens';
 export * from './registry';
 export * from './seal';
 export * from './sealLens';
+export * from './sealPlayer';
 export * from './types';

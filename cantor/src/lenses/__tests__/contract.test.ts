@@ -6,7 +6,8 @@
  * identity would draw another lens's paths. What each lens *draws* is pinned
  * by `features/field/__tests__/lensGoldens.test.ts`.
  */
-import { LENSES, LENS_UI, lensIndex } from '../registry';
+import { analyseWindow } from '../analysis';
+import { LENSES, LENS_PAIRS, LENS_UI, lensIndex } from '../registry';
 
 const recipe = { seed: 7, id: 'song-a', model: 'light', durationMs: 60_000 };
 
@@ -27,6 +28,52 @@ describe('the lens contract', () => {
       // the faces hands the canvas nothing new for an unchanged song.
       expect(lens.identity({ ...recipe })).toBe(lens.identity(recipe));
       expect(typeof lens.ui.drawMark).toBe('function');
+    }
+  });
+
+  it('gives every lens a player and says what its player reads', () => {
+    for (const lens of LENSES) {
+      expect(typeof lens.ui.drawPlayer).toBe('function');
+      expect([0, 1]).toContain(lens.ui.ringTicks);
+      expect([0, 1]).toContain(lens.ui.hearsPlayhead);
+    }
+  });
+
+  /**
+   * The two-layer rule, at the player: without a measurement a lens's player
+   * is its identity alone, and the sound arrives with the analysis.
+   */
+  it('builds a player without sound until the song is measured', () => {
+    const buckets = 729;
+    const measured = analyseWindow({
+      startSeconds: 0,
+      endSeconds: 60,
+      buckets,
+      sampleRate: 48000,
+      channels: [
+        {
+          min: new Float32Array(buckets).fill(-0.4),
+          max: new Float32Array(buckets).fill(0.4),
+          rms: new Float32Array(buckets).fill(0.2),
+        },
+      ],
+    });
+    for (const lens of LENSES) {
+      const quiet = lens.player(recipe, undefined);
+      if (quiet === null) continue; // its player is its mark, grown
+      expect(quiet.sound).toBeNull();
+      expect(lens.player(recipe, measured)?.sound).not.toBeNull();
+    }
+    expect(LENSES[lensIndex('seal')].player(recipe, undefined)).not.toBeNull();
+    expect(LENSES[lensIndex('name')].player(recipe, undefined)).toBeNull();
+  });
+
+  it('resolves every pair morph to two registered lenses', () => {
+    expect(LENS_PAIRS.length).toBeGreaterThan(0);
+    for (const pair of LENS_PAIRS) {
+      expect(LENSES[pair.a]).toBeDefined();
+      expect(LENSES[pair.b]).toBeDefined();
+      expect(pair.a).not.toBe(pair.b);
     }
   });
 });

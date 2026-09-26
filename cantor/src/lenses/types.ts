@@ -1,6 +1,6 @@
 import type { SkCanvas, SkFont, SkPaint } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
-import type { LensIdentity, LensUi } from './contract';
+import type { LensIdentity, LensPlayer, LensUi } from './contract';
 import type { FaceRecipe } from './face';
 
 export type LensBox = Readonly<{
@@ -100,6 +100,15 @@ export type Lens = Readonly<{
   label: string;
   /** JS thread, once per song: what the UI half draws from. */
   identity: (recipe: FaceRecipe) => LensIdentity;
+  /**
+   * JS thread, for the one song the camera is in: the player's model at the
+   * lens's deepest, with its sound once `analysis` is measured — or null when
+   * this lens's player is its mark grown.
+   */
+  player: (
+    recipe: FaceRecipe,
+    analysis: SongAnalysis | undefined,
+  ) => LensPlayer | null;
   /** UI thread: worklets only. */
   ui: LensUi;
   draw: (
