@@ -289,3 +289,5 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 - `fe3e879` docs: import design calls settled
 - `f40990e` scripts: device import fixtures
 - `a46a14a` docs: import I0, path playback works in every format
+- `45e8f53` audio: reduce samples natively with audio-api's own decoders
+- `c019e85` docs: import I1, native reduction
