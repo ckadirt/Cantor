@@ -9,7 +9,8 @@ decision, trap and commit.
 State on 2026-09-27: I0 and I1 done. Path playback works with no copy in
 every format (I0); a song's samples are now reduced natively with
 audio-api's own decoders, identical to the JS path and 6–18× faster (I1).
-**Next: I2** (phone database, op-sqlite). None of it is pushed;
+I2 done: the phone database (`cantor.sqlite`, op-sqlite, schema 1) exists
+and is exercised by real-SQL tests. **Next: I3** (native scanner). None of it is pushed;
 Cesar decides when to push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
@@ -52,13 +53,42 @@ coordinates and details):
 | --- | --- |
 | I0 phone spike | **done** 2026-09-27 — throwaway, not committed |
 | I1 native reduction | **done** 2026-09-27 |
-| I2 phone database | not started |
+| I2 phone database | **done** 2026-09-27 |
 | I3 native scanner | not started |
 | I4 resolver | not started |
 | I5 device source | not started |
 | I6 mark and axis | not started |
 | I7 import flow | not started |
 | I8 300-song check | not started |
+
+## I2 plan (phone database)
+
+Written before editing, 2026-09-27.
+
+- **What it holds.** Device songs, their albums, tags per song (playlists,
+  `p/<name>`, as for node songs), the last MediaStore generation scanned per
+  volume, and the folders the user unticked. Nothing about node songs: the
+  `cantor.private-library.v1` blob is untouched (plan § Scope).
+- **One database file, `cantor.sqlite`**, opened with op-sqlite (decided
+  2026-09-24) in its default location. Tables are prefixed `device_` so the
+  node library can move in later without a clash. File name, tables and
+  migrations are compatibility contracts from the first install on.
+- **Layers.** `core/storage/sql.ts`: a small `SqlDatabase` port (execute,
+  transaction) and the migration runner (`PRAGMA user_version`, one
+  transaction per migration). `device/schema.ts`: migration 1.
+  `device/repository.ts`: typed load / commit-scan / tags / exclusions, rows
+  checked on the way in. `device/database.ts`: the only file importing
+  op-sqlite. Repositories persist; the resolver (I4) decides what a scan
+  means.
+- **Identity.** A device song's id is assigned once, from its fingerprint
+  (`d` + first 16 hex of sha256 of size and the 64 KB head hash), and kept
+  after that, even if the file is retagged or moved. Two copies of one file
+  are one song.
+- **Tests** run the real schema on Node's built-in SQLite (`node:sqlite`,
+  3.51) through the same port, so SQL mistakes fail in Jest, not on the
+  phone.
+- **Phone check.** A throwaway lab opens the database, migrates, commits a
+  300-song scan and reads it back, timed.
 
 ## I1 plan (native reduction)
 
@@ -123,6 +153,19 @@ Written before editing, 2026-09-27.
 
 ## Measurements
 
+I2, Xiaomi, release build, op-sqlite 18.2.5 (SQLite 3.53.4), throwaway lab:
+
+| What | Time |
+| --- | --- |
+| Open + migrate to schema 1 (first run / later) | 52 ms / 9 ms |
+| Commit a 300-song, 30-album scan (one transaction) | 345 ms |
+| Commit the same 300 again (all upserts) | 199 ms |
+| Load everything back | 11–17 ms |
+
+Rows read back equal what was written, and survived a force-stop. The lab's
+second run deleted them: the phone's `cantor.sqlite` is at schema 1, empty.
+The APK grew from 186.7 to 192.6 MB (op-sqlite for four ABIs).
+
 I1, Xiaomi, release build: native reduction (as shipped) against the JS path
 it replaces, same file, same request, back to back. Native runs off the JS
 thread and never holds the song; JS holds the whole decode and loops on the JS
@@ -162,6 +205,18 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 
 ## Findings
 
+- **2026-09-27 — I2: Node 22's built-in SQLite runs the schema in Jest.**
+  `jest/nodeSqlite.ts` binds the `SqlDatabase` port to `node:sqlite`
+  (3.51, in memory). It declares the few `node:sqlite` types it needs
+  locally: adding Node's types to `tsconfig` (`types: ["jest"]` only) would
+  change `setTimeout`'s return type across the app. It also throws if a
+  statement runs on the database instead of the transaction inside
+  `transaction`, which op-sqlite would deadlock or interleave.
+- **2026-09-27 — I2: nothing imports op-sqlite outside `device/database.ts`
+  yet.** When I5 wires the database into the runtime, Jest needs a
+  `moduleNameMapper` entry for `@op-engineering/op-sqlite` (a mock, or the
+  Node binding) like the other native modules in `jest.config.js`.
+
 - **2026-09-27 — I1: MediaCodec is the wrong tool for reducing audio here.**
   Built as planned (`MediaExtractor` + `MediaCodec`, fold in Kotlin), it was
   3–7× *slower* than the JS path on the phone, mostly per-buffer plumbing and
@@ -183,6 +238,10 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
   overlap, so the first frame decoded after a seek is incomplete. Landing
   100 ms early (`kPrerollSeconds`) and discarding up to the window took AAC
   from 0.009 RMS off to exact, and Opus from 0.001 to ≤ 0.0001.
+- **2026-09-27 — Follow-up for I8: `ANALYSIS_STORE_KNOBS.BACKGROUND_GAP_MS`**
+  (1.5 s rest between background measurements) was sized for the JS decode
+  (~1.5 s of the JS thread per song). After I1 a measurement is 0.1–0.6 s off
+  the JS thread; the rest and its comment should be re-tuned with 300 songs.
 - **2026-09-27 — I1: how the C++ is built.** React Native's app CMake takes a
   user file when `externalNativeBuild.cmake.path` is set
   (`android/app/build.gradle` → `src/main/jni/CMakeLists.txt`), which
