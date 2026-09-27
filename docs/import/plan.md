@@ -71,7 +71,7 @@ Measured per format in I0, not assumed.
 ```
 DeviceSong   id · mediaId · path · fingerprint (size, duration, sha256 of first 64 KB)
              · title · artist · album · albumArtist · disc · track · year · genre
-             · durationMs · mime · addedAtMs · albumKey · missing
+             · durationMs · mime · addedAtMs · date (year/date tag, kept) · albumKey · missing
 Album        key = normalize(albumArtist ?? artist) + normalize(album) + folder
              · title · artist · year · artwork (cached thumbnail path | none)
 Tags         per song, as today (playlists = p/<name>)
@@ -90,18 +90,22 @@ re-attaches by fingerprint if it reappears elsewhere.
 
 ## Decisions
 
-Cesar delegated these on 2026-09-27 ("all yours"); revisit if the phone says
-otherwise.
+Settled with Cesar on 2026-09-27.
 
-1. **The imported mark** is the same drawn form as a generated one, its identity
-   from a hash of the metadata (`field-redesign.html`: "a hash of the
-   metadata"), with a distinct imported cue. The field stays ink: the cover is
-   shown only where one song owns the screen (L2 / the player). Both lenses
-   keep the grey/black/filled ink order.
+1. **The imported mark.** L0/L1: the same drawn form as a generated mark, its
+   identity from a hash of the metadata (`field-redesign.html`: "a hash of the
+   metadata"), plus a marker that says *imported*. Both lenses keep the
+   grey/black/filled ink order. L2 offers the circle, the waves, **and the
+   cover** — the cover not as a photo but converted by a cheap math/ASCII
+   function (brightness → glyph density) into ink, so it matches the app's
+   aesthetic. The conversion runs once per album on the small cached
+   thumbnail, and its result is cached too.
 2. **Grouping.** Time axes (WEEK/MONTH/YEAR) use arrival on the phone
-   (`DATE_ADDED`); an album arrives together, so it clusters. A new
+   (`DATE_ADDED`) for now; an album arrives together, so it clusters. **The
+   song's own date (year/date tag) is stored too**: it is shown to the user
+   and a later setting may let the time axes use it instead of arrival. A new
    ALBUM/ARTIST axis joins the dial as an arrangement beside `byTime` and
-   `byPlaylist`. The release year is kept as data, not used as a time axis.
+   `byPlaylist`.
 3. **What a scan takes in:** everything passing the filter, shown as a summary
    (folders, albums, track counts) the user can untick before anything is
    imported.
@@ -118,7 +122,7 @@ Each ships alone and follows the routine in `log.md`.
 | **I3 native scanner** | `CantorMediaModule`: paged MediaStore rows, album thumbnails to cache, incremental re-scan via `MediaStore.getGeneration` (API 30+). | Keeps the scan native and re-scans cheap. |
 | **I4 resolver** | Pure TS: tags → name → folder, the `<unknown>` rule, disc/track split, album key, fingerprint, duplicates. Table tests of messy real cases. | All policy in one testable place. |
 | **I5 device source** | A second producer into the library store; `FieldEntity` gets a reserved device home key; GET/KEEP hidden; the player plays the original path. | Songs appear in the field with no renderer change. |
-| **I6 mark and axis** | Decisions 1 and 2: the imported cue in both lenses (goldens updated on purpose), the cover at L2, the ALBUM/ARTIST arrangement. | |
+| **I6 mark and axis** | Decisions 1 and 2: the imported marker in both lenses (goldens updated on purpose), the ASCII cover at L2, the song's date shown, the ALBUM/ARTIST arrangement. | |
 | **I7 import flow** | Entry point, permission, scan summary, progress, re-scan. | The only new UI. |
 | **I8 300-song check** | ~300 real files on the Xiaomi: L0 idle, panning, a re-group, memory. | The thousands-of-songs goal. |
 

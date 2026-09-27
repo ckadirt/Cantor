@@ -55,10 +55,15 @@ coordinates and details):
   rewrite; it gets `docs/import/`. The rewrite log's phase 5 points here.
 - **2026-09-27 — MediaStore paths, not the document picker.** The player
   opens paths only; the picker would force copies. Pending I0.
-- **2026-09-27 — The three design calls** (Cesar: "all yours"): same drawn form
-  with an imported cue and the cover only at L2; time axes by arrival plus an
-  ALBUM/ARTIST axis; scan everything that passes the filter, then a summary to
-  untick. See plan § Decisions.
+- **2026-09-27 — The three design calls, settled with Cesar.** L0/L1: same
+  drawn form plus an *imported* marker; L2: circle, waves, and the cover
+  converted to ASCII-style ink by a cheap math function. Time axes by arrival
+  for now; the song's own date is kept, shown, and may drive the axes later
+  via a setting. ALBUM/ARTIST axis added. Scan everything that passes the
+  filter, then a summary to untick. See plan § Decisions.
+- **2026-09-27 — The Xiaomi is Cesar's to lend for import** ("all yours"):
+  permission prompts and test fixtures in `Music/cantor-import-test/` are
+  fine. Still ask before touching his own music files or his nodes.
 
 ## Measurements
 
