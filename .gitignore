@@ -40,6 +40,8 @@ reports/*
 docs/*
 !docs/refactor/
 !docs/refactor/**
+!docs/import/
+!docs/import/**
 !docs/interface/
 !docs/interface/**
 !docs/private-library-milestones/

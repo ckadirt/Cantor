@@ -8,7 +8,7 @@ Three programs and one shared wire contract.
 | `node/` | the Rust daemon: library, generation, relay and control adapters, CLI |
 | `relay/` | the Cloudflare Worker that splices opaque bytes between them |
 | `protocol/` | the transport manifest, shared fixtures, and generated wire types |
-| `docs/` | milestones, the framework refactor record, and the contributor guides |
+| `docs/` | milestones, the framework refactor record, the device import plan, and the contributor guides |
 
 ## Read before changing code
 
