@@ -12,7 +12,9 @@ audio-api's own decoders, identical to the JS path and 6–18× faster (I1).
 I2 done: the phone database (`cantor.sqlite`, op-sqlite, schema 1) exists
 and is exercised by real-SQL tests. I3 done: `CantorMedia` lists, inspects
 and saves album art, read only; the manifest declares the music permission.
-**Next: I4** (the resolver: raw rows → songs and albums). None of it is pushed;
+I4 done: `device/resolve.ts` turns rows and inspections into one scan
+commit, tested on the phone's own values; its phone check is I5's first real
+scan. **Next: I5** (device songs in the field). None of it is pushed;
 Cesar decides when to push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
@@ -57,11 +59,50 @@ coordinates and details):
 | I1 native reduction | **done** 2026-09-27 |
 | I2 phone database | **done** 2026-09-27 |
 | I3 native scanner | **done** 2026-09-27 |
-| I4 resolver | not started |
+| I4 resolver | **done** 2026-09-27 (checked on the phone with I5) |
 | I5 device source | not started |
 | I6 mark and axis | not started |
 | I7 import flow | not started |
 | I8 300-song check | not started |
+
+## I4 plan (resolver)
+
+Written before editing, 2026-09-27. Pure TypeScript, `device/resolve.ts`;
+no native calls, no storage. The orchestration that calls `inspect`,
+`albumArt` and `commitScan` is I5's.
+
+- **What needs inspecting.** A row is *changed* when no present song has its
+  path, or its `GENERATION_MODIFIED` is above the last scan's generation (or
+  unknown, before Android 11). Only changed rows are inspected; an unchanged
+  row's song stands as stored.
+- **Fields, by source** (I0/I3 findings):
+  - title: retriever tag → MediaStore title unless it equals the file name →
+    the file name without a leading track number (`07 - `, `07. `, `07 `);
+    `Artist - Title` names give an artist when no tag does.
+  - artist: retriever → MediaStore unless `<unknown>` → file name → null.
+  - album: retriever only (its null is "no album tag"; MediaStore's would be
+    the folder name). albumArtist: retriever → MediaStore.
+  - track/disc: retriever's `n/total` → MediaStore's `disc×1000+track` split
+    → the file name's leading number (track only).
+  - year: MediaStore → retriever year → the first four digits of the
+    retriever date, **never** from the MP4 epoch date `1904…T…`, which is
+    also not kept as `date`.
+- **Album key**: `albumArtist | album | folder`, lower-cased and trimmed;
+  artist is left out so a compilation without an album artist stays one
+  album; the folder keeps two "Greatest Hits" apart. `CD1`/`Disc 2`
+  sub-folders count as their parent. A file without an album tag belongs to
+  its folder's untitled album (`title` null).
+- **Identity**: an existing song matched by path keeps its id; otherwise by
+  fingerprint (a moved file keeps its id, tags and first import time);
+  otherwise `deviceSongId`. Two present files with one fingerprint are one
+  song: the one already stored, else the lowest `mediaId`.
+- **Missing**: a present song whose path is gone and whose fingerprint did
+  not reappear. Excluded folders' rows are skipped; songs already imported
+  from them are left alone (removing them is I7's decision, not a scan's).
+- **Albums** are rebuilt for every key a changed song touches, from all its
+  songs: title, the album artist or the most common artist, the most common
+  year, and the stored artwork kept.
+- **Tests**: tables of the fixture rows exactly as the phone reported them.
 
 ## I3 plan (native scanner)
 
@@ -251,6 +292,20 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 
 ## Findings
 
+- **2026-09-27 — I4: Bandcamp's WAV/AIFF are named, not tagged, as far as
+  Android can tell.** Neither reader parses their tags (I0), so the file name
+  is all there is. Bandcamp names downloads `Artist - Album - 01 Title`;
+  `parseFileName` reads that pattern, and an untagged file takes its album
+  from the name (a tagged single never does). Without it, a Bandcamp WAV album
+  imported as "Album - 01 Title" by "Artist" in an untitled folder album.
+- **2026-09-27 — I4: the album title is not in the song row.** The key keeps
+  it lower-cased; the spelling comes from the changed files' tags (or name)
+  during a scan, else from the stored album row. No schema change was needed.
+- **2026-09-27 — I4: known limits of the name parser.** A title starting with
+  one to three digits and a space (`100 Years.mp3`) loses them to the track
+  number; four digits (`2001 A Space Odyssey`) are kept. Only when the file
+  has no title tag.
+
 - **2026-09-27 — I3: the scanner on the phone** (fixtures; Cesar's own files
   only counted). What the resolver (I4) receives:
   - MediaStore `track` is `1001…` (disc × 1000 + track); the retriever's is
@@ -421,3 +476,5 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 - `2fa88e8` device: phone database for imported songs
 - `15a2618` docs: import I2, phone database
 - `a220179` media: read the phone's music
+- `770dfdc` docs: import I3, native scanner
+- `041da3e` device: resolve a scan into songs and albums
