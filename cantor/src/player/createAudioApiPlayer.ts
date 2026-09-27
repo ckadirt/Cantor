@@ -3,18 +3,22 @@ import {
   decodeAudioData,
   getAudioDuration,
 } from 'react-native-audio-api';
+import { reduceNativeAudio } from '../audio/native';
 import { AudioApiPlayer, toFileUri } from './audioApiPlayer';
+import { nativeFirst } from './nativeSamples';
 import type { ChannelWindow, SampleRequest, SampleWindow } from './types';
 
 /**
  * Decode a local file and reduce it to `buckets` columns per channel.
  *
- * The decode is the expensive part: a three-minute song is roughly 69 MB of
+ * The fallback behind the native reduction (`nativeSamples.ts`): it answers
+ * only what the platform decoder cannot, ALAC and AIFF among them. The decode
+ * is the expensive part: a three-minute song is roughly 69 MB of
  * float samples (measured in `docs/interface/m3-audio-gate.md`). The buffer is
  * dropped as soon as it has been reduced, and callers are expected to ask for
  * one song at a time rather than a whole shelf.
  */
-async function readSamples(request: SampleRequest): Promise<SampleWindow> {
+async function decodeSamples(request: SampleRequest): Promise<SampleWindow> {
   // Same trap as the element source: a bare absolute path is resolved against
   // the app's bundled assets in a release build and fails with "Could not read
   // asset bytes", while working fine under Metro.
@@ -148,7 +152,7 @@ export async function declarePlaybackControls(): Promise<void> {
 export function createAudioApiPlayer(): AudioApiPlayer {
   return new AudioApiPlayer({
     getDuration: localPath => getAudioDuration(localPath),
-    readSamples,
+    readSamples: nativeFirst(reduceNativeAudio, decodeSamples),
     showNowPlaying: async info => {
       await PlaybackNotificationManager.show({
         title: info.title,

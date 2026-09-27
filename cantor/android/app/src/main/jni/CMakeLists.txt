@@ -1,0 +1,26 @@
+# The app's native library. React Native builds `libappmodules` from its
+# default setup (`ReactNative-application.cmake`, included unchanged); this file
+# exists only to add Cantor's own C++ to it. There is no *.cpp in this
+# directory on purpose: one here would replace React Native's default OnLoad.
+cmake_minimum_required(VERSION 3.13)
+project(appmodules)
+
+include(${REACT_ANDROID_DIR}/cmake-utils/ReactNative-application.cmake)
+
+# FFmpeg as react-native-audio-api ships it (only MP4/AAC are decoded with it): its headers, and the shared
+# libraries it already packages into the APK. Linking them here adds no copy;
+# at run time the loader finds the ones audio-api put beside this library.
+set(AUDIO_API_DIR ${PROJECT_ROOT_DIR}/../node_modules/react-native-audio-api)
+set(FFMPEG_LIBS ${AUDIO_API_DIR}/android/src/main/jniLibs/${ANDROID_ABI})
+
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp/AudioReduction.cpp)
+# miniaudio's header for its declarations only; the implementation is
+# audio-api's, looked up at run time (see AudioReduction.cpp).
+target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+        ${AUDIO_API_DIR}/common/cpp/audioapi/external/include_ffmpeg
+        ${AUDIO_API_DIR}/common/cpp/audioapi/libs/miniaudio)
+target_link_libraries(${CMAKE_PROJECT_NAME}
+        ${FFMPEG_LIBS}/libavformat.so
+        ${FFMPEG_LIBS}/libavcodec.so
+        ${FFMPEG_LIBS}/libavutil.so
+        ${FFMPEG_LIBS}/libswresample.so)

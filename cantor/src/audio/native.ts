@@ -34,6 +34,12 @@ type CantorAudioNative = {
     maxBytes: number,
     protectedPath: string | null,
   ): Promise<string[]>;
+  reduce(
+    path: string,
+    startSeconds: number,
+    endSeconds: number,
+    buckets: number,
+  ): Promise<unknown>;
 };
 
 function module(): CantorAudioNative {
@@ -112,3 +118,19 @@ export const nativeAudio = {
   enforceCacheBudget: (bytes: number, protectedPath: string | null = null) =>
     module().enforceCacheBudget(bytes, protectedPath),
 };
+
+/**
+ * Ask the platform decoder to reduce a range of a local file to columns.
+ *
+ * The answer is returned unchecked: its shape belongs to the player, which
+ * validates it (`player/nativeSamples.ts`) and falls back to its own decoder
+ * when this rejects. A plain path, never a `file://` URI.
+ */
+export function reduceNativeAudio(
+  path: string,
+  startSeconds: number,
+  endSeconds: number,
+  buckets: number,
+): Promise<unknown> {
+  return module().reduce(path, startSeconds, endSeconds, buckets);
+}

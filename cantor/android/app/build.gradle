@@ -85,6 +85,13 @@ android {
         versionCode 1
         versionName "1.0"
     }
+    // React Native's default app CMake plus Cantor's C++ (the FFmpeg-backed
+    // audio reduction); see src/main/jni/CMakeLists.txt.
+    externalNativeBuild {
+        cmake {
+            path "src/main/jni/CMakeLists.txt"
+        }
+    }
     signingConfigs {
         debug {
             storeFile file('debug.keystore')
