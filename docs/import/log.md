@@ -14,7 +14,9 @@ and is exercised by real-SQL tests. I3 done: `CantorMedia` lists, inspects
 and saves album art, read only; the manifest declares the music permission.
 I4 done: `device/resolve.ts` turns rows and inspections into one scan
 commit, tested on the phone's own values; its phone check is I5's first real
-scan. **Next: I5** (device songs in the field). None of it is pushed;
+scan. I5a done: `DeviceLibraryService` loads, publishes and scans; the phone's
+database holds the 16 fixture songs from a fixture-only scan (kept for
+I5b–d). **Next: I5b** (the presentation union). None of it is pushed;
 Cesar decides when to push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
@@ -60,10 +62,39 @@ coordinates and details):
 | I2 phone database | **done** 2026-09-27 |
 | I3 native scanner | **done** 2026-09-27 |
 | I4 resolver | **done** 2026-09-27 (checked on the phone with I5) |
-| I5 device source | not started |
+| I5 device source | I5a **done** 2026-09-27; I5b–d next |
 | I6 mark and axis | not started |
 | I7 import flow | not started |
 | I8 300-song check | not started |
+
+## I5 plan (device songs in the field)
+
+Written before editing, 2026-09-27. Too wide for one commit — the field's
+`FieldPresentation` is node-shaped (`SongHeader`, `BackendRecord`, delivery
+artifact, `LocalAudio`) and ~70 sites read it — so four steps, each checked on
+the phone:
+
+- **I5a — the device library and the scan.** `device/deviceLibrary.ts`: opens
+  the phone database, publishes the `DeviceLibrary` through `core/store`, and
+  runs a scan: `generation` (stop if unchanged) → `list` → `rowsToInspect` →
+  `inspect` each (one at a time, progress published) → `buildScanCommit` →
+  `albumArt` for albums without art → `commitScan` → prune `files/artwork/`
+  of files no album names (clears the I3 lab's three). No UI trigger yet (I7):
+  until then a dev-only trigger scans **only `Music/cantor-import-test/`**,
+  so Cesar's own 25 files are not imported while this is being built.
+- **I5b — a presentation union.** `FieldPresentation` becomes
+  `NodePresentation | DevicePresentation` (`source` tag). The typechecker then
+  lists every site that reads node-only fields; each decides what a device
+  song means there. Device entities use the reserved node key `device`
+  (`FieldEntity.key = device:<id>`), `createdAtMs = addedAtMs`, the song's
+  tags. Their mark draws from the song id for now (I6 gives it the imported
+  marker and the metadata identity).
+- **I5c — playing and measuring.** The player loads the original path; the
+  analysis keys on `device`/id/`size:headSha256`; the shelf queue plays device
+  songs; the lock screen shows title and artist.
+- **I5d — the sheet.** Availability draws as `downloaded` (plays offline,
+  always) but offers no GET/KEEP/REMOVE; rename, delete and regenerate are
+  node verbs and are absent; tags and playlists write to the phone database.
 
 ## I4 plan (resolver)
 
@@ -228,6 +259,12 @@ Written before editing, 2026-09-27.
 
 ## Measurements
 
+I5a, Xiaomi, release build: a real scan of `Music/cantor-import-test/` only
+(16 files) into the real database: **1.6 s** (16 inspections, 4 album arts
+saved, 3 stale art files removed, one commit), 20 store changes. The same
+partial scan again: 1.2 s (a partial scan records no generation, so it
+re-inspects). Start (open + load): 14 ms.
+
 I3, Xiaomi, release build, throwaway lab against the fixtures:
 
 | What | Time |
@@ -291,6 +328,18 @@ So a 300-song first scan with the retriever and a thumbnail per *album* is
 seconds, not minutes; the per-song decode is the thing I1 exists for.
 
 ## Findings
+
+- **2026-09-27 — I5a: the fixtures after a real scan.** Six albums:
+  Fixture Album (9 → 7 tagged songs, art), Cover Only Album and Folder Only
+  Album (art from the folder's image), an untitled album for the untagged
+  WAV and AIFF in the Fixture Album folder (art from `cover.jpg`), and
+  untitled `loose` and `long`. All titles, artists, discs, tracks and years as
+  I4's tests say. The I3 lab's three art files were pruned.
+- **2026-09-27 — Known limit, not built: untagged files beside a tagged
+  album form their own untitled album.** Joining them to the folder's one
+  titled album is a sensible rule, but it makes a song's album depend on its
+  siblings (a stored untagged song would have to move when a tagged sibling
+  arrives). Revisit if real libraries show it.
 
 - **2026-09-27 — I4: Bandcamp's WAV/AIFF are named, not tagged, as far as
   Android can tell.** Neither reader parses their tags (I0), so the file name
@@ -478,3 +527,5 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 - `a220179` media: read the phone's music
 - `770dfdc` docs: import I3, native scanner
 - `041da3e` device: resolve a scan into songs and albums
+- `be18d23` docs: import I4, resolver
+- `19ec171` device: the device library and its scan
