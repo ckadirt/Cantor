@@ -11,6 +11,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.WritableMap
 import java.io.File
 import java.io.FileInputStream
@@ -239,6 +240,24 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
       partial.outputStream().use { bitmap.compress(Bitmap.CompressFormat.JPEG, ARTWORK_QUALITY, it) }
       if (!partial.renameTo(target)) throw IllegalStateException("Could not save artwork.")
       "$name.jpg"
+    }
+  }
+
+  /**
+   * Delete every saved album art file whose name is not in `keep`; resolves
+   * with the names removed. Only Cantor's own `files/artwork/` is touched.
+   * Called after a scan commits, so a file an album row names is never
+   * removed, and one no row names does not linger.
+   */
+  @ReactMethod
+  fun pruneArtwork(keep: ReadableArray, promise: Promise) {
+    run(promise) {
+      val kept = (0 until keep.size()).mapNotNull { keep.getString(it) }.toSet()
+      val removed = Arguments.createArray()
+      File(context.filesDir, "artwork").listFiles()?.forEach { file ->
+        if (file.isFile && file.name !in kept && file.delete()) removed.pushString(file.name)
+      }
+      removed
     }
   }
 
