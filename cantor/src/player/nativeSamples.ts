@@ -81,7 +81,9 @@ export function fromNativeReduction(
   });
   const hasStereo = value.mid !== undefined || value.side !== undefined;
   if (hasStereo !== channels.length >= 2) {
-    throw new Error('Native reduction stereo image does not match its channels.');
+    throw new Error(
+      'Native reduction stereo image does not match its channels.',
+    );
   }
   return {
     startSeconds,
