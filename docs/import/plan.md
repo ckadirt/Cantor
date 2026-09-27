@@ -46,11 +46,11 @@ jpg/png), or both, and belongs to the album, not the track.
 picker only yields `content://` URIs, which would force a copy of every file.
 MediaStore's `DATA` column gives a path that an app holding
 `READ_MEDIA_AUDIO` (API 33+; `READ_EXTERNAL_STORAGE` below, minSdk is 24) may
-open directly since Android 11. **I0 must confirm this on the Xiaomi.**
+open directly since Android 11. **Confirmed on the Xiaomi in I0.**
 
-Formats: audio-api is built with FFmpeg (`disableAudioapiFFmpeg` unset), so
-mp3, flac, m4a AAC/ALAC, ogg, opus, wav and aiff are expected to decode.
-Measured per format in I0, not assumed.
+Formats: audio-api is built with FFmpeg (`disableAudioapiFFmpeg` unset). I0
+decoded and played mp3, flac 16/44 and 24/96, m4a AAC and ALAC, ogg, opus, wav
+and aiff from their paths.
 
 ### MediaStore traps
 
@@ -59,8 +59,15 @@ Measured per format in I0, not assumed.
   MediaStore too.
 - `"<unknown>"` (`MediaStore.UNKNOWN_STRING`) for artist and album means
   *missing*; a title equal to the file name means *no title tag*.
-- `TRACK` may hold `disc × 1000 + track` on older rows; `DISC_NUMBER` and
-  `GENRE` exist only on newer APIs.
+- `TRACK` is `disc × 1000 + track` (still on API 33); `DISC_NUMBER` is the raw
+  tag string (`1/1`).
+- An untagged file's `ALBUM` is its **folder name**, not `<unknown>`; only
+  `ARTIST` is `<unknown>`. WAV and AIFF tags are never read, so they always
+  look untagged.
+- `YEAR` is null for FLAC, Ogg and Opus; `MediaMetadataRetriever`'s `DATE`
+  fills it (but its `DATE` is garbage for M4A — use `YEAR` there).
+- The duration comes from MediaStore; audio-api's `getAudioDuration` returns 0
+  for Ogg Vorbis.
 - `ALBUM_ID` is not an identity: two "Greatest Hits" merge. Cantor builds its
   own album key.
 - `_ID` can change when a file is moved or re-indexed. Each song also carries a
@@ -81,9 +88,11 @@ Resolution order:
 
 - **Title / artist / album / numbers:** tags (via MediaStore) → file name
   (`NN - Title`, `Artist - Title`) → folder names.
-- **Artwork:** embedded or MediaStore thumbnail (`loadThumbnail`, API 29+) →
-  `cover|folder|albumart.(jpg|png)` beside the tracks → none. One ~256 px file per
-  album in the app cache; never the full image, never per track.
+- **Artwork:** `loadThumbnail` (API 29+) alone — it returns the embedded
+  picture, else the folder's `cover.jpg`/`folder.jpg` (I0), which the app
+  cannot open directly with audio permission → none. Downscaled by us (it
+  ignores the requested size) to one ~256 px file per album in the app cache;
+  never the full image, never per track.
 
 A file that disappears marks its song `missing`; it is not deleted, and it
 re-attaches by fingerprint if it reappears elsewhere.
