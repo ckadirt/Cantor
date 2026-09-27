@@ -10,7 +10,9 @@ State on 2026-09-27: I0 and I1 done. Path playback works with no copy in
 every format (I0); a song's samples are now reduced natively with
 audio-api's own decoders, identical to the JS path and 6–18× faster (I1).
 I2 done: the phone database (`cantor.sqlite`, op-sqlite, schema 1) exists
-and is exercised by real-SQL tests. **Next: I3** (native scanner). None of it is pushed;
+and is exercised by real-SQL tests. I3 done: `CantorMedia` lists, inspects
+and saves album art, read only; the manifest declares the music permission.
+**Next: I4** (the resolver: raw rows → songs and albums). None of it is pushed;
 Cesar decides when to push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
@@ -54,12 +56,44 @@ coordinates and details):
 | I0 phone spike | **done** 2026-09-27 — throwaway, not committed |
 | I1 native reduction | **done** 2026-09-27 |
 | I2 phone database | **done** 2026-09-27 |
-| I3 native scanner | not started |
+| I3 native scanner | **done** 2026-09-27 |
 | I4 resolver | not started |
 | I5 device source | not started |
 | I6 mark and axis | not started |
 | I7 import flow | not started |
 | I8 300-song check | not started |
+
+## I3 plan (native scanner)
+
+Written before editing, 2026-09-27.
+
+- **`CantorMedia`, a new native module** (`media/CantorMediaModule.kt`),
+  reading only; it never writes, moves or deletes a user's file. All work on
+  its own single thread.
+  - `generation()` — `MediaStore.getGeneration` (API 30+; −1 below). Equal
+    to the last scan's means nothing changed and the scan stops there.
+  - `list(minDurationMs)` — every `IS_MUSIC = 1` row at least that long:
+    `_ID`, `DATA`, `TITLE`, `ARTIST`, `ALBUM`, `ALBUM_ARTIST`, `TRACK`,
+    `DISC_NUMBER`, `YEAR`, `GENRE`, `DURATION`, `MIME_TYPE`, `SIZE`,
+    `DATE_ADDED`, `GENERATION_MODIFIED`. Always the full list (metadata only,
+    cheap): it is also how a scan learns which songs went missing, which an
+    incremental query cannot say.
+  - `inspect(path)` — for a new or changed file only: size, sha256 of the
+    first 64 KB (the fingerprint), and `MediaMetadataRetriever`'s tags. The
+    retriever is the second reader (I0): its null album is how the resolver
+    tells "no album tag" from MediaStore's folder-name album, and its date
+    fills the year MediaStore drops for FLAC/Ogg/Opus.
+  - `albumArt(mediaId, name)` — `loadThumbnail`, downscaled to at most
+    256 px and saved as `files/artwork/<name>.jpg`; null when there is no
+    art. Files, not cache: the album row points at it, and the system must
+    not clear it behind the database's back.
+- **Permission.** `READ_MEDIA_AUDIO` (API 33+) and `READ_EXTERNAL_STORAGE`
+  with `maxSdkVersion 32`, in the manifest; asking is I7's.
+- **JS bridge** `device/native.ts`, checking every row (the MediaStore
+  `<unknown>` and `disc×1000+track` rules are the resolver's, I4, not this
+  layer's: the bridge passes the raw values).
+- **Checks.** Bridge decoding tests; on the phone a throwaway lab lists the
+  fixtures, inspects each, and saves one album's art, timed.
 
 ## I2 plan (phone database)
 
@@ -153,6 +187,18 @@ Written before editing, 2026-09-27.
 
 ## Measurements
 
+I3, Xiaomi, release build, throwaway lab against the fixtures:
+
+| What | Time |
+| --- | --- |
+| `generation()` | 44 ms (first call, includes module start) |
+| `list(30000)`: 37 rows | 48 ms |
+| `inspect` (64 KB hash + retriever) per file | 29–58 ms; 88 ms the first |
+| `albumArt` (thumbnail, downscale, save) | 15–26 ms |
+
+A first scan of 300 songs in ~30 albums: ~15 s of `inspect` on the
+module's own thread and under 1 s of art. Worth showing progress for (I7).
+
 I2, Xiaomi, release build, op-sqlite 18.2.5 (SQLite 3.53.4), throwaway lab:
 
 | What | Time |
@@ -204,6 +250,27 @@ So a 300-song first scan with the retriever and a thumbnail per *album* is
 seconds, not minutes; the per-song decode is the thing I1 exists for.
 
 ## Findings
+
+- **2026-09-27 — I3: the scanner on the phone** (fixtures; Cesar's own files
+  only counted). What the resolver (I4) receives:
+  - MediaStore `track` is `1001…` (disc × 1000 + track); the retriever's is
+    the tag text, `"7/10"`. `disc` is `"1/1"` from both.
+  - Untagged files: MediaStore gives `artist "<unknown>"`, `album` = folder
+    name, `title` = file name; the retriever gives **all nulls** — the
+    reliable "no tag" signal. WAV and AIFF look the same way even though
+    they are tagged (neither reader parses their tags).
+  - `year`: MediaStore null for FLAC/Ogg/Opus, the retriever's `date` is
+    `"2019"` there; for MP3 the retriever has `year "2019"`, `date` null; for
+    M4A its `date` is the MP4 epoch `19040101T000000.000Z` and `year` is right.
+  - `albumArtist` null from both when the file has none (Cover Only).
+  - `list(0)` includes the 3 s blip, `list(30000)` does not.
+  - Files pushed without `scan_volume` are absent from `list` (the `long/`
+    folder): MediaStore is the only source of truth for what exists.
+- **2026-09-27 — I3: the lab left three files in the app's
+  `files/artwork/`** (`lab-1000000769.jpg`, `lab-1000000774.jpg`,
+  `lab-1000000779.jpg`, ~5 KB each), which a release build cannot delete from
+  adb. **Requirement for I5:** a scan removes every file in `files/artwork/`
+  that no album row names; that also clears these.
 
 - **2026-09-27 — I2: Node 22's built-in SQLite runs the schema in Jest.**
   `jest/nodeSqlite.ts` binds the `SqlDatabase` port to `node:sqlite`
@@ -350,3 +417,7 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 - `a46a14a` docs: import I0, path playback works in every format
 - `45e8f53` audio: reduce samples natively with audio-api's own decoders
 - `c019e85` docs: import I1, native reduction
+- `68b51e0` player: format nativeSamples
+- `2fa88e8` device: phone database for imported songs
+- `15a2618` docs: import I2, phone database
+- `a220179` media: read the phone's music
