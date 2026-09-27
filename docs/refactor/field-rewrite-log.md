@@ -15,11 +15,10 @@ State on 2026-09-26: phases 1–4 done (R5 shelved; R6, the lens contract, and R
 field rewrite is pushed (`git rev-list --count origin/main..main`); Cesar
 decides when to push.
 
-**Next:** phase 5, device import (Cesar's order, 2026-09-26). Its design is
-in `field-redesign.html` § "Songs, homes and copies"; two design calls wait
-on Cesar when they come up (what an imported mark looks like; how imported
-songs are grouped). Also open: the L2 playback cost finding, and the tree
-lens on the contract (after alpha). The "how the app is
+**Next:** phase 5, device import (Cesar's order, 2026-09-26), is a new
+feature with its own plan and log: [`../import/plan.md`](../import/plan.md)
+and [`../import/log.md`](../import/log.md). Also open here: the L2 playback
+cost finding, and the tree lens on the contract (after alpha). The "how the app is
 built" walkthrough waits until the rewrite is finished.
 Any step touching a lens keeps `lensGoldens.test.ts` and
 `playerRingGoldens.test.tsx` passing unchanged; a golden changed on purpose
@@ -78,7 +77,7 @@ motion rules, required before touching motion or Skia code.
 | 2. Stores | **done** — `53b3488`, `d8f9588`, `1475be9` (field-screen UI stores deferred to phase 4) |
 | 3. Renderer | **done** — R1 `ecddc22`, R2 `5218cf7`, R3 `82dc931`, R4 `9690ff0` `aa3e5ce` done, R5 shelved, R6 (lens contract) R6a `6967a9a`, R6b `5691bb3`, R6c `cc27a36`, R6d `dbbb48d`, R6e `047b663` `96410f4`, R6f `f60a6ab`, R6g `2c7477a`; R7 (every lens keeps the availability reading) `b0b5632`; see "Phase 3 plan" |
 | 4. Camera events, chrome, UI stores | **done** — C1 `b1a72aa`, C2 `c38fc87`, C2b `cd54f40`, C3a `4007b5e`, C4 `ea9657e`, C5 `04ea31e`, runtime persist-on-change `706514c`, `keep` `b4d095d`; C3b measured, not built; see "Phase 4 plan" |
-| 5. Import (device songs) | not started — design in `field-redesign.html` § "Songs, homes and copies" |
+| 5. Import (device songs) | moved to its own plan and log, `docs/import/` (2026-09-27) |
 | 6. L3 (grain) as a layer | not started; decide after phase 3 |
 
 ## Goals (agreed with Cesar, 2026-09-24)
