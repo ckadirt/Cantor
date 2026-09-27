@@ -107,8 +107,10 @@ Settled with Cesar on 2026-09-27.
    grey/black/filled ink order. L2 offers the circle, the waves, **and the
    cover** — the cover not as a photo but converted by a cheap math/ASCII
    function (brightness → glyph density) into ink, so it matches the app's
-   aesthetic. The conversion runs once per album on the small cached
-   thumbnail, and its result is cached too.
+   aesthetic. **The ASCII is never stored** (Cesar, 2026-09-27): it is
+   computed on the fly from the album's small cached thumbnail — a grid of
+   ~50×50 brightness cells mapped to glyphs is microseconds of work. Only the
+   thumbnail is kept.
 2. **Grouping.** Time axes (WEEK/MONTH/YEAR) use arrival on the phone
    (`DATE_ADDED`) for now; an album arrives together, so it clusters. **The
    song's own date (year/date tag) is stored too**: it is shown to the user
@@ -126,7 +128,7 @@ Each ships alone and follows the routine in `log.md`.
 | Step | What | Why here |
 | --- | --- | --- |
 | **I0 phone spike** | Throwaway: permission, MediaStore query, play the `DATA` path with our player, `loadThumbnail`; one fixture per format (mp3, flac 16/44 and 24/96, m4a AAC, m4a ALAC, ogg, opus, wav, aiff). | Decides path playback with no copy. Everything below leans on it. |
-| **I1 native reduction** | Kotlin `MediaExtractor` + `MediaCodec` streaming min/max/rms buckets, replacing `readSamples`' JS loop; the old path stays as fallback for what the platform decoder refuses. Measured. | Today: ~1.5 s of a core per song, and a whole-song float buffer (~69 MB for 3 min at 44.1 kHz, ~230 MB for 5 min at 96 kHz). |
+| **I1 native reduction** | **Done.** C++ on audio-api's own decoders (FFmpeg for MP4/AAC, its miniaudio for the rest) streaming min/max/rms buckets, replacing `readSamples`' JS loop; the JS path stays as fallback. MediaCodec was tried and dropped (log § Findings). | Today: ~1.5 s of a core per song, and a whole-song float buffer (~69 MB for 3 min at 44.1 kHz, ~230 MB for 5 min at 96 kHz). |
 | **I2 phone database** | op-sqlite: device songs, albums, tags. The AsyncStorage blob is untouched. | Decided 2026-09-24; imports are its first user. |
 | **I3 native scanner** | `CantorMediaModule`: paged MediaStore rows, album thumbnails to cache, incremental re-scan via `MediaStore.getGeneration` (API 30+). | Keeps the scan native and re-scans cheap. |
 | **I4 resolver** | Pure TS: tags → name → folder, the `<unknown>` rule, disc/track split, album key, fingerprint, duplicates. Table tests of messy real cases. | All policy in one testable place. |

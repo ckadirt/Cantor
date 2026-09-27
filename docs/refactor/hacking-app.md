@@ -145,6 +145,18 @@ and `FragmentReassembler` own record framing. Add JVM tests before moving any
 of it; the React Native method names, arguments, return shapes, and error text
 are the contract.
 
+Reading a song's samples (`PlayerPort.samples`, for the analysis and the L3
+grain) is native first: `CantorAudio.reduce` → `AudioReduction.kt` →
+`src/main/cpp/AudioReduction.cpp`, the app's only C++, compiled into React
+Native's `libappmodules` through `src/main/jni/CMakeLists.txt`. It decodes with
+react-native-audio-api's own decoders — its FFmpeg for `.mp4`/`.m4a`/`.aac`,
+its miniaudio (looked up with `dlsym` in its library) for everything else — so
+the columns match what plays. `player/nativeSamples.ts` falls back to the JS
+decode if the native side throws. **Upgrading react-native-audio-api** can
+break it (the FFmpeg paths, the dispatch rule, the exported `ma_*` symbols);
+the fallback keeps the app working, but re-check with
+`docs/import/log.md` § I1.
+
 ## Forgetting and recovering engines
 
 Forgetting removes the pairing record and stops its connection. It never touches
