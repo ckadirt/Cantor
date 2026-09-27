@@ -53,6 +53,7 @@ type CantorMediaNative = {
   list(minDurationMs: number): Promise<unknown>;
   inspect(path: string): Promise<unknown>;
   albumArt(mediaId: number, name: string): Promise<unknown>;
+  pruneArtwork(keep: string[]): Promise<unknown>;
 };
 
 function module(): CantorMediaNative {
@@ -103,6 +104,18 @@ export const nativeMedia = {
       throw new Error('Native album art result is invalid.');
     }
     return value;
+  },
+
+  /**
+   * Delete the saved art files not in `keep` (file names); the names removed.
+   * Only Cantor's own `files/artwork/`.
+   */
+  async pruneArtwork(keep: readonly string[]): Promise<string[]> {
+    const value = await module().pruneArtwork([...keep]);
+    if (!Array.isArray(value) || value.some(name => typeof name !== 'string')) {
+      throw new Error('Native artwork prune result is invalid.');
+    }
+    return value as string[];
   },
 };
 
