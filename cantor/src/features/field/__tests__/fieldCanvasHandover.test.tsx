@@ -23,7 +23,10 @@ import {
   type FieldLayout,
 } from '../../../field';
 import { FieldCanvas } from '../FieldCanvas';
-import type { FieldPresentation } from '../useFieldController';
+import {
+  nodePresentation,
+  type FieldPresentation,
+} from '../useFieldController';
 import type { FieldRecutModel } from '../useFieldCamera';
 
 /** Every shared value the canvas built, in creation order. */
@@ -113,7 +116,7 @@ const backend = {
 const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
   entities.map(entity => [
     entity.key,
-    {
+    nodePresentation({
       entity,
       song: {
         id: entity.entityId,
@@ -133,7 +136,7 @@ const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
       nodeLabels: ['Studio'],
       delivery: undefined,
       localAudio: { state: 'remote', bytes: 0 },
-    } as FieldPresentation,
+    }),
   ]),
 );
 

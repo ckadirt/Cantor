@@ -13,7 +13,7 @@ import type {
   PlayerPort,
   PlayerSnapshot,
 } from '../../player';
-import type { FieldPresentation } from './useFieldController';
+import { audioRefOf, type FieldPresentation } from './useFieldController';
 
 /** KNOBS — how the shelf plays on. */
 export const SHELF_QUEUE_KNOBS = {
@@ -123,7 +123,7 @@ export function useShelfQueue({
 
   const playable = useCallback((entityKey: string) => {
     const presentation = latest.current.presentations.get(entityKey);
-    return presentation !== undefined && presentation.delivery !== undefined;
+    return presentation !== undefined && presentation.playable;
   }, []);
 
   /** Fetch, then open — unless a newer play has been asked for meanwhile. */
@@ -134,20 +134,12 @@ export function useShelfQueue({
       if (ahead !== undefined) await ahead.catch(() => undefined);
       const path = await latest.current.fetchPath(presentation);
       if (held !== ticket.current) return false;
-      const artifact = presentation.delivery;
-      if (artifact === undefined) throw new Error('This song has no audio yet.');
-      await latest.current.transport.open(
-        {
-          nodeKey: presentation.entity.nodePublicKey,
-          songId: presentation.entity.entityId,
-          digest: artifact.sha256,
-        },
-        path,
-        {
-          title: presentation.song.title,
-          artist: presentation.nodeLabels[0] ?? 'Cantor',
-        },
-      );
+      const ref = audioRefOf(presentation);
+      if (ref === null) throw new Error('This song has no audio yet.');
+      await latest.current.transport.open(ref, path, {
+        title: presentation.title,
+        artist: presentation.label,
+      });
       if (player.snapshot().state === 'error') {
         throw new Error(player.snapshot().error ?? 'This song would not open.');
       }

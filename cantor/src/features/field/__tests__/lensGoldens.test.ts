@@ -38,7 +38,10 @@ import {
   type GrainBars,
   type SongDetailModel,
 } from '../FieldCanvas';
-import type { FieldPresentation } from '../useFieldController';
+import {
+  nodePresentation,
+  type FieldPresentation,
+} from '../useFieldController';
 
 const viewport = { width: 380, height: 800 };
 const CIRCLE = lensIndex('name');
@@ -60,7 +63,7 @@ const entities: FieldEntity[] = STATES.map((_, index) => ({
 const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
   entities.map((entity, index) => [
     entity.key,
-    {
+    nodePresentation({
       entity,
       song: {
         id: entity.entityId,
@@ -87,7 +90,7 @@ const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
       nodeLabels: ['Studio'],
       delivery: undefined,
       localAudio: { state: STATES[index], bytes: 0 },
-    } as FieldPresentation,
+    }),
   ]),
 );
 

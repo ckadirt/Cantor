@@ -60,9 +60,9 @@ function FieldA11yListImpl({
                 ? 'Opens this song group'
                 : 'Records this song as the focused row'
             }
-            accessibilityLabel={`${presentation.song.title}, ${
+            accessibilityLabel={`${presentation.title}, ${
               group.label
-            }, ${Math.round(presentation.song.duration_ms / 1000)} seconds`}
+            }, ${Math.round(presentation.durationMs / 1000)} seconds`}
             accessibilityRole="button"
             onPress={() => onSelect(placement)}
             style={styles.item}

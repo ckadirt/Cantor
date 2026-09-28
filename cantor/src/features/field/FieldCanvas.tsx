@@ -132,7 +132,11 @@ import {
   lineOwnedByPlayer,
   playerRadiusPx,
 } from './songPose';
-import type { FieldPresentation, JobPresentation } from './useFieldController';
+import {
+  sameDrawnSong,
+  type FieldPresentation,
+  type JobPresentation,
+} from './useFieldController';
 import { FIELD_CAMERA_KNOBS, type FieldRecutModel } from './useFieldCamera';
 
 /** KNOBS — screen-space culling and row dimensions from the HTML prototype. */
@@ -460,15 +464,7 @@ function FieldCanvasImpl({
       retained.size === previous.size &&
       [...retained].every(([key, next]) => {
         const old = previous.get(key);
-        return (
-          old !== undefined &&
-          old.song === next.song &&
-          old.backend === next.backend &&
-          old.ready === next.ready &&
-          old.delivery === next.delivery &&
-          old.localAudio === next.localAudio &&
-          old.nodeLabels.join('\0') === next.nodeLabels.join('\0')
-        );
+        return old !== undefined && sameDrawnSong(old, next);
       })
     )
       return previous;
@@ -1118,15 +1114,9 @@ export function faceFlightsOf(
   for (const flight of flights) {
     const presentation = presentations.get(flight.entityKey);
     if (presentation === undefined) continue;
-    const song = presentation.song;
     const to = ink?.to.get(flight.entityKey) ?? songInkOf(presentation);
     const from = ink?.from.get(flight.entityKey) ?? to;
-    const recipe = {
-      seed: song.seed,
-      id: presentation.entity.entityId,
-      model: song.model,
-      durationMs: song.duration_ms,
-    };
+    const recipe = presentation.recipe;
     const isPlayer =
       focusKey !== null && flight.targetPlacementKey === focusKey;
     result.push({
@@ -1155,7 +1145,7 @@ export function faceFlightsOf(
         presentation.localAudio.state === 'partial'
           ? arrivingFraction(
               presentation.localAudio.bytes,
-              presentation.delivery?.byte_length,
+              presentation.byteLength ?? undefined,
             ) ?? ARRIVING_UNKNOWN
           : ARRIVING_NONE,
       // The same two questions `NativePlacementFlight` asks, asked here so the
@@ -1921,7 +1911,7 @@ function songDetailOf(
     targetBloomX: flight.targetBloomX,
     targetBloomY: flight.targetBloomY,
     levels: levelsOf(analyses?.get(flight.entityKey)),
-    durationSeconds: presentation.song.duration_ms / 1000,
+    durationSeconds: presentation.durationMs / 1000,
   };
 }
 
@@ -2041,7 +2031,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     return {
       flights,
       playerKey: key,
-      playerSeconds: (presentation?.song.duration_ms ?? 0) / 1000,
+      playerSeconds: (presentation?.durationMs ?? 0) / 1000,
       // Born with the faces, and at its start, when the sound has to rise: a
       // clock shared across generations would paint the risen sound for a frame
       // before the effect below could wind it back. Null is risen.
@@ -2163,19 +2153,13 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       recut.flights.flatMap(flight => {
         const presentation = presentations.get(flight.entityKey);
         if (!presentation) return [];
-        const song = presentation.song;
         return [
           {
             flight,
             titleFrom: ink.from.get(flight.entityKey)?.title,
             row: nativeRowModel(
               presentation,
-              {
-                seed: song.seed,
-                id: presentation.entity.entityId,
-                model: song.model,
-                durationMs: song.duration_ms,
-              },
+              presentation.recipe,
               displayFont,
               monoFont,
             ),
@@ -2311,13 +2295,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           return null;
         const presentation = presentations.get(flight.entityKey);
         if (presentation === undefined) return null;
-        const song = presentation.song;
-        const recipe = {
-          seed: song.seed,
-          id: presentation.entity.entityId,
-          model: song.model,
-          durationMs: song.duration_ms,
-        };
+        const recipe = presentation.recipe;
         const row = nativeRowModel(presentation, recipe, displayFont, monoFont);
         /*
          * Exactly one song in the field is the player, so exactly one flight
@@ -2373,7 +2351,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             transportPlaying={focused ? transportPlaying : null}
             transportArriving={focused ? transportArriving : null}
             transportLights={focused ? transportLights : null}
-            durationSeconds={song.duration_ms / 1000}
+            durationSeconds={presentation.durationMs / 1000}
             displayFont={displayFont}
             monoFont={monoFont}
             color={palette.ink}
@@ -2412,7 +2390,9 @@ function nativeRowModel(
   // cut to whatever is left, so a long title cannot run under the word that
   // acts on it. Both are measured from the row's own point, which is the
   // origin of the group the UI thread moves.
-  const action = availabilityAction(availability);
+  const action = presentation.audioActions
+    ? availabilityAction(availability)
+    : null;
   const titleLeft = -NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
   const rowRight = NAME_LENS_KNOBS.ROW_RIGHT_PX;
   const actionWidth = action === null ? 0 : textWidth(action, monoFont);
@@ -2421,7 +2401,7 @@ function nativeRowModel(
       ? rowRight
       : rowRight - actionWidth - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
   const column = titleRight - titleLeft;
-  const title = fitText(presentation.song.title, displayFont, column);
+  const title = fitText(presentation.title, displayFont, column);
   return {
     action,
     actionX: rowRight - actionWidth,
@@ -2435,16 +2415,19 @@ function nativeRowModel(
     titleAlpha: TITLE_ALPHA[availability],
     meta: fitText(
       // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
-      // the longest line here and it must not run under the action word.
-      availabilityLine({
-        audioState: presentation.localAudio.state,
-        arriving: arrivingFraction(
-          presentation.localAudio.bytes,
-          presentation.delivery?.byte_length,
-        ),
-        byteLength: presentation.delivery?.byte_length ?? null,
-        nodeLabel: presentation.nodeLabels[0] ?? presentation.backend.petname,
-      }),
+      // the longest line here and it must not run under the action word. A
+      // device song's file was never downloaded: its line is who made it.
+      presentation.source === 'device'
+        ? presentation.label.toUpperCase()
+        : availabilityLine({
+            audioState: presentation.localAudio.state,
+            arriving: arrivingFraction(
+              presentation.localAudio.bytes,
+              presentation.byteLength ?? undefined,
+            ),
+            byteLength: presentation.byteLength,
+            nodeLabel: presentation.label,
+          }),
       monoFont,
       column,
     ),

@@ -1,4 +1,5 @@
 import { audioKey } from '../../audio/repository';
+import type { AudioRef } from '../../audio/localAudioStore';
 import type { LocalAudio } from '../../audio/native';
 import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { SongHeader } from '../../core/protocol';
@@ -8,16 +9,151 @@ import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import type { JobView } from '../../core/protocol';
 import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import type { FieldEntity } from '../../field';
+import type { FaceRecipe } from '../../lenses/face';
+import type {
+  DeviceAlbum,
+  DeviceLibrary,
+  DeviceSong,
+} from '../../device/repository';
 
-export type FieldPresentation = Readonly<{
+/**
+ * The reserved node key of songs whose files live on this phone.
+ *
+ * A node key is a public key, so no node can ever have this one: a device
+ * song's entity key is `device:<id>` and cannot collide with a node's song.
+ */
+export const DEVICE_NODE_KEY = 'device';
+
+/**
+ * What every song in the field shows, wherever it lives.
+ *
+ * Display reads these; anything that acts on a song — downloading it, renaming
+ * it, asking a node — narrows on `source` first, because a device song has no
+ * node, no delivery artifact and no revision to send.
+ */
+type PresentationBase = Readonly<{
   entity: FieldEntity;
-  song: SongHeader;
-  backend: BackendRecord;
-  ready: boolean;
-  nodeLabels: readonly string[];
-  delivery: ArtifactView | undefined;
+  title: string;
+  durationMs: number;
+  /** The recipe a lens draws the song's face from. */
+  recipe: FaceRecipe;
+  /**
+   * Where the audio is. A device song is always `pinned`: its file is on the
+   * phone and no budget may reclaim it, which is the promise `downloaded` ink
+   * draws. It offers no action on that audio (`audioActions`).
+   */
   localAudio: LocalAudio;
+  /** The playable file's size, or null when a node has not offered one. */
+  byteLength: number | null;
+  /** The second line: the node's name, or a device song's artist. */
+  label: string;
+  /** False when GET / KEEP / REMOVE mean nothing: a device song's own file. */
+  audioActions: boolean;
+  /** False while nothing could play: no delivery yet, or a missing file. */
+  playable: boolean;
 }>;
+
+export type NodePresentation = PresentationBase &
+  Readonly<{
+    source: 'node';
+    song: SongHeader;
+    backend: BackendRecord;
+    ready: boolean;
+    nodeLabels: readonly string[];
+    delivery: ArtifactView | undefined;
+  }>;
+
+export type DevicePresentation = PresentationBase &
+  Readonly<{
+    source: 'device';
+    device: DeviceSong;
+    album: DeviceAlbum | undefined;
+  }>;
+
+export type FieldPresentation = NodePresentation | DevicePresentation;
+
+/**
+ * A node song's presentation from what the runtime holds; the display fields
+ * are derived here, once, so every reader agrees on them.
+ */
+export function nodePresentation(
+  parts: Readonly<{
+    entity: FieldEntity;
+    song: SongHeader;
+    backend: BackendRecord;
+    ready: boolean;
+    nodeLabels: readonly string[];
+    delivery: ArtifactView | undefined;
+    localAudio: LocalAudio;
+  }>,
+): NodePresentation {
+  const { song, backend, delivery } = parts;
+  return {
+    ...parts,
+    source: 'node',
+    title: song.title,
+    durationMs: song.duration_ms,
+    recipe: {
+      seed: song.seed,
+      id: song.id,
+      model: song.model,
+      durationMs: song.duration_ms,
+    },
+    byteLength: delivery?.byte_length ?? null,
+    label: parts.nodeLabels[0] ?? backend.petname,
+    audioActions: true,
+    playable: delivery !== undefined,
+  };
+}
+
+/**
+ * The player's name for a song's audio, or null while there is none to play.
+ *
+ * A node song is its delivery artifact; a device song is its own file, whose
+ * fingerprint stands in for a digest (a retagged or replaced file is a
+ * different sound, and must not reuse the old one's analysis).
+ */
+export function audioRefOf(presentation: FieldPresentation): AudioRef | null {
+  if (presentation.source === 'device') {
+    return {
+      nodeKey: DEVICE_NODE_KEY,
+      songId: presentation.device.id,
+      digest: `${presentation.device.size}:${presentation.device.headSha256}`,
+    };
+  }
+  if (presentation.delivery === undefined) return null;
+  return {
+    nodeKey: presentation.entity.nodePublicKey,
+    songId: presentation.entity.entityId,
+    digest: presentation.delivery.sha256,
+  };
+}
+
+/**
+ * True when two presentations draw the same: what the canvas asks before
+ * re-recording a retained song's pictures.
+ */
+export function sameDrawnSong(
+  left: FieldPresentation,
+  right: FieldPresentation,
+): boolean {
+  if (left.localAudio !== right.localAudio) return false;
+  if (left.source === 'device' || right.source === 'device') {
+    return (
+      left.source === right.source &&
+      left.entity === right.entity &&
+      left.title === right.title &&
+      left.label === right.label
+    );
+  }
+  return (
+    left.song === right.song &&
+    left.backend === right.backend &&
+    left.ready === right.ready &&
+    left.delivery === right.delivery &&
+    left.nodeLabels.join('\0') === right.nodeLabels.join('\0')
+  );
+}
 
 /**
  * A generation in flight, as the field sees it.
@@ -59,7 +195,11 @@ export type FieldController = Readonly<{
 type FieldRuntimeState = Pick<
   BackendRuntimeState,
   'backends' | 'snapshots' | 'localAudio' | 'outbox'
->;
+> &
+  Readonly<{
+    /** Songs whose files live on this phone; absent before the database opens. */
+    device?: DeviceLibrary;
+  }>;
 
 /**
  * Job states that are still worth drawing.
@@ -138,6 +278,7 @@ export function buildFieldController(
       const ready = paired.has(nodeKey) && snapshot?.phase === 'ready';
       if (
         kept !== undefined &&
+        kept.source === 'node' &&
         kept.song === song &&
         kept.backend === backend &&
         kept.ready === ready &&
@@ -146,16 +287,22 @@ export function buildFieldController(
         presentations.set(entity.key, kept);
         continue;
       }
-      presentations.set(entity.key, {
-        entity,
-        song,
-        backend,
-        ready,
-        nodeLabels: nodeLabelsOf(backend),
-        delivery,
-        localAudio,
-      });
+      presentations.set(
+        entity.key,
+        nodePresentation({
+          entity,
+          song,
+          backend,
+          ready,
+          nodeLabels: nodeLabelsOf(backend),
+          delivery,
+          localAudio,
+        }),
+      );
     }
+  }
+  if (state.device !== undefined) {
+    addDeviceSongs(state.device, previous, presentations);
   }
   // Jobs join the same field as songs, keyed by canonical job id, so a job that
   // resolves into a song keeps its identity and its place.
@@ -234,6 +381,70 @@ export function buildFieldController(
   };
 }
 
+/**
+ * Every device song the field draws, beside the node songs.
+ *
+ * A missing file's song is left out rather than drawn as a promise it cannot
+ * keep; it comes back when its file does (the scan keeps it, `repository.ts`).
+ * Same identity rule as the node songs: an unchanged song keeps its
+ * presentation object.
+ */
+function addDeviceSongs(
+  library: DeviceLibrary,
+  previous: FieldController | null,
+  presentations: Map<string, FieldPresentation>,
+): void {
+  const albums = new Map(library.albums.map(album => [album.key, album]));
+  for (const device of library.songs) {
+    if (device.missingSinceMs !== null) continue;
+    const key = `${DEVICE_NODE_KEY}:${device.id}`;
+    const tags = library.tags.get(device.id) ?? NO_TAGS;
+    const album = albums.get(device.albumKey);
+    const kept = previous?.presentations.get(key);
+    const entity = keepEntity(kept?.entity, {
+      key,
+      nodePublicKey: DEVICE_NODE_KEY,
+      entityId: device.id,
+      kind: 'song',
+      createdAtMs: device.addedAtMs,
+      durationMs: device.durationMs,
+      tags,
+    });
+    if (
+      kept !== undefined &&
+      kept.source === 'device' &&
+      kept.device === device &&
+      kept.album === album &&
+      kept.entity === entity
+    ) {
+      presentations.set(key, kept);
+      continue;
+    }
+    presentations.set(key, {
+      source: 'device',
+      entity,
+      title: device.title,
+      durationMs: device.durationMs,
+      recipe: {
+        seed: undefined,
+        id: device.id,
+        model: DEVICE_NODE_KEY,
+        durationMs: device.durationMs,
+      },
+      localAudio: { state: 'pinned', bytes: device.size },
+      byteLength: device.size,
+      label: device.artist ?? DEVICE_LABEL,
+      audioActions: false,
+      playable: true,
+      device,
+      album,
+    });
+  }
+}
+
+/** A device song's second line when it names no artist. */
+const DEVICE_LABEL = 'This phone';
+
 const NO_STAGES: readonly GenerationStage[] = [];
 const NO_TAGS: readonly string[] = [];
 
@@ -272,6 +483,7 @@ function offlineBackend(
   if (previous === null) return undefined;
   for (const presentation of previous.presentations.values()) {
     if (
+      presentation.source === 'node' &&
       presentation.entity.nodePublicKey === nodeKey &&
       presentation.backend.relayUrl === ''
     ) {

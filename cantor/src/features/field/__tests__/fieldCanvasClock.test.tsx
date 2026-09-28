@@ -21,7 +21,12 @@ import {
   type FieldLayout,
 } from '../../../field';
 import { FieldCanvas } from '../FieldCanvas';
-import type { JobPresentation, FieldPresentation } from '../useFieldController';
+import {
+  nodePresentation,
+  type FieldPresentation,
+  type JobPresentation,
+  type NodePresentation,
+} from '../useFieldController';
 import type { FieldRecutModel } from '../useFieldCamera';
 
 const mockBornClocks: Array<{ born: number; clock: { value: number } }> = [];
@@ -112,7 +117,7 @@ const backend = {
 const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
   entities.map(entity => [
     entity.key,
-    {
+    nodePresentation({
       entity,
       song: {
         id: entity.entityId,
@@ -132,7 +137,7 @@ const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
       nodeLabels: ['Studio'],
       delivery: undefined,
       localAudio: { state: 'remote', bytes: 0 },
-    } as FieldPresentation,
+    }),
   ]),
 );
 
@@ -420,7 +425,10 @@ describe('field canvas re-cut clock', () => {
           new Map(
             [...songs].map(([key, value]) => [
               key,
-              { ...value, nodeLabels: [...value.nodeLabels] },
+              {
+                ...(value as NodePresentation),
+                nodeLabels: [...(value as NodePresentation).nodeLabels],
+              },
             ]),
           )
         }
