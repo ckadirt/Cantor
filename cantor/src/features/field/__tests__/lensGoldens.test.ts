@@ -356,6 +356,60 @@ describe('golden pixels: faces', () => {
 });
 
 /**
+ * The imported marker (docs/import I6a): the same songs with `imported` set,
+ * as a device song's recipe has it. Each lens draws its spindle in its own
+ * form, at the mark, the row, and through the descent, where the circle keeps
+ * it as the player's hub and the seal lets it go.
+ */
+describe('golden pixels: the imported mark', () => {
+  const imported: ReadonlyMap<string, FieldPresentation> = new Map(
+    [...presentations].map(([key, presentation]) => [
+      key,
+      { ...presentation, recipe: { ...presentation.recipe, imported: true } },
+    ]),
+  );
+  const importedFaces = (focusKey: string | null) =>
+    faceFlightsOf(
+      planPlacementFlights([], layout.placements, 1),
+      imported,
+      focusKey,
+      null,
+    );
+
+  it('draws something the generated mark does not', () => {
+    for (const lens of [0, 1]) {
+      expect(
+        faces({ faces: importedFaces(null), camera: atField, lens }),
+      ).not.toBe(faces({ faces: facesFor(null), camera: atField, lens }));
+    }
+  });
+
+  it('marks, rows and the descent, circle and seal', () => {
+    const frames: Record<string, string> = {};
+    for (const lens of [0, 1]) {
+      frames[`L0 lens ${lens}`] = faces({
+        faces: importedFaces(null),
+        camera: atField,
+        lens,
+      });
+      frames[`L1 lens ${lens}`] = faces({
+        faces: importedFaces(null),
+        camera: heldSeat(LEVEL_SCALE_RATIOS.shelf),
+        lens,
+      });
+      for (const ratio of [12.5, 18, LEVEL_SCALE_RATIOS.song]) {
+        frames[`ratio ${ratio} lens ${lens}`] = faces({
+          faces: importedFaces(held.key),
+          camera: heldSeat(ratio),
+          lens,
+        });
+      }
+    }
+    expect(frames).toMatchSnapshot();
+  });
+});
+
+/**
  * Downloads landing (R7): every lens shows one in its own form — the circle an
  * arc round the face, the seal its dust filling in along its thread — at the
  * mark, the row, and through the descent into the player, where the seal's

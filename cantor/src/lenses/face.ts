@@ -73,6 +73,12 @@ export type FaceRecipe = Readonly<{
   /** `SongHeader.model`, so two seeds that collide across models still differ. */
   model: string;
   durationMs: number;
+  /**
+   * True for a song imported from the phone's own files. Its seed comes from
+   * its tags (`metadataSeed`) and every lens adds the imported marker to its
+   * identity — see `docs/import/plan.md` § Decisions 1.
+   */
+  imported?: boolean;
 }>;
 
 export type FaceParams = Readonly<{
@@ -171,6 +177,19 @@ function contourPoint(params: FaceParams, angle: number): FacePoint {
     x: Math.cos(angle) * radius * eccentricity,
     y: (Math.sin(angle) * radius) / eccentricity,
   };
+}
+
+/**
+ * An imported song's seed, from what its tags say it is: the artist and the
+ * title, folded so case and spacing do not count.
+ *
+ * The metadata rather than the file, so one song is one face in any rip and on
+ * any phone; the file's own fingerprint is its id, not its identity.
+ */
+export function metadataSeed(title: string, artist: string | null): number {
+  const fold = (value: string) =>
+    value.trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+  return hash(`${fold(artist ?? '')}\u001f${fold(title)}`);
 }
 
 /** FNV-1a over a string, so ids and model names reduce to a stable integer. */
