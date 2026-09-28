@@ -301,3 +301,70 @@ describe('SongSheet', () => {
     expect(words()).toContain('Asking agentbox…');
   });
 });
+
+describe('SongSheet for an imported song', () => {
+  const imported = {
+    artist: 'Test Artist',
+    album: 'Fixture Album',
+    year: 2019,
+    genre: null,
+    format: 'FLAC',
+    folder: '/storage/emulated/0/Music/Fixture Album',
+    bytes: 2_573_322,
+    addedAtMs: Date.UTC(2026, 8, 27, 16, 0),
+  };
+  const importedSheet = () =>
+    render({
+      imported,
+      detail: null,
+      audioState: 'pinned',
+      deliveryBytes: null,
+      masterBytes: null,
+      nodeLabel: 'Test Artist',
+      song: song({ model: 'device', seed: undefined, tags: ['p/Dog walk'] }),
+    });
+
+  it('says the file is on this phone and offers nothing to do to it', () => {
+    const { labels, words } = importedSheet();
+    expect(words()).toContain('On this phone');
+    expect(words()).toContain('2.5 MB · YOUR OWN FILE');
+    expect(labels()).not.toContain('Keep it here');
+    expect(labels()).not.toContain('Unpin');
+    expect(labels()).not.toContain('Remove from this phone');
+    expect(labels()).not.toContain('Delete everywhere');
+    expect(words()).not.toContain('Asking Test Artist…');
+  });
+
+  it('records what the file says, and leaves out what it does not', () => {
+    const { words } = importedSheet();
+    expect(words()).toEqual(
+      expect.arrayContaining([
+        'Test Artist',
+        'Fixture Album',
+        '2019',
+        'FLAC',
+        '2.5 MB',
+        '/storage/emulated/0/Music/Fixture Album',
+      ]),
+    );
+    expect(words()).not.toContain('Genre');
+  });
+
+  it('still edits its playlists', async () => {
+    const { press, props } = importedSheet();
+    press('Remove from Dog walk');
+    expect(props.onPatch).toHaveBeenCalledWith({ tags: [] });
+    await ReactTestRenderer.act(async () => {});
+  });
+
+  it('has no favourite to give', () => {
+    const { words, tree } = importedSheet();
+    expect(words()).not.toContain('☆');
+    const star = tree.root.find(
+      node =>
+        typeof node.type !== 'string' &&
+        node.props.accessibilityLabel === 'Make a favourite',
+    );
+    expect(star.props.disabled).toBe(true);
+  });
+});

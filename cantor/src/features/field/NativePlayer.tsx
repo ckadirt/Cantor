@@ -959,8 +959,15 @@ export function transportWord(
   return onPhone ? 'PLAY' : 'FETCH';
 }
 
-/** Never claim a song is here when only part of it is. */
-export function describeAudio(state: FieldPresentation['localAudio']['state']): string {
+/**
+ * Never claim a song is here when only part of it is. An imported song's file
+ * is the person's own, on the phone before Cantor was: it was never pinned.
+ */
+export function describeAudio(
+  state: FieldPresentation['localAudio']['state'],
+  imported = false,
+): string {
+  if (imported) return 'ON THIS PHONE';
   switch (state) {
     case 'pinned':
       return 'PINNED';
@@ -1072,7 +1079,10 @@ function playerSeats(
     ),
     words: playerWords(
       fonts.songMeta,
-      describeAudio(presentation.localAudio.state),
+      describeAudio(
+        presentation.localAudio.state,
+        presentation.source === 'device',
+      ),
     ),
     onPhone:
       presentation.localAudio.state === 'cached' ||
