@@ -19,9 +19,11 @@ database holds the 16 fixture songs from a fixture-only scan (kept for
 I5b–d). I5b done: `FieldPresentation` is a node/device union and the 16 fixture
 songs stand in the field, open at L2 and play (native analysis ticks drawn).
 I5d done: an imported song's sheet and the player's `ON THIS PHONE`.
-**I5 is finished. Next: I6** (the imported marker at L0/L1, the ASCII cover
-at L2, the ALBUM/ARTIST axis). None of it is pushed;
-Cesar decides when to push.
+I6 done (2026-09-28): imported marks carry a spindle in every lens, ALBUM
+and ARTIST join the dial, and a COVER lens draws an album's art as hairline
+glyphs at L2. **Next: I7** (the import flow: entry point, permission, scan
+summary, progress, re-scan). None of it is pushed; Cesar decides when to
+push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
 (13 album/loose/short files plus `Cover Only/` and `Folder Only/`), kept for
@@ -71,9 +73,47 @@ coordinates and details):
 | I3 native scanner | **done** 2026-09-27 |
 | I4 resolver | **done** 2026-09-27 (checked on the phone with I5) |
 | I5 device source | **done** 2026-09-28 (I5a, I5b, I5d; I5c folded into I5b) |
-| I6 mark and axis | not started |
+| I6 mark and axis | **done** 2026-09-28 (I6a, I6b, I6c) |
 | I7 import flow | not started |
 | I8 300-song check | not started |
+
+## I6 plan (mark and axis)
+
+Written before editing, 2026-09-28. Three steps, each checked on the phone.
+
+- **I6a — the imported mark.** A device song's recipe gets its seed from a
+  hash of its metadata (`metadataSeed`: folded artist and title), so one song
+  looks the same in any rip and on any phone, and `imported: true`. Each lens
+  draws the marker in its own form, and both read the same way: **a spindle**,
+  a small hole at the centre with a hairline ring, a record's. The circle bakes
+  it into its cached contour (even-odd hole, the ring is the hole's own edge);
+  the seal clears a disc at its centre and draws the ring there. Ink order is
+  untouched (an imported song is always `downloaded`). At L2 the circle keeps
+  the ring as a quiet hub where its hand starts
+  (`IMPORTED_HUB_RATIO` = `CLOCK_HAND_INNER_RATIO / SONG_FACE_RATIO`); the
+  seal's fades out as its dots arrive. Goldens gain imported frames on purpose.
+- **I6b — ALBUM and ARTIST.** Two arrangements beside DATE and PLAYLIST
+  (`byAlbum`, `byArtist`). `FieldEntity` gains what a file's tags say it
+  belongs to (`record`: album key and title, artist); node songs have none
+  and sit in one trailing `Generated` group. An album untitled by its tags is
+  named for its folder; a song with no artist tag sits under `Unknown
+  artist`. Songs that arrived in the same instant sit in track order (an
+  album arrives together), a tie-break in `orderMembers`. **Revised on the
+  phone:** copying an album takes seconds (the fixtures straddle two), so an
+  exact-instant tie is too fragile; the date order ranks an imported song by
+  its album's first arrival (`FieldRecord.arrivedMs`, only for albums the
+  tags name), then by track.
+- **I6c — the cover.** A third lens, `COVER`: its marks are the circle's (the
+  two layers hold: identity is the recipe), its player draws the album's
+  thumbnail as ink — decoded with Skia, reduced to a grid of brightness
+  cells, each cell a hairline glyph from a density ramp (`·  -  +  ×  #  *`,
+  by how much line each is; a test measures the order in pixels), built
+  into one path on the JS thread. The brightness grid comes from a new
+  read-only `CantorMedia.artworkLuma` (32×32 of the centre square of the
+  saved thumbnail) rather than decoding in JS. Never stored; cached in memory per
+  album. A song with no cover draws the circle's player. Its clock is the
+  seal's rim. The contract grows one input: `Lens.player` receives the
+  song's cover cells.
 
 ## I5 plan (device songs in the field)
 
@@ -347,6 +387,29 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 
 ## Findings
 
+- **2026-09-28 — I6 on the phone.** L0 and L1: every imported mark shows its
+  spindle, a paper hole in the filled circle and a ring in a clearing of the
+  seal; generated marks are unchanged (the old goldens held). L2 circle: the
+  spindle stays as a quiet hub the hand starts from; L2 seal: it fades as the
+  dust arrives. The dial reads `DATE PLAYLIST ALBUM ARTIST`; ALBUM shows 7
+  groups (Fixture Album twice: the tagged seven and the untagged WAV/AIFF,
+  named for the same folder, the I5a limit), `GENERATED` last; ARTIST shows
+  Some Artist, Test Artist, Unknown artist, Generated; the hint says `OPEN
+  ITS ALBUM` / `ARTIST`. Fixture Album seats 1…7 in track order. COVER is
+  offered only for a song with art (or while it is the lens): the fixture
+  cover (diagonal gradient, black square in cells 8–24) draws with the square
+  where it belongs; a loose file with no art under COVER draws the circle's
+  quiet face inside the rim.
+- **2026-09-28 — I6: the lens contract grew one input.** `Lens.player` takes
+  the song's `CoverArt | null`; the canvas gets a `covers` map beside
+  `analyses`, filled for the focused song only (`useCover`). The cover is the
+  lens's `sound`, so it rises on the existing sound clock after the camera
+  lands. Known gap: a song whose analysis already rose will not re-rise when
+  its cover lands later (it appears); loading is milliseconds, so the cover is
+  normally there first.
+- **2026-09-28 — I6: the lens is not remembered.** `lensKey` is React state,
+  as before; after a restart the field is the circle again.
+
 - **2026-09-28 — I5d on the phone.** An imported song's player foot reads
   `DETAIL · ON THIS PHONE`; play works with the patched audio-api (media
   session "Tone FLAC 16-44, Test Artist"). DETAIL opens the sheet: no
@@ -603,3 +666,7 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 - `96ee904` docs: import I5b, device songs in the field
 - `fdac1df` audio: start audio-api's foreground service on a placeholder
 - `e149691` song: an imported song's sheet and player words
+- `7a0d7bf` docs: import I5d, the imported song's sheet
+- `289b97e` lenses: the imported mark, a spindle in each lens
+- `cd4cdf5` field: album and artist axes
+- `a189ec4` lenses: the cover, an album's art as ink
