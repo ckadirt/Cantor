@@ -58,14 +58,7 @@ coordinates and details):
 
 ## Open questions (for Cesar)
 
-- **The audio-api foreground-service crash** (Findings, I5b): patch it with
-  `patch-package` (post a placeholder notification instead of returning),
-  report it upstream, or both?
-- **The device song's sheet (I5d).** Proposed: title, `ARTIST · ALBUM`, year
-  and genre, format and folder, and the same tags/playlists editing as a
-  node song (written to the phone database). No rename, delete, download or
-  recipe: the file is the person's own. The player's foot says `ON THIS
-  PHONE` instead of `PINNED`.
+(none open; the two below were settled 2026-09-28)
 
 ## Where we are
 
@@ -267,6 +260,16 @@ Written before editing, 2026-09-27.
   filter, then a summary to untick. See plan § Decisions.
 - **2026-09-27 — The ASCII cover is computed on the fly, never stored**
   (Cesar). Only the ~256 px album thumbnail is cached.
+- **2026-09-28 — The audio-api foreground-service race is patched locally,
+  not reported upstream** (Cesar). `patches/react-native-audio-api+0.13.3.patch`
+  via `patch-package` (`postinstall`): when the service starts before the
+  playback notification exists, it starts on a placeholder under
+  `PlaybackNotification.ID`, which the real notification replaces in place.
+  **An audio-api upgrade must re-check or drop the patch.**
+- **2026-09-28 — The device song's sheet (I5d), as proposed** (Cesar):
+  title, `ARTIST · ALBUM`, year and genre, format and folder; tags and
+  playlists edited like a node song's, written to the phone database; no
+  rename, delete, download or recipe. The player's foot says `ON THIS PHONE`.
 - **2026-09-27 — The Xiaomi is Cesar's to lend for import** ("all yours"):
   permission prompts and test fixtures in `Music/cantor-import-test/` are
   fine. Still ask before touching his own music files or his nodes.
@@ -532,6 +535,13 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
     above the last generation seen.
 
 ## Traps
+
+- **`patch-package` without `--include` captures build output.** The first
+  patch of react-native-audio-api swept in `android/.cxx/` CMake caches
+  (megabytes). Always `npx patch-package <pkg> --include '<file regex>'`.
+- **audio-api's `CentralizedForegroundService` is not exported**, so
+  `adb shell am start-foreground-service` is refused: the race it had cannot
+  be forced from adb. The patch is verified by reading, not by reproduction.
 
 - **A JS syntax error in a lab can ship the previous bundle.** A duplicate
   `const` in a throwaway lab left the release APK running the old bundle with
