@@ -5,7 +5,7 @@ import { GestureDetector } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFieldCamera } from '../features/field/useFieldCamera';
 import { FieldCanvas } from '../features/field/FieldCanvas';
-import type { FieldPresentation } from '../features/field/useFieldController';
+import { nodePresentation } from '../features/field/useFieldController';
 import { byDate, layoutField, type DateResolution } from '../field';
 import {
   GROUP_SCENARIOS,
@@ -37,7 +37,7 @@ export function FieldGroupLab() {
       new Map(
         entities.map(entity => [
           entity.key,
-          {
+          nodePresentation({
             entity,
             song: {
               id: entity.entityId,
@@ -62,7 +62,7 @@ export function FieldGroupLab() {
             nodeLabels: ['Layout test'],
             delivery: undefined,
             localAudio: { state: 'remote', bytes: 0 },
-          } satisfies FieldPresentation,
+          }),
         ]),
       ),
     [entities],

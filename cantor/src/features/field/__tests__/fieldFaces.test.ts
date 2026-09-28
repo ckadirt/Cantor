@@ -22,7 +22,10 @@ import {
 } from '../../../lenses';
 import { drawFieldFaces, faceFlightsOf, type FaceFlight } from '../FieldCanvas';
 import { playerFaceScale } from '../songPose';
-import type { FieldPresentation } from '../useFieldController';
+import {
+  nodePresentation,
+  type FieldPresentation,
+} from '../useFieldController';
 
 const viewport = { width: 380, height: 800 };
 const CIRCLE = lensIndex('name');
@@ -43,7 +46,7 @@ const entities: FieldEntity[] = ['song-a', 'song-b', 'song-c'].map(
 const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
   entities.map(entity => [
     entity.key,
-    {
+    nodePresentation({
       entity,
       song: {
         id: entity.entityId,
@@ -68,7 +71,7 @@ const presentations: ReadonlyMap<string, FieldPresentation> = new Map(
       nodeLabels: ['Studio'],
       delivery: undefined,
       localAudio: { state: 'remote', bytes: 0 },
-    } as FieldPresentation,
+    }),
   ]),
 );
 
@@ -331,12 +334,7 @@ describe('the field drawn as one pass', () => {
       scale: layout.fitScale * 30,
     };
     const song = presentations.get(held.entityKey)!;
-    const dots = sealModel({
-      seed: song.song.seed,
-      id: song.entity.entityId,
-      model: song.song.model,
-      durationMs: song.song.duration_ms,
-    }).order.length;
+    const dots = sealModel(song.recipe).order.length;
     expect(dots).toBeGreaterThan(100);
 
     // Identity only: the whole seal is one path.

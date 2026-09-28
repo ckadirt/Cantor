@@ -16,8 +16,13 @@ import {
 import { GestureDetector } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PairBackendModal } from '../backends/PairBackendModal';
+import { openPhoneDatabase } from '../device/database';
+import { DeviceLibraryService } from '../device/deviceLibrary';
+import { nativeMedia } from '../device/native';
+import { createDeviceRepository } from '../device/repository';
 import { EnginesSheet } from '../features/engines';
 import {
+  audioRefOf,
   FieldA11yList,
   FieldCanvas,
   FieldOverlay,
@@ -164,24 +169,37 @@ const PLAYHEAD_STEP_PX = 2;
 /** Where song measurements are kept, apart from every other stored key. */
 const ANALYSIS_DATABASE = 'cantor-analysis';
 
-type AnalysisSource = Readonly<{ song: SongHeader; artifact: ArtifactView }>;
+type AnalysisSource =
+  | Readonly<{ kind: 'node'; song: SongHeader; artifact: ArtifactView }>
+  | Readonly<{ kind: 'device'; path: string; durationMs: number }>;
 
 /** How to measure a song, when its audio is on the phone to measure. */
 function analysisRefOf(
   presentation: FieldPresentation,
 ): AnalysisRef<AnalysisSource> | null {
-  const artifact = presentation.delivery;
+  const ref = audioRefOf(presentation);
   const state = presentation.localAudio.state;
-  if (artifact === undefined || (state !== 'cached' && state !== 'pinned')) {
+  if (ref === null || (state !== 'cached' && state !== 'pinned')) {
     return null;
   }
   return {
     entityKey: presentation.entity.key,
-    nodePublicKey: presentation.entity.nodePublicKey,
-    songId: presentation.entity.entityId,
-    artifactDigest: artifact.sha256,
+    nodePublicKey: ref.nodeKey,
+    songId: ref.songId,
+    artifactDigest: ref.digest,
     resolution: ANALYSIS_BUCKETS,
-    source: { song: presentation.song, artifact },
+    source:
+      presentation.source === 'device'
+        ? {
+            kind: 'device',
+            path: presentation.device.path,
+            durationMs: presentation.durationMs,
+          }
+        : {
+            kind: 'node',
+            song: presentation.song,
+            artifact: presentation.delivery!,
+          },
   };
 }
 
@@ -408,21 +426,30 @@ export function FieldScreen({ identity }: Props) {
   const analysisStore = useMemo(
     () =>
       new AnalysisStore<AnalysisSource>(async ref => {
-        const { song, artifact } = ref.source;
-        const localPath = await commands.audioPath(
-          ref.nodePublicKey,
-          song,
-          artifact,
-        );
+        const source = ref.source;
+        // A device song is its own file; a node song's path is asked of native
+        // storage, which answers only for a whole, verified artifact.
+        const localPath =
+          source.kind === 'device'
+            ? source.path
+            : await commands.audioPath(
+                ref.nodePublicKey,
+                source.song,
+                source.artifact,
+              );
+        const durationMs =
+          source.kind === 'device'
+            ? source.durationMs
+            : source.song.duration_ms;
         const window = await player.samples({
           ref: {
             nodeKey: ref.nodePublicKey,
             songId: ref.songId,
-            digest: artifact.sha256,
+            digest: ref.artifactDigest,
           },
           localPath,
           startSeconds: 0,
-          endSeconds: song.duration_ms / 1000,
+          endSeconds: durationMs / 1000,
           buckets: ANALYSIS_BUCKETS,
         });
         return analyseWindow(window);
@@ -435,8 +462,27 @@ export function FieldScreen({ identity }: Props) {
    * The field's projection of the runtime: songs and entities here, which a
    * job's progress leaves as the same objects; the jobs where they are drawn.
    */
+  /*
+   * The songs whose files live on this phone (device import, docs/import/).
+   * Opened once; if the database cannot be opened the field shows node songs
+   * only, as it did before import existed.
+   */
+  const [deviceLibrary] = useState(
+    () =>
+      new DeviceLibraryService({
+        openRepository: async () =>
+          createDeviceRepository(await openPhoneDatabase()),
+        media: nativeMedia,
+        now: () => Date.now(),
+      }),
+  );
+  useEffect(() => {
+    deviceLibrary.start().catch(error => {
+      console.warn('device library unavailable', readError(error));
+    });
+  }, [deviceLibrary]);
   const [controllerStore] = useState(() =>
-    createFieldControllerStore(runtime.store),
+    createFieldControllerStore(runtime.store, deviceLibrary.store),
   );
   useEffect(() => controllerStore.connect(), [controllerStore]);
   const controller = useStore(controllerStore.store, songsOf, shallowEqual);
@@ -585,6 +631,8 @@ export function FieldScreen({ identity }: Props) {
    */
   const runRowAudio = useCallback(
     async (presentation: FieldPresentation, action: AvailabilityAction) => {
+      // A device song's file is its own; there is nothing to fetch or free.
+      if (presentation.source !== 'node') return;
       const artifact = presentation.delivery;
       if (artifact === undefined) return;
       const key = presentation.entity.key;
@@ -629,7 +677,11 @@ export function FieldScreen({ identity }: Props) {
   const onRowAction = useCallback(
     (placement: Placement): boolean => {
       const presentation = controller.presentations.get(placement.entityKey);
-      if (presentation === undefined || presentation.delivery === undefined) {
+      if (
+        presentation === undefined ||
+        !presentation.audioActions ||
+        !presentation.playable
+      ) {
         return false;
       }
       const action = availabilityAction(
@@ -787,7 +839,7 @@ export function FieldScreen({ identity }: Props) {
         : layout.groups.find(
             candidate => candidate.key === sheetTarget.groupKey,
           );
-    const playlists = playlistsOf(sheetSong.song.tags);
+    const playlists = playlistsOf(sheetSong.entity.tags);
     const onPlaylistAxis = arrangementKey === byPlaylist.key;
     const isPlaylistGroup =
       onPlaylistAxis &&
@@ -931,7 +983,8 @@ export function FieldScreen({ identity }: Props) {
   const focusedArriving = useStore(
     runtime.store,
     state =>
-      focused?.delivery !== undefined &&
+      focused?.source === 'node' &&
+      focused.delivery !== undefined &&
       state.downloading.has(
         audioKey(
           focused.entity.nodePublicKey,
@@ -978,7 +1031,7 @@ export function FieldScreen({ identity }: Props) {
       ? null
       : arrivingFraction(
           focused.localAudio.bytes,
-          focused.delivery?.byte_length,
+          focused.byteLength ?? undefined,
         );
   useEffect(() => {
     if (focusedArrivingFraction === null) {
@@ -1026,22 +1079,20 @@ export function FieldScreen({ identity }: Props) {
    */
   const fetchPath = useCallback(
     async (presentation: FieldPresentation): Promise<string> => {
+      if (presentation.source === 'device') return presentation.device.path;
       const artifact = presentation.delivery;
       if (artifact === undefined) {
         throw new Error('This song has no delivery audio yet.');
       }
+      const song = presentation.song;
       const where = () =>
-        commands.audioPath(
-          presentation.entity.nodePublicKey,
-          presentation.song,
-          artifact,
-        );
+        commands.audioPath(presentation.entity.nodePublicKey, song, artifact);
       try {
         return await where();
       } catch {
         await commands.audio(
           presentation.entity.nodePublicKey,
-          presentation.song,
+          song,
           artifact,
           'download',
         );
@@ -1052,6 +1103,7 @@ export function FieldScreen({ identity }: Props) {
   );
   const prefetch = useCallback(
     async (presentation: FieldPresentation) => {
+      if (presentation.source !== 'node') return;
       const artifact = presentation.delivery;
       if (artifact === undefined) return;
       await commands.audio(
@@ -1149,7 +1201,7 @@ export function FieldScreen({ identity }: Props) {
     }
     const shelf = queueFrom(layout, playerPlacement);
     const playable = (key: string) =>
-      controller.presentations.get(key)?.delivery !== undefined;
+      controller.presentations.get(key)?.playable === true;
     const from = playerPlacement.entityKey;
     return {
       previous:
@@ -1203,7 +1255,7 @@ export function FieldScreen({ identity }: Props) {
   /** Play or pause the focused song; a new one makes its shelf the queue. */
   const playFocused = useCallback(async () => {
     if (focused === null || playerPlacement === null) return;
-    if (focused.delivery === undefined) {
+    if (!focused.playable) {
       setPlaybackError('This song has no delivery audio yet.');
       return;
     }
@@ -1251,7 +1303,9 @@ export function FieldScreen({ identity }: Props) {
    */
   const commitSheetPatch = useCallback(
     async (patch: SongPatch) => {
-      if (sheetSong === null) return;
+      // The sheet opens on node songs only until device songs have their own
+      // (docs/import/log.md, I5d).
+      if (sheetSong === null || sheetSong.source !== 'node') return;
       setSongProblem(null);
       try {
         await commands.patchSong(
@@ -1269,7 +1323,13 @@ export function FieldScreen({ identity }: Props) {
 
   const runAudioAction = useCallback(
     (action: 'pin' | 'unpin' | 'remove') => {
-      if (sheetSong === null || sheetSong.delivery === undefined) return;
+      if (
+        sheetSong === null ||
+        sheetSong.source !== 'node' ||
+        sheetSong.delivery === undefined
+      ) {
+        return;
+      }
       const artifact = sheetSong.delivery;
       const track = transport.snapshot.track;
       const isCurrent =
@@ -1412,16 +1472,16 @@ export function FieldScreen({ identity }: Props) {
       grainShared.value = null;
       return;
     }
-    const artifact = focused.delivery;
+    const ref = audioRefOf(focused);
     const onPhone =
       focused.localAudio.state === 'cached' ||
       focused.localAudio.state === 'pinned';
-    if (artifact === undefined || !onPhone) {
+    if (ref === null || !onPhone) {
       grainShared.value = null;
       return;
     }
 
-    const duration = focused.song.duration_ms / 1000;
+    const duration = focused.durationMs / 1000;
     const visible = visibleSecondsAt(
       fieldCamera.camera.scale,
       fieldCamera.renderFitScale,
@@ -1432,17 +1492,16 @@ export function FieldScreen({ identity }: Props) {
     let active = true;
     void (async () => {
       try {
-        const path = await commands.audioPath(
-          focused.entity.nodePublicKey,
-          focused.song,
-          artifact,
-        );
+        const path =
+          focused.source === 'device'
+            ? focused.device.path
+            : await commands.audioPath(
+                focused.entity.nodePublicKey,
+                focused.song,
+                focused.delivery!,
+              );
         const samples = await player.samples({
-          ref: {
-            nodeKey: focused.entity.nodePublicKey,
-            songId: focused.entity.entityId,
-            digest: artifact.sha256,
-          },
+          ref,
           localPath: path,
           startSeconds: window.startSeconds,
           endSeconds: window.endSeconds,
@@ -1540,6 +1599,8 @@ export function FieldScreen({ identity }: Props) {
     > = {};
     const playlistsByNode: Record<string, Set<string>> = {};
     for (const presentation of controller.presentations.values()) {
+      // Engines count what each node holds; a device song belongs to none.
+      if (presentation.source !== 'node') continue;
       const key = presentation.entity.nodePublicKey;
       const entry = (totals[key] ??= {
         songs: 0,
@@ -1569,7 +1630,7 @@ export function FieldScreen({ identity }: Props) {
             : bytes;
       }
       const names = (playlistsByNode[key] ??= new Set<string>());
-      for (const name of playlistsOf(presentation.song.tags)) names.add(name);
+      for (const name of playlistsOf(presentation.entity.tags)) names.add(name);
     }
     for (const [key, names] of Object.entries(playlistsByNode)) {
       const entry = totals[key];
@@ -1582,7 +1643,7 @@ export function FieldScreen({ identity }: Props) {
   const libraryReport = useMemo(() => {
     const playlists = new Set<string>();
     for (const presentation of controller.presentations.values()) {
-      for (const name of playlistsOf(presentation.song.tags)) {
+      for (const name of playlistsOf(presentation.entity.tags)) {
         playlists.add(normalise([name])[0] ?? name);
       }
     }
@@ -1600,6 +1661,8 @@ export function FieldScreen({ identity }: Props) {
     let cachedSongs = 0;
     let cachedBytes = 0;
     for (const presentation of controller.presentations.values()) {
+      // A device song's file is the person's own, not Cantor's storage.
+      if (presentation.source !== 'node') continue;
       const bytes = presentation.delivery?.byte_length ?? 0;
       if (presentation.localAudio.state === 'pinned') {
         downloadedSongs += 1;
@@ -1655,6 +1718,7 @@ export function FieldScreen({ identity }: Props) {
     const pending = group.entityKeys.flatMap(key => {
       const presentation = controller.presentations.get(key);
       return presentation === undefined ||
+        presentation.source !== 'node' ||
         presentation.delivery === undefined ||
         presentation.localAudio.state === 'pinned'
         ? []
@@ -1775,7 +1839,7 @@ export function FieldScreen({ identity }: Props) {
             style={StyleSheet.absoluteFill}
           >
             <SongSurface
-              available={focused.delivery !== undefined}
+              available={focused.playable}
               cameraShared={fieldCamera.cameraShared}
               fitScale={fieldCamera.renderFitScale}
               height={viewport.height}
@@ -1808,11 +1872,11 @@ export function FieldScreen({ identity }: Props) {
               song={{
                 key: focused.entity.key,
                 id: focused.entity.entityId,
-                title: focused.song.title,
-                model: focused.song.model,
-                seed: focused.song.seed,
-                durationMs: focused.song.duration_ms,
-                nodeLabel: focused.nodeLabels[0] ?? focused.backend.petname,
+                title: focused.title,
+                model: focused.recipe.model,
+                seed: focused.recipe.seed,
+                durationMs: focused.durationMs,
+                nodeLabel: focused.label,
                 audioState: focused.localAudio.state,
                 // The word the touch layer announces has to mean what the drawn
                 // verb means. The verb closes only for a live transfer, so the
@@ -1820,7 +1884,7 @@ export function FieldScreen({ identity }: Props) {
                 // around the face is the one thing that speaks for bytes merely
                 // sitting on disk.
                 arriving: focusedArriving ? focusedArrivingFraction : null,
-                tags: focused.song.tags,
+                tags: focused.entity.tags,
               }}
               width={viewport.width}
             />
@@ -1911,7 +1975,10 @@ export function FieldScreen({ identity }: Props) {
         onPair={commands.pairBackend}
         visible={pairing}
       />
-      {sheetSong !== null && viewport !== null ? (
+      {/* Node songs only until device songs have their own sheet (I5d). */}
+      {sheetSong !== null &&
+      sheetSong.source === 'node' &&
+      viewport !== null ? (
         <Curtain
           edge="bottom"
           onClose={closeSongSheet}

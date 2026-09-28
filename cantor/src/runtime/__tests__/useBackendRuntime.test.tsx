@@ -362,8 +362,8 @@ describe('useBackendRuntime', () => {
     expect(f.saveBackends).toHaveBeenLastCalledWith([]);
     expect(f.connections[0].stop).toHaveBeenCalled();
     let field = buildFieldController(mounted.current().state);
-    expect([...field.presentations.values()].map(p => p.song.id)).toEqual(['pinned']);
-    expect([...field.presentations.values()].every(p => !p.ready)).toBe(true);
+    expect([...field.presentations.values()].map(p => p.recipe.id)).toEqual(['pinned']);
+    expect([...field.presentations.values()].every(p => p.source === 'node' && !p.ready)).toBe(true);
     await expect(mounted.current().commands.audioPath('node-a', songs[1], artifact)).resolves.toContain('fixture.opus');
     // A stopped connection must not revive remote content or flush an outbox.
     await ReactTestRenderer.act(async () => {
@@ -375,7 +375,7 @@ describe('useBackendRuntime', () => {
     f.dependencies.loadLibraries = jest.fn().mockResolvedValue({ 'node-a': library });
     mounted = await mount(f);
     field = buildFieldController(mounted.current().state);
-    expect([...field.presentations.values()].map(p => p.song.id)).toEqual(['pinned']);
+    expect([...field.presentations.values()].map(p => p.recipe.id)).toEqual(['pinned']);
     expect(f.connections).toHaveLength(1);
     await ReactTestRenderer.act(async () => {
       mounted.current().commands.pairBackend({ backend, pairToken: 'fresh-token' });
@@ -387,7 +387,7 @@ describe('useBackendRuntime', () => {
     // nothing was ever deleted on the node.
     field = buildFieldController(mounted.current().state);
     expect(field.presentations.size).toBe(4);
-    expect(allPlaylists([...field.presentations.values()].map(p => p.song.tags))).toEqual(['Drive', 'Dusk', 'Remote playlist']);
+    expect(allPlaylists([...field.presentations.values()].map(p => p.entity.tags))).toEqual(['Drive', 'Dusk', 'Remote playlist']);
     expect(f.commitLibrary).toHaveBeenLastCalledWith('node-a', 22, songs);
     await ReactTestRenderer.act(async () => mounted.renderer.unmount());
   });

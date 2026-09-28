@@ -38,7 +38,10 @@ import {
   type PoseViewport,
   type TransportSeat,
 } from './songPose';
-import type { FieldPresentation } from './useFieldController';
+import type {
+  DevicePresentation,
+  FieldPresentation,
+} from './useFieldController';
 import { lensWeight, type LensClock } from './lensClock';
 
 /** Where a clock with nothing to say rests: the circle's position in `LENSES`. */
@@ -1029,19 +1032,31 @@ function buildLineMorph(
   return morphs;
 }
 
+/** An imported song's line under its title: `ARTIST · ALBUM`, upper-cased. */
+function deviceLine(presentation: DevicePresentation): string {
+  return [presentation.label, presentation.album?.title ?? null]
+    .filter((part): part is string => part !== null && part.length > 0)
+    .join(' · ')
+    .toUpperCase();
+}
+
 /** What both models share: the strings, where they sit, and what is in the foot. */
 function playerSeats(
   presentation: FieldPresentation,
   viewport: PoseViewport,
   fonts: Readonly<{ songTitle: SkFont; songMeta: SkFont }>,
 ): Omit<NativeSongModel, 'titleMorph' | 'metaMorph'> {
-  const song = presentation.song;
   const songTitle = fitText(
-    song.title,
+    presentation.title,
     fonts.songTitle,
     songTitleColumnPx(viewport.width),
   );
-  const songMeta = recipeLine(song.model, song.seed);
+  // A generated song's line is its recipe; an imported one has none, and says
+  // who made it and on which album.
+  const songMeta =
+    presentation.source === 'node'
+      ? recipeLine(presentation.song.model, presentation.song.seed)
+      : deviceLine(presentation);
   return {
     songTitle,
     titleSeat: centredOnAxis(

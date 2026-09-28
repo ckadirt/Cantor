@@ -48,7 +48,11 @@ function presentation(
   options: { silent?: boolean; state?: 'cached' | 'remote' } = {},
 ): FieldPresentation {
   return {
+    source: 'node',
     entity: item,
+    title: `Song ${item.entityId}`,
+    label: 'node',
+    playable: !options.silent,
     song: { id: item.entityId, title: `Song ${item.entityId}` },
     nodeLabels: ['node'],
     delivery: options.silent ? undefined : { sha256: item.entityId.repeat(64) },

@@ -5,7 +5,7 @@ import type {
   BackendRecord,
   ConnectionSnapshot,
 } from '../../../backends/types';
-import { buildFieldController } from '../useFieldController';
+import { audioRefOf, buildFieldController } from '../useFieldController';
 
 const artifact: ArtifactView = {
   kind: 'delivery',
@@ -188,7 +188,7 @@ describe('generation as marks', () => {
     // Same key, one entity: the mark does not blink or duplicate at hand-off.
     expect(model.entities.map(entity => entity.key)).toEqual(['node-a:job-1']);
     expect(model.jobs.size).toBe(0);
-    expect(model.presentations.get('node-a:job-1')?.song.id).toBe('job-1');
+    expect(model.presentations.get('node-a:job-1')?.recipe.id).toBe('job-1');
   });
 
   it('keeps drawing a completed job until its song is observed', () => {
@@ -281,5 +281,106 @@ describe('reusing the last projection', () => {
     expect(next.jobs.get('node-a:job-1')?.job).toBe(moved);
     // Same entities in the same order: the layout has nothing to redo.
     expect(next.entities).toBe(first.entities);
+  });
+});
+
+describe('device songs', () => {
+  const album = {
+    key: 'test artist|fixture album|/Music/Fixture Album',
+    title: 'Fixture Album',
+    artist: 'Test Artist',
+    year: 2019,
+    folder: '/Music/Fixture Album',
+    artwork: null,
+  };
+  const deviceSong = {
+    id: 'd0123456789abcdef',
+    mediaId: 776,
+    path: '/Music/Fixture Album/01 - Tone MP3.mp3',
+    size: 730681,
+    headSha256: 'c'.repeat(64),
+    durationMs: 30041,
+    mime: 'audio/mpeg',
+    title: 'Tone MP3',
+    titleFromTag: true,
+    artist: 'Test Artist',
+    albumArtist: 'Test Artist',
+    disc: 1,
+    track: 1,
+    year: 2019,
+    date: null,
+    genre: 'Ambient',
+    albumKey: album.key,
+    addedAtMs: 1_790_542_056_000,
+    importedAtMs: 1_790_600_000_000,
+    missingSinceMs: null,
+  };
+  const empty = { backends: [], snapshots: {}, localAudio: {}, outbox: {} };
+  const library = (
+    songs: (typeof deviceSong)[],
+    tags: [string, string[]][] = [],
+  ) => ({
+    songs,
+    albums: [album],
+    tags: new Map(tags),
+    generations: new Map(),
+    excludedFolders: [],
+  });
+
+  it('joins the field under the reserved device key, as a song on the phone', () => {
+    const model = buildFieldController({
+      ...empty,
+      device: library([deviceSong], [[deviceSong.id, ['p/road']]]),
+    });
+    const presentation = model.presentations.get(`device:${deviceSong.id}`);
+    expect(presentation).toMatchObject({
+      source: 'device',
+      title: 'Tone MP3',
+      durationMs: 30041,
+      label: 'Test Artist',
+      localAudio: { state: 'pinned', bytes: 730681 },
+      audioActions: false,
+      playable: true,
+      album,
+    });
+    expect(presentation?.entity).toMatchObject({
+      nodePublicKey: 'device',
+      createdAtMs: deviceSong.addedAtMs,
+      tags: ['p/road'],
+    });
+    expect(audioRefOf(presentation!)).toEqual({
+      nodeKey: 'device',
+      songId: deviceSong.id,
+      digest: `730681:${'c'.repeat(64)}`,
+    });
+  });
+
+  it('leaves a missing file’s song out', () => {
+    const model = buildFieldController({
+      ...empty,
+      device: library([{ ...deviceSong, missingSinceMs: 5 }]),
+    });
+    expect(model.presentations.size).toBe(0);
+    expect(model.entities).toEqual([]);
+  });
+
+  it('keeps the whole controller when the library object is new but its songs are not', () => {
+    const songs = [deviceSong];
+    const first = buildFieldController({ ...empty, device: library(songs) });
+    const second = buildFieldController(
+      { ...empty, device: library(songs) },
+      first,
+    );
+    expect(second).toBe(first);
+  });
+
+  it('names a device song with no artist after the phone', () => {
+    const model = buildFieldController({
+      ...empty,
+      device: library([{ ...deviceSong, artist: null }]),
+    });
+    expect(model.presentations.get(`device:${deviceSong.id}`)?.label).toBe(
+      'This phone',
+    );
   });
 });

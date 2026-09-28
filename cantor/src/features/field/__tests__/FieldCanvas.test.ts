@@ -6,7 +6,7 @@ import type { SongHeader } from '../../../../../protocol/SongHeader';
 import { byTime, layoutField } from '../../../field';
 import { FieldA11yList } from '../FieldA11yList';
 import { drawJobMark } from '../FieldCanvas';
-import type { FieldPresentation } from '../useFieldController';
+import { nodePresentation } from '../useFieldController';
 
 const viewport = { width: 380, height: 800 };
 const artifact: ArtifactView = {
@@ -40,7 +40,7 @@ const entity = {
   durationMs: 0,
   tags: [],
 };
-const presentation: FieldPresentation = {
+const presentation = nodePresentation({
   entity,
   song,
   backend: {
@@ -53,7 +53,7 @@ const presentation: FieldPresentation = {
   nodeLabels: ['Studio'],
   delivery: artifact,
   localAudio: { state: 'cached', bytes: artifact.byte_length },
-};
+});
 
 function paint(color: string) {
   const result = Skia.Paint();

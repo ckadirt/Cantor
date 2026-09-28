@@ -19,6 +19,8 @@ module.exports = {
     '^react-native-vision-camera$': '<rootDir>/jest/visionCameraMock.js',
     // audio-api ships its own mock; the real entry pulls in native audio
     '^react-native-audio-api$': 'react-native-audio-api/mock',
+    // native SQLite; database tests use jest/nodeSqlite.ts instead
+    '^@op-engineering/op-sqlite$': '<rootDir>/jest/opSqliteMock.js',
     '\\.(ttf|otf)$': '<rootDir>/jest/assetStub.js',
   },
   // react-navigation and friends ship untranspiled ESM; @scure/@noble are ESM-only
