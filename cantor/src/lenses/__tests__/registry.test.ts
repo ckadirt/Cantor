@@ -105,7 +105,7 @@ describe('every lens draws', () => {
           const recorder = Skia.PictureRecorder();
           const canvas = recorder.beginRecording(Skia.XYWHRect(0, 0, 400, 800));
           const identity = lens.identity(recipe);
-          const player = lens.player(recipe, analysis);
+          const player = lens.player(recipe, analysis, null);
           expect(() => {
             lens.ui.drawMark(
               canvas,

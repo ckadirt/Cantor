@@ -96,6 +96,7 @@ import {
   type LensPlayer,
   type LensPaints,
   type SongAnalysis,
+  type CoverArt,
 } from '../../lenses';
 import { easeSmoother } from '../../motion';
 import { bornClock } from '../../motion/clock';
@@ -303,6 +304,11 @@ type Props = {
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
   /**
+   * Album covers as glyph levels, by entity key — only for the song the
+   * player holds, which is the only one a cover is drawn for.
+   */
+  covers?: ReadonlyMap<string, CoverArt>;
+  /**
    * The decoded L3 window on the UI thread, never through React: see
    * `NativeFieldContentProps`.
    *
@@ -437,6 +443,7 @@ function FieldCanvasImpl({
   transportArriving = null,
   transportLights = null,
   analyses,
+  covers,
   grainShared = undefined,
   activeLensKey = 'name',
   nowMs,
@@ -712,6 +719,7 @@ function FieldCanvasImpl({
           transportLights={transportLights}
           positionSeconds={positionSeconds}
           analyses={analyses}
+          covers={covers}
           labelFlights={labelFlights}
           displayFont={displayFont}
           songTitleFont={songTitleFont}
@@ -724,6 +732,7 @@ function FieldCanvasImpl({
     );
   }, [
     analyses,
+    covers,
     cameraShared,
     displayFont,
     fitScaleShared,
@@ -948,6 +957,7 @@ type NativeFieldContentProps = Readonly<{
   transportLights: SharedValue<number[]> | null;
   positionSeconds: SharedValue<number> | null;
   analyses: ReadonlyMap<string, SongAnalysis> | undefined;
+  covers: ReadonlyMap<string, CoverArt> | undefined;
   /**
    * The decoded window L3 draws, as a shared value rather than a prop.
    *
@@ -1109,6 +1119,7 @@ export function faceFlightsOf(
   playingKey: string | null,
   analyses?: ReadonlyMap<string, SongAnalysis>,
   ink?: InkArrival,
+  covers?: ReadonlyMap<string, CoverArt>,
 ): readonly FaceFlight[] {
   const result: FaceFlight[] = [];
   for (const flight of flights) {
@@ -1123,7 +1134,11 @@ export function faceFlightsOf(
       identities: LENSES.map(lens => lens.identity(recipe)),
       players: isPlayer
         ? LENSES.map(lens =>
-            lens.player(recipe, analyses?.get(flight.entityKey)),
+            lens.player(
+              recipe,
+              analyses?.get(flight.entityKey),
+              covers?.get(flight.entityKey) ?? null,
+            ),
           )
         : undefined,
       fromX: flight.fromX,
@@ -1931,6 +1946,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   transportLights,
   positionSeconds,
   analyses,
+  covers,
   grainShared,
   jobMarks,
   labelFlights,
@@ -2012,6 +2028,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       playingKey,
       analyses,
       ink,
+      covers,
     );
     const player = flights.find(face => face.isPlayer);
     const playerFlight =
@@ -2037,7 +2054,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       // before the effect below could wind it back. Null is risen.
       soundClock: rising ? bornClock(0) : null,
     };
-  }, [recut, presentations, focusKey, playingKey, analyses, ink]);
+  }, [recut, presentations, focusKey, playingKey, analyses, ink, covers]);
   const faceFlights = faces.flights;
   useEffect(() => {
     if (faces.soundClock === null || faces.playerKey === undefined) return;

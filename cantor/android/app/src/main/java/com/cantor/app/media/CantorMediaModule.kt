@@ -2,6 +2,7 @@ package com.cantor.app.media
 
 import android.content.ContentUris
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.provider.MediaStore
@@ -32,6 +33,9 @@ private const val ARTWORK_PX = 256
 private const val ARTWORK_QUALITY = 85
 
 private val ARTWORK_NAME = Regex("^[a-z0-9_-]{1,64}$")
+
+/** The most cells a side of an artwork's brightness grid may have. */
+private const val LUMA_MAX_CELLS = 96
 
 /**
  * The phone's music, as Android indexes it — read only.
@@ -258,6 +262,49 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
         if (file.isFile && file.name !in kept && file.delete()) removed.pushString(file.name)
       }
       removed
+    }
+  }
+
+  /**
+   * A saved album thumbnail as a `cells × cells` grid of brightness, 0 black
+   * to 1 white, row by row: the middle square of the picture, averaged down.
+   * Null when the file is gone. Reads only Cantor's own `files/artwork/`.
+   *
+   * What the cover lens draws from (docs/import/ I6c). Nothing is kept: the
+   * grid is a few kilobytes and a few milliseconds, so it is made again
+   * whenever it is asked for.
+   */
+  @ReactMethod
+  fun artworkLuma(file: String, cells: Double, promise: Promise) {
+    run(promise) {
+      require(file.endsWith(".jpg") && ARTWORK_NAME.matches(file.removeSuffix(".jpg"))) {
+        "Invalid artwork name."
+      }
+      val side = cells.toInt()
+      require(side in 1..LUMA_MAX_CELLS) { "Invalid cell count." }
+      val source = File(File(context.filesDir, "artwork"), file)
+      val decoded = BitmapFactory.decodeFile(source.path) ?: return@run null
+      val square = minOf(decoded.width, decoded.height)
+      val cropped = Bitmap.createBitmap(
+          decoded,
+          (decoded.width - square) / 2,
+          (decoded.height - square) / 2,
+          square,
+          square,
+      )
+      val grid = Bitmap.createScaledBitmap(cropped, side, side, true)
+      val pixels = IntArray(side * side)
+      grid.getPixels(pixels, 0, side, 0, 0, side, side)
+      val luma = Arguments.createArray()
+      for (pixel in pixels) {
+        val r = (pixel shr 16) and 0xff
+        val g = (pixel shr 8) and 0xff
+        val b = pixel and 0xff
+        // Rec. 709 weights on the stored values: the grid only has to order
+        // light against dark, not measure it.
+        luma.pushDouble((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0)
+      }
+      luma
     }
   }
 

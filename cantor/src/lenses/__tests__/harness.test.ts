@@ -93,7 +93,7 @@ describe('lens harness', () => {
               if (alpha.song > 0) {
                 lens.ui.drawPlayer(
                   canvas,
-                  lens.player(recipe(placement.entityKey), undefined),
+                  lens.player(recipe(placement.entityKey), undefined, null),
                   identity,
                   12,
                   alpha.song,

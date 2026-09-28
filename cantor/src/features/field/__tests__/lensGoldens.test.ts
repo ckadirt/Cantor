@@ -27,6 +27,7 @@ import {
 import {
   ARRIVING_UNKNOWN,
   analyseWindow,
+  coverArtOf,
   lensIndex,
   type SongAnalysis,
 } from '../../../lenses';
@@ -46,6 +47,7 @@ import {
 const viewport = { width: 380, height: 800 };
 const CIRCLE = lensIndex('name');
 const SEAL = lensIndex('seal');
+const COVER = lensIndex('cover');
 
 /** Three songs, one per way a song can be held: elsewhere, cached, pinned. */
 const STATES = ['remote', 'cached', 'pinned'] as const;
@@ -405,6 +407,76 @@ describe('golden pixels: the imported mark', () => {
         });
       }
     }
+    expect(frames).toMatchSnapshot();
+  });
+});
+
+/**
+ * The cover (docs/import I6c): the circle growing into the player, and the
+ * album's picture as glyphs rising once the camera is there — or, with no
+ * cover, the circle's own player.
+ */
+describe('golden pixels: the cover', () => {
+  const cells = 16;
+  const luma = Array.from({ length: cells * cells }, (_, index) => {
+    const x = index % cells;
+    const y = Math.floor(index / cells);
+    const inside = x >= 4 && x < 12 && y >= 4 && y < 12;
+    return inside ? 0.05 : (x + y) / (2 * cells);
+  });
+  const withCover = faceFlightsOf(
+    planPlacementFlights([], layout.placements, 1),
+    presentations,
+    held.key,
+    null,
+    undefined,
+    undefined,
+    new Map([[held.entityKey, coverArtOf(luma, cells)]]),
+  );
+  const coverFrame = (
+    flights: readonly FaceFlight[],
+    ratio: number,
+    soundProgress: number,
+  ) =>
+    raster(canvas =>
+      drawFieldFaces(
+        canvas,
+        flights,
+        paints(),
+        1,
+        recut,
+        { value: heldSeat(ratio) } as never,
+        { value: fit } as never,
+        viewport,
+        COVER,
+        COVER,
+        1,
+        false,
+        soundProgress,
+      ),
+    );
+
+  it('rises into the player, and falls back to the circle without one', () => {
+    const frames: Record<string, string> = {};
+    for (const ratio of [
+      LEVEL_SCALE_RATIOS.shelf,
+      18,
+      LEVEL_SCALE_RATIOS.song,
+    ]) {
+      for (const sound of [0, 0.5, 1]) {
+        frames[`ratio ${ratio} sound ${sound}`] = coverFrame(
+          withCover,
+          ratio,
+          sound,
+        );
+      }
+    }
+    frames['no cover'] = coverFrame(
+      facesFor(held.key),
+      LEVEL_SCALE_RATIOS.song,
+      1,
+    );
+    expect(frames['ratio 18 sound 1']).not.toBe(frames['no cover']);
     expect(frames).toMatchSnapshot();
   });
 });

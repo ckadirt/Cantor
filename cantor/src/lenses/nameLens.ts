@@ -189,7 +189,7 @@ export function nameLensRingRadius(radius: number): number {
  * fill gives way (`arrived`) and its line settles to `SONG_FACE_ALPHA`, the
  * quiet contour the player's clock is drawn inside.
  */
-function drawCircleMark(
+export function drawCircleMark(
   canvas: SkCanvas,
   identity: LensIdentity,
   size: number,
