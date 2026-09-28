@@ -18,8 +18,9 @@ scan. I5a done: `DeviceLibraryService` loads, publishes and scans; the phone's
 database holds the 16 fixture songs from a fixture-only scan (kept for
 I5b–d). I5b done: `FieldPresentation` is a node/device union and the 16 fixture
 songs stand in the field, open at L2 and play (native analysis ticks drawn).
-**Next: I5c/I5d** — most of I5c landed with I5b (see its entry); what is left
-is the device sheet and the player's `PINNED`/DETAIL words. None of it is pushed;
+I5d done: an imported song's sheet and the player's `ON THIS PHONE`.
+**I5 is finished. Next: I6** (the imported marker at L0/L1, the ASCII cover
+at L2, the ALBUM/ARTIST axis). None of it is pushed;
 Cesar decides when to push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
@@ -69,7 +70,7 @@ coordinates and details):
 | I2 phone database | **done** 2026-09-27 |
 | I3 native scanner | **done** 2026-09-27 |
 | I4 resolver | **done** 2026-09-27 (checked on the phone with I5) |
-| I5 device source | I5a, I5b **done** 2026-09-27; I5d next (I5c mostly folded into I5b) |
+| I5 device source | **done** 2026-09-28 (I5a, I5b, I5d; I5c folded into I5b) |
 | I6 mark and axis | not started |
 | I7 import flow | not started |
 | I8 300-song check | not started |
@@ -346,6 +347,22 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 
 ## Findings
 
+- **2026-09-28 — I5d on the phone.** An imported song's player foot reads
+  `DETAIL · ON THIS PHONE`; play works with the patched audio-api (media
+  session "Tone FLAC 16-44, Test Artist"). DETAIL opens the sheet: no
+  favourite star, the name not editable, playlists and tags editable (added
+  to Dusk and removed again: `1 OF 16` then `0 OF 16`, written to the phone
+  database, nothing sent to a node), `On this phone · 2.5 MB · YOUR OWN
+  FILE`, no foot act. The back page (RECORD): arrived date and time, length,
+  artist, album, year, genre, format, size, folder; no delete.
+- **2026-09-28 — I5d: how the sheet shows an imported song.** `SongSheet`
+  takes `imported: ImportedFacts | null`; `FieldScreen` hands it a
+  `SongHeader`-shaped view of the device song (its title, length, tags,
+  `model: device`) so membership, the face and `useSongWish` work unchanged
+  — a wish settles by comparing tags, not revisions, so the phone database
+  fits. Tag edits go to `DeviceLibraryService.setTags`; the node's recipe
+  is never asked for.
+
 - **2026-09-27 — I5b: device songs in the field, on the phone.** The field
   counts 62 songs (46 node + 16 imported); imported marks draw solid
   (`pinned`: always plays offline). At L1 a row reads its title and artist
@@ -583,3 +600,6 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 - `19ec171` device: the device library and its scan
 - `af3dcb8` docs: import I5a, device library
 - `f48c4b8` field: device songs join the field
+- `96ee904` docs: import I5b, device songs in the field
+- `fdac1df` audio: start audio-api's foreground service on a placeholder
+- `e149691` song: an imported song's sheet and player words
