@@ -38,7 +38,7 @@ export const SONG_ORDERS: readonly SongOrder[] = [
   {
     key: 'date',
     label: 'Date',
-    rank: entity => entity.createdAtMs,
+    rank: entity => entity.record?.arrivedMs ?? entity.createdAtMs,
   },
   {
     // Seeded, and held: an unseeded shuffle would re-form the whole field on
@@ -68,9 +68,9 @@ export function orderByKey(key: string): SongOrder {
 /**
  * One group's members, in the order they should be seated.
  *
- * Ties break on the entity key so the result is total: two songs generated in
- * the same millisecond, or two of exactly the same length, must not swap places
- * between two renders of the same field.
+ * Ties break on the track, then on the entity key, so the result is total:
+ * two songs generated in the same millisecond, or two of exactly the same
+ * length, must not swap places between two renders of the same field.
  */
 export function orderMembers(
   entityKeys: readonly string[],
@@ -85,10 +85,21 @@ export function orderMembers(
       rank: entity === undefined ? 0 : order.rank(entity, seed),
     };
   });
+  // Songs of one album rank equal by date (`FieldRecord.arrivedMs`) and sit
+  // in its track order before the key breaks the tie.
   ranked.sort(
-    (left, right) => left.rank - right.rank || left.key.localeCompare(right.key),
+    (left, right) =>
+      left.rank - right.rank ||
+      trackOf(entitiesByKey.get(left.key)) -
+        trackOf(entitiesByKey.get(right.key)) ||
+      left.key.localeCompare(right.key),
   );
   return ranked.map(entry => entry.key);
+}
+
+/** Where a song falls in its album, or after every numbered track. */
+function trackOf(entity: FieldEntity | undefined): number {
+  return entity?.record?.track ?? Number.MAX_SAFE_INTEGER;
 }
 
 /** A stable number per (song, seed): FNV-1a over the key, mixed with the seed. */

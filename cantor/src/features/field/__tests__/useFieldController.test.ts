@@ -6,6 +6,7 @@ import type {
   ConnectionSnapshot,
 } from '../../../backends/types';
 import type { DeviceSong } from '../../../device/repository';
+import { metadataSeed } from '../../../lenses/face';
 import { audioRefOf, buildFieldController } from '../useFieldController';
 
 const artifact: ArtifactView = {
@@ -380,5 +381,74 @@ describe('device songs', () => {
     expect(model.presentations.get(`device:${deviceSong.id}`)?.label).toBe(
       'This phone',
     );
+  });
+
+  it('carries its record for the album and artist axes, and its face from its tags', () => {
+    const model = buildFieldController({
+      ...empty,
+      device: library([
+        deviceSong,
+        {
+          ...deviceSong,
+          id: 'dloose',
+          path: '/Music/loose/untitled.wav',
+          albumKey: '||/Music/loose',
+          artist: null,
+          disc: null,
+          track: null,
+        },
+      ]),
+    });
+    const tagged = model.presentations.get(`device:${deviceSong.id}`)!;
+    expect(tagged.entity.record).toEqual({
+      albumKey: album.key,
+      album: 'Fixture Album',
+      artist: 'Test Artist',
+      track: 1001,
+      arrivedMs: deviceSong.addedAtMs,
+    });
+    expect(tagged.recipe).toMatchObject({
+      seed: metadataSeed('Tone MP3', 'Test Artist'),
+      imported: true,
+    });
+    // No album row, no album tag: the folder names it.
+    expect(model.presentations.get('device:dloose')?.entity.record).toEqual({
+      albumKey: '||/Music/loose',
+      album: 'loose',
+      artist: null,
+      track: null,
+      arrivedMs: deviceSong.addedAtMs,
+    });
+  });
+
+  it('dates an album by its first file, so it sits as one package', () => {
+    const model = buildFieldController({
+      ...empty,
+      device: library([
+        deviceSong,
+        {
+          ...deviceSong,
+          id: 'dlater',
+          track: 2,
+          addedAtMs: deviceSong.addedAtMs + 1_000,
+        },
+      ]),
+    });
+    expect(
+      model.presentations.get('device:dlater')?.entity.record?.arrivedMs,
+    ).toBe(deviceSong.addedAtMs);
+  });
+
+  it('gives a retagged song a new entity, so the axes re-cut', () => {
+    const first = buildFieldController({
+      ...empty,
+      device: library([deviceSong]),
+    });
+    const second = buildFieldController(
+      { ...empty, device: library([{ ...deviceSong, artist: 'Someone' }]) },
+      first,
+    );
+    expect(second.entities[0]).not.toBe(first.entities[0]);
+    expect(second.entities[0].record?.artist).toBe('Someone');
   });
 });

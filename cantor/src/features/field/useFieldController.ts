@@ -8,7 +8,7 @@ import { deliveryArtifact, type BackendRuntimeState } from '../../runtime';
 import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import type { JobView } from '../../core/protocol';
 import type { GenerationStage } from '../../../../protocol/GenerationStage';
-import type { FieldEntity } from '../../field';
+import type { FieldEntity, FieldRecord } from '../../field';
 import { metadataSeed, type FaceRecipe } from '../../lenses/face';
 import type {
   DeviceAlbum,
@@ -395,6 +395,14 @@ function addDeviceSongs(
   presentations: Map<string, FieldPresentation>,
 ): void {
   const albums = new Map(library.albums.map(album => [album.key, album]));
+  const albumArrived = new Map<string, number>();
+  for (const device of library.songs) {
+    if (device.missingSinceMs !== null) continue;
+    const first = albumArrived.get(device.albumKey);
+    if (first === undefined || device.addedAtMs < first) {
+      albumArrived.set(device.albumKey, device.addedAtMs);
+    }
+  }
   for (const device of library.songs) {
     if (device.missingSinceMs !== null) continue;
     const key = `${DEVICE_NODE_KEY}:${device.id}`;
@@ -409,6 +417,23 @@ function addDeviceSongs(
       createdAtMs: device.addedAtMs,
       durationMs: device.durationMs,
       tags,
+      record: {
+        albumKey: device.albumKey,
+        album:
+          album?.title ??
+          folderName(
+            album?.folder ?? device.path.slice(0, device.path.lastIndexOf('/')),
+          ),
+        artist: device.artist,
+        track:
+          device.track === null
+            ? null
+            : (device.disc ?? 1) * 1000 + device.track,
+        arrivedMs:
+          album?.title == null
+            ? device.addedAtMs
+            : albumArrived.get(device.albumKey) ?? device.addedAtMs,
+      },
     });
     if (
       kept !== undefined &&
@@ -445,6 +470,12 @@ function addDeviceSongs(
   }
 }
 
+/** The last part of a folder's path: an untitled album's name. */
+function folderName(folder: string): string {
+  const parts = folder.split('/').filter(part => part !== '');
+  return parts[parts.length - 1] ?? folder;
+}
+
 /** A device song's second line when it names no artist. */
 const DEVICE_LABEL = 'This phone';
 
@@ -463,11 +494,26 @@ function keepEntity(
     kept.createdAtMs === next.createdAtMs &&
     kept.durationMs === next.durationMs &&
     kept.tags.length === next.tags.length &&
-    kept.tags.every((tag, index) => tag === next.tags[index])
+    kept.tags.every((tag, index) => tag === next.tags[index]) &&
+    sameRecord(kept.record, next.record)
   ) {
     return kept;
   }
   return next;
+}
+
+function sameRecord(
+  left: FieldRecord | undefined,
+  right: FieldRecord | undefined,
+): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return (
+    left.albumKey === right.albumKey &&
+    left.album === right.album &&
+    left.artist === right.artist &&
+    left.track === right.track &&
+    left.arrivedMs === right.arrivedMs
+  );
 }
 
 function nodeLabelsOf(backend: BackendRecord): readonly string[] {

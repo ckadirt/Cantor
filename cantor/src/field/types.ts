@@ -46,6 +46,29 @@ export type FieldEntity = Readonly<{
    */
   durationMs: number;
   tags: readonly string[];
+  /**
+   * What an imported file's tags say it belongs to, for the album and artist
+   * axes; absent for a generated song, which has neither.
+   */
+  record?: FieldRecord;
+}>;
+
+export type FieldRecord = Readonly<{
+  /** The album's own key (`device/resolve.ts`), unique across folders. */
+  albumKey: string;
+  /** Its title, or its folder's name when the files carry no album tag. */
+  album: string;
+  artist: string | null;
+  /** `disc × 1000 + track`, where the tags give one: an album's own order. */
+  track: number | null;
+  /**
+   * When the song's album arrived: its first file. Copying an album takes
+   * seconds, so its files' own times differ; the date order seats by this,
+   * then by track, so the album sits as the package it came in. The song's
+   * own arrival for an album the tags do not name — a folder of loose files
+   * is not a package.
+   */
+  arrivedMs: number;
 }>;
 
 /** Membership and display text decided by one arrangement. */
