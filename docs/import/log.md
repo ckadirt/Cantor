@@ -56,6 +56,17 @@ coordinates and details):
    ask first. Import only reads the user's files; it never writes, moves or
    deletes them.
 
+## Open questions (for Cesar)
+
+- **The audio-api foreground-service crash** (Findings, I5b): patch it with
+  `patch-package` (post a placeholder notification instead of returning),
+  report it upstream, or both?
+- **The device song's sheet (I5d).** Proposed: title, `ARTIST · ALBUM`, year
+  and genre, format and folder, and the same tags/playlists editing as a
+  node song (written to the phone database). No rename, delete, download or
+  recipe: the file is the person's own. The player's foot says `ON THIS
+  PHONE` instead of `PINNED`.
+
 ## Where we are
 
 | Step | State |
