@@ -435,7 +435,12 @@ function SongSheetImpl({
           onPress={onToggleFavourite}
           style={styles.seat}
         >
-          <Face arrival={arrival} song={song} colour={pal.ink} />
+          <Face
+            arrival={arrival}
+            song={song}
+            imported={imported !== null}
+            colour={pal.ink}
+          />
           {imported !== null ? null : (
             <Text
               style={[
@@ -658,10 +663,13 @@ function windowed(value: number, from: number, to: number): number {
 function Face({
   arrival,
   song,
+  imported,
   colour,
 }: {
   arrival: SharedValue<number>;
   song: SongHeader;
+  /** Draws the imported marker, as the field does. */
+  imported: boolean;
   colour: string;
 }) {
   const size = SONG_SHEET_KNOBS.SEAT_PX;
@@ -680,10 +688,11 @@ function Face({
           id: song.id,
           model: song.model,
           durationMs: song.duration_ms,
+          imported,
         },
         size / 2.6,
       ),
-    [song.duration_ms, song.id, song.model, song.seed, size],
+    [imported, song.duration_ms, song.id, song.model, song.seed, size],
   );
   return (
     <Canvas style={{ width: size, height: size }}>

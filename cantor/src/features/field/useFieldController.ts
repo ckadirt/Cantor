@@ -9,7 +9,7 @@ import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import type { JobView } from '../../core/protocol';
 import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import type { FieldEntity } from '../../field';
-import type { FaceRecipe } from '../../lenses/face';
+import { metadataSeed, type FaceRecipe } from '../../lenses/face';
 import type {
   DeviceAlbum,
   DeviceLibrary,
@@ -425,11 +425,14 @@ function addDeviceSongs(
       entity,
       title: device.title,
       durationMs: device.durationMs,
+      // Drawn from its tags, not its bytes, and marked as imported: see
+      // `metadataSeed`.
       recipe: {
-        seed: undefined,
+        seed: metadataSeed(device.title, device.artist),
         id: device.id,
         model: DEVICE_NODE_KEY,
         durationMs: device.durationMs,
+        imported: true,
       },
       localAudio: { state: 'pinned', bytes: device.size },
       byteLength: device.size,

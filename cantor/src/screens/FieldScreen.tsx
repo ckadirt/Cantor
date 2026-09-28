@@ -1344,6 +1344,8 @@ export function FieldScreen({ identity }: Props) {
       created_at: new Date(sheetSong.device.addedAtMs).toISOString(),
       duration_ms: sheetSong.durationMs,
       model: sheetSong.recipe.model,
+      // The face is the field's: drawn from the tags (`metadataSeed`).
+      seed: sheetSong.recipe.seed,
       favorite: false,
       tags: [...sheetSong.entity.tags],
       trashed: false,

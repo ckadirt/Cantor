@@ -5,6 +5,7 @@ import {
   faceParams,
   facePoints,
   faceSeed,
+  metadataSeed,
   type FaceRecipe,
 } from '../face';
 import { NAME_LENS_KNOBS, nameLensFacePath } from '../nameLens';
@@ -159,5 +160,28 @@ describe('the face', () => {
       turned += step;
     }
     expect(turned).toBeGreaterThan(Math.PI * 1.9);
+  });
+});
+
+describe('an imported song\'s identity', () => {
+  it('comes from its tags, folded, not from its file', () => {
+    expect(metadataSeed('Blue in Green', 'Miles Davis')).toBe(
+      metadataSeed('  blue  in green ', 'MILES DAVIS'),
+    );
+    expect(metadataSeed('Blue in Green', 'Miles Davis')).not.toBe(
+      metadataSeed('Blue in Green', 'Bill Evans'),
+    );
+    expect(metadataSeed('Intro', null)).toBe(metadataSeed('Intro', ''));
+  });
+
+  it('is the same face with a spindle hole in it', () => {
+    const plain = nameLensFacePath(recipe(), 10);
+    const imported = nameLensFacePath(recipe({ imported: true }), 10);
+    expect(imported).not.toBe(plain);
+    // The contour is unchanged; the hole is inside it and empty when filled.
+    expect(imported.contains(0, 0)).toBe(false);
+    expect(plain.contains(0, 0)).toBe(true);
+    const edge = 10 * NAME_LENS_KNOBS.SPINDLE_RATIO * 1.5;
+    expect(imported.contains(edge, 0)).toBe(true);
   });
 });

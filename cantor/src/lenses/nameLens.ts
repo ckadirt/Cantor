@@ -1,4 +1,9 @@
-import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
+import {
+  FillType,
+  Skia,
+  type SkCanvas,
+  type SkPath,
+} from '@shopify/react-native-skia';
 import type { Availability } from './availability';
 import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
 import { ringTurnAt } from './ring';
@@ -58,6 +63,14 @@ export const NAME_LENS_KNOBS = {
   PLAYING_RING_WIDTH_PX: 1.2,
   /** The arriving arc, in the same hand as the ring a generating job draws. */
   ARRIVING_RING_WIDTH_PX: 1.4,
+  /**
+   * The imported marker: a spindle hole at the face's centre, as a fraction
+   * of its radius — a record's. Part of the contour's own path (even-odd), so
+   * a filled face shows a hole and the outline a small ring, at no cost per
+   * frame. At the player it stays as the quiet hub the hand starts from:
+   * `CLOCK_HAND_INNER_RATIO / SONG_FACE_RATIO` is 0.19.
+   */
+  SPINDLE_RATIO: 0.2,
 
   /*
    * L2 — the player. One song filling the view, and the same lens that drew it
@@ -396,7 +409,8 @@ const facePathCache = new Map<string, SkPath>();
 
 /** Build the closed contour once per song recipe and requested display size. */
 export function nameLensFacePath(
-  song: Pick<LensSong, 'seed' | 'id' | 'model' | 'durationMs'>,
+  song: Pick<LensSong, 'seed' | 'id' | 'model' | 'durationMs'> &
+    Readonly<{ imported?: boolean }>,
   radius: number = NAME_LENS_KNOBS.MARK_RADIUS_PX,
 ): SkPath {
   // A template literal, not `JSON.stringify`: this runs for every face on
@@ -405,7 +419,7 @@ export function nameLensFacePath(
   // keeps fields that could contain the delimiter from colliding.
   const cacheKey = `${song.seed ?? ''}\u001f${song.id}\u001f${song.model}\u001f${
     song.durationMs
-  }\u001f${radius}`;
+  }\u001f${radius}\u001f${song.imported === true ? 'i' : ''}`;
   const cached = facePathCache.get(cacheKey);
   if (cached !== undefined) return cached;
   const recipe: FaceRecipe = {
@@ -422,6 +436,10 @@ export function nameLensFacePath(
     else builder.lineTo(x, y);
   });
   builder.close();
+  if (song.imported === true) {
+    builder.addCircle(0, 0, radius * NAME_LENS_KNOBS.SPINDLE_RATIO);
+    builder.setFillType(FillType.EvenOdd);
+  }
   const path = builder.detach();
   if (facePathCache.size >= FACE_PATH_CACHE_LIMIT) {
     const oldest = facePathCache.keys().next().value;

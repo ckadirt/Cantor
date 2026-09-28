@@ -1,4 +1,9 @@
-import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
+import {
+  PathOp,
+  Skia,
+  type SkCanvas,
+  type SkPath,
+} from '@shopify/react-native-skia';
 import { NAME_LENS_KNOBS } from './nameLens';
 import { ringTurnAt } from './ring';
 import {
@@ -87,6 +92,11 @@ export type SealMark = Readonly<{
   /** Each dot's place in time: where its first child falls on the thread. */
   rank: readonly number[];
   radius: number;
+  /**
+   * The imported marker's ring, as a radius at the mark's size; 0 for a
+   * generated song. `dots` and `filled` already have its clearing cut out.
+   */
+  spindle: number;
 }>;
 
 const SEAL_MARK_CACHE_LIMIT = 512;
@@ -95,7 +105,7 @@ const sealMarkCache = new Map<string, SealMark>();
 export function sealMarkOf(recipe: FaceRecipe): SealMark {
   const key = `${recipe.seed ?? ''}\u001f${recipe.id}\u001f${
     recipe.model
-  }\u001f${recipe.durationMs}`;
+  }\u001f${recipe.durationMs}\u001f${recipe.imported === true ? 'i' : ''}`;
   const cached = sealMarkCache.get(key);
   if (cached !== undefined) return cached;
   const level = sealModel(recipe).levels[SEAL_KNOBS.MARK_DEPTH];
@@ -110,13 +120,18 @@ export function sealMarkOf(recipe: FaceRecipe): SealMark {
     }
     return builder.detach();
   };
+  const spindle =
+    recipe.imported === true
+      ? NAME_LENS_KNOBS.MARK_RADIUS_PX * NAME_LENS_KNOBS.SPINDLE_RATIO
+      : 0;
   const mark: SealMark = {
-    dots: sealMarkPath(recipe, side),
-    filled: at(SEAL_FILLED_GROW),
+    dots: cleared(sealMarkPath(recipe, side), spindle),
+    filled: cleared(at(SEAL_FILLED_GROW), spindle),
     x,
     y,
     rank: sealMarkRanks(recipe),
     radius,
+    spindle,
   };
   if (sealMarkCache.size >= SEAL_MARK_CACHE_LIMIT) {
     const oldest = sealMarkCache.keys().next().value;
@@ -124,6 +139,36 @@ export function sealMarkOf(recipe: FaceRecipe): SealMark {
   }
   sealMarkCache.set(key, mark);
   return mark;
+}
+
+/** The dust with the spindle's clearing cut out of it, or as it is. */
+function cleared(dust: SkPath, spindle: number): SkPath {
+  if (spindle <= 0) return dust;
+  const disc = Skia.PathBuilder.Make()
+    .addCircle(0, 0, spindle * SEAL_KNOBS.SPINDLE_CLEAR)
+    .detach();
+  return Skia.Path.MakeFromOp(dust, disc, PathOp.Difference) ?? dust;
+}
+
+/**
+ * The imported marker's ring, over whatever the seal drew: a hairline at any
+ * size. The clearing it stands in is in the cached paths; while a download
+ * builds the dust dot by dot (never, for an imported song) the ring is drawn
+ * alone.
+ */
+function drawSealSpindle(
+  canvas: SkCanvas,
+  mark: SealMark,
+  alpha: number,
+  hairlinePx: number,
+  size: number,
+  paints: MarkPaints,
+): void {
+  'worklet';
+  if (mark.spindle <= 0 || alpha <= 0) return;
+  paints.stroke.setAlphaf(alpha);
+  paints.stroke.setStrokeWidth(hairlinePx / size);
+  canvas.drawCircle(0, 0, mark.spindle, paints.stroke);
 }
 
 /**
@@ -149,7 +194,7 @@ function drawSealMark(
   fill: number,
   _arrived: number,
   arriving: number,
-  _hairlinePx: number,
+  hairlinePx: number,
   paints: MarkPaints,
 ): void {
   'worklet';
@@ -191,6 +236,7 @@ function drawSealMark(
     paints.fill.setAlphaf(alpha * (weight + (1 - weight) * fill));
     canvas.drawPath(builder.detach(), paints.fill);
   }
+  drawSealSpindle(canvas, mark, alpha * weight, hairlinePx, size, paints);
   canvas.restore();
 }
 
@@ -202,7 +248,7 @@ function drawSealMark(
 function drawSealAsPlayer(
   canvas: SkCanvas,
   player: LensPlayer | null,
-  _identity: LensIdentity,
+  identity: LensIdentity,
   size: number,
   alpha: number,
   weight: number,
@@ -216,6 +262,7 @@ function drawSealAsPlayer(
 ): void {
   'worklet';
   if (player === null) return;
+  const mark = identity as SealMark;
   drawSealPlayer(
     canvas,
     player as SealPlayer,
@@ -231,6 +278,17 @@ function drawSealAsPlayer(
     heard,
     hairlinePx,
   );
+  // The spindle leaves as the player arrives, its clearing filling back in
+  // with the dust: at `arrived` 0 this is the mark exactly.
+  const away = 1 - arrived;
+  if (mark.spindle > 0 && away > 0) {
+    canvas.save();
+    canvas.scale(size, size);
+    paints.paper.setAlphaf(alpha * away);
+    canvas.drawCircle(0, 0, mark.spindle * SEAL_KNOBS.SPINDLE_CLEAR, paints.paper);
+    drawSealSpindle(canvas, mark, alpha * away * weight, hairlinePx, size, paints);
+    canvas.restore();
+  }
 }
 
 /** The seal's rim under a finger: the circle's dead centre, a longer reach. */

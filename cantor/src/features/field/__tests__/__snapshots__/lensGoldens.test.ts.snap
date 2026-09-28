@@ -83,6 +83,21 @@ exports[`golden pixels: faces the player, measured, rising and heard 1`] = `
 }
 `;
 
+exports[`golden pixels: the imported mark marks, rows and the descent, circle and seal 1`] = `
+{
+  "L0 lens 0": "63645 46788c80d658b0a3",
+  "L0 lens 1": "31217 cab6242e6d1982b1",
+  "L1 lens 0": "87626 81c90a4d45e4bbce",
+  "L1 lens 1": "45078 e679e11b8ae1ddd0",
+  "ratio 12.5 lens 0": "294989 44d65c764a2917e5",
+  "ratio 12.5 lens 1": "1122201 36643becb3f513f7",
+  "ratio 18 lens 0": "37921 6a300ab8f6d7edaf",
+  "ratio 18 lens 1": "1001276 dc660ba71fff3abc",
+  "ratio 30 lens 0": "28807 9c04e8d4a7977753",
+  "ratio 30 lens 1": "990213 f68738d067701b5b",
+}
+`;
+
 exports[`golden pixels: the measurement the ring at every lens step, sweeping, and unrolling 1`] = `
 {
   "grain lens 0": "18095166 d5e7dc61901fd046",

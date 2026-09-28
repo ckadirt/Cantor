@@ -77,6 +77,13 @@ export const SEAL_KNOBS = {
   WIDTH_SPLIT: 1.05,
   /** How much smaller each of a wide pair is than the dot it split from. */
   WIDTH_SHRINK: 0.3,
+  /**
+   * The imported marker in the seal's own form: the circle's spindle ring
+   * (`NAME_LENS_KNOBS.SPINDLE_RATIO`) standing in a clearing cut out of the
+   * dust, this many times the ring's radius — wide enough that the ring reads
+   * on paper whatever the masks put at the centre.
+   */
+  SPINDLE_CLEAR: 1.8,
 } as const;
 
 /**
