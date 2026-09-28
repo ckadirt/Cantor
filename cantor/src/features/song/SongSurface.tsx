@@ -93,6 +93,8 @@ export type SongSurfaceSong = Readonly<{
   arriving: number | null;
   /** Every tag; the playlists among them are named at the foot. */
   tags: readonly string[];
+  /** A file that was on the phone before Cantor: its foot says so. */
+  imported?: boolean;
 }>;
 
 type Props = {
@@ -215,8 +217,11 @@ function SongSurfaceImpl({
     () =>
       metaFont === null
         ? null
-        : playerWords(metaFont, describeAudio(song.audioState)),
-    [metaFont, song.audioState],
+        : playerWords(
+            metaFont,
+            describeAudio(song.audioState, song.imported === true),
+          ),
+    [metaFont, song.audioState, song.imported],
   );
   const transport = useMemo(
     () => transportScreenPx({ width, height }),

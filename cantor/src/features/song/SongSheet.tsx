@@ -162,6 +162,26 @@ const STATE_NOTE_GAP_PX = 3;
  */
 export type SongAct = 'pin' | 'unpin' | 'remove' | 'delete';
 
+/**
+ * What an imported song's file says about itself (docs/import/plan.md).
+ *
+ * Present, the sheet is an imported song's: its name, audio and life belong to
+ * the person's own file, so nothing here renames, fetches, frees or deletes
+ * it; only its playlists and tags, which are Cantor's, can change.
+ */
+export type ImportedFacts = Readonly<{
+  artist: string | null;
+  album: string | null;
+  year: number | null;
+  genre: string | null;
+  /** `FLAC`, `MP3`…, from the file's extension. */
+  format: string;
+  folder: string;
+  bytes: number;
+  /** When the file arrived on the phone. */
+  addedAtMs: number;
+}>;
+
 type Props = {
   visible: boolean;
   song: SongHeader;
@@ -231,6 +251,8 @@ type Props = {
   onRemoveDownload: () => void;
   /** Ending the song, on this phone and on the node, with no undo. */
   onDelete: () => void;
+  /** An imported song's facts; absent for a song a node holds. */
+  imported?: ImportedFacts | null;
 };
 
 /**
@@ -277,6 +299,7 @@ function SongSheetImpl({
   onUnpin,
   onRemoveDownload,
   onDelete,
+  imported = null,
 }: Props) {
   const pal = usePalette();
   /**
@@ -406,17 +429,23 @@ function SongSheetImpl({
           }
           accessibilityRole="button"
           accessibilityState={{ selected: song.favorite }}
-          disabled={locked}
+          // An imported song has no favourite: that flag is a node's.
+          disabled={locked || imported !== null}
           hitSlop={space.sm}
           onPress={onToggleFavourite}
           style={styles.seat}
         >
           <Face arrival={arrival} song={song} colour={pal.ink} />
-          <Text
-            style={[styles.star, { color: song.favorite ? pal.ink : pal.line }]}
-          >
-            {song.favorite ? '★' : '☆'}
-          </Text>
+          {imported !== null ? null : (
+            <Text
+              style={[
+                styles.star,
+                { color: song.favorite ? pal.ink : pal.line },
+              ]}
+            >
+              {song.favorite ? '★' : '☆'}
+            </Text>
+          )}
         </Pressable>
         {/*
               One object, two strings: the header does not swap a word for
@@ -456,6 +485,7 @@ function SongSheetImpl({
             downloaded={downloaded}
             deliveryBytes={deliveryBytes}
             full={full}
+            imported={imported}
             nodeLabel={nodeLabel}
             onPin={onPin}
             onRemoveDownload={onRemoveDownload}
@@ -489,6 +519,7 @@ function SongSheetImpl({
             masterBytes={masterBytes}
             nodeLabel={nodeLabel}
             downloaded={downloaded}
+            imported={imported}
             onDelete={() => {
               setConfirming(false);
               onDelete();
@@ -677,6 +708,7 @@ function Front({
   downloaded,
   deliveryBytes,
   full,
+  imported,
   nodeLabel,
   onPin,
   onRemoveDownload,
@@ -703,6 +735,7 @@ function Front({
   downloaded: boolean;
   deliveryBytes: number | null;
   full: boolean;
+  imported: ImportedFacts | null;
   nodeLabel: string;
   onPin: () => void;
   onRemoveDownload: () => void;
@@ -752,7 +785,8 @@ function Front({
         <Arriving arrival={arrival} index={0} style={styles.subject}>
           <Subject
             arrival={arrival}
-            busy={locked}
+            // An imported song's name is its file's; Cantor does not rename it.
+            busy={locked || imported !== null}
             colour={pal.ink}
             onBlur={onRename}
             onChangeText={onTitle}
@@ -814,50 +848,61 @@ function Front({
                 Glyphs drawn on a canvas are not text, so the pair is given one
                 label and read as one line — which is what it is.
               */}
-              <View
-                accessible
-                accessibilityLabel={`${whereItIs(audioState, nodeLabel)}. ${weight(
-                  deliveryBytes,
-                  downloaded,
-                  nodeLabel,
-                )}`}
-                accessibilityRole="text"
-              >
-                <TransformText
-                  charStyle={type.body}
-                  color={pal.ink}
-                  duration={SONG_SHEET_KNOBS.STATE_MS}
-                  style={styles.stateSlot}
-                  text={whereItIs(audioState, nodeLabel)}
-                />
-                <TransformText
-                  charStyle={LEDGER_NOTE_STYLE}
-                  color={pal.faint}
-                  duration={SONG_SHEET_KNOBS.STATE_MS}
-                  style={styles.stateNoteSlot}
-                  text={weight(deliveryBytes, downloaded, nodeLabel)}
-                />
-                {/*
-                  The fact an audio act is about to change. It is not a
-                  control, so it never goes out of reach — it says it is
-                  being worked on, and then it becomes its next reading.
-                */}
-                {/*
-                  Under the weight rather than the state: the two lines are
-                  3 px apart, which is no room for a rule, and the fact being
-                  changed is both of them — where the audio is and what that
-                  costs here. The rule underlines the whole sentence.
-                */}
-                <Underway
-                  charStyle={LEDGER_NOTE_STYLE}
-                  label={weight(deliveryBytes, downloaded, nodeLabel)}
-                  offset={SONG_SHEET_KNOBS.STATE_SLOT_PX + STATE_NOTE_GAP_PX}
-                  working={moving}
-                />
-              </View>
+              {imported !== null ? (
+                <View accessible accessibilityRole="text">
+                  <Text style={[type.body, { color: pal.ink }]}>
+                    On this phone
+                  </Text>
+                  <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>
+                    {`${formatBytes(imported.bytes)} · YOUR OWN FILE`}
+                  </Text>
+                </View>
+              ) : (
+                <View
+                  accessible
+                  accessibilityLabel={`${whereItIs(audioState, nodeLabel)}. ${weight(
+                    deliveryBytes,
+                    downloaded,
+                    nodeLabel,
+                  )}`}
+                  accessibilityRole="text"
+                >
+                  <TransformText
+                    charStyle={type.body}
+                    color={pal.ink}
+                    duration={SONG_SHEET_KNOBS.STATE_MS}
+                    style={styles.stateSlot}
+                    text={whereItIs(audioState, nodeLabel)}
+                  />
+                  <TransformText
+                    charStyle={LEDGER_NOTE_STYLE}
+                    color={pal.faint}
+                    duration={SONG_SHEET_KNOBS.STATE_MS}
+                    style={styles.stateNoteSlot}
+                    text={weight(deliveryBytes, downloaded, nodeLabel)}
+                  />
+                  {/*
+                    The fact an audio act is about to change. It is not a
+                    control, so it never goes out of reach — it says it is
+                    being worked on, and then it becomes its next reading.
+                  */}
+                  {/*
+                    Under the weight rather than the state: the two lines are
+                    3 px apart, which is no room for a rule, and the fact being
+                    changed is both of them — where the audio is and what that
+                    costs here. The rule underlines the whole sentence.
+                  */}
+                  <Underway
+                    charStyle={LEDGER_NOTE_STYLE}
+                    label={weight(deliveryBytes, downloaded, nodeLabel)}
+                    offset={SONG_SHEET_KNOBS.STATE_SLOT_PX + STATE_NOTE_GAP_PX}
+                    working={moving}
+                  />
+                </View>
+              )}
             </Row>
           </Arriving>
-          {downloaded ? (
+          {downloaded && imported === null ? (
             <Arriving arrival={arrival} index={4}>
               <Row
                 label={frees ?? 'FREES THE COPY'}
@@ -888,30 +933,32 @@ function Front({
           {problem.toUpperCase()}
         </Text>
       )}
-      <LedgerFoot>
-        {/*
-          One act, two strings. Keeping a song and letting go of it are the two
-          sides of one switch, so the foot does not swap a word for another —
-          the word becomes the other word, and the promise under it follows on
-          the same clock. Two Acts taking turns is what this used to be, and it
-          read as the foot being rebuilt every time you touched it.
-        */}
-        <Act
-          disabled={(locked && !keeping) || (!pinned && !downloaded)}
-          display
-          label={pinned ? 'Unpin' : 'Keep it here'}
-          morph
-          onPress={pinned ? onUnpin : onPin}
-          working={keeping}
-        />
-        <TransformText
-          charStyle={type.eyebrow}
-          color={pal.faint}
-          duration={SONG_SHEET_KNOBS.ACT_MS}
-          style={styles.footNoteSlot}
-          text={pinned ? 'KEPT UNTIL YOU SAY SO' : 'NEVER PURGED ONCE KEPT'}
-        />
-      </LedgerFoot>
+      {imported !== null ? null : (
+        <LedgerFoot>
+          {/*
+            One act, two strings. Keeping a song and letting go of it are the two
+            sides of one switch, so the foot does not swap a word for another —
+            the word becomes the other word, and the promise under it follows on
+            the same clock. Two Acts taking turns is what this used to be, and it
+            read as the foot being rebuilt every time you touched it.
+          */}
+          <Act
+            disabled={(locked && !keeping) || (!pinned && !downloaded)}
+            display
+            label={pinned ? 'Unpin' : 'Keep it here'}
+            morph
+            onPress={pinned ? onUnpin : onPin}
+            working={keeping}
+          />
+          <TransformText
+            charStyle={type.eyebrow}
+            color={pal.faint}
+            duration={SONG_SHEET_KNOBS.ACT_MS}
+            style={styles.footNoteSlot}
+            text={pinned ? 'KEPT UNTIL YOU SAY SO' : 'NEVER PURGED ONCE KEPT'}
+          />
+        </LedgerFoot>
+      )}
     </View>
   );
 }
@@ -924,6 +971,7 @@ function Back({
   detailError,
   deliveryBytes,
   downloaded,
+  imported,
   masterBytes,
   nodeLabel,
   onAsk,
@@ -938,6 +986,7 @@ function Back({
   detailError: string | null;
   deliveryBytes: number | null;
   downloaded: boolean;
+  imported: ImportedFacts | null;
   masterBytes: number | null;
   nodeLabel: string;
   onAsk: () => void;
@@ -948,6 +997,7 @@ function Back({
 }) {
   const pal = usePalette();
   const made = new Date(song.created_at);
+  if (imported !== null) return <ImportedRecord facts={imported} song={song} />;
   return (
     <View style={styles.page}>
       <ScrollView contentContainerStyle={styles.body}>
@@ -1082,6 +1132,59 @@ function Back({
           {confirming ? 'THERE IS NO UNDO' : noUndo(placementCount)}
         </Text>
       </LedgerFoot>
+    </View>
+  );
+}
+
+/**
+ * What an imported song is: what its file says, and where it lives.
+ *
+ * No recipe, because nothing generated it, and no foot, because the act that
+ * ends a song here would be deleting the person's own file, which Cantor never
+ * does. A fact the file does not carry is left out rather than said as blank.
+ */
+function ImportedRecord({
+  facts,
+  song,
+}: {
+  facts: ImportedFacts;
+  song: SongHeader;
+}) {
+  const pal = usePalette();
+  const added = new Date(facts.addedAtMs);
+  const optional: [string, string | null][] = [
+    ['Artist', facts.artist],
+    ['Album', facts.album],
+    ['Year', facts.year === null ? null : String(facts.year)],
+    ['Genre', facts.genre],
+  ];
+  return (
+    <View style={styles.page}>
+      <ScrollView contentContainerStyle={styles.body}>
+        <LedgerGap />
+        <Ledger>
+          <Row label="Arrived" note={clockOf(added)}>
+            <Text style={[type.body, { color: pal.ink }]}>{dateOf(added)}</Text>
+          </Row>
+          <Row label="Length">
+            <Text style={[type.body, { color: pal.ink }]}>
+              {duration(song.duration_ms)}
+            </Text>
+          </Row>
+          <LedgerGap />
+          {optional.map(([label, value]) =>
+            value === null ? null : (
+              <Row key={label} label={label}>
+                <Text style={[type.body, { color: pal.ink }]}>{value}</Text>
+              </Row>
+            ),
+          )}
+          <LedgerGap />
+          <Fact label="Format" mono value={facts.format} />
+          <Fact label="Size" mono value={formatBytes(facts.bytes)} />
+          <Fact label="Folder" mono value={facts.folder} />
+        </Ledger>
+      </ScrollView>
     </View>
   );
 }

@@ -60,6 +60,7 @@ import { LensPicker } from '../features/song/LensPicker';
 import {
   SongSheet,
   SONG_SHEET_KNOBS,
+  type ImportedFacts,
   type SongAct,
 } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
@@ -1303,11 +1304,16 @@ export function FieldScreen({ identity }: Props) {
    */
   const commitSheetPatch = useCallback(
     async (patch: SongPatch) => {
-      // The sheet opens on node songs only until device songs have their own
-      // (docs/import/log.md, I5d).
-      if (sheetSong === null || sheetSong.source !== 'node') return;
+      if (sheetSong === null) return;
       setSongProblem(null);
       try {
+        if (sheetSong.source === 'device') {
+          // Only its tags are Cantor's: the sheet offers nothing else here.
+          if (patch.tags !== undefined) {
+            await deviceLibrary.setTags(sheetSong.device.id, patch.tags);
+          }
+          return;
+        }
         await commands.patchSong(
           sheetSong.entity.nodePublicKey,
           sheetSong.song,
@@ -1318,8 +1324,47 @@ export function FieldScreen({ identity }: Props) {
         throw error;
       }
     },
-    [commands, sheetSong],
+    [commands, deviceLibrary, sheetSong],
   );
+
+  /**
+   * What the sheet draws a song from. A node song is its header; an imported
+   * one is shown through the same shape — its own title, length and tags, a
+   * recipe the face is drawn from — so the sheet's membership and face work
+   * unchanged, and `imported` says everything else is the file's.
+   */
+  const sheetHeader = useMemo<SongHeader | null>(() => {
+    if (sheetSong === null) return null;
+    if (sheetSong.source === 'node') return sheetSong.song;
+    return {
+      id: sheetSong.device.id,
+      revision: 0,
+      title: sheetSong.title,
+      caption_summary: '',
+      created_at: new Date(sheetSong.device.addedAtMs).toISOString(),
+      duration_ms: sheetSong.durationMs,
+      model: sheetSong.recipe.model,
+      favorite: false,
+      tags: [...sheetSong.entity.tags],
+      trashed: false,
+      artifacts: [],
+    };
+  }, [sheetSong]);
+  const sheetImported = useMemo<ImportedFacts | null>(() => {
+    if (sheetSong === null || sheetSong.source !== 'device') return null;
+    const { device, album } = sheetSong;
+    const dot = device.path.lastIndexOf('.');
+    return {
+      artist: device.artist,
+      album: album?.title ?? null,
+      year: device.year,
+      genre: device.genre,
+      format: dot < 0 ? 'FILE' : device.path.slice(dot + 1).toUpperCase(),
+      folder: device.path.slice(0, device.path.lastIndexOf('/')),
+      bytes: device.size,
+      addedAtMs: device.addedAtMs,
+    };
+  }, [sheetSong]);
 
   const runAudioAction = useCallback(
     (action: 'pin' | 'unpin' | 'remove') => {
@@ -1369,6 +1414,8 @@ export function FieldScreen({ identity }: Props) {
     setSongDetail(null);
     setSongDetailError(null);
     setSongProblem(null);
+    // An imported song has no recipe and no node to ask.
+    if (sheetSong.source !== 'node') return;
     commands
       .getSongDetail(sheetSong.entity.nodePublicKey, sheetSong.entity.entityId)
       .then(detail => {
@@ -1885,6 +1932,7 @@ export function FieldScreen({ identity }: Props) {
                 // sitting on disk.
                 arriving: focusedArriving ? focusedArrivingFraction : null,
                 tags: focused.entity.tags,
+                imported: focused.source === 'device',
               }}
               width={viewport.width}
             />
@@ -1975,10 +2023,7 @@ export function FieldScreen({ identity }: Props) {
         onPair={commands.pairBackend}
         visible={pairing}
       />
-      {/* Node songs only until device songs have their own sheet (I5d). */}
-      {sheetSong !== null &&
-      sheetSong.source === 'node' &&
-      viewport !== null ? (
+      {sheetSong !== null && sheetHeader !== null && viewport !== null ? (
         <Curtain
           edge="bottom"
           onClose={closeSongSheet}
@@ -1986,7 +2031,7 @@ export function FieldScreen({ identity }: Props) {
           openMs={SONG_SHEET_KNOBS.BLIND_MS}
           destination={sheetDestination}
           pull={sheetPull}
-          title={sheetSong.song.title.toUpperCase()}
+          title={sheetSong.title.toUpperCase()}
           viewportHeight={viewport.height}
         >
           <SongSheet
@@ -1995,14 +2040,24 @@ export function FieldScreen({ identity }: Props) {
             detail={songDetail}
             detailError={songDetailError}
             problem={songProblem}
-            deliveryBytes={sheetSong.delivery?.byte_length ?? null}
+            deliveryBytes={
+              sheetSong.source === 'node'
+                ? sheetSong.delivery?.byte_length ?? null
+                : null
+            }
+            imported={sheetImported}
             knownPlaylists={knownPlaylists}
             knownTags={knownTags}
-            masterBytes={masterBytesOf(sheetSong.song)}
-            nodeLabel={sheetSong.nodeLabels[0] ?? sheetSong.backend.petname}
+            masterBytes={
+              sheetSong.source === 'node' ? masterBytesOf(sheetSong.song) : null
+            }
+            nodeLabel={sheetSong.label}
             onClose={closeSongSheet}
             onDelete={() =>
               void runSongCommand('delete', async () => {
+                // An imported song's sheet offers no delete: the file is the
+                // person's own.
+                if (sheetSong.source !== 'node') return;
                 const track = transport.snapshot.track;
                 if (
                   track?.nodeKey === sheetSong.entity.nodePublicKey &&
@@ -2047,7 +2102,7 @@ export function FieldScreen({ identity }: Props) {
             placementCount={sheetScope.placements}
             playlistProblem={playlistNameProblem}
             scopeLabel={sheetScope.label}
-            song={sheetSong.song}
+            song={sheetHeader}
             tagProblem={tagNameProblem}
             visible={sheetOpen}
           />

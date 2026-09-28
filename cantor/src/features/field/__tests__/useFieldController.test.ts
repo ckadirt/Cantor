@@ -5,6 +5,7 @@ import type {
   BackendRecord,
   ConnectionSnapshot,
 } from '../../../backends/types';
+import type { DeviceSong } from '../../../device/repository';
 import { audioRefOf, buildFieldController } from '../useFieldController';
 
 const artifact: ArtifactView = {
@@ -293,7 +294,7 @@ describe('device songs', () => {
     folder: '/Music/Fixture Album',
     artwork: null,
   };
-  const deviceSong = {
+  const deviceSong: DeviceSong = {
     id: 'd0123456789abcdef',
     mediaId: 776,
     path: '/Music/Fixture Album/01 - Tone MP3.mp3',
@@ -316,10 +317,7 @@ describe('device songs', () => {
     missingSinceMs: null,
   };
   const empty = { backends: [], snapshots: {}, localAudio: {}, outbox: {} };
-  const library = (
-    songs: (typeof deviceSong)[],
-    tags: [string, string[]][] = [],
-  ) => ({
+  const library = (songs: DeviceSong[], tags: [string, string[]][] = []) => ({
     songs,
     albums: [album],
     tags: new Map(tags),
