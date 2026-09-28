@@ -1,0 +1,44 @@
+diff --git a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt
+index 086e348..cdb9443 100644
+--- a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt
++++ b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt
+@@ -49,14 +49,13 @@ class CentralizedForegroundService : Service() {
+     try {
+       createNotificationChannelIfNeeded()
+ 
+-      // Get the first available notification
+-      val existingNotification = findExistingNotification()
+-      if (existingNotification == null) {
+-        Log.w(TAG, "No notification available to start foreground service")
+-        return
+-      }
+-
+-      val (notificationId, notification) = existingNotification
++      // Get the first available notification. When the service starts before
++      // the playback notification is built, returning without startForeground
++      // makes Android kill the app (ForegroundServiceDidNotStartInTimeException).
++      // Start on a placeholder under the playback notification's own ID
++      // instead: the real notification replaces it in place when it is posted.
++      val (notificationId, notification) =
++        findExistingNotification() ?: (PlaybackNotification.ID to placeholderNotification())
+ 
+       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+         startForeground(
+@@ -73,6 +72,17 @@ class CentralizedForegroundService : Service() {
+     }
+   }
+ 
++  private fun placeholderNotification(): Notification {
++    Log.w(TAG, "No notification available yet; starting on a placeholder")
++    return NotificationCompat
++      .Builder(this, CHANNEL_ID)
++      .setSmallIcon(android.R.drawable.ic_media_play)
++      .setContentTitle(applicationInfo.loadLabel(packageManager))
++      .setPriority(NotificationCompat.PRIORITY_LOW)
++      .setOngoing(true)
++      .build()
++  }
++
+   private fun findExistingNotification(): Pair<Int, Notification>? {
+     // Check for playback notification first (priority)
+     NotificationRegistry.getBuiltNotification(PlaybackNotification.ID)?.let {
