@@ -6,6 +6,11 @@ import { space, type, usePalette } from '../../theme/tokens';
 type Props = {
   activeKey: string;
   onChange: (key: string) => void;
+  /**
+   * The lenses this song has something to show under, by key; every lens
+   * when absent. The cover is only offered for a song with a cover.
+   */
+  offered?: readonly string[];
 };
 
 /**
@@ -50,11 +55,13 @@ export const LENS_PICKER_KNOBS = {
  * marks at L0 and the rows at L1 as well. Its contents come from the registry,
  * so a new lens appears here without touching this file.
  */
-function LensPickerImpl({ activeKey, onChange }: Props) {
+function LensPickerImpl({ activeKey, onChange, offered }: Props) {
   const pal = usePalette();
   return (
     <View style={styles.row}>
-      {LENSES.map(lens => {
+      {LENSES.filter(
+        lens => offered === undefined || offered.includes(lens.key),
+      ).map(lens => {
         const active = lens.key === activeKey;
         return (
           <Pressable

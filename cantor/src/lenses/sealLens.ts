@@ -76,7 +76,7 @@ export function sealMarkPath(
 }
 
 /** The seal at the mark's size: every size it is drawn at is this, scaled. */
-const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
+export const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
 
 /**
  * The seal's identity at mark size: its dots as two cached paths — as they are

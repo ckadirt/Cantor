@@ -35,9 +35,9 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/library/` | cached library repository, query helpers, and the pure `sync` reducer |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
-| `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art — read only) |
+| `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens — read only) |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
-| `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`) and the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them |
+| `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
 
 ## The rules that are not obvious

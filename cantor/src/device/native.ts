@@ -54,6 +54,7 @@ type CantorMediaNative = {
   inspect(path: string): Promise<unknown>;
   albumArt(mediaId: number, name: string): Promise<unknown>;
   pruneArtwork(keep: string[]): Promise<unknown>;
+  artworkLuma(file: string, cells: number): Promise<unknown>;
 };
 
 function module(): CantorMediaNative {
@@ -117,7 +118,29 @@ export const nativeMedia = {
     }
     return value as string[];
   },
+
+  /**
+   * A saved album art file (`albumArt`'s name) as a `cells × cells` grid of
+   * brightness, 0..1, row by row; null when the file is gone. Made on each
+   * call, never kept.
+   */
+  async artworkLuma(file: string, cells: number): Promise<Float32Array | null> {
+    const value = await module().artworkLuma(file, cells);
+    if (value === null) return null;
+    return decodeLuma(value, cells);
+  },
 };
+
+export function decodeLuma(value: unknown, cells: number): Float32Array {
+  if (
+    !Array.isArray(value) ||
+    value.length !== cells * cells ||
+    value.some(cell => typeof cell !== 'number' || !(cell >= 0 && cell <= 1))
+  ) {
+    throw new Error('Native artwork brightness is invalid.');
+  }
+  return Float32Array.from(value as number[]);
+}
 
 export function decodeMediaRow(value: unknown): MediaRow {
   const row = record(value, 'media row');

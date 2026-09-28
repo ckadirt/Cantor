@@ -59,13 +59,13 @@ describe('the lens contract', () => {
       ],
     });
     for (const lens of LENSES) {
-      const quiet = lens.player(recipe, undefined);
+      const quiet = lens.player(recipe, undefined, null);
       if (quiet === null) continue; // its player is its mark, grown
       expect(quiet.sound).toBeNull();
-      expect(lens.player(recipe, measured)?.sound).not.toBeNull();
+      expect(lens.player(recipe, measured, null)?.sound).not.toBeNull();
     }
-    expect(LENSES[lensIndex('seal')].player(recipe, undefined)).not.toBeNull();
-    expect(LENSES[lensIndex('name')].player(recipe, undefined)).toBeNull();
+    expect(LENSES[lensIndex('seal')].player(recipe, undefined, null)).not.toBeNull();
+    expect(LENSES[lensIndex('name')].player(recipe, undefined, null)).toBeNull();
   });
 
   it('gives every lens a clock the player can draw', () => {

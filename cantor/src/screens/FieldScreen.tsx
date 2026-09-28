@@ -57,6 +57,7 @@ import type {
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
 import { LensPicker } from '../features/song/LensPicker';
+import { useCover } from '../features/field/useCover';
 import {
   SongSheet,
   SONG_SHEET_KNOBS,
@@ -109,7 +110,9 @@ import type { SongPatch } from '../../../protocol/SongPatch';
 import type { AppIdentity } from '../identity/derive';
 import {
   DEFAULT_LENS_KEY,
+  LENSES,
   analyseWindow,
+  coverLens,
   arrivingFraction,
   availabilityAction,
   availabilityOf,
@@ -222,6 +225,12 @@ function LiveFieldCanvas({
 function jobsOf(controller: FieldController) {
   return controller.jobs;
 }
+
+/** The picker's words: every lens, or every lens but the cover. */
+const ALL_LENSES: readonly string[] = LENSES.map(lens => lens.key);
+const WITHOUT_COVER: readonly string[] = ALL_LENSES.filter(
+  key => key !== coverLens.key,
+);
 
 /**
  * The engines sheet with each node's live snapshot — while it is open. It
@@ -786,6 +795,8 @@ export function FieldScreen({ identity }: Props) {
     const key = playerPlacement?.entityKey;
     return key === undefined ? null : controller.presentations.get(key) ?? null;
   }, [controller.presentations, playerPlacement]);
+  // Its album's cover as ink, for the cover lens; see `useCover`.
+  const covers = useCover(focused);
 
   /**
    * How present the player is, 0..1, from the same band the canvas draws from.
@@ -1816,6 +1827,7 @@ export function FieldScreen({ identity }: Props) {
                 palette={pal}
                 activeLensKey={lensKey}
                 analyses={analyses}
+                covers={covers}
                 grainShared={grainShared}
                 // The player's focus, not the tap's: entering a shelf must
                 // not re-record this canvas. See `commitFocus`.
@@ -1894,7 +1906,19 @@ export function FieldScreen({ identity }: Props) {
               height={viewport.height}
               isCurrent={focusedIsCurrent}
               lensKey={lensKey}
-              lens={<LensPicker activeKey={lensKey} onChange={setLensKey} />}
+              lens={
+                <LensPicker
+                  activeKey={lensKey}
+                  onChange={setLensKey}
+                  // The cover is offered where there is one, and stays
+                  // listed while it is the lens you are reading with.
+                  offered={
+                    covers.size > 0 || lensKey === coverLens.key
+                      ? ALL_LENSES
+                      : WITHOUT_COVER
+                  }
+                />
+              }
               onOpenDetail={() => {
                 setPlaybackError(null);
                 setSheetOpen(true);

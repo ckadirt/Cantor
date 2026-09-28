@@ -83,6 +83,21 @@ exports[`golden pixels: faces the player, measured, rising and heard 1`] = `
 }
 `;
 
+exports[`golden pixels: the cover rises into the player, and falls back to the circle without one 1`] = `
+{
+  "no cover": "24505 13ef4c5234cf82e5",
+  "ratio 18 sound 0": "31948 fcc8da311579787a",
+  "ratio 18 sound 0.5": "560320 9d3596b38b28bbf0",
+  "ratio 18 sound 1": "1042979 ff59ddde44533549",
+  "ratio 30 sound 0": "24505 13ef4c5234cf82e5",
+  "ratio 30 sound 0.5": "552877 6767749c4ace3013",
+  "ratio 30 sound 1": "1035536 29bfe5ddb9c8f7e6",
+  "ratio 5 sound 0": "85651 39354b087e791dfb",
+  "ratio 5 sound 0.5": "85651 39354b087e791dfb",
+  "ratio 5 sound 1": "85651 39354b087e791dfb",
+}
+`;
+
 exports[`golden pixels: the imported mark marks, rows and the descent, circle and seal 1`] = `
 {
   "L0 lens 0": "63645 46788c80d658b0a3",

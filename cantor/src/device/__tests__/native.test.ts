@@ -1,5 +1,10 @@
 import { NativeModules } from 'react-native';
-import { decodeInspection, decodeMediaRow, nativeMedia } from '../native';
+import {
+  decodeInspection,
+  decodeLuma,
+  decodeMediaRow,
+  nativeMedia,
+} from '../native';
 
 // Taken from the Xiaomi (docs/import/log.md, I0 and I3).
 const row = {
@@ -118,5 +123,17 @@ describe('nativeMedia', () => {
 
   it('says so when the module is missing', async () => {
     await expect(nativeMedia.generation()).rejects.toThrow('unavailable');
+  });
+});
+
+describe('decodeLuma', () => {
+  it('takes a full grid of brightness and nothing else', () => {
+    expect(Array.from(decodeLuma([0, 0.5, 1, 0.25], 2))).toEqual([
+      0, 0.5, 1, 0.25,
+    ]);
+    expect(() => decodeLuma([0, 0.5, 1], 2)).toThrow();
+    expect(() => decodeLuma([0, 0.5, 1, 1.5], 2)).toThrow();
+    expect(() => decodeLuma([0, 0.5, 1, Number.NaN], 2)).toThrow();
+    expect(() => decodeLuma('grid', 2)).toThrow();
   });
 });

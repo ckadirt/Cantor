@@ -1,6 +1,7 @@
 import type { SkFont, SkPaint } from '@shopify/react-native-skia';
 import type { SongAnalysis } from './analysis';
 import type { LensIdentity, LensPlayer, LensTouchUi, LensUi } from './contract';
+import type { CoverArt } from './cover';
 import type { FaceRecipe } from './face';
 
 /** Renderer-ready facts about a song. Runtime objects are never imported here. */
@@ -78,11 +79,13 @@ export type Lens = Readonly<{
   /**
    * JS thread, for the one song the camera is in: the player's model at the
    * lens's deepest, with its sound once `analysis` is measured — or null when
-   * this lens's player is its mark grown.
+   * this lens's player is its mark grown. `cover` is the song's album cover
+   * as glyph levels (`cover.ts`), or null for a song with none.
    */
   player: (
     recipe: FaceRecipe,
     analysis: SongAnalysis | undefined,
+    cover: CoverArt | null,
   ) => LensPlayer | null;
   /** UI thread: worklets only. */
   ui: LensUi;

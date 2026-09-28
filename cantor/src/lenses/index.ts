@@ -9,3 +9,5 @@ export * from './seal';
 export * from './sealLens';
 export * from './sealPlayer';
 export * from './types';
+export * from './cover';
+export * from './coverLens';
