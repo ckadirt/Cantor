@@ -261,6 +261,13 @@ const CLUSTER_NOUN: Record<DateResolution, string> = {
   year: 'YEAR',
 };
 
+/** The same noun for every axis that does not cut time, by arrangement key. */
+const AXIS_NOUN: Readonly<Record<string, string>> = {
+  playlist: 'PLAYLIST',
+  album: 'ALBUM',
+  artist: 'ARTIST',
+};
+
 function FieldOverlayImpl({
   level,
   cameraShared,
@@ -543,7 +550,9 @@ function FieldOverlayImpl({
           text={
             h.level === 'field'
               ? `${HINTS.field} ${
-                  onDateAxis ? CLUSTER_NOUN[h.dateResolution] : 'PLAYLIST'
+                  onDateAxis
+                    ? CLUSTER_NOUN[h.dateResolution]
+                    : AXIS_NOUN[h.arrangementKey] ?? 'GROUP'
                 }`
               : HINTS.shelf
           }
