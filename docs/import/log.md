@@ -16,7 +16,10 @@ I4 done: `device/resolve.ts` turns rows and inspections into one scan
 commit, tested on the phone's own values; its phone check is I5's first real
 scan. I5a done: `DeviceLibraryService` loads, publishes and scans; the phone's
 database holds the 16 fixture songs from a fixture-only scan (kept for
-I5b–d). **Next: I5b** (the presentation union). None of it is pushed;
+I5b–d). I5b done: `FieldPresentation` is a node/device union and the 16 fixture
+songs stand in the field, open at L2 and play (native analysis ticks drawn).
+**Next: I5c/I5d** — most of I5c landed with I5b (see its entry); what is left
+is the device sheet and the player's `PINNED`/DETAIL words. None of it is pushed;
 Cesar decides when to push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
@@ -62,7 +65,7 @@ coordinates and details):
 | I2 phone database | **done** 2026-09-27 |
 | I3 native scanner | **done** 2026-09-27 |
 | I4 resolver | **done** 2026-09-27 (checked on the phone with I5) |
-| I5 device source | I5a **done** 2026-09-27; I5b–d next |
+| I5 device source | I5a, I5b **done** 2026-09-27; I5d next (I5c mostly folded into I5b) |
 | I6 mark and axis | not started |
 | I7 import flow | not started |
 | I8 300-song check | not started |
@@ -329,6 +332,34 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 
 ## Findings
 
+- **2026-09-27 — I5b: device songs in the field, on the phone.** The field
+  counts 62 songs (46 node + 16 imported); imported marks draw solid
+  (`pinned`: always plays offline). At L1 a row reads its title and artist
+  and offers no GET/KEEP/REMOVE. At L2 the player shows the title,
+  `TEST ARTIST · FIXTURE ALBUM`, the file's length, and the ring's ticks
+  measured natively from the file; play works (media session: "Tone MP3,
+  Test Artist", state playing), Opus too. Still wrong for a device song, and
+  I5d's: the player's foot says `PINNED`, and DETAIL opens nothing (the sheet
+  is node-only for now).
+- **2026-09-27 — I5b folded most of I5c in.** Once the union existed the
+  typechecker required every play and measure path to decide, so playing
+  (`fetchPath` → the file's path), the shelf queue (`audioRefOf`,
+  `playable`), the analysis (`AnalysisSource` node | device, keyed
+  `device`/id/`size:headSha256`), the L3 grain and the lock-screen words
+  landed with it.
+- **2026-09-27 — A crash that is not import's: audio-api's foreground
+  service race.** Once, on the first play after a fresh install, the app died
+  with `ForegroundServiceDidNotStartInTimeException` for
+  `com.swmansion.audioapi.system.CentralizedForegroundService`. Not
+  reproduced in three more fresh launches. Cause, from its source
+  (`CentralizedForegroundService.startForegroundWithNotification`): when
+  the service starts before the playback notification is built,
+  `findExistingNotification()` is null and it returns **without calling
+  `startForeground`**, which Android punishes with a crash seconds later. It
+  can hit any song. Not fixed here (it is inside `node_modules`); for Cesar
+  to decide: a `patch-package` patch that posts a placeholder notification
+  instead of returning, or raise it upstream.
+
 - **2026-09-27 — I5a: the fixtures after a real scan.** Six albums:
   Fixture Album (9 → 7 tagged songs, art), Cover Only Album and Folder Only
   Album (art from the folder's image), an untitled album for the untagged
@@ -529,3 +560,5 @@ seconds, not minutes; the per-song decode is the thing I1 exists for.
 - `041da3e` device: resolve a scan into songs and albums
 - `be18d23` docs: import I4, resolver
 - `19ec171` device: the device library and its scan
+- `af3dcb8` docs: import I5a, device library
+- `f48c4b8` field: device songs join the field
