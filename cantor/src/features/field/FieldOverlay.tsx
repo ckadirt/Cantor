@@ -1,11 +1,15 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import Animated, {
   useAnimatedStyle,
+  useSharedValue,
+  withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
 import { TransformText, WriteText } from '../../motion';
 import { Dial, Reveal } from '../controls';
+import { FieldLegend } from './FieldLegend';
+import type { Lens } from '../../lenses';
 import {
   ARRANGEMENTS,
   DATE_RESOLUTIONS,
@@ -59,6 +63,20 @@ type Props = {
    */
   orderKey: string;
   onChangeOrder: (key: string) => void;
+  /** The lens the field is drawn in, for the legend's marks. */
+  lens: Lens;
+  /**
+   * Whether the map's hint seat holds the key to the marks rather than the
+   * gesture: true until the first cluster has been opened.
+   */
+  showLegend: boolean;
+  /**
+   * Whether the legend exists at all. True only in a session that began with
+   * it unseen, so it can still leave on its own fade; every later session
+   * mounts nothing for it. Its canvas is a TextureView the window composites
+   * whenever the chrome animates, which is every level change.
+   */
+  mountLegend: boolean;
 };
 
 /**
@@ -229,13 +247,17 @@ const CHROME_STYLES = {
   hint: { ...type.eyebrow, textAlign: 'center' } as const,
 } as const;
 
-/** What each level is called. */
-const LEVELS: Record<Level, { index: number; name: string }> = {
-  field: { index: 0, name: 'MAP' },
-  shelf: { index: 1, name: 'GROUP' },
-  song: { index: 2, name: 'SONG' },
-  grain: { index: 3, name: 'GRAIN' },
-};
+/**
+ * What the eyebrow says: how the map is cut (`BY WEEK`), and inside a cluster
+ * what kind of cluster it is (`ALBUM`, over the album's name). The depth
+ * numbers this used to show were the code's words for the levels, not a
+ * listener's. L2 and L3 never show the header; see `showHeader`.
+ */
+function eyebrowLine(level: Level, noun: string): string {
+  if (level === 'field') return `BY ${noun}`;
+  if (level === 'shelf') return noun;
+  return level === 'song' ? 'SONG' : 'GRAIN';
+}
 
 /**
  * The one gesture worth naming, at the levels the field owns.
@@ -287,6 +309,9 @@ function FieldOverlayImpl({
   onShelfAction,
   orderKey,
   onChangeOrder,
+  lens,
+  showLegend,
+  mountLegend,
 }: Props) {
   const pal = usePalette();
   // L2 and L3 belong to the player, which draws its own name and metadata in
@@ -318,6 +343,18 @@ function FieldOverlayImpl({
   if (showHeader) shown.current = live;
   const h = shown.current;
   const onDateAxis = h.arrangementKey === byTime.key;
+  const noun = onDateAxis
+    ? CLUSTER_NOUN[h.dateResolution]
+    : AXIS_NOUN[h.arrangementKey] ?? 'GROUP';
+  const legendShown = showLegend && h.level === 'field';
+  // The key and the hint share one seat; they cross rather than cut.
+  const legendIn = useSharedValue(legendShown ? 1 : 0);
+  useEffect(() => {
+    legendIn.value = withTiming(legendShown ? 1 : 0, {
+      duration: OVERLAY_KNOBS.HEADER_CHANGE_MS,
+    });
+  }, [legendIn, legendShown]);
+  const legendStyle = useAnimatedStyle(() => ({ opacity: legendIn.value }));
   // `away` decides touches, the screen reader and the frozen words; how much
   // is drawn follows the camera itself.
   const away = !showHeader;
@@ -372,7 +409,7 @@ function FieldOverlayImpl({
             gesture, which is what the paragraph above is claiming.
           */}
         <TransformText
-          text={`L${LEVELS[h.level].index} · ${LEVELS[h.level].name}`}
+          text={eyebrowLine(h.level, noun)}
           charStyle={CHROME_STYLES.eyebrow}
           color={pal.muted}
           duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
@@ -388,13 +425,9 @@ function FieldOverlayImpl({
         <View style={styles.metaRow} pointerEvents="box-none">
           <View style={styles.metaCount} pointerEvents="none">
             <TransformText
-              text={`${metaLine(
-                h.level,
-                h.songCount,
-                h.groupCount,
-                onDateAxis,
-                h.dateResolution,
-              )}${h.offline ? ' · OFFLINE' : ''}`}
+              text={`${metaLine(h.level, h.songCount, h.groupCount, noun)}${
+                h.offline ? ' · OFFLINE' : ''
+              }`}
               charStyle={CHROME_STYLES.eyebrow}
               color={pal.faint}
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
@@ -504,25 +537,12 @@ function FieldOverlayImpl({
           */}
         <Reveal open={h.level === 'field'}>
           <>
-            <Dial
-              activeKey={h.arrangementKey}
-              activeColour={pal.ink}
-              items={ARRANGEMENTS.map(arrangement => ({
-                key: arrangement.key,
-                label: arrangement.label.toUpperCase(),
-                accessibilityLabel: `Arrange by ${arrangement.label}`,
-              }))}
-              onSelect={onChangeArrangement}
-              restColour={pal.faint}
-              textStyle={type.eyebrow}
-              tickColour={pal.ink}
-            />
             {/*
-                Resolution sits under the axis it belongs to, because it is a
-                property of that axis rather than a fourth arrangement. It
-                grows in and out rather than appearing: the foot is anchored to
-                the bottom of the screen, so a row arriving at full height
-                shoves the axis above it upward in one frame.
+                Resolution sits over the axis it belongs to, because it is a
+                property of that axis rather than a fourth arrangement, and the
+                axis is the foot's last line: the foot is anchored to the bottom
+                of the screen and stacks upward, so this row can rise and set
+                on the date axis without moving the axis under a thumb.
               */}
             <Reveal open={onDateAxis} height={OVERLAY_KNOBS.RESOLUTION_ROW_PX}>
               <Dial
@@ -539,6 +559,19 @@ function FieldOverlayImpl({
                 tickColour={pal.muted}
               />
             </Reveal>
+            <Dial
+              activeKey={h.arrangementKey}
+              activeColour={pal.ink}
+              items={ARRANGEMENTS.map(arrangement => ({
+                key: arrangement.key,
+                label: arrangement.label.toUpperCase(),
+                accessibilityLabel: `Arrange by ${arrangement.label}`,
+              }))}
+              onSelect={onChangeArrangement}
+              restColour={pal.faint}
+              textStyle={type.eyebrow}
+              tickColour={pal.ink}
+            />
           </>
         </Reveal>
         {/*
@@ -546,20 +579,40 @@ function FieldOverlayImpl({
             is changes with the level and with the axis. It is the same
             sentence being rewritten, so it morphs like the header does.
           */}
-        <TransformText
-          text={
-            h.level === 'field'
-              ? `${HINTS.field} ${
-                  onDateAxis
-                    ? CLUSTER_NOUN[h.dateResolution]
-                    : AXIS_NOUN[h.arrangementKey] ?? 'GROUP'
-                }`
-              : HINTS.shelf
-          }
-          charStyle={CHROME_STYLES.hint}
-          color={pal.faint}
-          style={styles.hintSlot}
-        />
+        {/*
+            Until a cluster has been opened, the map's hint seat holds the key
+            to the marks instead: what the ink means is the first thing the
+            field cannot say for itself. The hint writes itself back in when
+            the key leaves.
+          */}
+        <View style={styles.hintSeat}>
+          <WriteText
+            text={
+              legendShown
+                ? ''
+                : h.level === 'field'
+                ? `${HINTS.field} ${noun}`
+                : HINTS.shelf
+            }
+            charStyle={CHROME_STYLES.hint}
+            color={pal.faint}
+            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+            writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+            variant="transform"
+            style={styles.hintSlot}
+          />
+          {mountLegend ? (
+            <Animated.View
+              pointerEvents="none"
+              style={[styles.legend, legendStyle]}
+              importantForAccessibility={
+                legendShown ? 'auto' : 'no-hide-descendants'
+              }
+            >
+              <FieldLegend lens={lens} palette={pal} />
+            </Animated.View>
+          ) : null}
+        </View>
       </Animated.View>
       <EdgeTab
         accessibilityLabel="Open engines"
@@ -577,17 +630,12 @@ function metaLine(
   level: Level,
   songCount: number,
   groupCount: number,
-  onDateAxis: boolean,
-  resolution: DateResolution,
+  noun: string,
 ): string {
   const songs = `${songCount} ${songCount === 1 ? 'SONG' : 'SONGS'}`;
   if (level === 'shelf') return songs;
-  // `GROUP` rather than `PLAYLIST`, which is the truer word and did not fit:
-  // this line shares its row with `ACTION_WIDTH_PX` of reserved slot, so
-  // `8 SONGS · 3 PLAYLISTS` ran off the end and was read as `8 SONGS · 3` —
-  // a count with nothing to count. The hint below still says `PLAYLIST`,
-  // where there is room for it and where naming the gesture is the point.
-  const noun = onDateAxis ? CLUSTER_NOUN[resolution] : 'GROUP';
+  // The axis's own noun: at L0 the bulk action's slot is empty and overlaid
+  // (`actionSlot`), so `8 SONGS · 3 PLAYLISTS` has the whole row.
   return `${songs} · ${groupCount} ${noun}${groupCount === 1 ? '' : 'S'}`;
 }
 
@@ -716,7 +764,14 @@ const styles = StyleSheet.create({
     right: 0,
     width: OVERLAY_KNOBS.ACTION_WIDTH_PX,
   },
-  hintSlot: { height: OVERLAY_KNOBS.EYEBROW_ROW_PX, marginTop: space.md },
+  hintSlot: { height: OVERLAY_KNOBS.EYEBROW_ROW_PX },
+  hintSeat: { justifyContent: 'center', marginTop: space.md },
+  legend: {
+    justifyContent: 'center',
+    left: 0,
+    position: 'absolute',
+    right: 0,
+  },
   // `ORDER` names the dial beside it, the way `WEEK · MONTH · YEAR` sits under
   // the axis it belongs to. Drawn in `line` rather than `faint`: it is a label
   // for a control, not a value, and it must not compete with the words it names.

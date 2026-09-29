@@ -9,6 +9,7 @@ import {
   type Camera,
   type Level,
 } from '../../../field';
+import { nameLens } from '../../../lenses';
 import { FieldOverlay } from '../FieldOverlay';
 
 // CanvasKit's system font manager is empty under Jest, so the header's
@@ -39,6 +40,7 @@ function opacities(level: Level, ratio: number) {
         fitScaleShared={shared(FIT)}
         groupCount={3}
         groupLabel="This week"
+        lens={nameLens}
         level={level}
         offline={false}
         onChangeArrangement={() => {}}
@@ -49,6 +51,8 @@ function opacities(level: Level, ratio: number) {
         onShelfAction={() => {}}
         orderKey="date"
         shelfAction={null}
+        showLegend={false}
+        mountLegend={false}
         songCount={8}
         storageError={null}
       />,

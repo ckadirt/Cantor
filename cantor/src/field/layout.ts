@@ -1,4 +1,9 @@
-import { BROWSE_KNOBS, browseOffsets, browseScale } from './browse';
+import {
+  BROWSE_KNOBS,
+  browseCluster,
+  browseScale,
+  hubRadiusWorld,
+} from './browse';
 import { LEVEL_SCALE_RATIOS } from './camera';
 import { boxFromPoints } from './geometry';
 import { orderByKey, orderMembers, DEFAULT_ORDER_KEY } from './order';
@@ -21,6 +26,12 @@ export const LAYOUT_KNOBS = {
   HORIZONTAL_SAFE_PADDING_PX: 44,
   VERTICAL_SAFE_PADDING_PX: 150,
   EMPTY_FIT_SCALE: 0.9,
+  /**
+   * Extra room above the first row of a section, in screen pixels, for the
+   * hairline and the word that name it (drawn by the canvas above the row's
+   * names).
+   */
+  SECTION_GAP_PX: 34,
 } as const;
 
 /** Keep gathered song rows 92 screen pixels apart at shelf distance. */
@@ -50,7 +61,22 @@ export function layoutField(request: LayoutRequest): FieldLayout {
     request.previousPlacements ?? [],
   );
   const columns = gridColumnCount(definitions.length);
-  const rowCount = columns === 0 ? 0 : Math.ceil(definitions.length / columns);
+  // A row holds `columns` groups, and a new section always starts a new row,
+  // so the hairline between two sections never cuts a row in half.
+  const rows: number[][] = [];
+  definitions.forEach((definition, index) => {
+    const last = rows[rows.length - 1];
+    if (
+      last === undefined ||
+      last.length >= columns ||
+      definitions[last[0]].section !== definition.section
+    ) {
+      rows.push([index]);
+    } else {
+      last.push(index);
+    }
+  });
+  const rowCount = rows.length;
 
   // Compact map seats and gathered shelf seats have independent footprints.
   const seats = definitions.map((definition, groupIndex) => {
@@ -61,11 +87,6 @@ export function layoutField(request: LayoutRequest): FieldLayout {
     ) {
       throw new Error(`Arrangement group key is duplicated: ${definition.key}`);
     }
-    const column = groupIndex % columns;
-    const row = Math.floor(groupIndex / columns);
-    const groupsInRow = Math.min(columns, definitions.length - row * columns);
-    const cx = (column - (groupsInRow - 1) / 2) * LAYOUT_KNOBS.SHELF_GAP_WORLD;
-    const cy = 0;
     // Seating order is the layout's, not the arrangement's: the same three
     // orders apply to every axis, and applying them here is what stops
     // `byPlaylist` from seating its members in whatever order their tags
@@ -76,48 +97,79 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       request.order ?? orderByKey(DEFAULT_ORDER_KEY),
       request.orderSeed ?? 0,
     );
-    const blooms = browseOffsets(entityKeys.length, definition.key).map(
-      point => ({
-        x: cx + point.x,
-        y: point.y,
-      }),
+    const cluster = browseCluster(
+      entityKeys.length,
+      definition.key,
+      definition.hub === true,
     );
-    return { definition, cx, cy, entityKeys, blooms };
+    return {
+      definition,
+      cx: 0,
+      cy: 0,
+      entityKeys,
+      blooms: cluster.points.map(point => ({ ...point })),
+      hub: definition.hub === true ? { ...cluster.hub } : null,
+    };
   });
 
   const fitScale =
     definitions.length === 0
       ? LAYOUT_KNOBS.EMPTY_FIT_SCALE
       : browseScale(request.viewport);
-  const minRowHeight =
-    Math.max(
-      1,
-      request.viewport.height - BROWSE_KNOBS.TOP_PX - BROWSE_KNOBS.FOOT_PX,
-    ) /
-    BROWSE_KNOBS.VISIBLE_ROWS /
-    fitScale;
   const contentGap = BROWSE_KNOBS.GROUP_GAP_PX / fitScale;
-  let rowTop =
-    (BROWSE_KNOBS.TOP_PX +
-      BROWSE_KNOBS.LABEL_SPACE_PX -
-      request.viewport.height / 2) /
-    fitScale;
-  for (let row = 0; row < rowCount; row++) {
-    const members = seats.slice(row * columns, (row + 1) * columns);
+  const sectionGap = LAYOUT_KNOBS.SECTION_GAP_PX / fitScale;
+  const bandTop =
+    (BROWSE_KNOBS.TOP_PX - request.viewport.height / 2) / fitScale;
+  const bandBottom =
+    (request.viewport.height / 2 - BROWSE_KNOBS.FOOT_PX) / fitScale;
+  const labelSpace = BROWSE_KNOBS.LABEL_SPACE_PX / fitScale;
+  // Rows are as tall as what they hold: a row of pairs is a short row.
+  let rowTop = bandTop + labelSpace;
+  let bottom = rowTop;
+  rows.forEach((members, row) => {
+    const section = definitions[members[0]].section;
+    const opens =
+      section !== undefined &&
+      (row === 0 || definitions[rows[row - 1][0]].section !== section);
+    if (opens) rowTop += sectionGap;
     let height = 0;
-    members.forEach((seat, column) => {
-      const ownHeight = Math.max(0, ...seat.blooms.map(point => point.y));
+    members.forEach((seatIndex, column) => {
+      const seat = seats[seatIndex];
+      const ownHeight = Math.max(
+        0,
+        ...seat.blooms.map(point => point.y),
+        seat.hub === null ? 0 : seat.hub.y + hubRadiusWorld(),
+      );
       const cx =
         (column - (members.length - 1) / 2) * BROWSE_KNOBS.COLUMN_WIDTH_WORLD;
       seat.blooms.forEach(point => {
-        point.x += cx - seat.cx;
+        point.x += cx;
         point.y += rowTop;
       });
+      if (seat.hub !== null) {
+        seat.hub.x += cx;
+        seat.hub.y += rowTop;
+      }
       seat.cx = cx;
       seat.cy = rowTop + ownHeight / 2;
       height = Math.max(height, ownHeight);
     });
-    rowTop += Math.max(minRowHeight, height + contentGap);
+    bottom = rowTop + height;
+    rowTop += height + contentGap;
+  });
+  // A field shorter than the band stands in its middle, not at its top: the
+  // room left over is shared above and below instead of pooling at the foot.
+  const contentTop = bandTop;
+  const spare = bandBottom - contentTop - (bottom - contentTop);
+  const shift = rowCount > 0 && spare > 0 ? spare / 2 : 0;
+  if (shift > 0) {
+    for (const seat of seats) {
+      seat.cy += shift;
+      seat.blooms.forEach(point => {
+        point.y += shift;
+      });
+      if (seat.hub !== null) seat.hub.y += shift;
+    }
   }
   const targetBounds = boxFromPoints(seats.flatMap(seat => seat.blooms));
   const songGapWorld = shelfRowGapWorld(fitScale);
@@ -125,19 +177,19 @@ export function layoutField(request: LayoutRequest): FieldLayout {
   // independently after FIT: feeding the 92 px row pitch back into FIT would
   // create a shrinking-frame / growing-column cycle. The bloom offsets below
   // retain the map seats while each gathered column gets its own clear run.
-  const shelfHalfHeights = Array.from({ length: rowCount }, (_, row) =>
+  const shelfHalfHeights = rows.map(members =>
     Math.max(
       0,
-      ...seats
-        .slice(row * columns, (row + 1) * columns)
-        .map(
-          seat => (Math.max(0, seat.entityKeys.length - 1) * songGapWorld) / 2,
-        ),
+      ...members.map(
+        seatIndex =>
+          (Math.max(0, seats[seatIndex].entityKeys.length - 1) * songGapWorld) /
+          2,
+      ),
     ),
   );
   const shelfCenters: number[] = [];
   shelfHalfHeights.forEach((halfHeight, row) => {
-    const mapCy = seats[row * columns].cy;
+    const mapCy = seats[rows[row][0]].cy;
     shelfCenters.push(
       row === 0
         ? mapCy
@@ -150,15 +202,15 @@ export function layoutField(request: LayoutRequest): FieldLayout {
           ),
     );
   });
-  seats.forEach((seat, index) => {
-    seat.cy = shelfCenters[Math.floor(index / columns)];
+  rows.forEach((members, row) => {
+    for (const seatIndex of members) seats[seatIndex].cy = shelfCenters[row];
   });
 
   const groups: Group[] = [];
   const placements: Placement[] = [];
   const placementKeys = new Set<string>();
 
-  seats.forEach(({ definition, cx, cy, entityKeys, blooms }) => {
+  seats.forEach(({ definition, cx, cy, entityKeys, blooms, hub }) => {
     // Both seats, because the name hangs from the cluster and the cluster has
     // two poses: the top of the bloomed packing, and the top of the column it
     // gathers into. The camera blends them the same way it blends the marks.
@@ -172,8 +224,20 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       entityKeys,
       cx,
       cy,
-      top: blooms.length === 0 ? cy : Math.min(...blooms.map(seat => seat.y)),
+      top:
+        blooms.length === 0 && hub === null
+          ? cy
+          : Math.min(
+              ...blooms.map(seat => seat.y),
+              ...(hub === null ? [] : [hub.y - hubRadiusWorld()]),
+            ),
       topGathered: columnTops.length === 0 ? cy : Math.min(...columnTops),
+      songCount: entityKeys.filter(
+        entityKey => entitiesByKey.get(entityKey)?.kind === 'song',
+      ).length,
+      subtitle: definition.subtitle ?? null,
+      section: definition.section ?? null,
+      hub,
     };
     groups.push(group);
 

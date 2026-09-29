@@ -51,6 +51,12 @@ export type FieldEntity = Readonly<{
    * axes; absent for a generated song, which has neither.
    */
   record?: FieldRecord;
+  /**
+   * The model a generated song was made by (or a job is being made by), as
+   * the node names it — `acestep:1.5-fast`. The artist axis credits it.
+   * Absent for an imported song, whose artist is in its record.
+   */
+  model?: string;
 }>;
 
 export type FieldRecord = Readonly<{
@@ -76,6 +82,20 @@ export type ArrangementGroup = Readonly<{
   key: string;
   label: string;
   entityKeys: readonly string[];
+  /**
+   * What stands before the count on the name's second line — an album's
+   * artist, `Engine` for a model credited as an artist. The count is the
+   * layout's to add.
+   */
+  subtitle?: string;
+  /**
+   * The part of the field this group belongs to, when the axis has parts —
+   * generated and imported on the artist axis. A new section starts a new
+   * row under a hairline carrying this word.
+   */
+  section?: string;
+  /** Keep the middle of the cluster empty for what the group shows there. */
+  hub?: boolean;
 }>;
 
 /** An arrangement decides groups only; layout owns all coordinates. */
@@ -111,6 +131,19 @@ export type Group = Readonly<{
    * flight path never did.
    */
   topGathered: number;
+  /** How many of its members are songs, for the name's second line. */
+  songCount: number;
+  subtitle: string | null;
+  /**
+   * The part of the axis this group opens or continues; a group whose section
+   * differs from the one before it starts a row under that part's hairline.
+   */
+  section: string | null;
+  /**
+   * The world point the bloomed cluster is packed around when the group keeps
+   * its middle for something of its own (`ArrangementGroup.hub`); else null.
+   */
+  hub: Point | null;
 }>;
 
 /**

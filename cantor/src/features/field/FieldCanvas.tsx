@@ -5,6 +5,17 @@ import {
 } from './nativeLabels';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 import { drawNativeJobs, type JobMark } from './nativeJobs';
+import { useHubCovers } from './useCover';
+import {
+  createMapPaints,
+  drawHubs,
+  drawLattice,
+  drawSections,
+  planHubFlights,
+  planSectionFlights,
+  type HubFlight,
+  type SectionFlight,
+} from './nativeMap';
 import {
   ARRIVAL_KNOBS,
   arriveInk,
@@ -583,6 +594,20 @@ function FieldCanvasImpl({
     };
   }
   const labelFlights = labelPlan.current?.flights ?? semanticLabelFlights;
+  // The map's furniture travels the same re-cut as the names, from the same
+  // groups; see `nativeMap.ts`.
+  // Keyed on the groups themselves: the `labelFromGroups` default is a fresh
+  // array every render, and a new plan would hand `Canvas` a new scene.
+  const mapBefore =
+    labelFromGroups.length === 0 ? layout.groups : labelFromGroups;
+  const mapFlights = useMemo(
+    () => ({
+      hubs: planHubFlights(mapBefore, layout.groups),
+      sections: planSectionFlights(mapBefore, layout.groups),
+    }),
+    [mapBefore, layout.groups],
+  );
+  const hubPaths = useHubCovers(layout.groups, currentPresentations);
   /*
    * The lens clock — from which lens, to which, how far — retained across
    * re-cuts on purpose: it lives out here rather than in the keyed native
@@ -721,6 +746,9 @@ function FieldCanvasImpl({
           analyses={analyses}
           covers={covers}
           labelFlights={labelFlights}
+          hubFlights={mapFlights.hubs}
+          sectionFlights={mapFlights.sections}
+          hubPaths={hubPaths}
           displayFont={displayFont}
           songTitleFont={songTitleFont}
           songMetaFont={songMetaFont}
@@ -740,6 +768,8 @@ function FieldCanvasImpl({
     grainValue,
     jobMarks,
     labelFlights,
+    mapFlights,
+    hubPaths,
     monoFont,
     nativeClock,
     lensClock,
@@ -974,6 +1004,14 @@ type NativeFieldContentProps = Readonly<{
    */
   jobMarks: SharedValue<Readonly<Record<string, JobMark>>>;
   labelFlights: ShelfLabelFlights | null;
+  /**
+   * The map's furniture across this re-cut — album covers and the hairlines
+   * between an axis's parts — and the covers' halftone paths, a shared value
+   * for `jobMarks`' reason: they land one by one after the field is drawn.
+   */
+  hubFlights: readonly HubFlight[];
+  sectionFlights: readonly SectionFlight[];
+  hubPaths: SharedValue<Readonly<Record<string, SkPath>>>;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
   songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -1950,6 +1988,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   grainShared,
   jobMarks,
   labelFlights,
+  hubFlights,
+  sectionFlights,
+  hubPaths,
   displayFont,
   songTitleFont,
   songMetaFont,
@@ -2123,9 +2164,31 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     }
     return positionSeconds.value / faces.playerSeconds;
   });
+  const mapPaints = useMemo(() => createMapPaints(palette), [palette]);
   const facePicture = useDerivedValue(() =>
     createPicture(
-      canvas =>
+      canvas => {
+        // The lattice is the ground the faces stand on, so it is drawn first
+        // in their recording; see `drawLattice`.
+        const p = Math.min(Math.max(clock.value, 0), 1);
+        const live = p >= 1 ? cameraShared.value : null;
+        drawLattice(
+          canvas,
+          {
+            x:
+              live?.x ??
+              nativeRecut.fromCamera.x +
+                (nativeRecut.toCamera.x - nativeRecut.fromCamera.x) * p,
+            y:
+              live?.y ??
+              nativeRecut.fromCamera.y +
+                (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
+            scale: nativeCameraScale(p, nativeRecut, cameraShared),
+          },
+          nativeFitScale(p, nativeRecut, fitScaleShared),
+          viewport,
+          mapPaints.lattice,
+        );
         drawFieldFaces(
           canvas,
           faceFlights,
@@ -2142,7 +2205,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           smootherstep(faces.soundClock?.value ?? 1) * soundDrawn.value,
           heard.value,
           inkClock?.value ?? 1,
-        ),
+        );
+      },
       { width: viewport.width, height: viewport.height },
     ),
   );
@@ -2220,8 +2284,30 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
       scale: nativeCameraScale(p, nativeRecut, cameraShared),
     };
+    const hubCovers = hubPaths.value;
     return createPicture(canvas => {
       const fit = nativeFitScale(p, nativeRecut, fitScaleShared);
+      drawSections(
+        canvas,
+        sectionFlights,
+        p,
+        rowCamera,
+        fit,
+        viewport,
+        monoFont,
+        mapPaints.line,
+        mapPaints.word,
+      );
+      drawHubs(
+        canvas,
+        hubFlights,
+        hubCovers,
+        p,
+        rowCamera,
+        fit,
+        viewport,
+        mapPaints.hub,
+      );
       drawNativeLabels(
         canvas,
         labels,

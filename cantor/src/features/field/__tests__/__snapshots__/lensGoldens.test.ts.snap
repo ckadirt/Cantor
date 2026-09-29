@@ -2,8 +2,8 @@
 
 exports[`golden pixels: downloads landing marks and rows, circle and seal 1`] = `
 {
-  "L0 lens 0": "49601 4c73811c27ba47f3",
-  "L0 lens 1": "34158 48eb8645bc2ab9ba",
+  "L0 lens 0": "49729 f60953ccce9f51fb",
+  "L0 lens 1": "34954 d66aec4f48c8b77c",
   "L1 lens 0": "60023 29064b48e9c15c7f",
   "L1 lens 1": "49968 720d04a3d81e691c",
 }
@@ -24,16 +24,16 @@ exports[`golden pixels: downloads landing the descent into a song still landing 
 
 exports[`golden pixels: faces L0, every lens step, and reduced motion 1`] = `
 {
-  "arriving lens 0": "79266 8119f70953563a56",
-  "arriving lens 1": "37780 9078792f81e3424c",
-  "lens 0": "61943 a07f07e0264702e3",
-  "lens 0.25": "19285 fb7281b4b25dd03f",
+  "arriving lens 0": "78297 7696b01c080c3f8b",
+  "arriving lens 1": "39182 cde56b07ae9a77a4",
+  "lens 0": "61523 f754b830a59f85a3",
+  "lens 0.25": "19472 741ddbfde25f31c2",
   "lens 0.5": "0 1dbdb8459dbc8106",
-  "lens 0.75": "6489 c215263c7a8f030f",
-  "lens 1": "30574 441ae1956eb9c962",
-  "playing lens 0": "89451 bf61a2e27c20675d",
-  "playing lens 1": "58082 a5181aa7175c6cac",
-  "reduced lens 0.5": "43700 223831cf40712354",
+  "lens 0.75": "6498 cbd19b7da8b8e796",
+  "lens 1": "31873 d1139d96435fb6e9",
+  "playing lens 0": "88183 1652e106a555f83d",
+  "playing lens 1": "58164 2a6e66658cc98c8a",
+  "reduced lens 0.5": "43966 729431513a383696",
 }
 `;
 
@@ -100,8 +100,8 @@ exports[`golden pixels: the cover rises into the player, and falls back to the c
 
 exports[`golden pixels: the imported mark marks, rows and the descent, circle and seal 1`] = `
 {
-  "L0 lens 0": "63645 46788c80d658b0a3",
-  "L0 lens 1": "31217 cab6242e6d1982b1",
+  "L0 lens 0": "63181 7571bfcc089ddc87",
+  "L0 lens 1": "31777 e17fe1dc439f1a6f",
   "L1 lens 0": "87626 81c90a4d45e4bbce",
   "L1 lens 1": "45078 e679e11b8ae1ddd0",
   "ratio 12.5 lens 0": "294989 44d65c764a2917e5",
