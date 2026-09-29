@@ -957,6 +957,107 @@ Each step ships alone, keeps tests green, and is checked on the phone.
   persist-on-change (`706514c`) and `keep` (`b4d095d`); C3b measured and
   not built.
 
+## L0 design pass (2026-09-28/29)
+
+Cesar asked for a design pass on the map before the import flow: faces sized
+by count, the dot lattice, `BY WEEK` eyebrow, the axis dial as the foot's last
+line, a count on every name's second line, album covers as the hub of their
+cluster, engines (models) as the artist axis's generated artists under a
+GENERATED/IMPORTED hairline, and a first-visit legend of the marks. Mockup:
+`docs/design/field-l0/index.html`. Built the same day, uncommitted; then
+Cesar: "made the field feel really slow … it should be smooth".
+
+**Measured (2026-09-29, release builds, same session).** A new method, since
+`input swipe` redraws only as fast as it injects touches (~33 ms median on
+both builds, so it cannot see the renderer): SurfaceFlinger frame intervals of
+the field's SurfaceView during motions the UI thread animates by itself —
+six WEEK↔MONTH re-cuts, three descents into the busiest cluster (a tap) and
+three ascents (BACK). Scripts: `~/.cache/cantor-ab/flights.sh` (not in the
+repo). Frames over 20 ms, of all frames:
+
+| Build | re-cut | descent | ascent |
+| --- | --- | --- | --- |
+| HEAD (`997c838`) | 11/311, worst 83 | 6/146, worst 117 | 1/124, worst 33 |
+| design pass, shader lattice | 10/310, worst 117 | 12/138, worst 134 | 11/113, worst 67 |
+
+Panning (the R6 loop, CPU of one core): HEAD 63.0 / 64.7, the design pass
+with the lattice as points 66.6 / 66.1, as a shader 67.7 / 63.5.
+
+**Findings.** (1) *Ascents and descents got worse; re-cuts did not.* What the
+pass added that moves on a level change: the legend's four `<Canvas>`es
+(TextureViews, mounted even when hidden, so the window composites four GL
+layers whenever the header and foot morph — the R5a trap), and the lattice as
+its own `<Picture>` with its own per-frame mapper over the whole screen.
+(2) *Older than the pass: every re-cut and most descents start with a 67–117
+ms stall.* simpleperf (profileable release, six re-cuts): inside the stalls
+72% of the UI thread is `UIScheduler::triggerUI` → `runSync` — worklets the
+JS thread hands over, i.e. the new generation of `NativeFieldContent`
+installing its mappers and deserialising what their closures capture — and
+27% is Skia drawing.
+
+**Plan.**
+- *P1 — the legend costs nothing once seen.* Mounted only in a session that
+  started with it unseen; one `<Canvas>` for the four marks instead of four.
+- *P2 — the lattice rides the faces' picture.* No picture or mapper of its
+  own: `drawLattice` runs at the head of the faces' recording, which already
+  re-records on every camera frame; the shader covers the band, not the
+  screen.
+- Measure again (same script); the pass must be no worse than HEAD on all
+  three motions.
+- *P3 — the stalls*, after P1/P2, from an instrumented build: which mappers
+  install at a re-cut and a descent, and what their closures carry. Planned
+  here once measured.
+
+**As built.**
+- *P1:* `FieldOverlay`'s `mountLegend` (true only in a session that began
+  with the legend unseen); `FieldLegend` draws its four marks in one
+  `<Canvas>` under words React lays out. Also: a launch that restores the
+  camera inside a shelf no longer retires the legend — only an open from the
+  map does.
+- *P2:* `drawLattice` runs at the head of the faces' recording, over the
+  band only (`BROWSE_KNOBS.TOP_PX` to the foot).
+- *P3, measured first.* Ruled out: the chrome's text morphs (an experiment
+  with `HEADER_CHANGE_MS` 1 made re-cuts *worse*, 41 slow frames of 267);
+  the main window compositing during the flight (the field's hitches in a
+  descent come before the window's first frame). Found with a probe in RN
+  Skia's `Container.native.ts` (the field canvas has six shared values —
+  its pictures — and each frame's `render` is 7–15 ms, spikes 28–69 ms
+  while `play` is 0–4 ms), SurfaceFlinger's raw timestamps (no buffer queued
+  for ~130 ms), and Reanimated's `mappers.ts`: every React change to a
+  canvas's element calls `redraw()`, which stops the mapper, draws a first
+  frame *synchronously* in `runOnUI` and starts a new mapper — and a new
+  mapper is born dirty and draws again on the next frame. Two renders in one
+  vsync fill the buffer queue and the next present blocks. That first frame
+  is also played without `applyUpdates`, from the JS thread's copies of the
+  shared values: the stale frame the Flicker Law note describes. **Fix:**
+  `patches/@shopify+react-native-skia+2.6.9.patch` — a scene with shared
+  values is drawn by its mapper only; a static scene still draws at once.
+  Patched in `src/` (Metro bundles it) and both `lib/` builds (Jest).
+
+**Measured (12 of each motion per build, frames over 20 ms):**
+
+| Build | re-cut | descent | ascent |
+| --- | --- | --- | --- |
+| HEAD (`997c838`) | 15/625, worst 134 | 17/508, worst 117 | 8/496, worst 34 |
+| design pass + P1 + P2 | 15/628, worst 134 | 34/465, worst 100 | 18/478, worst 50 |
+| + P3 (the patch) | 19/623, worst 134 | 19/504, worst 117 | 6/489, worst 51 |
+
+With three of each the runs of one build spread 6–10 descent hitches: use
+twelve. The pass with P3 is level with HEAD within that noise. Steady frames
+are 16.7 ms on every motion in every build; what is left is about 3% of
+frames, almost all in the first 300 ms of a motion — the same React commit
+that hands the canvas a new element also makes every derived value of a new
+`NativeFieldContent` (a re-cut) or of the changed ones (a descent) install
+and record from scratch in one frame.
+
+**Next — P4, not started: the canvas's element stays the same through a
+motion.** What changes on a descent (`focusKey`, the player's
+`NativePlacementFlight`, `songDetail`) and on a re-cut (the generation key)
+reaches the canvas as React props today. Moving them into shared values set
+from the UI thread (as `jobMarks` and `hubPaths` already are) would leave no
+`redraw()` and no mapper reinstall at the start of a motion. It is renderer
+surgery under the Flicker Law — plan it here and agree it with Cesar first.
+
 ## Open questions (for Cesar)
 
 - **Does an interrupted regroup glide now?** (`671af18`.) Tap MONTH then
@@ -985,6 +1086,21 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 - L2 playing costs ~41% even with no redraw; not investigated.
 
 ## Traps (learned the hard way)
+
+- **`input swipe` cannot measure frame pacing.** The canvas redraws per
+  touch event, and injected moves arrive about every 33 ms, so a swipe loop
+  reads ~33 ms per frame on any build. Time motions the UI thread animates
+  by itself (re-cuts, descents, ascents) and read SurfaceFlinger's
+  `--latency` for the field's `(BLAST)` layer.
+- **`/tmp` has a small quota here.** It filled during this work (`patch-package`
+  failed with "Disk quota exceeded") and was cleared overnight, taking saved
+  APKs with it. Keep A/B builds in `~/.cache/cantor-ab/`; run patch-package
+  with `TMPDIR=~/.cache/cantor-ab/tmp` and exclude RN Skia's build output
+  (`--exclude 'package\.json$|android/\.cxx|android/build|\.gradle'`), or the
+  patch fills with CMake files.
+- **Scripted descents can start downloads.** A tap meant for a cluster that
+  lands on a row at L1 arrives at a song, which fetches its audio (cached,
+  not pinned). Check `DOWNLOADING` rows after a long script.
 
 - **Several files were never prettier-clean** (`NativePlayer.tsx`,
   `nameLens.ts`, `seal.ts`, `face.ts`, `analysisStore.ts`, `SongSurface.tsx`,
@@ -1037,6 +1153,8 @@ Each step ships alone, keeps tests green, and is checked on the phone.
 
 ## Commits
 
+- `5623119` field: a canvas scene change draws once, on its mapper
+- `1476f14` field: faces by count, engines as artists, album covers, the lattice and a legend
 - `04ea31e` field: a regroup never lands on nothing
 - `b4d095d` runtime: GET keeps a song in one act
 - `4f10540` docs: what a running job costs, and the fix

@@ -358,13 +358,25 @@ nothing new.
 
 ### Group layout stress checks
 
-`layoutField` uses a two-column browsing window, with three rows visible for
-ordinary groups. Date groups start newest first. The scale depends on viewport
-width, never library length. Marks form stable irregular oval clusters. Sparse
-groups have room between songs; increasing membership compresses the particles
-with slight internal overlap before the oval grows vertically. Group-key-seeded
-variation keeps refreshes deterministic; gathered shelves retain their order.
-Rows reserve at least 64 screen pixels between their mark envelopes. At overview
+`layoutField` uses a two-column browsing window. Date groups start newest
+first. The scale depends on viewport width, never library length. Marks form
+stable irregular oval clusters whose area follows their count
+(`CLUSTER_PITCH_WORLD` per song), so two songs make a small pair and forty a
+large face; past `CLUSTER_MAX_RADIUS_X_WORLD` a cluster grows downward instead
+of across. Rows are as tall as what they hold, and a field shorter than the
+band between header and foot stands in its middle. Group-key-seeded variation
+keeps refreshes deterministic; gathered shelves retain their order. Rows
+reserve at least 64 screen pixels between their mark envelopes.
+
+An arrangement group may carry a `subtitle` (the name's second line reads
+`SUBTITLE · N SONGS`, or just the count), a `hub` (the album axis keeps the
+middle `HUB_SEATS` seats empty for the album's cover, drawn as halftone from
+its thumbnail by `nativeMap.ts`), and a `section` (the artist axis splits
+engines from imported artists; a new section starts a new row, with
+`SECTION_GAP_PX` of room for its hairline). The lattice under the map is
+world-anchored and drawn only while the dots are. Generated songs are credited
+to their model on the artist axis — `FieldEntity.model`, the node's selector,
+read as words by `modelLabel`. At overview
 distance, dragging moves freely in both axes, even when all groups fit;
 zooming out cannot compress all groups into the viewport. Header/footer veils
 and hit testing keep off-screen marks clear of controls. Job captions appear
