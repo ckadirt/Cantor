@@ -27,6 +27,10 @@ const group = (label: string, ...entityKeys: string[]) => {
     cy: 0,
     top: 0,
     topGathered: 0,
+    songCount: entityKeys.length,
+    subtitle: null,
+    section: null,
+    hub: null,
   };
 };
 const groups = (...labels: string[]) => labels.map(label => group(label, 's1'));

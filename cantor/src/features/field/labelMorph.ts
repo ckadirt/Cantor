@@ -641,8 +641,8 @@ function plan(
     targetAlpha: number;
   },
 ): LabelFlight | null {
-  const source = from === null ? EMPTY_READ : read(from.label, nowMs);
-  const target = to === null ? EMPTY_READ : read(to.label, nowMs);
+  const source = from === null ? EMPTY_READ : read(from, nowMs);
+  const target = to === null ? EMPTY_READ : read(to, nowMs);
   const primary = planShelfLabelMorph(source.primary, target.primary, font);
   const secondary = planShelfLabelMorph(
     source.secondary,
@@ -694,7 +694,7 @@ export function settledShelfLabelFlights(
 ): ShelfLabelFlights | null {
   if (groups.length === 0) return null;
   return groups.map(group => {
-    const value = read(group.label, nowMs);
+    const value = read(group, nowMs);
     const seat = { x: group.cx, y: group.cy };
     return {
       fromGroupKey: group.key,
@@ -720,14 +720,30 @@ export function settledShelfLabelFlights(
 
 const EMPTY_READ = { primary: '', secondary: '' } as const;
 
-/** The two lines a cluster shows, in the case the canvas draws them. */
+/**
+ * The two lines a cluster shows, in the case the canvas draws them: its name,
+ * and under it what it holds — `18 SONGS`, or `MILES DAVIS · 6 SONGS` where the
+ * axis has something to say first. The same second line on every axis, so a
+ * week and an album read alike.
+ */
 function read(
-  label: string,
+  group: Group,
   nowMs: number,
 ): { primary: string; secondary: string } {
-  const value = shelfLabel(label, nowMs);
   return {
-    primary: value.primary.toUpperCase(),
-    secondary: value.secondary ?? '',
+    primary: shelfLabel(group.label, nowMs).primary.toUpperCase(),
+    secondary: groupContents(group).toUpperCase(),
   };
+}
+
+/** `18 songs`, `Engine · 3 songs`; a cluster of jobs alone says it is being made. */
+export function groupContents(
+  group: Pick<Group, 'entityKeys' | 'songCount' | 'subtitle'>,
+): string {
+  const making = group.entityKeys.length - group.songCount;
+  const count =
+    group.songCount === 0 && making > 0
+      ? `${making} being made`
+      : `${group.songCount} ${group.songCount === 1 ? 'song' : 'songs'}`;
+  return group.subtitle === null ? count : `${group.subtitle} · ${count}`;
 }

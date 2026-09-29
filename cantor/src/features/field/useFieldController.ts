@@ -274,6 +274,7 @@ export function buildFieldController(
         createdAtMs: timestampOrEpoch(song.created_at),
         durationMs: song.duration_ms,
         tags: song.tags,
+        model: song.model,
       });
       const ready = paired.has(nodeKey) && snapshot?.phase === 'ready';
       if (
@@ -325,6 +326,7 @@ export function buildFieldController(
         // to the head, which is where a thing being made belongs anyway.
         durationMs: 0,
         tags: NO_TAGS,
+        model: job.model,
       });
       const caption =
         job.caption ?? state.outbox[key]?.generation.caption ?? null;
@@ -493,6 +495,7 @@ function keepEntity(
     kept.kind === next.kind &&
     kept.createdAtMs === next.createdAtMs &&
     kept.durationMs === next.durationMs &&
+    kept.model === next.model &&
     kept.tags.length === next.tags.length &&
     kept.tags.every((tag, index) => tag === next.tags[index]) &&
     sameRecord(kept.record, next.record)

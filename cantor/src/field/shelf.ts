@@ -41,6 +41,11 @@ export const SHELF_KNOBS = {
    * deliberate drag leaves and a wandering one does not.
    */
   ESCAPE_FRACTION: 1 / 3,
+  /**
+   * How much a row's height counts against a column's width when a release
+   * picks the neighbour it leaves for; see `seatAfterRelease`.
+   */
+  ROW_CHANGE_COST: 4,
 } as const;
 
 /**
@@ -326,7 +331,10 @@ export function seatAfterRelease(
     if (index === from) continue;
     const dx = seats[index].cx - seats[from].cx;
     if (travelled > 0 ? dx <= 0 : dx >= 0) continue;
-    const dy = seats[index].top - seats[from].top;
+    // A sideways release means sideways: rows sit as close as their clusters
+    // are short, so a cluster one row down can be nearer than the one beside
+    // this in its own row. Rising or falling a row costs several columns.
+    const dy = (seats[index].top - seats[from].top) * SHELF_KNOBS.ROW_CHANGE_COST;
     const distance = dx * dx + dy * dy;
     if (distance < bestDistance) {
       bestDistance = distance;

@@ -29,6 +29,7 @@ import {
   OriginMark,
   useFieldCamera,
 } from '../features/field';
+import { loadLegendSeen, saveLegendSeen } from '../features/field/legendSeen';
 import {
   createFieldControllerStore,
   type FieldControllerStore,
@@ -1060,6 +1061,41 @@ export function FieldScreen({ identity }: Props) {
         });
   }, [focusedArrivingFraction, reducedMotion, transportArriving]);
 
+  /**
+   * Whether the map still shows the key to its marks: until the first cluster
+   * is opened, then never again. Starts hidden, so a phone that has already
+   * seen it does not show it for the moment the flag takes to read.
+   */
+  const [legendSeen, setLegendSeen] = useState(true);
+  // Mounted for the session only if the session began with it unseen; see
+  // `FieldOverlay`'s `mountLegend`.
+  const [legendMounted, setLegendMounted] = useState(false);
+  useEffect(() => {
+    let active = true;
+    loadLegendSeen().then(seen => {
+      if (!active) return;
+      setLegendSeen(seen);
+      setLegendMounted(!seen);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  // Opening a cluster from the map is what retires it — not a launch that
+  // restores the camera inside one, which the person never did.
+  const legendLevel = useRef(fieldCamera.level);
+  useEffect(() => {
+    const from = legendLevel.current;
+    legendLevel.current = fieldCamera.level;
+    if (legendSeen || from !== 'field' || fieldCamera.level === 'field') return;
+    setLegendSeen(true);
+    saveLegendSeen().catch(() => undefined);
+  }, [fieldCamera.level, legendSeen]);
+  const activeLens = useMemo(
+    () => LENSES.find(lens => lens.key === lensKey) ?? LENSES[0],
+    [lensKey],
+  );
+
   /** What happens when a song runs off its end; read once, written on change. */
   const [afterSong, setAfterSong] = useState<AfterSong>(DEFAULT_AFTER_SONG);
   useEffect(() => {
@@ -1971,6 +2007,7 @@ export function FieldScreen({ identity }: Props) {
           dateResolution={dateResolution}
           groupCount={layout?.groups.length ?? 0}
           groupLabel={focusedGroupLabel}
+          lens={activeLens}
           level={fieldCamera.level}
           onChangeArrangement={setArrangementKey}
           onChangeDateResolution={setDateResolution}
@@ -1981,6 +2018,8 @@ export function FieldScreen({ identity }: Props) {
           onShelfAction={downloadShelf}
           orderKey={orderKey}
           shelfAction={shelfDownload?.label ?? null}
+          showLegend={!legendSeen}
+          mountLegend={legendMounted}
           songCount={shelfGroup?.entityKeys.length ?? songCount}
           storageError={audioError ?? storageError}
         />

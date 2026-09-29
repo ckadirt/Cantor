@@ -19,8 +19,14 @@ export { byPlaylist, UNFILED_LABEL } from './byPlaylist';
 export {
   byAlbum,
   byArtist,
+  modelLabel,
+  ENGINE_SUBTITLE,
   GENERATED_LABEL,
+  SECTION_GENERATED,
+  SECTION_IMPORTED,
   UNKNOWN_ARTIST_LABEL,
+  UNKNOWN_MODEL_LABEL,
+  VARIOUS_ARTISTS_LABEL,
 } from './byRecord';
 export {
   byDate,
