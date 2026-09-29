@@ -1,0 +1,89 @@
+diff --git a/node_modules/@shopify/react-native-skia/lib/commonjs/sksg/Container.native.js b/node_modules/@shopify/react-native-skia/lib/commonjs/sksg/Container.native.js
+index 91b2235..3e4bff0 100644
+--- a/node_modules/@shopify/react-native-skia/lib/commonjs/sksg/Container.native.js
++++ b/node_modules/@shopify/react-native-skia/lib/commonjs/sksg/Container.native.js
+@@ -52,11 +52,21 @@ class NativeReanimatedContainer extends _StaticContainer.Container {
+     const sharedValues = recorder.getSharedValues();
+     const sharedRecorder = recorder.getRecorder();
+     // Draw first frame
+-    _ReanimatedProxy.default.runOnUI(() => {
+-      "worklet";
++    // Cantor patch: a scene with shared values is drawn by its mapper, which
++    // Reanimated starts dirty and runs on the next frame with every value read
++    // on the UI thread (applyUpdates). Drawing here as well rendered the scene
++    // twice in one vsync — the second present then blocked for a buffer, a
++    // 33-70 ms hitch at the start of every re-cut and descent on the Xiaomi —
++    // and the extra frame was played without applyUpdates, from the JS
++    // thread's copies of the values: one stale frame. Static scenes still
++    // draw here, since nothing else will.
++    if (sharedValues.length === 0) {
++      _ReanimatedProxy.default.runOnUI(() => {
++        "worklet";
+ 
+-      nativeDrawOnscreen(nativeId, sharedRecorder, picture);
+-    })();
++        nativeDrawOnscreen(nativeId, sharedRecorder, picture);
++      })();
++    }
+     // Animate
+     if (sharedValues.length > 0) {
+       this.mapperId = _ReanimatedProxy.default.startMapper(() => {
+diff --git a/node_modules/@shopify/react-native-skia/lib/module/sksg/Container.native.js b/node_modules/@shopify/react-native-skia/lib/module/sksg/Container.native.js
+index 1baab98..c0b1800 100644
+--- a/node_modules/@shopify/react-native-skia/lib/module/sksg/Container.native.js
++++ b/node_modules/@shopify/react-native-skia/lib/module/sksg/Container.native.js
+@@ -46,11 +46,21 @@ class NativeReanimatedContainer extends Container {
+     const sharedValues = recorder.getSharedValues();
+     const sharedRecorder = recorder.getRecorder();
+     // Draw first frame
+-    Rea.runOnUI(() => {
+-      "worklet";
++    // Cantor patch: a scene with shared values is drawn by its mapper, which
++    // Reanimated starts dirty and runs on the next frame with every value read
++    // on the UI thread (applyUpdates). Drawing here as well rendered the scene
++    // twice in one vsync — the second present then blocked for a buffer, a
++    // 33-70 ms hitch at the start of every re-cut and descent on the Xiaomi —
++    // and the extra frame was played without applyUpdates, from the JS
++    // thread's copies of the values: one stale frame. Static scenes still
++    // draw here, since nothing else will.
++    if (sharedValues.length === 0) {
++      Rea.runOnUI(() => {
++        "worklet";
+ 
+-      nativeDrawOnscreen(nativeId, sharedRecorder, picture);
+-    })();
++        nativeDrawOnscreen(nativeId, sharedRecorder, picture);
++      })();
++    }
+     // Animate
+     if (sharedValues.length > 0) {
+       this.mapperId = Rea.startMapper(() => {
+diff --git a/node_modules/@shopify/react-native-skia/src/sksg/Container.native.ts b/node_modules/@shopify/react-native-skia/src/sksg/Container.native.ts
+index 08c16a9..376c42d 100644
+--- a/node_modules/@shopify/react-native-skia/src/sksg/Container.native.ts
++++ b/node_modules/@shopify/react-native-skia/src/sksg/Container.native.ts
+@@ -52,10 +52,20 @@ class NativeReanimatedContainer extends Container {
+     const sharedValues = recorder.getSharedValues();
+     const sharedRecorder = recorder.getRecorder();
+     // Draw first frame
+-    Rea.runOnUI(() => {
+-      "worklet";
+-      nativeDrawOnscreen(nativeId, sharedRecorder, picture);
+-    })();
++    // Cantor patch: a scene with shared values is drawn by its mapper, which
++    // Reanimated starts dirty and runs on the next frame with every value read
++    // on the UI thread (applyUpdates). Drawing here as well rendered the scene
++    // twice in one vsync — the second present then blocked for a buffer, a
++    // 33-70 ms hitch at the start of every re-cut and descent on the Xiaomi —
++    // and the extra frame was played without applyUpdates, from the JS
++    // thread's copies of the values: one stale frame. Static scenes still
++    // draw here, since nothing else will.
++    if (sharedValues.length === 0) {
++      Rea.runOnUI(() => {
++        "worklet";
++        nativeDrawOnscreen(nativeId, sharedRecorder, picture);
++      })();
++    }
+     // Animate
+     if (sharedValues.length > 0) {
+       this.mapperId = Rea.startMapper(() => {
