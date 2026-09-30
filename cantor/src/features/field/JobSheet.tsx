@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -21,10 +20,18 @@ import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import { easeSmoother, TransformText, WriteText } from '../../motion';
 import { SymbolArtworkPath } from '../../motion/CanonicalSymbol';
 import {
-  Ledger,
-  LedgerFoot,
-  LedgerGap,
+  Coda,
+  FolioHead,
+  FOLIO_ACT_STYLE,
+  FOLIO_EYEBROW_STYLE,
+  FOLIO_KNOBS,
+  FOLIO_META_STYLE,
+  FOLIO_NOTE_STYLE,
+  FOLIO_TITLE_STYLE,
+  Measure,
+  Rest,
   Row,
+  Stave,
 } from '../controls';
 import { STAGE_SYMBOLS, jobMarkModel } from '../../jobs/marks';
 import {
@@ -39,8 +46,8 @@ import type { JobPresentation } from './useFieldController';
 
 /** KNOBS — the arc laid along the axis, and the beat it arrives on. */
 export const JOB_SHEET_KNOBS = {
-  /** The glyph in the header seat: the measure every panel's seat takes. */
-  SEAT_PX: 27,
+  /** The glyph in the clef: the measure every Folio clef takes. */
+  SEAT_PX: FOLIO_KNOBS.CLEF_PX,
   /**
    * One stage of the arc, drawn in the value column.
    *
@@ -174,9 +181,9 @@ export function JobSheet({
 
   return (
     <View style={styles.sheet}>
-      <View style={[styles.header, { borderColor: pal.line }]}>
-        <View style={styles.seat}>
-          {model.symbol === null ? null : (
+      <FolioHead
+        clef={
+          model.symbol === null ? null : (
             <Canvas style={styles.seatGlyph}>
               <SymbolArtworkPath
                 centerX={JOB_SHEET_KNOBS.SEAT_PX / 2}
@@ -186,63 +193,50 @@ export function JobSheet({
                 symbol={model.symbol}
               />
             </Canvas>
-          )}
-          {/*
-            One object, two strings: a job that fails while you are reading it
-            does not have its word replaced, it becomes the other word.
-          */}
+          )
+        }
+        eyebrow={
+          // One object, two strings: a job that fails while you are reading
+          // it does not have its word replaced, it becomes the other word.
           <TransformText
-            charStyle={type.eyebrow}
+            charStyle={FOLIO_EYEBROW_STYLE}
             color={pal.muted}
             duration={JOB_SHEET_KNOBS.STATE_MS}
-            style={[
-              styles.stateSlot,
-              model.symbol === null ? null : styles.state,
-            ]}
+            style={styles.stateSlot}
             text={model.failed ? 'IT STOPPED' : 'GENERATING'}
           />
-        </View>
-        <Pressable
-          accessibilityLabel="Close job"
-          accessibilityRole="button"
-          hitSlop={space.sm}
-          onPress={onClose}>
-          <Text style={[type.eyebrow, { color: pal.muted }]}>CLOSE</Text>
-        </Pressable>
-      </View>
-
-      <ScrollView contentContainerStyle={styles.body}>
-        {/*
-          The words that were typed are the subject, above the spine, the way a
-          song's title is: it is the only thing that says which generation this
-          was, and a person reading a failure is looking for exactly that.
-        */}
-        <View style={styles.subject}>
+        }
+        nav={{ label: 'CLOSE', accessibilityLabel: 'Close job', onPress: onClose }}
+        // The words that were typed are the subject, the way a song's title
+        // is: it is the only thing that says which generation this was, and a
+        // person reading a failure is looking for exactly that.
+        title={
           <Written
             arrival={arrival}
-            charStyle={type.title}
+            charStyle={FOLIO_TITLE_STYLE}
             colour={pal.ink}
             text={pending.caption ?? jobStateLabel(pending.job)}
             window={JOB_SHEET_KNOBS.WRITE_WINDOW}
           />
-          {/*
-            Where it ran, and nothing else: a model selector is long enough to
-            wrap this line onto two, and it is a fact, so it hangs off the
-            spine with the other facts instead.
-          */}
+        }
+        // Where it ran, and nothing else: a model selector is long enough to
+        // wrap this line onto two, and it is a fact, so it hangs off the
+        // spine with the other facts instead.
+        meta={
           <Written
             arrival={arrival}
-            charStyle={type.eyebrow}
+            charStyle={FOLIO_META_STYLE}
             colour={pal.faint}
-            style={styles.scope}
             text={`ON ${node.toUpperCase()}`}
             window={JOB_SHEET_KNOBS.SCOPE_WINDOW}
           />
-        </View>
+        }
+      />
 
-        <Ledger arrival={arrival}>
+      <Stave>
           {stages.length === 0 ? null : (
             <Arriving arrival={arrival} index={0}>
+              <Measure arrival={arrival}>
               <Row label="Stages" note={arcNote(model, stages)}>
                 <View style={styles.arc}>
                   {stages.map((stage, index) => (
@@ -277,12 +271,14 @@ export function JobSheet({
                   </View>
                 ) : null}
               </Row>
+              </Measure>
             </Arriving>
           )}
 
           {failure === undefined ? null : (
             <Arriving arrival={arrival} index={1}>
-              <LedgerGap />
+              {stages.length === 0 ? null : <Rest />}
+              <Measure arrival={arrival}>
               {/* The node's own words. The app does not paraphrase a failure. */}
               <Row
                 label="Reason"
@@ -293,11 +289,13 @@ export function JobSheet({
                   {failure.message}
                 </Text>
               </Row>
+              </Measure>
             </Arriving>
           )}
 
           <Arriving arrival={arrival} index={2}>
-            <LedgerGap />
+            {stages.length === 0 && failure === undefined ? null : <Rest />}
+            <Measure arrival={arrival}>
             <Fact label="Started" note={clockOf(made)} value={dateOf(made)} />
           {/*
             The rest of the submission is what this phone kept, so a job sent
@@ -314,20 +312,20 @@ export function JobSheet({
             )}
             <Fact label="Model" mono value={pending.job.model} />
             <Fact label="Ref" mono value={shortKey(pending.job.id)} />
+            </Measure>
           </Arriving>
-        </Ledger>
-      </ScrollView>
+      </Stave>
 
       {/*
-        What is wrong sits above the acts rather than in a banner: the eye is
-        already on its way to the foot.
+        What is wrong sits between the bar and the acts rather than in a
+        banner: the eye is already on its way to the coda.
       */}
-      {error === null ? null : (
-        <Text style={[type.eyebrow, styles.problem, { color: pal.ink }]}>
-          {error.toUpperCase()}
-        </Text>
-      )}
-      <LedgerFoot>
+      <Coda
+        why={
+          error === null ? null : (
+            <Text style={[type.small, { color: pal.ink }]}>{error}</Text>
+          )
+        }>
         {confirming ? (
           <View style={styles.confirm}>
             <Act
@@ -365,16 +363,16 @@ export function JobSheet({
               What there is to do is nothing, and saying so is the honest act.
             */}
             {controls.length === 0 && !deletable ? (
-              <Text style={[type.eyebrow, styles.idle, { color: pal.faint }]}>
+              <Text style={[FOLIO_NOTE_STYLE, styles.idle, { color: pal.faint }]}>
                 {model.failed ? 'NOTHING LEFT TO DO' : 'NOTHING TO DO BUT WAIT'}
               </Text>
             ) : null}
           </View>
         )}
-        <Text style={[type.eyebrow, styles.footNote, { color: pal.faint }]}>
+        <Text style={[FOLIO_NOTE_STYLE, styles.footNote, { color: pal.faint }]}>
           {footNote(confirming, deletable)}
         </Text>
-      </LedgerFoot>
+      </Coda>
     </View>
   );
 }
@@ -506,7 +504,7 @@ function Act({
       style={styles.act}>
       <Text
         style={[
-          display ? type.heading : type.body,
+          display ? FOLIO_ACT_STYLE : type.body,
           { color: busy ? pal.faint : pal.ink },
         ]}>
         {label}
@@ -602,24 +600,12 @@ function linesOf(lyrics: string): string {
 const styles = StyleSheet.create({
   /** The Curtain owns the surface; this is only what stands on it. */
   sheet: { flex: 1, paddingBottom: space.lg },
-  header: {
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    height: 56,
-    justifyContent: 'space-between',
-  },
-  seat: { alignItems: 'center', flexDirection: 'row' },
   seatGlyph: {
     height: JOB_SHEET_KNOBS.SEAT_PX,
     width: JOB_SHEET_KNOBS.SEAT_PX,
   },
   /** A morphing word needs a slot that does not resize under it. */
-  stateSlot: { height: 16, width: 132 },
-  state: { marginLeft: space.md },
-  body: { paddingBottom: space.lg },
-  subject: { paddingBottom: space.md, paddingTop: space.md },
-  scope: { marginTop: space.sm },
+  stateSlot: { height: FOLIO_KNOBS.EYEBROW_LINE_PX },
   /** The arc: one square box per stage, evenly spaced along the value column. */
   arc: { flexDirection: 'row', gap: space.md },
   stageGlyph: {
@@ -632,5 +618,4 @@ const styles = StyleSheet.create({
   confirm: { alignItems: 'baseline', flexDirection: 'row', gap: space.lg },
   idle: { paddingVertical: (touch.min - 16) / 2 },
   footNote: { marginTop: space.xs },
-  problem: { marginBottom: space.xs, marginLeft: space.lg },
 });

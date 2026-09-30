@@ -287,9 +287,17 @@ cable is replugged.
   keyboard covers is paid for by the sheet's content and by nothing else. RN's
   `Modal` sets `adjustResize` on its own window regardless, so the pairing and
   restore sheets are unaffected.
-- **The foot's line is narrower than the page.** `LedgerFoot` starts at the
-  spine, so its note holds about 26 mono characters, not a page's worth. Two
-  sheets have already lost a word off the right edge there; count the string.
+- **The coda's line is narrower than the page.** A Folio `Coda` starts one
+  gutter past the spine, so its note holds about 26 mono characters, and a
+  head's meta line beside the clef about 28. Two sheets have already lost a
+  word off the right edge there; count the string.
+- **Every blind is a Folio.** `features/controls/Folio.tsx`: `FolioHead` (clef,
+  eyebrow with the one `CLOSE` or back word, title, meta), `Stave` (the
+  scrolling measures, whose last stretch of spine meets the coda, with a paper
+  fade and no scroll indicator), `Measure`/`Rest` (a spine per group, broken
+  between), and `Coda` (the double bar and the page's one act, or nothing).
+  Do not hand-roll a header or a foot in a new sheet; see
+  `docs/interfacealpha/folio.html` and `folio-steps.md`.
 - **An arrival stagger has to finish inside its clock.** A block's window is
   `ROWS_FROM + index * ARRIVAL_LAG` to `+ ARRIVAL_RISE`, and a window that ends
   past 1 is a row that never reaches full ink — it does not fail, it just sits
@@ -330,7 +338,7 @@ not inherit either this capability or its sentinel. Stage count alone does not
 establish lyric-writing support.
 
 The Ledger uses a compact dial whose tick sits near its text while retaining a
-48 dp touch target. Header titles are centered independently of side controls.
+48 dp touch target.
 
 - [ ] Does a component call the connection directly?
 - [ ] Is the new state owned by exactly one hook or repository?
