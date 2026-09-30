@@ -276,8 +276,8 @@ Unattended installs never start processes or download models automatically.
 Installer fixtures and a real detached lifecycle test run from the repo root:
 `node --test node/scripts/install.test.mjs node/scripts/lifecycle.test.mjs`.
 
-Release order matters: publish v0.1.8 native node/engine assets before deploying
-this installer (its default download is pinned to v0.1.8; `CANTOR_VERSION` can
+Release order matters: publish v0.1.9 native node/engine assets before deploying
+this installer (its default download is pinned to v0.1.9; `CANTOR_VERSION` can
 select another tag).
 
 ## Controlling a running node
