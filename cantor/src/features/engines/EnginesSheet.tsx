@@ -5,7 +5,10 @@ import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { AnimatedSymbol } from '../../motion';
 import {
   Coda,
+  Constellation,
   Door,
+  PhoneSealMark,
+  StationMark,
   FolioHead,
   FOLIO_ACT_STYLE,
   FOLIO_KNOBS,
@@ -157,23 +160,34 @@ function EnginesSheetImpl({
     <>
       <FolioHead
         clef={
-          // One retained glyph across the pages, so a page change morphs the
-          // clef rather than replacing it. F4 draws a node's station here.
-          <AnimatedSymbol
-            symbol={
-              page.kind === 'settings'
-                ? 'identityMark'
-                : page.kind === 'forget'
-                ? 'partial'
-                : page.kind === 'node'
-                ? stateSymbol(snapshots[page.node])
-                : 'contourIntegral'
-            }
-            width={FOLIO_KNOBS.CLEF_PX}
-            height={FOLIO_KNOBS.CLEF_PX}
-            duration={PANEL_KNOBS.MORPH_MS}
-            color={pal.ink}
-          />
+          page.kind === 'settings' ? (
+            <PhoneSealMark publicKey={publicKey} size={FOLIO_KNOBS.CLEF_PX} />
+          ) : page.kind === 'node' && selectedBackend !== undefined ? (
+            <StationMark
+              models={selectedBackend.lastNodeInfo?.models.length ?? 0}
+              nodePublicKey={selectedBackend.nodePubkey}
+              size={FOLIO_KNOBS.CLEF_PX}
+              state={nodeState(snapshots[selectedBackend.nodePubkey])}
+            />
+          ) : page.kind === 'forget' ? (
+            <AnimatedSymbol
+              symbol="partial"
+              width={FOLIO_KNOBS.CLEF_PX}
+              height={FOLIO_KNOBS.CLEF_PX}
+              duration={PANEL_KNOBS.MORPH_MS}
+              color={pal.ink}
+            />
+          ) : (
+            // The panel's subject is every node, so its clef is all of them.
+            <Constellation
+              nodes={(backends ?? []).map(backend => ({
+                nodePublicKey: backend.nodePubkey,
+                models: backend.lastNodeInfo?.models.length ?? 0,
+                state: nodeState(snapshots[backend.nodePubkey]),
+              }))}
+              size={FOLIO_KNOBS.CLEF_PX}
+            />
+          )
         }
         eyebrow={head.eyebrow}
         meta={head.meta}
@@ -261,7 +275,9 @@ function EnginesSheetImpl({
                     <RosterEntry
                       key={backend.nodePubkey}
                       footprint={footprints[backend.nodePubkey]}
+                      models={backend.lastNodeInfo?.models.length ?? 0}
                       name={nameOf(backend)}
+                      nodePublicKey={backend.nodePubkey}
                       onOpen={() =>
                         setPage({ kind: 'node', node: backend.nodePubkey })
                       }
@@ -299,12 +315,16 @@ function EnginesSheetImpl({
  */
 function RosterEntry({
   footprint,
+  models,
   name,
+  nodePublicKey,
   onOpen,
   snapshot,
 }: {
   footprint: BackendFootprint | undefined;
+  models: number;
   name: string;
+  nodePublicKey: string;
   onOpen: () => void;
   snapshot: ConnectionSnapshot | undefined;
 }) {
@@ -319,12 +339,11 @@ function RosterEntry({
           accessibilityRole="image"
           accessibilityLabel={`${name} ${state.toLowerCase()}`}
         >
-          <AnimatedSymbol
-            symbol={stateSymbol(snapshot)}
-            width={PANEL_KNOBS.ENGINE_SYMBOL_PX}
-            height={PANEL_KNOBS.ENGINE_SYMBOL_PX}
-            duration={PANEL_KNOBS.MORPH_MS}
-            color={offline ? pal.faint : pal.ink}
+          <StationMark
+            models={models}
+            nodePublicKey={nodePublicKey}
+            size={PANEL_KNOBS.STATION_PX}
+            state={nodeState(snapshot)}
           />
         </View>
       }
@@ -347,18 +366,6 @@ function RosterEntry({
       </Text>
     </Row>
   );
-}
-
-/** Until F4's station: the glyph that has always said a node's state. */
-function stateSymbol(
-  snapshot: ConnectionSnapshot | undefined,
-): 'infinity' | 'fermata' | 'interchange' {
-  const state = nodeState(snapshot);
-  return state === 'offline'
-    ? 'fermata'
-    : state === 'connecting'
-    ? 'interchange'
-    : 'infinity';
 }
 
 /**
@@ -611,8 +618,8 @@ function Action({
 
 /** KNOBS — the sheet's own glyphs and page transition. */
 const PANEL_KNOBS = {
-  /** One retained glyph per node: held, exchanging, then connected. */
-  ENGINE_SYMBOL_PX: 24,
+  /** A node's station in the roster's label column. */
+  STATION_PX: 34,
   PAGE_FADE_MS: 220,
   MORPH_MS: 420,
 } as const;

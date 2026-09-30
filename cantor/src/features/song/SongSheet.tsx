@@ -22,8 +22,7 @@ import type { SongDetail, SongHeader } from '../../core/protocol';
 import type { SongPatch } from '../../../../protocol/SongPatch';
 import type { LocalAudioState } from '../../audio/native';
 import { formatBytes } from '../../lenses';
-import { nameLensFacePath } from '../../lenses/nameLens';
-import { Canvas, Path } from '@shopify/react-native-skia';
+import type { Lens } from '../../lenses/types';
 import Animated, {
   useAnimatedStyle,
   useDerivedValue,
@@ -37,6 +36,9 @@ import { easeSmoother, TransformText, WriteText } from '../../motion';
 import {
   Coda,
   FolioHead,
+  SongClef,
+  StationMark,
+  type StationState,
   FOLIO_ACT_STYLE,
   FOLIO_EYEBROW_STYLE,
   FOLIO_KNOBS,
@@ -68,6 +70,8 @@ export const SONG_SHEET_KNOBS = {
   DIGEST_PREFIX_CHARS: 12,
   /** The face in the clef, at the size every Folio clef takes. */
   SEAT_PX: FOLIO_KNOBS.CLEF_PX,
+  /** A node's station beside its name on the record. */
+  NODE_MARK_PX: 20,
   /** How long the header's name takes to become the other page's name. */
   PAGE_NAME_MS: 260,
   /**
@@ -259,6 +263,14 @@ type Props = {
   onDelete: () => void;
   /** An imported song's facts; absent for a song a node holds. */
   imported?: ImportedFacts | null;
+  /** The lens the person has chosen: the clef is drawn in it. */
+  lens: Lens;
+  /** The node that holds the song, for its station beside its name. */
+  node?: Readonly<{
+    publicKey: string;
+    models: number;
+    state: StationState;
+  }> | null;
 };
 
 /**
@@ -306,6 +318,8 @@ function SongSheetImpl({
   onRemoveDownload,
   onDelete,
   imported = null,
+  lens,
+  node = null,
 }: Props) {
   const pal = usePalette();
   /**
@@ -459,9 +473,10 @@ function SongSheetImpl({
           >
             <Face
               arrival={arrival}
-              song={song}
+              audioState={audioState}
               imported={imported !== null}
-              colour={pal.ink}
+              lens={lens}
+              song={song}
             />
             {imported !== null ? null : (
               <Text
@@ -570,6 +585,7 @@ function SongSheetImpl({
             detailError={detailError}
             deliveryBytes={deliveryBytes}
             masterBytes={masterBytes}
+            node={node}
             nodeLabel={nodeLabel}
             downloaded={downloaded}
             imported={imported}
@@ -710,17 +726,18 @@ function windowed(value: number, from: number, to: number): number {
  */
 function Face({
   arrival,
-  song,
+  audioState,
   imported,
-  colour,
+  lens,
+  song,
 }: {
   arrival: SharedValue<number>;
-  song: SongHeader;
+  audioState: LocalAudioState;
   /** Draws the imported marker, as the field does. */
   imported: boolean;
-  colour: string;
+  lens: Lens;
+  song: SongHeader;
 }) {
-  const size = SONG_SHEET_KNOBS.SEAT_PX;
   const traced = useDerivedValue(() =>
     windowed(
       arrival.value,
@@ -728,32 +745,20 @@ function Face({
       SONG_SHEET_KNOBS.FACE_WINDOW[1],
     ),
   );
-  const path = useMemo(
-    () =>
-      nameLensFacePath(
-        {
-          seed: song.seed,
-          id: song.id,
-          model: song.model,
-          durationMs: song.duration_ms,
-          imported,
-        },
-        size / 2.6,
-      ),
-    [imported, song.duration_ms, song.id, song.model, song.seed, size],
-  );
   return (
-    <Canvas style={{ width: size, height: size }}>
-      <Path
-        color={colour}
-        end={traced}
-        path={path}
-        start={0}
-        style="stroke"
-        strokeWidth={1}
-        transform={[{ translateX: size / 2 }, { translateY: size / 2 }]}
-      />
-    </Canvas>
+    <SongClef
+      lens={lens}
+      size={SONG_SHEET_KNOBS.SEAT_PX}
+      song={{
+        id: song.id,
+        seed: song.seed,
+        model: song.model,
+        durationMs: song.duration_ms,
+        audioState,
+        imported,
+      }}
+      traced={traced}
+    />
   );
 }
 
@@ -1003,6 +1008,7 @@ function Back({
   downloaded,
   imported,
   masterBytes,
+  node,
   nodeLabel,
   onAsk,
   onDelete,
@@ -1018,6 +1024,11 @@ function Back({
   downloaded: boolean;
   imported: ImportedFacts | null;
   masterBytes: number | null;
+  node: Readonly<{
+    publicKey: string;
+    models: number;
+    state: StationState;
+  }> | null;
   nodeLabel: string;
   onAsk: () => void;
   onDelete: () => void;
@@ -1078,7 +1089,21 @@ function Back({
             <Rest />
             <Measure>
               <Fact label="Model" mono value={song.model} />
-              <Fact label="Node" value={nodeLabel} />
+              <Row label="Node">
+                <View style={styles.named}>
+                  {node === null ? null : (
+                    <StationMark
+                      models={node.models}
+                      nodePublicKey={node.publicKey}
+                      size={SONG_SHEET_KNOBS.NODE_MARK_PX}
+                      state={node.state}
+                    />
+                  )}
+                  <Text style={[type.body, { color: pal.ink }]}>
+                    {nodeLabel}
+                  </Text>
+                </View>
+              </Row>
               <Fact
                 label="Seed"
                 value={`${
@@ -1480,6 +1505,8 @@ const styles = StyleSheet.create({
   pageSeat: { overflow: 'hidden', paddingHorizontal: space.lg },
   page: { flex: 1 },
   titleField: { padding: 0 },
+  /** A mark and the name it belongs to, on one line. */
+  named: { alignItems: 'center', flexDirection: 'row', gap: 9 },
   act: { justifyContent: 'center', minHeight: touch.min },
   /** A morphing word needs a slot that does not resize under it. */
   actSlot: { height: SONG_SHEET_KNOBS.ACT_SLOT_PX },

@@ -1,5 +1,6 @@
 import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
+import { nameLens } from '../../../lenses/nameLens';
 import { SongSheet } from '../SongSheet';
 import type { SongDetail, SongHeader } from '../../../core/protocol';
 
@@ -54,6 +55,7 @@ function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
   const props: React.ComponentProps<typeof SongSheet> = {
     visible: true,
     song: song(),
+    lens: nameLens,
     nodeLabel: 'agentbox',
     audioState: 'cached',
     detail: detail(),
@@ -108,8 +110,7 @@ describe('SongSheet', () => {
     const { tree } = render();
     expect(
       tree.root.findAll(
-        node =>
-          node.props.accessibilityLabel === 'DOG WALK · 3 PLACEMENTS',
+        node => node.props.accessibilityLabel === 'DOG WALK · 3 PLACEMENTS',
       ).length,
     ).toBeGreaterThan(0);
   });
