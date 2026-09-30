@@ -3,6 +3,7 @@ import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { WriteSymbol } from '../../motion';
 import { STAGE_SYMBOLS } from '../../jobs/marks';
 import {
+  Choice,
   Coda,
   CodaWhy,
   Dial,
@@ -15,10 +16,11 @@ import {
   PanelPressable,
   Rest,
   Row,
+  Ruler,
   Stave,
+  StationMark,
   LEDGER_DIAL_ITEM,
   LEDGER_KNOBS,
-  type DialItem,
 } from '../controls';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 import { lyricsContractFor } from '../../core/protocol/lyrics';
@@ -58,6 +60,8 @@ export const COMPOSER_KNOBS = {
    * being drawn.
    */
   STAGE_WRITE_MS: 520,
+  /** A node's station beside its name in the node row. */
+  NODE_MARK_PX: 18,
   MARK_WRITE_MS: 420,
   /** The quiet mono of every label in this sheet; the engines sheet's own. */
   META_PX: 12,
@@ -264,92 +268,116 @@ function ComposerSheetImpl({
               />
             ) : null}
           </Row>
-          <Choice
-            label="Node"
-            items={targets.map(candidate => ({
-              key: candidate.nodePublicKey,
-              label: (candidate.ready
-                ? candidate.label
-                : `${candidate.label} · offline`
-              ).toUpperCase(),
-              accessibilityLabel: `Run it on ${candidate.label}`,
-            }))}
-            activeKey={resolved.nodePublicKey}
-            empty="nowhere yet — no node is paired"
-            onSelect={key =>
-              // Changing the engine drops the model with it: the next
-              // node's list is a different list, and carrying a selector
-              // across is how `model-not-installed` used to happen.
-              !submitting &&
-              setDraft(current => ({
-                ...current,
-                ...resolved,
-                nodePublicKey: key,
-                modelSelector: null,
-                parameters: {},
-                wordsMode:
-                  current.wordsMode === 'model' ? 'none' : current.wordsMode,
-              }))
-            }
-            value={target?.label ?? null}
-          />
+          <Row label="Node" control>
+            <Choice
+              activeKey={resolved.nodePublicKey}
+              disabled={submitting}
+              empty="nowhere yet — no node is paired"
+              items={targets.map(candidate => ({
+                key: candidate.nodePublicKey,
+                label: candidate.label,
+                accessibilityLabel: `Run it on ${candidate.label}`,
+                state: candidate.ready ? 'ready' : 'offline',
+                quiet: !candidate.ready,
+                mark: (
+                  <StationMark
+                    models={candidate.models.length}
+                    nodePublicKey={candidate.nodePublicKey}
+                    size={COMPOSER_KNOBS.NODE_MARK_PX}
+                    state={candidate.ready ? 'ready' : 'offline'}
+                  />
+                ),
+              }))}
+              onSelect={key =>
+                // Changing the node drops the model with it: the next node's
+                // list is a different list, and carrying a selector across is
+                // how `model-not-installed` used to happen.
+                !submitting &&
+                setDraft(current => ({
+                  ...current,
+                  ...resolved,
+                  nodePublicKey: key,
+                  modelSelector: null,
+                  parameters: {},
+                  wordsMode:
+                    current.wordsMode === 'model' ? 'none' : current.wordsMode,
+                }))
+              }
+            />
+          </Row>
 
-          <Choice
+          <Row
             label="Model"
-            items={models.map(model => ({
-              key: model.selector,
-              label: model.selector.toUpperCase(),
-              accessibilityLabel: `Run it with ${model.selector}`,
-            }))}
-            activeKey={resolved.modelSelector}
-            empty={
-              target === null
-                ? 'not until a node is chosen'
-                : 'nothing installed'
+            control
+            note={
+              models.length > 1 ? undefined : modelsNote(target, models.length)
             }
-            note={modelsNote(target, models.length)}
-            onSelect={key =>
-              update({
-                modelSelector: key,
-                parameters: {},
-                wordsMode:
-                  resolved.wordsMode === 'model' ? 'none' : resolved.wordsMode,
-              })
-            }
-            value={resolved.modelSelector}
-          />
+          >
+            <Choice
+              activeKey={resolved.modelSelector}
+              disabled={submitting}
+              empty={
+                target === null
+                  ? 'not until a node is chosen'
+                  : 'nothing installed'
+              }
+              items={models.map(model => ({
+                key: model.selector,
+                label: model.selector,
+                accessibilityLabel: `Run it with ${model.selector}`,
+                state: model.stages?.length
+                  ? `${model.stages.length} stages`
+                  : undefined,
+              }))}
+              onSelect={key =>
+                update({
+                  modelSelector: key,
+                  parameters: {},
+                  wordsMode:
+                    resolved.wordsMode === 'model'
+                      ? 'none'
+                      : resolved.wordsMode,
+                })
+              }
+            />
+          </Row>
 
-          <Choice
-            label="Length"
-            items={[
-              {
-                key: AUTO_LENGTH,
-                label: 'AUTO',
-                accessibilityLabel: "The model's choice of length",
-              },
-              ...lengths.map(seconds => ({
-                key: String(seconds),
-                label: `${seconds}S`,
-                accessibilityLabel: `${seconds} seconds`,
-              })),
-            ]}
-            activeKey={
-              resolved.durationSeconds === null
-                ? AUTO_LENGTH
-                : String(resolved.durationSeconds)
-            }
-            empty="the model's choice"
-            onSelect={key =>
-              update({
-                durationSeconds: key === AUTO_LENGTH ? null : Number(key),
-              })
-            }
-            value={
-              resolved.durationSeconds === null
-                ? "the model's choice"
-                : `${resolved.durationSeconds} seconds`
-            }
-          />
+          <Row label="Length" control>
+            {/* The value in words above the line it is chosen along. */}
+            <View style={styles.rulerValue}>
+              <Text style={[type.body, { color: pal.ink }]}>
+                {resolved.durationSeconds === null
+                  ? "the model's choice"
+                  : `${resolved.durationSeconds} seconds`}
+              </Text>
+            </View>
+            {lengths.length > 0 ? (
+              <Ruler
+                auto
+                activeKey={
+                  resolved.durationSeconds === null
+                    ? AUTO_LENGTH
+                    : String(resolved.durationSeconds)
+                }
+                disabled={submitting}
+                onSelect={key =>
+                  update({
+                    durationSeconds: key === AUTO_LENGTH ? null : Number(key),
+                  })
+                }
+                stops={[
+                  {
+                    key: AUTO_LENGTH,
+                    accessibilityLabel: "Length: the model's choice",
+                  },
+                  ...lengths.map(seconds => ({
+                    key: String(seconds),
+                    accessibilityLabel: `Length: ${seconds} seconds`,
+                  })),
+                ]}
+              />
+            ) : null}
+          </Row>
         </Measure>
         {writer || controls.length > 0 ? (
           <>
@@ -477,66 +505,6 @@ function ComposerSheetImpl({
 const AUTO_LENGTH = 'auto';
 
 /**
- * One step of the cascade: what it decides, and how it is decided.
- *
- * A dial when there is something to pick, a stated value when there is one
- * option, and the reason when there are none. The interface never draws a
- * control for a choice that does not exist — that is the same rule dependency
- * order exists for, applied to a single step instead of to the chain.
- */
-function Choice({
-  activeKey,
-  empty,
-  items,
-  label,
-  note,
-  onSelect,
-  value,
-}: {
-  activeKey: string | null;
-  /** What to say when the step has no options at all. */
-  empty: string;
-  items: readonly DialItem[];
-  label: string;
-  note?: string;
-  onSelect: (key: string) => void;
-  /** The chosen reading, in the sheet's own words, when there is nothing to pick. */
-  value: string | null;
-}) {
-  const pal = usePalette();
-  return (
-    <Row label={label} note={note} control={items.length > 1}>
-      {items.length > 1 ? (
-        <Dial
-          compact
-          activeColour={pal.ink}
-          activeKey={activeKey ?? ''}
-          items={items}
-          itemStyle={LEDGER_DIAL_ITEM}
-          onSelect={onSelect}
-          restColour={pal.faint}
-          // The lengths an engine accepts and the choices a model declares are
-          // the node's to decide, so the row may be longer than the sheet.
-          scroll
-          textStyle={styles.dialWord}
-          tickColour={pal.ink}
-        />
-      ) : (
-        // The same seat a dial would have taken. Every step of the cascade is
-        // a label over one row of that height, whether the row is a control or
-        // a statement, so a step that resolved itself does not sit tighter to
-        // its label than the step below it that did not.
-        <View style={styles.stated}>
-          <Text style={[type.body, { color: pal.ink }]}>
-            {items.length === 1 ? value ?? items[0].label : empty}
-          </Text>
-        </View>
-      )}
-    </Row>
-  );
-}
-
-/**
  * The arc this engine will trace, drawn from what the model declared.
  *
  * Built from the mask rather than authored as four acts, so a shorter pipeline
@@ -630,7 +598,8 @@ const styles = StyleSheet.create({
   },
   metaLine: { lineHeight: FOLIO_KNOBS.EYEBROW_LINE_PX },
   lyrics: { padding: 0, textAlignVertical: 'top' },
-  stated: { justifyContent: 'center', minHeight: LEDGER_KNOBS.LINE_PX },
+  /** The ruler's value, on the label's line, with the line under it. */
+  rulerValue: { justifyContent: 'center', paddingTop: 13 },
   stages: {
     alignItems: 'center',
     flexDirection: 'row',

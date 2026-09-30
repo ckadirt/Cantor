@@ -1,3 +1,4 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import React from 'react';
 import * as Renderer from 'react-test-renderer';
 import fixture from '../../../../../protocol/fixtures/v2/node-info.json';
@@ -48,31 +49,33 @@ function render(snapshots: Record<string, ConnectionSnapshot> = {}) {
   let tree!: Renderer.ReactTestRenderer;
   Renderer.act(() => {
     tree = Renderer.create(
-      <EnginesSheet
-        open
-        backends={[
-          backend('studio', 'acestep:1.5-fast'),
-          backend('phone', 'levo2:1.0-fast'),
-        ]}
-        snapshots={snapshots}
-        footprints={{}}
-        refreshing={false}
-        onClose={jest.fn()}
-        onPair={jest.fn()}
-        onRefresh={onRefresh}
-        onRename={jest.fn()}
-        onForget={onForget}
-        publicKey="123456789abcdef"
-        library={{ songs: 9, placements: 14, playlists: 3 }}
-        storage={{
-          downloadedSongs: 3,
-          downloadedBytes: 4000,
-          cachedSongs: 2,
-          cachedBytes: 2000,
-        }}
-        budgetBytes={1024 ** 3}
-        onChangeBudget={onChangeBudget}
-      />,
+      <GestureHandlerRootView>
+        <EnginesSheet
+          open
+          backends={[
+            backend('studio', 'acestep:1.5-fast'),
+            backend('phone', 'levo2:1.0-fast'),
+          ]}
+          snapshots={snapshots}
+          footprints={{}}
+          refreshing={false}
+          onClose={jest.fn()}
+          onPair={jest.fn()}
+          onRefresh={onRefresh}
+          onRename={jest.fn()}
+          onForget={onForget}
+          publicKey="123456789abcdef"
+          library={{ songs: 9, placements: 14, playlists: 3 }}
+          storage={{
+            downloadedSongs: 3,
+            downloadedBytes: 4000,
+            cachedSongs: 2,
+            cachedBytes: 2000,
+          }}
+          budgetBytes={1024 ** 3}
+          onChangeBudget={onChangeBudget}
+        />
+      </GestureHandlerRootView>,
     );
   });
   const press = (label: string) => {
@@ -142,12 +145,23 @@ describe('Ledger engine pages', () => {
   });
 
   it('changes only the cache budget from settings and returns', () => {
-    const { press, words, onChangeBudget, onForget } = render();
+    const { press, words, onChangeBudget, onForget, tree } = render();
     press('Settings');
     expect(words()).toEqual(
       expect.arrayContaining(['DOWNLOADED', 'CACHED', 'PLACEMENTS']),
     );
-    press('Budget 2 GB');
+    // The budget is a ruler: one step up from 1 GB is 2 GB.
+    const ruler = tree.root.find(
+      n =>
+        n.props.accessibilityRole === 'adjustable' &&
+        typeof n.type !== 'string',
+    );
+    expect(ruler.props.accessibilityLabel).toBe('Budget 1 GB');
+    Renderer.act(() =>
+      ruler.props.onAccessibilityAction({
+        nativeEvent: { actionName: 'increment' },
+      }),
+    );
     expect(onChangeBudget).toHaveBeenCalledWith(2 * 1024 ** 3);
     expect(onForget).not.toHaveBeenCalled();
     press('Back to nodes');

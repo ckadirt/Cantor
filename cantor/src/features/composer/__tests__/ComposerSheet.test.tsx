@@ -1,3 +1,4 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
 import { ComposerSheet } from '../ComposerSheet';
@@ -41,13 +42,16 @@ function render(targets: readonly ComposerTarget[]) {
   let tree!: ReactTestRenderer.ReactTestRenderer;
   ReactTestRenderer.act(() => {
     tree = ReactTestRenderer.create(
-      <ComposerSheet
-        error={null}
-        onClose={jest.fn()}
-        onSubmit={onSubmit}
-        submitting={false}
-        targets={targets}
-      />,
+      // The ruler and the scrub are gestures, which need a gesture root.
+      <GestureHandlerRootView>
+        <ComposerSheet
+          error={null}
+          onClose={jest.fn()}
+          onSubmit={onSubmit}
+          submitting={false}
+          targets={targets}
+        />
+      </GestureHandlerRootView>,
     );
   });
   const words = () =>
@@ -126,6 +130,8 @@ describe('the composer Ledger', () => {
       caption: 'harbour',
     });
     press('Generate lyrics automatically');
+    // A choice of names opens before an alternative can be picked.
+    press('acestep:1.5-fast, tap to change');
     press('Run it with levo2:1.0');
     expect(words()).not.toContain('WRITE WORDS');
     expect(words()).toContain('NO LYRICS SUPPLIED');
@@ -150,6 +156,7 @@ describe('a pairing the node cannot run is never offered', () => {
   it('offers only the chosen node’s models', () => {
     const { words, press } = render([agentbox, phone]);
 
+    press('Choose one of 2');
     press('Run it on this phone');
 
     expect(words()).toContain('The only model this phone has.');
@@ -164,6 +171,7 @@ describe('a pairing the node cannot run is never offered', () => {
   it('sends the model that belongs to the node it sends to', () => {
     const { onSubmit, press, type } = render([agentbox, phone]);
     type('Describe the song', 'a slow harbour at dusk');
+    press('Choose one of 2');
     press('Run it on this phone');
     press('Make it');
 

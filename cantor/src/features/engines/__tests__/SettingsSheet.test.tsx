@@ -1,3 +1,4 @@
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import React from 'react';
 import { AppState } from 'react-native';
 import * as Renderer from 'react-test-renderer';
@@ -35,13 +36,15 @@ function render() {
   let tree!: Renderer.ReactTestRenderer;
   Renderer.act(() => {
     tree = Renderer.create(
+      <GestureHandlerRootView>
       <SettingsSheet
         visible
         library={{ songs: 0, placements: 0, playlists: 0 }}
         storage={{ downloadedSongs: 0, downloadedBytes: 0, cachedSongs: 0, cachedBytes: 0 }}
         budgetBytes={0}
         onChangeBudget={() => {}}
-      />,
+      />
+      </GestureHandlerRootView>,
     );
   });
   trees.push(tree);
