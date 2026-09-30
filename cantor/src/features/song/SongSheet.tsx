@@ -985,7 +985,7 @@ function Front({
             color={pal.faint}
             duration={SONG_SHEET_KNOBS.ACT_MS}
             style={styles.footNoteSlot}
-            text={pinned ? 'KEPT UNTIL YOU SAY SO' : 'NEVER PURGED ONCE KEPT'}
+            text={pinned ? 'KEPT UNTIL YOU UNPIN' : 'NEVER RECLAIMED ONCE KEPT'}
           />
         </Coda>
       )}
@@ -1287,7 +1287,12 @@ function Act({
   onPress: () => void;
   working?: boolean;
 }) {
-  const { tint, colour } = useReach(disabled);
+  const pal = usePalette();
+  // An act on the stave is muted; ink is the coda's one act, in the display
+  // face (the three inks, `nodes.html#inks`).
+  const { tint, colour } = useReach(disabled, {
+    from: display ? pal.ink : pal.muted,
+  });
   const charStyle = display ? FOLIO_ACT_STYLE : type.body;
   return (
     <Pressable

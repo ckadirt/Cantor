@@ -152,7 +152,7 @@ describe('a pairing the node cannot run is never offered', () => {
 
     press('Run it on this phone');
 
-    expect(words()).toContain('THE ONLY MODEL THIS PHONE HAS.');
+    expect(words()).toContain('The only model this phone has.');
     // ACE-Step belongs to the other node and must not be on offer here, in
     // either the dial's chrome casing or the sheet's own.
     expect(words()).not.toContain('acestep:1.5-fast');

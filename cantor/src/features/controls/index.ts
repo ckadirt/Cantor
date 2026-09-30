@@ -15,9 +15,12 @@ export {
   type FolioNav,
 } from './Folio';
 export {
+  Door,
+  isState,
   Ledger,
   Measure,
   Rest,
+  RowAct,
   Row,
   LEDGER_KNOBS,
   LEDGER_NOTE_STYLE,

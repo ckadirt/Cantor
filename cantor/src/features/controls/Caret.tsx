@@ -26,6 +26,8 @@ export const CARET_KNOBS = {
   TURN_MS: 240,
   /** 45° is the chevron; the half-turn on top of it is the direction. */
   UP_DEG: 45,
+  /** A door: it points on, to the page it opens. */
+  RIGHT_DEG: 135,
   DOWN_DEG: 225,
 } as const;
 
@@ -49,15 +51,16 @@ export function Caret({
   direction,
 }: {
   colour: string;
-  /** Where it points. `up` folds a block away; `down` opens one. */
-  direction: 'up' | 'down';
+  /**
+   * Where it points. `up` folds a block away; `down` opens one; `right` is a
+   * door to another page.
+   */
+  direction: 'up' | 'down' | 'right';
 }) {
   const reducedMotion = useReducedMotion();
-  const angle = useSharedValue(
-    direction === 'up' ? CARET_KNOBS.UP_DEG : CARET_KNOBS.DOWN_DEG,
-  );
+  const angle = useSharedValue(angleOf(direction));
   useEffect(() => {
-    const to = direction === 'up' ? CARET_KNOBS.UP_DEG : CARET_KNOBS.DOWN_DEG;
+    const to = angleOf(direction);
     angle.value = reducedMotion
       ? to
       : withTiming(to, {
@@ -69,10 +72,16 @@ export function Caret({
     transform: [{ rotate: `${angle.value}deg` }],
   }));
   return (
-    <Animated.View
-      style={[styles.caret, { borderColor: colour }, turned]}
-    />
+    <Animated.View style={[styles.caret, { borderColor: colour }, turned]} />
   );
+}
+
+function angleOf(direction: 'up' | 'down' | 'right'): number {
+  return direction === 'up'
+    ? CARET_KNOBS.UP_DEG
+    : direction === 'right'
+    ? CARET_KNOBS.RIGHT_DEG
+    : CARET_KNOBS.DOWN_DEG;
 }
 
 const styles = StyleSheet.create({

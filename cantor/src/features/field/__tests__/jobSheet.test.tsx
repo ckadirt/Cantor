@@ -149,7 +149,7 @@ describe('the stopped generation sheet', () => {
     );
     expect(words()).toContain('acestep:1.5-fast');
     expect(words().join(' ')).toContain('INTERNAL');
-    expect(words().join(' ')).toContain('IT WILL NOT BE RETRIED');
+    expect(words().join(' ')).toContain('NOT RETRIED');
     // The engine is the scope line; the model is a fact on the axis.
     expect(words()).toContain('ON STUDIO');
   });
@@ -157,7 +157,7 @@ describe('the stopped generation sheet', () => {
   it('asks twice before deleting, and deletes only on the second answer', () => {
     const { press, labels, words, onForget } = render(pending({}));
     expect(labels()).toContain('Delete');
-    expect(words()).toContain('THE WORDS GO WITH IT');
+    expect(words()).toContain('THE CAPTION GOES TOO');
     press('Delete');
     expect(onForget).not.toHaveBeenCalled();
     expect(words()).toContain('THERE IS NO UNDO');
@@ -193,7 +193,7 @@ describe('the stopped generation sheet', () => {
     // Work the node has taken past the point of stopping: no controls either.
     expect(
       render(pending({ state: 'finalizing', error: undefined })).words(),
-    ).toContain('NOTHING TO DO BUT WAIT');
+    ).toContain('WAITING ON THE NODE');
   });
 
   it('shows what a job submitted from another phone can still say', () => {
