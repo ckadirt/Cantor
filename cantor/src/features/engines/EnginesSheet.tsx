@@ -6,6 +6,7 @@ import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { AnimatedSymbol } from '../../motion';
 import {
   Coda,
+  Door,
   FolioHead,
   FOLIO_ACT_STYLE,
   FOLIO_KNOBS,
@@ -14,6 +15,7 @@ import {
   PanelPressable,
   Rest,
   Row,
+  RowAct,
   Stave,
   type FolioNav,
 } from '../controls';
@@ -311,22 +313,18 @@ function EnginesSheetImpl({
                               : 'Not reported yet'
                           }
                         >
-                          <PanelPressable
-                            accessibilityRole="button"
+                          <Door
                             accessibilityLabel={`All models on ${nameOf(
                               backend,
                             )}`}
+                            label="All models"
                             onPress={() =>
                               setPage({
                                 kind: 'models',
                                 node: backend.nodePubkey,
                               })
                             }
-                          >
-                            <Text style={[type.body, { color: pal.ink }]}>
-                              All models
-                            </Text>
-                          </PanelPressable>
+                          />
                         </Row>
                         {snapshot?.error ? (
                           <Row>
@@ -345,7 +343,7 @@ function EnginesSheetImpl({
                               : undefined
                           }
                         >
-                          <Action
+                          <RowAct
                             label="Forget this node"
                             accessibilityLabel={`Forget ${nameOf(backend)}`}
                             onPress={() =>
@@ -364,13 +362,13 @@ function EnginesSheetImpl({
               <Rest />
               <Measure>
                 <Row control>
-                  <Action label="Pair a node" onPress={onPair} />
+                  <RowAct label="Pair a node" onPress={onPair} />
                 </Row>
                 <Row control>
-                  <Action
-                    label={refreshing ? 'Refreshing…' : 'Refresh libraries'}
+                  <RowAct
+                    label="Refresh libraries"
                     onPress={onRefresh}
-                    disabled={refreshing}
+                    working={refreshing}
                   />
                 </Row>
               </Measure>

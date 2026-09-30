@@ -10,7 +10,10 @@ import Animated, {
   useAnimatedStyle,
   type SharedValue,
 } from 'react-native-reanimated';
-import { font, space, touch, usePalette } from '../../theme/tokens';
+import { Caret } from './Caret';
+import { PanelPressable } from './PanelPressable';
+import { Underway, useReach } from './state';
+import { font, space, touch, type, usePalette } from '../../theme/tokens';
 
 /**
  * KNOBS — the one axis every panel is drawn on.
@@ -55,6 +58,19 @@ export const LEDGER_KNOBS = {
   TICK_PX: 4,
   LABEL_SIZE_PX: 10,
   LABEL_TRACKING: 1.4,
+  /**
+   * The longest label the column holds on one line, in mono characters at
+   * `LABEL_SIZE_PX` and `LABEL_TRACKING` (about 7.4 px each in 96 px).
+   * Labels never wrap: a longer one moves into the value column, in full, and
+   * the label column stays empty.
+   */
+  LABEL_MAX_CHARS: 12,
+  /**
+   * The most words a note may have and still be set in spaced mono capitals.
+   * Mono is for states and counts; anything longer, or anything that ends as
+   * a sentence does, is set in Spectral 13 instead.
+   */
+  STATE_MAX_WORDS: 4,
   /** Full target height; scroll containers clip hitSlop outside their bounds. */
   DIAL_ITEM_PX: touch.min,
 } as const;
@@ -122,9 +138,7 @@ function Spine({
   colour: string;
 }) {
   const drawn = useAnimatedStyle(() =>
-    arrival === undefined
-      ? {}
-      : { transform: [{ scaleY: arrival.value }] },
+    arrival === undefined ? {} : { transform: [{ scaleY: arrival.value }] },
   );
   return (
     <Animated.View
@@ -155,13 +169,17 @@ export function Row({
   label?: string;
   /** Align labels with text inside a 48 dp control without adding row padding twice. */
   control?: boolean;
-  /** The quiet mono line under a value: a consequence, or a state. */
+  /** The line under a value: a state in mono, or a sentence in Spectral. */
   note?: string;
 }) {
   const pal = usePalette();
+  const named = label !== undefined && label !== '';
+  // A label never wraps. One too long for the column moves into the value
+  // column in full, and the label column is left empty rather than cut.
+  const fits = named && label.length <= LEDGER_KNOBS.LABEL_MAX_CHARS;
   return (
     <View style={[styles.row, control && styles.controlRow]}>
-      {label === undefined || label === '' ? null : (
+      {named ? (
         // The fact's mark on the ruler the spine is: level with the middle of
         // the label's first line.
         <View
@@ -172,25 +190,123 @@ export function Row({
             { backgroundColor: pal.spine },
           ]}
         />
-      )}
+      ) : null}
       <Text
+        numberOfLines={1}
         style={[
           styles.label,
           control && styles.controlLabel,
           { color: pal.faint },
         ]}
       >
-        {label === undefined ? '' : label.toUpperCase()}
+        {fits ? label.toUpperCase() : ''}
       </Text>
       <View style={styles.value}>
+        {named && !fits ? (
+          <Text style={[styles.movedLabel, { color: pal.faint }]}>
+            {label.toUpperCase()}
+          </Text>
+        ) : null}
         {children}
-        {note === undefined ? null : (
+        {note === undefined ? null : isState(note) ? (
           <Text style={[styles.note, { color: pal.faint }]}>
             {note.toUpperCase()}
+          </Text>
+        ) : (
+          <Text style={[type.small, styles.sentence, { color: pal.muted }]}>
+            {note}
           </Text>
         )}
       </View>
     </View>
+  );
+}
+
+/**
+ * Whether a note is a state (`3 KEPT`, `THIS WILL BE INSTRUMENTAL`) rather
+ * than a sentence (`Choose where it runs first.`): four words at most, and not
+ * punctuated as a sentence.
+ */
+export function isState(note: string): boolean {
+  const words = note
+    .trim()
+    .split(/\s+/)
+    .filter(word => /[\p{L}\p{N}]/u.test(word));
+  return (
+    words.length <= LEDGER_KNOBS.STATE_MAX_WORDS && !/[.!?…]$/.test(note.trim())
+  );
+}
+
+/**
+ * A door: the same ink as a fact, with the hairline caret at the value
+ * column's right edge. It moves you somewhere and changes nothing.
+ */
+export function Door({
+  accessibilityLabel,
+  label,
+  onPress,
+}: {
+  accessibilityLabel?: string;
+  label: string;
+  onPress: () => void;
+}) {
+  const pal = usePalette();
+  return (
+    <PanelPressable
+      accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={styles.door}
+    >
+      <Text
+        numberOfLines={1}
+        style={[type.body, styles.doorWord, { color: pal.ink }]}
+      >
+        {label}
+      </Text>
+      <View style={styles.caretSeat}>
+        <Caret colour={pal.ink} direction="right" />
+      </View>
+    </PanelPressable>
+  );
+}
+
+/**
+ * An act on the stave: it changes something, so it is set in muted ink. Ink
+ * belongs to the one act at the coda, in the display face.
+ *
+ * `working` keeps the ink and grows the rule under the word; `disabled`
+ * settles it to faint. A working act is refused by having nothing to call, not
+ * by `disabled`, which a screen reader would announce as "busy, disabled".
+ */
+export function RowAct({
+  accessibilityLabel,
+  disabled = false,
+  label,
+  onPress,
+  working = false,
+}: {
+  accessibilityLabel?: string;
+  disabled?: boolean;
+  label: string;
+  onPress: () => void;
+  working?: boolean;
+}) {
+  const pal = usePalette();
+  const { tint } = useReach(disabled, { from: pal.muted });
+  return (
+    <PanelPressable
+      accessibilityLabel={accessibilityLabel ?? label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled, busy: working }}
+      disabled={disabled}
+      onPress={working ? undefined : onPress}
+    >
+      <View>
+        <Animated.Text style={[type.body, tint]}>{label}</Animated.Text>
+        <Underway charStyle={type.body} label={label} working={working} />
+      </View>
+    </PanelPressable>
   );
 }
 
@@ -238,6 +354,23 @@ const styles = StyleSheet.create({
   },
   value: { flex: 1, minWidth: 0 },
   note: { ...LEDGER_NOTE_STYLE, marginTop: 3 },
+  sentence: { marginTop: 3 },
+  movedLabel: { ...LEDGER_NOTE_STYLE, lineHeight: LEDGER_KNOBS.LINE_PX },
+  door: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: space.md,
+    justifyContent: 'space-between',
+  },
+  doorWord: { flexShrink: 1 },
+  /** The caret's rotated square needs its own box to turn in. */
+  caretSeat: {
+    alignItems: 'center',
+    height: 18,
+    justifyContent: 'center',
+    marginRight: space.xs,
+    width: 18,
+  },
   rest: { height: LEDGER_KNOBS.REST_PX },
   tick: {
     height: StyleSheet.hairlineWidth,

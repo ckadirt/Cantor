@@ -283,7 +283,7 @@ export function JobSheet({
               <Row
                 label="Reason"
                 note={`${failure.code.replaceAll('_', ' ')}${
-                  failure.retryable ? '' : ' · it will not be retried'
+                  failure.retryable ? '' : ' · not retried'
                 }`}>
                 <Text style={[type.body, { color: pal.ink }]}>
                   {failure.message}
@@ -364,7 +364,7 @@ export function JobSheet({
             */}
             {controls.length === 0 && !deletable ? (
               <Text style={[FOLIO_NOTE_STYLE, styles.idle, { color: pal.faint }]}>
-                {model.failed ? 'NOTHING LEFT TO DO' : 'NOTHING TO DO BUT WAIT'}
+                {model.failed ? 'NOTHING LEFT TO DO' : 'WAITING ON THE NODE'}
               </Text>
             ) : null}
           </View>
@@ -394,11 +394,12 @@ const CONTROL_WORDS: Record<JobControl, string> = {
  * same measure, the opposite answer.
  *
  * The line starts at the spine and holds about `FOOT_NOTE_CHARS` of mono;
- * `DELETING TAKES THE WORDS WITH IT` was 32 and left `IT` on a second line.
+ * `DELETING TAKES THE WORDS WITH IT` was 32 and left `IT` on a second line,
+ * and a coda note is a state: four words at most.
  */
 function footNote(confirming: boolean, deletable: boolean): string {
   if (confirming) return 'THERE IS NO UNDO';
-  return deletable ? 'THE WORDS GO WITH IT' : 'THE WORDS ARE KEPT';
+  return deletable ? 'THE CAPTION GOES TOO' : 'THE WORDS ARE KEPT';
 }
 
 /** How far around the arc the work has come, in words under the glyphs. */
@@ -505,7 +506,8 @@ function Act({
       <Text
         style={[
           display ? FOLIO_ACT_STYLE : type.body,
-          { color: busy ? pal.faint : pal.ink },
+          // Ink for the coda's first act, muted for the rest (the three inks).
+          { color: busy ? pal.faint : display ? pal.ink : pal.muted },
         ]}>
         {label}
       </Text>
