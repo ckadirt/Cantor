@@ -23,6 +23,7 @@ describe('the three inks', () => {
     expect(isState('Choose where it runs first.')).toBe(false);
     expect(isState('The model writes the lyrics')).toBe(false);
     expect(isState('10 SONGS · NEVER RECLAIMED')).toBe(true);
+    expect(isState('10 kept here · 8 cached')).toBe(true);
   });
 
   it('never wraps a label: a long one moves into the value column', () => {

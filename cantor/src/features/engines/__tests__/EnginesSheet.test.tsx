@@ -2,7 +2,10 @@ import React from 'react';
 import * as Renderer from 'react-test-renderer';
 import fixture from '../../../../../protocol/fixtures/v2/node-info.json';
 import type { NodeInfo } from '../../../core/protocol';
-import type { BackendRecord } from '../../../backends/types';
+import type {
+  BackendRecord,
+  ConnectionSnapshot,
+} from '../../../backends/types';
 import { EnginesSheet } from '../EnginesSheet';
 
 // CanvasKit's system font manager is empty under Jest, so the recovery grid
@@ -29,8 +32,18 @@ const backend = (nodePubkey: string, selector: string): BackendRecord => ({
     ],
   },
 });
-function render() {
+const snapshot: ConnectionSnapshot = {
+  phase: 'disconnected',
+  error: null,
+  jobs: [],
+  songs: [],
+  libraryRevision: null,
+  librarySyncing: false,
+};
+
+function render(snapshots: Record<string, ConnectionSnapshot> = {}) {
   const onForget = jest.fn();
+  const onRefresh = jest.fn();
   const onChangeBudget = jest.fn();
   let tree!: Renderer.ReactTestRenderer;
   Renderer.act(() => {
@@ -41,12 +54,12 @@ function render() {
           backend('studio', 'acestep:1.5-fast'),
           backend('phone', 'levo2:1.0-fast'),
         ]}
-        snapshots={{}}
+        snapshots={snapshots}
         footprints={{}}
         refreshing={false}
         onClose={jest.fn()}
         onPair={jest.fn()}
-        onRefresh={jest.fn()}
+        onRefresh={onRefresh}
         onRename={jest.fn()}
         onForget={onForget}
         publicKey="123456789abcdef"
@@ -75,35 +88,57 @@ function render() {
     tree.root
       .findAll(n => typeof n.props.children === 'string')
       .map(n => n.props.children);
-  return { tree, press, words, onForget, onChangeBudget };
+  return { tree, press, words, onForget, onChangeBudget, onRefresh };
 }
 
 describe('Ledger engine pages', () => {
-  it('keeps the growing model list behind a node-scoped door', () => {
+  it("keeps each node's models behind its door, with where the others are", () => {
     const { press, words } = render();
-    expect(words()).not.toContain('acestep:1.5-fast');
+    expect(words()).not.toContain('1.5 · fast');
+    press('Open studio');
+    expect(words()).toContain('1.5 · fast');
+    expect(words()).toContain('HERE');
+    // Levo is on the other node, and says so.
+    expect(words()).toContain('ON PHONE');
     expect(words()).not.toContain('cantor pull levo2:1.0-fast');
-    press('All models on studio');
-    expect(words()).toContain('1.5-fast');
-    expect(words()).toContain('KNOWN ELSEWHERE');
     press('Model levo2:1.0-fast');
     expect(words()).toContain('cantor pull levo2:1.0-fast');
     press('Back to nodes');
     expect(words()).not.toContain('cantor pull levo2:1.0-fast');
-    press('All models on phone');
+    press('Open phone');
     press('Model levo2:1.0-fast');
     expect(words()).not.toContain('cantor pull levo2:1.0-fast');
   });
 
   it('retains the explicit forget confirmation and correct node', () => {
-    const { press, onForget } = render();
+    const { press, onForget, words } = render();
+    press('Open studio');
     press('Forget studio');
     expect(onForget).not.toHaveBeenCalled();
     press('Keep it');
+    // Keeping it goes back to the node it was about, not to the roster.
+    expect(words()).toContain('Forget this node');
     expect(onForget).not.toHaveBeenCalled();
+    press('Back to nodes');
+    press('Open phone');
     press('Forget phone');
     press('Forget it');
     expect(onForget).toHaveBeenCalledWith('phone');
+  });
+
+  it("says each node's state as a person would, and syncs on opening", () => {
+    const { words, onRefresh } = render({
+      studio: { ...snapshot, phase: 'ready' },
+      phone: { ...snapshot, phase: 'handshaking' },
+    });
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(words()).toContain('Two nodes');
+    expect(words()).toContain('ONE READY · 0 SONGS');
+    expect(words()).toContain('READY');
+    expect(words()).toContain('CONNECTING');
+    expect(words()).not.toContain('handshaking');
+    expect(words()).not.toContain('Refresh libraries');
+    expect(words()).toContain('Pair a node');
   });
 
   it('changes only the cache budget from settings and returns', () => {

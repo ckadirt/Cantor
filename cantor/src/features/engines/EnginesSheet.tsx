@@ -1,7 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
-import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { AnimatedSymbol } from '../../motion';
 import {
@@ -11,15 +10,16 @@ import {
   FOLIO_ACT_STYLE,
   FOLIO_KNOBS,
   FOLIO_NOTE_STYLE,
+  FOLIO_TITLE_STYLE,
   Measure,
   PanelPressable,
   Rest,
   Row,
-  RowAct,
   Stave,
   type FolioNav,
 } from '../controls';
-import { ModelsSheet } from './ModelsSheet';
+import { NodeSheet } from './NodeSheet';
+import { knownModels, nodeState, nodeStateWord } from './nodeState';
 import { formatBytes } from '../../lenses';
 import {
   SettingsSheet,
@@ -27,7 +27,7 @@ import {
   type LibraryReport,
   type StorageReport,
 } from './SettingsSheet';
-import { space, touch, type, usePalette } from '../../theme/tokens';
+import { touch, type, usePalette } from '../../theme/tokens';
 
 /** What one node's songs weigh on this phone, and how many there are. */
 export type BackendFootprint = Readonly<{
@@ -92,22 +92,10 @@ function EnginesSheetImpl({
 }: Props) {
   const pal = usePalette();
   const reducedMotion = useReducedMotion();
-  const [renaming, setRenaming] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
   const [page, setPage] = useState<Page>({ kind: 'engines' });
 
-  // These are models observed on paired nodes, not a compatibility catalogue.
-  const known = useMemo(() => {
-    const seen = new Map<string, ModelView>();
-    for (const backend of backends ?? []) {
-      for (const model of backend.lastNodeInfo?.models ?? []) {
-        if (!seen.has(model.selector)) seen.set(model.selector, model);
-      }
-    }
-    return [...seen.values()].sort((a, b) =>
-      a.selector.localeCompare(b.selector),
-    );
-  }, [backends]);
+  const known = useMemo(() => knownModels(backends), [backends]);
   const selectedBackend =
     'node' in page
       ? backends?.find(backend => backend.nodePubkey === page.node)
@@ -121,6 +109,24 @@ function EnginesSheetImpl({
   React.useEffect(() => {
     if (!open && page.kind !== 'engines') home();
   }, [open, page.kind]);
+  // The panel syncs when it opens: there is no `Refresh libraries` to press.
+  const refreshed = React.useRef(false);
+  React.useEffect(() => {
+    if (!open) {
+      refreshed.current = false;
+      return;
+    }
+    if (refreshed.current || refreshing) return;
+    refreshed.current = true;
+    onRefresh();
+  }, [onRefresh, open, refreshing]);
+  // The node page's title is its name, renamed in place.
+  React.useEffect(() => {
+    if (selectedBackend !== undefined) setDraftName(nameOf(selectedBackend));
+  }, [selectedBackend?.nodePubkey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nameOfKey = (key: string) =>
+    nameOf(backends?.find(backend => backend.nodePubkey === key));
   const head = headOf(page, {
     backends,
     snapshots,
@@ -131,21 +137,36 @@ function EnginesSheetImpl({
   const nav: FolioNav = isHome
     ? { label: 'CLOSE', accessibilityLabel: 'Close nodes', onPress: close }
     : page.kind === 'forget'
-    ? { label: 'KEEP IT', accessibilityLabel: 'Keep it', onPress: home }
+    ? { label: 'KEEP IT', accessibilityLabel: 'Keep it', onPress: back(page) }
     : { label: '‹ NODES', accessibilityLabel: 'Back to nodes', onPress: home };
+
+  function back(from: Page) {
+    return () =>
+      'node' in from ? setPage({ kind: 'node', node: from.node }) : home();
+  }
+
+  const commitName = () => {
+    if (selectedBackend === undefined) return;
+    const next = draftName.trim();
+    if (next.length > 0 && next !== nameOf(selectedBackend))
+      onRename(selectedBackend.nodePubkey, next);
+    else setDraftName(nameOf(selectedBackend));
+  };
 
   return (
     <>
       <FolioHead
         clef={
           // One retained glyph across the pages, so a page change morphs the
-          // clef rather than replacing it.
+          // clef rather than replacing it. F4 draws a node's station here.
           <AnimatedSymbol
             symbol={
               page.kind === 'settings'
                 ? 'identityMark'
                 : page.kind === 'forget'
                 ? 'partial'
+                : page.kind === 'node'
+                ? stateSymbol(snapshots[page.node])
                 : 'contourIntegral'
             }
             width={FOLIO_KNOBS.CLEF_PX}
@@ -157,7 +178,21 @@ function EnginesSheetImpl({
         eyebrow={head.eyebrow}
         meta={head.meta}
         nav={nav}
-        title={head.title}
+        title={
+          page.kind === 'node' && selectedBackend !== undefined ? (
+            <TextInput
+              accessibilityLabel={`Rename ${nameOf(selectedBackend)}`}
+              onBlur={commitName}
+              onChangeText={setDraftName}
+              onSubmitEditing={commitName}
+              returnKeyType="done"
+              style={[FOLIO_TITLE_STYLE, styles.rename, { color: pal.ink }]}
+              value={draftName}
+            />
+          ) : (
+            head.title
+          )
+        }
       />
       <Animated.View
         key={'node' in page ? `${page.kind}-${page.node}` : page.kind}
@@ -172,8 +207,15 @@ function EnginesSheetImpl({
             storage={storage}
             visible={open}
           />
-        ) : page.kind === 'models' ? (
-          <ModelsSheet backend={selectedBackend} known={known} />
+        ) : page.kind === 'node' ? (
+          <NodeSheet
+            backend={selectedBackend}
+            footprint={footprints[page.node]}
+            known={known}
+            nameOf={nameOfKey}
+            onForget={() => setPage({ kind: 'forget', node: page.node })}
+            snapshot={snapshots[page.node]}
+          />
         ) : page.kind === 'forget' ? (
           selectedBackend ? (
             <Forget
@@ -200,187 +242,48 @@ function EnginesSheetImpl({
           )
         ) : (
           <>
-            <Stave keyboardShouldPersistTaps="handled">
-              {backends === null ? (
-                <Measure>
+            <Stave>
+              <Measure>
+                {backends === null ? (
                   <Row>
                     <Text style={[type.body, { color: pal.muted }]}>
                       Loading paired nodes…
                     </Text>
                   </Row>
-                </Measure>
-              ) : backends.length === 0 ? (
-                <Measure>
+                ) : backends.length === 0 ? (
                   <Row>
                     <Text style={[type.body, { color: pal.muted }]}>
                       No node is paired yet.
                     </Text>
                   </Row>
-                </Measure>
-              ) : (
-                backends.map((backend, index) => {
-                  const snapshot = snapshots[backend.nodePubkey];
-                  const footprint = footprints[backend.nodePubkey];
-                  const installed = backend.lastNodeInfo?.models;
-                  return (
-                    <React.Fragment key={backend.nodePubkey}>
-                      {index === 0 ? null : <Rest />}
-                      <Measure>
-                        <Row label="Node" control>
-                          <View style={styles.engineHeading}>
-                            <View style={styles.engineName}>
-                              {renaming === backend.nodePubkey ? (
-                                <TextInput
-                                  accessibilityLabel={`Rename ${nameOf(
-                                    backend,
-                                  )}`}
-                                  autoFocus
-                                  onBlur={() => setRenaming(null)}
-                                  onChangeText={setDraftName}
-                                  onSubmitEditing={() => {
-                                    onRename(backend.nodePubkey, draftName);
-                                    setRenaming(null);
-                                  }}
-                                  returnKeyType="done"
-                                  style={[
-                                    styles.rename,
-                                    type.heading,
-                                    { borderColor: pal.line, color: pal.ink },
-                                  ]}
-                                  value={draftName}
-                                />
-                              ) : (
-                                <PanelPressable
-                                  accessibilityLabel={`Rename ${nameOf(
-                                    backend,
-                                  )}`}
-                                  accessibilityRole="button"
-                                  onPress={() => {
-                                    setDraftName(nameOf(backend));
-                                    setRenaming(backend.nodePubkey);
-                                  }}
-                                >
-                                  <Text
-                                    style={[type.heading, { color: pal.ink }]}
-                                  >
-                                    {nameOf(backend)}
-                                  </Text>
-                                </PanelPressable>
-                              )}
-                            </View>
-                            <View
-                              accessible
-                              accessibilityRole="image"
-                              accessibilityLabel={`Node ${
-                                snapshot?.phase ?? 'disconnected'
-                              }`}
-                            >
-                              <AnimatedSymbol
-                                symbol={
-                                  snapshot?.phase === 'ready'
-                                    ? 'infinity'
-                                    : !snapshot ||
-                                      snapshot.phase === 'disconnected'
-                                    ? 'fermata'
-                                    : 'interchange'
-                                }
-                                width={PANEL_KNOBS.ENGINE_SYMBOL_PX}
-                                height={PANEL_KNOBS.ENGINE_SYMBOL_PX}
-                                duration={PANEL_KNOBS.MORPH_MS}
-                                color={pal.ink}
-                              />
-                            </View>
-                          </View>
-                        </Row>
-                        <Row label="State">
-                          <Text style={[type.body, { color: pal.ink }]}>
-                            {snapshot?.phase ?? 'disconnected'}
-                          </Text>
-                        </Row>
-                        <Row label="Library">
-                          <Text style={[type.body, { color: pal.ink }]}>
-                            {footprint
-                              ? `${footprint.songs} songs, ${footprint.downloaded} kept here`
-                              : 'Not synced yet'}
-                          </Text>
-                        </Row>
-                        <Row
-                          control
-                          label="Models"
-                          note={
-                            installed
-                              ? `${installed.length} installed`
-                              : 'Not reported yet'
-                          }
-                        >
-                          <Door
-                            accessibilityLabel={`All models on ${nameOf(
-                              backend,
-                            )}`}
-                            label="All models"
-                            onPress={() =>
-                              setPage({
-                                kind: 'models',
-                                node: backend.nodePubkey,
-                              })
-                            }
-                          />
-                        </Row>
-                        {snapshot?.error ? (
-                          <Row>
-                            <Text
-                              accessibilityRole="alert"
-                              style={[type.small, { color: pal.ink }]}
-                            >
-                              {snapshot.error}
-                            </Text>
-                          </Row>
-                        ) : null}
-                        <Row
-                          label={
-                            footprint
-                              ? `${footprint.downloaded} kept`
-                              : undefined
-                          }
-                        >
-                          <RowAct
-                            label="Forget this node"
-                            accessibilityLabel={`Forget ${nameOf(backend)}`}
-                            onPress={() =>
-                              setPage({
-                                kind: 'forget',
-                                node: backend.nodePubkey,
-                              })
-                            }
-                          />
-                        </Row>
-                      </Measure>
-                    </React.Fragment>
-                  );
-                })
-              )}
+                ) : (
+                  backends.map(backend => (
+                    <RosterEntry
+                      key={backend.nodePubkey}
+                      footprint={footprints[backend.nodePubkey]}
+                      name={nameOf(backend)}
+                      onOpen={() =>
+                        setPage({ kind: 'node', node: backend.nodePubkey })
+                      }
+                      snapshot={snapshots[backend.nodePubkey]}
+                    />
+                  ))
+                )}
+              </Measure>
               <Rest />
               <Measure>
-                <Row control>
-                  <RowAct label="Pair a node" onPress={onPair} />
-                </Row>
-                <Row control>
-                  <RowAct
-                    label="Refresh libraries"
-                    onPress={onRefresh}
-                    working={refreshing}
+                <Row note="Your key · storage · about">
+                  <Door
+                    label="Settings"
+                    onPress={() => setPage({ kind: 'settings' })}
                   />
                 </Row>
               </Measure>
             </Stave>
             <Coda>
-              <Action
-                display
-                label="Settings"
-                onPress={() => setPage({ kind: 'settings' })}
-              />
+              <Action display label="Pair a node" onPress={onPair} />
               <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
-                IDENTITY · STORAGE · ABOUT
+                A PC, A MAC OR A SERVER
               </Text>
             </Coda>
           </>
@@ -388,6 +291,74 @@ function EnginesSheetImpl({
       </Animated.View>
     </>
   );
+}
+
+/**
+ * One node in the roster: its mark where the field names used to hang, its
+ * name as a door, and one line of state as a person would say it.
+ */
+function RosterEntry({
+  footprint,
+  name,
+  onOpen,
+  snapshot,
+}: {
+  footprint: BackendFootprint | undefined;
+  name: string;
+  onOpen: () => void;
+  snapshot: ConnectionSnapshot | undefined;
+}) {
+  const pal = usePalette();
+  const offline = nodeState(snapshot) === 'offline';
+  const state = nodeStateWord(snapshot);
+  return (
+    <Row
+      mark={
+        <View
+          accessible
+          accessibilityRole="image"
+          accessibilityLabel={`${name} ${state.toLowerCase()}`}
+        >
+          <AnimatedSymbol
+            symbol={stateSymbol(snapshot)}
+            width={PANEL_KNOBS.ENGINE_SYMBOL_PX}
+            height={PANEL_KNOBS.ENGINE_SYMBOL_PX}
+            duration={PANEL_KNOBS.MORPH_MS}
+            color={offline ? pal.faint : pal.ink}
+          />
+        </View>
+      }
+    >
+      <Door
+        accessibilityLabel={`Open ${name}`}
+        label={name}
+        name
+        onPress={onOpen}
+        quiet={offline}
+      />
+      <Text
+        style={[FOLIO_NOTE_STYLE, { color: offline ? pal.faint : pal.muted }]}
+      >
+        {footprint === undefined
+          ? state
+          : `${state} · ${footprint.songs} SONG${
+              footprint.songs === 1 ? '' : 'S'
+            }`}
+      </Text>
+    </Row>
+  );
+}
+
+/** Until F4's station: the glyph that has always said a node's state. */
+function stateSymbol(
+  snapshot: ConnectionSnapshot | undefined,
+): 'infinity' | 'fermata' | 'interchange' {
+  const state = nodeState(snapshot);
+  return state === 'offline'
+    ? 'fermata'
+    : state === 'connecting'
+    ? 'interchange'
+    : 'infinity';
 }
 
 /**
@@ -518,7 +489,7 @@ function capitalised(word: string): string {
 
 type Page =
   | { kind: 'engines' | 'settings' }
-  | { kind: 'models' | 'forget'; node: string };
+  | { kind: 'node' | 'forget'; node: string };
 
 /** The head each page of this sheet opens on: where, what, and its state. */
 function headOf(
@@ -544,14 +515,27 @@ function headOf(
         title: 'This phone',
         meta: settingsMeta(publicKey),
       };
-    case 'models': {
-      const installed = selected?.lastNodeInfo?.models;
+    case 'node': {
+      if (selected === undefined)
+        return { eyebrow: 'NODE', title: nameOf(selected), meta: '' };
+      const index =
+        (backends ?? []).findIndex(
+          backend => backend.nodePubkey === selected.nodePubkey,
+        ) + 1;
+      const info = selected.lastNodeInfo;
       return {
-        eyebrow: 'MODELS',
+        eyebrow: `NODE · ${index} OF ${backends?.length ?? 1}`,
         title: nameOf(selected),
-        meta: installed
-          ? `${countWord(installed.length).toUpperCase()} INSTALLED`
-          : 'NOT REPORTED YET',
+        meta: [
+          nodeStateWord(snapshots[selected.nodePubkey]),
+          info?.device_type,
+          info?.engine_version,
+        ]
+          .filter(
+            (part): part is string => typeof part === 'string' && part !== '',
+          )
+          .join(' · ')
+          .toUpperCase(),
       };
     }
     case 'forget': {
@@ -635,9 +619,8 @@ const PANEL_KNOBS = {
 
 const styles = StyleSheet.create({
   page: { flex: 1 },
-  engineHeading: { flexDirection: 'row', alignItems: 'center', gap: space.md },
-  engineName: { flex: 1 },
-  rename: { borderWidth: 1, minHeight: touch.min, paddingHorizontal: space.sm },
+  /** The node's name, renamed where it stands: no box, as the caption. */
+  rename: { includeFontPadding: false, padding: 0 },
   action: {
     justifyContent: 'center',
     minHeight: touch.min,
