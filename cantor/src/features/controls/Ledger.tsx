@@ -162,21 +162,28 @@ function Spine({
 export function Row({
   children,
   label,
+  mark,
   note,
   control = false,
 }: {
   children: React.ReactNode;
   label?: string;
+  /**
+   * A drawing in the label column instead of a word — a node's mark in the
+   * roster — right-aligned against the spine as a label would be.
+   */
+  mark?: React.ReactNode;
   /** Align labels with text inside a 48 dp control without adding row padding twice. */
   control?: boolean;
   /** The line under a value: a state in mono, or a sentence in Spectral. */
   note?: string;
 }) {
   const pal = usePalette();
-  const named = label !== undefined && label !== '';
+  const named = (label !== undefined && label !== '') || mark !== undefined;
   // A label never wraps. One too long for the column moves into the value
   // column in full, and the label column is left empty rather than cut.
-  const fits = named && label.length <= LEDGER_KNOBS.LABEL_MAX_CHARS;
+  const fits =
+    label !== undefined && label.length <= LEDGER_KNOBS.LABEL_MAX_CHARS;
   return (
     <View style={[styles.row, control && styles.controlRow]}>
       {named ? (
@@ -191,18 +198,22 @@ export function Row({
           ]}
         />
       ) : null}
-      <Text
-        numberOfLines={1}
-        style={[
-          styles.label,
-          control && styles.controlLabel,
-          { color: pal.faint },
-        ]}
-      >
-        {fits ? label.toUpperCase() : ''}
-      </Text>
+      {mark !== undefined ? (
+        <View style={styles.mark}>{mark}</View>
+      ) : (
+        <Text
+          numberOfLines={1}
+          style={[
+            styles.label,
+            control && styles.controlLabel,
+            { color: pal.faint },
+          ]}
+        >
+          {fits ? label.toUpperCase() : ''}
+        </Text>
+      )}
       <View style={styles.value}>
-        {named && !fits ? (
+        {label !== undefined && label !== '' && !fits ? (
           <Text style={[styles.movedLabel, { color: pal.faint }]}>
             {label.toUpperCase()}
           </Text>
@@ -224,14 +235,15 @@ export function Row({
 
 /**
  * Whether a note is a state (`3 KEPT`, `THIS WILL BE INSTRUMENTAL`) rather
- * than a sentence (`Choose where it runs first.`): four words at most, and not
- * punctuated as a sentence.
+ * than a sentence (`Choose where it runs first.`): four words at most — a
+ * number is a count, not a word — and not punctuated as a sentence.
  */
 export function isState(note: string): boolean {
+  // Numbers are counts, not words: `10 KEPT HERE · 8 CACHED` is a state.
   const words = note
     .trim()
     .split(/\s+/)
-    .filter(word => /[\p{L}\p{N}]/u.test(word));
+    .filter(word => /\p{L}/u.test(word));
   return (
     words.length <= LEDGER_KNOBS.STATE_MAX_WORDS && !/[.!?…]$/.test(note.trim())
   );
@@ -244,11 +256,17 @@ export function isState(note: string): boolean {
 export function Door({
   accessibilityLabel,
   label,
+  name = false,
   onPress,
+  quiet = false,
 }: {
   accessibilityLabel?: string;
   label: string;
+  /** A name rather than a word: the display face at 20, as the roster sets it. */
+  name?: boolean;
   onPress: () => void;
+  /** Out of reach for now (an offline node): the door still opens, in faint. */
+  quiet?: boolean;
 }) {
   const pal = usePalette();
   return (
@@ -260,12 +278,16 @@ export function Door({
     >
       <Text
         numberOfLines={1}
-        style={[type.body, styles.doorWord, { color: pal.ink }]}
+        style={[
+          name ? styles.doorName : type.body,
+          styles.doorWord,
+          { color: quiet ? pal.faint : pal.ink },
+        ]}
       >
         {label}
       </Text>
       <View style={styles.caretSeat}>
-        <Caret colour={pal.ink} direction="right" />
+        <Caret colour={quiet ? pal.faint : pal.ink} direction="right" />
       </View>
     </PanelPressable>
   );
@@ -363,6 +385,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   doorWord: { flexShrink: 1 },
+  doorName: { fontFamily: font.display, fontSize: 20, lineHeight: 24 },
+  mark: {
+    alignItems: 'flex-end',
+    paddingTop: LEDGER_KNOBS.ROW_PAD_PX,
+    width: LEDGER_KNOBS.LABEL_PX,
+  },
   /** The caret's rotated square needs its own box to turn in. */
   caretSeat: {
     alignItems: 'center',
