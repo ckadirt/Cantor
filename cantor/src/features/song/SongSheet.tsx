@@ -35,12 +35,18 @@ import Animated, {
 } from 'react-native-reanimated';
 import { easeSmoother, TransformText, WriteText } from '../../motion';
 import {
-  Ledger,
-  LedgerFoot,
-  LedgerGap,
+  Coda,
+  FolioHead,
+  FOLIO_ACT_STYLE,
+  FOLIO_EYEBROW_STYLE,
+  FOLIO_KNOBS,
+  FOLIO_META_STYLE,
+  FOLIO_NOTE_STYLE,
   LEDGER_NOTE_STYLE,
-  LEDGER_VALUE_PX,
+  Measure,
+  Rest,
   Row,
+  Stave,
   Underway,
   useReach,
 } from '../controls';
@@ -60,8 +66,8 @@ import { space, touch, type, usePalette } from '../../theme/tokens';
 export const SONG_SHEET_KNOBS = {
   /** Enough of a digest to compare by eye, short enough to read. */
   DIGEST_PREFIX_CHARS: 12,
-  /** The face in the header seat, at the size every other panel's glyph takes. */
-  SEAT_PX: 27,
+  /** The face in the clef, at the size every Folio clef takes. */
+  SEAT_PX: FOLIO_KNOBS.CLEF_PX,
   /** How long the header's name takes to become the other page's name. */
   PAGE_NAME_MS: 260,
   /**
@@ -409,69 +415,119 @@ function SongSheetImpl({
     [ask],
   );
 
+  /**
+   * A page is the whole screen's width, the margin carried inside it: the
+   * coda's bar runs to the screen's edge, and a page one margin short would
+   * clip it there.
+   */
+  const pageWidth = width + 2 * space.lg;
   const onPagerEnd = useCallback(
     (event: NativeSyntheticEvent<NativeScrollEvent>) => {
       const offset = event.nativeEvent.contentOffset.x;
-      setPage(offset > width / 2 ? 1 : 0);
+      setPage(offset > pageWidth / 2 ? 1 : 0);
     },
-    [width],
+    [pageWidth],
   );
+  const meta =
+    page === 0
+      ? scopeSummary(scopeLabel, nodeLabel, placementCount)
+      : madeLine(imported, song);
+  const toFront = useCallback(() => {
+    setPage(0);
+    pager.current?.scrollTo({ x: 0, animated: !reducedMotion });
+  }, [reducedMotion]);
   const onFrame = useCallback((event: LayoutChangeEvent) => {
     setWidth(event.nativeEvent.layout.width);
   }, []);
 
   return (
     <View onLayout={onFrame} style={styles.sheet}>
-      <View style={[styles.header, { borderColor: pal.line }]}>
-        <Pressable
-          accessibilityLabel={
-            song.favorite ? 'Remove from favourites' : 'Make a favourite'
-          }
-          accessibilityRole="button"
-          accessibilityState={{ selected: song.favorite }}
-          // An imported song has no favourite: that flag is a node's.
-          disabled={locked || imported !== null}
-          hitSlop={space.sm}
-          onPress={onToggleFavourite}
-          style={styles.seat}
-        >
-          <Face
-            arrival={arrival}
-            song={song}
-            imported={imported !== null}
-            colour={pal.ink}
+      <FolioHead
+        clefAccessible
+        clef={
+          <Pressable
+            accessibilityLabel={
+              song.favorite ? 'Remove from favourites' : 'Make a favourite'
+            }
+            accessibilityRole="button"
+            accessibilityState={{ selected: song.favorite }}
+            // An imported song has no favourite: that flag is a node's.
+            disabled={locked || imported !== null}
+            hitSlop={space.sm}
+            onPress={onToggleFavourite}
+            style={styles.seat}
+          >
+            <Face
+              arrival={arrival}
+              song={song}
+              imported={imported !== null}
+              colour={pal.ink}
+            />
+            {imported !== null ? null : (
+              <Text
+                style={[
+                  styles.star,
+                  { color: song.favorite ? pal.ink : pal.line },
+                ]}
+              >
+                {song.favorite ? '★' : '☆'}
+              </Text>
+            )}
+          </Pressable>
+        }
+        eyebrow={
+          // One object, two strings: the eyebrow does not swap a word for
+          // another, it becomes it, on the same clock as the page it names.
+          <TransformText
+            text={page === 0 ? 'SONG' : 'RECORD'}
+            charStyle={FOLIO_EYEBROW_STYLE}
+            color={pal.muted}
+            duration={SONG_SHEET_KNOBS.PAGE_NAME_MS}
+            style={styles.nameSlot}
           />
-          {imported !== null ? null : (
-            <Text
-              style={[
-                styles.star,
-                { color: song.favorite ? pal.ink : pal.line },
-              ]}
-            >
-              {song.favorite ? '★' : '☆'}
-            </Text>
-          )}
-        </Pressable>
-        {/*
-              One object, two strings: the header does not swap a word for
-              another, it becomes it, on the same clock as the page it names.
-            */}
-        <TransformText
-          text={page === 0 ? 'SONG' : 'RECORD'}
-          charStyle={type.eyebrow}
-          color={pal.muted}
-          duration={SONG_SHEET_KNOBS.PAGE_NAME_MS}
-          style={styles.nameSlot}
-        />
-        <Pressable
-          accessibilityLabel="Close song"
-          accessibilityRole="button"
-          hitSlop={space.sm}
-          onPress={onClose}
-        >
-          <Text style={[type.eyebrow, { color: pal.muted }]}>CLOSE</Text>
-        </Pressable>
-      </View>
+        }
+        nav={
+          page === 0
+            ? {
+                label: 'CLOSE',
+                accessibilityLabel: 'Close song',
+                onPress: onClose,
+              }
+            : {
+                label: '‹ SONG',
+                accessibilityLabel: 'Back to the song',
+                onPress: toFront,
+              }
+        }
+        // The title is the subject, not a field: renaming is tapping the
+        // word, which is what the composer's caption already does.
+        title={
+          <Subject
+            arrival={arrival}
+            // An imported song's name is its file's; Cantor does not rename it.
+            busy={locked || imported !== null}
+            colour={pal.ink}
+            onBlur={() => {
+              const next = title.trim();
+              if (next.length > 0 && next !== song.title) onRename(next);
+            }}
+            onChangeText={setTitle}
+            title={title}
+          />
+        }
+        meta={
+          // Glyphs on a canvas are not text: the line carries its own words.
+          <View accessible accessibilityRole="text" accessibilityLabel={meta}>
+            <TransformText
+              text={meta}
+              charStyle={FOLIO_META_STYLE}
+              color={pal.faint}
+              duration={SONG_SHEET_KNOBS.PAGE_NAME_MS}
+              style={styles.nameSlot}
+            />
+          </View>
+        }
+      />
 
       <ScrollView
         horizontal
@@ -481,7 +537,7 @@ function SongSheetImpl({
         ref={pager}
         style={styles.pager}
       >
-        <View style={{ width }}>
+        <View style={[styles.pageSeat, { width: pageWidth }]}>
           <Front
             arrival={arrival}
             acting={acting}
@@ -494,27 +550,19 @@ function SongSheetImpl({
             nodeLabel={nodeLabel}
             onPin={onPin}
             onRemoveDownload={onRemoveDownload}
-            onRename={() => {
-              const next = title.trim();
-              if (next.length > 0 && next !== song.title) onRename(next);
-            }}
-            onTitle={setTitle}
             onTogglePlaylist={onTogglePlaylist}
             onToggleTag={onToggleTag}
             onUnpin={onUnpin}
             placeEntries={placeEntries}
             placePending={placePending}
-            placementCount={placementCount}
             playlistProblem={playlistProblem}
-            scopeLabel={scopeLabel}
             tagProblem={tagProblem}
-            title={title}
             usedTags={song.tags.length}
             wordEntries={wordEntries}
             wordPending={wordPending}
           />
         </View>
-        <View style={{ width }}>
+        <View style={[styles.pageSeat, { width: pageWidth }]}>
           <Back
             acting={acting}
             confirming={confirming}
@@ -721,19 +769,14 @@ function Front({
   nodeLabel,
   onPin,
   onRemoveDownload,
-  onRename,
-  onTitle,
   onTogglePlaylist,
   onToggleTag,
   onUnpin,
   placeEntries,
   placePending,
-  placementCount,
   playlistProblem,
   problem,
-  scopeLabel,
   tagProblem,
-  title,
   usedTags,
   wordEntries,
   wordPending,
@@ -748,19 +791,14 @@ function Front({
   nodeLabel: string;
   onPin: () => void;
   onRemoveDownload: () => void;
-  onRename: () => void;
-  onTitle: (value: string) => void;
   onTogglePlaylist: (name: string, member: boolean) => void;
   onToggleTag: (name: string, member: boolean) => void;
   onUnpin: () => void;
   placeEntries: readonly MembershipEntry[];
   placePending: (name: string) => boolean;
-  placementCount: number;
   playlistProblem: (name: string) => string | null;
   problem: string | null;
-  scopeLabel: string | null;
   tagProblem: (name: string) => string | null;
-  title: string;
   usedTags: number;
   wordEntries: readonly MembershipEntry[];
   wordPending: (name: string) => boolean;
@@ -784,29 +822,8 @@ function Front({
     deliveryBytes === null ? null : `FREES ${formatBytes(deliveryBytes)}`;
   return (
     <View style={styles.page}>
-      <ScrollView contentContainerStyle={styles.body}>
-        {/*
-          The title is the subject, not a field: a panel with one subject puts
-          it above the spine. Renaming is tapping the word, which is what the
-          composer's caption already does — there was never a box, only a
-          title someone might change.
-        */}
-        <Arriving arrival={arrival} index={0} style={styles.subject}>
-          <Subject
-            arrival={arrival}
-            // An imported song's name is its file's; Cantor does not rename it.
-            busy={locked || imported !== null}
-            colour={pal.ink}
-            onBlur={onRename}
-            onChangeText={onTitle}
-            title={title}
-          />
-          <Text style={[type.eyebrow, styles.scope, { color: pal.faint }]}>
-            {scopeSummary(scopeLabel, nodeLabel, placementCount)}
-          </Text>
-        </Arriving>
-
-        <Ledger arrival={spine}>
+      <Stave>
+        <Measure arrival={spine}>
           <Arriving arrival={arrival} index={1}>
             <Row control label="Playlists">
               <Membership
@@ -837,7 +854,9 @@ function Front({
               />
             </Row>
           </Arriving>
-          <LedgerGap />
+        </Measure>
+        <Rest />
+        <Measure arrival={spine}>
           <Arriving arrival={arrival} index={3}>
             <Row label="Offline">
               {/*
@@ -869,11 +888,10 @@ function Front({
               ) : (
                 <View
                   accessible
-                  accessibilityLabel={`${whereItIs(audioState, nodeLabel)}. ${weight(
-                    deliveryBytes,
-                    downloaded,
+                  accessibilityLabel={`${whereItIs(
+                    audioState,
                     nodeLabel,
-                  )}`}
+                  )}. ${weight(deliveryBytes, downloaded, nodeLabel)}`}
                   accessibilityRole="text"
                 >
                   <TransformText
@@ -926,8 +944,8 @@ function Front({
               </Row>
             </Arriving>
           ) : null}
-        </Ledger>
-      </ScrollView>
+        </Measure>
+      </Stave>
 
       {/*
         The foot carries what you most often want from a song: whether its
@@ -937,13 +955,16 @@ function Front({
         What is wrong sits above the act rather than in a banner or beside the
         control that caused it: the eye is already on its way to the foot.
       */}
-      {problem === null ? null : (
-        <Text style={[type.eyebrow, styles.problem, { color: pal.ink }]}>
-          {problem.toUpperCase()}
-        </Text>
-      )}
-      {imported !== null ? null : (
-        <LedgerFoot>
+      {imported !== null ? (
+        <Coda />
+      ) : (
+        <Coda
+          why={
+            problem === null ? null : (
+              <Text style={[type.small, { color: pal.ink }]}>{problem}</Text>
+            )
+          }
+        >
           {/*
             One act, two strings. Keeping a song and letting go of it are the two
             sides of one switch, so the foot does not swap a word for another —
@@ -960,13 +981,13 @@ function Front({
             working={keeping}
           />
           <TransformText
-            charStyle={type.eyebrow}
+            charStyle={FOLIO_NOTE_STYLE}
             color={pal.faint}
             duration={SONG_SHEET_KNOBS.ACT_MS}
             style={styles.footNoteSlot}
             text={pinned ? 'KEPT UNTIL YOU SAY SO' : 'NEVER PURGED ONCE KEPT'}
           />
-        </LedgerFoot>
+        </Coda>
       )}
     </View>
   );
@@ -1005,36 +1026,37 @@ function Back({
   song: SongHeader;
 }) {
   const pal = usePalette();
-  const made = new Date(song.created_at);
   if (imported !== null) return <ImportedRecord facts={imported} song={song} />;
   return (
     <View style={styles.page}>
-      <ScrollView contentContainerStyle={styles.body}>
-        <LedgerGap />
-        <Ledger>
-          <Row label="Made" note={clockOf(made)}>
-            <Text style={[type.body, { color: pal.ink }]}>{dateOf(made)}</Text>
-          </Row>
+      <Stave>
+        <Measure>
           <Row label="Length">
             <Text style={[type.body, { color: pal.ink }]}>
               {duration(song.duration_ms)}
             </Text>
           </Row>
-          <LedgerGap />
-          {detailError !== null ? (
+        </Measure>
+        <Rest />
+        {detailError !== null ? (
+          <Measure>
             <Row label="Recipe">
               <Text style={[type.body, { color: pal.muted }]}>
                 {detailError}
               </Text>
             </Row>
-          ) : detail === null ? (
+          </Measure>
+        ) : detail === null ? (
+          <Measure>
             <Row label="Recipe">
               <Text style={[type.body, { color: pal.muted }]}>
                 {`Asking ${nodeLabel}\u2026`}
               </Text>
             </Row>
-          ) : (
-            <>
+          </Measure>
+        ) : (
+          <>
+            <Measure>
               <Row label="Prompt">
                 <Text style={[type.body, { color: pal.ink }]}>
                   {detail.generation.caption}
@@ -1052,7 +1074,9 @@ function Back({
                   {detail.generation.lyrics ?? 'instrumental'}
                 </Text>
               </Row>
-              <LedgerGap />
+            </Measure>
+            <Rest />
+            <Measure>
               <Fact label="Model" mono value={song.model} />
               <Fact label="Node" value={nodeLabel} />
               <Fact
@@ -1068,15 +1092,19 @@ function Back({
                 length is not known at build time, which is why it sits between
                 two gaps rather than inside a fixed set of rows.
               */}
-              {declared(detail).length === 0 ? null : (
-                <>
-                  <LedgerGap />
+            </Measure>
+            {declared(detail).length === 0 ? null : (
+              <>
+                <Rest />
+                <Measure>
                   {declared(detail).map(([name, value]) => (
                     <Fact key={name} label={name} value={value} />
                   ))}
-                </>
-              )}
-              <LedgerGap />
+                </Measure>
+              </>
+            )}
+            <Rest />
+            <Measure>
               <Fact
                 label="Here"
                 mono
@@ -1101,16 +1129,16 @@ function Back({
                   value={digest.slice(0, SONG_SHEET_KNOBS.DIGEST_PREFIX_CHARS)}
                 />
               ))}
-            </>
-          )}
-        </Ledger>
-      </ScrollView>
+            </Measure>
+          </>
+        )}
+      </Stave>
 
       {/*
         The end of the song, where arriving deliberately is worth more than a
         dialog — and it asks anyway.
       */}
-      <LedgerFoot>
+      <Coda>
         {confirming ? (
           <View style={styles.confirm}>
             <Act
@@ -1120,11 +1148,7 @@ function Back({
               onPress={onDelete}
               working={acting === 'delete'}
             />
-            <Act
-              disabled={acting !== null}
-              label="Keep it"
-              onPress={onKeep}
-            />
+            <Act disabled={acting !== null} label="Keep it" onPress={onKeep} />
           </View>
         ) : (
           <Act
@@ -1134,13 +1158,13 @@ function Back({
             onPress={onAsk}
           />
         )}
-        <Text style={[type.eyebrow, styles.footNote, { color: pal.faint }]}>
+        <Text style={[FOLIO_NOTE_STYLE, styles.footNote, { color: pal.faint }]}>
           {cost(downloaded ? deliveryBytes : null, masterBytes, nodeLabel)}
         </Text>
-        <Text style={[type.eyebrow, styles.footHard, { color: pal.ink }]}>
+        <Text style={[FOLIO_NOTE_STYLE, styles.footHard, { color: pal.ink }]}>
           {confirming ? 'THERE IS NO UNDO' : noUndo(placementCount)}
         </Text>
-      </LedgerFoot>
+      </Coda>
     </View>
   );
 }
@@ -1160,7 +1184,6 @@ function ImportedRecord({
   song: SongHeader;
 }) {
   const pal = usePalette();
-  const added = new Date(facts.addedAtMs);
   const optional: [string, string | null][] = [
     ['Artist', facts.artist],
     ['Album', facts.album],
@@ -1169,18 +1192,13 @@ function ImportedRecord({
   ];
   return (
     <View style={styles.page}>
-      <ScrollView contentContainerStyle={styles.body}>
-        <LedgerGap />
-        <Ledger>
-          <Row label="Arrived" note={clockOf(added)}>
-            <Text style={[type.body, { color: pal.ink }]}>{dateOf(added)}</Text>
-          </Row>
+      <Stave>
+        <Measure>
           <Row label="Length">
             <Text style={[type.body, { color: pal.ink }]}>
               {duration(song.duration_ms)}
             </Text>
           </Row>
-          <LedgerGap />
           {optional.map(([label, value]) =>
             value === null ? null : (
               <Row key={label} label={label}>
@@ -1188,12 +1206,16 @@ function ImportedRecord({
               </Row>
             ),
           )}
-          <LedgerGap />
+        </Measure>
+        <Rest />
+        <Measure>
           <Fact label="Format" mono value={facts.format} />
           <Fact label="Size" mono value={formatBytes(facts.bytes)} />
           <Fact label="Folder" mono value={facts.folder} />
-        </Ledger>
-      </ScrollView>
+        </Measure>
+      </Stave>
+      {/* No act: Cantor never deletes the person's own file. */}
+      <Coda />
     </View>
   );
 }
@@ -1266,7 +1288,7 @@ function Act({
   working?: boolean;
 }) {
   const { tint, colour } = useReach(disabled);
-  const charStyle = display ? type.heading : type.body;
+  const charStyle = display ? FOLIO_ACT_STYLE : type.body;
   return (
     <Pressable
       accessibilityLabel={label}
@@ -1317,18 +1339,31 @@ function Fact({
   );
 }
 
-/** `FROM DOG WALK · 3 PLACEMENTS`, and the honest singular. */
+/** `DOG WALK · 3 PLACEMENTS`, and the honest singular. */
 function scopeSummary(
   scopeLabel: string | null,
   nodeLabel: string,
   placementCount: number,
 ): string {
+  // A meta line holds about 28 mono characters beside the clef, so the
+  // cluster is named bare rather than as `FROM …`.
   const where =
-    scopeLabel === null
-      ? nodeLabel.toUpperCase()
-      : `FROM ${scopeLabel.toUpperCase()}`;
+    scopeLabel === null ? nodeLabel.toUpperCase() : scopeLabel.toUpperCase();
   const marks = `${placementCount} PLACEMENT${placementCount === 1 ? '' : 'S'}`;
   return `${where} · ${marks}`;
+}
+
+/** `MADE 26 SEP · 13:26`: the record page's meta line. */
+function madeLine(imported: ImportedFacts | null, song: SongHeader): string {
+  const when = new Date(
+    imported === null ? song.created_at : imported.addedAtMs,
+  );
+  const verb = imported === null ? 'MADE' : 'ARRIVED';
+  if (Number.isNaN(when.getTime())) return verb;
+  const day = when
+    .toLocaleDateString(undefined, { day: 'numeric', month: 'short' })
+    .toUpperCase();
+  return `${verb} ${day} · ${clockOf(when)}`;
 }
 
 /** The shared count, which is only interesting while you are adding. */
@@ -1413,16 +1448,6 @@ function duration(ms: number): string {
   return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, '0')}`;
 }
 
-function dateOf(made: Date): string {
-  return Number.isNaN(made.getTime())
-    ? 'unknown'
-    : made.toLocaleDateString(undefined, {
-        day: 'numeric',
-        month: 'long',
-        year: 'numeric',
-      });
-}
-
 function clockOf(made: Date): string | undefined {
   if (Number.isNaN(made.getTime())) return undefined;
   return made
@@ -1433,31 +1458,23 @@ function clockOf(made: Date): string | undefined {
 const styles = StyleSheet.create({
   /** The Curtain owns the surface; this is only what stands on it. */
   sheet: { flex: 1, paddingBottom: space.lg },
-  header: {
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    flexDirection: 'row',
-    height: 56,
-    justifyContent: 'space-between',
-  },
-  seat: { alignItems: 'center', flexDirection: 'row', minHeight: touch.min },
+  /** The clef is the face, and the favourite's star hangs at its foot. */
+  seat: { alignItems: 'flex-end' },
   star: {
     fontFamily: type.title.fontFamily,
     fontSize: 13,
-    marginLeft: space.xs,
+    marginTop: space.xs,
   },
-  nameSlot: { flex: 1, height: 16, marginHorizontal: space.md },
-  pager: { flex: 1 },
+  /** A morphing head line: the eyebrow's and the meta's 16 px slot. */
+  nameSlot: { height: FOLIO_KNOBS.EYEBROW_LINE_PX },
+  pager: { flex: 1, marginHorizontal: -space.lg },
   /**
-   * Clipped: `LedgerFoot` hangs its rule past the page margin by design, and
-   * in a pager that margin is the next page — the front page's foot rule was
-   * showing up at the left edge of the record.
+   * A whole screen's width, clipped there: the coda's bar runs to the edge,
+   * and past it is the next page.
    */
-  page: { flex: 1, overflow: 'hidden' },
-  body: { paddingBottom: space.lg },
-  subject: { paddingBottom: space.md, paddingTop: space.md },
+  pageSeat: { overflow: 'hidden', paddingHorizontal: space.lg },
+  page: { flex: 1 },
   titleField: { padding: 0 },
-  scope: { marginTop: space.sm },
   act: { justifyContent: 'center', minHeight: touch.min },
   /** A morphing word needs a slot that does not resize under it. */
   actSlot: { height: SONG_SHEET_KNOBS.ACT_SLOT_PX },
@@ -1473,7 +1490,6 @@ const styles = StyleSheet.create({
   },
   confirm: { alignItems: 'baseline', flexDirection: 'row', gap: space.lg },
   footNote: { marginTop: space.xs },
-  problem: { marginBottom: space.xs, marginLeft: LEDGER_VALUE_PX },
   footHard: { letterSpacing: 1.6, marginTop: 2 },
   hem: {
     alignSelf: 'center',

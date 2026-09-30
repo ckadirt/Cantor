@@ -24,7 +24,7 @@ const song = (over: Partial<SongHeader> = {}): SongHeader =>
     trashed: false,
     artifacts: [],
     ...over,
-  }) as SongHeader;
+  } as SongHeader);
 
 const detail = (): SongDetail =>
   ({
@@ -33,7 +33,7 @@ const detail = (): SongDetail =>
     engine: 'acestep',
     component_digests: ['bdaf9e292d44aaaa'],
     attempts: 1,
-  }) as SongDetail;
+  } as SongDetail);
 
 /**
  * Every tree this file mounts, torn down after each test.
@@ -105,8 +105,13 @@ function render(over: Partial<React.ComponentProps<typeof SongSheet>> = {}) {
 
 describe('SongSheet', () => {
   it('names the mark it opened on and how many the song has', () => {
-    const { words } = render();
-    expect(words()).toContain('FROM DOG WALK · 3 PLACEMENTS');
+    const { tree } = render();
+    expect(
+      tree.root.findAll(
+        node =>
+          node.props.accessibilityLabel === 'DOG WALK · 3 PLACEMENTS',
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it('keeps the destructive act off the page you land on', () => {
@@ -184,7 +189,9 @@ describe('SongSheet', () => {
   it('draws a membership the moment it is asked for, not when it lands', () => {
     // The node is never allowed to answer here, so anything the sheet shows is
     // something it decided to show on the strength of the tap alone.
-    const { labels, press } = render({ onPatch: jest.fn(() => new Promise<void>(() => {})) });
+    const { labels, press } = render({
+      onPatch: jest.fn(() => new Promise<void>(() => {})),
+    });
     expect(labels()).toContain('Remove from Dog walk');
     press('Remove from Dog walk');
     expect(labels()).toContain('Add to Dog walk');
@@ -206,7 +213,9 @@ describe('SongSheet', () => {
     press('Remove from Dog walk');
     press('Remove from Birthday');
     expect(onPatch).toHaveBeenCalledTimes(1);
-    expect(onPatch).toHaveBeenLastCalledWith({ tags: ['p/Birthday', 'ambient'] });
+    expect(onPatch).toHaveBeenLastCalledWith({
+      tags: ['p/Birthday', 'ambient'],
+    });
     await ReactTestRenderer.act(async () => {
       release();
     });
@@ -233,7 +242,10 @@ describe('SongSheet', () => {
     // the sheet has been drawing this since the tap.
     ReactTestRenderer.act(() => {
       tree.update(
-        <SongSheet {...props} song={song({ tags: ['p/Birthday', 'ambient'] })} />,
+        <SongSheet
+          {...props}
+          song={song({ tags: ['p/Birthday', 'ambient'] })}
+        />,
       );
     });
     expect(labels()).toContain('Add to Dog walk');
@@ -248,7 +260,7 @@ describe('SongSheet', () => {
 
   it('says a refused act where the acts are, not on the other page', () => {
     const { words } = render({ problem: 'The node is not ready.' });
-    expect(words()).toContain('THE NODE IS NOT READY.');
+    expect(words()).toContain('The node is not ready.');
   });
 
   it('lets the act you pressed work while the rest go out of reach', () => {

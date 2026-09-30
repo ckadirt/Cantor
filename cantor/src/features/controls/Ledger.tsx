@@ -46,13 +46,9 @@ export const LEDGER_KNOBS = {
   ROW_PAD_PX: 9,
   LINE_PX: 22,
   /**
-   * The only separator. Ledger has no section headings — a gap in the spine
-   * *is* the heading, which is why nothing in any panel is ever titled.
-   */
-  GAP_PX: 14,
-  /**
-   * A Folio rest: the spine actually broken between two measures. Half a
-   * 48 dp control, so the page's rhythm falls on 8.
+   * A Folio rest: the only separator. The spine is actually broken between
+   * two measures, and that break *is* the heading, which is why nothing in any
+   * panel is ever titled. Half a 48 dp control, so the rhythm falls on 8.
    */
   REST_PX: 24,
   /** Each fact's mark on the spine, where its label ends. */
@@ -198,11 +194,6 @@ export function Row({
   );
 }
 
-/** A breath in the spine. The only thing this design has instead of headings. */
-export function LedgerGap() {
-  return <View style={styles.gap} />;
-}
-
 /**
  * A Folio measure: one group of facts, with the spine drawn once for it.
  *
@@ -217,22 +208,6 @@ export const Measure = Ledger;
  */
 export function Rest() {
   return <View style={styles.rest} />;
-}
-
-/** Footer geometry matches the selected HTML: rule at x106, action at x130. */
-export function LedgerFoot({
-  children,
-  style,
-}: {
-  children: React.ReactNode;
-  style?: StyleProp<ViewStyle>;
-}) {
-  const pal = usePalette();
-  return (
-    <View style={[styles.foot, { borderTopColor: pal.ink }, style]}>
-      {children}
-    </View>
-  );
 }
 
 const styles = StyleSheet.create({
@@ -263,7 +238,6 @@ const styles = StyleSheet.create({
   },
   value: { flex: 1, minWidth: 0 },
   note: { ...LEDGER_NOTE_STYLE, marginTop: 3 },
-  gap: { height: LEDGER_KNOBS.GAP_PX },
   rest: { height: LEDGER_KNOBS.REST_PX },
   tick: {
     height: StyleSheet.hairlineWidth,
@@ -273,14 +247,6 @@ const styles = StyleSheet.create({
     width: LEDGER_KNOBS.TICK_PX,
   },
   controlTick: { top: touch.min / 2 },
-  foot: {
-    borderTopWidth: 1,
-    marginLeft: LEDGER_KNOBS.SPINE_PX - space.lg,
-    marginRight: -space.lg,
-    paddingBottom: 0,
-    paddingLeft: space.lg,
-    paddingTop: 0,
-  },
   /** The seat a dial takes inside a row, sized by `DIAL_ITEM_PX`. */
   dialItem: {
     justifyContent: 'center',

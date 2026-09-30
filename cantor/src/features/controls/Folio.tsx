@@ -114,6 +114,12 @@ export type FolioNav = Readonly<{
 type HeadProps = {
   /** A drawing of the subject, at `FOLIO_KNOBS.CLEF_PX`. */
   clef?: React.ReactNode;
+  /**
+   * Whether a screen reader may reach the clef. A drawing is decoration and
+   * hidden by default; a clef that is also a control (the song's face, which
+   * toggles its favourite) says so here.
+   */
+  clefAccessible?: boolean;
   /** Where you are. A string is set in the eyebrow's mono; a node is placed as is. */
   eyebrow: React.ReactNode;
   nav: FolioNav;
@@ -128,7 +134,14 @@ type HeadProps = {
  * beside it — eyebrow, title, meta. The spine starts at the clef, the way a
  * staff starts at its clef.
  */
-export function FolioHead({ clef, eyebrow, nav, title, meta }: HeadProps) {
+export function FolioHead({
+  clef,
+  clefAccessible = false,
+  eyebrow,
+  nav,
+  title,
+  meta,
+}: HeadProps) {
   const pal = usePalette();
   return (
     <View style={styles.head}>
@@ -139,8 +152,10 @@ export function FolioHead({ clef, eyebrow, nav, title, meta }: HeadProps) {
         style={[styles.headSpine, { backgroundColor: pal.spine }]}
       />
       <View
-        accessibilityElementsHidden
-        importantForAccessibility="no-hide-descendants"
+        accessibilityElementsHidden={!clefAccessible}
+        importantForAccessibility={
+          clefAccessible ? 'auto' : 'no-hide-descendants'
+        }
         style={styles.clef}
       >
         {clef}

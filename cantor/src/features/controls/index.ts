@@ -18,8 +18,6 @@ export {
   Ledger,
   Measure,
   Rest,
-  LedgerFoot,
-  LedgerGap,
   Row,
   LEDGER_KNOBS,
   LEDGER_NOTE_STYLE,

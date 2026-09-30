@@ -1,19 +1,26 @@
 import React, { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { WriteSymbol } from '../../motion';
 import { STAGE_SYMBOLS } from '../../jobs/marks';
 import {
+  Coda,
+  CodaWhy,
   Dial,
+  FolioHead,
+  FOLIO_ACT_STYLE,
+  FOLIO_KNOBS,
+  FOLIO_META_STYLE,
+  FOLIO_TITLE_STYLE,
+  Measure,
   PanelPressable,
-  Ledger,
+  Rest,
   Row,
-  LedgerGap,
-  LedgerFoot,
+  Stave,
   LEDGER_DIAL_ITEM,
   LEDGER_KNOBS,
   type DialItem,
 } from '../controls';
-import { space, type, usePalette } from '../../theme/tokens';
+import { space, touch, type, usePalette } from '../../theme/tokens';
 import { lyricsContractFor } from '../../core/protocol/lyrics';
 import { ModelParams } from './ModelParams';
 import {
@@ -34,26 +41,12 @@ import {
 /** KNOBS — the composer's type and rhythm, from the alpha design's frames. */
 export const COMPOSER_KNOBS = {
   /**
-   * The caption: the only creative act on the screen, so the largest thing on
-   * it, and one size.
-   *
-   * It used to drop to 17 px when the machine choices opened, on the argument
-   * that it had become context. Two type sizes for one string means the words
-   * under the finger change size at the moment a drawer opens somewhere else —
-   * a jump inside a motion, and a reflow no animation can carry (a font size
-   * animated on the UI thread never reaches React Native's layout pass). The
-   * machine arrives *below* the caption instead, and the surface stays the
-   * surface.
+   * The caption is the Folio head's title (`FOLIO_TITLE_STYLE`, 26/32): one
+   * size, never smaller when the machine choices open — two type sizes for one
+   * string means the words under the finger change size mid-motion.
    */
-  CAPTION_SIZE_PX: 25,
-  CAPTION_LINE_PX: 34,
-  CAPTION_TOP_PX: 22,
-  CAPTION_BOTTOM_PX: 20,
-  HEADER_SIDE_PX: 64,
   LYRICS_LINES: 4,
   DURATION_STEP_SECONDS: 15, // coarse enough to tap, fine enough to matter
-  /** Header mark at the HTML reference's 27 dp size. */
-  SYMBOL_PX: 27,
   /** Small reference glyphs: the arc is a quiet annotation beside its label. */
   STAGE_GLYPH_PX: 16,
   STAGE_GLYPH_GAP_PX: space.sm,
@@ -66,12 +59,8 @@ export const COMPOSER_KNOBS = {
    */
   STAGE_WRITE_MS: 520,
   MARK_WRITE_MS: 420,
-  /** `Make it`: a serif line, not a button in a box. */
-  SUBMIT_SIZE_PX: 19,
   /** The quiet mono of every label in this sheet; the engines sheet's own. */
   META_PX: 12,
-  /** Header and submit row height. */
-  ROW_PX: 56,
 } as const;
 
 type Props = {
@@ -155,83 +144,78 @@ function ComposerSheetImpl({
   const stages = selected?.stages ?? [];
   const lengths = durationChoices(target);
 
+  /** An empty caption is the page's own state, not a reason to write down. */
+  const shown = problems.filter(problem => problem.kind !== 'caption-empty');
+
   const update = (patch: Partial<ComposerDraft>) => {
     if (!submitting)
       setDraft(current => ({ ...current, ...resolved, ...patch }));
   };
 
+  const overCaption = captionLimit !== null && captionBytes > captionLimit;
+  const summary = [
+    target?.label,
+    resolved.modelSelector,
+    resolved.durationSeconds === null ? 'AUTO' : `${resolved.durationSeconds}S`,
+  ]
+    .filter((part): part is string => typeof part === 'string')
+    .join(' · ')
+    .toUpperCase();
+
   return (
     <>
-      <View style={[styles.header, { borderColor: pal.line }]}>
-        {/*
-          The sheet draws its own mark as it comes down — ∇, the stage a
-          generation begins at, which is what this sheet is. Written rather
-          than faded, because the blind arrives by being pulled and the thing
-          inside it should arrive by being drawn.
-        */}
-        <View
-          style={styles.headingMark}
-          accessible={false}
-          importantForAccessibility="no-hide-descendants"
-        >
+      <FolioHead
+        clef={
+          // The sheet draws its own mark as it comes down — ∇, the stage a
+          // generation begins at, which is what this sheet is. Written rather
+          // than faded, because the blind arrives by being pulled and the
+          // thing inside it should arrive by being drawn.
           <WriteSymbol
             symbol="nabla"
-            width={COMPOSER_KNOBS.SYMBOL_PX}
-            height={COMPOSER_KNOBS.SYMBOL_PX}
+            width={FOLIO_KNOBS.CLEF_PX}
+            height={FOLIO_KNOBS.CLEF_PX}
             duration={COMPOSER_KNOBS.MARK_WRITE_MS}
             color={pal.ink}
           />
-        </View>
-        <Text
-          pointerEvents="none"
-          style={[styles.meta, styles.headerTitle, { color: pal.muted }]}
-        >
-          COMPOSE
-        </Text>
-        <PanelPressable
-          accessibilityLabel="Close composer"
-          accessibilityRole="button"
-          hitSlop={space.md}
-          onPress={onClose}
-          style={styles.close}
-        >
-          <Text style={[styles.meta, { color: pal.muted }]}>CLOSE</Text>
-        </PanelPressable>
-      </View>
-
-      <ScrollView
-        contentContainerStyle={styles.body}
-        keyboardDismissMode="on-drag"
-        keyboardShouldPersistTaps="handled"
-      >
-        {/*
-          No box, no label, no counter until it matters: a sheet of paper.
-        */}
-        <TextInput
-          accessibilityLabel="Describe the song"
-          editable={!submitting}
-          multiline
-          onChangeText={caption => update({ caption })}
-          placeholder="a slow harbour at dusk"
-          placeholderTextColor={pal.faint}
-          style={[
-            styles.caption,
-            {
-              color: pal.ink,
-              fontFamily: type.title.fontFamily,
-              fontSize: COMPOSER_KNOBS.CAPTION_SIZE_PX,
-              lineHeight: COMPOSER_KNOBS.CAPTION_LINE_PX,
-            },
-          ]}
-          value={resolved.caption}
-        />
-        {captionLimit !== null && captionBytes > captionLimit ? (
-          <Text style={[styles.meta, { color: pal.ink }]}>
-            {captionBytes}/{captionLimit} BYTES
+        }
+        eyebrow="COMPOSE · DRAFT"
+        nav={{
+          label: 'CLOSE',
+          accessibilityLabel: 'Close composer',
+          onPress: onClose,
+        }}
+        // The caption is the head's title: the only creative act on the
+        // screen, set as the name of the thing being made. No box, no label,
+        // no counter until it matters: a sheet of paper.
+        title={
+          <TextInput
+            accessibilityLabel="Describe the song"
+            editable={!submitting}
+            multiline
+            onChangeText={caption => update({ caption })}
+            placeholder="a slow harbour at dusk"
+            placeholderTextColor={pal.faint}
+            style={[styles.caption, FOLIO_TITLE_STYLE, { color: pal.ink }]}
+            value={resolved.caption}
+          />
+        }
+        meta={
+          <Text
+            style={[
+              FOLIO_META_STYLE,
+              styles.metaLine,
+              { color: overCaption ? pal.ink : pal.faint },
+            ]}
+          >
+            {overCaption
+              ? `${captionBytes}/${captionLimit} BYTES`
+              : summary || 'NOWHERE YET'}
           </Text>
-        ) : null}
+        }
+      />
 
-        <Ledger>
+      <Stave keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
+        <Measure>
           <Row
             label="Words"
             control
@@ -366,85 +350,97 @@ function ComposerSheetImpl({
                 : `${resolved.durationSeconds} seconds`
             }
           />
-
-          {writer || controls.length > 0 ? <LedgerGap /> : null}
-          {writer ? (
-            <Row label="Write words" control>
-              <Dial
-                compact
-                activeColour={pal.ink}
-                activeKey={resolved.wordsMode === 'model' ? 'on' : 'off'}
-                items={[
-                  {
-                    key: 'off',
-                    label: 'OFF',
-                    accessibilityLabel: 'Write words: off',
-                  },
-                  {
-                    key: 'on',
-                    label: 'ON',
-                    accessibilityLabel: 'Generate lyrics automatically',
-                  },
-                ]}
-                itemStyle={LEDGER_DIAL_ITEM}
-                onSelect={key =>
+        </Measure>
+        {writer || controls.length > 0 ? (
+          <>
+            <Rest />
+            <Measure>
+              {writer ? (
+                <Row label="Write words" control>
+                  <Dial
+                    compact
+                    activeColour={pal.ink}
+                    activeKey={resolved.wordsMode === 'model' ? 'on' : 'off'}
+                    items={[
+                      {
+                        key: 'off',
+                        label: 'OFF',
+                        accessibilityLabel: 'Write words: off',
+                      },
+                      {
+                        key: 'on',
+                        label: 'ON',
+                        accessibilityLabel: 'Generate lyrics automatically',
+                      },
+                    ]}
+                    itemStyle={LEDGER_DIAL_ITEM}
+                    onSelect={key =>
+                      update({
+                        wordsMode:
+                          key === 'on'
+                            ? 'model'
+                            : resolved.lyrics.trim()
+                            ? 'mine'
+                            : 'none',
+                      })
+                    }
+                    restColour={pal.faint}
+                    textStyle={styles.dialWord}
+                    tickColour={pal.ink}
+                  />
+                </Row>
+              ) : null}
+              <ModelParams
+                declared={controls}
+                disabled={submitting}
+                onChange={(key, value) =>
                   update({
-                    wordsMode:
-                      key === 'on'
-                        ? 'model'
-                        : resolved.lyrics.trim()
-                        ? 'mine'
-                        : 'none',
+                    parameters: { ...resolved.parameters, [key]: value },
                   })
                 }
-                restColour={pal.faint}
-                textStyle={styles.dialWord}
-                tickColour={pal.ink}
+                values={resolved.parameters}
               />
-            </Row>
-          ) : null}
-          <ModelParams
-            declared={controls}
-            disabled={submitting}
-            onChange={(key, value) =>
-              update({ parameters: { ...resolved.parameters, [key]: value } })
-            }
-            values={resolved.parameters}
-          />
-          {stages.length > 0 ? (
-            <>
-              <LedgerGap />
+            </Measure>
+          </>
+        ) : null}
+        {stages.length > 0 ? (
+          <>
+            <Rest />
+            <Measure>
               <Row label="It traces">
                 <StageArc colour={pal.faint} stages={stages} />
               </Row>
-            </>
-          ) : null}
-        </Ledger>
-      </ScrollView>
-      <LedgerFoot style={styles.foot}>
-        {problems
-          .filter(problem => problem.kind !== 'caption-empty')
-          .map(problem => (
-            <Text
-              key={
-                problem.kind === 'parameter'
-                  ? `parameter-${problem.key}`
-                  : problem.kind
-              }
-              style={[type.small, { color: pal.muted }]}
-            >
-              {describeProblem(problem)}
-            </Text>
-          ))}
-        {error !== null ? (
-          <Text
-            accessibilityRole="alert"
-            style={[type.small, { color: pal.ink }]}
-          >
-            {error}
-          </Text>
+            </Measure>
+          </>
         ) : null}
-
+      </Stave>
+      <Coda
+        why={
+          shown.length === 0 && error === null ? null : (
+            <>
+              {shown.map(problem => (
+                <CodaWhy
+                  key={
+                    problem.kind === 'parameter'
+                      ? `parameter-${problem.key}`
+                      : problem.kind
+                  }
+                >
+                  {describeProblem(problem)}
+                </CodaWhy>
+              ))}
+              {error !== null ? (
+                <Text
+                  accessibilityRole="alert"
+                  style={[type.small, { color: pal.ink }]}
+                >
+                  {error}
+                </Text>
+              ) : null}
+            </>
+          )
+        }
+      >
         <PanelPressable
           accessibilityLabel="Make it"
           accessibilityRole="button"
@@ -465,17 +461,14 @@ function ComposerSheetImpl({
         >
           <Text
             style={[
-              type.title,
-              {
-                color: ready && !submitting ? pal.ink : pal.faint,
-                fontSize: COMPOSER_KNOBS.SUBMIT_SIZE_PX,
-              },
+              FOLIO_ACT_STYLE,
+              { color: ready && !submitting ? pal.ink : pal.faint },
             ]}
           >
             {submitting ? 'Sending it…' : 'Make it'}
           </Text>
         </PanelPressable>
-      </LedgerFoot>
+      </Coda>
     </>
   );
 }
@@ -614,25 +607,6 @@ function durationChoices(target: ComposerTarget | null): readonly number[] {
 }
 
 const styles = StyleSheet.create({
-  /** The engines sheet's head, because it is the same head. */
-  header: {
-    alignItems: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    gap: space.sm,
-    justifyContent: 'space-between',
-    height: COMPOSER_KNOBS.ROW_PX,
-    marginHorizontal: -space.lg,
-    paddingHorizontal: space.lg,
-  },
-  headingMark: { width: COMPOSER_KNOBS.SYMBOL_PX },
-  headerTitle: {
-    position: 'absolute',
-    left: COMPOSER_KNOBS.HEADER_SIDE_PX,
-    right: COMPOSER_KNOBS.HEADER_SIDE_PX,
-    textAlign: 'center',
-  },
-  close: { alignItems: 'flex-end' },
   dialWord: { ...type.eyebrow, fontSize: 12, letterSpacing: 0 },
   /**
    * Every label in this sheet, and every word on its dials.
@@ -649,15 +623,13 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     lineHeight: 19,
   },
-  body: { paddingBottom: space.lg, paddingTop: COMPOSER_KNOBS.CAPTION_TOP_PX },
   caption: {
     padding: 0,
     textAlignVertical: 'top',
     includeFontPadding: false,
-    marginBottom: COMPOSER_KNOBS.CAPTION_BOTTOM_PX,
   },
+  metaLine: { lineHeight: FOLIO_KNOBS.EYEBROW_LINE_PX },
   lyrics: { padding: 0, textAlignVertical: 'top' },
-  foot: { gap: space.sm },
   stated: { justifyContent: 'center', minHeight: LEDGER_KNOBS.LINE_PX },
   stages: {
     alignItems: 'center',
@@ -665,7 +637,7 @@ const styles = StyleSheet.create({
     gap: COMPOSER_KNOBS.STAGE_GLYPH_GAP_PX,
     minHeight: LEDGER_KNOBS.LINE_PX,
   },
-  submit: { justifyContent: 'center', minHeight: COMPOSER_KNOBS.ROW_PX },
+  submit: { justifyContent: 'center', minHeight: touch.min },
 });
 
 /**
