@@ -12,6 +12,11 @@ const light = {
   muted: '#666666', // secondary text
   faint: '#A6A6A6', // tertiary text, disabled
   line: '#E6E6E6', // hairline rules and borders
+  /**
+   * The Folio spine and its ticks: darker than `line`, which vanished on the
+   * phone's panel at arm's length (docs/interfacealpha/folio.html#measures).
+   */
+  spine: '#D4D4D4',
 };
 
 const dark: Palette = {
@@ -20,6 +25,7 @@ const dark: Palette = {
   muted: '#999999',
   faint: '#595959',
   line: '#1F1F1F',
+  spine: '#2A2A2A',
 };
 
 export type Palette = typeof light;

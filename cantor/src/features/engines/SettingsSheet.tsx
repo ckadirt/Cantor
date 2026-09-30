@@ -6,13 +6,15 @@ import Animated, {
   useReducedMotion,
 } from 'react-native-reanimated';
 import { easeSmoother, TransformText } from '../../motion';
-import { Alert, AppState, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {
+  Coda,
   Dial,
-  Ledger,
-  LedgerGap,
+  Measure,
+  Rest,
   Row,
+  Stave,
   Underway,
   useReach,
   LEDGER_DIAL_ITEM,
@@ -54,7 +56,6 @@ export type LibraryReport = Readonly<{
 
 type Props = {
   visible: boolean;
-  publicKey: string;
   library: LibraryReport;
   storage: StorageReport;
   budgetBytes: number;
@@ -73,7 +74,6 @@ type Props = {
  */
 export function SettingsSheet({
   visible,
-  publicKey,
   library,
   storage,
   budgetBytes,
@@ -86,87 +86,96 @@ export function SettingsSheet({
   const widest = Math.max(total, budgetBytes, 1);
 
   return (
-    <ScrollView contentContainerStyle={styles.body}>
+    <>
       {/*
-        No header of its own: the sheet it opens inside already carries one,
-        and two rows saying where you are is the fault the chrome work in step
-        3 existed to remove.
+        The head — `This phone`, and the key it answers to in the meta line —
+        is the sheet's this page opens inside; see `settingsMeta`.
       */}
-      <Text style={[type.title, { color: pal.ink }]}>Cantor</Text>
-      <Text style={[styles.meta, { color: pal.muted }]}>1.0 · ALPHA</Text>
-
-      <Ledger>
-        <Row label="Identity">
-          <Text selectable style={[styles.meta, { color: pal.ink }]}>
-            {fingerprint(publicKey)}
-          </Text>
-        </Row>
-        <RecoveryWords />
-        <LedgerGap />
-        <Row label="Songs">
-          <Text style={[type.body, { color: pal.ink }]}>{library.songs}</Text>
-        </Row>
-        <Row label="Placements">
-          <Text style={[type.body, { color: pal.ink }]}>
-            {library.placements}
-          </Text>
-        </Row>
-        <Row label="Playlists">
-          <Text style={[type.body, { color: pal.ink }]}>
-            {library.playlists}
-          </Text>
-        </Row>
-        <LedgerGap />
-        <Row label="Downloaded">
-          <Band
-            colour={pal.ink}
-            fraction={storage.downloadedBytes / widest}
-            label={`${storage.downloadedSongs} songs`}
-            value={formatBytes(storage.downloadedBytes)}
-            note="Yours until you remove them. Never reclaimed."
-          />
-        </Row>
-        <Row label="Cached">
-          <Band
-            colour={pal.muted}
-            fraction={storage.cachedBytes / widest}
-            label={`${storage.cachedSongs} songs`}
-            value={formatBytes(storage.cachedBytes)}
-            note="Here because you listened. Reclaimed first."
-          />
-        </Row>
-        <Row label="Budget" control>
-          <Dial
-            compact
-            activeColour={pal.ink}
-            activeKey={String(budgetBytes)}
-            items={BUDGET_CHOICES.map(choice => ({
-              key: String(choice),
-              label: formatBytes(choice)
-                .replace(' MB', 'M')
-                .replace(' GB', 'G'),
-              accessibilityLabel: `Budget ${formatBytes(choice)}`,
-            }))}
-            onSelect={key => onChangeBudget(Number(key))}
-            itemStyle={LEDGER_DIAL_ITEM}
-            restColour={pal.faint}
-            textStyle={styles.meta}
-            tickColour={pal.ink}
-          />
-          <Text style={[type.small, { color: pal.muted }]}>
-            Downloads count against this budget but are never reclaimed.
-          </Text>
-        </Row>
-        <LedgerGap />
-        <Row label="Diagnostics">
-          <Text style={[type.body, { color: pal.faint }]}>not yet</Text>
-        </Row>
-        <Row label="Licences">
-          <Text style={[type.body, { color: pal.faint }]}>not yet</Text>
-        </Row>
-      </Ledger>
-    </ScrollView>
+      <Stave>
+        <Measure>
+          <RecoveryWords />
+        </Measure>
+        <Rest />
+        <Measure>
+          <Row label="Songs">
+            <Text style={[type.body, { color: pal.ink }]}>{library.songs}</Text>
+          </Row>
+          <Row label="Placements">
+            <Text style={[type.body, { color: pal.ink }]}>
+              {library.placements}
+            </Text>
+          </Row>
+          <Row label="Playlists">
+            <Text style={[type.body, { color: pal.ink }]}>
+              {library.playlists}
+            </Text>
+          </Row>
+        </Measure>
+        <Rest />
+        <Measure>
+          <Row label="Downloaded">
+            <Band
+              colour={pal.ink}
+              fraction={storage.downloadedBytes / widest}
+              label={`${storage.downloadedSongs} songs`}
+              value={formatBytes(storage.downloadedBytes)}
+              note="Yours until you remove them. Never reclaimed."
+            />
+          </Row>
+          <Row label="Cached">
+            <Band
+              colour={pal.muted}
+              fraction={storage.cachedBytes / widest}
+              label={`${storage.cachedSongs} songs`}
+              value={formatBytes(storage.cachedBytes)}
+              note="Here because you listened. Reclaimed first."
+            />
+          </Row>
+          <Row label="Budget" control>
+            <Dial
+              compact
+              activeColour={pal.ink}
+              activeKey={String(budgetBytes)}
+              items={BUDGET_CHOICES.map(choice => ({
+                key: String(choice),
+                label: formatBytes(choice)
+                  .replace(' MB', 'M')
+                  .replace(' GB', 'G'),
+                accessibilityLabel: `Budget ${formatBytes(choice)}`,
+              }))}
+              onSelect={key => onChangeBudget(Number(key))}
+              itemStyle={LEDGER_DIAL_ITEM}
+              restColour={pal.faint}
+              textStyle={styles.meta}
+              tickColour={pal.ink}
+            />
+            <Text style={[type.small, { color: pal.muted }]}>
+              Downloads count against this budget but are never reclaimed.
+            </Text>
+          </Row>
+        </Measure>
+        <Rest />
+        <Measure>
+          <Row label="Diagnostics">
+            <Text style={[type.body, { color: pal.faint }]}>not yet</Text>
+          </Row>
+          <Row label="Licences">
+            <Text style={[type.body, { color: pal.faint }]}>not yet</Text>
+          </Row>
+        </Measure>
+      </Stave>
+      {/* No act: settings ends on the bar alone. */}
+      <Coda />
+    </>
   );
+}
+
+/** The version the settings head names; the app has no build-time source yet. */
+export const APP_VERSION_LABEL = '1.0 ALPHA';
+
+/** `KEY 9F2C · 41AB · 1.0 ALPHA`: the settings head's meta line. */
+export function settingsMeta(publicKey: string): string {
+  return `KEY ${fingerprint(publicKey)} · ${APP_VERSION_LABEL}`;
 }
 
 /**
@@ -411,7 +420,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.7,
     lineHeight: 19,
   },
-  body: { gap: space.xs, paddingBottom: space.xxl, paddingTop: space.md },
   band: { gap: space.xs },
   track: { height: SETTINGS_KNOBS.BAR_HEIGHT_PX, width: '100%' },
   fill: { height: SETTINGS_KNOBS.BAR_HEIGHT_PX },

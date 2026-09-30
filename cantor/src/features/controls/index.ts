@@ -1,7 +1,23 @@
 export { Caret, CARET_KNOBS } from './Caret';
 export { Dial, DIAL_KNOBS, type DialItem } from './Dial';
 export {
+  Coda,
+  CodaWhy,
+  Folio,
+  FolioHead,
+  Stave,
+  FOLIO_ACT_STYLE,
+  FOLIO_EYEBROW_STYLE,
+  FOLIO_KNOBS,
+  FOLIO_META_STYLE,
+  FOLIO_NOTE_STYLE,
+  FOLIO_TITLE_STYLE,
+  type FolioNav,
+} from './Folio';
+export {
   Ledger,
+  Measure,
+  Rest,
   LedgerFoot,
   LedgerGap,
   Row,

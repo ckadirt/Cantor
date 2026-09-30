@@ -1,20 +1,27 @@
 import React, { useMemo, useState } from 'react';
 import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { AnimatedSymbol } from '../../motion';
 import {
+  Coda,
+  FolioHead,
+  FOLIO_ACT_STYLE,
+  FOLIO_KNOBS,
+  FOLIO_NOTE_STYLE,
+  Measure,
   PanelPressable,
-  Ledger,
-  LedgerFoot,
-  LedgerGap,
+  Rest,
   Row,
+  Stave,
+  type FolioNav,
 } from '../controls';
 import { ModelsSheet } from './ModelsSheet';
 import { formatBytes } from '../../lenses';
 import {
   SettingsSheet,
+  settingsMeta,
   type LibraryReport,
   type StorageReport,
 } from './SettingsSheet';
@@ -85,10 +92,7 @@ function EnginesSheetImpl({
   const reducedMotion = useReducedMotion();
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftName, setDraftName] = useState('');
-  const [page, setPage] = useState<
-    | { kind: 'engines' | 'settings' }
-    | { kind: 'models' | 'forget'; node: string }
-  >({ kind: 'engines' });
+  const [page, setPage] = useState<Page>({ kind: 'engines' });
 
   // These are models observed on paired nodes, not a compatibility catalogue.
   const known = useMemo(() => {
@@ -115,21 +119,25 @@ function EnginesSheetImpl({
   React.useEffect(() => {
     if (!open && page.kind !== 'engines') home();
   }, [open, page.kind]);
-  const title =
-    page.kind === 'forget'
-      ? `FORGET ${nameOf(selectedBackend)}`
-      : page.kind === 'engines'
-      ? 'NODES'
-      : page.kind.toUpperCase();
+  const head = headOf(page, {
+    backends,
+    snapshots,
+    footprints,
+    selected: selectedBackend,
+    publicKey,
+  });
+  const nav: FolioNav = isHome
+    ? { label: 'CLOSE', accessibilityLabel: 'Close nodes', onPress: close }
+    : page.kind === 'forget'
+    ? { label: 'KEEP IT', accessibilityLabel: 'Keep it', onPress: home }
+    : { label: '‹ NODES', accessibilityLabel: 'Back to nodes', onPress: home };
 
   return (
     <>
-      <View style={[styles.header, { borderColor: pal.line }]}>
-        <View
-          style={styles.headingMark}
-          accessible={false}
-          importantForAccessibility="no-hide-descendants"
-        >
+      <FolioHead
+        clef={
+          // One retained glyph across the pages, so a page change morphs the
+          // clef rather than replacing it.
           <AnimatedSymbol
             symbol={
               page.kind === 'settings'
@@ -138,36 +146,17 @@ function EnginesSheetImpl({
                 ? 'partial'
                 : 'contourIntegral'
             }
-            width={PANEL_KNOBS.SYMBOL_PX}
-            height={PANEL_KNOBS.SYMBOL_PX}
+            width={FOLIO_KNOBS.CLEF_PX}
+            height={FOLIO_KNOBS.CLEF_PX}
             duration={PANEL_KNOBS.MORPH_MS}
             color={pal.ink}
           />
-        </View>
-        <Text
-          pointerEvents="none"
-          style={[styles.meta, styles.headerTitle, { color: pal.muted }]}
-        >
-          {title}
-        </Text>
-        <PanelPressable
-          accessibilityLabel={
-            isHome
-              ? 'Close nodes'
-              : page.kind === 'forget'
-              ? 'Keep it'
-              : 'Back to nodes'
-          }
-          accessibilityRole="button"
-          hitSlop={space.md}
-          style={styles.close}
-          onPress={isHome ? close : home}
-        >
-          <Text style={[styles.meta, { color: pal.muted }]}>
-            {isHome ? 'CLOSE' : page.kind === 'forget' ? 'KEEP IT' : 'BACK'}
-          </Text>
-        </PanelPressable>
-      </View>
+        }
+        eyebrow={head.eyebrow}
+        meta={head.meta}
+        nav={nav}
+        title={head.title}
+      />
       <Animated.View
         key={'node' in page ? `${page.kind}-${page.node}` : page.kind}
         entering={FadeIn.duration(reducedMotion ? 0 : PANEL_KNOBS.PAGE_FADE_MS)}
@@ -178,7 +167,6 @@ function EnginesSheetImpl({
             budgetBytes={budgetBytes}
             library={library}
             onChangeBudget={onChangeBudget}
-            publicKey={publicKey}
             storage={storage}
             visible={open}
           />
@@ -195,36 +183,47 @@ function EnginesSheetImpl({
               }}
             />
           ) : (
-            <Text style={[type.body, { color: pal.muted }]}>
-              This node is no longer paired.
-            </Text>
+            <>
+              <Stave>
+                <Measure>
+                  <Row>
+                    <Text style={[type.body, { color: pal.muted }]}>
+                      This node is no longer paired.
+                    </Text>
+                  </Row>
+                </Measure>
+              </Stave>
+              <Coda />
+            </>
           )
         ) : (
           <>
-            <ScrollView
-              contentContainerStyle={styles.body}
-              keyboardShouldPersistTaps="handled"
-            >
-              <Ledger>
-                {backends === null ? (
+            <Stave keyboardShouldPersistTaps="handled">
+              {backends === null ? (
+                <Measure>
                   <Row>
                     <Text style={[type.body, { color: pal.muted }]}>
                       Loading paired nodes…
                     </Text>
                   </Row>
-                ) : backends.length === 0 ? (
+                </Measure>
+              ) : backends.length === 0 ? (
+                <Measure>
                   <Row>
                     <Text style={[type.body, { color: pal.muted }]}>
                       No node is paired yet.
                     </Text>
                   </Row>
-                ) : (
-                  backends.map(backend => {
-                    const snapshot = snapshots[backend.nodePubkey];
-                    const footprint = footprints[backend.nodePubkey];
-                    const installed = backend.lastNodeInfo?.models;
-                    return (
-                      <React.Fragment key={backend.nodePubkey}>
+                </Measure>
+              ) : (
+                backends.map((backend, index) => {
+                  const snapshot = snapshots[backend.nodePubkey];
+                  const footprint = footprints[backend.nodePubkey];
+                  const installed = backend.lastNodeInfo?.models;
+                  return (
+                    <React.Fragment key={backend.nodePubkey}>
+                      {index === 0 ? null : <Rest />}
+                      <Measure>
                         <Row label="Node" control>
                           <View style={styles.engineHeading}>
                             <View style={styles.engineName}>
@@ -357,11 +356,13 @@ function EnginesSheetImpl({
                             }
                           />
                         </Row>
-                        <LedgerGap />
-                      </React.Fragment>
-                    );
-                  })
-                )}
+                      </Measure>
+                    </React.Fragment>
+                  );
+                })
+              )}
+              <Rest />
+              <Measure>
                 <Row control>
                   <Action label="Pair a node" onPress={onPair} />
                 </Row>
@@ -372,17 +373,18 @@ function EnginesSheetImpl({
                     disabled={refreshing}
                   />
                 </Row>
-              </Ledger>
-            </ScrollView>
-            <LedgerFoot>
+              </Measure>
+            </Stave>
+            <Coda>
               <Action
+                display
                 label="Settings"
                 onPress={() => setPage({ kind: 'settings' })}
               />
-              <Text style={[styles.meta, { color: pal.faint }]}>
+              <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
                 IDENTITY · STORAGE · ABOUT
               </Text>
-            </LedgerFoot>
+            </Coda>
           </>
         )}
       </Animated.View>
@@ -413,71 +415,78 @@ function Forget({
   const songs = footprint?.songs ?? 0;
   const downloaded = footprint?.downloaded ?? 0;
   const borrowed = footprint?.borrowed ?? 0;
-  const gone = songs - downloaded;
   return (
-    <ScrollView contentContainerStyle={styles.body}>
-      <Text style={[type.title, styles.forgetTitle, { color: pal.ink }]}>
-        {gone === 1
-          ? '1 song leaves the field.'
-          : `${gone} songs leave the field.`}
-      </Text>
-      <Text style={[type.body, { color: pal.muted }]}>
-        Downloaded songs stay on this phone, with their playlist tags. Songs
-        only cached from listening are given back — the budget could reclaim
-        them anyway, and there would be no node left to ask again.
-      </Text>
-
-      <View style={[styles.hairline, { backgroundColor: pal.line }]} />
-      <Text style={[styles.meta, { color: pal.muted }]}>WHAT CHANGES</Text>
-      <Count
-        label={`${downloaded} downloaded`}
-        note={downloaded === 0 ? 'NONE ON THIS PHONE' : 'KEPT ON THIS PHONE'}
-      />
-      <Count
-        label={`${borrowed} cached`}
-        note={
-          borrowed === 0
-            ? 'NOTHING BORROWED'
-            : `${formatBytes(footprint?.borrowedBytes ?? 0)} GIVEN BACK`
-        }
-      />
-      <Count
-        label={`${songs - downloaded - borrowed} not here`}
-        note="NOTHING TO DELETE"
-      />
-      <Count
-        label={`${footprint?.playlists ?? 0} playlists`}
-        note="TAGS LIVE ON THE NODE"
-      />
-
-      <View style={[styles.hairline, { backgroundColor: pal.line }]} />
-      <Text style={[type.body, { color: pal.ink }]}>
-        Nothing is deleted on {nameOf(backend)}. Pair again and everything
-        returns.
-      </Text>
-
-      <View style={[styles.rule, { backgroundColor: pal.ink }]} />
-      <PanelPressable
-        accessibilityLabel="Forget it"
-        accessibilityRole="button"
-        onPress={onConfirm}
-        style={styles.confirm}
-      >
-        <Text style={[type.title, styles.confirmWord, { color: pal.ink }]}>
-          Forget it
-        </Text>
-      </PanelPressable>
-    </ScrollView>
+    <>
+      <Stave>
+        <Measure>
+          <Row>
+            <Text style={[type.small, { color: pal.muted }]}>
+              Downloaded songs stay on this phone, with their playlist tags.
+              Songs only cached from listening are given back — the budget could
+              reclaim them anyway, and there would be no node left to ask again.
+            </Text>
+          </Row>
+        </Measure>
+        <Rest />
+        <Measure>
+          <Count
+            label="Downloaded"
+            value={String(downloaded)}
+            note={
+              downloaded === 0 ? 'NONE ON THIS PHONE' : 'KEPT ON THIS PHONE'
+            }
+          />
+          <Count
+            label="Cached"
+            value={String(borrowed)}
+            note={
+              borrowed === 0
+                ? 'NOTHING BORROWED'
+                : `${formatBytes(footprint?.borrowedBytes ?? 0)} GIVEN BACK`
+            }
+          />
+          <Count
+            label="Not here"
+            value={String(songs - downloaded - borrowed)}
+            note="NOTHING TO DELETE"
+          />
+          <Count
+            label="Playlists"
+            value={String(footprint?.playlists ?? 0)}
+            note="TAGS LIVE ON THE NODE"
+          />
+        </Measure>
+        <Rest />
+        <Measure>
+          <Row>
+            <Text style={[type.body, { color: pal.ink }]}>
+              Nothing is deleted on {nameOf(backend)}. Pair again and everything
+              returns.
+            </Text>
+          </Row>
+        </Measure>
+      </Stave>
+      <Coda>
+        <Action display label="Forget it" onPress={onConfirm} />
+      </Coda>
+    </>
   );
 }
 
-function Count({ label, note }: { label: string; note: string }) {
+function Count({
+  label,
+  value,
+  note,
+}: {
+  label: string;
+  value: string;
+  note: string;
+}) {
   const pal = usePalette();
   return (
-    <View style={styles.count}>
-      <Text style={[type.body, { color: pal.ink }]}>{label}</Text>
-      <Text style={[styles.meta, { color: pal.muted }]}>{note}</Text>
-    </View>
+    <Row label={label} note={note}>
+      <Text style={[type.body, { color: pal.ink }]}>{value}</Text>
+    </Row>
   );
 }
 
@@ -486,16 +495,115 @@ function nameOf(backend: BackendRecord | undefined): string {
   return backend.petname || backend.lastNodeInfo?.name || 'this node';
 }
 
+/** `Four nodes`: a count said as a word while it is small enough to read as one. */
+const NUMBER_WORDS = [
+  'no',
+  'one',
+  'two',
+  'three',
+  'four',
+  'five',
+  'six',
+  'seven',
+  'eight',
+  'nine',
+  'ten',
+] as const;
+
+function countWord(count: number): string {
+  return count < NUMBER_WORDS.length ? NUMBER_WORDS[count] : String(count);
+}
+
+function capitalised(word: string): string {
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+type Page =
+  | { kind: 'engines' | 'settings' }
+  | { kind: 'models' | 'forget'; node: string };
+
+/** The head each page of this sheet opens on: where, what, and its state. */
+function headOf(
+  page: Page,
+  {
+    backends,
+    snapshots,
+    footprints,
+    selected,
+    publicKey,
+  }: {
+    backends: readonly BackendRecord[] | null;
+    snapshots: Readonly<Record<string, ConnectionSnapshot>>;
+    footprints: Readonly<Record<string, BackendFootprint>>;
+    selected: BackendRecord | undefined;
+    publicKey: string;
+  },
+): { eyebrow: string; title: string; meta: string } {
+  switch (page.kind) {
+    case 'settings':
+      return {
+        eyebrow: 'SETTINGS',
+        title: 'This phone',
+        meta: settingsMeta(publicKey),
+      };
+    case 'models': {
+      const installed = selected?.lastNodeInfo?.models;
+      return {
+        eyebrow: 'MODELS',
+        title: nameOf(selected),
+        meta: installed
+          ? `${countWord(installed.length).toUpperCase()} INSTALLED`
+          : 'NOT REPORTED YET',
+      };
+    }
+    case 'forget': {
+      const footprint =
+        selected === undefined ? undefined : footprints[selected.nodePubkey];
+      const gone = (footprint?.songs ?? 0) - (footprint?.downloaded ?? 0);
+      return {
+        eyebrow: 'FORGET',
+        title: nameOf(selected),
+        meta: `${gone} SONG${gone === 1 ? '' : 'S'} LEAVE${
+          gone === 1 ? 'S' : ''
+        } THE FIELD`,
+      };
+    }
+    default: {
+      if (backends === null)
+        return { eyebrow: 'NODES', title: 'Nodes', meta: 'LOADING' };
+      const count = backends.length;
+      const ready = backends.filter(
+        backend => snapshots[backend.nodePubkey]?.phase === 'ready',
+      ).length;
+      const songs = backends.reduce(
+        (sum, backend) => sum + (footprints[backend.nodePubkey]?.songs ?? 0),
+        0,
+      );
+      return {
+        eyebrow: 'NODES',
+        title: `${capitalised(countWord(count))} node${count === 1 ? '' : 's'}`,
+        meta:
+          count === 0
+            ? 'NONE PAIRED YET'
+            : `${countWord(ready).toUpperCase()} READY · ${songs} SONGS`,
+      };
+    }
+  }
+}
+
 function Action({
   label,
   accessibilityLabel = label,
   onPress,
   disabled = false,
+  display = false,
 }: {
   label: string;
   accessibilityLabel?: string;
   onPress: () => void;
   disabled?: boolean;
+  /** The coda's act, in the display face. */
+  display?: boolean;
 }) {
   const pal = usePalette();
   return (
@@ -507,65 +615,35 @@ function Action({
       onPress={onPress}
       style={styles.action}
     >
-      <Text style={[type.body, { color: disabled ? pal.faint : pal.ink }]}>
+      <Text
+        style={[
+          display ? FOLIO_ACT_STYLE : type.body,
+          { color: disabled ? pal.faint : pal.ink },
+        ]}
+      >
         {label}
       </Text>
     </PanelPressable>
   );
 }
 
-/** KNOBS — header geometry and the shared symbol transition. */
+/** KNOBS — the sheet's own glyphs and page transition. */
 const PANEL_KNOBS = {
-  SYMBOL_PX: 27,
-  HEADER_SIDE_PX: 64,
   /** One retained glyph per node: held, exchanging, then connected. */
   ENGINE_SYMBOL_PX: 24,
   PAGE_FADE_MS: 220,
-  ACTION_PX: 56,
   MORPH_MS: 420,
-  META_PX: 12,
 } as const;
 
 const styles = StyleSheet.create({
   page: { flex: 1 },
   engineHeading: { flexDirection: 'row', alignItems: 'center', gap: space.md },
   engineName: { flex: 1 },
-  meta: {
-    ...type.eyebrow,
-    fontSize: PANEL_KNOBS.META_PX,
-    letterSpacing: 0.7,
-    lineHeight: 19,
-  },
-  headingMark: { width: PANEL_KNOBS.SYMBOL_PX },
-  headerTitle: {
-    position: 'absolute',
-    left: PANEL_KNOBS.HEADER_SIDE_PX,
-    right: PANEL_KNOBS.HEADER_SIDE_PX,
-    textAlign: 'center',
-  },
-  close: { alignItems: 'flex-end' },
-  header: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    height: PANEL_KNOBS.ACTION_PX,
-    marginHorizontal: -space.lg,
-    paddingHorizontal: space.lg,
-    gap: space.sm,
-  },
-  body: { gap: space.sm, paddingBottom: space.xxl, paddingTop: space.md },
   rename: { borderWidth: 1, minHeight: touch.min, paddingHorizontal: space.sm },
-  hairline: { height: 1, marginVertical: space.sm },
-  rule: { height: 1, marginTop: space.md },
-  count: { gap: 2, paddingTop: space.sm },
-  forgetTitle: { fontSize: 20, lineHeight: 29 },
   action: {
     justifyContent: 'center',
     minHeight: touch.min,
   },
-  confirm: { justifyContent: 'center', minHeight: touch.min },
-  confirmWord: { fontSize: 17 },
 });
 
 /**

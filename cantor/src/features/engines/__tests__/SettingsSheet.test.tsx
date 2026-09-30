@@ -37,7 +37,6 @@ function render() {
     tree = Renderer.create(
       <SettingsSheet
         visible
-        publicKey={'ab'.repeat(32)}
         library={{ songs: 0, placements: 0, playlists: 0 }}
         storage={{ downloadedSongs: 0, downloadedBytes: 0, cachedSongs: 0, cachedBytes: 0 }}
         budgetBytes={0}

@@ -78,6 +78,7 @@ const palette = {
   muted: '#666666',
   faint: '#A6A6A6',
   line: '#E6E6E6',
+  spine: '#D4D4D4',
 };
 
 function cameraFor(layout: FieldLayout): Camera {
