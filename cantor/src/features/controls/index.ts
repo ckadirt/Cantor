@@ -1,5 +1,14 @@
 export { Caret, CARET_KNOBS } from './Caret';
 export {
+  CHOOSING_KNOBS,
+  Choice,
+  declaredStep,
+  Ruler,
+  Scrub,
+  type ChoiceItem,
+  type RulerStop,
+} from './Choosing';
+export {
   CLEF_KNOBS,
   Constellation,
   PhoneSealMark,

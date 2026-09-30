@@ -10,14 +10,13 @@ import { Alert, AppState, Pressable, StyleSheet, Text, View } from 'react-native
 import Clipboard from '@react-native-clipboard/clipboard';
 import {
   Coda,
-  Dial,
   Measure,
   Rest,
   Row,
+  Ruler,
   Stave,
   Underway,
   useReach,
-  LEDGER_DIAL_ITEM,
 } from '../controls';
 import { RecoveryGrid, RECOVERY_KNOBS } from './RecoveryGrid';
 import { BUDGET_CHOICES } from '../../audio/budget';
@@ -132,22 +131,22 @@ export function SettingsSheet({
             />
           </Row>
           <Row label="Budget" control>
-            <Dial
-              compact
-              activeColour={pal.ink}
+            {/* The value in words above the line it is chosen along. */}
+            <View style={styles.rulerValue}>
+              <Text style={[type.body, { color: pal.ink }]}>
+                {formatBytes(budgetBytes)}
+              </Text>
+            </View>
+            <Ruler
               activeKey={String(budgetBytes)}
-              items={BUDGET_CHOICES.map(choice => ({
+              onSelect={key => onChangeBudget(Number(key))}
+              stops={BUDGET_CHOICES.map(choice => ({
                 key: String(choice),
                 label: formatBytes(choice)
                   .replace(' MB', 'M')
                   .replace(' GB', 'G'),
                 accessibilityLabel: `Budget ${formatBytes(choice)}`,
               }))}
-              onSelect={key => onChangeBudget(Number(key))}
-              itemStyle={LEDGER_DIAL_ITEM}
-              restColour={pal.faint}
-              textStyle={styles.meta}
-              tickColour={pal.ink}
             />
             <Text style={[type.small, { color: pal.muted }]}>
               Downloads count against this budget but are never reclaimed.
@@ -424,6 +423,7 @@ const styles = StyleSheet.create({
   track: { height: SETTINGS_KNOBS.BAR_HEIGHT_PX, width: '100%' },
   fill: { height: SETTINGS_KNOBS.BAR_HEIGHT_PX },
   recoveryAct: { justifyContent: 'center', minHeight: touch.min },
+  rulerValue: { justifyContent: 'center', paddingTop: 13 },
   recoverySlot: { height: SETTINGS_KNOBS.ACT_SLOT_PX },
   recoveryGrid: { marginBottom: space.sm, marginTop: space.xs },
 });
