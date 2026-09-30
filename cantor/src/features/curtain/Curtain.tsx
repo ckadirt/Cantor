@@ -430,6 +430,24 @@ function CurtainImpl({
         }),
     [destination, height, onClose, open, pull, sign],
   );
+  /**
+   * A tap on the grip folds the blind away too. The pan claims any touch that
+   * moves; one that does not is a tap, and it closes the way `CLOSE` does —
+   * React is told, and the run starts from the effect above.
+   */
+  const gripGesture = useMemo(
+    () =>
+      Gesture.Exclusive(
+        dismiss,
+        Gesture.Tap()
+          .enabled(open)
+          .onEnd((_event, success) => {
+            'worklet';
+            if (success) runOnJS(onClose)();
+          }),
+      ),
+    [dismiss, onClose, open],
+  );
 
   if (!live && !open) return null;
 
@@ -461,8 +479,15 @@ function CurtainImpl({
     </View>
   );
   const grip = (
-    <GestureDetector gesture={dismiss}>
-      <View style={styles.grip}>
+    <GestureDetector gesture={gripGesture}>
+      {/*
+        Hidden from a screen reader: a gesture handler is not a button it can
+        press, and the head's `CLOSE` is the one it finds instead.
+      */}
+      <View
+        importantForAccessibility="no-hide-descendants"
+        style={styles.grip}
+      >
         <View style={[styles.gripLine, { backgroundColor: pal.faint }]} />
       </View>
     </GestureDetector>

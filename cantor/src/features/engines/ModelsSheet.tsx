@@ -1,11 +1,15 @@
 import React, { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord } from '../../backends/types';
-import { Ledger, LedgerGap, PanelPressable, Row } from '../controls';
+import { Coda, Measure, PanelPressable, Rest, Row, Stave } from '../controls';
 import { space, type, usePalette } from '../../theme/tokens';
 
-/** A node's installed models and models observed on other paired nodes. */
+/**
+ * A node's installed models and models observed on other paired nodes: the
+ * stave and the bare coda of the page. The head (the node's name and how many
+ * models it has) belongs to the sheet that opened it.
+ */
 export function ModelsSheet({
   backend,
   known,
@@ -33,116 +37,122 @@ export function ModelsSheet({
 
   if (!backend)
     return (
-      <Text style={[type.body, { color: pal.muted }]}>
-        This node is no longer paired.
-      </Text>
+      <>
+        <Stave>
+          <Measure>
+            <Row>
+              <Text style={[type.body, { color: pal.muted }]}>
+                This node is no longer paired.
+              </Text>
+            </Row>
+          </Measure>
+        </Stave>
+        <Coda />
+      </>
     );
   const name = backend.petname || backend.lastNodeInfo?.name || 'this node';
   return (
-    <ScrollView
-      contentContainerStyle={styles.body}
-      keyboardShouldPersistTaps="handled"
-    >
-      <Ledger>
-        <Row label="Node">
-          <Text style={[type.heading, { color: pal.ink }]}>{name}</Text>
-        </Row>
-        <Row label="Models" note="Models reported by your paired nodes.">
-          <Text style={[type.body, { color: pal.ink }]}>
-            {installed
-              ? `${installed.length} installed`
-              : 'Installation state not reported'}
-          </Text>
-        </Row>
-        <LedgerGap />
+    <>
+      <Stave keyboardShouldPersistTaps="handled">
         {families.length === 0 ? (
-          <Row>
-            <Text style={[type.body, { color: pal.muted }]}>
-              No models reported yet.
-            </Text>
-          </Row>
+          <Measure>
+            <Row>
+              <Text style={[type.body, { color: pal.muted }]}>
+                No models reported yet.
+              </Text>
+            </Row>
+          </Measure>
         ) : null}
-        {families.map(([family, models]) => (
+        {families.map(([family, models], familyIndex) => (
           <React.Fragment key={family}>
-            {models.map((model, index) => {
-              const here =
-                installed?.some(entry => entry.selector === model.selector) ??
-                false;
-              const open = expanded === model.selector;
-              const prefix = `${family}:`;
-              const label = model.selector.startsWith(prefix)
-                ? model.selector.slice(prefix.length)
-                : model.selector;
-              return (
-                <React.Fragment key={model.selector}>
-                  <Row label={index === 0 ? family : undefined}>
-                    <PanelPressable
-                      accessibilityRole="button"
-                      accessibilityLabel={`Model ${model.selector}`}
-                      accessibilityState={{ expanded: open }}
-                      onPress={() => setExpanded(open ? null : model.selector)}
-                    >
-                      <Text style={[type.body, { color: pal.ink }]}>
-                        {label}
-                      </Text>
-                      <Text style={[styles.meta, { color: pal.muted }]}>
-                        {here
-                          ? 'INSTALLED'
-                          : installed
-                          ? 'KNOWN ELSEWHERE'
-                          : 'INSTALLATION UNKNOWN'}
-                      </Text>
-                    </PanelPressable>
-                    {open ? (
-                      <>
-                        <Text style={[type.small, { color: pal.muted }]}>
-                          {model.stages?.length
-                            ? `${
-                                model.stages.length
-                              } stages: ${model.stages.join(' → ')}`
-                            : 'Stages not declared'}
-                        </Text>
-                        {here && model.parameters?.length ? (
-                          <Text style={[type.small, { color: pal.muted }]}>
-                            Controls:{' '}
-                            {model.parameters
-                              .map(parameter => parameter.label)
-                              .join(', ')}
-                          </Text>
-                        ) : null}
-                      </>
-                    ) : null}
-                  </Row>
-                  {open && !here ? (
-                    <View
-                      style={[styles.command, { backgroundColor: pal.line }]}
-                    >
-                      <Text
-                        selectable
-                        accessibilityLabel={`Install ${model.selector}`}
-                        style={[type.mono, { color: pal.ink }]}
+            {familyIndex === 0 ? null : <Rest />}
+            <Measure>
+              {models.map((model, index) => {
+                const here =
+                  installed?.some(entry => entry.selector === model.selector) ??
+                  false;
+                const open = expanded === model.selector;
+                const prefix = `${family}:`;
+                const label = model.selector.startsWith(prefix)
+                  ? model.selector.slice(prefix.length)
+                  : model.selector;
+                return (
+                  <React.Fragment key={model.selector}>
+                    <Row label={index === 0 ? family : undefined}>
+                      <PanelPressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Model ${model.selector}`}
+                        accessibilityState={{ expanded: open }}
+                        onPress={() =>
+                          setExpanded(open ? null : model.selector)
+                        }
                       >
-                        {`cantor pull ${model.selector}`}
-                      </Text>
-                      <Text style={[type.small, { color: pal.muted }]}>
-                        Run on {name}. The node checks availability and
-                        requirements.
-                      </Text>
-                    </View>
-                  ) : null}
-                </React.Fragment>
-              );
-            })}
-            <LedgerGap />
+                        <Text style={[type.body, { color: pal.ink }]}>
+                          {label}
+                        </Text>
+                        <Text style={[styles.meta, { color: pal.muted }]}>
+                          {here
+                            ? 'INSTALLED'
+                            : installed
+                            ? 'KNOWN ELSEWHERE'
+                            : 'INSTALLATION UNKNOWN'}
+                        </Text>
+                      </PanelPressable>
+                      {open ? (
+                        <>
+                          <Text style={[type.small, { color: pal.muted }]}>
+                            {model.stages?.length
+                              ? `${
+                                  model.stages.length
+                                } stages: ${model.stages.join(' → ')}`
+                              : 'Stages not declared'}
+                          </Text>
+                          {here && model.parameters?.length ? (
+                            <Text style={[type.small, { color: pal.muted }]}>
+                              Controls:{' '}
+                              {model.parameters
+                                .map(parameter => parameter.label)
+                                .join(', ')}
+                            </Text>
+                          ) : null}
+                        </>
+                      ) : null}
+                    </Row>
+                    {open && !here ? (
+                      <Row>
+                        <View
+                          style={[
+                            styles.command,
+                            { backgroundColor: pal.line },
+                          ]}
+                        >
+                          <Text
+                            selectable
+                            accessibilityLabel={`Install ${model.selector}`}
+                            style={[type.mono, { color: pal.ink }]}
+                          >
+                            {`cantor pull ${model.selector}`}
+                          </Text>
+                          <Text style={[type.small, { color: pal.muted }]}>
+                            Run on {name}. The node checks availability and
+                            requirements.
+                          </Text>
+                        </View>
+                      </Row>
+                    ) : null}
+                  </React.Fragment>
+                );
+              })}
+            </Measure>
           </React.Fragment>
         ))}
-      </Ledger>
-    </ScrollView>
+      </Stave>
+      <Coda />
+    </>
   );
 }
 
 const styles = StyleSheet.create({
-  body: { paddingTop: space.md, paddingBottom: space.xxl },
   meta: { ...type.eyebrow, fontSize: 10, lineHeight: 16, letterSpacing: 0.7 },
   command: { padding: space.sm, gap: space.xs },
 });

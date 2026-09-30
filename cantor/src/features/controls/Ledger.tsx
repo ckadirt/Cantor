@@ -50,6 +50,13 @@ export const LEDGER_KNOBS = {
    * *is* the heading, which is why nothing in any panel is ever titled.
    */
   GAP_PX: 14,
+  /**
+   * A Folio rest: the spine actually broken between two measures. Half a
+   * 48 dp control, so the page's rhythm falls on 8.
+   */
+  REST_PX: 24,
+  /** Each fact's mark on the spine, where its label ends. */
+  TICK_PX: 4,
   LABEL_SIZE_PX: 10,
   LABEL_TRACKING: 1.4,
   /** Full target height; scroll containers clip hitSlop outside their bounds. */
@@ -104,7 +111,7 @@ export function Ledger({
   const pal = usePalette();
   return (
     <View style={[styles.ledger, style]}>
-      <Spine arrival={arrival} colour={pal.line} />
+      <Spine arrival={arrival} colour={pal.spine} />
       {children}
     </View>
   );
@@ -158,6 +165,18 @@ export function Row({
   const pal = usePalette();
   return (
     <View style={[styles.row, control && styles.controlRow]}>
+      {label === undefined || label === '' ? null : (
+        // The fact's mark on the ruler the spine is: level with the middle of
+        // the label's first line.
+        <View
+          pointerEvents="none"
+          style={[
+            styles.tick,
+            control && styles.controlTick,
+            { backgroundColor: pal.spine },
+          ]}
+        />
+      )}
       <Text
         style={[
           styles.label,
@@ -182,6 +201,22 @@ export function Row({
 /** A breath in the spine. The only thing this design has instead of headings. */
 export function LedgerGap() {
   return <View style={styles.gap} />;
+}
+
+/**
+ * A Folio measure: one group of facts, with the spine drawn once for it.
+ *
+ * The same object as `Ledger`; the name is the one `folio.html` uses, where a
+ * page is a stave and its sections are measures separated by `Rest`s.
+ */
+export const Measure = Ledger;
+
+/**
+ * The gap between two measures. The spine stops here and starts again, so a
+ * page with three sections shows three bars at a glance and needs no headings.
+ */
+export function Rest() {
+  return <View style={styles.rest} />;
 }
 
 /** Footer geometry matches the selected HTML: rule at x106, action at x130. */
@@ -229,6 +264,15 @@ const styles = StyleSheet.create({
   value: { flex: 1, minWidth: 0 },
   note: { ...LEDGER_NOTE_STYLE, marginTop: 3 },
   gap: { height: LEDGER_KNOBS.GAP_PX },
+  rest: { height: LEDGER_KNOBS.REST_PX },
+  tick: {
+    height: StyleSheet.hairlineWidth,
+    left: LEDGER_KNOBS.SPINE_PX - LEDGER_KNOBS.TICK_PX,
+    position: 'absolute',
+    top: LEDGER_KNOBS.ROW_PAD_PX + LEDGER_KNOBS.LINE_PX / 2,
+    width: LEDGER_KNOBS.TICK_PX,
+  },
+  controlTick: { top: touch.min / 2 },
   foot: {
     borderTopWidth: 1,
     marginLeft: LEDGER_KNOBS.SPINE_PX - space.lg,
