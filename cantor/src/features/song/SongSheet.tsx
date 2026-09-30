@@ -265,6 +265,8 @@ type Props = {
   imported?: ImportedFacts | null;
   /** The lens the person has chosen: the clef is drawn in it. */
   lens: Lens;
+  /** How much of this song's download has landed, 0..1, or null. */
+  arriving?: number | null;
   /** The node that holds the song, for its station beside its name. */
   node?: Readonly<{
     publicKey: string;
@@ -320,6 +322,7 @@ function SongSheetImpl({
   imported = null,
   lens,
   node = null,
+  arriving = null,
 }: Props) {
   const pal = usePalette();
   /**
@@ -556,6 +559,7 @@ function SongSheetImpl({
           <Front
             arrival={arrival}
             acting={acting}
+            arriving={arriving}
             audioState={audioState}
             problem={problem}
             downloaded={downloaded}
@@ -765,6 +769,7 @@ function Face({
 /** What you do with a song. */
 function Front({
   acting,
+  arriving,
   arrival,
   audioState,
   downloaded,
@@ -787,6 +792,8 @@ function Front({
   wordPending,
 }: {
   acting: SongAct | null;
+  /** How much of a download has landed, 0..1, or null. */
+  arriving: number | null;
   arrival: SharedValue<number>;
   audioState: LocalAudioState;
   downloaded: boolean;
@@ -928,7 +935,10 @@ function Front({
                     charStyle={LEDGER_NOTE_STYLE}
                     label={weight(deliveryBytes, downloaded, nodeLabel)}
                     offset={SONG_SHEET_KNOBS.STATE_SLOT_PX + STATE_NOTE_GAP_PX}
-                    working={moving}
+                    // A download knows how far it has come: the rule is
+                    // straight up to there and waves after it.
+                    fraction={arriving}
+                    working={moving || audioState === 'partial'}
                   />
                 </View>
               )}
@@ -980,7 +990,16 @@ function Front({
           <Act
             disabled={(locked && !keeping) || (!pinned && !downloaded)}
             display
-            label={pinned ? 'Unpin' : 'Keep it here'}
+            // The word morphs to its present tense while it works.
+            label={
+              acting === 'pin'
+                ? 'Keeping it'
+                : acting === 'unpin'
+                ? 'Unpinning'
+                : pinned
+                ? 'Unpin'
+                : 'Keep it here'
+            }
             morph
             onPress={pinned ? onUnpin : onPin}
             working={keeping}
@@ -1169,7 +1188,8 @@ function Back({
             <Act
               disabled={acting !== null && acting !== 'delete'}
               display
-              label="Delete it"
+              label={acting === 'delete' ? 'Deleting it' : 'Delete it'}
+              morph
               onPress={onDelete}
               working={acting === 'delete'}
             />

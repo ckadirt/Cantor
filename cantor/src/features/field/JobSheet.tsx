@@ -32,6 +32,8 @@ import {
   Rest,
   Row,
   Stave,
+  Underway,
+  useReach,
 } from '../controls';
 import { STAGE_SYMBOLS, jobMarkModel } from '../../jobs/marks';
 import {
@@ -139,8 +141,16 @@ export function JobSheet({
   // Deleting is the one act here that cannot be undone, so it is asked twice.
   // Keyed on the job: opening a different mark must never inherit a raised axe.
   const [confirming, setConfirming] = useState(false);
+  /**
+   * Which act was pressed, so that one works while the rest go out of reach —
+   * `busy` alone cannot say which (`controls/state.tsx`).
+   */
+  const [pressed, setPressed] = useState<string | null>(null);
   const jobId = pending?.job.id ?? null;
-  useEffect(() => setConfirming(false), [jobId, visible]);
+  useEffect(() => {
+    setConfirming(false);
+    setPressed(null);
+  }, [jobId, visible]);
   /**
    * The second beat, 0 to 1. Driven from `visible` rather than from mount: the
    * sheet is mounted by the commit that opens the blind, so a clock started on
@@ -333,11 +343,19 @@ export function JobSheet({
               display
               label="Delete it"
               onPress={() => {
+                setPressed('Delete it');
                 setConfirming(false);
                 onForget();
               }}
+              pressed={pressed}
+              working="Deleting it"
             />
-            <Act busy={busy} label="Keep it" onPress={() => setConfirming(false)} />
+            <Act
+              busy={busy}
+              label="Keep it"
+              onPress={() => setConfirming(false)}
+              pressed={pressed}
+            />
           </View>
         ) : (
           <View style={styles.confirm}>
@@ -347,7 +365,12 @@ export function JobSheet({
                 display={index === 0}
                 key={control}
                 label={CONTROL_WORDS[control]}
-                onPress={() => onControl(control)}
+                onPress={() => {
+                  setPressed(CONTROL_WORDS[control]);
+                  onControl(control);
+                }}
+                pressed={pressed}
+                working={WORKING_WORDS[control]}
               />
             ))}
             {deletable ? (
@@ -356,6 +379,7 @@ export function JobSheet({
                 display={controls.length === 0}
                 label="Delete"
                 onPress={() => setConfirming(true)}
+                pressed={pressed}
               />
             ) : null}
             {/*
@@ -383,6 +407,14 @@ const CONTROL_WORDS: Record<JobControl, string> = {
   resume: 'Resume',
   cancel: 'Cancel',
   retry: 'Try again',
+};
+
+/** The same verbs in the present tense, said while they run. */
+const WORKING_WORDS: Record<JobControl, string> = {
+  pause: 'Pausing',
+  resume: 'Resuming',
+  cancel: 'Cancelling',
+  retry: 'Trying again',
 };
 
 /**
@@ -482,35 +514,47 @@ function windowed(value: number, from: number, to: number): number {
   return Math.min(Math.max((value - from) / (to - from), 0), 1);
 }
 
-/** An act: a word in the value column, in the panel's voice or the foot's. */
+/**
+ * An act: a word in the coda. The one that was pressed keeps its ink, grows
+ * the working rule and says itself in the present tense while the node works;
+ * the others go out of reach. A working act is refused by having nothing to
+ * call, never by `disabled` (`controls/state.tsx`).
+ */
 function Act({
   busy,
   display,
   label,
   onPress,
+  pressed,
+  working,
 }: {
   busy: boolean;
   display?: boolean;
   label: string;
   onPress: () => void;
+  /** Which act was pressed last. */
+  pressed: string | null;
+  /** The word while it runs; the label itself when left out. */
+  working?: string;
 }) {
   const pal = usePalette();
+  const running = busy && pressed === label;
+  const away = busy && !running;
+  const { tint } = useReach(away, { from: display ? pal.ink : pal.muted });
+  const charStyle = display ? FOLIO_ACT_STYLE : type.body;
+  const word = running && working !== undefined ? working : label;
   return (
     <Pressable
       accessibilityLabel={label}
       accessibilityRole="button"
-      accessibilityState={{ disabled: busy }}
-      disabled={busy}
-      onPress={onPress}
+      accessibilityState={{ disabled: away, busy: running }}
+      disabled={away}
+      onPress={running ? undefined : onPress}
       style={styles.act}>
-      <Text
-        style={[
-          display ? FOLIO_ACT_STYLE : type.body,
-          // Ink for the coda's first act, muted for the rest (the three inks).
-          { color: busy ? pal.faint : display ? pal.ink : pal.muted },
-        ]}>
-        {label}
-      </Text>
+      <View>
+        <Animated.Text style={[charStyle, tint]}>{word}</Animated.Text>
+        <Underway charStyle={charStyle} label={word} working={running} />
+      </View>
     </Pressable>
   );
 }

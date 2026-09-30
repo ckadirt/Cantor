@@ -2112,6 +2112,15 @@ export function FieldScreen({ identity }: Props) {
             }
             imported={sheetImported}
             lens={activeLens}
+            arriving={
+              sheetSong.source === 'node' &&
+              sheetSong.localAudio.state === 'partial'
+                ? arrivingFraction(
+                    sheetSong.localAudio.bytes,
+                    sheetSong.delivery?.byte_length,
+                  )
+                : null
+            }
             node={
               sheetSong.source === 'node'
                 ? {

@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
-import { WriteSymbol } from '../../motion';
+import { TransformText, WriteSymbol } from '../../motion';
 import { STAGE_SYMBOLS } from '../../jobs/marks';
 import {
   Choice,
@@ -19,6 +19,8 @@ import {
   Ruler,
   Stave,
   StationMark,
+  Underway,
+  useReach,
   LEDGER_DIAL_ITEM,
   LEDGER_KNOBS,
 } from '../controls';
@@ -60,6 +62,10 @@ export const COMPOSER_KNOBS = {
    * being drawn.
    */
   STAGE_WRITE_MS: 520,
+  /** How long `Make it` takes to become `Sending it`, and back. */
+  ACT_MS: 520,
+  /** The seat that morphing word takes: the act's own 28 px line. */
+  ACT_SLOT_PX: 28,
   /** A node's station beside its name in the node row. */
   NODE_MARK_PX: 18,
   MARK_WRITE_MS: 420,
@@ -151,9 +157,21 @@ function ComposerSheetImpl({
   /** An empty caption is the page's own state, not a reason to write down. */
   const shown = problems.filter(problem => problem.kind !== 'caption-empty');
 
+  /**
+   * The last send failed: the rule went still and the word says so, until the
+   * next touch of anything in the draft.
+   */
+  const [failed, setFailed] = useState(false);
+  const wasSubmitting = useRef(submitting);
+  useEffect(() => {
+    if (wasSubmitting.current && !submitting && error !== null) setFailed(true);
+    wasSubmitting.current = submitting;
+  }, [error, submitting]);
+
   const update = (patch: Partial<ComposerDraft>) => {
-    if (!submitting)
-      setDraft(current => ({ ...current, ...resolved, ...patch }));
+    if (submitting) return;
+    setFailed(false);
+    setDraft(current => ({ ...current, ...resolved, ...patch }));
   };
 
   const overCaption = captionLimit !== null && captionBytes > captionLimit;
@@ -469,15 +487,13 @@ function ComposerSheetImpl({
           )
         }
       >
-        <PanelPressable
-          accessibilityLabel="Make it"
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !ready || submitting }}
-          disabled={!ready || submitting}
+        <MakeIt
+          failed={failed}
           onPress={() => {
             // One guard, here: a second tap while a submission is in flight
             // would create a second job for one intent.
             if (!ready || submitting) return;
+            setFailed(false);
             onSubmit(
               resolved.nodePublicKey as string,
               resolved.modelSelector as string,
@@ -485,19 +501,59 @@ function ComposerSheetImpl({
             );
             setDraft(EMPTY_DRAFT);
           }}
-          style={styles.submit}
-        >
-          <Text
-            style={[
-              FOLIO_ACT_STYLE,
-              { color: ready && !submitting ? pal.ink : pal.faint },
-            ]}
-          >
-            {submitting ? 'Sending it…' : 'Make it'}
-          </Text>
-        </PanelPressable>
+          ready={ready}
+          submitting={submitting}
+        />
       </Coda>
     </>
+  );
+}
+
+/**
+ * `Make it`: the page's one act. While it sends, the working rule grows under
+ * it and the word morphs to its present tense; if the send fails, the rule
+ * goes still and faint and the word says so (`folio.html#working`).
+ */
+function MakeIt({
+  failed,
+  onPress,
+  ready,
+  submitting,
+}: {
+  failed: boolean;
+  onPress: () => void;
+  ready: boolean;
+  submitting: boolean;
+}) {
+  // Out of reach only when there is nothing to send; sending is busy, not
+  // unavailable, so the word keeps its ink and grows the rule.
+  const { colour } = useReach(!ready && !submitting);
+  const label = submitting ? 'Sending it' : failed ? 'Not sent' : 'Make it';
+  return (
+    <PanelPressable
+      accessibilityLabel="Make it"
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !ready, busy: submitting }}
+      disabled={!ready && !submitting}
+      onPress={submitting ? undefined : onPress}
+      style={styles.submit}
+    >
+      <View>
+        <TransformText
+          charStyle={FOLIO_ACT_STYLE}
+          color={colour}
+          duration={COMPOSER_KNOBS.ACT_MS}
+          style={styles.actSlot}
+          text={label}
+        />
+        <Underway
+          charStyle={FOLIO_ACT_STYLE}
+          failed={failed}
+          label={label}
+          working={submitting}
+        />
+      </View>
+    </PanelPressable>
   );
 }
 
@@ -607,6 +663,7 @@ const styles = StyleSheet.create({
     minHeight: LEDGER_KNOBS.LINE_PX,
   },
   submit: { justifyContent: 'center', minHeight: touch.min },
+  actSlot: { height: COMPOSER_KNOBS.ACT_SLOT_PX },
 });
 
 /**
