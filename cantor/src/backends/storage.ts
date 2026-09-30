@@ -15,10 +15,10 @@ export async function loadBackends(): Promise<BackendRecord[]> {
   try {
     value = JSON.parse(serialized);
   } catch {
-    throw new Error('Stored backend data is not valid JSON.');
+    throw new Error('Stored node data is not valid JSON.');
   }
   if (!Array.isArray(value)) {
-    throw new Error('Stored backend data has an invalid shape.');
+    throw new Error('Stored node data has an invalid shape.');
   }
   return value.map(parseBackendRecord);
 }
@@ -35,7 +35,7 @@ function parseBackendRecord(value: unknown): BackendRecord {
     typeof value.petname !== 'string' ||
     !(value.lastNodeInfo === null || parseNodeInfo(value.lastNodeInfo) !== null)
   ) {
-    throw new Error('Stored backend record has an invalid shape.');
+    throw new Error('Stored node record has an invalid shape.');
   }
   const transport =
     value.transport === undefined

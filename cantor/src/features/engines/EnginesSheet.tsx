@@ -118,6 +118,8 @@ function EnginesSheetImpl({
   const title =
     page.kind === 'forget'
       ? `FORGET ${nameOf(selectedBackend)}`
+      : page.kind === 'engines'
+      ? 'NODES'
       : page.kind.toUpperCase();
 
   return (
@@ -151,10 +153,10 @@ function EnginesSheetImpl({
         <PanelPressable
           accessibilityLabel={
             isHome
-              ? 'Close engines'
+              ? 'Close nodes'
               : page.kind === 'forget'
               ? 'Keep it'
-              : 'Back to engines'
+              : 'Back to nodes'
           }
           accessibilityRole="button"
           hitSlop={space.md}
@@ -194,7 +196,7 @@ function EnginesSheetImpl({
             />
           ) : (
             <Text style={[type.body, { color: pal.muted }]}>
-              This engine is no longer paired.
+              This node is no longer paired.
             </Text>
           )
         ) : (
@@ -213,7 +215,7 @@ function EnginesSheetImpl({
                 ) : backends.length === 0 ? (
                   <Row>
                     <Text style={[type.body, { color: pal.muted }]}>
-                      No engine is paired yet.
+                      No node is paired yet.
                     </Text>
                   </Row>
                 ) : (
@@ -223,7 +225,7 @@ function EnginesSheetImpl({
                     const installed = backend.lastNodeInfo?.models;
                     return (
                       <React.Fragment key={backend.nodePubkey}>
-                        <Row label="Engine" control>
+                        <Row label="Node" control>
                           <View style={styles.engineHeading}>
                             <View style={styles.engineName}>
                               {renaming === backend.nodePubkey ? (
@@ -268,7 +270,7 @@ function EnginesSheetImpl({
                             <View
                               accessible
                               accessibilityRole="image"
-                              accessibilityLabel={`Engine ${
+                              accessibilityLabel={`Node ${
                                 snapshot?.phase ?? 'disconnected'
                               }`}
                             >
@@ -345,7 +347,7 @@ function EnginesSheetImpl({
                           }
                         >
                           <Action
-                            label="Forget this engine"
+                            label="Forget this node"
                             accessibilityLabel={`Forget ${nameOf(backend)}`}
                             onPress={() =>
                               setPage({
@@ -361,7 +363,7 @@ function EnginesSheetImpl({
                   })
                 )}
                 <Row control>
-                  <Action label="Add a backend" onPress={onPair} />
+                  <Action label="Pair a node" onPress={onPair} />
                 </Row>
                 <Row control>
                   <Action
@@ -422,7 +424,7 @@ function Forget({
       <Text style={[type.body, { color: pal.muted }]}>
         Downloaded songs stay on this phone, with their playlist tags. Songs
         only cached from listening are given back — the budget could reclaim
-        them anyway, and there would be no engine left to ask again.
+        them anyway, and there would be no node left to ask again.
       </Text>
 
       <View style={[styles.hairline, { backgroundColor: pal.line }]} />
@@ -480,8 +482,8 @@ function Count({ label, note }: { label: string; note: string }) {
 }
 
 function nameOf(backend: BackendRecord | undefined): string {
-  if (backend === undefined) return 'this engine';
-  return backend.petname || backend.lastNodeInfo?.name || 'this engine';
+  if (backend === undefined) return 'this node';
+  return backend.petname || backend.lastNodeInfo?.name || 'this node';
 }
 
 function Action({

@@ -1006,7 +1006,7 @@ describe('BackendConnection', () => {
   it('refuses to delete before the node is ready', async () => {
     const { connection } = connect();
     await expect(connection.forgetJob('job', 1)).rejects.toThrow(
-      'Backend is not ready.',
+      'The node is not ready.',
     );
   });
 

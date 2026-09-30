@@ -262,7 +262,7 @@ export function toGenerationRequest(
 export function describeProblem(problem: ComposerProblem): string {
   switch (problem.kind) {
     case 'no-node':
-      return 'Choose an engine to generate on.';
+      return 'Choose a node to generate on.';
     case 'node-offline':
       return `${problem.label} is not connected.`;
     case 'no-model':
@@ -272,7 +272,7 @@ export function describeProblem(problem: ComposerProblem): string {
     case 'caption-empty':
       return 'Describe the song you want.';
     case 'caption-too-long':
-      return `Caption is ${problem.bytes} bytes; this engine accepts ${problem.maxBytes}.`;
+      return `Caption is ${problem.bytes} bytes; this node accepts ${problem.maxBytes}.`;
     case 'writer-unavailable':
       return 'Automatic lyrics are not available for this model. Choose none or mine.';
     case 'lyrics-required':
@@ -280,7 +280,7 @@ export function describeProblem(problem: ComposerProblem): string {
     case 'words-empty':
       return 'Write the words, or set words to none.';
     case 'lyrics-too-long':
-      return `Lyrics are ${problem.bytes} bytes; this engine accepts ${problem.maxBytes}.`;
+      return `Lyrics are ${problem.bytes} bytes; this node accepts ${problem.maxBytes}.`;
     case 'duration-out-of-range':
       return `Length must be between ${problem.min} and ${problem.max} seconds.`;
     case 'parameter':

@@ -216,7 +216,7 @@ describe('SongSheet', () => {
 
   it('puts the mark back when the node refuses the ask', async () => {
     const onPatch = jest.fn(async () => {
-      throw new Error('Backend is not ready.');
+      throw new Error('The node is not ready.');
     });
     const { labels, press } = render({ onPatch });
     press('Remove from Dog walk');
@@ -247,8 +247,8 @@ describe('SongSheet', () => {
   });
 
   it('says a refused act where the acts are, not on the other page', () => {
-    const { words } = render({ problem: 'Backend is not ready.' });
-    expect(words()).toContain('BACKEND IS NOT READY.');
+    const { words } = render({ problem: 'The node is not ready.' });
+    expect(words()).toContain('THE NODE IS NOT READY.');
   });
 
   it('lets the act you pressed work while the rest go out of reach', () => {

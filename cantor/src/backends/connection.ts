@@ -149,7 +149,7 @@ export class BackendConnection {
     );
     this.relay = new RelaySocket(backendRoomUrl(backend), {
       onBeforeConnect: () => {
-        this.clearPending('Backend reconnected before the request completed.');
+        this.clearPending('The node reconnected before the request completed.');
         this.resetSecure();
         this.resetLibrarySync();
         this.setSnapshot({
@@ -178,7 +178,7 @@ export class BackendConnection {
   stop(): void {
     this.relay.stop();
     this.resetSecure();
-    this.clearPending('Backend connection stopped.');
+    this.clearPending('The connection to the node stopped.');
   }
 
   // Anything this build does not understand is skipped rather than treated as
@@ -564,7 +564,7 @@ export class BackendConnection {
     generation: GenerationRequest,
   ): Promise<JobView> {
     if (this.snapshot.phase !== 'ready') {
-      return Promise.reject(new Error('Backend is not ready.'));
+      return Promise.reject(new Error('The node is not ready.'));
     }
     let id = '';
     return new Promise((resolve, reject) => {
@@ -613,7 +613,7 @@ export class BackendConnection {
     expectedRevision: number,
   ): Promise<JobView> {
     if (this.snapshot.phase !== 'ready') {
-      return Promise.reject(new Error('Backend is not ready.'));
+      return Promise.reject(new Error('The node is not ready.'));
     }
     let id = '';
     return new Promise((resolve, reject) => {
@@ -658,7 +658,7 @@ export class BackendConnection {
    */
   forgetJob(jobId: string, expectedRevision: number): Promise<void> {
     if (this.snapshot.phase !== 'ready') {
-      return Promise.reject(new Error('Backend is not ready.'));
+      return Promise.reject(new Error('The node is not ready.'));
     }
     let id = '';
     return new Promise((resolve, reject) => {
@@ -716,7 +716,7 @@ export class BackendConnection {
 
   getSong(songId: string): Promise<SongDetail> {
     if (this.snapshot.phase !== 'ready') {
-      return Promise.reject(new Error('Backend is not ready.'));
+      return Promise.reject(new Error('The node is not ready.'));
     }
     const request = this.requests.request('song-detail', {
       expected: 'song.detail',
@@ -760,7 +760,7 @@ export class BackendConnection {
     onProgress?: (written: number, total: number) => void,
   ): Promise<void> {
     if (this.snapshot.phase !== 'ready') {
-      throw new Error('Backend is not ready.');
+      throw new Error('The node is not ready.');
     }
     for (let attempt = 0; ; attempt += 1) {
       try {
@@ -982,7 +982,7 @@ export class BackendConnection {
     extra: { patch: SongPatch } | Record<string, never>,
   ): Promise<SongHeader> {
     if (this.snapshot.phase !== 'ready') {
-      return Promise.reject(new Error('Backend is not ready.'));
+      return Promise.reject(new Error('The node is not ready.'));
     }
     let id = '';
     return new Promise((resolve, reject) => {

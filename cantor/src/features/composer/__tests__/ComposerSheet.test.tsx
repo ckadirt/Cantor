@@ -81,7 +81,7 @@ describe('the composer Ledger', () => {
     ]);
     expect(words()).toEqual(
       expect.arrayContaining([
-        'ENGINE',
+        'NODE',
         'MODEL',
         'LENGTH',
         'WORDS',

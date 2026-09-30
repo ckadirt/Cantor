@@ -889,7 +889,7 @@ export class BackendRuntime {
     model: string,
     generation: GenerationRequest,
   ): Promise<void> => {
-    const connection = this.live(nodePublicKey, 'Backend is not connected.');
+    const connection = this.live(nodePublicKey, 'The node is not connected.');
     const entry = await this.deps.putPending(nodePublicKey, model, generation);
     // Until a read of the outbox finds it sent, snapshots keep retrying it.
     this.outboxPending.add(nodePublicKey);
