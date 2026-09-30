@@ -7,6 +7,7 @@ import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.cantor.app.audio.CantorAudioPackage
+import com.cantor.app.haptics.CantorHapticsPackage
 import com.cantor.app.media.CantorMediaPackage
 import com.cantor.app.security.CantorSecurePackage
 
@@ -21,6 +22,7 @@ class MainApplication : Application(), ReactApplication {
           add(CantorAudioPackage())
           add(CantorMediaPackage())
           add(CantorSecurePackage())
+          add(CantorHapticsPackage())
         },
     )
   }

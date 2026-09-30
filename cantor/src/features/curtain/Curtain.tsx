@@ -11,6 +11,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
 import { useKeyboardInset } from './keyboard';
+import { haptic } from '../../haptics';
 import { space, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — the blind: how it hangs, how far it must come, how fast it runs. */
@@ -324,6 +325,24 @@ function CurtainImpl({
       if (drawn !== previous) runOnJS(setLive)(drawn);
     },
     [sign],
+  );
+
+  // One click as a pulled blind crosses its release point (`KEEP PULLING` →
+  // `RELEASE TO OPEN`) — only while a finger holds it, which is when nothing
+  // is headed anywhere; a run launched by a release or by React is silent.
+  useAnimatedReaction(
+    () => pull.value * sign >= openAt,
+    (past, previous) => {
+      if (
+        previous !== null &&
+        past &&
+        !previous &&
+        Number.isNaN(destination.value)
+      ) {
+        runOnJS(haptic)('click');
+      }
+    },
+    [openAt, sign],
   );
 
   // React owns only the destination. The finger owns everything before it, and

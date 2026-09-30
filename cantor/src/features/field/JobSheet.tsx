@@ -32,6 +32,7 @@ import {
   Rest,
   Row,
   Stave,
+  Strike,
   Underway,
   useReach,
 } from '../controls';
@@ -140,7 +141,6 @@ export function JobSheet({
   const reducedMotion = useReducedMotion();
   // Deleting is the one act here that cannot be undone, so it is asked twice.
   // Keyed on the job: opening a different mark must never inherit a raised axe.
-  const [confirming, setConfirming] = useState(false);
   /**
    * Which act was pressed, so that one works while the rest go out of reach —
    * `busy` alone cannot say which (`controls/state.tsx`).
@@ -148,7 +148,6 @@ export function JobSheet({
   const [pressed, setPressed] = useState<string | null>(null);
   const jobId = pending?.job.id ?? null;
   useEffect(() => {
-    setConfirming(false);
     setPressed(null);
   }, [jobId, visible]);
   /**
@@ -336,28 +335,7 @@ export function JobSheet({
             <Text style={[type.small, { color: pal.ink }]}>{error}</Text>
           )
         }>
-        {confirming ? (
-          <View style={styles.confirm}>
-            <Act
-              busy={busy}
-              display
-              label="Delete it"
-              onPress={() => {
-                setPressed('Delete it');
-                setConfirming(false);
-                onForget();
-              }}
-              pressed={pressed}
-              working="Deleting it"
-            />
-            <Act
-              busy={busy}
-              label="Keep it"
-              onPress={() => setConfirming(false)}
-              pressed={pressed}
-            />
-          </View>
-        ) : (
+        {controls.length > 0 ? (
           <View style={styles.confirm}>
             {controls.map((control, index) => (
               <Act
@@ -373,29 +351,37 @@ export function JobSheet({
                 working={WORKING_WORDS[control]}
               />
             ))}
-            {deletable ? (
-              <Act
-                busy={busy}
-                display={controls.length === 0}
-                label="Delete"
-                onPress={() => setConfirming(true)}
-                pressed={pressed}
-              />
-            ) : null}
-            {/*
-              A foot with no acts in it would read as a sheet still loading.
-              What there is to do is nothing, and saying so is the honest act.
-            */}
-            {controls.length === 0 && !deletable ? (
-              <Text style={[FOLIO_NOTE_STYLE, styles.idle, { color: pal.faint }]}>
-                {model.failed ? 'NOTHING LEFT TO DO' : 'WAITING ON THE NODE'}
-              </Text>
-            ) : null}
           </View>
+        ) : null}
+        {deletable ? (
+          // Deleting is the one act here that cannot be undone, so it is held
+          // rather than asked twice; what it takes is written under it.
+          <Strike
+            key={jobId ?? 'none'}
+            disabled={busy}
+            done="Deleted"
+            label="Delete"
+            note="HOLD · CAPTION GOES TOO"
+            onStrike={() => {
+              setPressed('Delete');
+              onForget();
+            }}
+          />
+        ) : null}
+        {/*
+          A foot with no acts in it would read as a sheet still loading. What
+          there is to do is nothing, and saying so is the honest act.
+        */}
+        {controls.length === 0 && !deletable ? (
+          <Text style={[FOLIO_NOTE_STYLE, styles.idle, { color: pal.faint }]}>
+            {model.failed ? 'NOTHING LEFT TO DO' : 'WAITING ON THE NODE'}
+          </Text>
+        ) : null}
+        {deletable ? null : (
+          <Text style={[FOLIO_NOTE_STYLE, styles.footNote, { color: pal.faint }]}>
+            THE WORDS ARE KEPT
+          </Text>
         )}
-        <Text style={[FOLIO_NOTE_STYLE, styles.footNote, { color: pal.faint }]}>
-          {footNote(confirming, deletable)}
-        </Text>
       </Coda>
     </View>
   );
@@ -416,23 +402,6 @@ const WORKING_WORDS: Record<JobControl, string> = {
   cancel: 'Cancelling',
   retry: 'Trying again',
 };
-
-/**
- * What the foot promises, in the measure the foot has.
- *
- * A sheet that offers deletion says what deletion costs *before* it is asked
- * for: the caption is the only copy of the request there is, and it goes with
- * the job. Where nothing can be deleted, the promise is the opposite one — the
- * same measure, the opposite answer.
- *
- * The line starts at the spine and holds about `FOOT_NOTE_CHARS` of mono;
- * `DELETING TAKES THE WORDS WITH IT` was 32 and left `IT` on a second line,
- * and a coda note is a state: four words at most.
- */
-function footNote(confirming: boolean, deletable: boolean): string {
-  if (confirming) return 'THERE IS NO UNDO';
-  return deletable ? 'THE CAPTION GOES TOO' : 'THE WORDS ARE KEPT';
-}
 
 /** How far around the arc the work has come, in words under the glyphs. */
 function arcNote(

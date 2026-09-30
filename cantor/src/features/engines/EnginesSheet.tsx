@@ -2,7 +2,6 @@ import React, { useMemo, useState } from 'react';
 import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
-import { AnimatedSymbol } from '../../motion';
 import {
   Coda,
   Constellation,
@@ -23,7 +22,6 @@ import {
 } from '../controls';
 import { NodeSheet } from './NodeSheet';
 import { knownModels, nodeState, nodeStateWord } from './nodeState';
-import { formatBytes } from '../../lenses';
 import {
   SettingsSheet,
   settingsMeta,
@@ -139,14 +137,7 @@ function EnginesSheetImpl({
   });
   const nav: FolioNav = isHome
     ? { label: 'CLOSE', accessibilityLabel: 'Close nodes', onPress: close }
-    : page.kind === 'forget'
-    ? { label: 'KEEP IT', accessibilityLabel: 'Keep it', onPress: back(page) }
     : { label: '‹ NODES', accessibilityLabel: 'Back to nodes', onPress: home };
-
-  function back(from: Page) {
-    return () =>
-      'node' in from ? setPage({ kind: 'node', node: from.node }) : home();
-  }
 
   const commitName = () => {
     if (selectedBackend === undefined) return;
@@ -168,14 +159,6 @@ function EnginesSheetImpl({
               nodePublicKey={selectedBackend.nodePubkey}
               size={FOLIO_KNOBS.CLEF_PX}
               state={nodeState(snapshots[selectedBackend.nodePubkey])}
-            />
-          ) : page.kind === 'forget' ? (
-            <AnimatedSymbol
-              symbol="partial"
-              width={FOLIO_KNOBS.CLEF_PX}
-              height={FOLIO_KNOBS.CLEF_PX}
-              duration={PANEL_KNOBS.MORPH_MS}
-              color={pal.ink}
             />
           ) : (
             // The panel's subject is every node, so its clef is all of them.
@@ -227,33 +210,13 @@ function EnginesSheetImpl({
             footprint={footprints[page.node]}
             known={known}
             nameOf={nameOfKey}
-            onForget={() => setPage({ kind: 'forget', node: page.node })}
+            onForget={() => {
+              // Held on the node page itself: there is no second page asking.
+              home();
+              onForget(page.node);
+            }}
             snapshot={snapshots[page.node]}
           />
-        ) : page.kind === 'forget' ? (
-          selectedBackend ? (
-            <Forget
-              backend={selectedBackend}
-              footprint={footprints[selectedBackend.nodePubkey]}
-              onConfirm={() => {
-                home();
-                onForget(selectedBackend.nodePubkey);
-              }}
-            />
-          ) : (
-            <>
-              <Stave>
-                <Measure>
-                  <Row>
-                    <Text style={[type.body, { color: pal.muted }]}>
-                      This node is no longer paired.
-                    </Text>
-                  </Row>
-                </Measure>
-              </Stave>
-              <Coda />
-            </>
-          )
         ) : (
           <>
             <Stave>
@@ -368,104 +331,6 @@ function RosterEntry({
   );
 }
 
-/**
- * What forgetting keeps, and what it gives back.
- *
- * A song is here because you asked — `GET` or `KEEP`, which pins it — or
- * because you played it, which leaves a copy the cache budget may reclaim at
- * any download. Only the first is a promise this phone can keep with the node
- * gone, so the sheet counts the two apart rather than calling both
- * "downloaded". Saying `NOTHING TO DELETE` over a loan about to be released
- * would be the sheet's one job done wrong.
- */
-function Forget({
-  backend,
-  footprint,
-  onConfirm,
-}: {
-  backend: BackendRecord;
-  footprint: BackendFootprint | undefined;
-  onConfirm: () => void;
-}) {
-  const pal = usePalette();
-  const songs = footprint?.songs ?? 0;
-  const downloaded = footprint?.downloaded ?? 0;
-  const borrowed = footprint?.borrowed ?? 0;
-  return (
-    <>
-      <Stave>
-        <Measure>
-          <Row>
-            <Text style={[type.small, { color: pal.muted }]}>
-              Downloaded songs stay on this phone, with their playlist tags.
-              Songs only cached from listening are given back — the budget could
-              reclaim them anyway, and there would be no node left to ask again.
-            </Text>
-          </Row>
-        </Measure>
-        <Rest />
-        <Measure>
-          <Count
-            label="Downloaded"
-            value={String(downloaded)}
-            note={
-              downloaded === 0 ? 'NONE ON THIS PHONE' : 'KEPT ON THIS PHONE'
-            }
-          />
-          <Count
-            label="Cached"
-            value={String(borrowed)}
-            note={
-              borrowed === 0
-                ? 'NOTHING BORROWED'
-                : `${formatBytes(footprint?.borrowedBytes ?? 0)} GIVEN BACK`
-            }
-          />
-          <Count
-            label="Not here"
-            value={String(songs - downloaded - borrowed)}
-            note="NOTHING TO DELETE"
-          />
-          <Count
-            label="Playlists"
-            value={String(footprint?.playlists ?? 0)}
-            note="TAGS LIVE ON THE NODE"
-          />
-        </Measure>
-        <Rest />
-        <Measure>
-          <Row>
-            <Text style={[type.body, { color: pal.ink }]}>
-              Nothing is deleted on {nameOf(backend)}. Pair again and everything
-              returns.
-            </Text>
-          </Row>
-        </Measure>
-      </Stave>
-      <Coda>
-        <Action display label="Forget it" onPress={onConfirm} />
-      </Coda>
-    </>
-  );
-}
-
-function Count({
-  label,
-  value,
-  note,
-}: {
-  label: string;
-  value: string;
-  note: string;
-}) {
-  const pal = usePalette();
-  return (
-    <Row label={label} note={note}>
-      <Text style={[type.body, { color: pal.ink }]}>{value}</Text>
-    </Row>
-  );
-}
-
 function nameOf(backend: BackendRecord | undefined): string {
   if (backend === undefined) return 'this node';
   return backend.petname || backend.lastNodeInfo?.name || 'this node';
@@ -496,7 +361,7 @@ function capitalised(word: string): string {
 
 type Page =
   | { kind: 'engines' | 'settings' }
-  | { kind: 'node' | 'forget'; node: string };
+  | { kind: 'node'; node: string };
 
 /** The head each page of this sheet opens on: where, what, and its state. */
 function headOf(
@@ -543,18 +408,6 @@ function headOf(
           )
           .join(' · ')
           .toUpperCase(),
-      };
-    }
-    case 'forget': {
-      const footprint =
-        selected === undefined ? undefined : footprints[selected.nodePubkey];
-      const gone = (footprint?.songs ?? 0) - (footprint?.downloaded ?? 0);
-      return {
-        eyebrow: 'FORGET',
-        title: nameOf(selected),
-        meta: `${gone} SONG${gone === 1 ? '' : 'S'} LEAVE${
-          gone === 1 ? 'S' : ''
-        } THE FIELD`,
       };
     }
     default: {
@@ -621,7 +474,6 @@ const PANEL_KNOBS = {
   /** A node's station in the roster's label column. */
   STATION_PX: 34,
   PAGE_FADE_MS: 220,
-  MORPH_MS: 420,
 } as const;
 
 const styles = StyleSheet.create({

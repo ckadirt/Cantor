@@ -23,6 +23,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
+import { haptic } from '../../haptics';
 import { LEDGER_NOTE_STYLE } from './Ledger';
 import { Reveal } from './Reveal';
 import { font, touch, type, usePalette } from '../../theme/tokens';
@@ -257,6 +258,7 @@ export function Ruler({
     (to: number) => {
       if (to === current.current) return;
       current.current = to;
+      haptic('tick');
       onStep?.();
       onSelect(stops[to].key);
     },
@@ -422,6 +424,7 @@ export function Scrub({
       );
       if (next === last.current) return;
       last.current = next;
+      haptic('tick');
       onStep?.();
       onChange(next);
     },

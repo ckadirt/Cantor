@@ -56,3 +56,4 @@ export {
   useRuleInk,
 } from './state';
 export { Reveal, REVEAL_KNOBS } from './Reveal';
+export { Strike, STRIKE_KNOBS } from './Strike';
