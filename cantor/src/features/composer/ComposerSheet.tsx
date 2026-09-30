@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { TransformText, WriteSymbol } from '../../motion';
+import { haptic } from '../../haptics';
 import { STAGE_SYMBOLS } from '../../jobs/marks';
 import {
   Choice,
@@ -493,6 +494,8 @@ function ComposerSheetImpl({
             // One guard, here: a second tap while a submission is in flight
             // would create a second job for one intent.
             if (!ready || submitting) return;
+            // The one firm pulse in the app: a song is being asked for.
+            haptic('confirm');
             setFailed(false);
             onSubmit(
               resolved.nodePublicKey as string,

@@ -7,6 +7,7 @@ import type {
   BackendRecord,
   ConnectionSnapshot,
 } from '../../../backends/types';
+import { STRIKE_KNOBS } from '../../controls';
 import { EnginesSheet } from '../EnginesSheet';
 
 // CanvasKit's system font manager is empty under Jest, so the recovery grid
@@ -113,20 +114,35 @@ describe('Ledger engine pages', () => {
     expect(words()).not.toContain('cantor pull levo2:1.0-fast');
   });
 
-  it('retains the explicit forget confirmation and correct node', () => {
-    const { press, onForget, words } = render();
-    press('Open studio');
-    press('Forget studio');
-    expect(onForget).not.toHaveBeenCalled();
-    press('Keep it');
-    // Keeping it goes back to the node it was about, not to the roster.
-    expect(words()).toContain('Forget this node');
-    expect(onForget).not.toHaveBeenCalled();
-    press('Back to nodes');
-    press('Open phone');
-    press('Forget phone');
-    press('Forget it');
-    expect(onForget).toHaveBeenCalledWith('phone');
+  it('forgets the right node only on a whole hold of its act', () => {
+    jest.useFakeTimers();
+    try {
+      const { press, onForget, tree } = render();
+      const hold = (label: string, ms: number) => {
+        const target = tree.root.find(
+          n =>
+            typeof n.type !== 'string' &&
+            typeof n.props.onPressIn === 'function' &&
+            n.props.accessibilityLabel === label,
+        );
+        // Held before the act runs: acting leaves the page under the finger.
+        const { onPressIn, onPressOut } = target.props;
+        Renderer.act(() => onPressIn());
+        Renderer.act(() => {
+          jest.advanceTimersByTime(ms);
+        });
+        Renderer.act(() => onPressOut());
+      };
+      press('Open studio');
+      hold('Forget this node', STRIKE_KNOBS.HOLD_MS / 2);
+      expect(onForget).not.toHaveBeenCalled();
+      press('Back to nodes');
+      press('Open phone');
+      hold('Forget this node', STRIKE_KNOBS.HOLD_MS);
+      expect(onForget).toHaveBeenCalledWith('phone');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it("says each node's state as a person would, and syncs on opening", () => {

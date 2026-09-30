@@ -2,6 +2,7 @@ import React from 'react';
 import * as Renderer from 'react-test-renderer';
 import type { JobView, NodeInfo } from '../../../core/protocol';
 import fixture from '../../../../../protocol/fixtures/v2/node-info.json';
+import { STRIKE_KNOBS } from '../../controls';
 import { JobSheet, JOB_SHEET_KNOBS } from '../JobSheet';
 import type { JobPresentation } from '../useFieldController';
 
@@ -93,11 +94,26 @@ function render(presentation: JobPresentation | null) {
       .findAll(
         n =>
           typeof n.type !== 'string' &&
-          typeof n.props.onPress === 'function' &&
+          (typeof n.props.onPress === 'function' ||
+            typeof n.props.onPressIn === 'function') &&
           typeof n.props.accessibilityLabel === 'string',
       )
       .map(n => n.props.accessibilityLabel as string);
-  return { tree, press, words, labels, onControl, onForget };
+  /** Press and hold a struck act for `ms`, then let go. */
+  const hold = (label: string, ms: number) => {
+    const target = tree.root.find(
+      n =>
+        typeof n.type !== 'string' &&
+        typeof n.props.onPressIn === 'function' &&
+        n.props.accessibilityLabel === label,
+    );
+    Renderer.act(() => target.props.onPressIn());
+    Renderer.act(() => {
+      jest.advanceTimersByTime(ms);
+    });
+    Renderer.act(() => target.props.onPressOut());
+  };
+  return { tree, press, hold, words, labels, onControl, onForget };
 }
 
 describe('the stopped generation sheet', () => {
@@ -116,13 +132,8 @@ describe('the stopped generation sheet', () => {
   it('keeps every foot note inside the measure the foot actually has', () => {
     const notes = [
       ...render(pending({})).words(),
-      ...(() => {
-        const sheet = render(pending({}));
-        sheet.press('Delete');
-        return sheet.words();
-      })(),
       ...render(pending({}, {}, { job_forget: false })).words(),
-    ].filter(word => word.startsWith('THE ') || word.startsWith('DELETING'));
+    ].filter(word => word.startsWith('THE ') || word.startsWith('HOLD'));
     expect(notes.length).toBeGreaterThan(0);
     for (const note of notes) {
       expect(note.length).toBeLessThanOrEqual(JOB_SHEET_KNOBS.FOOT_NOTE_CHARS);
@@ -154,22 +165,21 @@ describe('the stopped generation sheet', () => {
     expect(words()).toContain('ON STUDIO');
   });
 
-  it('asks twice before deleting, and deletes only on the second answer', () => {
-    const { press, labels, words, onForget } = render(pending({}));
-    expect(labels()).toContain('Delete');
-    expect(words()).toContain('THE CAPTION GOES TOO');
-    press('Delete');
-    expect(onForget).not.toHaveBeenCalled();
-    expect(words()).toContain('THERE IS NO UNDO');
-    press('Keep it');
-    expect(onForget).not.toHaveBeenCalled();
-    expect(labels()).toContain('Delete');
-
-    press('Delete');
-    press('Delete it');
-    expect(onForget).toHaveBeenCalledTimes(1);
-    // The question is asked afresh next time, never left standing.
-    expect(labels()).toContain('Delete');
+  it('deletes only when held for the whole stroke', () => {
+    jest.useFakeTimers();
+    try {
+      const { hold, labels, words, onForget } = render(pending({}));
+      expect(labels()).toContain('Delete');
+      // What it takes is written before it is touched.
+      expect(words()).toContain('HOLD · CAPTION GOES TOO');
+      // Let go early: the rule goes back, nothing is deleted.
+      hold('Delete', STRIKE_KNOBS.HOLD_MS / 2);
+      expect(onForget).not.toHaveBeenCalled();
+      hold('Delete', STRIKE_KNOBS.HOLD_MS);
+      expect(onForget).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('offers the retry the node said it would honour, beside the deletion', () => {

@@ -5,16 +5,14 @@ import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { lyricsContractFor } from '../../core/protocol/lyrics';
 import {
   Coda,
-  FOLIO_ACT_STYLE,
-  FOLIO_NOTE_STYLE,
   LEDGER_NOTE_STYLE,
   Measure,
-  PanelPressable,
   Rest,
   Row,
   Stave,
+  Strike,
 } from '../controls';
-import { font, space, touch, type, usePalette } from '../../theme/tokens';
+import { font, space, type, usePalette } from '../../theme/tokens';
 import type { BackendFootprint } from './EnginesSheet';
 import {
   nodeState,
@@ -250,26 +248,32 @@ export function NodeSheet({
             );
           })}
         </Measure>
+        <Rest />
+        <Measure>
+          {/*
+            What the forget page used to say, kept: forgetting releases this
+            phone's loans and deletes nothing on the node.
+          */}
+          <Row label="Forgetting">
+            <Text style={[type.small, { color: pal.muted }]}>
+              Downloaded songs stay on this phone; cached ones are given back.
+              Nothing is deleted on {name}, and pairing again brings it all
+              back.
+            </Text>
+          </Row>
+        </Measure>
       </Stave>
       <Coda>
         {/*
-          The one act on this page, and a destructive one: muted until it is
-          held. F7 turns it into a strike; until then it opens the page that
-          counts what goes.
+          The one act on this page, and a destructive one: held, not
+          confirmed. What it costs is written under it before it is touched.
         */}
-        <PanelPressable
-          accessibilityLabel={`Forget ${name}`}
-          accessibilityRole="button"
-          onPress={onForget}
-          style={styles.act}
-        >
-          <Text style={[FOLIO_ACT_STYLE, { color: pal.muted }]}>
-            Forget this node
-          </Text>
-        </PanelPressable>
-        <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
-          {`${songs - kept} LEAVE · ${kept} KEPT STAY`}
-        </Text>
+        <Strike
+          done="Forgotten"
+          label="Forget this node"
+          note={`HOLD · ${songs - kept} LEAVE · ${kept} KEPT STAY`}
+          onStrike={onForget}
+        />
       </Coda>
     </>
   );
@@ -305,5 +309,4 @@ const styles = StyleSheet.create({
   detail: { gap: space.xs, paddingBottom: space.sm },
   command: { paddingHorizontal: space.sm, paddingVertical: 6 },
   commandWord: { fontFamily: font.mono, fontSize: 11.5 },
-  act: { justifyContent: 'center', minHeight: touch.min },
 });

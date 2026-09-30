@@ -38,6 +38,7 @@ import {
   FolioHead,
   SongClef,
   StationMark,
+  Strike,
   type StationState,
   FOLIO_ACT_STYLE,
   FOLIO_EYEBROW_STYLE,
@@ -333,7 +334,6 @@ function SongSheetImpl({
   const { song, wish, ask } = useSongWish(known, onPatch);
   const [title, setTitle] = useState(known.title);
   const [page, setPage] = useState(0);
-  const [confirming, setConfirming] = useState(false);
   const [width, setWidth] = useState(0);
   const pager = useRef<ScrollView | null>(null);
   const reducedMotion = useReducedMotion();
@@ -368,10 +368,8 @@ function SongSheetImpl({
     setTitle(known.title);
   }, [known.id, known.title]);
 
-  // A sheet that opens on a different song must never open on the back page
-  // already asking to destroy it.
+  // A sheet that opens on a different song opens on its front page.
   useEffect(() => {
-    setConfirming(false);
     setPage(0);
     pager.current?.scrollTo({ x: 0, animated: false });
   }, [song.id, visible]);
@@ -584,7 +582,6 @@ function SongSheetImpl({
         <View style={[styles.pageSeat, { width: pageWidth }]}>
           <Back
             acting={acting}
-            confirming={confirming}
             detail={detail}
             detailError={detailError}
             deliveryBytes={deliveryBytes}
@@ -593,12 +590,7 @@ function SongSheetImpl({
             nodeLabel={nodeLabel}
             downloaded={downloaded}
             imported={imported}
-            onDelete={() => {
-              setConfirming(false);
-              onDelete();
-            }}
-            onKeep={() => setConfirming(false)}
-            onAsk={() => setConfirming(true)}
+            onDelete={onDelete}
             placementCount={placementCount}
             song={song}
           />
@@ -1020,7 +1012,6 @@ function Front({
 /** What a song is, and the act that ends it. */
 function Back({
   acting,
-  confirming,
   detail,
   detailError,
   deliveryBytes,
@@ -1029,14 +1020,11 @@ function Back({
   masterBytes,
   node,
   nodeLabel,
-  onAsk,
   onDelete,
-  onKeep,
   placementCount,
   song,
 }: {
   acting: SongAct | null;
-  confirming: boolean;
   detail: SongDetail | null;
   detailError: string | null;
   deliveryBytes: number | null;
@@ -1049,9 +1037,7 @@ function Back({
     state: StationState;
   }> | null;
   nodeLabel: string;
-  onAsk: () => void;
   onDelete: () => void;
-  onKeep: () => void;
   placementCount: number;
   song: SongHeader;
 }) {
@@ -1180,35 +1166,23 @@ function Back({
 
       {/*
         The end of the song, where arriving deliberately is worth more than a
-        dialog — and it asks anyway.
+        dialog: the act is held, and what it costs is written under it before
+        it is touched.
       */}
       <Coda>
-        {confirming ? (
-          <View style={styles.confirm}>
-            <Act
-              disabled={acting !== null && acting !== 'delete'}
-              display
-              label={acting === 'delete' ? 'Deleting it' : 'Delete it'}
-              morph
-              onPress={onDelete}
-              working={acting === 'delete'}
-            />
-            <Act disabled={acting !== null} label="Keep it" onPress={onKeep} />
-          </View>
-        ) : (
-          <Act
-            disabled={acting !== null}
-            display
-            label="Delete everywhere"
-            onPress={onAsk}
-          />
-        )}
-        <Text style={[FOLIO_NOTE_STYLE, styles.footNote, { color: pal.faint }]}>
-          {cost(downloaded ? deliveryBytes : null, masterBytes, nodeLabel)}
-        </Text>
-        <Text style={[FOLIO_NOTE_STYLE, styles.footHard, { color: pal.ink }]}>
-          {confirming ? 'THERE IS NO UNDO' : noUndo(placementCount)}
-        </Text>
+        <Strike
+          // A different song is a fresh act: nothing half-held carries over.
+          key={song.id}
+          disabled={acting !== null}
+          done="Deleted everywhere"
+          label="Delete everywhere"
+          note={`HOLD · ${cost(
+            downloaded ? deliveryBytes : null,
+            masterBytes,
+            nodeLabel,
+          )} · ${noUndo(placementCount)}`}
+          onStrike={onDelete}
+        />
       </Coda>
     </View>
   );
@@ -1540,9 +1514,6 @@ const styles = StyleSheet.create({
     height: SONG_SHEET_KNOBS.NOTE_SLOT_PX,
     marginTop: space.xs,
   },
-  confirm: { alignItems: 'baseline', flexDirection: 'row', gap: space.lg },
-  footNote: { marginTop: space.xs },
-  footHard: { letterSpacing: 1.6, marginTop: 2 },
   hem: {
     alignSelf: 'center',
     bottom: space.sm,

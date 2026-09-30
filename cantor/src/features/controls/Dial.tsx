@@ -16,6 +16,7 @@ import Animated, {
   withTiming,
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
+import { haptic } from '../../haptics';
 import { space, touch } from '../../theme/tokens';
 
 /** KNOBS — the tick, and how it travels. */
@@ -149,7 +150,11 @@ export function Dial({
             hitSlop={space.sm}
             key={item.key}
             onLayout={event => measure(item.key, event)}
-            onPress={() => onSelect(item.key)}
+            onPress={() => {
+              // A light tick per step, and none for the word already chosen.
+              if (item.key !== activeKey) haptic('tick');
+              onSelect(item.key);
+            }}
             style={[styles.dialItem, itemStyle, compact && styles.compactItem]}
           >
             <Text

@@ -1,6 +1,7 @@
 import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
 import { nameLens } from '../../../lenses/nameLens';
+import { STRIKE_KNOBS } from '../../controls';
 import { SongSheet } from '../SongSheet';
 import type { SongDetail, SongHeader } from '../../../core/protocol';
 
@@ -132,18 +133,40 @@ describe('SongSheet', () => {
     expect(props.onPin).not.toHaveBeenCalled();
   });
 
-  it('asks before it deletes, and says what goes on both machines', () => {
-    const { words, press, props } = render();
-    press('Delete everywhere');
-    expect(props.onDelete).not.toHaveBeenCalled();
-    expect(words()).toContain('THERE IS NO UNDO');
-    press('Delete it');
-    expect(props.onDelete).toHaveBeenCalled();
+  it('deletes only on a whole hold, and says what goes before it is touched', () => {
+    jest.useFakeTimers();
+    try {
+      const { tree, words, props } = render();
+      expect(words()).toContain(
+        'HOLD · 3.1 MB HERE · 27 MB ON AGENTBOX · NO UNDO · 3 PLACEMENTS GO',
+      );
+      const strike = tree.root.find(
+        node =>
+          typeof node.type !== 'string' &&
+          typeof node.props.onPressIn === 'function' &&
+          node.props.accessibilityLabel === 'Delete everywhere',
+      );
+      const hold = (ms: number) => {
+        ReactTestRenderer.act(() => strike.props.onPressIn());
+        ReactTestRenderer.act(() => {
+          jest.advanceTimersByTime(ms);
+        });
+        ReactTestRenderer.act(() => strike.props.onPressOut());
+      };
+      hold(STRIKE_KNOBS.HOLD_MS / 3);
+      expect(props.onDelete).not.toHaveBeenCalled();
+      hold(STRIKE_KNOBS.HOLD_MS);
+      expect(props.onDelete).toHaveBeenCalledTimes(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('states both sizes, because only this act frees space on both', () => {
     const { words } = render();
-    expect(words()).toContain('3.1 MB HERE · 27 MB ON AGENTBOX');
+    expect(
+      words().some(word => word.includes('3.1 MB HERE · 27 MB ON AGENTBOX')),
+    ).toBe(true);
   });
 
   it('never claims a copy here for a song that is only on the node', () => {
@@ -154,8 +177,10 @@ describe('SongSheet', () => {
     expect(labels()).toContain(
       'On agentbox only. 3.1 MB TO FETCH · ON AGENTBOX',
     );
-    expect(words()).toContain('27 MB ON AGENTBOX');
-    expect(words()).not.toContain('3.1 MB HERE · 27 MB ON AGENTBOX');
+    expect(words().some(word => word.includes('27 MB ON AGENTBOX'))).toBe(true);
+    expect(
+      words().some(word => word.includes('3.1 MB HERE · 27 MB ON AGENTBOX')),
+    ).toBe(false);
   });
 
   it('says where a kept copy is, in the same line that said it was cached', () => {
