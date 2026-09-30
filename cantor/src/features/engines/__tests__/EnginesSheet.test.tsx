@@ -88,7 +88,7 @@ describe('Ledger engine pages', () => {
     expect(words()).toContain('KNOWN ELSEWHERE');
     press('Model levo2:1.0-fast');
     expect(words()).toContain('cantor pull levo2:1.0-fast');
-    press('Back to engines');
+    press('Back to nodes');
     expect(words()).not.toContain('cantor pull levo2:1.0-fast');
     press('All models on phone');
     press('Model levo2:1.0-fast');
@@ -115,7 +115,7 @@ describe('Ledger engine pages', () => {
     press('Budget 2 GB');
     expect(onChangeBudget).toHaveBeenCalledWith(2 * 1024 ** 3);
     expect(onForget).not.toHaveBeenCalled();
-    press('Back to engines');
-    expect(words()).toContain('ENGINES');
+    press('Back to nodes');
+    expect(words()).toContain('NODES');
   });
 });

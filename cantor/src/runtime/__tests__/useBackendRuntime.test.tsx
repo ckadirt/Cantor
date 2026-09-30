@@ -605,7 +605,7 @@ describe('useBackendRuntime', () => {
       offline.current().commands.submit('node-a', 'light', {
         caption: 'Offline',
       }),
-    ).rejects.toThrow('Backend is not connected.');
+    ).rejects.toThrow('The node is not connected.');
     await expect(
       offline.current().commands.controlJob('node-a', job('job-a'), 'pause'),
     ).rejects.toThrow('Job node is not connected.');

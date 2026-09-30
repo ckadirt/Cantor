@@ -125,7 +125,7 @@ export function FieldLegend({
   return (
     <View
       accessible
-      accessibilityLabel="Grey outline: on the engine. Black outline: cached. Filled: downloaded. Filled with a dot: imported."
+      accessibilityLabel="Grey outline: on the node. Black outline: cached. Filled: downloaded. Filled with a dot: imported."
       style={styles.row}
     >
       <Canvas pointerEvents="none" style={StyleSheet.absoluteFill}>

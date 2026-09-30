@@ -281,7 +281,7 @@ function ComposerSheetImpl({
             ) : null}
           </Row>
           <Choice
-            label="Engine"
+            label="Node"
             items={targets.map(candidate => ({
               key: candidate.nodePublicKey,
               label: (candidate.ready
@@ -291,7 +291,7 @@ function ComposerSheetImpl({
               accessibilityLabel: `Run it on ${candidate.label}`,
             }))}
             activeKey={resolved.nodePublicKey}
-            empty="nowhere yet — no engine is paired"
+            empty="nowhere yet — no node is paired"
             onSelect={key =>
               // Changing the engine drops the model with it: the next
               // node's list is a different list, and carrying a selector
@@ -320,7 +320,7 @@ function ComposerSheetImpl({
             activeKey={resolved.modelSelector}
             empty={
               target === null
-                ? 'not until an engine is chosen'
+                ? 'not until a node is chosen'
                 : 'nothing installed'
             }
             note={modelsNote(target, models.length)}
@@ -341,7 +341,7 @@ function ComposerSheetImpl({
               {
                 key: AUTO_LENGTH,
                 label: 'AUTO',
-                accessibilityLabel: "The engine's choice of length",
+                accessibilityLabel: "The model's choice of length",
               },
               ...lengths.map(seconds => ({
                 key: String(seconds),
@@ -354,7 +354,7 @@ function ComposerSheetImpl({
                 ? AUTO_LENGTH
                 : String(resolved.durationSeconds)
             }
-            empty="the engine's choice"
+            empty="the model's choice"
             onSelect={key =>
               update({
                 durationSeconds: key === AUTO_LENGTH ? null : Number(key),
@@ -362,7 +362,7 @@ function ComposerSheetImpl({
             }
             value={
               resolved.durationSeconds === null
-                ? "the engine's choice"
+                ? "the model's choice"
                 : `${resolved.durationSeconds} seconds`
             }
           />
@@ -564,7 +564,7 @@ function StageArc({
     <View
       accessible
       accessibilityRole="image"
-      accessibilityLabel={`This engine runs ${
+      accessibilityLabel={`This model runs ${
         stages.length
       } stages: ${stages.join(', ')}`}
       style={styles.stages}

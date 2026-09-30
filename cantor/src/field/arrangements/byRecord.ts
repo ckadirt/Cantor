@@ -8,9 +8,9 @@ export const UNKNOWN_ARTIST_LABEL = 'Unknown artist';
 /** An album whose files name more than one artist. */
 export const VARIOUS_ARTISTS_LABEL = 'Various artists';
 /** The second line of a model credited as an artist. */
-export const ENGINE_SUBTITLE = 'Engine';
+export const ENGINE_SUBTITLE = 'Model';
 /** Generated songs whose header names no model (written before it did). */
-export const UNKNOWN_MODEL_LABEL = 'Unknown engine';
+export const UNKNOWN_MODEL_LABEL = 'Unknown model';
 /** The artist axis's two parts, in the order they are seated. */
 export const SECTION_GENERATED = 'Generated';
 export const SECTION_IMPORTED = 'Imported';

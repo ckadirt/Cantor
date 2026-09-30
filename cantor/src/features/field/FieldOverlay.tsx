@@ -615,10 +615,10 @@ function FieldOverlayImpl({
         </View>
       </Animated.View>
       <EdgeTab
-        accessibilityLabel="Open engines"
+        accessibilityLabel="Open nodes"
         colour={pal.faint}
         edge="bottom"
-        label="ENGINES"
+        label="NODES"
         onPress={onOpenEngines}
       />
     </View>

@@ -96,7 +96,7 @@ function PairBackendModalImpl({ visible, onClose, onPair }: Props) {
     >
       <View style={[styles.root, { backgroundColor: pal.bg }]}>
         <View style={styles.header}>
-          <Text style={[type.title, { color: pal.ink }]}>Pair a backend</Text>
+          <Text style={[type.title, { color: pal.ink }]}>Pair a node</Text>
           <Pressable
             accessibilityRole="button"
             accessibilityLabel="Close pairing"

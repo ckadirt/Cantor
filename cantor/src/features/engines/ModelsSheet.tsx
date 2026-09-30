@@ -34,17 +34,17 @@ export function ModelsSheet({
   if (!backend)
     return (
       <Text style={[type.body, { color: pal.muted }]}>
-        This engine is no longer paired.
+        This node is no longer paired.
       </Text>
     );
-  const name = backend.petname || backend.lastNodeInfo?.name || 'this engine';
+  const name = backend.petname || backend.lastNodeInfo?.name || 'this node';
   return (
     <ScrollView
       contentContainerStyle={styles.body}
       keyboardShouldPersistTaps="handled"
     >
       <Ledger>
-        <Row label="Engine">
+        <Row label="Node">
           <Text style={[type.heading, { color: pal.ink }]}>{name}</Text>
         </Row>
         <Row label="Models" note="Models reported by your paired nodes.">

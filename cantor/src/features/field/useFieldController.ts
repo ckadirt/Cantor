@@ -245,7 +245,7 @@ export function buildFieldController(
     const backend = paired.get(nodeKey) ??
       offlineBackend(nodeKey, previous) ?? {
         nodePubkey: nodeKey,
-        petname: 'Offline engine',
+        petname: 'Offline node',
         relayUrl: '',
         lastNodeInfo: null,
       };

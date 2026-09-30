@@ -1053,8 +1053,8 @@ function Back({
                 </Text>
               </Row>
               <LedgerGap />
-              <Fact label="Engine" value={`${detail.engine} · ${nodeLabel}`} />
               <Fact label="Model" mono value={song.model} />
+              <Fact label="Node" value={nodeLabel} />
               <Fact
                 label="Seed"
                 value={`${
