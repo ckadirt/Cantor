@@ -277,8 +277,9 @@ describe('SongSheet', () => {
       )[0];
     // The pressed act is busy, not disabled: it keeps its ink and says it is
     // working. It cannot be pressed twice, but it is the one thing that is
-    // doing something, and going grey would say the opposite.
-    const keep = act('Keep it here');
+    // doing something, and going grey would say the opposite. Its word is in
+    // the present tense while it works.
+    const keep = act('Keeping it');
     expect(keep.props.accessibilityState).toEqual({
       disabled: false,
       busy: true,

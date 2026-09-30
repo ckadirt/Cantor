@@ -109,6 +109,13 @@ export const STATE_KNOBS = {
    * stands a little clear of it.
    */
   UNDERWAY_GAP_PX: 2,
+  /**
+   * Measured work straightens the rule: straight from the left up to the
+   * fraction done, still waving after it. This is how long the straight part
+   * takes to follow a new fraction, and how wide the seam between the two is.
+   */
+  FRACTION_MS: 240,
+  SEAM_PX: 6,
 } as const;
 
 /**
@@ -171,12 +178,19 @@ export function useReach(
 export function WorkingRule({
   amount,
   colour,
+  fraction = null,
   style,
   working,
 }: {
   /** How much of the rule exists, 0..1. Follows `working` when omitted. */
   amount?: SharedValue<number>;
   colour: string;
+  /**
+   * How much of measured work is done, 0..1, or null when it cannot be known.
+   * The rule is straight up to it and waves after it; at 1 it is a straight
+   * hairline, which then retracts with the work.
+   */
+  fraction?: number | null;
   style?: StyleProp<ViewStyle>;
   working: boolean;
 }) {
@@ -188,6 +202,16 @@ export function WorkingRule({
   const wave = useSharedValue(0);
   const phase = useSharedValue(0);
   const drawn = amount ?? own;
+  const done = useSharedValue(fraction ?? 0);
+  useEffect(() => {
+    const next = fraction ?? 0;
+    done.value = reducedMotion
+      ? next
+      : withTiming(next, {
+          duration: STATE_KNOBS.FRACTION_MS,
+          easing: easeSmoother,
+        });
+  }, [done, fraction, reducedMotion]);
 
   useEffect(() => {
     if (amount !== undefined) return;
@@ -235,11 +259,17 @@ export function WorkingRule({
     const turn = 2 * Math.PI;
     const shift = phase.value * turn;
     const steps = STATE_KNOBS.SAMPLES;
+    // Where the straight part ends, in the full rule's own pixels.
+    const straight = size.value.width * done.value;
     for (let i = 0; i <= steps; i++) {
       const x = (width * i) / steps;
+      const past = Math.min(
+        Math.max((x - straight) / STATE_KNOBS.SEAM_PX, 0),
+        1,
+      );
       const y =
         middle +
-        amp * Math.sin(turn * (x / STATE_KNOBS.PERIOD_PX) - shift);
+        amp * past * Math.sin(turn * (x / STATE_KNOBS.PERIOD_PX) - shift);
       if (i === 0) builder.moveTo(x, y);
       else builder.lineTo(x, y);
     }
@@ -298,11 +328,20 @@ export function useRuleInk(inked: boolean): boolean {
  */
 export function Underway({
   charStyle,
+  failed = false,
+  fraction = null,
   label,
   offset = 0,
   working,
 }: {
   charStyle: TextStyle;
+  /**
+   * The work failed: the wave stops, goes faint and retracts. Pass it with
+   * `working` false; the word itself says why (the caller morphs it).
+   */
+  failed?: boolean;
+  /** Measured work's fraction done, 0..1, or null (see `WorkingRule`). */
+  fraction?: number | null;
   label: string;
   /** How far down its container the measured line sits. */
   offset?: number;
@@ -333,7 +372,8 @@ export function Underway({
       </Text>
       {box === null ? null : (
         <WorkingRule
-          colour={pal.ink}
+          colour={failed ? pal.faint : pal.ink}
+          fraction={fraction}
           style={[
             styles.underway,
             {
