@@ -42,6 +42,17 @@ export function nodeState(snapshot: ConnectionSnapshot | undefined): NodeState {
 }
 
 /**
+ * A node's state from its connection phase alone, for a surface that names a
+ * node without holding its snapshot (the song's record): it cannot see jobs,
+ * so it never says `working`.
+ */
+export function nodeStateOfPhase(phase: string | undefined): NodeState {
+  if (phase === 'ready') return 'ready';
+  if (phase === 'connecting' || phase === 'handshaking') return 'connecting';
+  return 'offline';
+}
+
+/**
  * The state as a word. `OFFLINE` alone: the app does not record when a node
  * was last ready yet, so `OFFLINE SINCE 14:02` waits for that (folio-log.md).
  */

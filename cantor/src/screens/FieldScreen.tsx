@@ -20,7 +20,7 @@ import { openPhoneDatabase } from '../device/database';
 import { DeviceLibraryService } from '../device/deviceLibrary';
 import { nativeMedia } from '../device/native';
 import { createDeviceRepository } from '../device/repository';
-import { EnginesSheet } from '../features/engines';
+import { EnginesSheet, nodeStateOfPhase } from '../features/engines';
 import {
   audioRefOf,
   FieldA11yList,
@@ -2111,6 +2111,22 @@ export function FieldScreen({ identity }: Props) {
                 : null
             }
             imported={sheetImported}
+            lens={activeLens}
+            node={
+              sheetSong.source === 'node'
+                ? {
+                    publicKey: sheetSong.entity.nodePublicKey,
+                    models:
+                      backends?.find(
+                        backend =>
+                          backend.nodePubkey === sheetSong.entity.nodePublicKey,
+                      )?.lastNodeInfo?.models.length ?? 0,
+                    state: nodeStateOfPhase(
+                      phases[sheetSong.entity.nodePublicKey],
+                    ),
+                  }
+                : null
+            }
             knownPlaylists={knownPlaylists}
             knownTags={knownTags}
             masterBytes={

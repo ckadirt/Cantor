@@ -1,4 +1,14 @@
 export { Caret, CARET_KNOBS } from './Caret';
+export {
+  CLEF_KNOBS,
+  Constellation,
+  PhoneSealMark,
+  SongClef,
+  StationMark,
+  type ConstellationNode,
+  type SongClefSong,
+  type StationState,
+} from './Clef';
 export { Dial, DIAL_KNOBS, type DialItem } from './Dial';
 export {
   Coda,
