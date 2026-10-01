@@ -8,6 +8,15 @@ import { audioKey } from '../audio/repository';
 import type { LocalAudio } from '../audio/native';
 import type { AudioRef, LocalAudioStore } from '../audio/localAudioStore';
 import { repositoryLocalAudioStore } from '../audio/repositoryLocalAudioStore';
+import {
+  dropWaiting,
+  dropWaitingFor,
+  loadWaiting,
+  putWaiting,
+  waitingKey,
+  type WaitingDownload,
+  type WaitingQueue,
+} from '../audio/waiting';
 import type { JobControl } from '../jobs/policy';
 import {
   BackendConnection,
@@ -114,6 +123,10 @@ type RuntimeDependencies = {
   markAccepted: typeof markAccepted;
   markRejected: typeof markRejected;
   audioStore: LocalAudioStore;
+  loadWaiting: typeof loadWaiting;
+  putWaiting: typeof putWaiting;
+  dropWaiting: typeof dropWaiting;
+  dropWaitingFor: typeof dropWaitingFor;
 };
 
 /** Explicit seams for focused tests; production uses the concrete stack. */
@@ -134,6 +147,13 @@ export type BackendRuntimeState = {
    * or it promises motion to a song nothing is fetching.
    */
   downloading: ReadonlySet<string>;
+  /**
+   * Downloads waiting for their node, keyed like `localAudio`
+   * (`audio/waiting.ts`): a `GET` made while the node was away, a transfer cut
+   * off half way, or one stopped because the file changed. Persisted, and
+   * drained when the node is ready again.
+   */
+  waiting: WaitingQueue;
   /**
    * Persisted submissions, keyed `${nodePublicKey}:${canonicalJobId}`.
    *
@@ -211,6 +231,15 @@ export type BackendRuntimeCommands = {
     artifact: ArtifactView,
   ) => Promise<string>;
   refreshLibraries: () => void;
+  /**
+   * Let go of a download waiting for its node, or of one stopped because the
+   * file changed. Nothing was sent, so there is nothing on the node to stop.
+   */
+  cancelWaiting: (
+    nodePublicKey: string,
+    songId: string,
+    digest: string,
+  ) => void;
 };
 
 const defaultDependencies: RuntimeDependencies = {
@@ -230,6 +259,10 @@ const defaultDependencies: RuntimeDependencies = {
   markAccepted,
   markRejected,
   audioStore: repositoryLocalAudioStore,
+  loadWaiting,
+  putWaiting,
+  dropWaiting,
+  dropWaitingFor,
 };
 
 type LiveConnection = {
@@ -244,6 +277,7 @@ export const INITIAL_RUNTIME_STATE: BackendRuntimeState = {
   storageError: null,
   localAudio: {},
   downloading: new Set(),
+  waiting: {},
   outbox: {},
 };
 
@@ -313,6 +347,7 @@ export class BackendRuntime {
       audio: this.audio,
       audioPath: this.audioPath,
       refreshLibraries: this.refreshLibraries,
+      cancelWaiting: this.cancelWaiting,
     };
   }
 
@@ -329,6 +364,13 @@ export class BackendRuntime {
      * one most needs to say what it was.
      */
     this.refreshOutbox().catch(this.reportError);
+    // Promises made while a node was away outlive the app: read them back.
+    this.deps
+      .loadWaiting()
+      .then(waiting => {
+        if (alive()) this.update({ waiting });
+      })
+      .catch(this.reportError);
     this.deps
       .loadBackends()
       .then(loaded => {
@@ -655,6 +697,10 @@ export class BackendRuntime {
                 this.reportError(error);
               });
           }
+          // Downloads that waited for this node run now that it is back.
+          if (snapshot.phase === 'ready' && !wasReady) {
+            this.drainWaiting(nodePublicKey);
+          }
           // The outbox is flushed when the node becomes ready, and again while
           // it still held something pending — which is how a submission whose
           // send failed is retried without a reconnect.
@@ -859,6 +905,12 @@ export class BackendRuntime {
       }
     }
 
+    // Its waiting downloads go with it: there is no node left to wait for.
+    this.deps
+      .dropWaitingFor(nodePublicKey)
+      .then(waiting => this.update({ waiting }))
+      .catch(this.reportError);
+
     this.replaceBackends(
       (this.state.backends ?? []).filter(
         backend => backend.nodePubkey !== nodePublicKey,
@@ -981,8 +1033,23 @@ export class BackendRuntime {
     const identify = () => this.deps.audioStore.inspect(ref);
     let evicts = false;
     if (action === 'download' || action === 'keep') {
-      const connection = this.live(nodeKey, 'Song node is not connected.');
       const before = await identify();
+      // A node that is away does not fail the download: it promises it, and
+      // the promise is kept when the node is back (`drainWaiting`).
+      if (
+        before.state !== 'cached' &&
+        before.state !== 'pinned' &&
+        this.state.snapshots[nodeKey]?.phase !== 'ready'
+      ) {
+        await this.wait(
+          { nodeKey, songId: song.id, digest: artifact.sha256 },
+          action,
+          'waiting',
+        );
+        this.setLocalAudio(key, before);
+        return;
+      }
+      const connection = this.live(nodeKey, 'Song node is not connected.');
       if (before.state !== 'cached' && before.state !== 'pinned') {
         const sink: ArtifactSink = this.deps.audioStore.createSink(ref);
         this.markDownloading(key, true);
@@ -1015,10 +1082,25 @@ export class BackendRuntime {
           );
           // Finalising runs the cache budget, which may have taken others.
           evicts = true;
+        } catch (error) {
+          const where = { nodeKey, songId: song.id, digest: artifact.sha256 };
+          if (fileChanged(error)) {
+            // The bytes here are no longer the song's: only starting again helps.
+            await this.wait(where, action, 'changed');
+            throw error;
+          }
+          if (!interrupted(error)) throw error;
+          // Cut off half way: the bytes stay, and it resumes when the node is
+          // back. Not a failure, so nothing is thrown.
+          await this.wait(where, action, 'waiting');
+          this.setLocalAudio(key, await identify());
+          return;
         } finally {
           this.markDownloading(key, false);
         }
       }
+      // It landed (or was already here): nothing is waiting for it any more.
+      if (this.state.waiting[key] !== undefined) await this.unwait(key);
       if (action === 'keep') await this.deps.audioStore.pin(ref);
     } else if (action === 'pin') {
       await this.deps.audioStore.pin(ref);
@@ -1030,6 +1112,77 @@ export class BackendRuntime {
     }
     this.setLocalAudio(key, await identify());
     if (evicts) this.reconcileAudio();
+  };
+
+  /** Keep a download waiting for its node, persisted. */
+  private async wait(
+    where: { nodeKey: string; songId: string; digest: string },
+    action: 'download' | 'keep',
+    state: WaitingDownload['state'],
+  ): Promise<void> {
+    const waiting = await this.deps.putWaiting({
+      nodePublicKey: where.nodeKey,
+      songId: where.songId,
+      digest: where.digest,
+      action,
+      state,
+      createdAt: new Date().toISOString(),
+    });
+    this.update({ waiting });
+  }
+
+  private async unwait(key: string): Promise<void> {
+    const waiting = await this.deps.dropWaiting(key);
+    this.update({ waiting });
+  }
+
+  /** Nodes whose waiting downloads are being run right now. */
+  private readonly draining = new Set<string>();
+
+  /**
+   * Run every download that waited for this node, one at a time, now that it
+   * is ready. A song the library no longer has stays waiting until it does or
+   * the person cancels it; a changed file waits for the person.
+   */
+  private drainWaiting(nodePublicKey: string): void {
+    if (this.draining.has(nodePublicKey)) return;
+    const entries = Object.entries(this.state.waiting).filter(
+      ([, entry]) =>
+        entry.nodePublicKey === nodePublicKey && entry.state === 'waiting',
+    );
+    if (entries.length === 0) return;
+    this.draining.add(nodePublicKey);
+    const run = async () => {
+      for (const [, entry] of entries) {
+        if (this.state.snapshots[nodePublicKey]?.phase !== 'ready') break;
+        const song = this.state.snapshots[nodePublicKey]?.songs.find(
+          candidate => candidate.id === entry.songId,
+        );
+        const artifact =
+          song === undefined ? undefined : deliveryArtifact(song);
+        if (song === undefined || artifact === undefined) continue;
+        if (artifact.sha256 !== entry.digest) {
+          // The song has a new file since it was asked for: ask for that one.
+          await this.unwait(waitingKey(entry));
+        }
+        await this.audio(nodePublicKey, song, artifact, entry.action).catch(
+          this.reportError,
+        );
+      }
+    };
+    run()
+      .catch(this.reportError)
+      .finally(() => this.draining.delete(nodePublicKey));
+  }
+
+  private readonly cancelWaiting = (
+    nodePublicKey: string,
+    songId: string,
+    digest: string,
+  ): void => {
+    this.unwait(waitingKey({ nodePublicKey, songId, digest })).catch(
+      this.reportError,
+    );
   };
 
   private readonly refreshLibraries = (): void => {
@@ -1091,3 +1244,37 @@ export function deliveryArtifact(song: SongHeader): ArtifactView | undefined {
 // Job control policy is owned by the jobs domain; re-exported so the runtime's
 // public surface is unchanged for callers.
 export type { JobControl };
+
+/** A transfer the node can no longer continue: the bytes here are stale. */
+function fileChanged(error: unknown): boolean {
+  const code = codeOf(error);
+  return (
+    code === 'artifact_changed' ||
+    code === 'transfer_expired' ||
+    code === 'invalid_offset'
+  );
+}
+
+/**
+ * A transfer cut off by the connection rather than refused by the node: the
+ * node left, the socket dropped, or the request was cleared when it did.
+ */
+function interrupted(error: unknown): boolean {
+  if (codeOf(error) === 'temporarily_unavailable') return true;
+  if (codeOf(error) !== null) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /not ready|not connected|stopped|reconnected|closed|offline/i.test(
+    message,
+  );
+}
+
+function codeOf(error: unknown): string | null {
+  if (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof (error as { code: unknown }).code === 'string'
+  )
+    return (error as { code: string }).code;
+  return null;
+}

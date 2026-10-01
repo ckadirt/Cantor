@@ -64,11 +64,45 @@ export function arrivingFraction(
  * offers nothing: the bytes are already on their way and the only honest
  * control would be a cancel, which no command supports.
  */
-export type AvailabilityAction = 'GET' | 'KEEP' | 'REMOVE';
+export type AvailabilityAction =
+  | 'GET'
+  | 'KEEP'
+  | 'REMOVE'
+  | 'CANCEL'
+  | 'START AGAIN';
+
+/**
+ * A download that is not simply landing (`features/field/useFieldController`
+ * `Transfer`): moving, held for its node, stopped with nothing to resume it,
+ * waiting before anything was sent, or stopped because the file changed.
+ */
+export type TransferState =
+  | 'moving'
+  | 'held'
+  | 'stopped'
+  | 'waiting'
+  | 'changed';
 
 export function availabilityAction(
   availability: Availability,
+  transfer: TransferState | null = null,
 ): AvailabilityAction | null {
+  // A wish that has not reached the node can be withdrawn; a changed file can
+  // only be fetched again; a transfer nothing will resume is asked for again.
+  // One that is moving, or held for its node, needs nothing from you.
+  switch (transfer) {
+    case 'waiting':
+      return 'CANCEL';
+    case 'changed':
+      return 'START AGAIN';
+    case 'stopped':
+      return 'GET';
+    case 'moving':
+    case 'held':
+      return null;
+    default:
+      break;
+  }
   switch (availability) {
     case 'not-synced':
       return 'GET';
@@ -90,7 +124,24 @@ export function availabilityAction(
  */
 export function availabilityLine(
   song: Pick<LensSong, 'audioState' | 'arriving' | 'byteLength' | 'nodeLabel'>,
+  transfer: TransferState | null = null,
 ): string {
+  const node = song.nodeLabel.toUpperCase();
+  const at = song.arriving === null ? null : Math.round(song.arriving * 100);
+  switch (transfer) {
+    case 'held':
+      return at === null
+        ? `STOPPED · ${node} LEFT`
+        : `STOPPED AT ${at}% · ${node} LEFT`;
+    case 'stopped':
+      return at === null ? 'STOPPED' : `STOPPED AT ${at}%`;
+    case 'waiting':
+      return `WAITING FOR ${node}`;
+    case 'changed':
+      return `THE FILE CHANGED ON ${node}`;
+    default:
+      break;
+  }
   switch (availabilityOf(song.audioState)) {
     case 'downloaded':
       return song.byteLength === null

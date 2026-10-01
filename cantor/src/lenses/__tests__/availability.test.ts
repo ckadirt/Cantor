@@ -6,7 +6,10 @@ import {
   FACE_FILL_ALPHA,
   LENSES,
   FACE_STROKE_ALPHA,
+  arrivedShare,
   arrivingFraction,
+  arrivingHeld,
+  isArrivingHeld,
   availabilityAction,
   availabilityLine,
   availabilityOf,
@@ -73,9 +76,7 @@ describe('what a row says and offers', () => {
   });
 
   it('says where the audio is, in the words the design uses', () => {
-    expect(availabilityLine(song({ audioState: 'remote' }))).toBe(
-      'ON STUDIO',
-    );
+    expect(availabilityLine(song({ audioState: 'remote' }))).toBe('ON STUDIO');
     expect(availabilityLine(song({ audioState: 'cached' }))).toBe(
       'CACHED · MAY BE RECLAIMED',
     );
@@ -253,5 +254,43 @@ describe('cutting a title to the column it has', () => {
     expect(fitText('Lanterns', font, 6)).toBe('');
     expect(fitText('Lanterns', font, 0)).toBe('');
     expect(fitText('Lanterns', font, -10)).toBe('');
+  });
+});
+
+describe('a download that is not simply landing', () => {
+  const song = {
+    audioState: 'partial' as const,
+    arriving: 0.46,
+    byteLength: 1000,
+    nodeLabel: 'agentbox',
+  };
+  it('says where it stopped, what it waits for, and what changed', () => {
+    expect(availabilityLine(song, 'held')).toBe(
+      'STOPPED AT 46% · AGENTBOX LEFT',
+    );
+    expect(availabilityLine(song, 'stopped')).toBe('STOPPED AT 46%');
+    expect(
+      availabilityLine(
+        { ...song, audioState: 'remote', arriving: null },
+        'waiting',
+      ),
+    ).toBe('WAITING FOR AGENTBOX');
+    expect(availabilityLine(song, 'changed')).toBe(
+      'THE FILE CHANGED ON AGENTBOX',
+    );
+    expect(availabilityLine(song, 'moving')).toBe('DOWNLOADING · 46%');
+  });
+  it('offers only what can be done about it', () => {
+    expect(availabilityAction('not-synced', 'waiting')).toBe('CANCEL');
+    expect(availabilityAction('arriving', 'changed')).toBe('START AGAIN');
+    expect(availabilityAction('arriving', 'stopped')).toBe('GET');
+    expect(availabilityAction('arriving', 'held')).toBeNull();
+    expect(availabilityAction('arriving', 'moving')).toBeNull();
+  });
+  it('draws a stopped download where it stopped, apart from a moving one', () => {
+    const held = arrivingHeld(0.46);
+    expect(isArrivingHeld(held)).toBe(true);
+    expect(arrivedShare(held)).toBeCloseTo(0.46);
+    expect(isArrivingHeld(0.46)).toBe(false);
   });
 });

@@ -50,10 +50,37 @@ export const ARRIVING_UNKNOWN = -2;
  */
 export const ARRIVING_UNKNOWN_SHARE = 70 / 360;
 
+/**
+ * A download that stopped part of the way — its node left, or nothing is
+ * resuming it — is said as `ARRIVING_HELD_BASE - share`: the arc stays where
+ * it stopped and is drawn faint (`folio.html#errors`). One number, so the
+ * lens contract's signature does not change.
+ */
+export const ARRIVING_HELD_BASE = -10;
+/** KNOB — how present a stopped download's arc is: faint, not gone. */
+export const ARRIVING_HELD_ALPHA = 0.35;
+
+/** `arriving` for a download that stopped at `share` (0..1, or null if unknown). */
+export function arrivingHeld(share: number | null): number {
+  'worklet';
+  return (
+    ARRIVING_HELD_BASE -
+    (share === null ? ARRIVING_UNKNOWN_SHARE : Math.min(1, Math.max(0, share)))
+  );
+}
+
+/** Whether `arriving` says a download that has stopped, not one that moves. */
+export function isArrivingHeld(arriving: number): boolean {
+  'worklet';
+  return arriving <= ARRIVING_HELD_BASE;
+}
+
 /** How much of a download to show as landed, 0..1; see `ARRIVING_NONE`. */
 export function arrivedShare(arriving: number): number {
   'worklet';
   if (arriving === ARRIVING_UNKNOWN) return ARRIVING_UNKNOWN_SHARE;
+  if (arriving <= ARRIVING_HELD_BASE)
+    return Math.min(1, Math.max(0, ARRIVING_HELD_BASE - arriving));
   return Math.min(1, Math.max(0, arriving));
 }
 

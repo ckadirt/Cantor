@@ -86,6 +86,7 @@ import {
 import {
   ARRIVING_NONE,
   ARRIVING_UNKNOWN,
+  arrivingHeld,
   LENSES,
   LENS_PAIRS,
   LENS_UI,
@@ -1194,13 +1195,7 @@ export function faceFlightsOf(
       fill: to.fill,
       fromWeight: from.stroke,
       fromFill: from.fill,
-      arriving:
-        presentation.localAudio.state === 'partial'
-          ? arrivingFraction(
-              presentation.localAudio.bytes,
-              presentation.byteLength ?? undefined,
-            ) ?? ARRIVING_UNKNOWN
-          : ARRIVING_NONE,
+      arriving: arrivingOf(presentation),
       // The same two questions `NativePlacementFlight` asks, asked here so the
       // gate travels with the row rather than being chosen beside it. A pose
       // shared across the field is how every mark once grew into the player.
@@ -2482,6 +2477,22 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
  * renderer changed would be a different row.
  */
 
+/**
+ * A song's download as its mark draws it: a fraction while bytes move, held
+ * (faint, where it stopped) when nothing is moving them, or none.
+ */
+function arrivingOf(presentation: FieldPresentation): number {
+  if (presentation.localAudio.state !== 'partial') return ARRIVING_NONE;
+  const share = arrivingFraction(
+    presentation.localAudio.bytes,
+    presentation.byteLength ?? undefined,
+  );
+  const moving =
+    presentation.source !== 'node' || presentation.transfer === 'moving';
+  if (!moving) return arrivingHeld(share);
+  return share ?? ARRIVING_UNKNOWN;
+}
+
 function nativeRowModel(
   presentation: FieldPresentation,
   recipe: Parameters<typeof nameLensFacePath>[0],
@@ -2493,8 +2504,10 @@ function nativeRowModel(
   // cut to whatever is left, so a long title cannot run under the word that
   // acts on it. Both are measured from the row's own point, which is the
   // origin of the group the UI thread moves.
+  const transfer =
+    presentation.source === 'node' ? presentation.transfer : null;
   const action = presentation.audioActions
-    ? availabilityAction(availability)
+    ? availabilityAction(availability, transfer)
     : null;
   const titleLeft = -NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX;
   const rowRight = NAME_LENS_KNOBS.ROW_RIGHT_PX;
@@ -2530,7 +2543,7 @@ function nativeRowModel(
             ),
             byteLength: presentation.byteLength,
             nodeLabel: presentation.label,
-          }),
+          }, transfer),
       monoFont,
       column,
     ),

@@ -48,10 +48,12 @@ export function createFieldControllerStore(
       next.snapshots === read.snapshots &&
       next.localAudio === read.localAudio &&
       next.outbox === read.outbox &&
+      next.downloading === read.downloading &&
+      next.waiting === read.waiting &&
       nextDevice === deviceRead;
     read = next;
     deviceRead = nextDevice;
-    // Pairing, errors and transfers in flight are not the field's business.
+    // Pairing and errors are not the field's business.
     if (same) return;
     // `buildFieldController` hands back the controller it was given when
     // nothing it holds changed, and the store tells nobody about that.

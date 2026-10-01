@@ -553,6 +553,17 @@ describe('useBackendRuntime', () => {
       mounted.current().commands.getSongDetail('node-a', 'song-a'),
     ).resolves.toEqual(detail);
 
+    // A download runs only on a ready node; one that is not waits for it.
+    ReactTestRenderer.act(() => {
+      f.callbacks[0].onSnapshot({
+        phase: 'ready',
+        error: null,
+        jobs: [],
+        songs: [],
+        libraryRevision: null,
+        librarySyncing: false,
+      });
+    });
     f.inspectAudio
       .mockReset()
       .mockResolvedValueOnce({ state: 'partial', bytes: 4 })

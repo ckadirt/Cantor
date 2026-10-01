@@ -16,7 +16,9 @@ import {
   sealModel,
 } from './seal';
 import {
+  ARRIVING_HELD_ALPHA,
   ARRIVING_NONE,
+  isArrivingHeld,
   arrivedShare,
   type LensIdentity,
   type LensPlayer,
@@ -218,7 +220,10 @@ function drawSealMark(
     }
     paints.fill.setAlphaf(alpha * weight);
     canvas.drawPath(rest.detach(), paints.fill);
-    paints.fill.setAlphaf(alpha);
+    // A stopped download keeps what landed, faint: it is waiting, not here.
+    paints.fill.setAlphaf(
+      alpha * (isArrivingHeld(arriving) ? ARRIVING_HELD_ALPHA : 1),
+    );
     canvas.drawPath(done.detach(), paints.fill);
   } else if (fill <= 0) {
     paints.fill.setAlphaf(alpha * weight);
