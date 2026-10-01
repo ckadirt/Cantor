@@ -9,6 +9,19 @@ import {
   type ViewStyle,
 } from 'react-native';
 import { Canvas, LinearGradient, Rect, vec } from '@shopify/react-native-skia';
+import Animated, {
+  useAnimatedStyle,
+  useReducedMotion,
+  useSharedValue,
+} from 'react-native-reanimated';
+import { TransformText } from '../../motion';
+import {
+  ARRIVAL_KNOBS,
+  Arrive,
+  StaveHeight,
+  useArrivalClock,
+  windowed,
+} from './Arrival';
 import { LEDGER_KNOBS } from './Ledger';
 import { PanelPressable } from './PanelPressable';
 import { font, space, touch, type, usePalette } from '../../theme/tokens';
@@ -54,6 +67,8 @@ export const FOLIO_KNOBS = {
   CODA_BOTTOM_PX: 8,
   /** A page with no act still ends on the bar, in this much room. */
   BARE_CODA_PX: 26,
+  /** How long a page's eyebrow and title take to become the next page's. */
+  MORPH_MS: 420,
 } as const;
 
 /** Where the coda's act begins: one gutter past the spine. */
@@ -127,6 +142,16 @@ type HeadProps = {
   title: React.ReactNode;
   /** Its state, four words at most. */
   meta?: React.ReactNode;
+  /**
+   * The title draws its own arrival (the song's and the job's write
+   * themselves on), so the head does not write it on again.
+   */
+  titleWritesItself?: boolean;
+  /**
+   * Say a string eyebrow and title by morphing, so a page change inside the
+   * blind turns the words into the next page's rather than cutting them.
+   */
+  morph?: boolean;
 };
 
 /**
@@ -141,15 +166,30 @@ export function FolioHead({
   nav,
   title,
   meta,
+  titleWritesItself = false,
+  morph = false,
 }: HeadProps) {
   const pal = usePalette();
+  const clock = useArrivalClock();
+  // The head's own stretch of spine grows out of the clef, first of all.
+  const headSpine = useAnimatedStyle(() => ({
+    transform: [
+      {
+        scaleY: windowed(
+          clock.value,
+          ARRIVAL_KNOBS.CLEF_FROM,
+          ARRIVAL_KNOBS.SPINE_FROM,
+        ),
+      },
+    ],
+  }));
   return (
     <View style={styles.head}>
-      <View
+      <Animated.View
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
         pointerEvents="none"
-        style={[styles.headSpine, { backgroundColor: pal.spine }]}
+        style={[styles.headSpine, { backgroundColor: pal.spine }, headSpine]}
       />
       <View
         accessibilityElementsHidden={!clefAccessible}
@@ -158,12 +198,33 @@ export function FolioHead({
         }
         style={styles.clef}
       >
-        {clef}
+        <Arrive
+          from={ARRIVAL_KNOBS.CLEF_FROM}
+          rise={0}
+          to={ARRIVAL_KNOBS.CLEF_TO}
+        >
+          {clef}
+        </Arrive>
       </View>
       <View style={styles.headText}>
         <View style={styles.eyebrowRow}>
-          <View style={styles.eyebrow}>
-            {typeof eyebrow === 'string' ? (
+          <Arrive
+            from={ARRIVAL_KNOBS.LINES_FROM}
+            style={styles.eyebrow}
+            to={ARRIVAL_KNOBS.LINES_TO}
+          >
+            {typeof eyebrow === 'string' && morph ? (
+              // Glyphs on a canvas are not text: the slot carries its words.
+              <View accessible accessibilityLabel={eyebrow}>
+                <TransformText
+                  charStyle={FOLIO_EYEBROW_STYLE}
+                  color={pal.muted}
+                  duration={FOLIO_KNOBS.MORPH_MS}
+                  style={styles.eyebrowSlot}
+                  text={eyebrow}
+                />
+              </View>
+            ) : typeof eyebrow === 'string' ? (
               <Text
                 numberOfLines={1}
                 style={[
@@ -177,28 +238,48 @@ export function FolioHead({
             ) : (
               eyebrow
             )}
-          </View>
-          <PanelPressable
-            accessibilityLabel={nav.accessibilityLabel}
-            accessibilityRole="button"
-            hitSlop={space.md}
-            onPress={nav.onPress}
-            style={styles.nav}
-          >
-            <Text style={[styles.navText, { color: pal.muted }]}>
-              {nav.label}
-            </Text>
-          </PanelPressable>
+          </Arrive>
+          <Arrive from={ARRIVAL_KNOBS.LINES_FROM} to={ARRIVAL_KNOBS.LINES_TO}>
+            <PanelPressable
+              accessibilityLabel={nav.accessibilityLabel}
+              accessibilityRole="button"
+              hitSlop={space.md}
+              onPress={nav.onPress}
+              style={styles.nav}
+            >
+              <Text style={[styles.navText, { color: pal.muted }]}>
+                {nav.label}
+              </Text>
+            </PanelPressable>
+          </Arrive>
         </View>
-        <View style={styles.title}>
-          {typeof title === 'string' ? (
+        <TitleWrite skip={titleWritesItself}>
+          {typeof title === 'string' && morph ? (
+            <View
+              accessible
+              accessibilityLabel={title}
+              accessibilityRole="header"
+            >
+              <TransformText
+                charStyle={FOLIO_TITLE_STYLE}
+                color={pal.ink}
+                duration={FOLIO_KNOBS.MORPH_MS}
+                style={styles.titleSlot}
+                text={title}
+              />
+            </View>
+          ) : typeof title === 'string' ? (
             <Text style={[FOLIO_TITLE_STYLE, { color: pal.ink }]}>{title}</Text>
           ) : (
             title
           )}
-        </View>
+        </TitleWrite>
         {meta === undefined || meta === null ? null : (
-          <View style={styles.meta}>
+          <Arrive
+            from={ARRIVAL_KNOBS.LINES_FROM}
+            style={styles.meta}
+            to={ARRIVAL_KNOBS.LINES_TO}
+          >
             {typeof meta === 'string' ? (
               <Text
                 style={[
@@ -212,9 +293,58 @@ export function FolioHead({
             ) : (
               meta
             )}
-          </View>
+          </Arrive>
         )}
       </View>
+    </View>
+  );
+}
+
+/**
+ * The title, written on from the left as the blind comes down: a band of
+ * paper over it slides away on the arrival clock. A transform, so nothing
+ * reflows; reduced motion fades it in instead.
+ */
+function TitleWrite({
+  children,
+  skip,
+}: {
+  children: React.ReactNode;
+  skip: boolean;
+}) {
+  const pal = usePalette();
+  const clock = useArrivalClock();
+  const reducedMotion = useReducedMotion();
+  const width = useSharedValue(0);
+  const cover = useAnimatedStyle(() => {
+    const written = windowed(
+      clock.value,
+      ARRIVAL_KNOBS.TITLE_FROM,
+      ARRIVAL_KNOBS.TITLE_TO,
+    );
+    return reducedMotion
+      ? { opacity: 1 - written }
+      : {
+          opacity: written >= 1 ? 0 : 1,
+          transform: [{ translateX: written * width.value }],
+        };
+  });
+  return (
+    <View
+      onLayout={event => {
+        width.value = event.nativeEvent.layout.width;
+      }}
+      style={styles.title}
+    >
+      {children}
+      {skip ? null : (
+        <Animated.View
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          pointerEvents="none"
+          style={[styles.titleCover, { backgroundColor: pal.bg }, cover]}
+        />
+      )}
     </View>
   );
 }
@@ -232,24 +362,32 @@ export const Stave = React.forwardRef<
   ScrollViewProps & { children: React.ReactNode }
 >(function StaveImpl({ children, contentContainerStyle, ...scroll }, ref) {
   const pal = usePalette();
+  const height = useSharedValue(0);
   return (
-    <View style={styles.stave}>
-      <ScrollView
-        ref={ref}
-        showsVerticalScrollIndicator={false}
-        {...scroll}
-        contentContainerStyle={[styles.staveContent, contentContainerStyle]}
-      >
-        {children}
-        <View
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          pointerEvents="none"
-          style={styles.tail}
+    <View
+      onLayout={event => {
+        height.value = event.nativeEvent.layout.height;
+      }}
+      style={styles.stave}
+    >
+      <StaveHeight.Provider value={height}>
+        <ScrollView
+          ref={ref}
+          showsVerticalScrollIndicator={false}
+          {...scroll}
+          contentContainerStyle={[styles.staveContent, contentContainerStyle]}
         >
-          <View style={[styles.tailSpine, { backgroundColor: pal.spine }]} />
-        </View>
-      </ScrollView>
+          {children}
+          <View
+            accessibilityElementsHidden
+            importantForAccessibility="no-hide-descendants"
+            pointerEvents="none"
+            style={styles.tail}
+          >
+            <View style={[styles.tailSpine, { backgroundColor: pal.spine }]} />
+          </View>
+        </ScrollView>
+      </StaveHeight.Provider>
       <PaperFade colour={pal.bg} />
     </View>
   );
@@ -298,19 +436,47 @@ export function Coda({
   style?: StyleProp<ViewStyle>;
 }) {
   const pal = usePalette();
+  const clock = useArrivalClock();
   const bare = children === undefined || children === null;
   const hasWhy = why !== undefined && why !== null && why !== false;
+  // The double bar draws out of the spine, last, and then the act appears.
+  const drawn = useAnimatedStyle(() => ({
+    transform: [
+      {
+        scaleX: windowed(
+          clock.value,
+          ARRIVAL_KNOBS.BAR_FROM,
+          ARRIVAL_KNOBS.BAR_TO,
+        ),
+      },
+    ],
+  }));
   return (
     <View style={[bare ? styles.bareCoda : styles.coda, style]}>
-      <View
+      <Animated.View
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
         pointerEvents="none"
-        style={[styles.bar, { borderColor: pal.ink }]}
+        style={[styles.bar, { borderColor: pal.ink }, drawn]}
       />
-      {hasWhy ? <View style={styles.why}>{why}</View> : null}
+      {hasWhy ? (
+        <Arrive
+          from={ARRIVAL_KNOBS.ACT_FROM}
+          style={styles.why}
+          to={ARRIVAL_KNOBS.ACT_TO}
+        >
+          {why}
+        </Arrive>
+      ) : null}
       {bare ? null : (
-        <View style={hasWhy ? styles.actAfterWhy : styles.act}>{children}</View>
+        <Arrive
+          from={ARRIVAL_KNOBS.ACT_FROM}
+          rise={0}
+          style={hasWhy ? styles.actAfterWhy : styles.act}
+          to={ARRIVAL_KNOBS.ACT_TO}
+        >
+          {children}
+        </Arrive>
       )}
     </View>
   );
@@ -389,6 +555,16 @@ const styles = StyleSheet.create({
     lineHeight: FOLIO_KNOBS.EYEBROW_LINE_PX,
   },
   title: { marginTop: FOLIO_KNOBS.TITLE_GAP_PX },
+  titleSlot: { height: FOLIO_KNOBS.TITLE_LINE_PX },
+  eyebrowSlot: { height: FOLIO_KNOBS.EYEBROW_LINE_PX },
+  /** The paper over a title still being written; wider than any title. */
+  titleCover: {
+    bottom: 0,
+    left: 0,
+    position: 'absolute',
+    right: -space.lg * 4,
+    top: 0,
+  },
   meta: {
     marginTop: FOLIO_KNOBS.META_GAP_PX,
     minHeight: FOLIO_KNOBS.EYEBROW_LINE_PX,
@@ -417,6 +593,7 @@ const styles = StyleSheet.create({
   },
   bareCoda: { height: FOLIO_KNOBS.BARE_CODA_PX },
   bar: {
+    transformOrigin: 'left',
     borderBottomWidth: FOLIO_KNOBS.BAR_INK_PX,
     borderTopWidth: FOLIO_KNOBS.BAR_HAIRLINE_PX,
     height:

@@ -92,7 +92,12 @@ function render(snapshots: Record<string, ConnectionSnapshot> = {}) {
     tree.root
       .findAll(n => typeof n.props.children === 'string')
       .map(n => n.props.children);
-  return { tree, press, words, onForget, onChangeBudget, onRefresh };
+  // The head's eyebrow and title morph on a canvas; their words are labels.
+  const labels = () =>
+    tree.root
+      .findAll(n => typeof n.props.accessibilityLabel === 'string')
+      .map(n => n.props.accessibilityLabel as string);
+  return { tree, press, words, labels, onForget, onChangeBudget, onRefresh };
 }
 
 describe('Ledger engine pages', () => {
@@ -146,12 +151,12 @@ describe('Ledger engine pages', () => {
   });
 
   it("says each node's state as a person would, and syncs on opening", () => {
-    const { words, onRefresh } = render({
+    const { words, labels, onRefresh } = render({
       studio: { ...snapshot, phase: 'ready' },
       phone: { ...snapshot, phase: 'handshaking' },
     });
     expect(onRefresh).toHaveBeenCalledTimes(1);
-    expect(words()).toContain('Two nodes');
+    expect(labels()).toContain('Two nodes');
     expect(words()).toContain('ONE READY · 0 SONGS');
     expect(words()).toContain('READY');
     expect(words()).toContain('CONNECTING');
@@ -161,7 +166,7 @@ describe('Ledger engine pages', () => {
   });
 
   it('changes only the cache budget from settings and returns', () => {
-    const { press, words, onChangeBudget, onForget, tree } = render();
+    const { press, words, labels, onChangeBudget, onForget, tree } = render();
     press('Settings');
     expect(words()).toEqual(
       expect.arrayContaining(['DOWNLOADED', 'CACHED', 'PLACEMENTS']),
@@ -181,6 +186,6 @@ describe('Ledger engine pages', () => {
     expect(onChangeBudget).toHaveBeenCalledWith(2 * 1024 ** 3);
     expect(onForget).not.toHaveBeenCalled();
     press('Back to nodes');
-    expect(words()).toContain('NODES');
+    expect(labels()).toContain('NODES');
   });
 });

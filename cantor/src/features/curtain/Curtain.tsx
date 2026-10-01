@@ -6,12 +6,14 @@ import Animated, {
   runOnUI,
   useAnimatedReaction,
   useAnimatedStyle,
+  useDerivedValue,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
 import { useKeyboardInset } from './keyboard';
 import { haptic } from '../../haptics';
+import { ArrivalProvider } from '../controls/Arrival';
 import { space, type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — the blind: how it hangs, how far it must come, how fast it runs. */
@@ -380,6 +382,11 @@ function CurtainImpl({
     };
   }, [height, sign]);
 
+  /** How far the blind is drawn, 0..1: the clock its content arrives on. */
+  const drawnShare = useDerivedValue(() =>
+    height <= 0 ? 0 : Math.min(Math.max((pull.value * sign) / height, 0), 1),
+  );
+
   // The hem rides at the leading edge, so the rail and the words are always at
   // the edge the finger is holding rather than at a fixed place on the screen.
   const hem = useAnimatedStyle(() => {
@@ -545,7 +552,13 @@ function CurtainImpl({
             inside what is left, and nothing ends up underneath it.
           */}
           {fromTop ? <View style={styles.seatGap} /> : grip}
-          <View style={styles.content}>{children}</View>
+          {/*
+            What is inside arrives on how far the blind is drawn — the same
+            number the finger moves, on the UI thread (`ArrivalProvider`).
+          */}
+          <View style={styles.content}>
+            <ArrivalProvider clock={drawnShare}>{children}</ArrivalProvider>
+          </View>
           {fromTop ? grip : <View style={styles.seatGap} />}
         </View>
       </Animated.View>

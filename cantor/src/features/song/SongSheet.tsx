@@ -15,8 +15,6 @@ import {
   type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
-  type StyleProp,
-  type ViewStyle,
 } from 'react-native';
 import type { SongDetail, SongHeader } from '../../core/protocol';
 import type { SongPatch } from '../../../../protocol/SongPatch';
@@ -27,12 +25,9 @@ import Animated, {
   useAnimatedStyle,
   useDerivedValue,
   useReducedMotion,
-  useSharedValue,
-  withDelay,
-  withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import { easeSmoother, TransformText, WriteText } from '../../motion';
+import { TransformText, WriteText } from '../../motion';
 import {
   Coda,
   FolioHead,
@@ -51,6 +46,7 @@ import {
   Row,
   Stave,
   Underway,
+  useArrivalClock,
   useReach,
 } from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
@@ -344,22 +340,13 @@ function SongSheetImpl({
    * same commit that opens the blind, so a clock started on mount would run
    * while the surface carrying it was still on its way up.
    */
-  const arrival = useSharedValue(0);
-  useEffect(() => {
-    if (!visible) {
-      arrival.value = 0;
-      return;
-    }
-    arrival.value = reducedMotion
-      ? 1
-      : withDelay(
-          SONG_SHEET_KNOBS.ARRIVAL_WAIT_MS,
-          withTiming(1, {
-            duration: SONG_SHEET_KNOBS.ARRIVAL_MS,
-            easing: easeSmoother,
-          }),
-        );
-  }, [arrival, reducedMotion, song.id, visible]);
+  /**
+   * The sheet's own beat, 0 to 1, read off how far its blind is drawn (F10:
+   * never a clock started by React). Its second half, so the blind is most of
+   * the way up before the face traces on and the name writes.
+   */
+  const blind = useArrivalClock();
+  const arrival = useDerivedValue(() => windowed(blind.value, 0.5, 1));
 
   // Adopt the node's title whenever a different song is shown, or the node
   // renames this one under us. Read from truth rather than from the drawing:
@@ -458,6 +445,7 @@ function SongSheetImpl({
   return (
     <View onLayout={onFrame} style={styles.sheet}>
       <FolioHead
+        titleWritesItself
         clefAccessible
         clef={
           <Pressable
@@ -555,7 +543,6 @@ function SongSheetImpl({
       >
         <View style={[styles.pageSeat, { width: pageWidth }]}>
           <Front
-            arrival={arrival}
             acting={acting}
             arriving={arriving}
             audioState={audioState}
@@ -762,7 +749,6 @@ function Face({
 function Front({
   acting,
   arriving,
-  arrival,
   audioState,
   downloaded,
   deliveryBytes,
@@ -786,7 +772,6 @@ function Front({
   acting: SongAct | null;
   /** How much of a download has landed, 0..1, or null. */
   arriving: number | null;
-  arrival: SharedValue<number>;
   audioState: LocalAudioState;
   downloaded: boolean;
   deliveryBytes: number | null;
@@ -813,22 +798,13 @@ function Front({
   /** An audio act is under way: the offline line is what it will change. */
   const moving = acting === 'pin' || acting === 'unpin' || acting === 'remove';
   const keeping = acting === 'pin' || acting === 'unpin';
-  // The axis exists before the facts land on it, and after the mark that
-  // opened the sheet: one clock, read at three different stretches of itself.
-  const spine = useDerivedValue(() =>
-    windowed(
-      arrival.value,
-      SONG_SHEET_KNOBS.SPINE_WINDOW[0],
-      SONG_SHEET_KNOBS.SPINE_WINDOW[1],
-    ),
-  );
   const frees =
     deliveryBytes === null ? null : `FREES ${formatBytes(deliveryBytes)}`;
   return (
     <View style={styles.page}>
       <Stave>
-        <Measure arrival={spine}>
-          <Arriving arrival={arrival} index={1}>
+        <Measure>
+          <>
             <Row control label="Playlists">
               <Membership
                 addPlaceholder="new playlist"
@@ -842,8 +818,8 @@ function Front({
                 problemOf={playlistProblem}
               />
             </Row>
-          </Arriving>
-          <Arriving arrival={arrival} index={2}>
+          </>
+          <>
             <Row control label="Tags">
               <Membership
                 addPlaceholder="add a tag"
@@ -857,11 +833,11 @@ function Front({
                 problemOf={tagProblem}
               />
             </Row>
-          </Arriving>
+          </>
         </Measure>
         <Rest />
-        <Measure arrival={spine}>
-          <Arriving arrival={arrival} index={3}>
+        <Measure>
+          <>
             <Row label="Offline">
               {/*
                 Where the audio is is one state with several readings, so the
@@ -935,9 +911,9 @@ function Front({
                 </View>
               )}
             </Row>
-          </Arriving>
+          </>
           {downloaded && imported === null ? (
-            <Arriving arrival={arrival} index={4}>
+            <>
               <Row
                 label={frees ?? 'FREES THE COPY'}
                 note={`STAYS ON ${nodeLabel.toUpperCase()}`}
@@ -949,7 +925,7 @@ function Front({
                   working={acting === 'remove'}
                 />
               </Row>
-            </Arriving>
+            </>
           ) : null}
         </Measure>
       </Stave>
@@ -1237,43 +1213,6 @@ function ImportedRecord({
       <Coda />
     </View>
   );
-}
-
-/**
- * One block of the sheet, landing on the axis after it has been drawn.
- *
- * Opacity and a 6 px rise, nothing else: a layout prop driven from the UI
- * thread never reaches React Native's layout pass and snaps instead, which
- * `Reveal` documents and this obeys. The seats are permanent either way — the
- * front page is laid out at rest and only its ink arrives.
- */
-function Arriving({
-  arrival,
-  children,
-  index,
-  style,
-}: {
-  arrival: SharedValue<number>;
-  children: React.ReactNode;
-  index: number;
-  style?: StyleProp<ViewStyle>;
-}) {
-  const landed = useAnimatedStyle(() => {
-    const from =
-      SONG_SHEET_KNOBS.ROWS_FROM + index * SONG_SHEET_KNOBS.ARRIVAL_LAG;
-    const local = windowed(
-      arrival.value,
-      from,
-      from + SONG_SHEET_KNOBS.ARRIVAL_RISE,
-    );
-    return {
-      opacity: local,
-      transform: [
-        { translateY: (1 - local) * SONG_SHEET_KNOBS.ARRIVAL_RISE_PX },
-      ],
-    };
-  });
-  return <Animated.View style={[style, landed]}>{children}</Animated.View>;
 }
 
 /**
