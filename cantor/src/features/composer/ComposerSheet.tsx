@@ -2,10 +2,15 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import { TransformText, WriteSymbol } from '../../motion';
 import { haptic } from '../../haptics';
+import { nameLens } from '../../lenses/nameLens';
+import type { Lens } from '../../lenses/types';
+import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import { STAGE_SYMBOLS } from '../../jobs/marks';
 import {
   Choice,
   Coda,
+  DraftClef,
+  draftSeed,
   CodaWhy,
   Dial,
   FolioHead,
@@ -78,11 +83,14 @@ type Props = {
   targets: readonly ComposerTarget[];
   submitting: boolean;
   error: string | null;
+  /** The lens the person has chosen: the draft's face is drawn in it. */
+  lens?: Lens;
   onClose: () => void;
   onSubmit: (
     nodePublicKey: string,
     modelSelector: string,
-    generation: ReturnType<typeof toGenerationRequest>,
+    /** The draft, with the seed its clef was drawn from. */
+    generation: GenerationRequest,
   ) => void;
 };
 
@@ -111,11 +119,18 @@ function ComposerSheetImpl({
   targets,
   submitting,
   error,
+  lens = nameLens,
   onClose,
   onSubmit,
 }: Props) {
   const pal = usePalette();
   const [draft, setDraft] = useState<ComposerDraft>(EMPTY_DRAFT);
+  /**
+   * The seed this draft will be sent with, picked when it is begun: the
+   * clef draws that recipe's face, and the song lands wearing it. A new one
+   * after each send, so two presses of `Make it` are two songs.
+   */
+  const [seed, setSeed] = useState(draftSeed);
 
   // Default to the only sensible choice rather than making someone pick it.
   const nodePublicKey =
@@ -189,17 +204,32 @@ function ComposerSheetImpl({
     <>
       <FolioHead
         clef={
-          // The sheet draws its own mark as it comes down — ∇, the stage a
-          // generation begins at, which is what this sheet is. Written rather
-          // than faded, because the blind arrives by being pulled and the
-          // thing inside it should arrive by being drawn.
-          <WriteSymbol
-            symbol="nabla"
-            width={FOLIO_KNOBS.CLEF_PX}
-            height={FOLIO_KNOBS.CLEF_PX}
-            duration={COMPOSER_KNOBS.MARK_WRITE_MS}
-            color={pal.ink}
-          />
+          resolved.modelSelector !== null ? (
+            // The face of the song not made yet: its seed and model, its
+            // length or `auto`. The caption never changes it.
+            <DraftClef
+              draft={{
+                seed,
+                model: resolved.modelSelector,
+                durationMs:
+                  resolved.durationSeconds === null
+                    ? null
+                    : resolved.durationSeconds * 1000,
+              }}
+              lens={lens}
+              size={FOLIO_KNOBS.CLEF_PX}
+            />
+          ) : (
+            // Until a model is chosen there is no recipe to draw, so the sheet
+            // draws its own mark — ∇, the stage a generation begins at.
+            <WriteSymbol
+              symbol="nabla"
+              width={FOLIO_KNOBS.CLEF_PX}
+              height={FOLIO_KNOBS.CLEF_PX}
+              duration={COMPOSER_KNOBS.MARK_WRITE_MS}
+              color={pal.ink}
+            />
+          )
         }
         eyebrow="COMPOSE · DRAFT"
         nav={{
@@ -500,9 +530,10 @@ function ComposerSheetImpl({
             onSubmit(
               resolved.nodePublicKey as string,
               resolved.modelSelector as string,
-              toGenerationRequest(resolved, declared, selected),
+              { ...toGenerationRequest(resolved, declared, selected), seed },
             );
             setDraft(EMPTY_DRAFT);
+            setSeed(draftSeed());
           }}
           ready={ready}
           submitting={submitting}

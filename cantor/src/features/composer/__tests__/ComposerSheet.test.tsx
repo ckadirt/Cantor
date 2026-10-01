@@ -128,6 +128,7 @@ describe('the composer Ledger', () => {
     press('Make it');
     expect(onSubmit.mock.calls[0][2]).toEqual({
       caption: 'harbour',
+      seed: expect.any(Number),
     });
     press('Generate lyrics automatically');
     // A choice of names opens before an alternative can be picked.
@@ -179,5 +180,27 @@ describe('a pairing the node cannot run is never offered', () => {
     const [nodePublicKey, modelSelector] = onSubmit.mock.calls[0];
     expect(nodePublicKey).toBe('b');
     expect(modelSelector).toBe('levo2:1.0');
+  });
+});
+
+/**
+ * The live clef draws the draft's recipe, seed included, so the seed has to be
+ * the one that is sent — and a fresh one after each send, or two presses of
+ * `Make it` would be one song twice.
+ */
+describe('the draft seed', () => {
+  it('is sent with the request, and renewed after every send', () => {
+    const { onSubmit, press, type } = render([
+      { ...agentbox, models: [model('acestep:1.5-fast')] },
+    ]);
+    type('Describe the song', 'harbour');
+    press('Make it');
+    type('Describe the song', 'harbour');
+    press('Make it');
+    const [first, second] = onSubmit.mock.calls.map(call => call[2].seed);
+    expect(Number.isInteger(first)).toBe(true);
+    expect(first).toBeGreaterThanOrEqual(0);
+    expect(first).toBeLessThanOrEqual(0xffffffff);
+    expect(second).not.toBe(first);
   });
 });

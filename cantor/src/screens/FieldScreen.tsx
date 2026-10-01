@@ -2044,6 +2044,7 @@ export function FieldScreen({ identity }: Props) {
         >
           <ComposerSheet
             error={submitError}
+            lens={activeLens}
             onClose={closeComposer}
             onSubmit={onComposerSubmit}
             submitting={submitting}
