@@ -53,9 +53,25 @@ type PresentationBase = Readonly<{
   playable: boolean;
 }>;
 
+/**
+ * A download that is not simply landing, as the row and the mark say it
+ * (`folio.html#errors`):
+ *
+ * | Transfer | What is true |
+ * | --- | --- |
+ * | `moving` | bytes are arriving now |
+ * | `held` | cut off half way; waiting for its node, resumes by itself |
+ * | `stopped` | cut off half way, with nothing waiting to resume it |
+ * | `waiting` | asked for while the node was away; nothing sent yet |
+ * | `changed` | the node's file changed; it can only start again |
+ */
+export type Transfer = 'moving' | 'held' | 'stopped' | 'waiting' | 'changed';
+
 export type NodePresentation = PresentationBase &
   Readonly<{
     source: 'node';
+    /** A download that is not simply landing, or null. */
+    transfer: Transfer | null;
     song: SongHeader;
     backend: BackendRecord;
     ready: boolean;
@@ -85,11 +101,13 @@ export function nodePresentation(
     nodeLabels: readonly string[];
     delivery: ArtifactView | undefined;
     localAudio: LocalAudio;
+    transfer?: Transfer | null;
   }>,
 ): NodePresentation {
   const { song, backend, delivery } = parts;
   return {
     ...parts,
+    transfer: parts.transfer ?? null,
     source: 'node',
     title: song.title,
     durationMs: song.duration_ms,
@@ -148,6 +166,7 @@ export function sameDrawnSong(
   }
   return (
     left.song === right.song &&
+    left.transfer === right.transfer &&
     left.backend === right.backend &&
     left.ready === right.ready &&
     left.delivery === right.delivery &&
@@ -196,6 +215,7 @@ type FieldRuntimeState = Pick<
   BackendRuntimeState,
   'backends' | 'snapshots' | 'localAudio' | 'outbox'
 > &
+  Partial<Pick<BackendRuntimeState, 'downloading' | 'waiting'>> &
   Readonly<{
     /** Songs whose files live on this phone; absent before the database opens. */
     device?: DeviceLibrary;
@@ -223,6 +243,19 @@ const LIVE_JOB_STATES: ReadonlySet<string> = new Set([
 ]);
 
 const REMOTE_AUDIO: LocalAudio = { state: 'remote', bytes: 0 };
+
+/** What a song's download is doing, from the runtime's three facts about it. */
+export function transferOf(
+  localAudio: LocalAudio,
+  moving: boolean,
+  waiting: 'waiting' | 'changed' | null,
+): Transfer | null {
+  if (moving) return 'moving';
+  if (waiting === 'changed') return 'changed';
+  if (waiting === 'waiting')
+    return localAudio.state === 'partial' ? 'held' : 'waiting';
+  return localAudio.state === 'partial' ? 'stopped' : null;
+}
 
 /**
  * Project runtime truth into the tiny read model used by the field. The field
@@ -253,10 +286,13 @@ export function buildFieldController(
     for (const song of snapshot?.songs ?? []) {
       if (song.trashed) continue;
       const delivery = deliveryArtifact(song);
-      const localAudio =
-        state.localAudio[
-          audioKey(nodeKey, song.id, delivery?.sha256 ?? 'none')
-        ] ?? REMOTE_AUDIO;
+      const audio = audioKey(nodeKey, song.id, delivery?.sha256 ?? 'none');
+      const localAudio = state.localAudio[audio] ?? REMOTE_AUDIO;
+      const transfer = transferOf(
+        localAudio,
+        state.downloading?.has(audio) ?? false,
+        state.waiting?.[audio]?.state ?? null,
+      );
       // An unpaired node keeps only what you pinned. A cached copy is a loan
       // `enforceCacheBudget` may call in at any download, and with no node to
       // fetch it back from a mark standing on one would simply vanish one day.
@@ -283,7 +319,8 @@ export function buildFieldController(
         kept.song === song &&
         kept.backend === backend &&
         kept.ready === ready &&
-        kept.localAudio === localAudio
+        kept.localAudio === localAudio &&
+        kept.transfer === transfer
       ) {
         presentations.set(entity.key, kept);
         continue;
@@ -298,6 +335,7 @@ export function buildFieldController(
           nodeLabels: nodeLabelsOf(backend),
           delivery,
           localAudio,
+          transfer,
         }),
       );
     }

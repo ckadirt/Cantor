@@ -2,6 +2,11 @@ import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { JobView } from '../../../../protocol/JobView';
 import type { SongHeader } from '../../../../protocol/SongHeader';
 import type { LocalAudioStore } from '../../audio/localAudioStore';
+import {
+  waitingKey,
+  type WaitingDownload,
+  type WaitingQueue,
+} from '../../audio/waiting';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import type { AppIdentity } from '../../identity/derive';
 import type { OutboxEntry } from '../../jobs/outbox';
@@ -100,7 +105,23 @@ function setup() {
   const mergeJobs = jest.fn(async (_node: string, jobs: JobView[]) => jobs);
   const commitLibrary = jest.fn().mockResolvedValue(undefined);
   const loadOutbox = jest.fn().mockResolvedValue([] as OutboxEntry[]);
+  // The waiting queue, in memory: the real one is AsyncStorage.
+  let queue: WaitingQueue = {};
+  const putWaiting = jest.fn(async (entry: WaitingDownload) => {
+    queue = { ...queue, [waitingKey(entry)]: entry };
+    return queue;
+  });
+  const dropWaiting = jest.fn(async (key: string) => {
+    const next = { ...queue };
+    delete next[key];
+    queue = next;
+    return queue;
+  });
   const runtime = new BackendRuntime(identity, {
+    loadWaiting: jest.fn(async () => queue),
+    putWaiting,
+    dropWaiting,
+    dropWaitingFor: jest.fn(async () => queue),
     createConnection: (_backend, _identity, _token, received) => {
       callbacks.push(received);
       return connection;
@@ -125,6 +146,8 @@ function setup() {
     callbacks,
     inspect,
     pin,
+    putWaiting,
+    dropWaiting,
     connection,
     mergeJobs,
     commitLibrary,
@@ -134,7 +157,9 @@ function setup() {
 
 function snapshot(songs: SongHeader[], jobs: JobView[]): ConnectionSnapshot {
   return {
-    phase: 'connecting',
+    // Ready: a download is only attempted on a ready node; one that is not
+    // waits for it (`audio/waiting.ts`).
+    phase: 'ready',
     error: null,
     songs,
     jobs,
@@ -359,6 +384,82 @@ describe('BackendRuntime', () => {
       f.callbacks[0].onSnapshot(ready([job(4)]));
       await flush();
       expect(f.loadOutbox.mock.calls.length).toBe(reads);
+    });
+  });
+
+  /*
+   * A GET on a node that is away promises instead of failing, a transfer cut
+   * off half way waits with its bytes, and both run when the node is back.
+   */
+  describe('downloads that wait for their node', () => {
+    it('promises a GET on a node that is away, and keeps it when the node is back', async () => {
+      const f = setup();
+      f.runtime.start();
+      await flush();
+      const target = song('song-a', 'a');
+      f.callbacks[0].onSnapshot({
+        ...snapshot([target], []),
+        phase: 'attached',
+      });
+      await flush();
+      await f.runtime.commands.audio('node-a', target, artifact('a'), 'keep');
+      await flush();
+      expect(f.connection.downloadArtifact).not.toHaveBeenCalled();
+      const key = waitingKey({
+        nodePublicKey: 'node-a',
+        songId: 'song-a',
+        digest: artifact('a').sha256,
+      });
+      expect(f.runtime.store.get().waiting[key]).toMatchObject({
+        state: 'waiting',
+        action: 'keep',
+      });
+
+      f.callbacks[0].onSnapshot(snapshot([target], []));
+      await flush();
+      await flush();
+      expect(f.connection.downloadArtifact).toHaveBeenCalledTimes(1);
+      expect(f.runtime.store.get().waiting[key]).toBeUndefined();
+    });
+
+    it('waits with its bytes when the connection cuts a transfer, and stops for a changed file', async () => {
+      const f = setup();
+      f.runtime.start();
+      await flush();
+      const target = song('song-a', 'a');
+      f.callbacks[0].onSnapshot(snapshot([target], []));
+      await flush();
+      const key = waitingKey({
+        nodePublicKey: 'node-a',
+        songId: 'song-a',
+        digest: artifact('a').sha256,
+      });
+      (f.connection.downloadArtifact as jest.Mock).mockRejectedValueOnce(
+        new Error('The connection to the node stopped.'),
+      );
+      await expect(
+        f.runtime.commands.audio('node-a', target, artifact('a'), 'keep'),
+      ).resolves.toBeUndefined();
+      expect(f.runtime.store.get().waiting[key]?.state).toBe('waiting');
+
+      (f.connection.downloadArtifact as jest.Mock).mockRejectedValueOnce(
+        Object.assign(new Error('raw'), {
+          code: 'artifact_changed',
+          retryable: false,
+        }),
+      );
+      await expect(
+        f.runtime.commands.audio('node-a', target, artifact('a'), 'keep'),
+      ).rejects.toThrow('raw');
+      expect(f.runtime.store.get().waiting[key]?.state).toBe('changed');
+
+      f.runtime.commands.cancelWaiting(
+        'node-a',
+        'song-a',
+        artifact('a').sha256,
+      );
+      await flush();
+      expect(f.runtime.store.get().waiting[key]).toBeUndefined();
     });
   });
 });

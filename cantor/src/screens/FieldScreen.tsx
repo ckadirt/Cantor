@@ -698,7 +698,23 @@ export function FieldScreen({ identity }: Props) {
           verb,
         );
       try {
-        if (action === 'GET') {
+        if (action === 'CANCEL') {
+          // Nothing was sent: withdrawing the wish is the whole act.
+          commands.cancelWaiting(
+            presentation.entity.nodePublicKey,
+            presentation.entity.entityId,
+            artifact.sha256,
+          );
+        } else if (action === 'START AGAIN') {
+          // The bytes here are no longer the song's: drop them, then fetch.
+          commands.cancelWaiting(
+            presentation.entity.nodePublicKey,
+            presentation.entity.entityId,
+            artifact.sha256,
+          );
+          if (presentation.localAudio.state !== 'remote') await run('remove');
+          await run('keep');
+        } else if (action === 'GET') {
           await run('keep');
         } else if (action === 'KEEP') {
           await run('pin');
@@ -715,12 +731,12 @@ export function FieldScreen({ identity }: Props) {
           await run('remove');
         }
       } catch (error) {
-        setAudioError(readError(error));
+        setAudioError(failureWords(error, presentation.label).sentence);
       } finally {
         audioBusy.current.delete(key);
       }
     },
-    [commands, transport],
+    [commands, failureWords, transport],
   );
 
   const onRowAction = useCallback(
@@ -735,6 +751,7 @@ export function FieldScreen({ identity }: Props) {
       }
       const action = availabilityAction(
         availabilityOf(presentation.localAudio.state),
+        presentation.source === 'node' ? presentation.transfer : null,
       );
       if (action === null) return false;
       void runRowAudio(presentation, action);

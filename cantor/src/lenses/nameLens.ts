@@ -9,7 +9,9 @@ import { FACE_MAX_EXTENT, facePoints, type FaceRecipe } from './face';
 import { ringTurnAt } from './ring';
 import { SEAL_PLAYER_KNOBS } from './seal';
 import {
+  ARRIVING_HELD_ALPHA,
   ARRIVING_NONE,
+  isArrivingHeld,
   arrivedShare,
   type LensIdentity,
   type LensPlayer,
@@ -227,7 +229,9 @@ export function drawCircleMark(
      */
     const r = nameLensRingRadius(NAME_LENS_KNOBS.MARK_RADIUS_PX * size);
     const share = arrivedShare(arriving);
-    paints.stroke.setAlphaf(alpha * (1 - arrived));
+    // A stopped download keeps its arc where it stopped, faint.
+    const held = isArrivingHeld(arriving) ? ARRIVING_HELD_ALPHA : 1;
+    paints.stroke.setAlphaf(alpha * (1 - arrived) * held);
     paints.stroke.setStrokeWidth(NAME_LENS_KNOBS.ARRIVING_RING_WIDTH_PX);
     canvas.drawArc(
       Skia.XYWHRect(-r, -r, r * 2, r * 2),
