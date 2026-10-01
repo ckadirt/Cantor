@@ -125,18 +125,23 @@ export function availabilityAction(
 export function availabilityLine(
   song: Pick<LensSong, 'audioState' | 'arriving' | 'byteLength' | 'nodeLabel'>,
   transfer: TransferState | null = null,
+  noConnection = false,
 ): string {
   const node = song.nodeLabel.toUpperCase();
   const at = song.arriving === null ? null : Math.round(song.arriving * 100);
   switch (transfer) {
     case 'held':
+      if (noConnection)
+        return at === null
+          ? 'STOPPED · NO CONNECTION'
+          : `STOPPED AT ${at}% · NO CONNECTION`;
       return at === null
         ? `STOPPED · ${node} LEFT`
         : `STOPPED AT ${at}% · ${node} LEFT`;
     case 'stopped':
       return at === null ? 'STOPPED' : `STOPPED AT ${at}%`;
     case 'waiting':
-      return `WAITING FOR ${node}`;
+      return noConnection ? 'WAITING FOR A CONNECTION' : `WAITING FOR ${node}`;
     case 'changed':
       return `THE FILE CHANGED ON ${node}`;
     default:

@@ -21,6 +21,7 @@ import { DeviceLibraryService } from '../device/deviceLibrary';
 import { nativeMedia } from '../device/native';
 import { createDeviceRepository } from '../device/repository';
 import { EnginesSheet, nodeStateOfPhase } from '../features/engines';
+import { followNetwork, network } from '../network';
 import {
   codeOf,
   followFailures,
@@ -299,6 +300,8 @@ export function FieldScreen({ identity }: Props) {
   const runtime = useRuntime(identity);
   const commands = runtime.commands;
   const backends = useStore(runtime.store, state => state.backends);
+  const phoneOnline = useStore(network, state => state);
+  useEffect(() => followNetwork(), []);
   // Connection errors and failed jobs arrive as state; Diagnostics keeps them.
   useEffect(() => followFailures(runtime.store), [runtime.store]);
   /** A paired node's name, for words that say which node a failure is about. */
@@ -531,7 +534,7 @@ export function FieldScreen({ identity }: Props) {
     });
   }, [deviceLibrary]);
   const [controllerStore] = useState(() =>
-    createFieldControllerStore(runtime.store, deviceLibrary.store),
+    createFieldControllerStore(runtime.store, deviceLibrary.store, network),
   );
   useEffect(() => controllerStore.connect(), [controllerStore]);
   const controller = useStore(controllerStore.store, songsOf, shallowEqual);
@@ -1898,6 +1901,19 @@ export function FieldScreen({ identity }: Props) {
     const { width, height } = event.nativeEvent.layout;
     if (width > 0 && height > 0) setViewport({ width, height });
   }, []);
+  /**
+   * No connection at all: the field shows what is with you. `null` (not yet
+   * known, or no module) is never read as offline.
+   */
+  const noConnection = phoneOnline === false;
+  const playableHere = useMemo(() => {
+    let count = 0;
+    for (const presentation of controller.presentations.values()) {
+      const state = presentation.localAudio.state;
+      if (state === 'cached' || state === 'pinned') count += 1;
+    }
+    return count;
+  }, [controller.presentations]);
   const offline =
     backends !== null &&
     backends.length > 0 &&
@@ -2050,6 +2066,15 @@ export function FieldScreen({ identity }: Props) {
                 arriving: focusedArriving ? focusedArrivingFraction : null,
                 tags: focused.entity.tags,
                 imported: focused.source === 'device',
+                // Not here, and nothing to fetch it from: the clock's slot
+                // says why instead of counting time that cannot run.
+                away:
+                  focused.source === 'node' &&
+                  focused.localAudio.state !== 'cached' &&
+                  focused.localAudio.state !== 'pinned' &&
+                  (noConnection || !focused.ready)
+                    ? `ON ${focused.label.toUpperCase()}, OFFLINE`
+                    : null,
               }}
               width={viewport.width}
             />
@@ -2067,6 +2092,8 @@ export function FieldScreen({ identity }: Props) {
           onChangeArrangement={setArrangementKey}
           onChangeDateResolution={setDateResolution}
           offline={offline}
+          noConnection={noConnection}
+          playableHere={playableHere}
           onOpenComposer={openComposer}
           onOpenEngines={openEnginesFromField}
           onChangeOrder={chooseOrder}
@@ -2100,6 +2127,7 @@ export function FieldScreen({ identity }: Props) {
           <ComposerSheet
             error={submitError?.sentence ?? null}
             errorWord={submitError?.short ?? null}
+            noConnection={noConnection}
             lens={activeLens}
             onClose={closeComposer}
             onSubmit={onComposerSubmit}

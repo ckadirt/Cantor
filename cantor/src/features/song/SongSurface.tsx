@@ -95,6 +95,12 @@ export type SongSurfaceSong = Readonly<{
   tags: readonly string[];
   /** A file that was on the phone before Cantor: its foot says so. */
   imported?: boolean;
+  /**
+   * Why it cannot play from here (`ON RTX6000, OFFLINE`), or null. Said in
+   * the clock's slot, which is already text (`folio.html` frame
+   * `f-err-player`).
+   */
+  away?: string | null;
 }>;
 
 type Props = {
@@ -297,9 +303,11 @@ function SongSurfaceImpl({
       */}
       <Animated.Text
         style={[type.eyebrow, styles.elapsed, { color: pal.ink }, readout]}>
-        {`${formatClock(isCurrent ? elapsed : 0)}  ·  ${formatClock(
-          durationSeconds,
-        )}`}
+        {song.away
+          ? song.away
+          : `${formatClock(isCurrent ? elapsed : 0)}  ·  ${formatClock(
+              durationSeconds,
+            )}`}
       </Animated.Text>
 
       <GestureDetector gesture={scrub}>
