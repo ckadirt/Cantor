@@ -258,27 +258,27 @@ describe('cutting a title to the column it has', () => {
 });
 
 describe('a download that is not simply landing', () => {
-  const song = {
+  const landing = {
     audioState: 'partial' as const,
     arriving: 0.46,
     byteLength: 1000,
     nodeLabel: 'agentbox',
   };
   it('says where it stopped, what it waits for, and what changed', () => {
-    expect(availabilityLine(song, 'held')).toBe(
+    expect(availabilityLine(landing, 'held')).toBe(
       'STOPPED AT 46% · AGENTBOX LEFT',
     );
-    expect(availabilityLine(song, 'stopped')).toBe('STOPPED AT 46%');
+    expect(availabilityLine(landing, 'stopped')).toBe('STOPPED AT 46%');
     expect(
       availabilityLine(
-        { ...song, audioState: 'remote', arriving: null },
+        { ...landing, audioState: 'remote', arriving: null },
         'waiting',
       ),
     ).toBe('WAITING FOR AGENTBOX');
-    expect(availabilityLine(song, 'changed')).toBe(
+    expect(availabilityLine(landing, 'changed')).toBe(
       'THE FILE CHANGED ON AGENTBOX',
     );
-    expect(availabilityLine(song, 'moving')).toBe('DOWNLOADING · 46%');
+    expect(availabilityLine(landing, 'moving')).toBe('DOWNLOADING · 46%');
   });
   it('offers only what can be done about it', () => {
     expect(availabilityAction('not-synced', 'waiting')).toBe('CANCEL');
