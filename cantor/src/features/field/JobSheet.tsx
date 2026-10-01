@@ -9,15 +9,11 @@ import {
 import Animated, {
   useAnimatedStyle,
   useDerivedValue,
-  useReducedMotion,
-  useSharedValue,
-  withDelay,
-  withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
 import { Canvas } from '@shopify/react-native-skia';
 import type { GenerationStage } from '../../../../protocol/GenerationStage';
-import { easeSmoother, TransformText, WriteText } from '../../motion';
+import { TransformText, WriteText } from '../../motion';
 import { SymbolArtworkPath } from '../../motion/CanonicalSymbol';
 import {
   Coda,
@@ -34,6 +30,7 @@ import {
   Stave,
   Strike,
   Underway,
+  useArrivalClock,
   useReach,
 } from '../controls';
 import { STAGE_SYMBOLS, jobMarkModel } from '../../jobs/marks';
@@ -139,7 +136,6 @@ export function JobSheet({
   onForget,
 }: Props) {
   const pal = usePalette();
-  const reducedMotion = useReducedMotion();
   // Deleting is the one act here that cannot be undone, so it is asked twice.
   // Keyed on the job: opening a different mark must never inherit a raised axe.
   /**
@@ -156,22 +152,13 @@ export function JobSheet({
    * sheet is mounted by the commit that opens the blind, so a clock started on
    * mount would run while the surface carrying it was still on its way up.
    */
-  const arrival = useSharedValue(0);
-  useEffect(() => {
-    if (!visible) {
-      arrival.value = 0;
-      return;
-    }
-    arrival.value = reducedMotion
-      ? 1
-      : withDelay(
-          JOB_SHEET_KNOBS.ARRIVAL_WAIT_MS,
-          withTiming(1, {
-            duration: JOB_SHEET_KNOBS.ARRIVAL_MS,
-            easing: easeSmoother,
-          }),
-        );
-  }, [arrival, jobId, reducedMotion, visible]);
+  /**
+   * The sheet's own beat, 0 to 1, read off how far its blind is drawn (F10:
+   * never a clock started by React). Its second half, so the blind is most of
+   * the way up before the face traces on and the name writes.
+   */
+  const blind = useArrivalClock();
+  const arrival = useDerivedValue(() => windowed(blind.value, 0.5, 1));
   if (pending === null) return null;
 
   const model = jobMarkModel(pending.job, [], pending.declaredStages);
@@ -192,6 +179,7 @@ export function JobSheet({
   return (
     <View style={styles.sheet}>
       <FolioHead
+        titleWritesItself
         clef={
           model.symbol === null ? null : (
             <Canvas style={styles.seatGlyph}>
@@ -245,8 +233,8 @@ export function JobSheet({
 
       <Stave>
           {stages.length === 0 ? null : (
-            <Arriving arrival={arrival} index={0}>
-              <Measure arrival={arrival}>
+            <>
+              <Measure>
               <Row label="Stages" note={arcNote(model, stages)}>
                 <View style={styles.arc}>
                   {stages.map((stage, index) => (
@@ -282,13 +270,13 @@ export function JobSheet({
                 ) : null}
               </Row>
               </Measure>
-            </Arriving>
+            </>
           )}
 
           {failure === undefined ? null : (
-            <Arriving arrival={arrival} index={1}>
+            <>
               {stages.length === 0 ? null : <Rest />}
-              <Measure arrival={arrival}>
+              <Measure>
               {/*
                 The failure in the app's words, from its code
                 (`describeError`); the node's own message is kept for
@@ -304,12 +292,12 @@ export function JobSheet({
                 </Text>
               </Row>
               </Measure>
-            </Arriving>
+            </>
           )}
 
-          <Arriving arrival={arrival} index={2}>
+          <>
             {stages.length === 0 && failure === undefined ? null : <Rest />}
-            <Measure arrival={arrival}>
+            <Measure>
             <Fact label="Started" note={clockOf(made)} value={dateOf(made)} />
           {/*
             The rest of the submission is what this phone kept, so a job sent
@@ -327,7 +315,7 @@ export function JobSheet({
             <Fact label="Model" mono value={pending.job.model} />
             <Fact label="Ref" mono value={shortKey(pending.job.id)} />
             </Measure>
-          </Arriving>
+          </>
       </Stave>
 
       {/*
@@ -554,41 +542,6 @@ function Fact({
   );
 }
 
-/**
- * One block of the sheet, landing on the axis after it has been drawn.
- *
- * Opacity and a 6 px rise, nothing else: a layout prop driven from the UI
- * thread never reaches React Native's layout pass and snaps instead. The seats
- * are permanent either way — the sheet is laid out at rest and only its ink
- * arrives, in the order the eye is given it.
- */
-function Arriving({
-  arrival,
-  children,
-  index,
-  style,
-}: {
-  arrival: SharedValue<number>;
-  children: React.ReactNode;
-  index: number;
-  style?: object;
-}) {
-  const landed = useAnimatedStyle(() => {
-    const from = JOB_SHEET_KNOBS.ROWS_FROM + index * JOB_SHEET_KNOBS.ARRIVAL_LAG;
-    const local = windowed(
-      arrival.value,
-      from,
-      from + JOB_SHEET_KNOBS.ARRIVAL_RISE,
-    );
-    return {
-      opacity: local,
-      transform: [
-        { translateY: (1 - local) * JOB_SHEET_KNOBS.ARRIVAL_RISE_PX },
-      ],
-    };
-  });
-  return <Animated.View style={[style, landed]}>{children}</Animated.View>;
-}
 
 function dateOf(made: Date): string {
   return Number.isNaN(made.getTime())

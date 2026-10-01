@@ -1,5 +1,4 @@
 import React, { useMemo, useState } from 'react';
-import Animated, { FadeIn, useReducedMotion } from 'react-native-reanimated';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import {
@@ -14,6 +13,7 @@ import {
   FOLIO_NOTE_STYLE,
   FOLIO_TITLE_STYLE,
   Measure,
+  PageArrival,
   PanelPressable,
   Rest,
   Row,
@@ -95,9 +95,22 @@ function EnginesSheetImpl({
   onChangeBudget,
 }: Props) {
   const pal = usePalette();
-  const reducedMotion = useReducedMotion();
   const [draftName, setDraftName] = useState('');
   const [page, setPage] = useState<Page>({ kind: 'engines' });
+  /**
+   * Whether the page shown replaced another since the blind opened: such a
+   * page arrives on its own clock; the first arrives with the blind.
+   */
+  const turned = React.useRef(false);
+  const shownPage = React.useRef<Page | null>(null);
+  if (!open) {
+    turned.current = false;
+    shownPage.current = null;
+  } else {
+    if (shownPage.current !== null && shownPage.current !== page)
+      turned.current = true;
+    shownPage.current = page;
+  }
 
   const known = useMemo(() => knownModels(backends), [backends]);
   const failures = useStore(diagnostics, state => state);
@@ -160,6 +173,7 @@ function EnginesSheetImpl({
   return (
     <>
       <FolioHead
+        morph
         clef={
           page.kind === 'settings' || page.kind === 'diagnostics' ? (
             <PhoneSealMark publicKey={publicKey} size={FOLIO_KNOBS.CLEF_PX} />
@@ -201,87 +215,88 @@ function EnginesSheetImpl({
           )
         }
       />
-      <Animated.View
+      <View
         key={'node' in page ? `${page.kind}-${page.node}` : page.kind}
-        entering={FadeIn.duration(reducedMotion ? 0 : PANEL_KNOBS.PAGE_FADE_MS)}
         style={styles.page}
       >
-        {page.kind === 'settings' ? (
-          <SettingsSheet
-            budgetBytes={budgetBytes}
-            library={library}
-            onChangeBudget={onChangeBudget}
-            failures={failures.length}
-            onOpenDiagnostics={() => setPage({ kind: 'diagnostics' })}
-            storage={storage}
-            visible={open}
-          />
-        ) : page.kind === 'diagnostics' ? (
-          <DiagnosticsSheet failures={failures} />
-        ) : page.kind === 'node' ? (
-          <NodeSheet
-            backend={selectedBackend}
-            footprint={footprints[page.node]}
-            known={known}
-            nameOf={nameOfKey}
-            onForget={() => {
-              // Held on the node page itself: there is no second page asking.
-              home();
-              onForget(page.node);
-            }}
-            snapshot={snapshots[page.node]}
-          />
-        ) : (
-          <>
-            <Stave>
-              <Measure>
-                {backends === null ? (
-                  <Row>
-                    <Text style={[type.body, { color: pal.muted }]}>
-                      Loading paired nodes…
-                    </Text>
-                  </Row>
-                ) : backends.length === 0 ? (
-                  <Row>
-                    <Text style={[type.body, { color: pal.muted }]}>
-                      No node is paired yet.
-                    </Text>
-                  </Row>
-                ) : (
-                  backends.map(backend => (
-                    <RosterEntry
-                      key={backend.nodePubkey}
-                      footprint={footprints[backend.nodePubkey]}
-                      models={backend.lastNodeInfo?.models.length ?? 0}
-                      name={nameOf(backend)}
-                      nodePublicKey={backend.nodePubkey}
-                      onOpen={() =>
-                        setPage({ kind: 'node', node: backend.nodePubkey })
-                      }
-                      snapshot={snapshots[backend.nodePubkey]}
+        <PageArrival fresh={turned.current}>
+          {page.kind === 'settings' ? (
+            <SettingsSheet
+              budgetBytes={budgetBytes}
+              library={library}
+              onChangeBudget={onChangeBudget}
+              failures={failures.length}
+              onOpenDiagnostics={() => setPage({ kind: 'diagnostics' })}
+              storage={storage}
+              visible={open}
+            />
+          ) : page.kind === 'diagnostics' ? (
+            <DiagnosticsSheet failures={failures} />
+          ) : page.kind === 'node' ? (
+            <NodeSheet
+              backend={selectedBackend}
+              footprint={footprints[page.node]}
+              known={known}
+              nameOf={nameOfKey}
+              onForget={() => {
+                // Held on the node page itself: there is no second page asking.
+                home();
+                onForget(page.node);
+              }}
+              snapshot={snapshots[page.node]}
+            />
+          ) : (
+            <>
+              <Stave>
+                <Measure>
+                  {backends === null ? (
+                    <Row>
+                      <Text style={[type.body, { color: pal.muted }]}>
+                        Loading paired nodes…
+                      </Text>
+                    </Row>
+                  ) : backends.length === 0 ? (
+                    <Row>
+                      <Text style={[type.body, { color: pal.muted }]}>
+                        No node is paired yet.
+                      </Text>
+                    </Row>
+                  ) : (
+                    backends.map(backend => (
+                      <RosterEntry
+                        key={backend.nodePubkey}
+                        footprint={footprints[backend.nodePubkey]}
+                        models={backend.lastNodeInfo?.models.length ?? 0}
+                        name={nameOf(backend)}
+                        nodePublicKey={backend.nodePubkey}
+                        onOpen={() =>
+                          setPage({ kind: 'node', node: backend.nodePubkey })
+                        }
+                        snapshot={snapshots[backend.nodePubkey]}
+                      />
+                    ))
+                  )}
+                </Measure>
+                <Rest />
+                <Measure>
+                  <Row note="Your key · storage · about">
+                    <Door
+                      label="Settings"
+                      onPress={() => setPage({ kind: 'settings' })}
                     />
-                  ))
-                )}
-              </Measure>
-              <Rest />
-              <Measure>
-                <Row note="Your key · storage · about">
-                  <Door
-                    label="Settings"
-                    onPress={() => setPage({ kind: 'settings' })}
-                  />
-                </Row>
-              </Measure>
-            </Stave>
-            <Coda>
-              <Action display label="Pair a node" onPress={onPair} />
-              <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
-                A PC, A MAC OR A SERVER
-              </Text>
-            </Coda>
-          </>
-        )}
-      </Animated.View>
+                  </Row>
+                </Measure>
+              </Stave>
+              <Coda>
+                <Action display label="Pair a node" onPress={onPair} />
+                <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
+                  A PC, A MAC OR A SERVER
+                </Text>
+              </Coda>
+            </>
+          )}
+        </PageArrival>
+      </View>
     </>
   );
 }
@@ -493,7 +508,6 @@ function Action({
 const PANEL_KNOBS = {
   /** A node's station in the roster's label column. */
   STATION_PX: 34,
-  PAGE_FADE_MS: 220,
 } as const;
 
 const styles = StyleSheet.create({

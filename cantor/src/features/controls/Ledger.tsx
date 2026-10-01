@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useContext } from 'react';
 import {
   StyleSheet,
   Text,
@@ -8,8 +8,17 @@ import {
 } from 'react-native';
 import Animated, {
   useAnimatedStyle,
+  useDerivedValue,
+  useReducedMotion,
+  useSharedValue,
   type SharedValue,
 } from 'react-native-reanimated';
+import {
+  ARRIVAL_KNOBS,
+  StaveHeight,
+  useArrivalClock,
+  windowed,
+} from './Arrival';
 import { Caret } from './Caret';
 import { PanelPressable } from './PanelPressable';
 import { Underway, useReach } from './state';
@@ -121,10 +130,63 @@ export function Ledger({
   style?: StyleProp<ViewStyle>;
 }) {
   const pal = usePalette();
+  const clock = useArrivalClock();
+  const staveHeight = useContext(StaveHeight);
+  // Where this measure stands in the stave decides when its spine grows: the
+  // line is drawn top to bottom, measure by measure, timed by position.
+  const top = useSharedValue(0);
+  const height = useSharedValue(0);
+  const from = useDerivedValue(() => {
+    const visible = staveHeight?.value ?? 0;
+    const at = visible > 0 ? Math.min(top.value / visible, 1) : 0;
+    return (
+      ARRIVAL_KNOBS.SPINE_FROM +
+      at * (ARRIVAL_KNOBS.SPINE_TO - ARRIVAL_KNOBS.SPINE_FROM)
+    );
+  });
+  const to = useDerivedValue(() => {
+    const visible = staveHeight?.value ?? 0;
+    const at =
+      visible > 0 ? Math.min((top.value + height.value) / visible, 1) : 1;
+    return (
+      ARRIVAL_KNOBS.SPINE_FROM +
+      at * (ARRIVAL_KNOBS.SPINE_TO - ARRIVAL_KNOBS.SPINE_FROM)
+    );
+  });
+  const reducedMotion = useReducedMotion();
+  const landed = useAnimatedStyle(() => {
+    if (arrival !== undefined) return {};
+    const local = windowed(
+      clock.value,
+      from.value,
+      from.value + ARRIVAL_KNOBS.FACT_SPAN,
+    );
+    return reducedMotion
+      ? { opacity: local }
+      : {
+          opacity: local,
+          transform: [{ translateY: (1 - local) * ARRIVAL_KNOBS.FACT_RISE_PX }],
+        };
+  });
+  const grown = useDerivedValue(() =>
+    arrival !== undefined
+      ? arrival.value
+      : windowed(clock.value, from.value, to.value),
+  );
   return (
-    <View style={[styles.ledger, style]}>
-      <Spine arrival={arrival} colour={pal.spine} />
-      {children}
+    <View
+      onLayout={event => {
+        top.value = event.nativeEvent.layout.y;
+        height.value = event.nativeEvent.layout.height;
+      }}
+      style={[styles.ledger, style]}
+    >
+      <Spine arrival={grown} colour={pal.spine} />
+      {/*
+        The facts land as the spine reaches them — as one block per measure,
+        not a mapper per row: a row each cost frames on the phone (F10 notes).
+      */}
+      <Animated.View style={landed}>{children}</Animated.View>
     </View>
   );
 }
