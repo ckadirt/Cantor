@@ -57,3 +57,4 @@ export {
 } from './state';
 export { Reveal, REVEAL_KNOBS } from './Reveal';
 export { Strike, STRIKE_KNOBS } from './Strike';
+export { DraftClef, draftSeed, DRAFT_CLEF_KNOBS, NEUTRAL_DURATION_MS, type DraftRecipe } from './DraftClef';
