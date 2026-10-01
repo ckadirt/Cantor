@@ -21,6 +21,9 @@ import {
   type FolioNav,
 } from '../controls';
 import { NodeSheet } from './NodeSheet';
+import { DiagnosticsSheet } from './DiagnosticsSheet';
+import { diagnostics } from '../../runtime/diagnostics';
+import { useStore } from '../../core/useStore';
 import { knownModels, nodeState, nodeStateWord } from './nodeState';
 import {
   SettingsSheet,
@@ -97,6 +100,7 @@ function EnginesSheetImpl({
   const [page, setPage] = useState<Page>({ kind: 'engines' });
 
   const known = useMemo(() => knownModels(backends), [backends]);
+  const failures = useStore(diagnostics, state => state);
   const selectedBackend =
     'node' in page
       ? backends?.find(backend => backend.nodePubkey === page.node)
@@ -137,6 +141,12 @@ function EnginesSheetImpl({
   });
   const nav: FolioNav = isHome
     ? { label: 'CLOSE', accessibilityLabel: 'Close nodes', onPress: close }
+    : page.kind === 'diagnostics'
+    ? {
+        label: '‹ SETTINGS',
+        accessibilityLabel: 'Back to settings',
+        onPress: () => setPage({ kind: 'settings' }),
+      }
     : { label: '‹ NODES', accessibilityLabel: 'Back to nodes', onPress: home };
 
   const commitName = () => {
@@ -151,7 +161,7 @@ function EnginesSheetImpl({
     <>
       <FolioHead
         clef={
-          page.kind === 'settings' ? (
+          page.kind === 'settings' || page.kind === 'diagnostics' ? (
             <PhoneSealMark publicKey={publicKey} size={FOLIO_KNOBS.CLEF_PX} />
           ) : page.kind === 'node' && selectedBackend !== undefined ? (
             <StationMark
@@ -201,9 +211,13 @@ function EnginesSheetImpl({
             budgetBytes={budgetBytes}
             library={library}
             onChangeBudget={onChangeBudget}
+            failures={failures.length}
+            onOpenDiagnostics={() => setPage({ kind: 'diagnostics' })}
             storage={storage}
             visible={open}
           />
+        ) : page.kind === 'diagnostics' ? (
+          <DiagnosticsSheet failures={failures} />
         ) : page.kind === 'node' ? (
           <NodeSheet
             backend={selectedBackend}
@@ -360,7 +374,7 @@ function capitalised(word: string): string {
 }
 
 type Page =
-  | { kind: 'engines' | 'settings' }
+  | { kind: 'engines' | 'settings' | 'diagnostics' }
   | { kind: 'node'; node: string };
 
 /** The head each page of this sheet opens on: where, what, and its state. */
@@ -381,6 +395,12 @@ function headOf(
   },
 ): { eyebrow: string; title: string; meta: string } {
   switch (page.kind) {
+    case 'diagnostics':
+      return {
+        eyebrow: 'DIAGNOSTICS',
+        title: 'What went wrong',
+        meta: 'LAST 20 · NEWEST FIRST',
+      };
     case 'settings':
       return {
         eyebrow: 'SETTINGS',

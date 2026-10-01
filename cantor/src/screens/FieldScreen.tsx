@@ -22,6 +22,12 @@ import { nativeMedia } from '../device/native';
 import { createDeviceRepository } from '../device/repository';
 import { EnginesSheet, nodeStateOfPhase } from '../features/engines';
 import {
+  codeOf,
+  followFailures,
+  rawOf,
+  recordFailure,
+} from '../runtime/diagnostics';
+import {
   audioRefOf,
   FieldA11yList,
   FieldCanvas,
@@ -293,6 +299,8 @@ export function FieldScreen({ identity }: Props) {
   const runtime = useRuntime(identity);
   const commands = runtime.commands;
   const backends = useStore(runtime.store, state => state.backends);
+  // Connection errors and failed jobs arrive as state; Diagnostics keeps them.
+  useEffect(() => followFailures(runtime.store), [runtime.store]);
   /** A paired node's name, for words that say which node a failure is about. */
   const nodeNameOf = useCallback(
     (nodePublicKey: string) => {
@@ -307,10 +315,17 @@ export function FieldScreen({ identity }: Props) {
    * A thrown failure in the app's own words (`describeFailure`): the raw
    * message never reaches the screen.
    */
-  const failureWords = useCallback(
-    (error: unknown, node: string): ErrorWords => describeFailure(error, node),
-    [],
-  );
+  const failureWords = useCallback((error: unknown, node: string): ErrorWords => {
+    const words = describeFailure(error, node);
+    // The raw message goes to Diagnostics, the only place it is ever shown.
+    recordFailure({
+      code: codeOf(error),
+      node,
+      sentence: words.sentence,
+      raw: rawOf(error),
+    });
+    return words;
+  }, []);
   const phases = useStore(runtime.store, phasesOf, shallowEqual);
   const pairing = useStore(runtime.store, state => state.pairing);
   const storageError = useStore(runtime.store, state => state.storageError);

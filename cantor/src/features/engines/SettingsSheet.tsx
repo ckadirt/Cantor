@@ -10,6 +10,7 @@ import { Alert, AppState, Pressable, StyleSheet, Text, View } from 'react-native
 import Clipboard from '@react-native-clipboard/clipboard';
 import {
   Coda,
+  Door,
   Measure,
   Rest,
   Row,
@@ -59,6 +60,9 @@ type Props = {
   storage: StorageReport;
   budgetBytes: number;
   onChangeBudget: (bytes: number) => void;
+  /** How many failures Diagnostics holds, and the door to them. */
+  failures?: number;
+  onOpenDiagnostics?: () => void;
 };
 
 /**
@@ -77,6 +81,8 @@ export function SettingsSheet({
   storage,
   budgetBytes,
   onChangeBudget,
+  failures = 0,
+  onOpenDiagnostics = () => {},
 }: Props) {
   const pal = usePalette();
   if (!visible) return null;
@@ -155,8 +161,18 @@ export function SettingsSheet({
         </Measure>
         <Rest />
         <Measure>
-          <Row label="Diagnostics">
-            <Text style={[type.body, { color: pal.faint }]}>not yet</Text>
+          <Row label="Diagnostics" control>
+            <Door
+              accessibilityLabel="Open diagnostics"
+              label={
+                failures === 0
+                  ? 'Nothing went wrong'
+                  : failures === 1
+                  ? 'One failure'
+                  : `The last ${failures} failures`
+              }
+              onPress={onOpenDiagnostics}
+            />
           </Row>
           <Row label="Licences">
             <Text style={[type.body, { color: pal.faint }]}>not yet</Text>
