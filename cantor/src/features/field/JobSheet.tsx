@@ -37,6 +37,7 @@ import {
   useReach,
 } from '../controls';
 import { STAGE_SYMBOLS, jobMarkModel } from '../../jobs/marks';
+import { describeError } from '../../core/protocol/describeError';
 import {
   canForgetJob,
   jobControls,
@@ -288,14 +289,18 @@ export function JobSheet({
             <Arriving arrival={arrival} index={1}>
               {stages.length === 0 ? null : <Rest />}
               <Measure arrival={arrival}>
-              {/* The node's own words. The app does not paraphrase a failure. */}
+              {/*
+                The failure in the app's words, from its code
+                (`describeError`); the node's own message is kept for
+                Diagnostics and never shown here (`folio.html#errors`).
+              */}
               <Row
                 label="Reason"
                 note={`${failure.code.replaceAll('_', ' ')}${
                   failure.retryable ? '' : ' · not retried'
                 }`}>
                 <Text style={[type.body, { color: pal.ink }]}>
-                  {failure.message}
+                  {describeError(failure.code, node, failure.retryable).sentence}
                 </Text>
               </Row>
               </Measure>

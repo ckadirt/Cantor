@@ -14,3 +14,10 @@ export type {
   SongDetail,
   SongHeader,
 } from './types';
+export {
+  describeConnection,
+  describeError,
+  describeFailure,
+  type ErrorNext,
+  type ErrorWords,
+} from './describeError';

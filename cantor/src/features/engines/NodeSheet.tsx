@@ -3,6 +3,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ModelView } from '../../../../protocol/ModelView';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { lyricsContractFor } from '../../core/protocol/lyrics';
+import { describeConnection } from '../../core/protocol/describeError';
 import {
   Coda,
   LEDGER_NOTE_STYLE,
@@ -140,7 +141,8 @@ export function NodeSheet({
                 accessibilityRole="alert"
                 style={[type.small, { color: pal.ink }]}
               >
-                {snapshot.error}
+                {/* In the app's words; the connection's own text is for Diagnostics. */}
+                {describeConnection(snapshot.error, name).sentence}
               </Text>
             </Row>
           ) : null}

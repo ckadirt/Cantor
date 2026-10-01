@@ -140,10 +140,14 @@ describe('the stopped generation sheet', () => {
     }
   });
 
-  it('says which generation stopped, and why, in the node’s own words', () => {
+  it('says which generation stopped, and why, in the app’s words rather than the node’s message', () => {
     const { words } = render(pending({}));
     expect(words()).toContain('a slow bolero for a rainy street');
-    expect(words()).toContain('The engine stopped.');
+    // The raw message is for Diagnostics; the screen says it by its code.
+    expect(words()).not.toContain('The engine stopped.');
+    expect(words().some(word => word.startsWith('Something broke on '))).toBe(
+      true,
+    );
     expect(words()).toContain('2:05');
     expect(words()).toContain('7');
     expect(words()).toContain('019c8f7e…0bcb17');
@@ -211,7 +215,9 @@ describe('the stopped generation sheet', () => {
       pending({}, { caption: null, request: null }),
     );
     expect(words()).toContain('Generation failed');
-    expect(words()).toContain('The engine stopped.');
+    expect(words().some(word => word.startsWith('Something broke on '))).toBe(
+      true,
+    );
     expect(words()).toContain('019c8f7e…0bcb17');
     expect(words()).not.toContain('2:05');
   });
