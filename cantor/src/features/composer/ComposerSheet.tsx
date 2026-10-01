@@ -83,6 +83,11 @@ type Props = {
   targets: readonly ComposerTarget[];
   submitting: boolean;
   error: string | null;
+  /**
+   * The failure in a few words (`agentbox is offline`): what `Make it` turns
+   * into when a send fails, until the next touch.
+   */
+  errorWord?: string | null;
   /** The lens the person has chosen: the draft's face is drawn in it. */
   lens?: Lens;
   onClose: () => void;
@@ -119,6 +124,7 @@ function ComposerSheetImpl({
   targets,
   submitting,
   error,
+  errorWord = null,
   lens = nameLens,
   onClose,
   onSubmit,
@@ -520,6 +526,7 @@ function ComposerSheetImpl({
       >
         <MakeIt
           failed={failed}
+          failedWord={errorWord}
           onPress={() => {
             // One guard, here: a second tap while a submission is in flight
             // would create a second job for one intent.
@@ -550,11 +557,13 @@ function ComposerSheetImpl({
  */
 function MakeIt({
   failed,
+  failedWord,
   onPress,
   ready,
   submitting,
 }: {
   failed: boolean;
+  failedWord: string | null;
   onPress: () => void;
   ready: boolean;
   submitting: boolean;
@@ -562,7 +571,11 @@ function MakeIt({
   // Out of reach only when there is nothing to send; sending is busy, not
   // unavailable, so the word keeps its ink and grows the rule.
   const { colour } = useReach(!ready && !submitting);
-  const label = submitting ? 'Sending it' : failed ? 'Not sent' : 'Make it';
+  const label = submitting
+    ? 'Sending it'
+    : failed
+    ? failedWord ?? 'Not sent'
+    : 'Make it';
   return (
     <PanelPressable
       accessibilityLabel="Make it"

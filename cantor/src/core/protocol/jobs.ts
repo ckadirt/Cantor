@@ -28,7 +28,7 @@ const GENERATION_STAGES = new Set<GenerationStage>([
   'decode',
 ]);
 const PROGRESS_UNITS = new Set(['tokens', 'steps', 'tiles', 'stage']);
-const ERROR_CODES = new Set<ErrorCode>([
+export const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'unsupported_version',
   'unauthenticated',
   'rejected',

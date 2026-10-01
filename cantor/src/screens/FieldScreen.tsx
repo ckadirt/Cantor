@@ -106,7 +106,12 @@ import {
   playlistsOf,
   tagNameProblem,
 } from '../playlists';
-import type { SongDetail, SongHeader } from '../core/protocol';
+import {
+  describeFailure,
+  type ErrorWords,
+  type SongDetail,
+  type SongHeader,
+} from '../core/protocol';
 import type { SongPatch } from '../../../protocol/SongPatch';
 import type { AppIdentity } from '../identity/derive';
 import {
@@ -288,6 +293,24 @@ export function FieldScreen({ identity }: Props) {
   const runtime = useRuntime(identity);
   const commands = runtime.commands;
   const backends = useStore(runtime.store, state => state.backends);
+  /** A paired node's name, for words that say which node a failure is about. */
+  const nodeNameOf = useCallback(
+    (nodePublicKey: string) => {
+      const backend = backends?.find(
+        candidate => candidate.nodePubkey === nodePublicKey,
+      );
+      return backend?.petname || backend?.lastNodeInfo?.name || 'the node';
+    },
+    [backends],
+  );
+  /**
+   * A thrown failure in the app's own words (`describeFailure`): the raw
+   * message never reaches the screen.
+   */
+  const failureWords = useCallback(
+    (error: unknown, node: string): ErrorWords => describeFailure(error, node),
+    [],
+  );
   const phases = useStore(runtime.store, phasesOf, shallowEqual);
   const pairing = useStore(runtime.store, state => state.pairing);
   const storageError = useStore(runtime.store, state => state.storageError);
@@ -302,7 +325,7 @@ export function FieldScreen({ identity }: Props) {
   const [enginesOpen, setEnginesOpen] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<ErrorWords | null>(null);
   /**
    * The caption in flight, from the moment it is sent until it has become a
    * mark. `jobKey` is filled in when the node names the job.
@@ -581,12 +604,12 @@ export function FieldScreen({ identity }: Props) {
         await commands.submit(nodePublicKey, modelSelector, generation);
       } catch (error) {
         setCondensing(null);
-        setSubmitError(error instanceof Error ? error.message : String(error));
+        setSubmitError(failureWords(error, nodeNameOf(nodePublicKey)));
       } finally {
         setSubmitting(false);
       }
     },
-    [commands],
+    [commands, failureWords, nodeNameOf],
   );
   const openEngines = useCallback(() => setEnginesOpen(true), []);
   const closeEngines = useCallback(() => setEnginesOpen(false), []);
@@ -829,6 +852,8 @@ export function FieldScreen({ identity }: Props) {
         : controller.presentations.get(sheetTarget.entityKey) ?? null,
     [controller.presentations, sheetTarget],
   );
+  /** Which node a failure in the song sheet is about, by name. */
+  const sheetNodeName = sheetSong?.label ?? 'the node';
 
   /**
    * What the sheet is allowed to say about scope.
@@ -1328,12 +1353,12 @@ export function FieldScreen({ identity }: Props) {
       try {
         await work();
       } catch (error) {
-        setSongProblem(error instanceof Error ? error.message : String(error));
+        setSongProblem(failureWords(error, sheetNodeName).sentence);
       } finally {
         setSongAct(null);
       }
     },
-    [],
+    [failureWords, sheetNodeName],
   );
 
   /**
@@ -1367,11 +1392,11 @@ export function FieldScreen({ identity }: Props) {
           patch,
         );
       } catch (error) {
-        setSongProblem(error instanceof Error ? error.message : String(error));
+        setSongProblem(failureWords(error, sheetNodeName).sentence);
         throw error;
       }
     },
-    [commands, deviceLibrary, sheetSong],
+    [commands, deviceLibrary, failureWords, sheetNodeName, sheetSong],
   );
 
   /**
@@ -1472,15 +1497,13 @@ export function FieldScreen({ identity }: Props) {
       })
       .catch(error => {
         if (active) {
-          setSongDetailError(
-            error instanceof Error ? error.message : String(error),
-          );
+          setSongDetailError(failureWords(error, sheetSong.label).sentence);
         }
       });
     return () => {
       active = false;
     };
-  }, [commands, sheetSong]);
+  }, [commands, failureWords, sheetSong]);
 
   /**
    * Where the caption in flight should land.
@@ -2043,7 +2066,8 @@ export function FieldScreen({ identity }: Props) {
           viewportHeight={viewport.height}
         >
           <ComposerSheet
-            error={submitError}
+            error={submitError?.sentence ?? null}
+            errorWord={submitError?.short ?? null}
             lens={activeLens}
             onClose={closeComposer}
             onSubmit={onComposerSubmit}
@@ -2225,7 +2249,14 @@ export function FieldScreen({ identity }: Props) {
                   pendingJob.job,
                   control,
                 )
-                .catch(problem => setJobError(readError(problem)))
+                .catch(problem =>
+                  setJobError(
+                    failureWords(
+                      problem,
+                      pendingJob.nodeLabels[0] ?? pendingJob.backend.petname,
+                    ).sentence,
+                  ),
+                )
                 .finally(() => setJobBusy(false));
             }}
             onForget={() => {
@@ -2236,7 +2267,14 @@ export function FieldScreen({ identity }: Props) {
                 // The sheet is about a job that no longer exists; there is
                 // nothing left to show, so it leaves with it.
                 .then(closeJobSheet)
-                .catch(problem => setJobError(readError(problem)))
+                .catch(problem =>
+                  setJobError(
+                    failureWords(
+                      problem,
+                      pendingJob.nodeLabels[0] ?? pendingJob.backend.petname,
+                    ).sentence,
+                  ),
+                )
                 .finally(() => setJobBusy(false));
             }}
             pending={pendingJob}
