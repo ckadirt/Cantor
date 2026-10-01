@@ -144,7 +144,7 @@ export function followFailures(
       errors.set(key, snapshot.error);
       for (const job of snapshot.jobs) {
         const id = `${key}:${job.id}`;
-        const before = states.get(id);
+        const was = states.get(id);
         states.set(id, job.state);
         // Only a job seen turning failed is news. One that is already failed
         // the first time it is seen failed before now — while the app was
@@ -153,8 +153,8 @@ export function followFailures(
           !record ||
           job.state !== 'failed' ||
           job.error === undefined ||
-          before === undefined ||
-          before === 'failed'
+          was === undefined ||
+          was === 'failed'
         )
           continue;
         recordFailure(
