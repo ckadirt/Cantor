@@ -72,6 +72,8 @@ export type NodePresentation = PresentationBase &
     source: 'node';
     /** A download that is not simply landing, or null. */
     transfer: Transfer | null;
+    /** The phone has no connection: a waiting row waits for one, not a node. */
+    noConnection: boolean;
     song: SongHeader;
     backend: BackendRecord;
     ready: boolean;
@@ -102,12 +104,14 @@ export function nodePresentation(
     delivery: ArtifactView | undefined;
     localAudio: LocalAudio;
     transfer?: Transfer | null;
+    noConnection?: boolean;
   }>,
 ): NodePresentation {
   const { song, backend, delivery } = parts;
   return {
     ...parts,
     transfer: parts.transfer ?? null,
+    noConnection: parts.noConnection ?? false,
     source: 'node',
     title: song.title,
     durationMs: song.duration_ms,
@@ -167,6 +171,7 @@ export function sameDrawnSong(
   return (
     left.song === right.song &&
     left.transfer === right.transfer &&
+    left.noConnection === right.noConnection &&
     left.backend === right.backend &&
     left.ready === right.ready &&
     left.delivery === right.delivery &&
@@ -219,6 +224,8 @@ type FieldRuntimeState = Pick<
   Readonly<{
     /** Songs whose files live on this phone; absent before the database opens. */
     device?: DeviceLibrary;
+    /** The phone has no connection at all. */
+    noConnection?: boolean;
   }>;
 
 /**
@@ -320,7 +327,8 @@ export function buildFieldController(
         kept.backend === backend &&
         kept.ready === ready &&
         kept.localAudio === localAudio &&
-        kept.transfer === transfer
+        kept.transfer === transfer &&
+        kept.noConnection === (state.noConnection ?? false)
       ) {
         presentations.set(entity.key, kept);
         continue;
@@ -336,6 +344,7 @@ export function buildFieldController(
           delivery,
           localAudio,
           transfer,
+          noConnection: state.noConnection ?? false,
         }),
       );
     }

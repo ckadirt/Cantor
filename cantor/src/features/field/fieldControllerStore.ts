@@ -33,15 +33,23 @@ export function createFieldControllerStore(
     Store<Readonly<{ library: DeviceLibrary }>>,
     'get' | 'subscribe'
   >,
+  /** Whether the phone is online (`network`); a row waiting says for what. */
+  online?: Pick<Store<boolean | null>, 'get' | 'subscribe'>,
 ): FieldControllerStore {
   let read = runtime.get();
   let deviceRead = device?.get().library;
+  let onlineRead = online?.get() ?? null;
   const store = createStore(
-    buildFieldController({ ...read, device: deviceRead }),
+    buildFieldController({
+      ...read,
+      device: deviceRead,
+      noConnection: onlineRead === false,
+    }),
   );
   const follow = (force = false) => {
     const next = runtime.get();
     const nextDevice = device?.get().library;
+    const nextOnline = online?.get() ?? null;
     const same =
       !force &&
       next.backends === read.backends &&
@@ -50,15 +58,20 @@ export function createFieldControllerStore(
       next.outbox === read.outbox &&
       next.downloading === read.downloading &&
       next.waiting === read.waiting &&
-      nextDevice === deviceRead;
+      nextDevice === deviceRead &&
+      nextOnline === onlineRead;
     read = next;
     deviceRead = nextDevice;
+    onlineRead = nextOnline;
     // Pairing and errors are not the field's business.
     if (same) return;
     // `buildFieldController` hands back the controller it was given when
     // nothing it holds changed, and the store tells nobody about that.
     store.set(previous =>
-      buildFieldController({ ...next, device: nextDevice }, previous),
+      buildFieldController(
+        { ...next, device: nextDevice, noConnection: nextOnline === false },
+        previous,
+      ),
     );
   };
   return {
@@ -68,9 +81,11 @@ export function createFieldControllerStore(
       follow(true);
       const stopRuntime = runtime.subscribe(() => follow());
       const stopDevice = device?.subscribe(() => follow());
+      const stopOnline = online?.subscribe(() => follow());
       return () => {
         stopRuntime();
         stopDevice?.();
+        stopOnline?.();
       };
     },
   };

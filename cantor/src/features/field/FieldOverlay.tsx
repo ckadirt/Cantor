@@ -33,6 +33,13 @@ type Props = {
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
   offline: boolean;
+  /**
+   * The phone itself has no connection: the one failure that is about the
+   * whole app, said as a state in the meta line rather than as an alert.
+   */
+  noConnection?: boolean;
+  /** How many songs play from this phone, for `NO CONNECTION · N PLAYABLE HERE`. */
+  playableHere?: number;
   storageError: string | null;
   onOpenEngines: () => void;
   onOpenComposer: () => void;
@@ -295,6 +302,8 @@ function FieldOverlayImpl({
   cameraShared,
   fitScaleShared,
   offline,
+  noConnection = false,
+  playableHere = 0,
   storageError,
   onOpenEngines,
   onOpenComposer,
@@ -331,6 +340,8 @@ function FieldOverlayImpl({
   const live = {
     level,
     offline,
+    noConnection,
+    playableHere,
     arrangementKey,
     dateResolution,
     songCount,
@@ -425,9 +436,13 @@ function FieldOverlayImpl({
         <View style={styles.metaRow} pointerEvents="box-none">
           <View style={styles.metaCount} pointerEvents="none">
             <TransformText
-              text={`${metaLine(h.level, h.songCount, h.groupCount, noun)}${
-                h.offline ? ' · OFFLINE' : ''
-              }`}
+              text={
+                h.noConnection
+                  ? `NO CONNECTION · ${h.playableHere ?? 0} PLAYABLE HERE`
+                  : `${metaLine(h.level, h.songCount, h.groupCount, noun)}${
+                      h.offline ? ' · OFFLINE' : ''
+                    }`
+              }
               charStyle={CHROME_STYLES.eyebrow}
               color={pal.faint}
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}

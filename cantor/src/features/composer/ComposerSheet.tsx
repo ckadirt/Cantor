@@ -90,6 +90,8 @@ type Props = {
   errorWord?: string | null;
   /** The lens the person has chosen: the draft's face is drawn in it. */
   lens?: Lens;
+  /** The phone has no connection at all: the draft is kept until it has. */
+  noConnection?: boolean;
   onClose: () => void;
   onSubmit: (
     nodePublicKey: string,
@@ -126,6 +128,7 @@ function ComposerSheetImpl({
   error,
   errorWord = null,
   lens = nameLens,
+  noConnection = false,
   onClose,
   onSubmit,
 }: Props) {
@@ -268,6 +271,8 @@ function ComposerSheetImpl({
           >
             {overCaption
               ? `${captionBytes}/${captionLimit} BYTES`
+              : noConnection
+              ? 'NO CONNECTION'
               : summary || 'NOWHERE YET'}
           </Text>
         }
@@ -332,7 +337,11 @@ function ComposerSheetImpl({
                 key: candidate.nodePublicKey,
                 label: candidate.label,
                 accessibilityLabel: `Run it on ${candidate.label}`,
-                state: candidate.ready ? 'ready' : 'offline',
+                state: noConnection
+                  ? 'no connection'
+                  : candidate.ready
+                  ? 'ready'
+                  : 'offline',
                 quiet: !candidate.ready,
                 mark: (
                   <StationMark
@@ -499,7 +508,12 @@ function ComposerSheetImpl({
       </Stave>
       <Coda
         why={
-          shown.length === 0 && error === null ? null : (
+          noConnection ? (
+            <CodaWhy>
+              The draft is kept. It can be sent the moment the phone is back
+              online.
+            </CodaWhy>
+          ) : shown.length === 0 && error === null ? null : (
             <>
               {shown.map(problem => (
                 <CodaWhy

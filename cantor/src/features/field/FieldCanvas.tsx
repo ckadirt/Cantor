@@ -2543,7 +2543,7 @@ function nativeRowModel(
             ),
             byteLength: presentation.byteLength,
             nodeLabel: presentation.label,
-          }, transfer),
+          }, transfer, presentation.source === 'node' && presentation.noConnection),
       monoFont,
       column,
     ),
