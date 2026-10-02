@@ -256,13 +256,8 @@ The Samsung is Cesar's own phone; don't open its browser. Render frames on
 the desktop instead (Chromium headless shell from the Playwright cache, driven
 by `playwright-core` from `~/.hermes/hermes-agent/node_modules`):
 
-```sh
-python3 -m http.server 8099 &   # repo root
-B=$(ls -d ~/.cache/ms-playwright/chromium_headless_shell-*/ | tail -1)*/chrome-headless-shell
-# /tmp/shots/shot.js: open flow.html?phone&still at 392×764, dsf 2, and
-# screenshot '#<id> [data-frame]' (or '.fld') per frame id given.
-B=$B node /tmp/shots/shot.js f-roster f-ask f-sum
-```
+`cantor/scripts/frame-shots.cjs` (usage in its header) writes
+`/tmp/frame-<id>.png` for each frame id.
 
 ### 2026-10-01 — the flow drawn and planned
 
