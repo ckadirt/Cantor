@@ -25,10 +25,10 @@ pointed at the phone.
 
 | # | Milestone | Frames | State |
 | --- | --- | --- | --- |
-| I7a | [Folders and the summary, pure](#i7a--folders-and-the-summary-pure) | — | not started |
-| I7b | [The scan, split](#i7b--the-scan-split) | — | not started |
-| I7c | [Permission](#i7c--permission) | — | not started |
-| I7d | [Looking again](#i7d--looking-again) | — | not started |
+| I7a | [Folders and the summary, pure](#i7a--folders-and-the-summary-pure) | — | **done** |
+| I7b | [The scan, split](#i7b--the-scan-split) | — | **done** (logic) |
+| I7c | [Permission](#i7c--permission) | — | **done** (logic) |
+| I7d | [Looking again](#i7d--looking-again) | — | **done** (logic) |
 | I7e | [The phone in the roster](#i7e--the-phone-in-the-roster) | `f-roster` | not started |
 | I7f | [The phone's page](#i7f--the-phones-page) | `f-ask` `f-denied` `f-sum` `f-new` `f-phone` `f-none` | not started |
 | I7g | [Bringing in](#i7g--bringing-in) | `f-bring` | not started |
@@ -185,9 +185,9 @@ New `device/folders.ts`, pure TS with tests. No UI, no native change.
   The one edge — every song of a kept folder went missing — still counts as
   kept, because missing songs are stored. Write that in a test.
 
-- [ ] `folderOf`, `looksLikeVoiceNotes`, `summarize`, with tests on fixture
+- [x] `folderOf`, `looksLikeVoiceNotes`, `summarize`, with tests on fixture
       paths, Bandcamp/CD/flat layouts and WhatsApp/Recordings paths
-- [ ] the kept/excluded/new rule tested, including the all-missing folder
+- [x] the kept/excluded/new rule tested, including the all-missing folder
 
 ## I7b · The scan, split
 
@@ -222,13 +222,13 @@ writes.
 - **Result counts** gain `protected` (if the inspection can tell DRM apart from
   unreadable; if not, everything is `couldn't read`, and the log says so).
 
-- [ ] `look()` and `bringIn()`, with `scan()` kept as `look` + `bringIn` of
-      kept folders for existing callers
-- [ ] excluded folders honoured, tested; new folders never inspected by an
+- [x] `look()` and `bringIn()`, with `scan()` kept for existing callers
+      (`refresh()` is the automatic one; see flow-log)
+- [x] excluded folders honoured, tested; new folders never inspected by an
       automatic scan, tested
-- [ ] progress fraction, `current` album, per-folder counts
-- [ ] the clef's luma source chosen and built (native, if that route)
-- [ ] fixture scan on the phone through `onlyUnder`, log updated
+- [x] progress fraction, `current` album, per-folder counts
+- [x] the clef's luma source chosen and built (native `thumbnailLuma`)
+- [ ] a real bring-in on the phone (Samsung: through the UI, no fixtures)
 
 ## I7c · Permission
 
@@ -248,8 +248,8 @@ Nothing in `src/` asks for the permission today; the phone holds it from I0.
   android.permission.READ_MEDIA_AUDIO` (and `pm reset-permissions` is too wide;
   do not use it).
 
-- [ ] permission module with tests (mocked `PermissionsAndroid`)
-- [ ] state in `DeviceLibraryService`'s store, re-checked on foreground
+- [x] permission module with tests (mocked `PermissionsAndroid`)
+- [x] state in `DeviceLibraryService`'s store, re-checked on foreground
 - [ ] revoke / grant cycle checked on the phone
 
 ## I7d · Looking again
@@ -269,7 +269,7 @@ Nothing in `src/` asks for the permission today; the phone holds it from I0.
   native list is already off it; the JS resolve over 300 rows is the part to
   time).
 
-- [ ] scan on start and on foreground, debounced, guarded
+- [x] scan on start and on foreground, debounced, guarded
 - [ ] timing of a no-change look and of a 1-new-file look recorded in the log
 
 ## I7e · The phone in the roster
