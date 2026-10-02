@@ -21,8 +21,9 @@ songs stand in the field, open at L2 and play (native analysis ticks drawn).
 I5d done: an imported song's sheet and the player's `ON THIS PHONE`.
 I6 done (2026-09-28): imported marks carry a spindle in every lens, ALBUM
 and ARTIST join the dial, and a COVER lens draws an album's art as hairline
-glyphs at L2. **Next: I7** (the import flow: entry point, permission, scan
-summary, progress, re-scan). None of it is pushed; Cesar decides when to
+glyphs at L2. **Next: I7**, the import flow: designed 2026-10-01 in
+[`flow.html`](flow.html) and planned in [`flow-plan.md`](flow-plan.md); its
+build is logged in [`flow-log.md`](flow-log.md), not here. None of it is pushed; Cesar decides when to
 push.
 
 The fixtures are still on the phone in `/sdcard/Music/cantor-import-test/`
@@ -74,7 +75,7 @@ coordinates and details):
 | I4 resolver | **done** 2026-09-27 (checked on the phone with I5) |
 | I5 device source | **done** 2026-09-28 (I5a, I5b, I5d; I5c folded into I5b) |
 | I6 mark and axis | **done** 2026-09-28 (I6a, I6b, I6c) |
-| I7 import flow | not started |
+| I7 import flow | designed 2026-10-01; build tracked in [`flow-log.md`](flow-log.md) |
 | I8 300-song check | not started |
 
 ## I6 plan (mark and axis)

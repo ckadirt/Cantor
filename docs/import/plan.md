@@ -134,7 +134,7 @@ Each ships alone and follows the routine in `log.md`.
 | **I4 resolver** | **Done.** Pure TS (`device/resolve.ts`): retriever tags → MediaStore → file name (incl. Bandcamp's `Artist - Album - 01 Title`), the `<unknown>`/folder-album rules, disc/track split, album key, identity by path then fingerprint, duplicates, moves, missing. | All policy in one testable place. |
 | **I5 device source** | **Done.** `DeviceLibraryService` (scan, store); `FieldPresentation` is a node/device union; device entities under the reserved key `device`; GET/KEEP/REMOVE absent; the player plays the original path; the sheet shows the file's facts and edits tags in the phone database. | Songs appear in the field with no renderer change. |
 | **I6 mark and axis** | **Done.** The imported marker in every lens (a spindle), the cover lens at L2 (album art as hairline glyphs, never stored), the song's date on the sheet (I5d), ALBUM and ARTIST arrangements with albums in track order. | |
-| **I7 import flow** | Entry point, permission, scan summary, progress, re-scan. | The only new UI. |
+| **I7 import flow** | Entry point, permission, scan summary, progress, re-scan. Planned in [`flow-plan.md`](flow-plan.md) (I7a–I7j), drawn in [`flow.html`](flow.html), logged in [`flow-log.md`](flow-log.md). | The only new UI. |
 | **I8 300-song check** | ~300 real files on the Xiaomi: L0 idle, panning, a re-group, memory. | The thousands-of-songs goal. |
 
 ## Out of scope

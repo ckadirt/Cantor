@@ -1,0 +1,1117 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Cantor · This phone, the import flow</title>
+<!-- Fonts are referenced from cantor/assets/fonts, as in folio.html. -->
+<style>
+@font-face{font-family:'CMU Serif';src:url('../../cantor/assets/fonts/cmu-serif.ttf') format('truetype');}
+@font-face{font-family:'Spectral';src:url('../../cantor/assets/fonts/spectral.ttf') format('truetype');}
+:root{
+ --ink:#000;--muted:#666;--faint:#A6A6A6;--line:#E6E6E6;--spine:#D4D4D4;--paper:#fff;
+ --display:'CMU Serif',Georgia,serif;--text:'Spectral',Georgia,serif;
+ --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+ --ease:cubic-bezier(.45,0,.2,1);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+body{margin:0;padding:0 0 140px;background:#E4E4E1;color:var(--ink);font-family:var(--text);}
+.wrap{max-width:1260px;margin:0 auto;padding:0 40px;}
+.cover{padding:88px 0 34px;}
+.cover h1{font-family:var(--display);font-size:52px;font-weight:400;margin:0 0 18px;letter-spacing:.2px;}
+.cover .sub{font-size:17px;line-height:26px;color:#3a3a3a;max-width:74ch;}
+.eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:2.4px;color:var(--muted);margin-bottom:16px;text-transform:uppercase;}
+section{padding:60px 0 0;}
+h2{font-family:var(--display);font-size:31px;font-weight:400;margin:0 0 6px;}
+h2 .no{font-family:var(--mono);font-size:12px;letter-spacing:2px;color:var(--faint);display:block;margin-bottom:12px;}
+h3{font-family:var(--display);font-size:20px;font-weight:400;margin:32px 0 8px;}
+p{font-size:15px;line-height:23.5px;color:#3a3a3a;max-width:78ch;margin:0 0 11px;}
+p.lede{font-size:16.5px;line-height:26px;color:#222;max-width:76ch;margin-bottom:20px;}
+code{font-family:var(--mono);font-size:.86em;}
+.rule{height:1px;background:#CFCFCC;margin:0;}
+.note{border-left:2px solid #000;padding:10px 0 10px 18px;margin:22px 0;max-width:78ch;}
+.note strong{font-family:var(--display);font-weight:400;font-size:17px;display:block;margin-bottom:5px;}
+.note p{margin:0;font-size:14.5px;line-height:22px;}
+.soft{border-left-color:#C6C6C3;}
+table{border-collapse:collapse;margin:18px 0 6px;font-size:13.5px;max-width:1000px;width:100%;}
+th,td{text-align:left;padding:9px 20px 9px 0;border-bottom:1px solid #D4D4D1;vertical-align:top;}
+th{font-family:var(--mono);font-size:9.5px;letter-spacing:1.5px;color:var(--muted);text-transform:uppercase;font-weight:400;}
+td.k{font-family:var(--display);white-space:nowrap;}
+td.m{font-family:var(--mono);font-size:11.5px;white-space:nowrap;}
+ul.rules{list-style:none;padding:0;margin:14px 0 4px;max-width:78ch;}
+ul.rules li{font-size:14.5px;line-height:22px;color:#3a3a3a;padding:6px 0 6px 20px;border-bottom:1px solid #D9D9D6;position:relative;}
+ul.rules li:before{content:'';position:absolute;left:0;top:14px;width:9px;height:1px;background:#8a8a8a;}
+ul.rules li b{font-family:var(--display);font-weight:400;color:#000;}
+.pair{display:flex;gap:34px;flex-wrap:wrap;margin:26px 0 6px;}
+.cell .lab{font-family:var(--mono);font-size:9.5px;letter-spacing:1.7px;color:var(--muted);margin-bottom:9px;text-transform:uppercase;display:flex;justify-content:space-between;width:392px;}
+.cell .lab .replay{cursor:pointer;color:var(--ink);}
+.cell .pick{font-family:var(--mono);font-size:9.5px;letter-spacing:1.7px;color:var(--ink);margin-top:10px;width:392px;text-transform:uppercase;}
+.cell .why{font-size:13.5px;line-height:20px;color:#555;width:392px;margin-top:6px;}
+.states{display:flex;gap:14px;margin-top:10px;font-family:var(--mono);font-size:10px;letter-spacing:1.4px;}
+.states span{color:var(--faint);cursor:pointer;padding-bottom:3px;border-bottom:1px solid transparent;}
+.states span.on{color:var(--ink);border-bottom-color:var(--ink);}
+body.phone .wrap{padding:0;}body.phone .pair{gap:40px;}body.phone .cell .lab{padding:0 8px;}
+
+/* ================= the blind (folio.html) ================= */
+.frame{width:392px;height:764px;background:var(--paper);position:relative;overflow:hidden;border:1px solid #d6d6d3;
+ box-shadow:0 1px 2px rgba(0,0,0,.08),0 12px 30px rgba(0,0,0,.08);font-family:var(--text);color:var(--ink);user-select:none;}
+.blind{position:absolute;left:0;right:0;display:flex;flex-direction:column;background:var(--paper);overflow:hidden;}
+.frame.top .blind{top:0;height:100%;}
+.frame.bottom .blind{bottom:0;height:100%;}
+.grip{flex:none;height:48px;display:flex;align-items:center;justify-content:center;gap:6px;}
+.grip i{display:block;width:56px;height:1px;background:var(--faint);}
+.grip i.pg{width:22px;background:var(--line);}
+.grip i.pg.on{background:var(--ink);}
+.seat{flex:none;height:24px;}
+.page{flex:1;min-height:0;position:relative;display:flex;flex-direction:column;}
+.scroll{flex:1;min-height:0;overflow:hidden;position:relative;}
+.scroll:after{content:'';position:absolute;left:0;right:0;bottom:0;height:28px;background:linear-gradient(rgba(255,255,255,0),var(--paper));pointer-events:none;}
+.head{display:grid;grid-template-columns:96px 1fr;column-gap:24px;padding:4px 24px 22px;position:relative;}
+.clef{display:flex;justify-content:flex-end;align-items:flex-start;padding-top:22px;}
+.eb{display:flex;justify-content:space-between;align-items:baseline;font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--muted);line-height:16px;}
+.eb .nav{font-size:10px;letter-spacing:1.6px;color:var(--muted);cursor:pointer;}
+.ti{font-family:var(--display);font-size:26px;line-height:32px;margin-top:8px;letter-spacing:.2px;}
+.mt{font-family:var(--mono);font-size:10.5px;letter-spacing:1.4px;color:var(--faint);line-height:16px;margin-top:9px;}
+.mt .ferm{color:var(--ink);}
+.stave{position:relative;}
+.measure{position:relative;}
+.measure:before{content:'';position:absolute;left:130px;top:0;bottom:0;width:1px;background:var(--spine);transform-origin:top;}
+.head:before{content:'';position:absolute;left:130px;top:26px;bottom:0;width:1px;background:var(--spine);transform-origin:top;}
+.rest{height:24px;flex:none;}
+.scroll>.stave{min-height:100%;display:flex;flex-direction:column;}
+.stave>.measure:last-child{flex:1;}
+.r{display:grid;grid-template-columns:96px 1fr;column-gap:24px;padding:9px 24px;position:relative;}
+.r > .k:not(:empty):after{content:'';position:absolute;left:126px;top:20px;width:4px;height:1px;background:var(--spine);}
+.k{text-align:right;font-family:var(--mono);font-size:10px;letter-spacing:1.4px;color:var(--faint);line-height:22px;text-transform:uppercase;white-space:nowrap;}
+.k.mk{display:flex;justify-content:flex-end;}
+.k.mk:after{display:none;}
+.v{font-family:var(--text);font-size:15px;line-height:22px;min-width:0;}
+.v small,.sm{display:block;font-family:var(--mono);font-size:10px;letter-spacing:1.2px;color:var(--faint);margin-top:3px;line-height:15px;}
+.v small.mu{color:var(--muted);}
+.v small.ink{color:var(--ink);}
+.nm{font-family:var(--display);font-size:20px;line-height:24px;}
+.fn{font-family:var(--display);font-size:18px;line-height:23px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.fn i{font-style:normal;color:var(--faint);}
+.off{color:var(--faint);}
+.prose{font-family:var(--text);font-size:13px;line-height:18px;color:var(--muted);margin-top:4px;}
+.say{font-family:var(--text);font-size:15px;line-height:22px;color:var(--ink);}
+.coda{flex:none;position:relative;padding:0 24px 8px 154px;}
+.coda .bar{position:absolute;left:130px;right:0;top:0;height:5px;border-top:1px solid var(--ink);border-bottom:2px solid var(--ink);}
+.coda .join{position:absolute;left:130px;top:-18px;width:1px;height:18px;background:var(--spine);}
+.coda .act{display:inline-block;font-family:var(--display);font-size:22px;line-height:28px;padding-top:17px;cursor:pointer;position:relative;white-space:nowrap;}
+.coda .act svg.wr{position:absolute;left:0;top:46px;overflow:visible;pointer-events:none;}
+.coda .sm{margin-top:5px;}
+.coda .sm.gap{margin-top:12px;}
+.door{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;}
+.caret{flex:none;width:8px;height:8px;border-top:1px solid currentColor;border-right:1px solid currentColor;transform:rotate(45deg);margin-right:4px;}
+.ferm{display:inline-block;width:13px;height:9px;vertical-align:0;margin-right:5px;color:inherit;}
+
+/* a folder is taken (ink) or left out (soft grey); the tap changes ink, never a box */
+.fold{cursor:pointer;transition:opacity .2s;}
+.fold .fn,.fold small{transition:color .22s var(--ease);}
+.fold canvas{transition:opacity .22s var(--ease);}
+.fold.out .fn,.fold.out .fn i{color:var(--faint);}
+.fold.out canvas{opacity:.28;}
+.fold.out small{color:var(--faint);}
+.fold.hidden{opacity:0;}
+
+/* covers in ink, in the value column */
+.wall{display:grid;grid-template-columns:repeat(3,64px);gap:12px 16px;margin:4px 0 2px;}
+.wall .al{cursor:pointer;}
+.wall .al span{display:block;font-family:var(--mono);font-size:8.5px;letter-spacing:.8px;color:var(--muted);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;width:64px;text-transform:uppercase;}
+.wall .al.out canvas{opacity:.25;} .wall .al.out span{color:var(--faint);}
+
+/* strike (folio.html) */
+.strike{position:relative;}
+.strike .line{position:absolute;left:-4px;top:55%;height:1px;width:0;background:var(--ink);}
+.strike.hold .line{width:calc(100% + 8px);transition:width .9s linear;}
+.strike.let .line{transition:width .25s var(--ease);}
+.strike.done{color:var(--faint);}
+.strike.done .line{width:calc(100% + 8px);background:var(--faint);}
+.coda .act.muted{color:var(--muted);transition:color .2s;}
+.coda .act.muted.hold{color:var(--ink);}
+
+/* arrival (folio.html) */
+.frame.go .blind{animation:unroll .46s var(--ease) both;}
+@keyframes unroll{from{height:0}to{height:100%}}
+.frame.go .clef svg .ink{stroke-dasharray:var(--len);stroke-dashoffset:var(--len);animation:draw .7s var(--ease) .28s forwards;}
+.frame.go .clef svg .dotf{opacity:0;animation:fade .3s ease .8s forwards;}
+@keyframes draw{to{stroke-dashoffset:0}}
+.frame.go .measure:before,.frame.go .head:before{animation:grow .62s var(--ease) both;animation-delay:var(--d,.36s);}
+@keyframes grow{from{transform:scaleY(0)}to{transform:scaleY(1)}}
+.frame.go .arrive{animation:land .34s var(--ease) both;animation-delay:var(--d,.4s);}
+@keyframes land{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+.frame.go .ti{animation:write .6s var(--ease) both;animation-delay:.3s;}
+@keyframes write{from{clip-path:inset(0 100% 0 0)}to{clip-path:inset(0 0 0 0)}}
+@keyframes fade{to{opacity:1}}
+.frame.go .coda .bar{animation:barin .5s var(--ease) both;animation-delay:var(--d,.9s);transform-origin:left;}
+@keyframes barin{from{transform:scaleX(0)}to{transform:scaleX(1)}}
+.land{animation:land .34s var(--ease) both;}
+
+/* ================= the field (folio.html) ================= */
+.fld{width:392px;height:764px;background:#fff;position:relative;overflow:hidden;border:1px solid #d6d6d3;
+ box-shadow:0 1px 2px rgba(0,0,0,.08),0 12px 30px rgba(0,0,0,.08);font-family:var(--text);}
+.fld .tab{position:absolute;left:0;right:0;display:flex;flex-direction:column;align-items:center;gap:3px;font-family:var(--mono);font-size:9px;letter-spacing:1.4px;color:var(--faint);}
+.fld .tab i{display:block;height:1px;background:var(--faint);}
+.fld .fh{padding:58px 24px 0;}
+.fld .fh .e{font-family:var(--mono);font-size:11px;letter-spacing:2px;color:var(--ink);}
+.fld .fh .t{font-family:var(--display);font-size:30px;line-height:38px;margin-top:6px;}
+.fld .fh .m{display:flex;justify-content:space-between;font-family:var(--mono);font-size:11px;letter-spacing:1.6px;color:var(--faint);margin-top:8px;align-items:center;min-height:16px;}
+.fld .fh .m b{font-weight:400;color:var(--ink);cursor:pointer;}
+.fld .fh .m .now{color:var(--ink);}
+.rows{padding:26px 0 0;}
+.row{display:grid;grid-template-columns:106px 1fr 82px;align-items:center;height:78px;padding-right:18px;}
+.row .fm{display:flex;justify-content:center;}
+.row .tt{font-family:var(--display);font-size:16.5px;line-height:21px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.row .tt.here{color:var(--ink);}
+.row .ln{font-family:var(--mono);font-size:9px;letter-spacing:1.1px;color:var(--ink);margin-top:4px;line-height:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.row .ln.q{color:var(--faint);}
+.row .ac{font-family:var(--mono);font-size:10px;letter-spacing:1.3px;color:var(--ink);text-align:right;cursor:pointer;}
+.fld .hint{position:absolute;left:0;right:0;bottom:66px;text-align:center;font-family:var(--mono);font-size:10px;letter-spacing:2px;color:var(--faint);}
+.fld .alone{position:absolute;left:0;right:0;top:250px;display:flex;flex-direction:column;align-items:center;text-align:center;}
+.fld .alone .say{max-width:250px;margin-top:22px;}
+.fld .alone .doors{margin-top:30px;width:236px;}
+.fld .alone .doors .door{height:48px;border-top:1px solid var(--line);font-family:var(--display);font-size:18px;}
+.fld .alone .doors .door.q{color:var(--muted);}
+.fld .alone .doors .door:last-child{border-bottom:1px solid var(--line);}
+.grp{font-family:var(--mono);font-size:9px;letter-spacing:1.6px;color:var(--faint);padding:14px 24px 0 106px;height:30px;}
+
+/* Android's own permission dialog, drawn plainly: it is the system's, not ours */
+.sys{position:absolute;inset:0;background:rgba(0,0,0,.32);display:none;align-items:center;justify-content:center;z-index:9;}
+.sys.on{display:flex;}
+.sys .dlg{width:312px;background:#F1F3F4;border-radius:28px;padding:24px 24px 14px;font-family:Roboto,system-ui,sans-serif;color:#1f1f1f;}
+.sys .ic{width:24px;height:24px;margin:0 auto 14px;border-radius:50%;border:2px solid #3c4043;}
+.sys .q{font-size:20px;line-height:27px;text-align:center;margin-bottom:22px;}
+.sys .b{display:block;text-align:center;background:#fff;border-radius:20px;padding:12px;margin-top:4px;font-size:14px;cursor:pointer;color:#0b57d0;}
+
+.lensdial{position:fixed;left:14px;bottom:14px;z-index:20;background:#fff;border:1px solid #cfcfcc;padding:10px 14px;display:flex;gap:14px;font-family:var(--mono);font-size:11px;letter-spacing:1.4px;box-shadow:0 2px 10px rgba(0,0,0,.08);}
+.lensdial b{font-weight:400;color:var(--muted);}
+.lensdial span{color:var(--faint);cursor:pointer;padding-bottom:3px;border-bottom:1px solid transparent;}
+.lensdial span.on{color:var(--ink);border-bottom-color:var(--ink);}
+</style></head><body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="ferm" viewBox="0 0 24 16">
+ <path d="M2 14 A10 10 0 0 1 22 14" fill="none" stroke="currentColor" stroke-width="1.3"/>
+ <circle cx="12" cy="11.2" r="1.8" fill="currentColor"/>
+</symbol>
+</defs></svg>
+
+<div class="wrap">
+<div class="cover">
+ <div class="eyebrow">Cantor &middot; device import &middot; I7 &middot; the flow</div>
+ <h1>This phone</h1>
+ <p class="sub">Bringing music in is not a wizard. The phone is a <em>home</em>, the way a node
+ is, and it gets the page a node gets: a clef, a stave of facts and one act in the coda. The first
+ act on that page brings the music in, and every later visit (looking again, leaving a folder out,
+ a file gone missing) happens on the same page, in the same Folio grammar. Nothing here is a new
+ kind of control. It is the roster, the three inks, the working rule, the fermata and the strike,
+ pointed at the phone.</p>
+</div>
+</div>
+
+<!-- ======================================================= WORDS -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="words"></a>
+ <h2><span class="no">Words</span>One word per thing</h2>
+ <p class="lede">"Import", "scan", "library" and "sync" never reach the screen. They are the
+ code's words. A person has music <em>on their phone</em>, and Cantor <em>brings it in</em>.</p>
+ <table>
+  <tr><th style="width:220px">Thing</th><th style="width:300px">On screen</th><th>Why</th></tr>
+  <tr><td class="k">The place</td><td class="m">This phone</td><td>Settings already titles its page this way, with the phone's seal as its clef. It is the same object.</td></tr>
+  <tr><td class="k">The first act</td><td class="m">Bring in 310 songs</td><td>The count is part of the act, and it morphs as folders are left out. You always know what pressing it does.</td></tr>
+  <tr><td class="k">Working</td><td class="m">Bringing them in</td><td>F6's present tense. The meta line counts: <code>READING 142 OF 310</code>.</td></tr>
+  <tr><td class="k">Finished, still on the page</td><td class="m">See them</td><td>Closes the blind and takes the camera to the newest cluster.</td></tr>
+  <tr><td class="k">A later look</td><td class="m">Look again</td><td>Cantor looks every time it opens; this is only for someone who has just copied files over.</td></tr>
+  <tr><td class="k">A folder not taken</td><td class="m">LEFT OUT</td><td>Soft grey, the disabled ink. Not struck through: nothing was destroyed.</td></tr>
+  <tr><td class="k">A voice-note folder</td><td class="m">LOOKS LIKE VOICE NOTES</td><td>Why it starts out grey. One tap brings it back.</td></tr>
+  <tr><td class="k">A file gone</td><td class="m">MISSING</td><td>With the fermata: held, not broken. It re-attaches by fingerprint.</td></tr>
+  <tr><td class="k">DRM</td><td class="m">PROTECTED · LEFT ALONE</td><td>Counted, never played, never an error.</td></tr>
+  <tr><td class="k">An imported song</td><td class="m">YOUR OWN FILE</td><td>Already used on the song sheet (I5d).</td></tr>
+ </table>
+</section>
+</div>
+
+<!-- ======================================================= ENTRY -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="entry"></a>
+ <h2><span class="no">1 · Where it starts</span>The phone is the first home in the roster</h2>
+ <p class="lede">The nodes blind lists every place songs live. The phone joins it as the first
+ entry, set apart from the nodes by a rest. Its mark is the phone's seal (Settings' clef), with
+ the <b>spindle</b> at its centre where the seal had a dot: the same ring every imported song
+ carries. That is how a song's mark and its home's mark say they belong together.</p>
+
+ <div class="pair">
+  <div class="cell" id="f-roster"><div class="lab"><span>Nodes · the phone first</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="constellation" data-size="64"></svg></div>
+       <div><div class="eb arrive">NODES<span class="nav">CLOSE</span></div>
+        <div class="ti">Four nodes</div>
+        <div class="mt arrive">TWO READY · 46 SONGS</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k mk"><svg class="mk" id="roster-phone" data-kind="phone" data-key="9F2C41AB" data-size="34"></svg></span>
+         <span class="v"><span class="door"><span class="nm">This phone</span><span class="caret"></span></span><small class="mu" id="roster-state">NOT READ YET</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k mk"><svg class="mk" data-kind="station" data-key="agentbox" data-models="1" data-size="34"></svg></span>
+         <span class="v"><span class="door"><span class="nm">agentbox</span><span class="caret"></span></span><small class="mu">READY · 26 SONGS</small></span></div>
+        <div class="r arrive"><span class="k mk"><svg class="mk" data-kind="station" data-key="h100" data-models="4" data-size="34"></svg></span>
+         <span class="v"><span class="door"><span class="nm">h100</span><span class="caret"></span></span><small class="mu">READY · 9 SONGS</small></span></div>
+        <div class="r arrive"><span class="k mk"><svg class="mk" data-kind="station" data-key="lightningnode" data-models="2" data-state="working" data-size="34"></svg></span>
+         <span class="v"><span class="door"><span class="nm">lightningnode</span><span class="caret"></span></span><small class="mu">CONNECTING · 2 SONGS</small></span></div>
+        <div class="r arrive"><span class="k mk"><svg class="mk" data-kind="station" data-key="rtx6000" data-models="3" data-state="offline" data-size="34"></svg></span>
+         <span class="v"><span class="door off"><span class="nm">rtx6000</span><span class="caret"></span></span><small>OFFLINE SINCE 14:02</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k"></span><span class="v"><span class="door" style="min-height:26px"><span>Settings</span><span class="caret"></span></span><small>YOUR KEY · STORAGE · ABOUT</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act">Pair a node</span><span class="sm">A PC, A MAC OR A SERVER</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="states" id="roster-states"><span class="on" data-s="0">NOT READ</span><span data-s="1">BRINGING IN</span><span data-s="2">READ</span><span data-s="3">NEW FOLDERS</span><span data-s="4">MISSING</span></div>
+   <div class="why">The phone's one state line, in each of its lives. Bringing in, the seal waves
+   like a node making a song, so closing the blind never hides the work. New folders are written
+   in ink, because they need you; missing files carry the fermata, because they don't.</div>
+  </div>
+
+  <div class="cell" id="f-empty"><div class="lab"><span>The field · nothing yet, no node</span></div>
+   <div class="fld">
+    <div class="tab" style="top:14px"><i style="width:28px"></i><i style="width:18px"></i><span>NEW SONG</span></div>
+    <div class="fh"><div class="e">WEEK</div><div class="t">This week</div>
+     <div class="m"><span>NO SONGS YET</span><b></b></div></div>
+    <div class="alone">
+     <svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64" data-state="faint"></svg>
+     <div class="say">Your music is already on this phone. Cantor can play it where it lies.</div>
+     <div class="doors">
+      <div class="door" data-go="f-ask"><span>Bring it in</span><span class="caret"></span></div>
+      <div class="door q"><span>Pair a node</span><span class="caret"></span></div>
+     </div>
+    </div>
+    <div class="tab" style="bottom:14px"><span>NODES</span><i style="width:18px"></i><i style="width:28px"></i></div>
+   </div>
+   <div class="why">The second way in, only when the field is empty. Someone without a node has
+   nothing else to do on day one, so the field offers the two doors it has. The phone's seal is
+   drawn faint here: nothing read yet. <i>Bring it in</i> opens the same page as the roster entry.
+   Once there is a single song, this is gone.</div>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- ======================================================= PERMISSION -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="ask"></a>
+ <h2><span class="no">2 · Asking</span>The promise first, then Android's question</h2>
+ <p class="lede">Android's dialog says "access music and audio", which sounds like more than it
+ is. So before it appears, the page says what Cantor will and won't do, in one sentence, and
+ where it will look. The act is <b>Allow music</b>; tapping it opens the system's prompt. Tap it
+ in the frame.</p>
+
+ <div class="pair">
+  <div class="cell" id="f-ask"><div class="lab"><span>This phone · before the permission</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive">NOT READ YET</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k"></span><span class="v"><span class="say">Cantor plays your music where it lies. Nothing is copied, moved or sent anywhere.</span></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k">Looks in</span><span class="v">Music, Download<small>THIS PHONE'S OWN STORAGE</small></span></div>
+        <div class="r arrive"><span class="k">Leaves out</span><span class="v">Ringtones, alarms, anything under thirty seconds<small>VOICE NOTES START GREY</small></span></div>
+        <div class="r arrive"><span class="k">Never</span><span class="v">Writes to your files<small>TAGS EDIT HERE ONLY</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act" id="allow">Allow music</span><span class="sm" id="allow-sm">ANDROID WILL ASK</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+    <div class="sys" id="sys"><div class="dlg"><div class="ic"></div>
+     <div class="q">Allow <b>Cantor</b> to access music and audio on this device?</div>
+     <span class="b" data-a="yes">Allow</span><span class="b" data-a="no">Don't allow</span></div></div>
+   </div>
+   <div class="why">After <i>Allow</i>, the act morphs to <i>Reading</i> under the sine rule, and the
+   page becomes the summary below (frame 3A). After <i>Don't allow</i>, the frame beside this one.</div>
+  </div>
+
+  <div class="cell" id="f-denied"><div class="lab"><span>This phone · Android said no</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64" data-state="faint"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive"><svg class="ferm"><use href="#ferm"/></svg>NOT ALLOWED YET</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k"></span><span class="v"><span class="say">Cantor can't see your music until Android lets it. Nothing else changes: the nodes and their songs are all still here.</span></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k">Where</span><span class="v">Apps, Cantor, Permissions, Music and audio<small>THE LAST SWITCH</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act">Open Android settings</span><span class="sm">COMES BACK HERE AFTER</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="why">No red and no alert. The first refusal can be asked again, so the coda keeps
+   <i>Allow music</i>. Only when Android stops showing its dialog does the coda become this door.
+   When the person returns with the permission granted, the page reads by itself.</div>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- ======================================================= SUMMARY -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="summary"></a>
+ <h2><span class="no">3 · What's there</span>The summary, before anything comes in</h2>
+ <p class="lede">Listing MediaStore is metadata only, under a second for hundreds of files. So the
+ summary is drawn <em>before</em> any file is opened, and only what the person keeps is inspected.
+ While the list is read, the act says <b>Reading</b> under the plain sine rule. The stave fills as
+ the folders are found, each row landing when the spine reaches it, as in Arrival. Then the act
+ becomes the count. Press <code>REPLAY READING</code>, then tap folders.</p>
+
+ <div class="pair">
+  <div class="cell" id="f-sum"><div class="lab"><span>3A · by folder (chosen)</span><span class="replay" id="replay-read">REPLAY READING ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive" id="sum-meta">4 FOLDERS · 310 SONGS</div></div>
+      </div>
+      <div class="scroll"><div class="stave" id="sum-stave">
+       <div class="measure">
+        <div class="r fold arrive" data-n="168"><span class="k mk"><canvas class="cv" data-key="Shade" data-size="34"></canvas></span>
+         <span class="v"><div class="fn"><i>Music / </i>Bandcamp</div><small data-s="14 ALBUMS · 168 SONGS">14 ALBUMS · 168 SONGS</small></span></div>
+        <div class="r fold arrive" data-n="71"><span class="k mk"><canvas class="cv" data-key="Pink Moon" data-size="34"></canvas></span>
+         <span class="v"><div class="fn"><i>Music / </i>CD rips</div><small data-s="6 ALBUMS · 71 SONGS">6 ALBUMS · 71 SONGS</small></span></div>
+        <div class="r fold arrive" data-n="12"><span class="k mk"><canvas class="cv" data-key="#loose" data-size="34" data-none></canvas></span>
+         <span class="v"><div class="fn">Music</div><small data-s="12 LOOSE SONGS">12 LOOSE SONGS</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r fold arrive" data-n="59"><span class="k mk"><canvas class="cv" data-key="Kick i" data-size="34"></canvas></span>
+         <span class="v"><div class="fn">Download</div><small data-s="4 ALBUMS · 59 SONGS">4 ALBUMS · 59 SONGS</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r fold out arrive" data-n="38" data-why="LOOKS LIKE VOICE NOTES"><span class="k mk"><canvas class="cv" data-key="#wa" data-size="34" data-none></canvas></span>
+         <span class="v"><div class="fn">WhatsApp Audio</div><small data-s="38 FILES">LOOKS LIKE VOICE NOTES</small></span></div>
+        <div class="r fold out arrive" data-n="7" data-why="LOOKS LIKE VOICE NOTES"><span class="k mk"><canvas class="cv" data-key="#rec" data-size="34" data-none></canvas></span>
+         <span class="v"><div class="fn">Recordings</div><small data-s="7 FILES">LOOKS LIKE VOICE NOTES</small></span></div>
+        <div class="r fold out arrive" data-n="4" data-why="LOOKS LIKE VOICE NOTES"><span class="k mk"><canvas class="cv" data-key="#tg" data-size="34" data-none></canvas></span>
+         <span class="v"><div class="fn">Telegram Audio</div><small data-s="4 FILES">LOOKS LIKE VOICE NOTES</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act" id="sum-act">Bring in 310 songs</span><span class="sm gap" id="sum-sm">TAP A FOLDER TO LEAVE IT OUT</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="pick">← Chosen</div>
+   <div class="why">Folders are the unit because a folder is what Cantor remembers
+   (<code>device_excluded_folder</code>), and because <em>tags are the data, folders are a hint</em>:
+   the summary never claims an album split that the resolver might later merge. The label column
+   holds the folder's first cover, in ink, where the roster holds a node's station. A folder with
+   no art shows the bare grain.</div>
+  </div>
+
+  <div class="cell" id="f-sum-wall"><div class="lab"><span>3B · by album, as covers</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive">24 ALBUMS · 310 SONGS</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k">Bandcamp</span><span class="v"><div class="wall" data-albums="Shade|Ruins|Nine Post Cards|Stratosphere|A Crow Looked at Me|World of Echo"></div><small>AND 8 MORE · 168 SONGS</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k">CD rips</span><span class="v"><div class="wall" data-albums="Pink Moon|Spirit of Eden|Satchidananda"></div><small>AND 3 MORE · 71 SONGS</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k">Download</span><span class="v"><div class="wall" data-albums="Kick i|Space 1.8|Promises"></div><small>AND 1 MORE · 59 SONGS</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act">Bring in 310 songs</span><span class="sm gap">TAP A COVER TO LEAVE IT OUT</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="why">The most beautiful page, and the one that promises most: every cover drawn
+   here is a thumbnail, so the summary has to save art before the person has said yes. An album
+   grouping from MediaStore alone can also be wrong (WAV and AIFF split; two "Greatest Hits"
+   merge). <b>Better used later</b>, as the folder page (frame 6C), once the resolver has had its say.</div>
+  </div>
+
+  <div class="cell" id="f-sum-src"><div class="lab"><span>3C · by where it came from</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive">FOUR KINDS · 310 SONGS</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k">Bought</span><span class="v">18 albums<small>BANDCAMP · QOBUZ · ITUNES</small><div class="prose">Tagged in full, cover inside or beside.</div></span></div>
+        <div class="r arrive"><span class="k">CD rips</span><span class="v">6 albums<small>FLAC · TIDIED BY PICARD</small></span></div>
+        <div class="r arrive"><span class="k">Loose</span><span class="v">12 songs<small>NO ALBUM · SOME UNTAGGED</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive off"><span class="k">Voice</span><span class="v">49 files<small>LEFT OUT · LOOKS LIKE NOTES</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act">Bring in 310 songs</span><span class="sm gap">TAP A KIND TO LEAVE IT OUT</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="why">Reads the way a person thinks about their music, but every line is a guess
+   from layouts and formats, and a wrong guess is worse than a folder name. Leaving out a
+   <i>kind</i> also has nothing to persist against. Drawn so it can be ruled out.</div>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- ======================================================= BRINGING IN -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="bring"></a>
+ <h2><span class="no">4 · Bringing in</span>A measured rule, and the clef shows the record being read</h2>
+ <p class="lede">Only the kept files are inspected and their art saved, so <code>done / total</code>
+ is honest. That makes it F6's <b>measured</b> rule: straight from the left up to the fraction,
+ still waving after it, straight at 100%, then retracting. The flourish is the clef. Each album's
+ thumbnail is drawn through the <b>cover lens</b> the moment it is saved, and changes cell by
+ cell to the next album, the way a terminal rewrites itself. The person watches their record
+ collection go past. It is computed, never stored, and costs microseconds.</p>
+
+ <div class="pair">
+  <div class="cell" id="f-bring"><div class="lab"><span>4A · in the blind (chosen)</span><span class="replay" id="replay-bring">REPLAY ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><canvas id="bring-clef" width="64" height="64" style="width:64px;height:64px"></canvas></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive" id="bring-meta">READING 0 OF 310</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r"><span class="k">Now</span><span class="v"><div class="fn" id="bring-album">Shade</div><small class="mu" id="bring-artist">GROUPER</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure" id="bring-folders">
+        <div class="r" data-n="168"><span class="k"></span><span class="v"><div class="fn"><i>Music / </i>Bandcamp</div><small>WAITING</small></span></div>
+        <div class="r" data-n="71"><span class="k"></span><span class="v"><div class="fn"><i>Music / </i>CD rips</div><small>WAITING</small></span></div>
+        <div class="r" data-n="12"><span class="k"></span><span class="v"><div class="fn">Music</div><small>WAITING</small></span></div>
+        <div class="r" data-n="59"><span class="k"></span><span class="v"><div class="fn">Download</div><small>WAITING</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda"><div class="join"></div><div class="bar"></div>
+       <span class="act" id="bring-act">Bringing them in</span><span class="sm gap" id="bring-sm">YOU CAN CLOSE THIS</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="pick">← Chosen</div>
+   <div class="why">Each folder's line moves from <code>WAITING</code> through its count to
+   <code>DONE</code>. The coda's note says what is true and freeing: closing the blind does not
+   stop anything. At the end the rule straightens, retracts, and the act morphs to <i>See them</i>.
+   Anything protected is counted on its own line, without fuss.</div>
+  </div>
+
+  <div class="cell" id="f-bring-field"><div class="lab"><span>4B · closed: the work as a row in the field</span></div>
+   <div class="fld">
+    <div class="tab" style="top:14px"><i style="width:28px"></i><i style="width:18px"></i><span>NEW SONG</span></div>
+    <div class="fh"><div class="e">WEEK</div><div class="t">This week</div>
+     <div class="m"><span>4 SONGS</span><b></b></div></div>
+    <div class="rows">
+     <div class="row"><span class="fm"><svg class="mk" id="bf-mark" data-kind="phone" data-key="9F2C41AB" data-size="40" data-arc="0"></svg></span>
+      <span style="min-width:0"><div class="tt here">From this phone</div><div class="ln" id="bf-ln">BRINGING IN · 0 OF 310</div></span><span class="ac">OPEN</span></div>
+     <div class="row"><span class="fm"><svg class="mk" data-kind="song" data-key="wind" data-size="40"></svg></span><span style="min-width:0"><div class="tt">wind over a field</div><div class="ln">ON AGENTBOX</div></span><span class="ac">GET</span></div>
+     <div class="row"><span class="fm"><svg class="mk" data-kind="song" data-key="paper" data-fill="1" data-size="40"></svg></span><span style="min-width:0"><div class="tt here">paper boats drifting</div><div class="ln">DOWNLOADED · 3.1 MB</div></span><span class="ac">REMOVE</span></div>
+     <div class="row"><span class="fm"><svg class="mk" data-kind="song" data-key="moss" data-size="40"></svg></span><span style="min-width:0"><div class="tt">moss on the stair</div><div class="ln">ON H100</div></span><span class="ac">GET</span></div>
+    </div>
+    <div class="hint">TAP A ROW TO ARRIVE</div>
+    <div class="tab" style="bottom:14px"><span>NODES</span><i style="width:18px"></i><i style="width:28px"></i></div>
+   </div>
+   <div class="why">The alternative: the work becomes a row, like a generating job, with the
+   phone's seal and an arc measuring it. It is honest about where the result will land, but it
+   puts a non-song among the songs for a minute, and the cover clef has nowhere to live. 4A, with
+   the roster's waving seal (frame 1, <i>Bringing in</i>), covers the closed case with less.</div>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- ======================================================= ARRIVAL -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="arrival"></a>
+ <h2><span class="no">5 · Arrival</span>The songs land album by album</h2>
+ <p class="lede">The commit is one transaction, so the songs exist all at once. They are
+ <em>shown</em> in order: when the blind lifts (or on <i>See them</i>), the camera goes to this
+ week, and each album's marks open out of a point together, one album after another, the way a
+ lens change opens a mark. The meta line says it once, <code>310 ARRIVED FROM THIS PHONE</code>,
+ then returns to the plain count the next time the field is opened. No toast. At L0 it is the
+ same sentence: each album's cluster opens, cluster by cluster.</p>
+
+ <div class="pair">
+  <div class="cell" id="f-arrived"><div class="lab"><span>The field · this week, just arrived</span><span class="replay" id="replay-arr">REPLAY ↺</span></div>
+   <div class="fld">
+    <div class="tab" style="top:14px"><i style="width:28px"></i><i style="width:18px"></i><span>NEW SONG</span></div>
+    <div class="fh"><div class="e">WEEK</div><div class="t">This week</div>
+     <div class="m"><span class="now" id="arr-meta">310 ARRIVED FROM THIS PHONE</span><b></b></div></div>
+    <div class="rows" id="arr-rows"></div>
+    <div class="tab" style="bottom:14px"><span>NODES</span><i style="width:18px"></i><i style="width:28px"></i></div>
+   </div>
+   <div class="why">Every imported mark is filled (it is on the phone, the darkest of the three
+   inks) and carries the spindle. Switch the <code>LENS</code> at the bottom left: in the seal the
+   spindle stands in its own clearing in the dust.</div>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- ======================================================= AFTERWARDS -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="after"></a>
+ <h2><span class="no">6 · Afterwards</span>The phone's page, the way a node's is</h2>
+ <p class="lede">Once read, <i>This phone</i> opens on what is here, the folders it reads, and
+ anything that needs a word. The coda is <b>Look again</b>.</p>
+
+ <h3>Looking again, like VLC</h3>
+ <ul class="rules">
+  <li><b>Every time Cantor opens</b>, it asks MediaStore for its generation number. Same number:
+  nothing to do, and no work at all. Higher: only rows changed since then are listed, and only
+  new or changed files are inspected. This is the I3/I4 machinery, already built.</li>
+  <li><b>While Cantor is open</b>, a <code>ContentObserver</code> on the audio table can trigger the
+  same look a few seconds after the phone finishes copying files. That is optional; opening the
+  app covers most cases.</li>
+  <li><b>New files in a kept folder come in silently.</b> They arrive in the field like any new
+  song. The person already said yes to that folder.</li>
+  <li><b>A new folder is asked about, never taken.</b> The roster's line says <code>2 NEW
+  FOLDERS</code> in ink; the page puts them first (6B).</li>
+  <li><b>A file that vanished is held, not deleted:</b> <code>MISSING</code> with the fermata. Its
+  tags and playlists stay. It re-attaches by fingerprint if it comes back anywhere.</li>
+  <li><b>Look again</b> exists for the person who just copied an album over USB and doesn't want to
+  restart. It runs the same look, with the sine rule; if nothing changed, the act morphs to
+  <i>Nothing new</i> and back.</li>
+ </ul>
+
+ <div class="pair">
+  <div class="cell" id="f-phone"><div class="lab"><span>6A · this phone, read</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive">310 SONGS · 24 ALBUMS</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k">Songs</span><span class="v">310<small>17 ARTISTS · 1.9 GB</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k mk"><canvas class="cv" data-key="Shade" data-size="26"></canvas></span><span class="v"><span class="door" data-go="f-folder"><span class="fn"><i>Music / </i>Bandcamp</span><span class="caret"></span></span><small>14 ALBUMS · 168 SONGS</small></span></div>
+        <div class="r arrive"><span class="k mk"><canvas class="cv" data-key="Pink Moon" data-size="26"></canvas></span><span class="v"><span class="door"><span class="fn"><i>Music / </i>CD rips</span><span class="caret"></span></span><small>6 ALBUMS · 71 SONGS</small></span></div>
+        <div class="r arrive"><span class="k mk"><canvas class="cv" data-key="Kick i" data-size="26"></canvas></span><span class="v"><span class="door"><span class="fn">Download</span><span class="caret"></span></span><small>4 ALBUMS · 59 SONGS</small></span></div>
+        <div class="r arrive"><span class="k mk"><canvas class="cv" data-key="#wa" data-size="26" data-none style="opacity:.28"></canvas></span><span class="v"><span class="door off"><span class="fn">Three left out</span><span class="caret"></span></span><small>VOICE NOTES · 49 FILES</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k">Missing</span><span class="v">2 songs<small><svg class="ferm"><use href="#ferm"/></svg>FILE MOVED OR REMOVED</small></span></div>
+        <div class="r arrive"><span class="k">Protected</span><span class="v">4 files<small>LEFT ALONE</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act" id="again">Look again</span><span class="sm gap" id="again-sm">LOOKED AT 14:02</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="why">Tap <i>Look again</i>. Health rows (<i>Missing</i>, <i>Protected</i>,
+   <i>Couldn't read</i>) exist only when non-zero; a clean phone has two measures. A left-out
+   folder stays on the page in grey, because that is where it can be brought back.</div>
+  </div>
+
+  <div class="cell" id="f-new"><div class="lab"><span>6B · new folders, asked about</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive">310 SONGS · 2 NEW FOLDERS</div></div>
+      </div>
+      <div class="scroll"><div class="stave" id="new-stave">
+       <div class="measure">
+        <div class="r fold arrive" data-n="14"><span class="k mk"><canvas class="cv" data-key="Heaven or Las Vegas" data-size="34"></canvas></span>
+         <span class="v"><div class="fn"><i>Music / </i>From Dad's PC</div><small class="ink" data-s="NEW · 14 SONGS">NEW · 14 SONGS</small></span></div>
+        <div class="r fold arrive" data-n="9"><span class="k mk"><canvas class="cv" data-key="Vespertine" data-size="34"></canvas></span>
+         <span class="v"><div class="fn"><i>Download / </i>vespertine-flac</div><small class="ink" data-s="NEW · 9 SONGS">NEW · 9 SONGS</small></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k">Songs</span><span class="v">310<small>17 ARTISTS · 1.9 GB</small></span></div>
+        <div class="r arrive"><span class="k">Folders</span><span class="v"><span class="door"><span>Four kept, three left out</span><span class="caret"></span></span></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act" id="new-act">Bring in 23 more</span><span class="sm gap">TAP A FOLDER TO LEAVE IT OUT</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="why">The summary again, with only what is new. The ordinary page waits under it.
+   Leaving both out and closing is an answer too: they become <code>LEFT OUT</code> and are never
+   asked about again.</div>
+  </div>
+
+  <div class="cell" id="f-folder"><div class="lab"><span>6C · one folder, one level in</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><canvas class="cv" data-key="Shade" data-size="64" data-cells="22"></canvas></div>
+       <div><div class="eb arrive">FOLDER<span class="nav">‹ THIS PHONE</span></div>
+        <div class="ti">Bandcamp</div>
+        <div class="mt arrive">MUSIC/BANDCAMP · 168 SONGS</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k">Grouper</span><span class="v"><div class="wall" data-albums="Shade|Ruins|Dragging a Dead Deer"></div></span></div>
+        <div class="r arrive"><span class="k">Others</span><span class="v"><div class="wall" data-albums="Nine Post Cards|Stratosphere|A Crow Looked at Me|World of Echo|Ravedeath, 1972|Luxury Problems"></div><small>AND 5 MORE</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act strike muted" data-done="Left out">Leave this folder out<i class="line"></i></span>
+       <span class="sm" data-hold>HOLD · 168 LEAVE · FILES STAY</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+   <div class="why">Where 3B's cover wall belongs: after the resolver has grouped the albums
+   properly. Its clef is the folder's first cover. Leaving a kept folder out takes songs, tags and
+   playlists from the field, so it is <b>held</b> (F7), and the consequence is written before the
+   touch. A tap on a cover takes the camera to that album in the ALBUM arrangement.</div>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- ======================================================= NOTHING -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="nothing"></a>
+ <h2><span class="no">7 · When there is nothing</span>One sentence, and where Cantor looked</h2>
+ <div class="pair">
+  <div class="cell" id="f-none"><div class="lab"><span>This phone · no music found</span><span class="replay">REPLAY ARRIVAL ↺</span></div>
+   <div class="frame bottom" data-frame>
+    <div class="blind">
+     <div class="grip"><i class="pg on"></i><i class="pg on"></i></div>
+     <div class="page">
+      <div class="head">
+       <div class="clef"><svg class="mk" data-kind="phone" data-key="9F2C41AB" data-size="64" data-state="faint"></svg></div>
+       <div><div class="eb arrive">THIS PHONE<span class="nav">‹ NODES</span></div>
+        <div class="ti">This phone</div>
+        <div class="mt arrive">NO MUSIC FOUND</div></div>
+      </div>
+      <div class="scroll"><div class="stave">
+       <div class="measure">
+        <div class="r arrive"><span class="k"></span><span class="v"><span class="say">There is no music on this phone that Cantor can see yet. Files copied into Music or Download appear here by themselves.</span></span></div>
+       </div>
+       <div class="rest"></div>
+       <div class="measure">
+        <div class="r arrive"><span class="k">Looked in</span><span class="v">Music, Download<small>THIS PHONE'S STORAGE</small></span></div>
+        <div class="r arrive"><span class="k">Passed over</span><span class="v">11 short sounds<small>UNDER THIRTY SECONDS</small></span></div>
+       </div>
+      </div></div>
+      <div class="coda arrive"><div class="join"></div><div class="bar"></div>
+       <span class="act">Look again</span><span class="sm gap">AND ON EVERY OPEN</span></div>
+     </div>
+     <div class="seat"></div>
+    </div>
+   </div>
+  </div>
+  <div style="max-width:52ch;padding-top:26px">
+   <ul class="rules">
+    <li><b>Nothing new</b> after <i>Look again</i>: the rule retracts and the act morphs to
+    <i>Nothing new</i> for two seconds (6A).</li>
+    <li><b>The phone database can't open:</b> the roster line says <code>UNAVAILABLE</code> with the
+    fermata; the raw reason goes to Diagnostics (F9d). Node songs are untouched.</li>
+    <li><b>A file couldn't be read</b> during bringing in: counted on its own row,
+    <code>COULDN'T READ · 3</code>, and tried again on the next look. A stored song for it stands
+    as it was.</li>
+    <li><b>Protected (DRM)</b>: counted, <code>LEFT ALONE</code>, never an error.</li>
+    <li><b>The permission is withdrawn later</b> in Android settings: the songs stay in the field,
+    faint, with the fermata on the roster line (<code>NOT ALLOWED NOW</code>), and come back by
+    themselves when it's restored.</li>
+   </ul>
+  </div>
+ </div>
+</section>
+</div>
+
+<!-- ======================================================= UNDERNEATH -->
+<div class="rule"></div>
+<div class="wrap">
+<section>
+ <a id="under"></a>
+ <h2><span class="no">8 · Underneath</span>What the flow asks of the code</h2>
+ <ul class="rules">
+  <li><b>Split <code>scan</code></b> into <i>list</i> (MediaStore rows, grouped by folder, with the
+  voice-note guess), and <i>bring in</i> (inspect, resolve, art, commit) over the kept folders
+  only. <code>ScanProgress</code> already has <code>inspecting {done, total}</code>; add the album
+  whose art was just saved, for the clef.</li>
+  <li><b>Folder exclusion</b> goes in the existing <code>device_excluded_folder</code> table. A
+  folder is <i>new</i> when it is neither kept nor excluded. No migration should be needed; if
+  "kept" needs its own row, that is a new table, not a change.</li>
+  <li><b>The voice-note guess</b> is a small pure function in <code>device/</code>: folder names
+  (<code>WhatsApp</code>, <code>Telegram</code>, <code>Recordings</code>, <code>Voice</code>,
+  <code>Call</code>) plus MediaStore's own <code>IS_RECORDING</code> where present. It only decides
+  the starting ink.</li>
+  <li><b>On open</b>: <code>deviceLibrary.scan()</code> after <code>start()</code> once the
+  permission is held, so a generation match costs one native call.</li>
+  <li><b>The roster</b> gets a phone entry fed by <code>deviceLibrary.store</code>; the phone mark
+  is the settings seal with the spindle (<code>marks/seal.ts</code> + the lens's spindle ratio).</li>
+  <li><b>Arrival</b> needs the field to know which entities are new in this commit, so it can
+  open them album by album. That is one set of ids handed to the existing open-from-a-point clock.</li>
+ </ul>
+</section>
+</div>
+
+<script>
+/* ================= shared ================= */
+const TAU=Math.PI*2;
+function fnv(s){let x=2166136261;for(const ch of s){x^=ch.charCodeAt(0);x=Math.imul(x,16777619)>>>0;}return x;}
+function rng(seed){let a=seed||1;return()=>{a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+ t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const easeT=t=>t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+const buzz=ms=>{try{navigator.vibrate&&navigator.vibrate(ms);}catch(e){}};
+let LENS=new URLSearchParams(location.search).get('lens')==='seal'?'seal':'circle';
+const INK='#000',FAINT='#A6A6A6';
+
+/* ================= song marks: circle or seal, with the spindle ================= */
+function facePts(key,R){const r=rng(fnv(key)),a=r()*TAU,b=r()*TAU,c=r()*TAU,k1=.09+r()*.06,k2=.05+r()*.05,k3=.02+r()*.03,o=[];
+ for(let i=0;i<=96;i++){const t=i/96*TAU,rr=R*(1+k1*Math.sin(2*t+a)+k2*Math.sin(3*t+b)+k3*Math.sin(5*t+c));
+  o.push([rr*Math.cos(t),rr*Math.sin(t)*1.08]);}return o;}
+const ptsPath=ps=>ps.map((q,i)=>(i?'L':'M')+q[0].toFixed(2)+' '+q[1].toFixed(2)).join(' ')+'Z';
+const ringPath=r=>`M ${r} 0 A ${r} ${r} 0 1 0 ${-r} 0 A ${r} ${r} 0 1 0 ${r} 0 Z`;
+function sealDots(key,R){const r=rng(fnv(key+'#seal')),side=R*1.9,turn=Math.floor(r()*4);
+ const mask=()=>{const cands=[[[0,1]],[[1,1]],[[2,1]],[[0,0],[0,2]],[[1,0],[1,2]],[[2,0],[2,2]]];
+  for(let i=cands.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[cands[i],cands[j]]=[cands[j],cands[i]];}
+  const want=5+Math.floor(r()*3),out=[];for(const c of cands){if(out.length+c.length<=want)out.push(...c);if(out.length===want)break;}
+  for(const c of cands){if(out.length>=5)break;for(const q of c)if(!out.some(o=>o[0]===q[0]&&o[1]===q[1]))out.push(q);}return out;};
+ const m1=mask(),m2=mask(),o=[];
+ for(const[r1,c1]of m1)for(const[r2,c2]of m2){let x=(c1-1)*side/3+(c2-1)*side/9,y=(r1-1)*side/3+(r2-1)*side/9;
+  for(let k=0;k<turn;k++)[x,y]=[-y,x];o.push([x,y]);}
+ return {dots:o,cell:side/9};}
+function paintSong(g,o,lens){
+ const {key,R,sw,style,spindle}=o,col=style==='faint'?FAINT:INK,sr=R*.2;
+ if(lens==='circle'){let d=ptsPath(facePts(key,R));
+  if(style==='filled'){if(spindle)d+=' '+ringPath(sr);g.innerHTML=`<path d="${d}" fill="${col}" fill-rule="evenodd" stroke="${col}" stroke-width="${sw}" stroke-linejoin="round"/>`;}
+  else g.innerHTML=`<path d="${d}" fill="none" stroke="${col}" stroke-width="${sw}" stroke-linejoin="round"/>`+(spindle?`<path d="${ringPath(sr)}" fill="none" stroke="${col}" stroke-width="${sw}"/>`:'');
+  return;}
+ const sd=sealDots(key,R),base=sd.cell*(style==='filled'?1.15:.78)/2,clear=sr*1.8;
+ g.innerHTML=sd.dots.filter(([x,y])=>!spindle||Math.hypot(x,y)>clear).map(([x,y])=>`<circle cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${base.toFixed(2)}" fill="${col}"/>`).join('')
+  +(spindle?`<path d="${ringPath(sr)}" fill="none" stroke="${col}" stroke-width="${sw}"/>`:'');}
+function songMark(g,o){g._o=o;g._lens=LENS;paintSong(g,o,LENS);}
+/* a lens change: the one being left scales in to a point, the one arriving opens out of it */
+function relens(g){if(!g._o||g._lens===LENS)return;const from=g._lens,to=LENS,t0=performance.now();g._lens=to;
+ const step=now=>{const t=Math.min(1,(now-t0)/440),e=t<.5?1-easeT(t*2):easeT(t*2-1);
+  paintSong(g,g._o,t<.5?from:to);g.setAttribute('transform',`scale(${Math.max(e,.001)})`);
+  if(t<1)requestAnimationFrame(step);else g.removeAttribute('transform');};requestAnimationFrame(step);}
+function setLens(l){if(l===LENS)return;LENS=l;buzz(6);document.querySelectorAll('g.song').forEach(relens);
+ document.querySelectorAll('.lensdial span').forEach(x=>x.classList.toggle('on',x.dataset.l===l));}
+
+/* ================= other marks: the phone's seal, a node's station ================= */
+function sealPath(key,R){const seed=fnv(key),r=rng(seed),n=5+seed%4,rot=r()*TAU;
+ let d=`M ${R} 0 A ${R} ${R} 0 1 1 ${-R} 0 A ${R} ${R} 0 1 1 ${R} 0 `;
+ for(let i=0;i<n;i++){const a=rot+i*TAU/n,l=R*(.45+r()*.4),s=4.2;
+  d+=`M ${(s*Math.cos(a)).toFixed(2)} ${(s*Math.sin(a)).toFixed(2)} L ${(l*Math.cos(a)).toFixed(2)} ${(l*Math.sin(a)).toFixed(2)} `;}
+ return d;}
+function station(key,R){const seed=fnv(key),r=rng(seed),n=3+seed%5,rot=r()*TAU/n-Math.PI/2,gate=Math.floor(r()*n);
+ const pts=[];for(let i=0;i<n;i++){const a=rot+i*TAU/n;pts.push([R*Math.cos(a),R*Math.sin(a)]);}
+ let d='';for(let i=1;i<=n;i++){const e=(gate+i)%n,f=(gate+i+1)%n;if(i===n)break;const[x1,y1]=pts[f];
+  if(i===1){const g=pts[e],h=pts[(e+n-1)%n];d+=`M ${(g[0]*.72+h[0]*.28).toFixed(2)} ${(g[1]*.72+h[1]*.28).toFixed(2)} L ${g[0].toFixed(2)} ${g[1].toFixed(2)} `;}
+  d+=`L ${x1.toFixed(2)} ${y1.toFixed(2)} `;}
+ const g=pts[gate],h=pts[(gate+1)%n];d+=`L ${(g[0]*.72+h[0]*.28).toFixed(2)} ${(g[1]*.72+h[1]*.28).toFixed(2)}`;return d;}
+function dots(n){if(n<=0)return[];if(n===1)return[[0,0]];const rr=n===2?3.4:4.6,o=[];
+ for(let i=0;i<n;i++){const a=-Math.PI/2+i*TAU/n;o.push([rr*Math.cos(a),rr*Math.sin(a)]);}return o;}
+const waves=new Set();
+function drawMark(svg){
+ const size=+svg.dataset.size,kind=svg.dataset.kind,key=svg.dataset.key||'',st=svg.dataset.state||'ready',n=+(svg.dataset.models||0);
+ const u=40/size,col=(st==='offline'||st==='faint')?FAINT:INK,R=14.5,sw=Math.max(u,.5),tall=st==='working';
+ const arc=svg.dataset.arc;
+ svg.setAttribute('width',size);svg.setAttribute('height',tall?size*1.25:size);
+ svg.setAttribute('viewBox',tall?'-20 -20 40 50':'-20 -20 40 40');svg.style.overflow='visible';
+ const path=d=>`<path class="ink" d="${d}" fill="none" stroke="${col}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round"/>`;
+ let b='';
+ if(kind==='station'){b+=path(station(key,R));for(const[x,y]of dots(n))b+=`<circle class="dotf" cx="${x.toFixed(2)}" cy="${y.toFixed(2)}" r="${Math.max(1.5,1.9*u)}" fill="${col}"/>`;}
+ else if(kind==='phone'){const r0=arc!==undefined?12:R;b+=path(sealPath(key,r0));b+=path(ringPath(2.6));}
+ else if(kind==='song'){b+='<g class="song"></g>';}
+ else if(kind==='constellation'){[['agentbox',1,'r'],['h100',4,'r'],['lightningnode',2,'r'],['rtx6000',3,'o']].forEach(([k,m,s],i)=>{
+   const cx=i%2?9.5:-9.5,cy=i<2?-9.5:9.5,c=s==='o'?FAINT:INK;
+   b+=`<g transform="translate(${cx} ${cy}) scale(.58)"><path class="ink" d="${station(k,R)}" fill="none" stroke="${c}" stroke-width="${sw/.58}" stroke-linejoin="round"/>${dots(m).map(([x,y])=>`<circle class="dotf" cx="${x}" cy="${y}" r="2.2" fill="${c}"/>`).join('')}</g>`;});}
+ if(arc!==undefined)b+=`<path class="arc" fill="none" stroke="${INK}" stroke-width="${1.3*u}" stroke-linecap="round"/>`;
+ if(tall)b+=`<path class="wave" fill="none" stroke="${INK}" stroke-width="${sw}"/>`;
+ svg.innerHTML=b;
+ if(kind==='song')songMark(svg.querySelector('g.song'),{key,R:R*.9,sw,style:svg.dataset.fill?'filled':'outline',spindle:!!svg.dataset.imp});
+ if(arc!==undefined)setArc(svg,+arc);
+ if(tall)waves.add(svg);else waves.delete(svg);
+ svg.querySelectorAll('.ink').forEach(p=>{try{p.style.setProperty('--len',Math.ceil(p.getTotalLength()*1.02));}catch(e){}});}
+function setArc(svg,f){const p=svg.querySelector('.arc');if(!p)return;const rr=18,a0=-Math.PI/2,a1=a0+Math.min(f,.9999)*TAU;
+ p.setAttribute('d',f<=0?'':`M 0 ${-rr} A ${rr} ${rr} 0 ${f>.5?1:0} 1 ${(rr*Math.cos(a1)).toFixed(2)} ${(rr*Math.sin(a1)).toFixed(2)}`);}
+(function waveLoop(now){waves.forEach(svg=>{const p=svg.querySelector('.wave');if(!p)return;let d='';
+  for(let i=0;i<=40;i++){const x=-10+i/2;d+=(i?'L':'M')+` ${x} ${24+1.3*Math.sin(x/10*TAU*1.5-now/110)} `;}p.setAttribute('d',d);});
+ requestAnimationFrame(waveLoop);})(0);
+document.querySelectorAll('svg.mk').forEach(drawMark);
+
+/* ================= the cover lens: a thumbnail as glyphs, never stored ================= */
+/* A stand-in for nativeMedia.artworkLuma: a few kinds of record cover, drawn from the album's name. */
+function coverLuma(key,n){const r=rng(fnv(key+'#cover')),kind=fnv(key)%5,a=r(),b=r(),c=r(),d=r(),out=new Float32Array(n*n);
+ const h=(x,y)=>{const s=Math.sin(x*127.1+y*311.7+a*91)*43758.5453;return s-Math.floor(s);};
+ const vn=(x,y)=>{const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi,sx=xf*xf*(3-2*xf),sy=yf*yf*(3-2*yf);
+  return (h(xi,yi)*(1-sx)+h(xi+1,yi)*sx)*(1-sy)+(h(xi,yi+1)*(1-sx)+h(xi+1,yi+1)*sx)*sy;};
+ for(let y=0;y<n;y++)for(let x=0;x<n;x++){const u=(x+.5)/n,v=(y+.5)/n,g=vn(u*5,v*5)*.6+vn(u*11,v*11)*.4;let l;
+  if(kind===0){const cx=.25+a*.5,cy=.3+b*.2,rad=.14+c*.12;l=.9-v*.3;if(Math.hypot(u-cx,v-cy)<rad)l=.08;if(v>.62+d*.14)l=.3+g*.3;}
+  else if(kind===1){l=.5+.42*Math.sin(v*(5+a*9)*TAU*.5+b*6)+(g-.5)*.35;}
+  else if(kind===2){const e=((u-.5-(a-.5)*.25)/.24)**2+((v-.48)/.32)**2;l=e<1?.85-(u-.3)*.6-g*.2:.1+g*.12;}
+  else if(kind===3){l=1-(u*(.5+a*.5)+v*(.5+b*.5))/1.5;const q=c<.5;if((q?u>.55:u<.45)&&v>.5+d*.2&&v<.85)l=.04;}
+  else{l=g>.52+a*.1?.15:.9-g*.4;}
+  out[y*n+x]=Math.max(0,Math.min(1,l));}
+ return out;}
+/* cover.ts's coverArtOf: stretch to the picture's own range, invert into ink, cut into six levels */
+function levelsOf(luma){const s=Float32Array.from(luma).sort(),clip=Math.floor(s.length*.02),bk=s[clip],wh=s[s.length-1-clip],span=wh-bk,o=new Uint8Array(luma.length);
+ for(let i=0;i<luma.length;i++){const lt=span>1e-6?Math.min(1,Math.max(0,(luma[i]-bk)/span)):.5;o[i]=Math.min(6,Math.round(Math.pow(1-lt,1.25)*6));}return o;}
+function grainLevels(n){const o=new Uint8Array(n*n);for(let i=0;i<o.length;i++)o[i]=1;return o;}
+/* · - + × # *, in order of how much line each is */
+function glyph(ctx,lv,cx,cy,s){const h=s*.34;if(lv<=0)return;ctx.beginPath();
+ if(lv===1){ctx.arc(cx,cy,Math.max(.35,s*.07),0,TAU);ctx.fill();return;}
+ const H=()=>{ctx.moveTo(cx-h,cy);ctx.lineTo(cx+h,cy);},V=()=>{ctx.moveTo(cx,cy-h);ctx.lineTo(cx,cy+h);},
+  X=()=>{const k=h*.78;ctx.moveTo(cx-k,cy-k);ctx.lineTo(cx+k,cy+k);ctx.moveTo(cx+k,cy-k);ctx.lineTo(cx-k,cy+k);};
+ if(lv===2)H();else if(lv===3){H();V();}else if(lv===4)X();
+ else if(lv===5){const k=h*.42;ctx.moveTo(cx-h,cy-k);ctx.lineTo(cx+h,cy-k);ctx.moveTo(cx-h,cy+k);ctx.lineTo(cx+h,cy+k);ctx.moveTo(cx-k,cy-h);ctx.lineTo(cx-k,cy+h);ctx.moveTo(cx+k,cy-h);ctx.lineTo(cx+k,cy+h);}
+ else{H();V();X();}
+ ctx.stroke();}
+function paintCover(cv,levels,n,size,ink){const dpr=window.devicePixelRatio||1;
+ if(cv.width!==size*dpr){cv.width=size*dpr;cv.height=size*dpr;cv.style.width=size+'px';cv.style.height=size+'px';}
+ const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,size,size);
+ const s=size/n;ctx.strokeStyle=ink;ctx.fillStyle=ink;ctx.lineWidth=Math.max(.55,s*.1);ctx.lineCap='round';
+ for(let y=0;y<n;y++)for(let x=0;x<n;x++)glyph(ctx,levels[y*n+x],(x+.5)*s,(y+.5)*s,s);}
+function cellsFor(size){return size>=60?20:size>=34?12:10;}
+function drawCover(cv){const size=+cv.dataset.size,n=+(cv.dataset.cells||cellsFor(size));
+ paintCover(cv,'none' in cv.dataset?grainLevels(n):levelsOf(coverLuma(cv.dataset.key,n)),n,size,'none' in cv.dataset?FAINT:INK);}
+document.querySelectorAll('canvas.cv').forEach(drawCover);
+document.querySelectorAll('.wall').forEach(w=>{w.innerHTML=w.dataset.albums.split('|').map(a=>`<div class="al arrive"><canvas class="cv" data-key="${a}" data-size="64" data-cells="18"></canvas><span>${a}</span></div>`).join('');
+ w.querySelectorAll('canvas').forEach(drawCover);
+ w.querySelectorAll('.al').forEach(al=>al.onclick=()=>{al.classList.toggle('out');buzz(6);});});
+
+/* the clef's cover changes cell by cell, like a terminal rewriting itself */
+function CoverClef(cv,size,n){let cur=new Uint8Array(n*n),nxt=cur,at=new Float32Array(n*n),t0=0,run=0;
+ const draw=()=>{const now=performance.now()-t0,lv=new Uint8Array(n*n);let left=false;
+  for(let i=0;i<lv.length;i++){if(now>=at[i])lv[i]=nxt[i];else{lv[i]=cur[i];left=true;}}
+  paintCover(cv,lv,n,size,INK);return left;};
+ return{show(key){const id=++run;cur=nxt;nxt=levelsOf(coverLuma(key,n));const r=rng(fnv(key));
+   for(let i=0;i<at.length;i++){const row=Math.floor(i/n);at[i]=row*14+r()*160;}t0=performance.now();
+   const tick=()=>{if(id!==run)return;if(draw())requestAnimationFrame(tick);};requestAnimationFrame(tick);},
+  clear(){run++;cur=nxt=new Uint8Array(n*n);paintCover(cv,cur,n,size,INK);}};}
+
+/* ================= the working rule in the coda: waves, straightens, retracts ================= */
+function Rule(act){const NS='http://www.w3.org/2000/svg',svg=document.createElementNS(NS,'svg'),p=document.createElementNS(NS,'path');
+ svg.setAttribute('class','wr');svg.setAttribute('height','8');p.setAttribute('fill','none');p.setAttribute('stroke','currentColor');p.setAttribute('stroke-width','1');
+ svg.appendChild(p);let frac=null,on=false,run=0;
+ const frame=now=>{if(!on)return;const W=act.getBoundingClientRect().width;svg.setAttribute('width',W);let d='';
+  for(let x=0;x<=W;x+=1.5){const flat=frac!==null&&x<=frac*W,y=4+(flat?0:1.3*Math.sin(x/5.5-now/110));d+=(x?'L':'M')+x.toFixed(1)+' '+y.toFixed(2)+' ';}
+  p.setAttribute('d',d);requestAnimationFrame(frame);};
+ return{start(f=null){frac=f;svg.style.clipPath='';svg.style.color='';if(!svg.parentNode)act.appendChild(svg);if(!on){on=true;requestAnimationFrame(frame);}},
+  set(f){frac=f;},
+  end(fail){const id=++run;if(fail)svg.style.color=FAINT;else frac=1;
+   setTimeout(()=>{if(id!==run)return;const a=svg.animate([{clipPath:'inset(0 0 0 0)'},{clipPath:'inset(0 0 0 100%)'}],{duration:420,easing:'cubic-bezier(.45,0,.2,1)',fill:'forwards'});
+    a.onfinish=()=>{if(id!==run)return;on=false;svg.remove();a.cancel();};},260);},
+  stop(){run++;on=false;svg.remove();}};}
+/* a text change morphs; here, a write */
+function morph(el,text){if(el.firstChild&&el.firstChild.nodeType===3){if(el.firstChild.textContent===text)return;el.firstChild.textContent=text;}else el.textContent=text;
+ el.animate([{clipPath:'inset(0 100% 0 0)'},{clipPath:'inset(0 0 0 0)'}],{duration:380,easing:'cubic-bezier(.45,0,.2,1)'});}
+
+/* ================= arrival (folio.html): timed by where each thing is ================= */
+function arrive(frame){frame.classList.remove('go');void frame.offsetWidth;
+ const page=frame.querySelector('.page'),H=page.getBoundingClientRect().height,top=page.getBoundingClientRect().top,at=el=>(el.getBoundingClientRect().top-top)/H;
+ frame.querySelectorAll('.measure,.head').forEach(m=>m.style.setProperty('--d',(0.36+at(m)*0.62).toFixed(3)+'s'));
+ frame.querySelectorAll('.arrive').forEach(e=>e.style.setProperty('--d',(0.42+at(e)*0.66).toFixed(3)+'s'));
+ const bar=frame.querySelector('.coda .bar');if(bar)bar.style.setProperty('--d','1.02s');frame.classList.add('go');}
+document.querySelectorAll('.cell').forEach(c=>{const f=c.querySelector('[data-frame]'),b=c.querySelector('.replay:not([id])');if(f&&b)b.onclick=()=>arrive(f);});
+document.querySelectorAll('[data-go]').forEach(d=>d.onclick=()=>{const t=document.getElementById(d.dataset.go);t.scrollIntoView({behavior:'smooth',block:'center'});
+ const f=t.querySelector('[data-frame]');if(f)setTimeout(()=>arrive(f),450);});
+
+/* ================= 1 · the roster's phone line ================= */
+const ROSTER=[['NOT READ YET','mu','ready'],['BRINGING IN · 46%','mu','working'],['310 SONGS · 24 ALBUMS','mu','ready'],['2 NEW FOLDERS','ink','ready'],['<svg class="ferm"><use href="#ferm"/></svg>2 MISSING · 310 SONGS','mu','ready']];
+document.querySelectorAll('#roster-states span').forEach(s=>s.onclick=()=>{const [t,c,st]=ROSTER[+s.dataset.s],el=document.getElementById('roster-state'),m=document.getElementById('roster-phone');
+ document.querySelectorAll('#roster-states span').forEach(x=>x.classList.toggle('on',x===s));
+ el.innerHTML=t;el.className=c;m.dataset.state=st;drawMark(m);buzz(5);});
+
+/* ================= 2 · asking ================= */
+(()=>{const act=document.getElementById('allow'),sm=document.getElementById('allow-sm'),sys=document.getElementById('sys'),rule=Rule(act);
+ act.onclick=()=>{buzz(8);sys.classList.add('on');};
+ sys.querySelectorAll('.b').forEach(b=>b.onclick=()=>{sys.classList.remove('on');
+  if(b.dataset.a==='no'){const t=document.getElementById('f-denied');t.scrollIntoView({behavior:'smooth',block:'center'});setTimeout(()=>arrive(t.querySelector('[data-frame]')),450);return;}
+  morph(act,'Reading');sm.textContent='MUSIC AND DOWNLOAD';rule.start();
+  setTimeout(()=>{rule.end();setTimeout(()=>{morph(act,'Allow music');sm.textContent='ANDROID WILL ASK';
+   document.getElementById('f-sum').scrollIntoView({behavior:'smooth',block:'center'});setTimeout(readSummary,500);},700);},1500);});})();
+
+/* ================= 3A · the summary: folders found, folders left out ================= */
+function foldSum(stave){let n=0,f=0;stave.querySelectorAll('.fold').forEach(r=>{if(!r.classList.contains('out')){n+=+r.dataset.n;f++;}});return{n,f};}
+function bindFolds(stave,act,meta,word){stave.querySelectorAll('.fold').forEach(r=>r.onclick=()=>{if(stave.dataset.busy)return;
+ r.classList.toggle('out');buzz(6);const sm=r.querySelector('small');
+ sm.textContent=r.classList.contains('out')?(r.dataset.why||'LEFT OUT · '+sm.dataset.s.split('·').pop().trim()):sm.dataset.s;
+ const{n,f}=foldSum(stave);morph(act,n?word(n):'Nothing to bring in');if(meta)meta.textContent=`${f} FOLDER${f===1?'':'S'} · ${n} SONGS`;});}
+const sumStave=document.getElementById('sum-stave'),sumAct=document.getElementById('sum-act'),sumMeta=document.getElementById('sum-meta'),sumRule=Rule(sumAct);
+bindFolds(sumStave,sumAct,sumMeta,n=>`Bring in ${n} songs`);
+bindFolds(document.getElementById('new-stave'),document.getElementById('new-act'),null,n=>`Bring in ${n} more`);
+function readSummary(){if(sumStave.dataset.busy)return;sumStave.dataset.busy=1;const rows=[...sumStave.querySelectorAll('.fold')],sm=document.getElementById('sum-sm');
+ rows.forEach(r=>{r.classList.add('hidden');r.classList.remove('land');});
+ sumAct.firstChild.textContent='Reading';sm.textContent='MUSIC AND DOWNLOAD';sumRule.start();let found=0;sumMeta.textContent='FOUND 0';
+ rows.forEach((r,i)=>setTimeout(()=>{r.classList.remove('hidden');r.classList.add('land');found+=+r.dataset.n;sumMeta.textContent=`FOUND ${found}`;},380+i*230));
+ setTimeout(()=>{sumRule.end();const{n,f}=foldSum(sumStave);setTimeout(()=>{morph(sumAct,`Bring in ${n} songs`);sm.textContent='TAP A FOLDER TO LEAVE IT OUT';
+  sumMeta.textContent=`${f} FOLDERS · ${n} SONGS`;delete sumStave.dataset.busy;},500);},380+rows.length*230+300);}
+document.getElementById('replay-read').onclick=readSummary;
+sumAct.onclick=()=>{if(sumStave.dataset.busy)return;buzz(20);document.getElementById('f-bring').scrollIntoView({behavior:'smooth',block:'center'});setTimeout(bringIn,500);};
+
+/* ================= 4 · bringing in ================= */
+const ALBUMS=[['Shade','Grouper',12,0],['Ruins','Grouper',8,0],['Dragging a Dead Deer','Grouper',13,0],['Nine Post Cards','Hiroshi Yoshimura',9,0],['Stratosphere','Duster',15,0],['A Crow Looked at Me','Mount Eerie',11,0],['World of Echo','Arthur Russell',17,0],['Ravedeath, 1972','Tim Hecker',12,0],['Luxury Problems','Andy Stott',8,0],['Nepenthe','Julianna Barwick',11,0],['Shrines','Purity Ring',11,0],['Garden of Delete','Oneohtrix Point Never',15,0],['Ágætis byrjun','Sigur Rós',10,0],['Lahai','Sampha',16,0],
+ ['Pink Moon','Nick Drake',11,1],['Spirit of Eden','Talk Talk',6,1],['Satchidananda','Alice Coltrane',5,1],['Music Has the Right','Boards of Canada',18,1],['Heaven or Las Vegas','Cocteau Twins',10,1],['Vespertine','Björk',21,1],
+ ['Loose songs','Various',12,2],
+ ['Kick i','Arca',12,3],['Space 1.8','Nala Sinephro',8,3],['Promises','Floating Points',9,3],['Ambient 1–4','Brian Eno',30,3]];
+const bringClef=CoverClef(document.getElementById('bring-clef'),64,20);
+let bringRun=0;const bringAct=document.getElementById('bring-act'),bringRule=Rule(bringAct);
+function bringIn(){const id=++bringRun,total=310,meta=document.getElementById('bring-meta'),sm=document.getElementById('bring-sm'),folders=[...document.querySelectorAll('#bring-folders .r')];
+ bringAct.firstChild.textContent='Bringing them in';sm.textContent='YOU CAN CLOSE THIS';bringRule.start(0);bringClef.clear();
+ folders.forEach(f=>{f.querySelector('small').textContent='WAITING';f.querySelector('small').className='';});
+ const prot=document.getElementById('bring-prot');if(prot)prot.remove();
+ const t0=performance.now(),DUR=11000;let shown=-1;
+ const ends=[];let acc=0;for(const a of ALBUMS){acc+=a[2];ends.push(acc);}
+ const tick=now=>{if(id!==bringRun)return;const f=Math.min(1,(now-t0)/DUR),done=Math.round(f*total);
+  bringRule.set(f);meta.textContent=f<1?`READING ${done} OF ${total}`:'310 SONGS · 24 ALBUMS';
+  let ai=ends.findIndex(e=>e>done);if(ai<0)ai=ALBUMS.length-1;
+  if(ai!==shown&&f<1){shown=ai;const[al,ar]=ALBUMS[ai];const fa=document.getElementById('bring-album'),fr=document.getElementById('bring-artist');
+   fa.textContent=al;fr.textContent=ar.toUpperCase();if(al==='Loose songs')bringClef.clear();else bringClef.show(al);}
+  let start=0;folders.forEach(fr=>{const n=+fr.dataset.n,s=fr.querySelector('small'),got=Math.max(0,Math.min(n,done-start));
+   const txt=got>=n?'DONE':got>0?`${got} OF ${n}`:'WAITING';if(s.textContent!==txt){s.textContent=txt;s.className=got>0&&got<n?'ink':'';}start+=n;});
+  if(f<1){requestAnimationFrame(tick);return;}
+  bringRule.end();document.getElementById('bring-album').textContent='All of them';document.getElementById('bring-artist').textContent='24 ALBUMS · 17 ARTISTS';
+  const m=document.getElementById('bring-folders'),p=document.createElement('div');p.className='r land';p.id='bring-prot';
+  p.innerHTML='<span class="k">Protected</span><span class="v">4 files<small>LEFT ALONE</small></span>';m.appendChild(p);
+  setTimeout(()=>{if(id!==bringRun)return;morph(bringAct,'See them');sm.textContent='310 SONGS · 24 ALBUMS';},700);};
+ requestAnimationFrame(tick);}
+document.getElementById('replay-bring').onclick=bringIn;
+bringAct.onclick=()=>{if(bringAct.firstChild.textContent!=='See them')return;buzz(8);document.getElementById('f-arrived').scrollIntoView({behavior:'smooth',block:'center'});setTimeout(arriveSongs,500);};
+
+/* 4B: the same work as a row */
+(()=>{const m=document.getElementById('bf-mark'),ln=document.getElementById('bf-ln');let t0=performance.now();
+ const tick=now=>{let f=((now-t0)%14000)/11000;if(f>1)f=1;setArc(m,f);ln.textContent=f<1?`BRINGING IN · ${Math.round(f*310)} OF 310`:'310 SONGS ARRIVED';requestAnimationFrame(tick);};requestAnimationFrame(tick);})();
+
+/* ================= 5 · arrival in the field ================= */
+const ARR=[['Shade','Grouper',['Ode to the Blue','Unclean Mind','Followed the Ocean']],['Pink Moon','Nick Drake',['Pink Moon','Place to Be']],['Nine Post Cards','Hiroshi Yoshimura',['Blink','Clouds']]];
+function arriveSongs(){const box=document.getElementById('arr-rows'),meta=document.getElementById('arr-meta');box.innerHTML='';
+ meta.textContent='';let delay=250;
+ ARR.forEach(([al,ar,songs])=>{const g=document.createElement('div');g.className='grp';g.textContent=`${al.toUpperCase()} · ${ar.toUpperCase()}`;g.style.opacity=0;box.appendChild(g);
+  const rows=songs.map(s=>{const r=document.createElement('div');r.className='row';r.style.height='62px';
+   r.innerHTML=`<span class="fm"><svg class="mk" data-kind="song" data-key="${s}" data-fill="1" data-imp="1" data-size="40"></svg></span><span style="min-width:0"><div class="tt here">${s}</div><div class="ln q">YOUR OWN FILE</div></span><span class="ac"></span>`;
+   box.appendChild(r);const svg=r.querySelector('svg');drawMark(svg);r.style.opacity=0;return r;});
+  const d=delay;setTimeout(()=>{g.style.opacity=1;g.classList.add('land');
+   rows.forEach(r=>{r.style.opacity=1;const gs=r.querySelector('g.song');gs.animate([{transform:'scale(.001)'},{transform:'scale(1)'}],{duration:420,easing:'cubic-bezier(.45,0,.2,1)'});
+    r.querySelector('.fm').nextElementSibling.animate([{opacity:0,transform:'translateY(4px)'},{opacity:1,transform:'none'}],{duration:320,delay:180,easing:'cubic-bezier(.45,0,.2,1)',fill:'backwards'});});},d);
+  delay+=520;});
+ setTimeout(()=>morph(meta,'310 ARRIVED FROM THIS PHONE'),delay);}
+document.getElementById('replay-arr').onclick=arriveSongs;
+
+/* ================= 6A · look again ================= */
+(()=>{const act=document.getElementById('again'),sm=document.getElementById('again-sm'),rule=Rule(act);let busy=false;
+ act.onclick=()=>{if(busy)return;busy=true;buzz(8);morph(act,'Looking');rule.start();
+  setTimeout(()=>{rule.end();setTimeout(()=>{morph(act,'Nothing new');sm.textContent='LOOKED AT NOW';
+   setTimeout(()=>{morph(act,'Look again');busy=false;},2200);},500);},1400);};})();
+
+/* ================= strike (folio.html) ================= */
+document.querySelectorAll('.strike').forEach(a=>{const note=a.parentElement.querySelector('[data-hold]'),label=a.firstChild.textContent;let t=null;
+ const reset=()=>{a.classList.remove('done');a.firstChild.textContent=label;if(note)note.style.visibility='';};
+ a.onpointerdown=e=>{e.preventDefault();if(a.classList.contains('done')){reset();return;}a.classList.remove('let');a.classList.add('hold');buzz(8);
+  t=setTimeout(()=>{a.classList.remove('hold');a.classList.add('done');a.firstChild.textContent=a.dataset.done;if(note)note.style.visibility='hidden';buzz([0,30]);},900);};
+ const up=()=>{if(t){clearTimeout(t);t=null;}if(a.classList.contains('hold')){a.classList.remove('hold');a.classList.add('let');}};
+ a.onpointerup=a.onpointerleave=a.onpointercancel=up;});
+
+if(new URLSearchParams(location.search).has('phone'))document.body.classList.add('phone');
+window.addEventListener('load',()=>{if(!new URLSearchParams(location.search).has('still'))document.querySelectorAll('[data-frame]').forEach(arrive);
+ bringIn();arriveSongs();
+ setTimeout(()=>{const e=document.getElementById(location.hash.slice(1));if(e)e.scrollIntoView();},350);});
+</script>
+<div class="lensdial"><b>LENS</b><span data-l="circle">CIRCLE</span><span data-l="seal">SEAL</span></div>
+<script>document.querySelectorAll('.lensdial span').forEach(x=>{x.onclick=()=>setLens(x.dataset.l);x.classList.toggle('on',x.dataset.l===LENS);});</script>
+</body></html>
