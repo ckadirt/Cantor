@@ -19,6 +19,7 @@ export {
   type StationState,
 } from './Clef';
 export { Dial, DIAL_KNOBS, type DialItem } from './Dial';
+export { Fermata, FERMATA_KNOBS } from './Fermata';
 export {
   Coda,
   CodaWhy,
@@ -57,7 +58,13 @@ export {
 } from './state';
 export { Reveal, REVEAL_KNOBS } from './Reveal';
 export { Strike, STRIKE_KNOBS } from './Strike';
-export { DraftClef, draftSeed, DRAFT_CLEF_KNOBS, NEUTRAL_DURATION_MS, type DraftRecipe } from './DraftClef';
+export {
+  DraftClef,
+  draftSeed,
+  DRAFT_CLEF_KNOBS,
+  NEUTRAL_DURATION_MS,
+  type DraftRecipe,
+} from './DraftClef';
 export {
   ARRIVAL_KNOBS,
   Arrive,

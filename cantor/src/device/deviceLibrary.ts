@@ -4,7 +4,8 @@ import { createStore, type Store } from '../core/store';
 import { folderOf, isUnder, summarize, type FolderSummary } from './folders';
 import type { MediaInspection, MediaRow, nativeMedia } from './native';
 import {
-  checkMusic,
+  afterCheck,
+  musicPermissionName,
   requestMusic,
   type MusicPermission,
   type PermissionPort,
@@ -26,6 +27,12 @@ export const DEVICE_LIBRARY_KNOBS = {
   MIN_DURATION_MS: 30_000,
   /** The MediaStore volume scanned; the phone's own storage. */
   VOLUME: 'external_primary',
+  /**
+   * Progress is published at most this often while files are read: album
+   * art saves in a few milliseconds each, and every publication is a render
+   * of whatever page is watching.
+   */
+  PROGRESS_MS: 100,
 } as const;
 
 /** The album a bring-in is reading now, as MediaStore names it. */
@@ -156,6 +163,7 @@ export class DeviceLibraryService {
   });
   private repository: DeviceRepository | null = null;
   private job: { kind: Job; promise: Promise<unknown> } | null = null;
+  private publishedAtMs = -Infinity;
   /** The last look's rows and generation, for the bring-in that follows it. */
   private looked: {
     rows: readonly MediaRow[];
@@ -188,15 +196,16 @@ export class DeviceLibraryService {
   /** Read the permission again: on start, and each time the app is back. */
   async checkPermission(): Promise<MusicPermission> {
     const { permissions } = this.deps;
-    const previous = this.store.get().permission;
-    const next =
-      permissions === undefined
-        ? 'granted'
-        : await checkMusic(permissions, previous);
-    this.store.set(state =>
-      state.permission === next ? state : { ...state, permission: next },
-    );
-    return next;
+    const granted =
+      permissions === undefined ||
+      (await permissions.check(musicPermissionName(permissions.sdk)));
+    // Read what a request learned *after* the check: Android's dialog answers
+    // while the check for the app coming back is still in flight.
+    this.store.set(state => {
+      const next = afterCheck(granted, state.permission);
+      return state.permission === next ? state : { ...state, permission: next };
+    });
+    return this.store.get().permission;
   }
 
   /** Ask Android for the permission; its dialog shows unless already final. */
@@ -544,9 +553,27 @@ export class DeviceLibraryService {
   }
 
   private setProgress(scan: ScanProgress): void {
-    this.store.set(state =>
-      sameProgress(state.scan, scan) ? state : { ...state, scan },
-    );
+    // Reading files publishes at a pace; a change of phase always goes out.
+    const now = this.deps.now();
+    const reading =
+      scan.phase === 'inspecting' &&
+      this.store.get().scan.phase === 'inspecting';
+    if (
+      reading &&
+      now - this.publishedAtMs < DEVICE_LIBRARY_KNOBS.PROGRESS_MS
+    ) {
+      return;
+    }
+    this.publishedAtMs = now;
+    try {
+      this.store.set(state =>
+        sameProgress(state.scan, scan) ? state : { ...state, scan },
+      );
+    } catch (error) {
+      // Progress is for watching: a watcher that fails must not stop the
+      // work, which commits on its own.
+      console.warn('device progress listener failed', error);
+    }
   }
 
   private ready(): DeviceRepository {

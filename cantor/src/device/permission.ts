@@ -46,8 +46,16 @@ export async function checkMusic(
   port: PermissionPort,
   previous: MusicPermission,
 ): Promise<MusicPermission> {
-  if (await port.check(musicPermissionName(port.sdk))) return 'granted';
-  return previous === 'granted' ? 'denied' : previous;
+  return afterCheck(await port.check(musicPermissionName(port.sdk)), previous);
+}
+
+/** A check's answer over what is known: refusals stay until it is granted. */
+export function afterCheck(
+  granted: boolean,
+  known: MusicPermission,
+): MusicPermission {
+  if (granted) return 'granted';
+  return known === 'granted' ? 'denied' : known;
 }
 
 /** Ask Android; it shows its dialog unless the answer is already final. */

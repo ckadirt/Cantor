@@ -5,6 +5,7 @@ import {
   Coda,
   Constellation,
   Door,
+  Fermata,
   PhoneSealMark,
   StationMark,
   FolioHead,
@@ -21,10 +22,14 @@ import {
   type FolioNav,
 } from '../controls';
 import { NodeSheet } from './NodeSheet';
+import { usePhonePage, type PhoneActions } from './PhoneSheet';
+import { rosterLine } from './phoneState';
+import type { DeviceLibraryState } from '../../device/deviceLibrary';
 import { DiagnosticsSheet } from './DiagnosticsSheet';
 import { diagnostics } from '../../runtime/diagnostics';
 import { useStore } from '../../core/useStore';
 import { knownModels, nodeState, nodeStateWord } from './nodeState';
+import { capitalised, countWord } from './phoneState';
 import {
   SettingsSheet,
   settingsMeta,
@@ -63,6 +68,9 @@ type Props = {
   storage: StorageReport;
   budgetBytes: number;
   onChangeBudget: (bytes: number) => void;
+  /** The phone's own music: the roster's first entry and its page. */
+  device: DeviceLibraryState;
+  phoneActions: PhoneActions;
 };
 
 /**
@@ -93,6 +101,8 @@ function EnginesSheetImpl({
   storage,
   budgetBytes,
   onChangeBudget,
+  device,
+  phoneActions,
 }: Props) {
   const pal = usePalette();
   const [draftName, setDraftName] = useState('');
@@ -118,15 +128,27 @@ function EnginesSheetImpl({
     'node' in page
       ? backends?.find(backend => backend.nodePubkey === page.node)
       : undefined;
-  const home = () => setPage({ kind: 'engines' });
+  const phone = usePhonePage({
+    active: open && page.kind === 'phone',
+    device,
+    actions: phoneActions,
+    publicKey,
+  });
+  const home = () => {
+    phone.leave();
+    setPage({ kind: 'engines' });
+  };
   const close = () => {
     home();
     onClose();
   };
   const isHome = page.kind === 'engines';
+  const { leave } = phone;
   React.useEffect(() => {
-    if (!open && page.kind !== 'engines') home();
-  }, [open, page.kind]);
+    if (open || page.kind === 'engines') return;
+    leave();
+    setPage({ kind: 'engines' });
+  }, [leave, open, page.kind]);
   // The panel syncs when it opens: there is no `Refresh libraries` to press.
   const refreshed = React.useRef(false);
   React.useEffect(() => {
@@ -175,7 +197,9 @@ function EnginesSheetImpl({
       <FolioHead
         morph
         clef={
-          page.kind === 'settings' || page.kind === 'diagnostics' ? (
+          page.kind === 'phone' ? (
+            phone.clef
+          ) : page.kind === 'settings' || page.kind === 'diagnostics' ? (
             <PhoneSealMark publicKey={publicKey} size={FOLIO_KNOBS.CLEF_PX} />
           ) : page.kind === 'node' && selectedBackend !== undefined ? (
             <StationMark
@@ -197,7 +221,7 @@ function EnginesSheetImpl({
           )
         }
         eyebrow={head.eyebrow}
-        meta={head.meta}
+        meta={page.kind === 'phone' ? phone.meta : head.meta}
         nav={nav}
         title={
           page.kind === 'node' && selectedBackend !== undefined ? (
@@ -220,7 +244,9 @@ function EnginesSheetImpl({
         style={styles.page}
       >
         <PageArrival fresh={turned.current}>
-          {page.kind === 'settings' ? (
+          {page.kind === 'phone' ? (
+            phone.body
+          ) : page.kind === 'settings' ? (
             <SettingsSheet
               budgetBytes={budgetBytes}
               library={library}
@@ -248,6 +274,14 @@ function EnginesSheetImpl({
           ) : (
             <>
               <Stave>
+                <Measure>
+                  <PhoneEntry
+                    device={device}
+                    onOpen={() => setPage({ kind: 'phone' })}
+                    publicKey={publicKey}
+                  />
+                </Measure>
+                <Rest />
                 <Measure>
                   {backends === null ? (
                     <Row>
@@ -360,36 +394,62 @@ function RosterEntry({
   );
 }
 
+/**
+ * The phone, first in the roster and set apart from the nodes by a rest: its
+ * seal with the spindle, `This phone` as a door, and one line of state
+ * (`f-roster`). New folders are written in ink, because they need you.
+ */
+function PhoneEntry({
+  device,
+  onOpen,
+  publicKey,
+}: {
+  device: DeviceLibraryState;
+  onOpen: () => void;
+  publicKey: string;
+}) {
+  const pal = usePalette();
+  const state = rosterLine(device);
+  const colour = state.ink ? pal.ink : pal.muted;
+  return (
+    <Row
+      mark={
+        <View
+          accessible
+          accessibilityRole="image"
+          accessibilityLabel={`This phone ${state.words.toLowerCase()}`}
+        >
+          <PhoneSealMark
+            faint={state.faint}
+            publicKey={publicKey}
+            size={PANEL_KNOBS.STATION_PX}
+            spindle
+            working={state.working}
+          />
+        </View>
+      }
+    >
+      <Door
+        accessibilityLabel="Open this phone"
+        label="This phone"
+        name
+        onPress={onOpen}
+      />
+      <View style={styles.line}>
+        {state.fermata ? <Fermata colour={colour} /> : null}
+        <Text style={[FOLIO_NOTE_STYLE, { color: colour }]}>{state.words}</Text>
+      </View>
+    </Row>
+  );
+}
+
 function nameOf(backend: BackendRecord | undefined): string {
   if (backend === undefined) return 'this node';
   return backend.petname || backend.lastNodeInfo?.name || 'this node';
 }
 
-/** `Four nodes`: a count said as a word while it is small enough to read as one. */
-const NUMBER_WORDS = [
-  'no',
-  'one',
-  'two',
-  'three',
-  'four',
-  'five',
-  'six',
-  'seven',
-  'eight',
-  'nine',
-  'ten',
-] as const;
-
-function countWord(count: number): string {
-  return count < NUMBER_WORDS.length ? NUMBER_WORDS[count] : String(count);
-}
-
-function capitalised(word: string): string {
-  return word.charAt(0).toUpperCase() + word.slice(1);
-}
-
 type Page =
-  | { kind: 'engines' | 'settings' | 'diagnostics' }
+  | { kind: 'engines' | 'settings' | 'diagnostics' | 'phone' }
   | { kind: 'node'; node: string };
 
 /** The head each page of this sheet opens on: where, what, and its state. */
@@ -416,6 +476,9 @@ function headOf(
         title: 'What went wrong',
         meta: 'LAST 20 · NEWEST FIRST',
       };
+    case 'phone':
+      // The meta line is the phone page's own (`usePhonePage`).
+      return { eyebrow: 'THIS PHONE', title: 'This phone', meta: '' };
     case 'settings':
       return {
         eyebrow: 'SETTINGS',
@@ -512,6 +575,7 @@ const PANEL_KNOBS = {
 
 const styles = StyleSheet.create({
   page: { flex: 1 },
+  line: { alignItems: 'center', flexDirection: 'row' },
   /** The node's name, renamed where it stands: no box, as the caption. */
   rename: { includeFontPadding: false, padding: 0 },
   action: {

@@ -11,7 +11,7 @@ import {
 } from '@shopify/react-native-skia';
 import { useDerivedValue, type SharedValue } from 'react-native-reanimated';
 import { station, type Point } from '../../marks/station';
-import { phoneSeal } from '../../marks/seal';
+import { PHONE_SEAL_KNOBS, phoneSeal } from '../../marks/seal';
 import type { FaceRecipe } from '../../lenses/face';
 import { FACE_MAX_EXTENT } from '../../lenses/face';
 import {
@@ -199,43 +199,74 @@ export function Constellation({
 /**
  * This phone's seal: a circle with spokes from its public key, and a dot at
  * the centre. Settings' clef.
+ *
+ * With `spindle` it is the phone as a place music lives (the nodes roster and
+ * the phone's page): the ring every imported song carries where the dot was.
+ * `faint` when nothing is read or reading is not allowed; `working` grows the
+ * working rule under it while music is brought in, as a station's does.
  */
 export function PhoneSealMark({
   publicKey,
   size,
+  spindle = false,
+  faint = false,
+  working = false,
 }: {
   publicKey: string;
   size: number;
+  spindle?: boolean;
+  faint?: boolean;
+  working?: boolean;
 }) {
   const pal = usePalette();
   const radius = (size / 2) * CLEF_KNOBS.FILL;
   const path = useMemo(() => {
     const builder = Skia.PathBuilder.Make();
     builder.addCircle(0, 0, radius);
-    for (const [[x0, y0], [x1, y1]] of phoneSeal(publicKey).spokes) {
+    for (const [[x0, y0], [x1, y1]] of phoneSeal(publicKey, spindle).spokes) {
       builder.moveTo(x0 * radius, y0 * radius);
       builder.lineTo(x1 * radius, y1 * radius);
     }
+    if (spindle) {
+      builder.addCircle(0, 0, radius * PHONE_SEAL_KNOBS.SPINDLE_RING);
+    }
     return builder.detach();
-  }, [publicKey, radius]);
+  }, [publicKey, radius, spindle]);
   const dot = useMemo(() => {
     const builder = Skia.PathBuilder.Make();
     builder.addCircle(0, 0, Math.max(1.2, radius * CLEF_KNOBS.SEAL_DOT_RATIO));
     return builder.detach();
   }, [radius]);
+  const colour = faint ? pal.faint : pal.ink;
+  const drawing = useRuleInk(working);
   return (
-    <Canvas style={{ width: size, height: size }}>
-      <Group transform={[{ translateX: size / 2 }, { translateY: size / 2 }]}>
-        <Path
-          color={pal.ink}
-          path={path}
-          strokeCap="round"
-          strokeWidth={1}
-          style="stroke"
+    <View style={{ width: size }}>
+      <Canvas style={{ width: size, height: size }}>
+        <Group transform={[{ translateX: size / 2 }, { translateY: size / 2 }]}>
+          <Path
+            color={colour}
+            path={path}
+            strokeCap="round"
+            strokeWidth={1}
+            style="stroke"
+          />
+          {spindle ? null : <Path color={colour} path={dot} />}
+        </Group>
+      </Canvas>
+      {drawing ? (
+        <WorkingRule
+          colour={pal.ink}
+          style={[
+            styles.rule,
+            {
+              height: size * CLEF_KNOBS.RULE_HEIGHT,
+              width: size * CLEF_KNOBS.RULE_WIDTH,
+            },
+          ]}
+          working={working}
         />
-        <Path color={pal.ink} path={dot} />
-      </Group>
-    </Canvas>
+      ) : null}
+    </View>
   );
 }
 

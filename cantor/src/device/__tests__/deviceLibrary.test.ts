@@ -91,7 +91,7 @@ function fakeMedia(
 
 async function service(
   files: Parameters<typeof fakeMedia>[0],
-  now = 5000,
+  now: number | (() => number) = 5000,
   permissions?: PermissionPort,
 ) {
   const db = openTestDatabase();
@@ -100,7 +100,7 @@ async function service(
   const library = new DeviceLibraryService({
     openRepository: async () => createDeviceRepository(db),
     media,
-    now: () => now,
+    now: typeof now === 'number' ? () => now : now,
     permissions,
   });
   await library.start();
@@ -255,7 +255,8 @@ describe('DeviceLibraryService', () => {
   });
 
   it('publishes progress over files and then album art', async () => {
-    const { library } = await service(fixtures());
+    let clock = 0;
+    const { library } = await service(fixtures(), () => (clock += 1000));
     const phases: string[] = [];
     library.store.subscribe(() => {
       const scan = library.store.get().scan;
@@ -285,7 +286,8 @@ describe('DeviceLibraryService', () => {
   });
 
   it('counts files per folder as it reads them', async () => {
-    const { library } = await service(fixtures());
+    let clock = 0;
+    const { library } = await service(fixtures(), () => (clock += 1000));
     const seen: string[] = [];
     library.store.subscribe(() => {
       const scan = library.store.get().scan;
@@ -427,6 +429,58 @@ describe('DeviceLibraryService', () => {
     await expect(library.look()).rejects.toThrow('SecurityException');
     expect(library.store.get().permission).toBe('denied');
     expect(library.store.get().scan).toEqual({ phase: 'idle' });
+  });
+
+  it('keeps a refusal that lands while a check is in flight', async () => {
+    let answerCheck: (granted: boolean) => void = () => undefined;
+    const permissions: PermissionPort = {
+      sdk: 34,
+      check: jest
+        .fn()
+        .mockResolvedValueOnce(false)
+        .mockImplementationOnce(
+          () => new Promise<boolean>(resolve => (answerCheck = resolve)),
+        ),
+      request: async () => 'denied',
+      openSettings: async () => undefined,
+    };
+    const { library } = await service(fixtures(), 5000, permissions);
+    const checking = library.checkPermission();
+    await library.requestPermission();
+    answerCheck(false);
+    await checking;
+    expect(library.store.get().permission).toBe('denied');
+  });
+
+  it('publishes reading at a pace, and every change of phase', async () => {
+    const { library } = await service(fixtures());
+    const phases: string[] = [];
+    library.store.subscribe(() => {
+      const { phase } = library.store.get().scan;
+      if (phases[phases.length - 1] !== phase) phases.push(phase);
+    });
+    let ticks = 0;
+    library.store.subscribe(() => {
+      if (library.store.get().scan.phase === 'inspecting') ticks += 1;
+    });
+    await library.scan();
+    // The clock stands still: one reading tick, then the phases.
+    expect(ticks).toBe(1);
+    expect(phases).toEqual(['listing', 'inspecting', 'saving', 'idle']);
+  });
+
+  it('commits even when a progress watcher throws', async () => {
+    const { library } = await service(fixtures());
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    library.store.subscribe(() => {
+      if (library.store.get().scan.phase === 'inspecting') {
+        throw new Error('Maximum update depth exceeded');
+      }
+    });
+    const result = await library.scan();
+    expect(result.imported).toBe(4);
+    expect(library.store.get().library.songs).toHaveLength(4);
+    warn.mockRestore();
   });
 
   it('writes tags to the phone database', async () => {

@@ -1,5 +1,5 @@
 import { modelDots, station } from '../station';
-import { phoneSeal } from '../seal';
+import { PHONE_SEAL_KNOBS, phoneSeal } from '../seal';
 
 const round = (points: readonly (readonly [number, number])[]) =>
   points.map(([x, y]) => [Number(x.toFixed(4)), Number(y.toFixed(4))]);
@@ -65,6 +65,25 @@ describe("the phone's seal", () => {
     expect(seal.spokes.length).toBeLessThanOrEqual(8);
     expect(
       seal.spokes.map(([from, to]) => round([from, to])),
+    ).toMatchSnapshot();
+  });
+
+  it('with the spindle: the same spokes, held clear of the ring', () => {
+    const dot = phoneSeal('9F2C41AB');
+    const spindle = phoneSeal('9F2C41AB', true);
+    expect(spindle.spokes).toHaveLength(dot.spokes.length);
+    spindle.spokes.forEach(([from, to], index) => {
+      // Same outer ends: one seal, two centres.
+      expect(to).toEqual(dot.spokes[index][1]);
+      expect(Math.hypot(from[0], from[1])).toBeCloseTo(
+        PHONE_SEAL_KNOBS.SPINDLE_SPOKE_FROM,
+      );
+    });
+    expect(PHONE_SEAL_KNOBS.SPINDLE_SPOKE_FROM).toBeGreaterThan(
+      PHONE_SEAL_KNOBS.SPINDLE_RING,
+    );
+    expect(
+      spindle.spokes.map(([from, to]) => round([from, to])),
     ).toMatchSnapshot();
   });
 });

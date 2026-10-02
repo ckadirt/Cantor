@@ -8,6 +8,8 @@ import type {
   ConnectionSnapshot,
 } from '../../../backends/types';
 import { STRIKE_KNOBS } from '../../controls';
+import type { DeviceLibraryState } from '../../../device/deviceLibrary';
+import type { FolderSummary } from '../../../device/folders';
 import { EnginesSheet } from '../EnginesSheet';
 
 // CanvasKit's system font manager is empty under Jest, so the recovery grid
@@ -43,7 +45,64 @@ const snapshot: ConnectionSnapshot = {
   librarySyncing: false,
 };
 
-function render(snapshots: Record<string, ConnectionSnapshot> = {}) {
+const ROOT = '/storage/emulated/0';
+
+function deviceState(
+  extra: Partial<DeviceLibraryState> = {},
+): DeviceLibraryState {
+  return {
+    status: 'ready',
+    library: {
+      songs: [],
+      albums: [],
+      tags: new Map(),
+      generations: new Map(),
+      excludedFolders: [],
+    },
+    scan: { phase: 'idle' },
+    permission: 'unknown',
+    folders: null,
+    lookedAtMs: null,
+    result: null,
+    ...extra,
+  };
+}
+
+function folder(label: string, extra: Partial<FolderSummary> = {}) {
+  const segments = label.split('/');
+  return {
+    path: `${ROOT}/${label}`,
+    label,
+    root: segments[0] === 'Music' ? 'Music' : null,
+    name: segments[segments.length - 1],
+    songs: 10,
+    albums: 2,
+    loose: false,
+    coverMediaId: null,
+    status: 'new',
+    voiceNotes: false,
+    keep: true,
+    ...extra,
+  } as FolderSummary;
+}
+
+function phoneActions() {
+  return {
+    requestPermission: jest.fn(async () => 'granted'),
+    openSettings: jest.fn(async () => undefined),
+    look: jest.fn(async () => ({ changed: true })),
+    refresh: jest.fn(async () => ({ changed: false })),
+    bringIn: jest.fn(async () => undefined),
+    seeThem: jest.fn(),
+    report: jest.fn(),
+  };
+}
+
+function render(
+  snapshots: Record<string, ConnectionSnapshot> = {},
+  device: DeviceLibraryState = deviceState(),
+  actions = phoneActions(),
+) {
   const onForget = jest.fn();
   const onRefresh = jest.fn();
   const onChangeBudget = jest.fn();
@@ -75,6 +134,8 @@ function render(snapshots: Record<string, ConnectionSnapshot> = {}) {
           }}
           budgetBytes={1024 ** 3}
           onChangeBudget={onChangeBudget}
+          device={device}
+          phoneActions={actions}
         />
       </GestureHandlerRootView>,
     );
@@ -187,5 +248,53 @@ describe('Ledger engine pages', () => {
     expect(onForget).not.toHaveBeenCalled();
     press('Back to nodes');
     expect(labels()).toContain('NODES');
+  });
+
+  it('puts the phone first, and asks before reading', async () => {
+    const actions = phoneActions();
+    const { press, words, tree } = render({}, deviceState(), actions);
+    expect(words()).toContain('NOT READ YET');
+    press('Open this phone');
+    expect(words()).toContain('ANDROID WILL ASK');
+    // Nothing is listed before the permission.
+    expect(actions.look).not.toHaveBeenCalled();
+    press('Allow music');
+    expect(actions.requestPermission).toHaveBeenCalledTimes(1);
+    await Renderer.act(async () => {});
+    // The working rule retracts on a timer; nothing may outlive the test.
+    Renderer.act(() => tree.unmount());
+  });
+
+  it('brings in what is left in ink', async () => {
+    const actions = phoneActions();
+    const whatsapp = folder('WhatsApp Audio', {
+      voiceNotes: true,
+      keep: false,
+      songs: 50,
+    });
+    const { press, words, labels, tree } = render(
+      {},
+      deviceState({
+        permission: 'granted',
+        folders: [
+          folder('Music/clasic', { songs: 104 }),
+          folder('Music/P2P', { songs: 35 }),
+          whatsapp,
+        ],
+      }),
+      actions,
+    );
+    press('Open this phone');
+    expect(actions.look).toHaveBeenCalledTimes(1);
+    expect(words()).toContain('LOOKS LIKE VOICE NOTES');
+    expect(labels()).toContain('Bring in 139 songs');
+    press('P2P, brought in');
+    expect(labels()).toContain('Bring in 104 songs');
+    press('Bring in 104 songs');
+    expect(actions.bringIn).toHaveBeenCalledWith(
+      new Set([`${ROOT}/Music/P2P`, whatsapp.path]),
+    );
+    await Renderer.act(async () => {});
+    Renderer.act(() => tree.unmount());
   });
 });
