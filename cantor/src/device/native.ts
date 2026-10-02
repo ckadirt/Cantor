@@ -55,6 +55,7 @@ type CantorMediaNative = {
   albumArt(mediaId: number, name: string): Promise<unknown>;
   pruneArtwork(keep: string[]): Promise<unknown>;
   artworkLuma(file: string, cells: number): Promise<unknown>;
+  thumbnailLuma(mediaId: number, cells: number): Promise<unknown>;
 };
 
 function module(): CantorMediaNative {
@@ -126,6 +127,20 @@ export const nativeMedia = {
    */
   async artworkLuma(file: string, cells: number): Promise<Float32Array | null> {
     const value = await module().artworkLuma(file, cells);
+    if (value === null) return null;
+    return decodeLuma(value, cells);
+  },
+
+  /**
+   * A song's thumbnail straight from MediaStore, as `artworkLuma` reduces it;
+   * null when it has none. For showing the album being read before its art is
+   * saved; nothing is written.
+   */
+  async thumbnailLuma(
+    mediaId: number,
+    cells: number,
+  ): Promise<Float32Array | null> {
+    const value = await module().thumbnailLuma(mediaId, cells);
     if (value === null) return null;
     return decodeLuma(value, cells);
   },
