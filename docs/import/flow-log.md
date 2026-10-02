@@ -20,8 +20,10 @@ The routine for each step is [`log.md`](log.md) § "How a step is done here".
 
 ## Next session starts here
 
-**I7a–I7d are built and tested (logic only, no UI yet). Next: I7e**, the
-phone in the roster, then I7f.
+**I7a–I7g are built and checked on the Samsung** with Cesar's real music
+(199 songs brought in, 2026-10-02). **Next: I7h** (a folder's page: kept
+folders on `f-phone` are plain rows until it lands), then I7i, then I7j. The
+leftovers of I7e–I7g are in the Status table.
 
 The test phone is now **Cesar's own Samsung A52s** (`R5CRC0VVK1M`, Android 14,
 API 34, 1080×2400 at density 450 → **384 dp wide**, not the Xiaomi's 392; the
@@ -49,12 +51,12 @@ Before the first line of UI, read:
 | # | State | What is left |
 | --- | --- | --- |
 | I7a | **done** 2026-10-02 | — |
-| I7b | **done** 2026-10-02 (logic) | the phone check of a real bring-in waits for the UI (I7f/g) |
-| I7c | **done** 2026-10-02 (logic) | revoke/grant cycle on the phone, through `f-ask` (I7f) |
-| I7d | **done** 2026-10-02 (logic) | timings of a no-change and a 1-new-file look, once something is brought in |
-| I7e | not started | everything |
-| I7f | not started | everything |
-| I7g | not started | everything |
+| I7b | **done** 2026-10-02 | — (real bring-in of 204 files on the Samsung) |
+| I7c | **done** 2026-10-02 | — (deny, deny-for-good, grant-and-return checked on the Samsung) |
+| I7d | **done** 2026-10-02 | timing of a 1-new-file look (needs a file added; Cesar's call) |
+| I7e | **done** 2026-10-02 | the seal's wave while bringing in not yet seen on the phone (blind closed mid-way) |
+| I7f | **done** 2026-10-02 | `f-new` and `f-none` seen only in tests; `FOUND n` counting up (see Deviations) |
+| I7g | **done** 2026-10-02 | cell-by-cell clef change not captured mid-flight; reduced-motion crossfade unchecked |
 | I7h | not started | everything |
 | I7i | not started | everything |
 | I7j | not started | everything |
@@ -95,6 +97,25 @@ its date when answered.
 
 ## Deviations
 
+- **2026-10-02 — Listing says `READING`, not `FOUND n` counting up.** The
+  native list returns every row at once (~0.3 s for 260 rows here), so there
+  is no count to show while it runs; the stave fills when the summary lands.
+- **2026-10-02 — `Looks in: Music, Download and the rest`.** The drawing
+  promises *Music, Download*, but the list is every `IS_MUSIC` row of the
+  primary volume (WhatsApp Audio, `Documents/Audiolibro` here). The words say
+  so rather than promise less than the code reads.
+- **2026-10-02 — `f-none` has no *Passed over* row.** The native list filters
+  short sounds itself, so their count is not known.
+- **2026-10-02 — A folder outside the music roots shows its last segment
+  only** (`Fluir [B094Y7YLRY]`, `Data_transfer`); its parent path is not
+  drawn. As the plan says; it reads fine with this phone's audiobooks.
+- **2026-10-02 — Kept folders on `f-phone` are rows, not doors**, until I7h
+  gives them a page.
+- **2026-10-02 — "Brought in before" means a song is stored**, not "a song or
+  an excluded folder" (plan I7d): a first bring-in that failed after saving
+  its exclusions read as `f-new` with `Bring in 204 more` and the roster said
+  `10 NEW FOLDERS`. Exclusions alone now count as a first visit.
+
 - **2026-10-02 — No `Protected` count.** `inspect` hashes the head and runs
   `MediaMetadataRetriever`; a protected file and an unreadable one both just
   throw (or read with no tags), and DRM'd local audio is essentially extinct
@@ -119,6 +140,19 @@ its date when answered.
   measured rule should never draw backwards (take the max in the UI).
 
 ## Findings
+
+- **2026-10-02 — First real bring-in (Samsung):** 204 files in 10 folders
+  (`Data_transfer` and both WhatsApp folders left out) → **199 songs, 169
+  albums, 120 artists, 7.4 GB**; 0 unreadable; 5 files were byte-identical
+  copies and merged into one song each. Reading ran at ~13 files/s (about
+  16 s for the files, then album art). The field shows 201 songs over 7
+  weeks; 157 arrived "this week" by `DATE_ADDED`.
+- **2026-10-02 — `Music/clasic` is 107 files in 99 MediaStore albums**: loose
+  tagged singles in one folder. The summary's album count is MediaStore's
+  hint and reads oddly high there; Cantor's own albums (169 overall) come from
+  the resolver.
+- **2026-10-02 — A look with nothing changed costs one native call**: `Look
+  again` answers `Nothing new` in under 0.6 s, end to end.
 
 - **2026-10-02 — Cesar's Samsung, MediaStore as it is** (`IS_MUSIC = 1`,
   counted read-only with `content query`): `Music/clasic` 104,
@@ -165,7 +199,28 @@ its date when answered.
 
 ## Traps
 
-(none yet)
+- **2026-10-02 — `Maximum update depth exceeded` killed the first real
+  bring-in** after the files were read (no commit; exclusions were saved).
+  React throws it from `scheduleUpdateOnFiber`, i.e. *inside the service's
+  `store.set`*, so a page watching progress could abort the import. Two
+  causes fixed: an effect in the phone page that set state on every progress
+  tick, and progress published for every album-art save (milliseconds
+  apart). Now progress is paced (`PROGRESS_MS` 100) and `setProgress`
+  catches a throwing watcher (tested). If it ever comes back, the import
+  still commits.
+- **2026-10-02 — `npx prettier --write <folder>` reformats files you did not
+  touch** (`SettingsSheet.tsx`, `RecoveryGrid.tsx` are not prettier-clean).
+  Format only the files you changed.
+- **2026-10-02 — Samsung: `Linking.openSettings()` can land on a secure
+  window** (a biometrics check, `screencap` comes back empty) and *Back* then
+  drops into whatever Settings page Cesar last had open. Do not drive
+  Settings: grant with `adb shell pm grant com.cantor.app
+  android.permission.READ_MEDIA_AUDIO` and bring Cantor back with `am start`
+  — that is an `AppState` return, which is what the page listens for.
+- **2026-10-02 — Permission race:** the foreground re-check started as
+  Android's dialog closed and finished after the request's answer, writing
+  `unknown` over `denied`. The check now applies its answer to the state as
+  it is when it resolves (`afterCheck`, tested).
 
 ## Session log
 
@@ -182,6 +237,32 @@ its date when answered.
 - Release build installed over the old app on the Samsung (data kept); it
   boots to the field with its 2 node songs; no permission yet, so the
   automatic look does nothing, as designed.
+- I7e–I7g: `features/engines/phoneState.ts` (page choice, roster line, words;
+  pure, tested), `PhoneSheet.tsx` (`usePhonePage`: the head's clef and meta,
+  the stave and coda of every frame), `PhoneMarks.tsx` (folder covers and the
+  reading clef from `thumbnailLuma`), `controls/Fermata.tsx`, the seal's
+  spindle variant (golden added). Rendered `flow.html`'s frames locally with
+  playwright-core's headless shell instead of the phone's browser (see
+  Comparing, below).
+- On the Samsung: roster → `f-ask` → Android's dialog → *Don't allow* (stays
+  on `f-ask`, `NOT ALLOWED YET`) → again *Don't allow* (`f-denied`) → granted
+  over adb, back in the app → summary of 13 folders, voice notes grey → one
+  folder tapped out → bring-in (first run hit the update-depth trap; second
+  run committed) → `See them` → field. `Look again` → `Nothing new`.
+
+#### Comparing against the drawing without the phone's browser
+
+The Samsung is Cesar's own phone; don't open its browser. Render frames on
+the desktop instead (Chromium headless shell from the Playwright cache, driven
+by `playwright-core` from `~/.hermes/hermes-agent/node_modules`):
+
+```sh
+python3 -m http.server 8099 &   # repo root
+B=$(ls -d ~/.cache/ms-playwright/chromium_headless_shell-*/ | tail -1)*/chrome-headless-shell
+# /tmp/shots/shot.js: open flow.html?phone&still at 392×764, dsf 2, and
+# screenshot '#<id> [data-frame]' (or '.fld') per frame id given.
+B=$B node /tmp/shots/shot.js f-roster f-ask f-sum
+```
 
 ### 2026-10-01 — the flow drawn and planned
 
@@ -199,3 +280,5 @@ its date when answered.
 - `e15f583` device: folders and the summary a person keeps or leaves out (I7a)
 - `372fe0a` device: look and bring in as two halves, the music permission,
   and a look on every open (I7b–I7d)
+- `aa41c75` the phone in the nodes roster, its page, and bringing music in
+  (I7e–I7g)

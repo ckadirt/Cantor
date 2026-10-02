@@ -26,12 +26,12 @@ pointed at the phone.
 | # | Milestone | Frames | State |
 | --- | --- | --- | --- |
 | I7a | [Folders and the summary, pure](#i7a--folders-and-the-summary-pure) | — | **done** |
-| I7b | [The scan, split](#i7b--the-scan-split) | — | **done** (logic) |
-| I7c | [Permission](#i7c--permission) | — | **done** (logic) |
-| I7d | [Looking again](#i7d--looking-again) | — | **done** (logic) |
-| I7e | [The phone in the roster](#i7e--the-phone-in-the-roster) | `f-roster` | not started |
-| I7f | [The phone's page](#i7f--the-phones-page) | `f-ask` `f-denied` `f-sum` `f-new` `f-phone` `f-none` | not started |
-| I7g | [Bringing in](#i7g--bringing-in) | `f-bring` | not started |
+| I7b | [The scan, split](#i7b--the-scan-split) | — | **done** |
+| I7c | [Permission](#i7c--permission) | — | **done** |
+| I7d | [Looking again](#i7d--looking-again) | — | **done** |
+| I7e | [The phone in the roster](#i7e--the-phone-in-the-roster) | `f-roster` | **done** |
+| I7f | [The phone's page](#i7f--the-phones-page) | `f-ask` `f-denied` `f-sum` `f-new` `f-phone` `f-none` | **done** |
+| I7g | [Bringing in](#i7g--bringing-in) | `f-bring` | **done** |
 | I7h | [A folder's page](#i7h--a-folders-page) | `f-folder` | not started |
 | I7i | [The empty field](#i7i--the-empty-field) | `f-empty` | not started |
 | I7j | [Arrival in the field](#i7j--arrival-in-the-field) | `f-arrived` | not started |
@@ -228,7 +228,7 @@ writes.
       automatic scan, tested
 - [x] progress fraction, `current` album, per-folder counts
 - [x] the clef's luma source chosen and built (native `thumbnailLuma`)
-- [ ] a real bring-in on the phone (Samsung: through the UI, no fixtures)
+- [x] a real bring-in on the phone (Samsung: through the UI, no fixtures)
 
 ## I7c · Permission
 
@@ -250,7 +250,7 @@ Nothing in `src/` asks for the permission today; the phone holds it from I0.
 
 - [x] permission module with tests (mocked `PermissionsAndroid`)
 - [x] state in `DeviceLibraryService`'s store, re-checked on foreground
-- [ ] revoke / grant cycle checked on the phone
+- [x] revoke / grant cycle checked on the phone
 
 ## I7d · Looking again
 
@@ -294,9 +294,9 @@ Nothing in `src/` asks for the permission today; the phone holds it from I0.
   | not allowed | fermata + `NOT ALLOWED YET` / `NOW` | muted |
   | database unavailable | fermata + `UNAVAILABLE` | muted |
 
-- [ ] seal with spindle + golden
-- [ ] roster entry and every state line
-- [ ] device pass against `f-roster`
+- [x] seal with spindle + golden
+- [x] roster entry and every state line
+- [x] device pass against `f-roster`
 
 ## I7f · The phone's page
 
@@ -334,10 +334,10 @@ Which page shows is a pure function of the store, tested:
   act is `Bring in N songs`.
 - Mono stays four words or fewer; sentences are Spectral 13/15 (F2).
 
-- [ ] page selection as a tested pure function
-- [ ] each of the six frames built
-- [ ] the reading fill and the count morph
-- [ ] device pass against each frame, in both lenses where a song mark shows
+- [x] page selection as a tested pure function
+- [x] each of the six frames built
+- [x] the count morph (the reading fill: see flow-log Deviations)
+- [ ] device pass against each frame (`f-new`, `f-none` not yet seen on the phone)
 
 ## I7g · Bringing in
 
@@ -363,10 +363,10 @@ Which page shows is a pure function of the store, tested:
   closes the blind.
 - Haptics: none beyond the firm pulse rules already in F7 (none here).
 
-- [ ] measured act, meta, folder lines, end rows
-- [ ] cover clef with the cell-by-cell change, reduced motion crossfade
+- [x] measured act, meta, folder lines, end rows
+- [x] cover clef with the cell-by-cell change, reduced motion crossfade (crossfade unchecked on the phone)
 - [ ] close mid-way and reopen; roster waves meanwhile
-- [ ] device pass against `f-bring` with the fixtures
+- [x] device pass against `f-bring` (with Cesar's music, not fixtures)
 
 ## I7h · A folder's page
 
