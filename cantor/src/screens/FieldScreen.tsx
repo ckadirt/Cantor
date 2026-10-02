@@ -17,7 +17,10 @@ import { GestureDetector } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PairBackendModal } from '../backends/PairBackendModal';
 import { openPhoneDatabase } from '../device/database';
-import { DeviceLibraryService } from '../device/deviceLibrary';
+import {
+  DeviceLibraryService,
+  type DeviceLibraryState,
+} from '../device/deviceLibrary';
 import { startLookingAgain } from '../device/lookAgain';
 import { androidPermissions } from '../device/permission';
 import { nativeMedia } from '../device/native';
@@ -254,16 +257,23 @@ const WITHOUT_COVER: readonly string[] = ALL_LENSES.filter(
  */
 function LiveEnginesSheet({
   runtimeStore,
+  deviceStore,
   ...props
-}: Omit<React.ComponentProps<typeof EnginesSheet>, 'snapshots'> & {
+}: Omit<React.ComponentProps<typeof EnginesSheet>, 'snapshots' | 'device'> & {
   runtimeStore: Store<BackendRuntimeState>;
+  deviceStore: Store<DeviceLibraryState>;
 }) {
   const snapshots = useStore(
     runtimeStore,
     state => state.snapshots,
     (left, right) => !props.open || left === right,
   );
-  return <EnginesSheet {...props} snapshots={snapshots} />;
+  const device = useStore(
+    deviceStore,
+    everything,
+    (left, right) => !props.open || left === right,
+  );
+  return <EnginesSheet {...props} device={device} snapshots={snapshots} />;
 }
 
 /** Each paired node's connection phase: what readiness is read from. */
@@ -555,6 +565,20 @@ export function FieldScreen({ identity }: Props) {
   }, [deviceLibrary]);
   const [controllerStore] = useState(() =>
     createFieldControllerStore(runtime.store, deviceLibrary.store, network),
+  );
+  /** The phone's page in the nodes blind (docs/import/flow-plan.md, I7f). */
+  const phoneActions = useMemo(
+    () => ({
+      requestPermission: () => deviceLibrary.requestPermission(),
+      openSettings: () => deviceLibrary.openSettings(),
+      look: () => deviceLibrary.look(),
+      refresh: () => deviceLibrary.refresh(),
+      bringIn: (leftOut: ReadonlySet<string>) => deviceLibrary.bringIn(leftOut),
+      seeThem: () => setEnginesOpen(false),
+      report: (error: unknown) =>
+        console.warn('device import failed', readError(error)),
+    }),
+    [deviceLibrary],
   );
   useEffect(() => controllerStore.connect(), [controllerStore]);
   const controller = useStore(controllerStore.store, songsOf, shallowEqual);
@@ -2168,6 +2192,8 @@ export function FieldScreen({ identity }: Props) {
         >
           <LiveEnginesSheet
             runtimeStore={runtime.store}
+            deviceStore={deviceLibrary.store}
+            phoneActions={phoneActions}
             backends={backends}
             open={enginesOpen}
             onClose={closeEngines}

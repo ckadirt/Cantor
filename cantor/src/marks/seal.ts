@@ -15,6 +15,13 @@ export const PHONE_SEAL_KNOBS = {
   SPOKE_CHOICES: 4,
   /** Where every spoke starts: clear of the centre dot. */
   SPOKE_FROM: 2.2 / 14.5,
+  /**
+   * With the spindle at the centre (the phone as a place music lives, I7e):
+   * the ring every imported song carries, and the spokes start clear of it
+   * (`flow.html`'s phone mark).
+   */
+  SPINDLE_RING: 2.6 / 14.5,
+  SPINDLE_SPOKE_FROM: 4.2 / 14.5,
   /** How long a spoke may be, as a share of the radius. */
   SPOKE_MIN: 0.45,
   SPOKE_RANGE: 0.4,
@@ -25,8 +32,15 @@ export type PhoneSeal = Readonly<{
   spokes: readonly (readonly [Point, Point])[];
 }>;
 
-/** This phone's seal, from its public key. Pure: one key, one seal, anywhere. */
-export function phoneSeal(publicKey: string): PhoneSeal {
+/**
+ * This phone's seal, from its public key. Pure: one key, one seal, anywhere.
+ * `spindle` draws it as the phone's music lives in it: the same spokes, held
+ * clear of a ring where the dot was.
+ */
+export function phoneSeal(publicKey: string, spindle = false): PhoneSeal {
+  const from = spindle
+    ? PHONE_SEAL_KNOBS.SPINDLE_SPOKE_FROM
+    : PHONE_SEAL_KNOBS.SPOKE_FROM;
   const seed = fnv1a(publicKey);
   const random = mulberry32(seed);
   const count =
@@ -40,7 +54,7 @@ export function phoneSeal(publicKey: string): PhoneSeal {
     const x = Math.cos(angle);
     const y = Math.sin(angle);
     spokes.push([
-      [x * PHONE_SEAL_KNOBS.SPOKE_FROM, y * PHONE_SEAL_KNOBS.SPOKE_FROM],
+      [x * from, y * from],
       [x * length, y * length],
     ]);
   }
