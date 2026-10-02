@@ -18,6 +18,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { PairBackendModal } from '../backends/PairBackendModal';
 import { openPhoneDatabase } from '../device/database';
 import { DeviceLibraryService } from '../device/deviceLibrary';
+import { startLookingAgain } from '../device/lookAgain';
+import { androidPermissions } from '../device/permission';
 import { nativeMedia } from '../device/native';
 import { createDeviceRepository } from '../device/repository';
 import { EnginesSheet, nodeStateOfPhase } from '../features/engines';
@@ -318,17 +320,20 @@ export function FieldScreen({ identity }: Props) {
    * A thrown failure in the app's own words (`describeFailure`): the raw
    * message never reaches the screen.
    */
-  const failureWords = useCallback((error: unknown, node: string): ErrorWords => {
-    const words = describeFailure(error, node);
-    // The raw message goes to Diagnostics, the only place it is ever shown.
-    recordFailure({
-      code: codeOf(error),
-      node,
-      sentence: words.sentence,
-      raw: rawOf(error),
-    });
-    return words;
-  }, []);
+  const failureWords = useCallback(
+    (error: unknown, node: string): ErrorWords => {
+      const words = describeFailure(error, node);
+      // The raw message goes to Diagnostics, the only place it is ever shown.
+      recordFailure({
+        code: codeOf(error),
+        node,
+        sentence: words.sentence,
+        raw: rawOf(error),
+      });
+      return words;
+    },
+    [],
+  );
   const phases = useStore(runtime.store, phasesOf, shallowEqual);
   const pairing = useStore(runtime.store, state => state.pairing);
   const storageError = useStore(runtime.store, state => state.storageError);
@@ -526,12 +531,27 @@ export function FieldScreen({ identity }: Props) {
           createDeviceRepository(await openPhoneDatabase()),
         media: nativeMedia,
         now: () => Date.now(),
+        permissions: androidPermissions,
       }),
   );
   useEffect(() => {
-    deviceLibrary.start().catch(error => {
-      console.warn('device library unavailable', readError(error));
-    });
+    let stop: (() => void) | null = null;
+    let gone = false;
+    deviceLibrary
+      .start()
+      .then(() => {
+        if (gone) return;
+        stop = startLookingAgain(deviceLibrary, AppState, Date.now, error =>
+          console.warn('device look failed', readError(error)),
+        );
+      })
+      .catch(error => {
+        console.warn('device library unavailable', readError(error));
+      });
+    return () => {
+      gone = true;
+      stop?.();
+    };
   }, [deviceLibrary]);
   const [controllerStore] = useState(() =>
     createFieldControllerStore(runtime.store, deviceLibrary.store, network),

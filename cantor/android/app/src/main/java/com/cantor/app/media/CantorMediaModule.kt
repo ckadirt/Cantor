@@ -13,6 +13,7 @@ import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableArray
+import com.facebook.react.bridge.WritableArray
 import com.facebook.react.bridge.WritableMap
 import java.io.File
 import java.io.FileInputStream
@@ -284,28 +285,56 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
       require(side in 1..LUMA_MAX_CELLS) { "Invalid cell count." }
       val source = File(File(context.filesDir, "artwork"), file)
       val decoded = BitmapFactory.decodeFile(source.path) ?: return@run null
-      val square = minOf(decoded.width, decoded.height)
-      val cropped = Bitmap.createBitmap(
-          decoded,
-          (decoded.width - square) / 2,
-          (decoded.height - square) / 2,
-          square,
-          square,
-      )
-      val grid = Bitmap.createScaledBitmap(cropped, side, side, true)
-      val pixels = IntArray(side * side)
-      grid.getPixels(pixels, 0, side, 0, 0, side, side)
-      val luma = Arguments.createArray()
-      for (pixel in pixels) {
-        val r = (pixel shr 16) and 0xff
-        val g = (pixel shr 8) and 0xff
-        val b = pixel and 0xff
-        // Rec. 709 weights on the stored values: the grid only has to order
-        // light against dark, not measure it.
-        luma.pushDouble((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0)
-      }
-      luma
+      lumaGrid(decoded, side)
     }
+  }
+
+  /**
+   * A song's MediaStore thumbnail as a `cells × cells` brightness grid, the
+   * same reduction as `artworkLuma`; null when it has none.
+   *
+   * For the picture shown while an album is being read, before its art is
+   * saved (docs/import/flow-plan.md, I7b). Display only: nothing is written.
+   */
+  @ReactMethod
+  fun thumbnailLuma(mediaId: Double, cells: Double, promise: Promise) {
+    run(promise) {
+      val side = cells.toInt()
+      require(side in 1..LUMA_MAX_CELLS) { "Invalid cell count." }
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return@run null
+      val uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, mediaId.toLong())
+      val thumbnail = try {
+        context.contentResolver.loadThumbnail(uri, Size(ARTWORK_PX, ARTWORK_PX), null)
+      } catch (_: FileNotFoundException) {
+        return@run null
+      }
+      lumaGrid(thumbnail, side)
+    }
+  }
+
+  /** The middle square of a picture, averaged down to `side × side` brightness. */
+  private fun lumaGrid(decoded: Bitmap, side: Int): WritableArray {
+    val square = minOf(decoded.width, decoded.height)
+    val cropped = Bitmap.createBitmap(
+        decoded,
+        (decoded.width - square) / 2,
+        (decoded.height - square) / 2,
+        square,
+        square,
+    )
+    val grid = Bitmap.createScaledBitmap(cropped, side, side, true)
+    val pixels = IntArray(side * side)
+    grid.getPixels(pixels, 0, side, 0, 0, side, side)
+    val luma = Arguments.createArray()
+    for (pixel in pixels) {
+      val r = (pixel shr 16) and 0xff
+      val g = (pixel shr 8) and 0xff
+      val b = pixel and 0xff
+      // Rec. 709 weights on the stored values: the grid only has to order
+      // light against dark, not measure it.
+      luma.pushDouble((0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0)
+    }
+    return luma
   }
 
   private fun run(promise: Promise, operation: () -> Any?) {

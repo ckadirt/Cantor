@@ -1,14 +1,21 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { createStore, type Store } from '../core/store';
-import type { MediaInspection, nativeMedia } from './native';
+import { folderOf, isUnder, summarize, type FolderSummary } from './folders';
+import type { MediaInspection, MediaRow, nativeMedia } from './native';
+import {
+  checkMusic,
+  requestMusic,
+  type MusicPermission,
+  type PermissionPort,
+} from './permission';
 import type {
   DeviceAlbum,
   DeviceLibrary,
   DeviceRepository,
   DeviceScanCommit,
 } from './repository';
-import { buildScanCommit, rowsToInspect } from './resolve';
+import { albumFolderOf, buildScanCommit, rowsToInspect } from './resolve';
 
 /** KNOBS */
 export const DEVICE_LIBRARY_KNOBS = {
@@ -21,10 +28,34 @@ export const DEVICE_LIBRARY_KNOBS = {
   VOLUME: 'external_primary',
 } as const;
 
+/** The album a bring-in is reading now, as MediaStore names it. */
+export type ReadingAlbum = Readonly<{
+  /** Changes when the next album starts: its folder and MediaStore album. */
+  key: string;
+  title: string | null;
+  artist: string | null;
+  /** A row of it, for its thumbnail (`nativeMedia.thumbnailLuma`). */
+  mediaId: number;
+}>;
+
+export type FolderProgress = Readonly<{ done: number; total: number }>;
+
 export type ScanProgress =
   | Readonly<{ phase: 'idle' }>
   | Readonly<{ phase: 'listing' }>
-  | Readonly<{ phase: 'inspecting'; done: number; total: number }>
+  | Readonly<{
+      phase: 'inspecting';
+      /**
+       * Over the whole job: files inspected, then albums given art. The art
+       * count is estimated until the files are resolved, so the total may
+       * move once.
+       */
+      done: number;
+      total: number;
+      current: ReadingAlbum | null;
+      /** Files inspected per folder (`folders.ts` paths). */
+      folders: ReadonlyMap<string, FolderProgress>;
+    }>
   | Readonly<{ phase: 'saving' }>;
 
 export type DeviceLibraryState = Readonly<{
@@ -32,6 +63,19 @@ export type DeviceLibraryState = Readonly<{
   status: 'loading' | 'ready' | 'unavailable';
   library: DeviceLibrary;
   scan: ScanProgress;
+  permission: MusicPermission;
+  /** The folders as the last look found them; null before the first. */
+  folders: readonly FolderSummary[] | null;
+  /** When the last look finished. */
+  lookedAtMs: number | null;
+  /** What the last bring-in did; null before the first in this run. */
+  result: ScanResult | null;
+}>;
+
+export type LookResult = Readonly<{
+  /** False when MediaStore's generation is the one the last scan ended at. */
+  changed: boolean;
+  folders: readonly FolderSummary[];
 }>;
 
 export type ScanResult = Readonly<{
@@ -41,6 +85,8 @@ export type ScanResult = Readonly<{
   /** Files that could not be read; a stored song for one stands as it was. */
   failed: number;
   imported: number;
+  /** The songs new in this commit, for the field to open (I7j). */
+  importedIds: readonly string[];
   missing: number;
   artworkSaved: number;
   artworkRemoved: number;
@@ -70,29 +116,60 @@ const EMPTY_LIBRARY: DeviceLibrary = {
 
 const IDLE: ScanProgress = { phase: 'idle' };
 
+type Job = 'look' | 'bringIn' | 'refresh';
+
+const UNCHANGED: ScanResult = {
+  changed: false,
+  inspected: 0,
+  failed: 0,
+  imported: 0,
+  importedIds: [],
+  missing: 0,
+  artworkSaved: 0,
+  artworkRemoved: 0,
+};
+
 /**
  * The songs whose files live on this phone: loaded from the phone database,
- * published through one store, and brought up to date by a scan.
+ * published through one store, and brought up to date in two halves.
  *
- * A scan reads MediaStore, inspects only new and changed files, resolves
- * (`resolve.ts`), saves art for albums that have none, commits once, and
- * removes art no album names. One runs at a time; asking again while one runs
- * returns the same scan.
+ * `look` reads MediaStore's list — metadata only, no file opened — and sums it
+ * up by folder (`folders.ts`). `bringIn` inspects only new and changed files
+ * in the folders taken, resolves (`resolve.ts`), saves art for albums that
+ * have none, commits once, and removes art no album names. Folders left out
+ * are remembered and skipped by every later scan. `refresh` is the automatic
+ * pair: it brings in what changed in kept folders and never takes a new
+ * folder, which waits in the summary to be asked about.
+ *
+ * One job runs at a time; asking for the same job while it runs returns it,
+ * and a different one waits its turn.
  */
 export class DeviceLibraryService {
   readonly store: Store<DeviceLibraryState> = createStore<DeviceLibraryState>({
     status: 'loading',
     library: EMPTY_LIBRARY,
     scan: IDLE,
+    permission: 'unknown',
+    folders: null,
+    lookedAtMs: null,
+    result: null,
   });
   private repository: DeviceRepository | null = null;
-  private scanning: Promise<ScanResult> | null = null;
+  private job: { kind: Job; promise: Promise<unknown> } | null = null;
+  /** The last look's rows and generation, for the bring-in that follows it. */
+  private looked: {
+    rows: readonly MediaRow[];
+    generation: number;
+    under: string | null;
+  } | null = null;
 
   constructor(
     private readonly deps: Readonly<{
       openRepository: () => Promise<DeviceRepository>;
       media: Media;
       now: () => number;
+      /** Android's permission; absent, reading is always allowed (tests). */
+      permissions?: PermissionPort;
     }>,
   ) {}
 
@@ -105,16 +182,95 @@ export class DeviceLibraryService {
       this.store.set(state => ({ ...state, status: 'unavailable' }));
       throw error;
     }
+    await this.checkPermission();
   }
 
+  /** Read the permission again: on start, and each time the app is back. */
+  async checkPermission(): Promise<MusicPermission> {
+    const { permissions } = this.deps;
+    const previous = this.store.get().permission;
+    const next =
+      permissions === undefined
+        ? 'granted'
+        : await checkMusic(permissions, previous);
+    this.store.set(state =>
+      state.permission === next ? state : { ...state, permission: next },
+    );
+    return next;
+  }
+
+  /** Ask Android for the permission; its dialog shows unless already final. */
+  async requestPermission(): Promise<MusicPermission> {
+    const { permissions } = this.deps;
+    const next =
+      permissions === undefined ? 'granted' : await requestMusic(permissions);
+    this.store.set(state =>
+      state.permission === next ? state : { ...state, permission: next },
+    );
+    return next;
+  }
+
+  openSettings(): Promise<void> {
+    return this.deps.permissions?.openSettings() ?? Promise.resolve();
+  }
+
+  /**
+   * List and sum up by folder. An unchanged generation answers from the last
+   * look without listing again.
+   */
+  look(options: ScanOptions = {}): Promise<LookResult> {
+    return this.exclusive('look', () => this.runLook(options));
+  }
+
+  /**
+   * Bring in every folder the last look found except `leftOut` (folder
+   * paths), and remember the choice: those are added to the excluded folders,
+   * and a listed folder not left out is taken off them.
+   */
+  bringIn(
+    leftOut: ReadonlySet<string>,
+    options: ScanOptions = {},
+  ): Promise<ScanResult> {
+    return this.exclusive('bringIn', async () => {
+      if (this.looked === null || this.looked.under !== underOf(options)) {
+        await this.runLook(options);
+      }
+      return this.runBringIn({ leftOut });
+    });
+  }
+
+  /**
+   * The automatic look: when the list changed, bring in what changed in kept
+   * folders. New folders are summed up, never inspected.
+   */
+  refresh(): Promise<LookResult> {
+    return this.exclusive('refresh', async () => {
+      if ((await this.checkPermission()) !== 'granted') {
+        return { changed: false, folders: this.store.get().folders ?? [] };
+      }
+      const look = await this.runLook({});
+      const kept = look.folders.some(folder => folder.status === 'kept');
+      if (look.changed && kept) {
+        await this.runBringIn({ leftOut: null });
+        return { ...look, folders: this.store.get().folders ?? [] };
+      }
+      return look;
+    });
+  }
+
+  /**
+   * Look, then bring in what the summary starts in ink: kept and new folders,
+   * voice notes left out.
+   */
   scan(options: ScanOptions = {}): Promise<ScanResult> {
-    if (this.scanning === null) {
-      this.scanning = this.runScan(options).finally(() => {
-        this.scanning = null;
-        this.setProgress(IDLE);
-      });
-    }
-    return this.scanning;
+    return this.exclusive('bringIn', async () => {
+      const { changed, folders } = await this.runLook(options);
+      if (!changed) return UNCHANGED;
+      const leftOut = new Set(
+        folders.filter(folder => !folder.keep).map(folder => folder.path),
+      );
+      return this.runBringIn({ leftOut });
+    });
   }
 
   async setTags(songId: string, tags: readonly string[]): Promise<void> {
@@ -123,56 +279,157 @@ export class DeviceLibraryService {
     await this.reload(repository);
   }
 
-  private async runScan(options: ScanOptions): Promise<ScanResult> {
-    const repository = this.ready();
+  private exclusive<T>(kind: Job, work: () => Promise<T>): Promise<T> {
+    const running = this.job;
+    if (running?.kind === kind) return running.promise as Promise<T>;
+    const after = running?.promise.catch(() => undefined) ?? Promise.resolve();
+    const promise = after.then(work).finally(() => {
+      if (this.job?.promise !== promise) return;
+      this.job = null;
+      this.setProgress(IDLE);
+    });
+    this.job = { kind, promise };
+    return promise;
+  }
+
+  private async runLook(options: ScanOptions): Promise<LookResult> {
     const { media } = this.deps;
     const { VOLUME, MIN_DURATION_MS } = DEVICE_LIBRARY_KNOBS;
-    const stored = this.store.get().library;
-    const lastGeneration = stored.generations.get(VOLUME) ?? -1;
+    const generation = await media.generation();
+    const under = underOf(options);
+    const storedGeneration = this.store.get().library.generations.get(VOLUME);
+    const changed =
+      under !== null || generation < 0 || generation !== storedGeneration;
+    const folders = this.store.get().folders;
+    if (
+      folders !== null &&
+      this.looked !== null &&
+      this.looked.under === under &&
+      generation >= 0 &&
+      generation === this.looked.generation
+    ) {
+      this.store.set(state => ({ ...state, lookedAtMs: this.deps.now() }));
+      return { changed, folders };
+    }
 
     this.setProgress({ phase: 'listing' });
-    const generation = await media.generation();
-    const partial = options.onlyUnder !== undefined;
-    if (!partial && generation >= 0 && generation === lastGeneration) {
-      return { ...NOTHING, changed: false };
+    let listed: MediaRow[];
+    try {
+      listed = await media.list(MIN_DURATION_MS);
+    } catch (error) {
+      // Most often the permission, withdrawn in Android's settings.
+      await this.checkPermission();
+      throw error;
     }
-    const under = partial ? withSlash(options.onlyUnder!) : null;
-    const rows = (await media.list(MIN_DURATION_MS)).filter(
+    const rows = listed.filter(
       row => under === null || row.path.startsWith(under),
     );
+    this.looked = { rows, generation, under };
+    const summary = summarize(rows, this.scoped(under));
+    this.store.set(state => ({
+      ...state,
+      folders: summary,
+      lookedAtMs: this.deps.now(),
+    }));
+    return { changed, folders: summary };
+  }
+
+  /**
+   * Bring in the last look's rows. `leftOut` is a person's choice, saved
+   * before anything is read; null is the automatic scan, which takes kept
+   * folders only and saves nothing.
+   */
+  private async runBringIn(
+    choice: Readonly<{ leftOut: ReadonlySet<string> | null }>,
+  ): Promise<ScanResult> {
+    const repository = this.ready();
+    const { media } = this.deps;
+    const { VOLUME } = DEVICE_LIBRARY_KNOBS;
+    const looked = this.looked!;
+    const folders = this.store.get().folders ?? [];
+    let stored = this.store.get().library;
+
+    if (choice.leftOut !== null) {
+      const leftOut = choice.leftOut;
+      const listed = new Set(folders.map(folder => folder.path));
+      const excluded = [
+        ...stored.excludedFolders.filter(
+          folder => !listed.has(folder) || leftOut.has(folder),
+        ),
+        ...[...leftOut].filter(
+          folder => !stored.excludedFolders.includes(folder),
+        ),
+      ];
+      if (!sameFolders(excluded, stored.excludedFolders)) {
+        await repository.setExcludedFolders(excluded);
+        stored = await this.reload(repository);
+      }
+    }
+    const taken = new Set(
+      folders
+        .filter(folder =>
+          choice.leftOut === null
+            ? folder.status === 'kept'
+            : !choice.leftOut.has(folder.path),
+        )
+        .map(folder => folder.path),
+    );
+    const order = new Map(folders.map((folder, index) => [folder.path, index]));
+    const rows = looked.rows
+      .filter(
+        row =>
+          taken.has(folderOf(row.path)) &&
+          !stored.excludedFolders.some(folder => isUnder(row.path, folder)),
+      )
+      .slice()
+      .sort(
+        (a, b) =>
+          (order.get(folderOf(a.path)) ?? 0) -
+            (order.get(folderOf(b.path)) ?? 0) || a.path.localeCompare(b.path),
+      );
+
     // A partial scan resolves against the songs under its folder only, so
     // nothing elsewhere reads as missing, and it records no generation (a
     // later full scan must not think it saw everything).
-    const library =
-      under === null
-        ? stored
-        : {
-            ...stored,
-            songs: stored.songs.filter(song => song.path.startsWith(under)),
-          };
-    const scanGeneration = partial ? -1 : generation;
+    const partial = looked.under !== null;
+    const library = this.scoped(looked.under);
+    const lastGeneration = partial ? -1 : stored.generations.get(VOLUME) ?? -1;
+    const scanGeneration = partial ? -1 : looked.generation;
 
-    const toInspect = rowsToInspect({
-      rows,
-      library,
-      lastGeneration: partial ? -1 : lastGeneration,
-    });
+    const toInspect = rowsToInspect({ rows, library, lastGeneration });
+    const perFolder = new Map<string, FolderProgress>();
+    const albumsSeen = new Set<string>();
+    for (const row of toInspect) {
+      const folder = folderOf(row.path);
+      const entry = perFolder.get(folder) ?? { done: 0, total: 0 };
+      perFolder.set(folder, { ...entry, total: entry.total + 1 });
+      albumsSeen.add(readingKey(row));
+    }
+    let total = toInspect.length + albumsSeen.size;
+    let current: ReadingAlbum | null = null;
     const inspections = new Map<string, MediaInspection>();
     const unreadable = new Set<string>();
     for (let index = 0; index < toInspect.length; index += 1) {
+      const row = toInspect[index];
+      if (current === null || current.key !== readingKey(row)) {
+        current = readingAlbum(row);
+      }
       this.setProgress({
         phase: 'inspecting',
         done: index,
-        total: toInspect.length,
+        total,
+        current,
+        folders: new Map(perFolder),
       });
-      const row = toInspect[index];
       try {
         inspections.set(row.path, await media.inspect(row.path));
       } catch {
         unreadable.add(row.path);
       }
+      const folder = folderOf(row.path);
+      const entry = perFolder.get(folder)!;
+      perFolder.set(folder, { ...entry, done: entry.done + 1 });
     }
-    this.setProgress({ phase: 'saving' });
 
     // A file that could not be read this time is left out of the scan: a new
     // one is not imported, and a known one stands as stored rather than
@@ -184,17 +441,32 @@ export class DeviceLibraryService {
         ...library,
         songs: library.songs.filter(song => !unreadable.has(song.path)),
       },
-      lastGeneration: partial ? -1 : lastGeneration,
+      lastGeneration,
       inspections,
       volume: VOLUME,
       generation: scanGeneration,
       nowMs: this.deps.now(),
     });
 
-    const { albums, saved } = await this.withArtwork(draft);
+    const needArt = draft.albums.filter(album => album.artwork === null).length;
+    total = toInspect.length + needArt;
+    const { albums, saved } = await this.withArtwork(draft, given =>
+      this.setProgress({
+        phase: 'inspecting',
+        done: toInspect.length + given,
+        total,
+        current,
+        folders: perFolder,
+      }),
+    );
+    this.setProgress({ phase: 'saving' });
     const commit: DeviceScanCommit = { ...draft, albums };
     await repository.commitScan(commit);
     const next = await this.reload(repository);
+    this.store.set(state => ({
+      ...state,
+      folders: summarize(looked.rows, this.scoped(looked.under)),
+    }));
 
     const names = next.albums
       .map(album => album.artwork)
@@ -202,22 +474,41 @@ export class DeviceLibraryService {
     const removed = await media.pruneArtwork(names);
 
     const knownIds = new Set(stored.songs.map(song => song.id));
-    return {
+    const importedIds = commit.songs
+      .filter(song => !knownIds.has(song.id))
+      .map(song => song.id);
+    const result: ScanResult = {
       changed: true,
       inspected: inspections.size,
       failed: unreadable.size,
-      imported: commit.songs.filter(song => !knownIds.has(song.id)).length,
+      imported: importedIds.length,
+      importedIds,
       missing: commit.missing.length,
       artworkSaved: saved,
       artworkRemoved: removed.length,
     };
+    this.store.set(state => ({ ...state, result }));
+    return result;
+  }
+
+  /** The stored library, narrowed to a partial scan's folder. */
+  private scoped(under: string | null): DeviceLibrary {
+    const stored = this.store.get().library;
+    return under === null
+      ? stored
+      : {
+          ...stored,
+          songs: stored.songs.filter(song => song.path.startsWith(under)),
+        };
   }
 
   /** Save art for every album in the commit that has none, from one of its songs. */
   private async withArtwork(
     commit: DeviceScanCommit,
+    onAlbum: (given: number) => void,
   ): Promise<{ albums: DeviceAlbum[]; saved: number }> {
     let saved = 0;
+    let given = 0;
     const albums: DeviceAlbum[] = [];
     for (const album of commit.albums) {
       if (album.artwork !== null) {
@@ -240,6 +531,8 @@ export class DeviceLibraryService {
       }
       if (artwork !== null) saved += 1;
       albums.push({ ...album, artwork });
+      given += 1;
+      onAlbum(given);
     }
     return { albums, saved };
   }
@@ -269,24 +562,44 @@ export function artworkName(albumKey: string): string {
   return `a${bytesToHex(sha256(utf8ToBytes(albumKey))).slice(0, 24)}`;
 }
 
-const NOTHING: ScanResult = {
-  changed: true,
-  inspected: 0,
-  failed: 0,
-  imported: 0,
-  missing: 0,
-  artworkSaved: 0,
-  artworkRemoved: 0,
-};
-
 function withSlash(folder: string): string {
   return folder.endsWith('/') ? folder : `${folder}/`;
+}
+
+function underOf(options: ScanOptions): string | null {
+  return options.onlyUnder === undefined ? null : withSlash(options.onlyUnder);
+}
+
+function sameFolders(left: readonly string[], right: readonly string[]) {
+  return (
+    left.length === right.length && left.every(folder => right.includes(folder))
+  );
+}
+
+/** Rows of one album share this: its folder and MediaStore's album. */
+function readingKey(row: MediaRow): string {
+  return `${albumFolderOf(row.path)}|${row.album ?? ''}`;
+}
+
+function readingAlbum(row: MediaRow): ReadingAlbum {
+  const artist = row.albumArtist ?? row.artist;
+  return {
+    key: readingKey(row),
+    title: row.album,
+    artist: artist === null || artist === '<unknown>' ? null : artist,
+    mediaId: row.mediaId,
+  };
 }
 
 function sameProgress(left: ScanProgress, right: ScanProgress): boolean {
   if (left.phase !== right.phase) return false;
   if (left.phase === 'inspecting' && right.phase === 'inspecting') {
-    return left.done === right.done && left.total === right.total;
+    return (
+      left.done === right.done &&
+      left.total === right.total &&
+      left.current === right.current &&
+      left.folders === right.folders
+    );
   }
   return true;
 }

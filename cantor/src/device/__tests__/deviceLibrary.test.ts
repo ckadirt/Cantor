@@ -2,6 +2,7 @@ import { openTestDatabase } from '../../../jest/nodeSqlite';
 import { migrate } from '../../core/storage/sql';
 import { artworkName, DeviceLibraryService } from '../deviceLibrary';
 import type { MediaInspection, MediaRow, RetrieverTags } from '../native';
+import type { PermissionPort } from '../permission';
 import { createDeviceRepository } from '../repository';
 import { DEVICE_MIGRATIONS } from '../schema';
 
@@ -88,7 +89,11 @@ function fakeMedia(
   return media;
 }
 
-async function service(files: Parameters<typeof fakeMedia>[0], now = 5000) {
+async function service(
+  files: Parameters<typeof fakeMedia>[0],
+  now = 5000,
+  permissions?: PermissionPort,
+) {
   const db = openTestDatabase();
   await migrate(db, DEVICE_MIGRATIONS);
   const media = fakeMedia(files);
@@ -96,6 +101,7 @@ async function service(files: Parameters<typeof fakeMedia>[0], now = 5000) {
     openRepository: async () => createDeviceRepository(db),
     media,
     now: () => now,
+    permissions,
   });
   await library.start();
   return { library, media, db };
@@ -248,28 +254,179 @@ describe('DeviceLibraryService', () => {
     expect(media.list).toHaveBeenCalledTimes(1);
   });
 
-  it('publishes progress while inspecting', async () => {
+  it('publishes progress over files and then album art', async () => {
     const { library } = await service(fixtures());
     const phases: string[] = [];
     library.store.subscribe(() => {
       const scan = library.store.get().scan;
-      phases.push(
+      const line =
         scan.phase === 'inspecting'
-          ? `inspecting ${scan.done}/${scan.total}`
-          : scan.phase,
-      );
+          ? `inspecting ${scan.done}/${scan.total} ${
+              scan.current?.title ?? '-'
+            }`
+          : scan.phase;
+      if (phases[phases.length - 1] !== line) phases.push(line);
     });
     await library.scan();
+    // Four files in three folders, then art for three albums (one saved).
+    // Albums are read together, folder by folder in the summary's order.
     expect(phases).toEqual([
       'listing',
-      'inspecting 0/4',
-      'inspecting 1/4',
-      'inspecting 2/4',
-      'inspecting 3/4',
-      'saving',
+      'inspecting 0/7 -',
+      'inspecting 1/7 -',
+      'inspecting 2/7 -',
+      'inspecting 3/7 -',
+      'inspecting 5/7 -',
+      'inspecting 6/7 -',
+      'inspecting 7/7 -',
       'saving',
       'idle',
     ]);
+  });
+
+  it('counts files per folder as it reads them', async () => {
+    const { library } = await service(fixtures());
+    const seen: string[] = [];
+    library.store.subscribe(() => {
+      const scan = library.store.get().scan;
+      if (scan.phase !== 'inspecting') return;
+      const test = scan.folders.get(`${ROOT}/cantor-import-test`);
+      if (test !== undefined) seen.push(`${test.done}/${test.total}`);
+    });
+    await library.scan();
+    expect(seen[0]).toBe('0/3');
+    expect(seen[seen.length - 1]).toBe('3/3');
+  });
+
+  it('looks without opening a file', async () => {
+    const { library, media } = await service(fixtures());
+    const look = await library.look();
+    expect(look.changed).toBe(true);
+    expect(media.inspected).toEqual([]);
+    expect(look.folders.map(f => [f.label, f.songs, f.status])).toEqual([
+      ['Music/cantor-import-test', 3, 'new'],
+      ['Music/Cesar', 1, 'new'],
+    ]);
+    expect(library.store.get().folders).toBe(look.folders);
+    expect(library.store.get().lookedAtMs).toBe(5000);
+    // The same generation answers from memory.
+    await library.look();
+    expect(media.list).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a folder out, remembers it, and takes it back', async () => {
+    const files = fixtures();
+    const { library, media } = await service(files);
+    await library.look();
+    const result = await library.bringIn(new Set([`${ROOT}/Cesar`]));
+    expect(result.imported).toBe(3);
+    expect(result.importedIds).toHaveLength(3);
+    expect(media.inspected).not.toContain(`${ROOT}/Cesar/own song.mp3`);
+    let state = library.store.get();
+    expect(state.library.excludedFolders).toEqual([`${ROOT}/Cesar`]);
+    expect(state.folders!.map(f => f.status)).toEqual(['kept', 'excluded']);
+    expect(state.result).toBe(result);
+
+    // A later look and refresh skip it too.
+    media.bump();
+    await library.refresh();
+    expect(media.inspected).not.toContain(`${ROOT}/Cesar/own song.mp3`);
+
+    // Tapped back to ink, it comes in.
+    const back = await library.bringIn(new Set());
+    expect(back.imported).toBe(1);
+    state = library.store.get();
+    expect(state.library.excludedFolders).toEqual([]);
+    expect(state.library.songs).toHaveLength(4);
+  });
+
+  it('never reads a song in a folder left out as missing', async () => {
+    const { library, media } = await service(fixtures());
+    await library.scan();
+    await library.bringIn(new Set([`${ROOT}/Cesar`]));
+    media.bump();
+    await library.refresh();
+    const own = library.store
+      .get()
+      .library.songs.find(song => song.path.endsWith('own song.mp3'));
+    expect(own?.missingSinceMs).toBeNull();
+  });
+
+  it('refreshes kept folders and only asks about a new one', async () => {
+    const files = fixtures();
+    const { library, media } = await service(files);
+    // Nothing brought in yet: the automatic look takes nothing.
+    await library.refresh();
+    expect(media.inspected).toEqual([]);
+    expect(library.store.get().library.songs).toEqual([]);
+
+    await library.bringIn(new Set([`${ROOT}/Cesar`]));
+    files.set(`${TEST}/new.mp3`, {
+      row: row(900, `${TEST}/new.mp3`, { generation: 11 }),
+      tags: {},
+      art: false,
+    });
+    files.set(`${ROOT}/Band/a.mp3`, {
+      row: row(901, `${ROOT}/Band/a.mp3`, { generation: 11 }),
+      tags: {},
+      art: false,
+    });
+    media.bump();
+    media.inspected.length = 0;
+    const look = await library.refresh();
+    expect(media.inspected).toEqual([`${TEST}/new.mp3`]);
+    expect(look.folders.find(f => f.label === 'Music/Band')?.status).toBe(
+      'new',
+    );
+    // Unchanged after that: one native call.
+    media.inspected.length = 0;
+    const again = await library.refresh();
+    expect(again.changed).toBe(false);
+    expect(media.list).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts voice notes left out', async () => {
+    const files = fixtures();
+    const whatsapp =
+      '/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Audio';
+    files.set(`${whatsapp}/AUD-1.opus`, {
+      row: row(902, `${whatsapp}/AUD-1.opus`),
+      tags: {},
+      art: false,
+    });
+    const { library } = await service(files);
+    const result = await library.scan();
+    expect(result.imported).toBe(4);
+    expect(library.store.get().library.excludedFolders).toEqual([whatsapp]);
+  });
+
+  it('reads nothing automatically without the permission', async () => {
+    let granted = false;
+    const permissions: PermissionPort = {
+      sdk: 34,
+      check: async () => granted,
+      request: async () => 'never_ask_again',
+      openSettings: async () => undefined,
+    };
+    const { library, media } = await service(fixtures(), 5000, permissions);
+    expect(library.store.get().permission).toBe('unknown');
+    await library.refresh();
+    expect(media.list).not.toHaveBeenCalled();
+    expect(await library.requestPermission()).toBe('blocked');
+    // Granted in Android's settings, then back in the app.
+    granted = true;
+    expect(await library.checkPermission()).toBe('granted');
+
+    // Withdrawn while the app runs: the list fails and the check says so.
+    await library.scan();
+    granted = false;
+    media.bump();
+    media.list.mockImplementationOnce(async () => {
+      throw new Error('SecurityException');
+    });
+    await expect(library.look()).rejects.toThrow('SecurityException');
+    expect(library.store.get().permission).toBe('denied');
+    expect(library.store.get().scan).toEqual({ phase: 'idle' });
   });
 
   it('writes tags to the phone database', async () => {
