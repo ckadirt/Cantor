@@ -8,7 +8,7 @@ import type {
 import type { FolderSummary } from '../../device/folders';
 import { haptic } from '../../haptics';
 import { TransformText } from '../../motion';
-import { font, touch, type, usePalette } from '../../theme/tokens';
+import { font, space, touch, type, usePalette } from '../../theme/tokens';
 import {
   Caret,
   Coda,
@@ -23,16 +23,23 @@ import {
   Rest,
   Row,
   Stave,
+  Strike,
   Underway,
   useReach,
 } from '../controls';
-import { FolderCover, ReadingClef } from './PhoneMarks';
+import {
+  AlbumCover,
+  FolderCover,
+  PHONE_MARK_KNOBS,
+  ReadingClef,
+} from './PhoneMarks';
 import {
   albumsWord,
   capitalised,
   countWord,
   filesRead,
   folderNote,
+  folderWall,
   hasBroughtIn,
   measuresOf,
   newFolders,
@@ -49,6 +56,9 @@ export const PHONE_SHEET_KNOBS = {
   FOLDER_COVER_PX: 34,
   /** And on the read page, where folders are doors. */
   DOOR_COVER_PX: 26,
+  /** A folder's wall: covers three across, and their grain. */
+  WALL_COVER_PX: 64,
+  WALL_CELLS: 18,
   /** A folder's name: the display face, smaller than a node's. */
   FOLDER_NAME_PX: 18,
   FOLDER_NAME_LINE_PX: 24,
@@ -67,6 +77,10 @@ export type PhoneActions = Readonly<{
   bringIn: (leftOut: ReadonlySet<string>) => Promise<unknown>;
   /** `See them`: close the blind (I7j takes the camera to them). */
   seeThem: () => void;
+  /** A kept folder's strike: forget its songs, keep it out (I7h). */
+  leaveOut: (folder: string) => Promise<void>;
+  /** A cover on a folder's wall: close the blind, open the album (I7h). */
+  showAlbum: (albumKey: string) => void;
   report: (error: unknown) => void;
 }>;
 
@@ -90,9 +104,12 @@ export function usePhonePage({
   device,
   actions,
   publicKey,
+  onOpenFolder,
 }: {
   /** The page is the one shown: it looks when it opens. */
   active: boolean;
+  /** A kept folder's door: its own page (`f-folder`). */
+  onOpenFolder: (folder: string) => void;
   device: DeviceLibraryState;
   actions: PhoneActions;
   publicKey: string;
@@ -567,7 +584,10 @@ export function usePhonePage({
                     />
                   }
                 >
-                  <FolderName folder={folder} />
+                  <FolderDoor
+                    folder={folder}
+                    onPress={() => onOpenFolder(folder.path)}
+                  />
                   <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
                     {folderNote(folder, false)}
                   </Text>
@@ -716,6 +736,134 @@ function FolderName({
   );
 }
 
+/** A kept folder as a door: its name, and the caret to its page. */
+function FolderDoor({
+  folder,
+  onPress,
+}: {
+  folder: FolderSummary;
+  onPress: () => void;
+}) {
+  const pal = usePalette();
+  return (
+    <PanelPressable
+      accessibilityLabel={`Open ${folder.name}`}
+      accessibilityRole="button"
+      onPress={onPress}
+      style={styles.door}
+    >
+      <View style={styles.doorName}>
+        <FolderName folder={folder} />
+      </View>
+      <View style={styles.caretSeat}>
+        <Caret colour={pal.ink} direction="right" />
+      </View>
+    </PanelPressable>
+  );
+}
+
+export type FolderPage = Readonly<{
+  title: string;
+  clef: React.ReactNode;
+  meta: string;
+  body: React.ReactNode;
+}>;
+
+/**
+ * A kept folder's page (`f-folder`): its albums as a wall of covers, and the
+ * strike that leaves it out. Two levels in, under the phone's page.
+ */
+export function useFolderPage({
+  device,
+  folder,
+  actions,
+  onLeft,
+}: {
+  device: DeviceLibraryState;
+  folder: string | null;
+  actions: PhoneActions;
+  /** The strike completed: the page goes back to the phone's. */
+  onLeft: () => void;
+}): FolderPage | null {
+  const pal = usePalette();
+  if (folder === null) return null;
+  const summary = device.folders?.find(candidate => candidate.path === folder);
+  const wall = folderWall(device, folder);
+  const name = summary?.name ?? folder.slice(folder.lastIndexOf('/') + 1);
+  const label = summary?.label ?? name;
+  const first = wall.groups[0]?.albums[0] ?? null;
+  const body = (
+    <>
+      <Stave>
+        {wall.groups.map((group, index) => (
+          <React.Fragment key={group.label}>
+            {index > 0 ? <Rest /> : null}
+            <Measure>
+              <Row label={group.label}>
+                <View style={styles.wall}>
+                  {group.albums.map(album => (
+                    <PanelPressable
+                      accessibilityLabel={`Open ${album.title ?? 'untitled'}`}
+                      accessibilityRole="button"
+                      key={album.key}
+                      onPress={() => actions.showAlbum(album.key)}
+                      style={styles.wallCell}
+                    >
+                      <AlbumCover
+                        artwork={album.artwork}
+                        cells={PHONE_SHEET_KNOBS.WALL_CELLS}
+                        size={PHONE_SHEET_KNOBS.WALL_COVER_PX}
+                      />
+                      <Text
+                        numberOfLines={1}
+                        style={[
+                          FOLIO_NOTE_STYLE,
+                          styles.wallName,
+                          { color: pal.muted },
+                        ]}
+                      >
+                        {(album.title ?? 'Untitled').toUpperCase()}
+                      </Text>
+                    </PanelPressable>
+                  ))}
+                </View>
+                {index === wall.groups.length - 1 && wall.more > 0 ? (
+                  <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
+                    {`AND ${wall.more} MORE`}
+                  </Text>
+                ) : null}
+              </Row>
+            </Measure>
+          </React.Fragment>
+        ))}
+      </Stave>
+      <Coda>
+        <Strike
+          done="Left out"
+          label="Leave this folder out"
+          note={`HOLD · ${wall.songs} LEAVE · FILES STAY`}
+          onStrike={() => {
+            onLeft();
+            actions.leaveOut(folder).catch(actions.report);
+          }}
+        />
+      </Coda>
+    </>
+  );
+  return {
+    title: name,
+    clef: (
+      <AlbumCover
+        artwork={first?.artwork ?? null}
+        cells={PHONE_MARK_KNOBS.CLEF_CELLS}
+        size={FOLIO_KNOBS.CLEF_PX}
+      />
+    ),
+    meta: `${label.toUpperCase()} · ${songsWord(wall.songs)}`,
+    body,
+  };
+}
+
 function SongsFact({ device }: { device: DeviceLibraryState }) {
   const counts = phoneCounts(device);
   return (
@@ -817,7 +965,9 @@ function PlainDoor({
       <Text numberOfLines={1} style={[styles.folderName, { color: colour }]}>
         {label}
       </Text>
-      <Caret colour={colour} direction="right" />
+      <View style={styles.caretSeat}>
+        <Caret colour={colour} direction="right" />
+      </View>
     </PanelPressable>
   );
 }
@@ -896,6 +1046,18 @@ const styles = StyleSheet.create({
     minHeight: touch.min / 2,
   },
   held: { alignItems: 'center', flexDirection: 'row' },
+  doorName: { flexShrink: 1 },
+  /** As `Door`'s: the caret's rotated square needs its own box to turn in. */
+  caretSeat: {
+    alignItems: 'center',
+    height: 18,
+    justifyContent: 'center',
+    marginRight: space.xs,
+    width: 18,
+  },
+  wall: { flexDirection: 'row', flexWrap: 'wrap' },
+  wallCell: { marginBottom: 12, width: '33.3%' },
+  wallName: { marginTop: 8, paddingRight: 8 },
   act: { justifyContent: 'center', minHeight: touch.min },
   actSlot: { height: PHONE_SHEET_KNOBS.ACT_SLOT_PX },
 });

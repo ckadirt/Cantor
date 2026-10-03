@@ -211,6 +211,50 @@ describe('device repository', () => {
       '/Music/WhatsApp',
     ]);
   });
+
+  it('leaves a folder out: its songs, tags and empty albums go, files stay', async () => {
+    const { repository } = await setup();
+    const other: DeviceAlbum = {
+      ...album,
+      key: 'k|other|/Music/Other_100%',
+      folder: '/Music/Other_100%',
+    };
+    const kept = song();
+    const gone = song({
+      size: 1,
+      path: '/Music/Other_100%/a.mp3',
+      albumKey: other.key,
+    });
+    // A sibling whose name only starts the same is not under it.
+    const sibling = song({
+      size: 2,
+      path: '/Music/Other_100%x/b.mp3',
+      albumKey: other.key,
+    });
+    await repository.commitScan({
+      volume: 'external_primary',
+      generation: 3,
+      scannedAtMs: 1,
+      songs: [kept, gone, sibling],
+      albums: [album, other],
+      missing: [],
+    });
+    await repository.setTags(gone.id, ['p/road']);
+    await repository.setTags(kept.id, ['p/road']);
+
+    await repository.leaveOut('/Music/Other_100%');
+    const library = await repository.load();
+    expect(library.songs.map(s => s.id).sort()).toEqual(
+      [kept.id, sibling.id].sort(),
+    );
+    expect(library.tags.get(gone.id)).toBeUndefined();
+    expect(library.tags.get(kept.id)).toEqual(['p/road']);
+    expect(library.excludedFolders).toEqual(['/Music/Other_100%']);
+    // The album still has the sibling; leaving out again changes nothing.
+    expect(library.albums.map(a => a.key)).toContain(other.key);
+    await repository.leaveOut('/Music/Other_100%');
+    expect((await repository.load()).excludedFolders).toHaveLength(1);
+  });
 });
 
 describe('deviceSongId', () => {

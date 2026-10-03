@@ -249,3 +249,86 @@ export function countWord(count: number): string {
 export function capitalised(word: string): string {
   return word.charAt(0).toUpperCase() + word.slice(1);
 }
+
+/** KNOBS — a folder's wall of covers (`f-folder`). */
+export const FOLDER_WALL_KNOBS = {
+  /** Covers shown before `AND n MORE`. */
+  SHOWN: 9,
+  /** An artist with more albums than this in the folder gets a measure. */
+  OWN_MEASURE_PAST: 2,
+} as const;
+
+export type WallAlbum = Readonly<{
+  key: string;
+  title: string | null;
+  artist: string | null;
+  artwork: string | null;
+  songs: number;
+}>;
+
+export type FolderWall = Readonly<{
+  /** By album artist when one has more than two albums here, else `Others`. */
+  groups: readonly Readonly<{ label: string; albums: readonly WallAlbum[] }>[];
+  songs: number;
+  /** Albums past the ones shown. */
+  more: number;
+}>;
+
+/** A kept folder's albums, as its page's wall draws them. */
+export function folderWall(
+  device: DeviceLibraryState,
+  folder: string,
+): FolderWall {
+  const prefix = folder.endsWith('/') ? folder : `${folder}/`;
+  const counts = new Map<string, number>();
+  let songs = 0;
+  for (const song of device.library.songs) {
+    if (!song.path.startsWith(prefix)) continue;
+    songs += 1;
+    counts.set(song.albumKey, (counts.get(song.albumKey) ?? 0) + 1);
+  }
+  const albums: WallAlbum[] = device.library.albums
+    .filter(album => counts.has(album.key))
+    .map(album => ({
+      key: album.key,
+      title: album.title,
+      artist: album.artist,
+      artwork: album.artwork,
+      songs: counts.get(album.key) ?? 0,
+    }))
+    .sort(
+      (a, b) =>
+        b.songs - a.songs || (a.title ?? '').localeCompare(b.title ?? ''),
+    );
+  const perArtist = new Map<string, WallAlbum[]>();
+  for (const album of albums) {
+    if (album.artist === null) continue;
+    const list = perArtist.get(album.artist) ?? [];
+    list.push(album);
+    perArtist.set(album.artist, list);
+  }
+  const groups: { label: string; albums: WallAlbum[] }[] = [];
+  const grouped = new Set<string>();
+  for (const [artist, list] of perArtist) {
+    if (list.length <= FOLDER_WALL_KNOBS.OWN_MEASURE_PAST) continue;
+    groups.push({ label: artist, albums: list });
+    for (const album of list) grouped.add(album.key);
+  }
+  const others = albums.filter(album => !grouped.has(album.key));
+  if (others.length > 0) groups.push({ label: 'Others', albums: others });
+
+  // Nine covers in all, taken in the order the groups are drawn.
+  let room: number = FOLDER_WALL_KNOBS.SHOWN;
+  const shown = groups
+    .map(group => {
+      const albumsShown = group.albums.slice(0, Math.max(0, room));
+      room -= albumsShown.length;
+      return { label: group.label, albums: albumsShown };
+    })
+    .filter(group => group.albums.length > 0);
+  return {
+    groups: shown,
+    songs,
+    more: Math.max(0, albums.length - FOLDER_WALL_KNOBS.SHOWN),
+  };
+}
