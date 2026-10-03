@@ -103,6 +103,15 @@ export type Arrangement = Readonly<{
   key: string;
   label: string;
   group: (entities: readonly FieldEntity[]) => readonly ArrangementGroup[];
+  /**
+   * One index word per group, in the order given, for the rail (`rail.ts`):
+   * the axis's own way of saying where in it a group is. Optional — without
+   * it a group's word is its name's initial, which is right for every axis
+   * whose groups are named and sorted by name.
+   */
+  indexWords?: (
+    groups: readonly Pick<ArrangementGroup, 'key' | 'label'>[],
+  ) => readonly string[];
 }>;
 
 /** A laid-out arrangement group with its world-space centre. */

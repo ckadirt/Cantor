@@ -81,10 +81,77 @@ export function dateKey(
  * the key here is what lets the label be re-read when the phone's idea of
  * "this week" moves on.
  */
+const MONTH_WORDS = [
+  'JAN',
+  'FEB',
+  'MAR',
+  'APR',
+  'MAY',
+  'JUN',
+  'JUL',
+  'AUG',
+  'SEP',
+  'OCT',
+  'NOV',
+  'DEC',
+] as const;
+
+/**
+ * The year and month a date group's key falls in: its own month, or for a
+ * week, the month of the week's Thursday — the day ISO uses to place a week
+ * that straddles two months in one of them. Null for a key this module did
+ * not write.
+ */
+export function dateKeyMonth(
+  key: string,
+): Readonly<{ year: number; month: number | null }> | null {
+  const week = /^(\d{4})-W(\d{2})$/.exec(key);
+  if (week !== null) {
+    const isoYear = Number(week[1]);
+    // January the 4th is always in week 1; its Monday starts that week.
+    const fourth = new Date(Date.UTC(isoYear, 0, 4));
+    const monday = 4 - ((fourth.getUTCDay() || 7) - 1);
+    const thursday = new Date(
+      Date.UTC(isoYear, 0, monday + 3 + (Number(week[2]) - 1) * 7),
+    );
+    return {
+      year: thursday.getUTCFullYear(),
+      month: thursday.getUTCMonth() + 1,
+    };
+  }
+  const month = /^(\d{4})-(\d{2})$/.exec(key);
+  if (month !== null) {
+    return { year: Number(month[1]), month: Number(month[2]) };
+  }
+  const year = /^(\d{4})$/.exec(key);
+  return year === null ? null : { year: Number(year[1]), month: null };
+}
+
+/**
+ * A date axis indexes itself by month, and says the year instead wherever the
+ * year changes from the group before — a rail reading `OCT SEP AUG 2025 DEC`
+ * — or by year alone when its groups are years.
+ */
+function dateIndexWords(
+  groups: readonly Pick<ArrangementGroup, 'key'>[],
+): readonly string[] {
+  let lastYear: number | null = null;
+  return groups.map(group => {
+    const when = dateKeyMonth(group.key);
+    if (when === null) return '';
+    const turned = lastYear !== null && when.year !== lastYear;
+    lastYear = when.year;
+    return when.month === null || turned
+      ? String(when.year)
+      : MONTH_WORDS[when.month - 1];
+  });
+}
+
 export function byDate(resolution: DateResolution): Arrangement {
   return {
     key: 'time',
     label: 'Date',
+    indexWords: dateIndexWords,
     group(entities: readonly FieldEntity[]): readonly ArrangementGroup[] {
       const entitiesByKey = new Map<string, FieldEntity[]>();
       for (const entity of entities) {

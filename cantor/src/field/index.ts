@@ -13,4 +13,5 @@ export * from './shelf';
 
 export * from './browse';
 export * from './glide';
+export * from './rail';
 export * from './queue';

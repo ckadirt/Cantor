@@ -38,6 +38,7 @@ import {
   FieldA11yList,
   FieldCanvas,
   FieldOverlay,
+  FieldRail,
   OriginMark,
   useFieldCamera,
 } from '../features/field';
@@ -103,8 +104,10 @@ import {
   gatherFraction,
   grainWindow,
   layoutField,
+  mapFrame,
   orderByKey,
   queueFrom,
+  railWords,
   representationAlphas,
   placementPoint,
   stepFrom,
@@ -634,14 +637,17 @@ export function FieldScreen({ identity }: Props) {
   useEffect(() => {
     setNowMs(Date.now());
   }, [controller.entities]);
-  const layout = useMemo(() => {
-    if (viewport === null) return null;
-    // Resolution is a property of the date axis, so it is applied here rather
-    // than being a third entry in the registry.
-    const arrangement =
+  // Resolution is a property of the date axis, so it is applied here rather
+  // than being a third entry in the registry.
+  const arrangement = useMemo(
+    () =>
       arrangementKey === byTime.key
         ? byDate(dateResolution)
-        : arrangementByKey(arrangementKey) ?? byTime;
+        : arrangementByKey(arrangementKey) ?? byTime,
+    [arrangementKey, dateResolution],
+  );
+  const layout = useMemo(() => {
+    if (viewport === null) return null;
     return layoutField({
       entities: controller.entities,
       arrangement,
@@ -649,14 +655,7 @@ export function FieldScreen({ identity }: Props) {
       order: orderByKey(orderKey),
       orderSeed,
     });
-  }, [
-    arrangementKey,
-    controller.entities,
-    dateResolution,
-    orderKey,
-    orderSeed,
-    viewport,
-  ]);
+  }, [arrangement, controller.entities, orderKey, orderSeed, viewport]);
 
   const openComposer = useCallback(() => {
     setSubmitError(null);
@@ -915,7 +914,22 @@ export function FieldScreen({ identity }: Props) {
     onRowAction,
     onHoldPlacement,
     onClaimTap,
+    // The date axis at each resolution is its own map, with its own place.
+    axisKey:
+      arrangementKey === byTime.key
+        ? `${arrangementKey}:${dateResolution}`
+        : arrangementKey,
   });
+  /** The rail's index words, once per map; see `field/rail.ts`. */
+  const railIndex = useMemo(() => {
+    const frame = layout === null ? null : mapFrame(layout);
+    return layout === null ||
+      frame === null ||
+      viewport === null ||
+      fieldCamera.rail === null
+      ? []
+      : railWords(layout, frame, viewport, arrangement);
+  }, [arrangement, fieldCamera.rail, layout, viewport]);
   /*
    * Songs that just arrived from the phone (docs/import/flow-plan.md, I7j):
    * armed when a bring-in commits — held at a point behind the blind — and
@@ -2210,6 +2224,18 @@ export function FieldScreen({ identity }: Props) {
               level={fieldCamera.level}
               onPress={fieldCamera.home}
             />
+            {viewport !== null ? (
+              <FieldRail
+                active={fieldCamera.level === 'field'}
+                cameraShared={fieldCamera.cameraShared}
+                extent={fieldCamera.rail}
+                fitScaleShared={fieldCamera.fitScaleShared}
+                gesture={fieldCamera.railGesture}
+                palette={pal}
+                viewport={viewport}
+                words={railIndex}
+              />
+            ) : null}
           </>
         ) : null}
         {(songAlpha > CAMERA_SUMMARY_KNOBS.SONG_MOUNT_ALPHA ||
