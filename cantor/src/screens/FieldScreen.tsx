@@ -91,6 +91,7 @@ import {
   DEFAULT_ORDER_KEY,
   GRAIN_ENABLED,
   arrangementByKey,
+  byAlbum,
   byDate,
   byPlaylist,
   byTime,
@@ -566,6 +567,38 @@ export function FieldScreen({ identity }: Props) {
   const [controllerStore] = useState(() =>
     createFieldControllerStore(runtime.store, deviceLibrary.store, network),
   );
+  /**
+   * An album the phone's folder page asked for (docs/import/flow-plan.md,
+   * I7h): the blind closes, the field takes the ALBUM arrangement, and once
+   * that re-cut has landed the camera descends into the album's group.
+   */
+  const pendingAlbum = useRef<{
+    group: string;
+    recut: 'wait' | 'seen' | 'none';
+  } | null>(null);
+  const showAlbum = useCallback(
+    (albumKey: string) => {
+      // Already on ALBUM there is no re-cut to wait for.
+      const pending = {
+        group: `album:${albumKey}`,
+        recut: (arrangementKey === byAlbum.key ? 'none' : 'wait') as
+          | 'wait'
+          | 'seen'
+          | 'none',
+      };
+      pendingAlbum.current = pending;
+      // A re-cut that never shows must not leave the album waiting to fire
+      // at some later, unrelated one.
+      setTimeout(() => {
+        if (pendingAlbum.current === pending && pending.recut === 'wait') {
+          pendingAlbum.current = null;
+        }
+      }, 3000);
+      setEnginesOpen(false);
+      setArrangementKey(byAlbum.key);
+    },
+    [arrangementKey],
+  );
   /** The phone's page in the nodes blind (docs/import/flow-plan.md, I7f). */
   const phoneActions = useMemo(
     () => ({
@@ -575,10 +608,12 @@ export function FieldScreen({ identity }: Props) {
       refresh: () => deviceLibrary.refresh(),
       bringIn: (leftOut: ReadonlySet<string>) => deviceLibrary.bringIn(leftOut),
       seeThem: () => setEnginesOpen(false),
+      leaveOut: (folder: string) => deviceLibrary.leaveOut(folder),
+      showAlbum,
       report: (error: unknown) =>
         console.warn('device import failed', readError(error)),
     }),
-    [deviceLibrary],
+    [deviceLibrary, showAlbum],
   );
   useEffect(() => controllerStore.connect(), [controllerStore]);
   const controller = useStore(controllerStore.store, songsOf, shallowEqual);
@@ -868,6 +903,37 @@ export function FieldScreen({ identity }: Props) {
     onHoldPlacement,
     onClaimTap,
   });
+  const { descend, home: cameraHome } = fieldCamera;
+  useEffect(() => {
+    const pending = pendingAlbum.current;
+    if (pending === null || layout === null) return;
+    // The re-cut to ALBUM starts a commit after the layout changes, and flies
+    // the camera itself: descend only once it has begun and landed (its
+    // clock at 1; the re-cut itself stays until the next one).
+    const flying = fieldCamera.recut !== null && fieldCamera.relayoutLinear < 1;
+    if (flying) {
+      pending.recut = 'seen';
+      return;
+    }
+    if (pending.recut === 'wait') return;
+    // One step at a time: back to the whole field, then into the album.
+    if (fieldCamera.level !== 'field') {
+      cameraHome();
+      return;
+    }
+    const placement = layout.placements.find(
+      candidate => candidate.groupKey === pending.group,
+    );
+    pendingAlbum.current = null;
+    if (placement !== undefined) descend(placement);
+  }, [
+    cameraHome,
+    descend,
+    fieldCamera.level,
+    fieldCamera.recut,
+    fieldCamera.relayoutLinear,
+    layout,
+  ]);
   // The overlay button drops any gesture in flight before the sheet arrives.
   const { cancelGesture } = fieldCamera;
   const openEnginesFromField = useCallback(() => {

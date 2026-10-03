@@ -94,6 +94,8 @@ function phoneActions() {
     refresh: jest.fn(async () => ({ changed: false })),
     bringIn: jest.fn(async () => undefined),
     seeThem: jest.fn(),
+    leaveOut: jest.fn(async () => undefined),
+    showAlbum: jest.fn(),
     report: jest.fn(),
   };
 }
@@ -296,5 +298,82 @@ describe('Ledger engine pages', () => {
     );
     await Renderer.act(async () => {});
     Renderer.act(() => tree.unmount());
+  });
+
+  it("opens a kept folder's page, its albums, and leaves it out held", () => {
+    jest.useFakeTimers();
+    try {
+      const actions = phoneActions();
+      const path = `${ROOT}/Music/clasic`;
+      const albumKey = `|goldberg|${path}`;
+      const { press, words, labels, tree } = render(
+        {},
+        deviceState({
+          permission: 'granted',
+          library: {
+            songs: [
+              {
+                id: 'd1',
+                mediaId: 1,
+                path: `${path}/a.mp3`,
+                size: 1,
+                headSha256: '0'.repeat(64),
+                durationMs: 1,
+                mime: null,
+                title: 'Aria',
+                titleFromTag: true,
+                artist: 'Bach',
+                albumArtist: null,
+                disc: null,
+                track: null,
+                year: null,
+                date: null,
+                genre: null,
+                albumKey,
+                addedAtMs: 0,
+                importedAtMs: 0,
+                missingSinceMs: null,
+              },
+            ],
+            albums: [
+              {
+                key: albumKey,
+                title: 'Goldberg',
+                artist: 'Bach',
+                year: null,
+                folder: path,
+                artwork: null,
+              },
+            ],
+            tags: new Map(),
+            generations: new Map(),
+            excludedFolders: [],
+          },
+          folders: [folder('Music/clasic', { status: 'kept', songs: 1 })],
+        }),
+        actions,
+      );
+      press('Open this phone');
+      press('Open clasic');
+      expect(labels()).toContain('Back to this phone');
+      expect(words()).toContain('MUSIC/CLASIC · 1 SONG');
+      expect(words()).toContain('HOLD · 1 LEAVE · FILES STAY');
+      press('Open Goldberg');
+      expect(actions.showAlbum).toHaveBeenCalledWith(albumKey);
+      const strike = tree.root.find(
+        n =>
+          typeof n.type !== 'string' &&
+          typeof n.props.onPressIn === 'function' &&
+          n.props.accessibilityLabel === 'Leave this folder out',
+      );
+      Renderer.act(() => strike.props.onPressIn());
+      Renderer.act(() => {
+        jest.advanceTimersByTime(STRIKE_KNOBS.HOLD_MS);
+      });
+      expect(actions.leaveOut).toHaveBeenCalledWith(path);
+      Renderer.act(() => tree.unmount());
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });

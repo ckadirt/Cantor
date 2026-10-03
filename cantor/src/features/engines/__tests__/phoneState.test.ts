@@ -3,6 +3,7 @@ import type { FolderSummary } from '../../../device/folders';
 import type { DeviceSong } from '../../../device/repository';
 import {
   folderNote,
+  folderWall,
   measuresOf,
   percent,
   phonePage,
@@ -247,5 +248,55 @@ describe('the summary', () => {
   it('says sizes as a person would', () => {
     expect(sizeWord(1_900_000_000)).toBe('1.9 GB');
     expect(sizeWord(640_400_000)).toBe('640 MB');
+  });
+});
+
+describe("a folder's wall", () => {
+  const album = (key: string, artist: string | null, title = key) => ({
+    key,
+    title,
+    artist,
+    year: null,
+    folder: `${ROOT}/Music/A`,
+    artwork: null,
+  });
+
+  it('groups an artist with more than two albums, the rest under Others', () => {
+    const albums = [
+      album('a1', 'Grouper'),
+      album('a2', 'Grouper'),
+      album('a3', 'Grouper'),
+      album('b1', 'Duster'),
+      album('c1', null),
+    ];
+    const songs = albums.map((a, index) =>
+      song(`s${index}`, { albumKey: a.key }),
+    );
+    songs.push(
+      song('elsewhere', { albumKey: 'a1', path: `${ROOT}/Music/B/x.mp3` }),
+    );
+    const wall = folderWall(
+      state({ library: { ...state().library, songs, albums } }),
+      `${ROOT}/Music/A`,
+    );
+    expect(wall.songs).toBe(5);
+    expect(wall.groups.map(g => [g.label, g.albums.map(a => a.key)])).toEqual([
+      ['Grouper', ['a1', 'a2', 'a3']],
+      ['Others', ['b1', 'c1']],
+    ]);
+    expect(wall.more).toBe(0);
+  });
+
+  it('shows nine covers and counts the rest', () => {
+    const albums = Array.from({ length: 12 }, (_, i) =>
+      album(`k${String(i).padStart(2, '0')}`, null),
+    );
+    const songs = albums.map((a, i) => song(`s${i}`, { albumKey: a.key }));
+    const wall = folderWall(
+      state({ library: { ...state().library, songs, albums } }),
+      `${ROOT}/Music/A`,
+    );
+    expect(wall.groups[0].albums).toHaveLength(9);
+    expect(wall.more).toBe(3);
   });
 });

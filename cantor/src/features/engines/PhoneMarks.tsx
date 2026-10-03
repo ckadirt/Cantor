@@ -199,3 +199,66 @@ export function ReadingClef({
     </Canvas>
   );
 }
+
+const albumCovers = new Map<string, Promise<CoverArt | null>>();
+
+/**
+ * An album's saved art (`files/artwork/`) as cover glyphs: the folder page's
+ * wall, where every album has been brought in and its art is on disk.
+ */
+export function AlbumCover({
+  artwork,
+  cells,
+  size,
+}: {
+  /** The album's art file name; null draws the bare grain. */
+  artwork: string | null;
+  cells: number;
+  size: number;
+}) {
+  const pal = usePalette();
+  const [art, setArt] = useState<CoverArt | null>(null);
+  useEffect(() => {
+    if (artwork === null) {
+      setArt(null);
+      return;
+    }
+    const key = `${artwork}:${cells}`;
+    let cover = albumCovers.get(key);
+    if (cover === undefined) {
+      cover = nativeMedia
+        .artworkLuma(artwork, cells)
+        .then(luma => (luma === null ? null : coverArtOf(luma, cells)))
+        .catch(() => null);
+      if (albumCovers.size >= PHONE_MARK_KNOBS.CACHE) {
+        const oldest = albumCovers.keys().next().value;
+        if (oldest !== undefined) albumCovers.delete(oldest);
+      }
+      albumCovers.set(key, cover);
+    }
+    let live = true;
+    cover.then(next => {
+      if (live) setArt(next);
+    });
+    return () => {
+      live = false;
+    };
+  }, [artwork, cells]);
+  const path = useMemo(
+    () => coverPath(art ?? grain(cells), size),
+    [art, cells, size],
+  );
+  return (
+    <Canvas style={{ width: size, height: size }}>
+      <Group transform={[{ translateX: size / 2 }, { translateY: size / 2 }]}>
+        <Path
+          color={art === null ? pal.faint : pal.ink}
+          path={path}
+          strokeCap="round"
+          strokeWidth={0.75}
+          style="stroke"
+        />
+      </Group>
+    </Canvas>
+  );
+}

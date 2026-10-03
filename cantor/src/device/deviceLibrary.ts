@@ -123,7 +123,7 @@ const EMPTY_LIBRARY: DeviceLibrary = {
 
 const IDLE: ScanProgress = { phase: 'idle' };
 
-type Job = 'look' | 'bringIn' | 'refresh';
+type Job = 'look' | 'bringIn' | 'refresh' | 'leaveOut';
 
 const UNCHANGED: ScanResult = {
   changed: false,
@@ -279,6 +279,31 @@ export class DeviceLibraryService {
         folders.filter(folder => !folder.keep).map(folder => folder.path),
       );
       return this.runBringIn({ leftOut });
+    });
+  }
+
+  /**
+   * Leave a kept folder out (the folder page's strike): it joins the excluded
+   * folders and its songs' records and tags are forgotten. Bringing it back
+   * later imports it fresh. The files are not touched.
+   */
+  leaveOut(folder: string): Promise<void> {
+    return this.exclusive('leaveOut', async () => {
+      const repository = this.ready();
+      await repository.leaveOut(folder);
+      const next = await this.reload(repository);
+      if (this.looked !== null) {
+        const looked = this.looked;
+        this.store.set(state => ({
+          ...state,
+          folders: summarize(looked.rows, this.scoped(looked.under)),
+        }));
+      }
+      await this.deps.media.pruneArtwork(
+        next.albums
+          .map(album => album.artwork)
+          .filter((name): name is string => name !== null),
+      );
     });
   }
 

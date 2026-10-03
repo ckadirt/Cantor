@@ -88,6 +88,11 @@ export type DeviceRepository = Readonly<{
   commitScan(commit: DeviceScanCommit): Promise<void>;
   setTags(songId: string, tags: readonly string[]): Promise<void>;
   setExcludedFolders(folders: readonly string[]): Promise<void>;
+  /**
+   * Leave a kept folder out: remember it as excluded and forget the songs
+   * under it — their records, tags and albums left empty. Files untouched.
+   */
+  leaveOut(folder: string): Promise<void>;
 }>;
 
 /**
@@ -166,6 +171,30 @@ export function createDeviceRepository(db: SqlDatabase): DeviceRepository {
             [songId, tag],
           );
         }
+      });
+    },
+
+    leaveOut(folder) {
+      const prefix = folder.endsWith('/') ? folder : `${folder}/`;
+      return db.transaction(async tx => {
+        await tx.execute(
+          'INSERT INTO device_excluded_folder (folder) VALUES (?) ON CONFLICT DO NOTHING',
+          [folder],
+        );
+        // Matched here rather than in SQL: a prefix compare in JS needs no
+        // escaping of `%` and `_`, and counts characters the way paths do.
+        const songs = await tx.execute('SELECT id, path FROM device_song');
+        for (const row of songs.rows) {
+          if (!text(row, 'path').startsWith(prefix)) continue;
+          const id = text(row, 'id');
+          await tx.execute('DELETE FROM device_song_tag WHERE song_id = ?', [
+            id,
+          ]);
+          await tx.execute('DELETE FROM device_song WHERE id = ?', [id]);
+        }
+        await tx.execute(
+          'DELETE FROM device_album WHERE key NOT IN (SELECT DISTINCT album_key FROM device_song)',
+        );
       });
     },
 

@@ -22,7 +22,7 @@ import {
   type FolioNav,
 } from '../controls';
 import { NodeSheet } from './NodeSheet';
-import { usePhonePage, type PhoneActions } from './PhoneSheet';
+import { useFolderPage, usePhonePage, type PhoneActions } from './PhoneSheet';
 import { rosterLine } from './phoneState';
 import type { DeviceLibraryState } from '../../device/deviceLibrary';
 import { DiagnosticsSheet } from './DiagnosticsSheet';
@@ -133,6 +133,13 @@ function EnginesSheetImpl({
     device,
     actions: phoneActions,
     publicKey,
+    onOpenFolder: folder => setPage({ kind: 'folder', folder }),
+  });
+  const folderPage = useFolderPage({
+    device,
+    folder: page.kind === 'folder' ? page.folder : null,
+    actions: phoneActions,
+    onLeft: () => setPage({ kind: 'phone' }),
   });
   const home = () => {
     phone.leave();
@@ -182,6 +189,12 @@ function EnginesSheetImpl({
         accessibilityLabel: 'Back to settings',
         onPress: () => setPage({ kind: 'settings' }),
       }
+    : page.kind === 'folder'
+    ? {
+        label: '‹ THIS PHONE',
+        accessibilityLabel: 'Back to this phone',
+        onPress: () => setPage({ kind: 'phone' }),
+      }
     : { label: '‹ NODES', accessibilityLabel: 'Back to nodes', onPress: home };
 
   const commitName = () => {
@@ -199,6 +212,8 @@ function EnginesSheetImpl({
         clef={
           page.kind === 'phone' ? (
             phone.clef
+          ) : folderPage !== null ? (
+            folderPage.clef
           ) : page.kind === 'settings' || page.kind === 'diagnostics' ? (
             <PhoneSealMark publicKey={publicKey} size={FOLIO_KNOBS.CLEF_PX} />
           ) : page.kind === 'node' && selectedBackend !== undefined ? (
@@ -221,7 +236,13 @@ function EnginesSheetImpl({
           )
         }
         eyebrow={head.eyebrow}
-        meta={page.kind === 'phone' ? phone.meta : head.meta}
+        meta={
+          page.kind === 'phone'
+            ? phone.meta
+            : folderPage !== null
+            ? folderPage.meta
+            : head.meta
+        }
         nav={nav}
         title={
           page.kind === 'node' && selectedBackend !== undefined ? (
@@ -235,17 +256,25 @@ function EnginesSheetImpl({
               value={draftName}
             />
           ) : (
-            head.title
+            folderPage?.title ?? head.title
           )
         }
       />
       <View
-        key={'node' in page ? `${page.kind}-${page.node}` : page.kind}
+        key={
+          'node' in page
+            ? `${page.kind}-${page.node}`
+            : 'folder' in page
+            ? `${page.kind}-${page.folder}`
+            : page.kind
+        }
         style={styles.page}
       >
         <PageArrival fresh={turned.current}>
           {page.kind === 'phone' ? (
             phone.body
+          ) : folderPage !== null ? (
+            folderPage.body
           ) : page.kind === 'settings' ? (
             <SettingsSheet
               budgetBytes={budgetBytes}
@@ -450,6 +479,7 @@ function nameOf(backend: BackendRecord | undefined): string {
 
 type Page =
   | { kind: 'engines' | 'settings' | 'diagnostics' | 'phone' }
+  | { kind: 'folder'; folder: string }
   | { kind: 'node'; node: string };
 
 /** The head each page of this sheet opens on: where, what, and its state. */
@@ -479,6 +509,9 @@ function headOf(
     case 'phone':
       // The meta line is the phone page's own (`usePhonePage`).
       return { eyebrow: 'THIS PHONE', title: 'This phone', meta: '' };
+    case 'folder':
+      // Title and meta are the folder page's own (`useFolderPage`).
+      return { eyebrow: 'FOLDER', title: '', meta: '' };
     case 'settings':
       return {
         eyebrow: 'SETTINGS',

@@ -483,6 +483,27 @@ describe('DeviceLibraryService', () => {
     warn.mockRestore();
   });
 
+  it('leaves a kept folder out for good, its files untouched', async () => {
+    const { library, media } = await service(fixtures());
+    await library.scan();
+    await library.leaveOut(`${ROOT}/cantor-import-test`);
+    let state = library.store.get();
+    expect(state.library.songs.map(song => song.path)).toEqual([
+      `${ROOT}/Cesar/own song.mp3`,
+    ]);
+    expect(
+      state.folders!.find(f => f.label === 'Music/cantor-import-test'),
+    ).toMatchObject({ status: 'excluded', keep: false });
+    // The album's art went with its last song.
+    expect([...media.artwork]).toEqual([]);
+    // Later looks neither bring it back nor count it missing.
+    media.bump();
+    await library.refresh();
+    state = library.store.get();
+    expect(state.library.songs).toHaveLength(1);
+    expect(state.library.songs[0].missingSinceMs).toBeNull();
+  });
+
   it('writes tags to the phone database', async () => {
     const { library } = await service(fixtures());
     await library.scan();
