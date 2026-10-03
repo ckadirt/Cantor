@@ -75,7 +75,7 @@ coordinates and details):
 | I4 resolver | **done** 2026-09-27 (checked on the phone with I5) |
 | I5 device source | **done** 2026-09-28 (I5a, I5b, I5d; I5c folded into I5b) |
 | I6 mark and axis | **done** 2026-09-28 (I6a, I6b, I6c) |
-| I7 import flow | designed 2026-10-01; build tracked in [`flow-log.md`](flow-log.md) |
+| I7 import flow | **built** 2026-10-03 (I7a–I7j, on Cesar's Samsung); leftovers in [`flow-log.md`](flow-log.md) |
 | I8 300-song check | not started |
 
 ## I6 plan (mark and axis)

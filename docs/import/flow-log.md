@@ -20,23 +20,32 @@ The routine for each step is [`log.md`](log.md) § "How a step is done here".
 
 ## Next session starts here
 
-**I7a–I7h and I7j are built and checked on the Samsung** with Cesar's real
-music (199 songs brought in 2026-10-02; `Music/Samsung`, a one-file brand
-jingle, left out with the strike 2026-10-03, so 198 now). **Next: I7i** (the
-empty field). It can only be seen on the phone with no songs at all — a
-fresh install or `pm clear`, which also drops the agentbox pairing (Cesar
-must re-scan a QR). The leftovers are in the Status table; **read Open issues
-first**: cluster labels can go missing after an import (a renderer problem,
-not the flow's).
+**All of I7 (I7a–I7j) is built and checked on the Samsung, 2026-10-03,**
+including a fresh install run end to end: onboarding → the empty field →
+`Bring it in` → `f-ask` → Android's dialog → summary → bring-in → arrival.
+What is left is in the Status table (mostly reduced-motion and L0 checks, a
+perf sample, a 1-new-file timing) and in **Open issues** — the missing
+cluster labels are the one that shows; it is the field renderer's, not the
+flow's.
 
-The test phone is now **Cesar's own Samsung A52s** (`R5CRC0VVK1M`, Android 14,
-API 34, 1080×2400 at density 450 → **384 dp wide**, not the Xiaomi's 392; the
-drawing is 392, so compare proportions, not pixels). It is his real phone:
-uninstalling/reinstalling Cantor and new seeds are fine; **never touch other
-apps or his files** — no fixtures are pushed to it. Its MediaStore is the real
-test (see Findings). `READ_MEDIA_AUDIO` is **not granted** on it, so the ask
-(`f-ask`) can be tested for real; to re-test it later:
-`adb shell pm revoke com.cantor.app android.permission.READ_MEDIA_AUDIO`.
+**State of the Samsung after this session** (`R5CRC0VVK1M`, Cesar's own
+phone): Cantor was **uninstalled and reinstalled** for the I7i check, as Cesar
+allowed. It has a **new identity** (its words were not written down anywhere
+but on the phone's own onboarding screen) and **no node is paired** — the old
+agentbox pairing went with the old install; re-pairing needs Cesar to scan a
+`cantor pair` QR. The phone library holds 198 songs (`Music/Samsung`,
+`Data_transfer` and the two WhatsApp folders left out). `READ_MEDIA_AUDIO` is
+granted. AppLock PRO asked to lock the new install; answered *Not Now*.
+
+To build on it next:
+
+1. Read Open issues, then decide with Cesar whether the label problem is
+   worth a field-renderer step before alpha.
+2. `I8` (the 300-song check, `plan.md`) can run on this phone as it is: 198
+   songs, one big cluster of 157.
+3. Remaining I7 checks: reduced motion (Android's *Remove animations*) for the
+   reading clef and the arrival; L0 arrival; `perf-sample.sh` during a
+   200-song arrival; a 1-new-file look (needs a file copied in — ask Cesar).
 
 Before the first line of UI, read:
 
@@ -62,7 +71,7 @@ Before the first line of UI, read:
 | I7f | **done** 2026-10-02 | `f-new` and `f-none` seen only in tests; `FOUND n` counting up (see Deviations) |
 | I7g | **done** 2026-10-02 | cell-by-cell clef change not captured mid-flight; reduced-motion crossfade unchecked |
 | I7h | **done** 2026-10-03 | — (wall, album tap into ALBUM, strike: all on the Samsung) |
-| I7i | not started | everything |
+| I7i | **done** 2026-10-03 | — (fresh install on the Samsung) |
 | I7j | **done** 2026-10-03 | L0 "cluster by cluster" not seen on the phone (the camera goes to L1); reduced motion unchecked; perf sample of a 300-song arrival not taken |
 
 ### The API the UI builds on (I7b–I7d)
@@ -292,6 +301,28 @@ is long over. The smallest thing that does the drawing:
 
 ## Session log
 
+### 2026-10-03 — I7i, and a fresh install end to end
+
+- `features/field/EmptyField.tsx` (seal faint, the sentence, two doors),
+  shown by `FieldScreen` when backends and the phone library have loaded and
+  there is no song and no job, held 600 ms so a late load never flashes it;
+  `NO SONGS YET` in the meta; `startOn: 'phone'` opens the nodes blind on the
+  phone's page (layout effect, so the roster never shows on the way). Tested.
+- Uninstalled and reinstalled on the Samsung (Cesar's go-ahead): AppLock PRO
+  asked to lock the new app (*Not Now*), onboarding made a new identity, the
+  field came up empty with the lattice running through the words → the
+  lattice is now skipped when a re-cut holds no flight (`ground` in
+  `FieldCanvas`), matching `f-empty`'s paper.
+- `Bring it in` → `f-ask` → *Allow* → summary of 13 folders → 204 files in →
+  198 songs. The arrival's camera went to the 4 audiobooks (*Jun 16–22*),
+  the first id in commit order, and waited ~3 s for them to open last →
+  now it goes to the first arriving placement in reading order (checked with
+  two folders in two weeks: it lands on the upper one, which opens first).
+- `lens analysis failed … miniaudio … Invalid file (-10)` warnings during
+  the bring-in: the lens analysis (I1's native reduction) cannot decode some
+  of these files — likely the `.m4b` audiobooks. Not the import; worth a
+  look under I8.
+
 ### 2026-10-03 — I7j
 
 - Proposed the opening clock first (above), then built it:
@@ -375,3 +406,6 @@ by `playwright-core` from `~/.hermes/hermes-agent/node_modules`):
 - `bd34ba4` a kept folder's page: its albums as covers, and leaving it out
   held (I7h)
 - `59c1bb2` songs from the phone arrive album by album (I7j)
+- `3600914` the empty field offers the phone's music and a node (I7i)
+- `a11a1db` no lattice under an empty field; an arrival's camera goes where
+  it starts
