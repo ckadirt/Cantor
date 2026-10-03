@@ -12,6 +12,7 @@ import { font, space, touch, type, usePalette } from '../../theme/tokens';
 import {
   Caret,
   Coda,
+  CodaWhy,
   Fermata,
   FOLIO_ACT_STYLE,
   FOLIO_KNOBS,
@@ -837,7 +838,14 @@ export function useFolderPage({
           </React.Fragment>
         ))}
       </Stave>
-      <Coda>
+      <Coda
+        why={
+          <CodaWhy>
+            Their tags and playlists go with them. The files stay where they
+            are.
+          </CodaWhy>
+        }
+      >
         <Strike
           done="Left out"
           label="Leave this folder out"
