@@ -96,6 +96,38 @@ its date when answered.
 - Leaving a folder out drops its tags: is `HOLD · 168 LEAVE · FILES STAY`
   enough warning?
 
+## I7j proposal: an opening clock (2026-10-03)
+
+The renderer has **no per-entity opening clock**. A re-cut's `enter` flights
+only fade in, all on the one re-cut clock (`flightOwnerAlpha`), and the
+songs' commit lands while the blind is still up, so by `See them` that re-cut
+is long over. The smallest thing that does the drawing:
+
+- **`features/field/opening.ts`, pure:** `planOpening(ids, placements,
+  albumOf)` groups the new ids by album, orders the albums as the layout
+  reads (top to bottom, then left to right), and gives each album a start
+  offset in ms. Tested.
+- **`FaceFlight.openAt`** (−1 when not opening), filled in `faceFlightsOf`
+  from the plan. The faces are rebuilt once when an opening is armed and
+  once when it is cleared, which is what any presentation change costs today.
+- **One clock, `openingMs`** (a shared value, elapsed ms, linear), read once
+  per frame in `drawFieldFaces`; per mark, one compare when `openAt < 0` and
+  a smootherstep otherwise, multiplying the size the lens beats already
+  multiply (`comingScale`). No new pass over the field; nothing at rest.
+  Reduced motion multiplies ink instead (a crossfade), as the lens change
+  does.
+- **Armed at commit, run when the blind lifts.** `FieldScreen` follows the
+  device store's `result`: new `importedIds` arm the plan with the clock at
+  0, which holds the new marks at a point behind the blind; the clock runs
+  when the blind is closed (or at once if it already is, the "you can close
+  this" case), and the plan is cleared when it has run.
+- **Deviation from "~520 ms apart":** the step is `min(520, 3000 /
+  albums)`. With this phone's 169 albums 520 ms would be a 90 s arrival; a
+  handful of albums still get the full 520.
+- The camera goes to the group holding the first new song (the same
+  pending-group mechanism as I7h's album tap), and the field's meta line says
+  `N ARRIVED FROM THIS PHONE` until the blind is next opened.
+
 ## Deviations
 
 - **2026-10-02 — Listing says `READING`, not `FOUND n` counting up.** The
