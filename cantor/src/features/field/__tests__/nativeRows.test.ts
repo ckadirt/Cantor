@@ -1,5 +1,7 @@
 import { settledShelfLabelFlights } from '../labelMorph';
 import {
+  fitLines,
+  labelWidth,
   prepareNativeLabels,
   createLabelPaints,
   drawNativeLabels,
@@ -162,4 +164,77 @@ it('keeps unchanged group names visible throughout their regrouping flight', () 
   expect(totals[0]).toBeGreaterThan(1000);
   expect(totals[1]).toBe(totals[0]);
   expect(totals[2]).toBe(totals[0]);
+});
+
+describe('a cluster name fitted to its column', () => {
+  const long = 'THE RISE AND FALL OF ZIGGY STARDUST AND THE SPIDERS FROM MARS';
+
+  it('leaves a name that fits alone', () => {
+    expect(fitLines('BLUE', font, 200, 2)).toEqual(['BLUE']);
+    expect(fitLines('', font, 200, 2)).toEqual([]);
+  });
+
+  it('wraps at spaces, then cuts the last line with an ellipsis', () => {
+    const lines = fitLines(long, font, 160, 2);
+    expect(lines).toHaveLength(2);
+    for (const line of lines) {
+      expect(labelWidth(line, font)).toBeLessThanOrEqual(160);
+    }
+    expect(long.startsWith(lines[0])).toBe(true);
+    expect(lines[0].endsWith(' ')).toBe(false);
+    expect(lines[1].endsWith('\u2026') || lines[1].endsWith('...')).toBe(true);
+  });
+
+  it('cuts a word wider than the whole line where it meets the edge', () => {
+    const word = 'SUPERCALIFRAGILISTICEXPIALIDOCIOUS';
+    const lines = fitLines(word, font, 90, 2);
+    expect(lines).toHaveLength(2);
+    expect(word.startsWith(lines[0])).toBe(true);
+    for (const line of lines) {
+      expect(labelWidth(line, font)).toBeLessThanOrEqual(90);
+    }
+  });
+
+  it('grows a wrapped name away from its cluster, and keeps the key under it', () => {
+    const layout = layoutField({
+      entities: groupScenario([1]),
+      arrangement: byTime,
+      viewport,
+    });
+    const flight = {
+      ...settledShelfLabelFlights(layout.groups, 0)![0],
+      primaryFrom: long,
+      primaryTo: long,
+    };
+    const [label] = prepareNativeLabels([flight], font, 160);
+    expect(label.lines.map(line => line.row)).toEqual([-1, 0, 1]);
+    for (const line of label.lines) {
+      expect(line.fromWidth).toBeLessThanOrEqual(160);
+      expect(line.from).toBe(line.to);
+    }
+    // Unbounded, nothing is cut: the name is one line, as it always was.
+    const [free] = prepareNativeLabels([flight], font);
+    expect(free.lines.map(line => line.row)).toEqual([0, 1]);
+    expect(free.lines[0].from).toBe(long);
+  });
+
+  it('fades the extra line when a one-line name becomes a two-line one', () => {
+    const layout = layoutField({
+      entities: groupScenario([1]),
+      arrangement: byTime,
+      viewport,
+    });
+    const flight = {
+      ...settledShelfLabelFlights(layout.groups, 0)![0],
+      primaryFrom: 'BLUE',
+      primaryTo: long,
+    };
+    const [label] = prepareNativeLabels([flight], font, 160);
+    expect(label.lines[0]).toEqual(
+      expect.objectContaining({ row: -1, from: '' }),
+    );
+    expect(label.lines[1]).toEqual(
+      expect.objectContaining({ row: 0, from: 'BLUE' }),
+    );
+  });
 });

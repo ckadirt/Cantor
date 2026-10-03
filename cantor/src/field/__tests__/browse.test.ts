@@ -1,5 +1,12 @@
 import { BROWSE_KNOBS, byTime, bloomedTargetPoint, layoutField } from '..';
-import { browseCluster, browseOffsets, inBrowseFrame } from '../browse';
+import {
+  browseCluster,
+  browseOffsets,
+  inBrowseFrame,
+  mapCameraAround,
+  mapCameraRange,
+  mapFrame,
+} from '../browse';
 import { groupScenario } from '../fixtures/groupScenarios';
 
 const viewport = { width: 393, height: 793 };
@@ -94,4 +101,71 @@ it('keeps particle layouts stable, varied by group, and free of grid rows', () =
   ).toBeGreaterThan(15);
   expect(browseOffsets(0, 'empty')).toEqual([]);
   expect(browseOffsets(1, 'solo')).toEqual([{ x: 0, y: 0 }]);
+});
+
+it('hands a cluster its seats top to bottom, so a gather keeps the height order', () => {
+  for (const hub of [false, true]) {
+    const { points } = browseCluster(40, '2026-W38', hub);
+    for (let index = 1; index < points.length; index += 1) {
+      expect(points[index].y).toBeGreaterThanOrEqual(points[index - 1].y);
+    }
+  }
+  const layout = makeLayout([40, 7]);
+  for (const group of layout.groups) {
+    const members = layout.placements.filter(p => p.groupKey === group.key);
+    for (let index = 1; index < members.length; index += 1) {
+      // Row `i` of the column is the `i`-th mark from the top of the bloom.
+      expect(members[index].targetY).toBeGreaterThan(members[index - 1].targetY);
+      expect(bloomedTargetPoint(members[index]).y).toBeGreaterThanOrEqual(
+        bloomedTargetPoint(members[index - 1]).y,
+      );
+    }
+  }
+});
+
+it('rests the map camera where the layout says a tall field runs, and at home across', () => {
+  const layout = makeLayout(Array(24).fill(24));
+  const range = mapCameraRange(mapFrame(layout)!, viewport, layout.fitScale);
+  expect(range.minY).toBeCloseTo(layout.fieldCenter.y, 6);
+  expect(range.maxY).toBeCloseTo(layout.browseBounds!.maxY, 6);
+  // Two columns fit across at FIT: there is nowhere to go sideways.
+  expect(range.minX).toBe(layout.fieldCenter.x);
+  expect(range.maxX).toBe(layout.fieldCenter.x);
+  // Closer in, the same content outruns the screen both ways.
+  const closer = mapCameraRange(
+    mapFrame(layout)!,
+    viewport,
+    layout.fitScale * 1.9,
+  );
+  expect(closer.maxX).toBeGreaterThan(closer.minX);
+  expect(closer.maxY - closer.minY).toBeGreaterThan(range.maxY - range.minY);
+});
+
+it('rests a short field at home', () => {
+  const layout = makeLayout([3, 2]);
+  const range = mapCameraRange(mapFrame(layout)!, viewport, layout.fitScale);
+  expect(range).toEqual({
+    minX: layout.fieldCenter.x,
+    maxX: layout.fieldCenter.x,
+    minY: layout.fieldCenter.y,
+    maxY: layout.fieldCenter.y,
+  });
+});
+
+it('climbs out to a camera with the cluster on screen, inside the map', () => {
+  const layout = makeLayout(Array(24).fill(24));
+  const range = mapCameraRange(mapFrame(layout)!, viewport, layout.fitScale);
+  for (const group of layout.groups) {
+    const around = mapCameraAround(layout, group.key, viewport)!;
+    expect(around.scale).toBe(layout.fitScale);
+    expect(around.y).toBeGreaterThanOrEqual(range.minY - 1e-9);
+    expect(around.y).toBeLessThanOrEqual(range.maxY + 1e-9);
+    // Its name, which hangs above its highest mark, is under the header.
+    const name =
+      (group.top - around.y) * layout.fitScale + viewport.height / 2;
+    expect(name).toBeGreaterThanOrEqual(
+      BROWSE_KNOBS.TOP_PX + BROWSE_KNOBS.LABEL_SPACE_PX - 1e-6,
+    );
+    expect(name).toBeLessThan(viewport.height - BROWSE_KNOBS.FOOT_PX);
+  }
 });

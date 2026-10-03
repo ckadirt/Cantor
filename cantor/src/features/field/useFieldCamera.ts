@@ -15,6 +15,7 @@ import { cameraSummary, type OriginFrame } from './cameraSummary';
 import { CURTAIN_KNOBS, releaseTarget, unrollMs } from '../curtain';
 import {
   inBrowseFrame,
+  GLIDE_KNOBS,
   GRAIN_ENABLED,
   GRAIN_KNOBS,
   LAYOUT_KNOBS,
@@ -29,9 +30,15 @@ import {
   LEVEL_SCALE_RATIOS,
   levelCameraTarget,
   levelOf,
+  glideEase,
+  glideSpeedPxS,
+  mapCameraAround,
+  mapCameraRange,
+  mapFrame,
   nearestSeat,
   placementFlightAt,
   placementPoint,
+  planGlide,
   planPlacementFlights,
   seatAfterRelease,
   seatCameraAround,
@@ -44,6 +51,7 @@ import {
   type FieldLayout,
   type Group,
   type Level,
+  type MapFrame,
   type Placement,
   type PlacementFlight,
   type Point,
@@ -120,6 +128,13 @@ export const FIELD_CAMERA_KNOBS = {
 } as const;
 
 type PullDirection = 'compose' | 'engines';
+
+/**
+ * The curve a camera flight runs on. A flight you asked for leaves and arrives
+ * at rest (smootherstep); a glide leaves at the speed the finger let go at and
+ * only arrives at rest (`glideEase`).
+ */
+const FLIGHT_CURVE = { SMOOTH: 0, GLIDE: 1 } as const;
 
 type Options = {
   layout: FieldLayout | null;
@@ -216,6 +231,11 @@ type PanStart = {
    * abandoned still count as leaving.
    */
   seat: number;
+  /**
+   * A second finger came down during this drag. The release speed of what is
+   * left of a pinch is not a throw, so such a drag never glides.
+   */
+  pinched: boolean;
 };
 
 type PinchStart = {
@@ -360,6 +380,15 @@ export function useFieldCamera({
   const flightFromCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const flightToCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const flightProgressCandidate = useSharedValue(1);
+  const flightCurveCandidate = useSharedValue<number>(FLIGHT_CURVE.SMOOTH);
+  const flightDurationCandidate = useSharedValue(0);
+  /** The map's content, for a throw at L0 to be held inside; see `mapFrame`. */
+  const mapFrameSharedCandidate = useSharedValue<MapFrame | null>(null);
+  /**
+   * The touch going down now stopped a glide, so it is not a tap. Written by
+   * whichever recogniser sees the touch first, cleared when the tap finishes.
+   */
+  const caughtGlideCandidate = useSharedValue(false);
   /**
    * How far an edge pull has come, in screen pixels: positive is the composer
    * being drawn down from the top, negative is engines being drawn up from the
@@ -397,6 +426,10 @@ export function useFieldCamera({
   const flightFrom = useRef(flightFromCandidate).current;
   const flightTo = useRef(flightToCandidate).current;
   const flightProgress = useRef(flightProgressCandidate).current;
+  const flightCurve = useRef(flightCurveCandidate).current;
+  const flightDuration = useRef(flightDurationCandidate).current;
+  const mapFrameShared = useRef(mapFrameSharedCandidate).current;
+  const caughtGlide = useRef(caughtGlideCandidate).current;
 
   layoutRef.current = layout;
   const seats = useMemo(
@@ -405,11 +438,12 @@ export function useFieldCamera({
   );
   useEffect(() => {
     shelfSeatsShared.value = seats;
+    mapFrameShared.value = layout === null ? null : mapFrame(layout);
     originShared.value = {
       centerX: layout?.fieldCenter.x ?? 0,
       groupCount: layout?.groups.length ?? 0,
     };
-  }, [layout, originShared, seats, shelfSeatsShared]);
+  }, [layout, mapFrameShared, originShared, seats, shelfSeatsShared]);
 
   /**
    * FIT as the field is drawn right now: the re-cut's own value while one is
@@ -590,7 +624,10 @@ export function useFieldCamera({
     flightThen.current = null;
     cameraFlying.current = false;
     cancelAnimation(flightProgress);
-  }, [flightProgress]);
+    // A glide stopped from here is not a glide still moving, which is what a
+    // touch asks `catchGlide` before it decides it was not a tap.
+    flightCurve.value = FLIGHT_CURVE.SMOOTH;
+  }, [flightCurve, flightProgress]);
   const landFlight = useCallback(() => {
     cameraFlying.current = false;
     const then = flightThen.current;
@@ -617,6 +654,26 @@ export function useFieldCamera({
     [],
   );
 
+  /**
+   * A flight's arrival, for every flight's clock.
+   *
+   * Arrival does not depend on the reaction below having run. The reaction is
+   * what makes the flight *smooth*; this is what makes it *land*, so a flight
+   * can never leave the camera short of the target it was given.
+   */
+  const flightLanded = useCallback(
+    (finished?: boolean) => {
+      'worklet';
+      if (finished !== true) return;
+      const landed = flightTo.value;
+      cameraShared.value = landed;
+      mirrorNow(landed);
+      // Queued after the mirror, so whatever runs on landing already reads the
+      // camera the flight arrived at.
+      runOnJS(landFlight)();
+    },
+    [cameraShared, flightTo, landFlight, mirrorNow],
+  );
   const flyTo = useCallback(
     (
       target: Camera,
@@ -631,6 +688,8 @@ export function useFieldCamera({
       }
       flightThen.current = then;
       cameraFlying.current = true;
+      flightCurve.value = FLIGHT_CURVE.SMOOTH;
+      flightDuration.value = durationMs;
       // From the *live* camera, not React's copy of it. A flight that begins
       // where the last mirrored frame happened to land would start with a jump
       // back to it — the exact distance the gesture covered after React's last
@@ -643,34 +702,35 @@ export function useFieldCamera({
       flightProgress.value = withTiming(
         1,
         { duration: durationMs, easing: Easing.linear },
-        finished => {
-          'worklet';
-          // Arrival does not depend on the reaction below having run. The
-          // reaction is what makes the flight *smooth*; this is what makes it
-          // *land*, so a flight can never leave the camera short of the target
-          // it was given.
-          if (finished !== true) return;
-          const landed = flightTo.value;
-          cameraShared.value = landed;
-          mirrorNow(landed);
-          // Queued after the mirror, so whatever runs on landing already
-          // reads the camera the flight arrived at.
-          runOnJS(landFlight)();
-        },
+        flightLanded,
       );
     },
     [
       cameraShared,
       cancelCameraFlight,
       commitCamera,
+      flightCurve,
+      flightDuration,
       flightFrom,
+      flightLanded,
       flightProgress,
       flightTo,
-      landFlight,
-      mirrorNow,
       reducedMotion,
     ],
   );
+  /**
+   * A glide the gesture has already launched on the UI thread, told to JS:
+   * it is a flight like any other, so a re-cut or a tap that arrives while it
+   * is moving treats it as one. Anything still waiting to fly is dropped,
+   * because the newest flight wins.
+   */
+  const beginGlide = useCallback(() => {
+    pendingDescent.current = null;
+    pendingStepLeg.current = null;
+    stepTarget.current = null;
+    flightThen.current = null;
+    cameraFlying.current = true;
+  }, []);
 
   /**
    * The flight itself, one frame at a time on the UI thread.
@@ -682,7 +742,8 @@ export function useFieldCamera({
    * callable from here means marking a chain of helpers in two other modules
    * and moving one of them above its caller, which is a larger change than the
    * six lines it would save. The maths is the same: smootherstep on position,
-   * logarithmic on scale, so a zoom reads as even.
+   * logarithmic on scale, so a zoom reads as even. A glide swaps the
+   * smootherstep for `glideEase`, which is a worklet already.
    *
    * React learns the camera exactly as fast as it can commit one, through the
    * same back-pressure a pan uses; the picture's transform covers every frame in
@@ -703,7 +764,10 @@ export function useFieldCamera({
       const to = flightTo.value;
       if (!(from.scale > 0) || !(to.scale > 0)) return;
       const t = progress;
-      const eased = t * t * t * (t * (t * 6 - 15) + 10);
+      const eased =
+        flightCurve.value === FLIGHT_CURVE.GLIDE
+          ? glideEase(t)
+          : t * t * t * (t * (t * 6 - 15) + 10);
       const next = {
         x: from.x + (to.x - from.x) * eased,
         y: from.y + (to.y - from.y) * eased,
@@ -1053,6 +1117,29 @@ export function useFieldCamera({
   }, [focus, level, renderedCamera, seats]);
 
   /**
+   * A shelf with one song's row on screen: the column, with the camera as near
+   * that row as the column's run allows.
+   *
+   * Where a tap on the map enters a shelf, and where a song climbs back out to.
+   * `levelCameraTarget` seats the camera in the column's middle, which in a
+   * column taller than the screen is somewhere you did not touch: a tap near
+   * the top of a big cluster flew to its middle, and every mark on screen left
+   * it at full speed. Seats are handed out top to bottom (`browseCluster`), so
+   * the row a mark gathers into is at the height you touched it.
+   */
+  const shelfAround = useCallback(
+    (field: FieldLayout, placement: Placement): Camera | null => {
+      const shelf = levelCameraTarget('shelf', field, placement);
+      if (shelf === null || viewport === null) return shelf;
+      const seat = shelfSeats(field).find(
+        candidate => candidate.key === placement.groupKey,
+      );
+      if (seat === undefined) return shelf;
+      return seatCameraAround(seat, placement.targetY, viewport, shelf.scale);
+    },
+    [viewport],
+  );
+  /**
    * Move one level closer to the tapped placement.
    *
    * Descending is always a single step, never a jump: the zoom model is the
@@ -1079,7 +1166,10 @@ export function useFieldCamera({
           ? 'grain'
           : null;
       if (next === null) return;
-      const target = levelCameraTarget(next, field, placement);
+      const target =
+        next === 'shelf'
+          ? shelfAround(field, placement)
+          : levelCameraTarget(next, field, placement);
       if (!target) return;
       const drawsPlayer = next === 'song' || next === 'grain';
       commitFocus(placement.key, drawsPlayer);
@@ -1111,7 +1201,7 @@ export function useFieldCamera({
       pendingDescent.current = target;
       setDescentTicket(ticket => ticket + 1);
     },
-    [renderedFit, cameraShared, commitFocus, flyTo],
+    [renderedFit, cameraShared, commitFocus, flyTo, shelfAround],
   );
   /*
    * Ticket rather than the focus itself: descending from a song into its grain
@@ -1144,24 +1234,6 @@ export function useFieldCamera({
     strandedFocus.current = null;
     commitFocus(null, true);
   }, [commitFocus, activeRecut?.generation]);
-  /**
-   * The shelf a song climbs back into, with that song's row on screen.
-   *
-   * `levelCameraTarget` seats the camera in the column's middle, which is where
-   * a tap enters one; coming back out of a song should put you where you were.
-   */
-  const shelfAround = useCallback(
-    (field: FieldLayout, placement: Placement): Camera | null => {
-      const shelf = levelCameraTarget('shelf', field, placement);
-      if (shelf === null || viewport === null) return shelf;
-      const seat = shelfSeats(field).find(
-        candidate => candidate.key === placement.groupKey,
-      );
-      if (seat === undefined) return shelf;
-      return seatCameraAround(seat, placement.targetY, viewport, shelf.scale);
-    },
-    [viewport],
-  );
   const ascend = useCallback((): boolean => {
     const field = layoutRef.current;
     if (field === null) return false;
@@ -1185,10 +1257,27 @@ export function useFieldCamera({
       }
     }
     commitFocus(null, true);
-    const target = levelCameraTarget('field', field);
+    // Leaving a shelf returns to the map with that shelf's cluster still on
+    // screen, not to the top of the field: the climb out of a song keeps your
+    // place in the column, and this keeps it on the map. The shelf is the one
+    // the camera is standing in, which a pan may have changed since the tap.
+    const seat =
+      current === 'shelf' ? nearestSeat(seats, cameraShared.value) : -1;
+    const target =
+      (seat >= 0 && viewport !== null
+        ? mapCameraAround(field, seats[seat].key, viewport)
+        : null) ?? levelCameraTarget('field', field);
     if (target) flyTo(target);
     return true;
-  }, [renderedFit, cameraShared, commitFocus, flyTo, shelfAround]);
+  }, [
+    renderedFit,
+    cameraShared,
+    commitFocus,
+    flyTo,
+    seats,
+    shelfAround,
+    viewport,
+  ]);
   const step = useCallback(
     (placement: Placement) => {
       // Still folding back into the row: retarget where it goes down again.
@@ -1381,11 +1470,58 @@ export function useFieldCamera({
       'worklet';
       mirrorNow(cameraShared.value);
     };
+    /**
+     * Carry a throw on: `flyTo`'s clock on the glide's curve, started here on
+     * the UI thread at the instant the finger lifts. A throw that waited a hop
+     * for JS to launch it would stand still for a frame at its fastest.
+     */
+    const launchGlide = (target: Camera, durationMs: number) => {
+      'worklet';
+      // Told before the clock starts, so the landing it queues is the later
+      // of the two calls JS receives.
+      runOnJS(beginGlide)();
+      flightCurve.value = FLIGHT_CURVE.GLIDE;
+      flightDuration.value = durationMs;
+      flightFrom.value = cameraShared.value;
+      flightTo.value = target;
+      flightProgress.value = 0;
+      flightProgress.value = withTiming(
+        1,
+        { duration: durationMs, easing: Easing.linear },
+        flightLanded,
+      );
+    };
+    /**
+     * A finger coming down on a glide stops it where it is.
+     *
+     * On the UI thread and before anything reads the camera, so the pan that
+     * follows starts from the frame the finger landed on rather than racing a
+     * glide still writing for the length of a hop. A glide still moving fast
+     * marks the touch as a catch, which the tap then does not answer.
+     */
+    const catchGlide = () => {
+      'worklet';
+      const u = flightProgress.value;
+      if (flightCurve.value !== FLIGHT_CURVE.GLIDE || u >= 1) return;
+      const speed = glideSpeedPxS(
+        flightFrom.value,
+        flightTo.value,
+        flightDuration.value,
+        u,
+      );
+      cancelAnimation(flightProgress);
+      flightCurve.value = FLIGHT_CURVE.SMOOTH;
+      if (speed > GLIDE_KNOBS.CATCH_SPEED_PX_S) caughtGlide.value = true;
+      mirrorNow(cameraShared.value);
+      runOnJS(cancelCameraFlight)();
+    };
     const pinch = Gesture.Pinch()
       .onStart(event => {
         'worklet';
         runOnJS(cancelCameraFlight)();
         pinching.value = true;
+        const drag = panStart.value;
+        if (drag !== null) panStart.value = { ...drag, pinched: true };
         const startCamera = cameraShared.value;
         // Zoom is still the navigation, so a pinch is how you leave a song —
         // but inside one it pulls against the middle of the view rather than
@@ -1443,6 +1579,7 @@ export function useFieldCamera({
       .minDistance(knobs.PAN_SLOP_PX)
       .onBegin(event => {
         'worklet';
+        catchGlide();
         runOnJS(cancelCameraFlight)();
         const startCamera = cameraShared.value;
         panStart.value = {
@@ -1453,6 +1590,7 @@ export function useFieldCamera({
           seat: isShelfDistance(startCamera.scale, layoutFitShared.value)
             ? nearestSeat(shelfSeatsShared.value, startCamera)
             : -1,
+          pinched: false,
         };
       })
       .onUpdate(event => {
@@ -1601,6 +1739,14 @@ export function useFieldCamera({
           settle();
           return;
         }
+        // A throw carries on — unless reduced motion is asked for, a pinch
+        // was part of it, or a blind was down and the drag never moved the
+        // field at all.
+        const throwable =
+          !reducedMotion &&
+          start !== null &&
+          !start.pinched &&
+          pullDestination.value === 0;
         const liveSeats = shelfSeatsShared.value;
         if (
           start !== null &&
@@ -1616,28 +1762,79 @@ export function useFieldCamera({
             x: start.camera.x - event.translationX / start.camera.scale,
             y: start.camera.y - event.translationY / start.camera.scale,
           };
+          const seatIndex = seatAfterRelease(
+            liveSeats,
+            released,
+            start.seat,
+            LAYOUT_KNOBS.SHELF_GAP_WORLD,
+          );
+          // Staying in the column, a throw runs on down it. Only from inside
+          // its run: a camera released in the overscroll goes back to the
+          // end it passed, and a glide too short to also bring the column
+          // back under the middle of the view is a settle after all.
+          const current = cameraShared.value;
+          const size = viewport;
+          if (throwable && seatIndex === start.seat && size !== null) {
+            const seat = liveSeats[seatIndex];
+            const run = seatCameraBounds(seat, size, current.scale);
+            const glide =
+              current.y >= run.min && current.y <= run.max
+                ? planGlide(
+                    current,
+                    { x: 0, y: event.velocityY },
+                    { minX: seat.cx, maxX: seat.cx, minY: run.min, maxY: run.max },
+                  )
+                : null;
+            if (glide !== null && glide.durationMs >= knobs.SEAT_SETTLE_MS) {
+              launchGlide({ ...glide.target, x: seat.cx }, glide.durationMs);
+              return;
+            }
+          }
           // React first, so the flight starts from the camera the finger left
           // rather than from whichever frame the mirror last managed to take.
           settle();
-          runOnJS(settleIntoSeat)(
-            seatAfterRelease(
-              liveSeats,
-              released,
-              start.seat,
-              LAYOUT_KNOBS.SHELF_GAP_WORLD,
-            ),
-          );
+          runOnJS(settleIntoSeat)(seatIndex);
           return;
+        }
+        // On the map a throw runs on in both axes, inside the map's range.
+        const frame = mapFrameShared.value;
+        const size = viewport;
+        const current = cameraShared.value;
+        const fitScale = layoutFitShared.value;
+        if (
+          throwable &&
+          frame !== null &&
+          size !== null &&
+          fitScale > 0 &&
+          current.scale / fitScale < LEVEL_BOUNDARIES.field
+        ) {
+          const glide = planGlide(
+            current,
+            { x: event.velocityX, y: event.velocityY },
+            mapCameraRange(frame, size, current.scale),
+          );
+          if (glide !== null) {
+            launchGlide(glide.target, glide.durationMs);
+            return;
+          }
         }
         settle();
       });
     const tap = Gesture.Tap()
       .maxDistance(knobs.TAP_SLOP_PX)
+      .onBegin(() => {
+        'worklet';
+        catchGlide();
+      })
       .onEnd((event, success) => {
         'worklet';
-        if (success && !pinching.value) {
+        if (success && !pinching.value && !caughtGlide.value) {
           runOnJS(tapAt)({ x: event.x, y: event.y });
         }
+      })
+      .onFinalize(() => {
+        'worklet';
+        caughtGlide.value = false;
       });
     // The hold fires the moment it is recognised rather than on release, so
     // the sheet is already arriving when the finger lifts. A hold that turned
@@ -1654,10 +1851,18 @@ export function useFieldCamera({
     // fire under it and descend a level the person did not ask for.
     return Gesture.Simultaneous(pinch, pan, Gesture.Exclusive(hold, tap));
   }, [
+    beginGlide,
     cameraShared,
     cancelCameraFlight,
+    caughtGlide,
     completePull,
+    flightCurve,
+    flightDuration,
+    flightFrom,
+    flightProgress,
+    flightTo,
     layoutFitShared,
+    mapFrameShared,
     mirrorNow,
     mirrorOnChange,
     panStart,
@@ -1666,6 +1871,8 @@ export function useFieldCamera({
     pullDestination,
     pullShared,
     holdAt,
+    reducedMotion,
+    flightLanded,
     settleIntoSeat,
     shelfSeatsShared,
     tapAt,

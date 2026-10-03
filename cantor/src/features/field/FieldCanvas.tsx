@@ -1,4 +1,5 @@
 import {
+  labelMaxWidthPx,
   prepareNativeLabels,
   createLabelPaints,
   drawNativeLabels,
@@ -2310,9 +2311,12 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     () => ({ title: displayFont, mono: monoFont }),
     [displayFont, monoFont],
   );
+  // A number, so a viewport handed down as a fresh object does not re-fit
+  // every name.
+  const labelWidthPx = labelMaxWidthPx(viewport);
   const labels = useMemo(
-    () => prepareNativeLabels(labelFlights ?? [], monoFont),
-    [labelFlights, monoFont],
+    () => prepareNativeLabels(labelFlights ?? [], monoFont, labelWidthPx),
+    [labelFlights, monoFont, labelWidthPx],
   );
   const labelPaints = useMemo(
     () => createLabelPaints(palette.muted, palette.faint),
