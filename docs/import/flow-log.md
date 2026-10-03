@@ -20,10 +20,11 @@ The routine for each step is [`log.md`](log.md) § "How a step is done here".
 
 ## Next session starts here
 
-**I7a–I7g are built and checked on the Samsung** with Cesar's real music
-(199 songs brought in, 2026-10-02). **Next: I7h** (a folder's page: kept
-folders on `f-phone` are plain rows until it lands), then I7i, then I7j. The
-leftovers of I7e–I7g are in the Status table.
+**I7a–I7h are built and checked on the Samsung** with Cesar's real music
+(199 songs brought in 2026-10-02; `Music/Samsung`, a one-file brand jingle,
+left out with the strike 2026-10-03, so 198 now). **Next: I7i** (the empty
+field), then **I7j** (arrival). The leftovers of I7e–I7h are in the Status
+table.
 
 The test phone is now **Cesar's own Samsung A52s** (`R5CRC0VVK1M`, Android 14,
 API 34, 1080×2400 at density 450 → **384 dp wide**, not the Xiaomi's 392; the
@@ -57,7 +58,7 @@ Before the first line of UI, read:
 | I7e | **done** 2026-10-02 | the seal's wave while bringing in not yet seen on the phone (blind closed mid-way) |
 | I7f | **done** 2026-10-02 | `f-new` and `f-none` seen only in tests; `FOUND n` counting up (see Deviations) |
 | I7g | **done** 2026-10-02 | cell-by-cell clef change not captured mid-flight; reduced-motion crossfade unchecked |
-| I7h | not started | everything |
+| I7h | **done** 2026-10-03 | — (wall, album tap into ALBUM, strike: all on the Samsung) |
 | I7i | not started | everything |
 | I7j | not started | everything |
 
@@ -109,8 +110,12 @@ its date when answered.
 - **2026-10-02 — A folder outside the music roots shows its last segment
   only** (`Fluir [B094Y7YLRY]`, `Data_transfer`); its parent path is not
   drawn. As the plan says; it reads fine with this phone's audiobooks.
-- **2026-10-02 — Kept folders on `f-phone` are rows, not doors**, until I7h
-  gives them a page.
+- **2026-10-03 — A folder's wall labels long artist names in the value
+  column** (`LUDOVICO EINAUDI` is past the label column's 12 characters):
+  the Ledger's own rule for long labels, not drawn in `f-folder`.
+- **2026-10-03 — The folder page's meta counts stored songs** (`MUSIC/CLASIC
+  · 102 SONGS`) while the phone page's folder line counts MediaStore rows
+  (`107 SONGS`): duplicates merged and unreadable files are the difference.
 - **2026-10-02 — "Brought in before" means a song is stored**, not "a song or
   an excluded folder" (plan I7d): a first bring-in that failed after saving
   its exclusions read as `f-new` with `Bring in 204 more` and the roster said
@@ -199,6 +204,13 @@ its date when answered.
 
 ## Traps
 
+- **2026-10-03 — A re-cut stays in `fieldCamera.recut` after it lands.** To
+  act after one (the album tap: switch to ALBUM, then descend), wait for
+  `recut !== null && relayoutLinear < 1` to be seen, then for
+  `relayoutLinear` to reach 1. An effect in the same commit as the layout
+  change sees `recut === null` (the camera hook starts it a commit later),
+  descends, and the re-cut then flies the camera home over it.
+
 - **2026-10-02 — `Maximum update depth exceeded` killed the first real
   bring-in** after the files were read (no commit; exclusions were saved).
   React throws it from `scheduleUpdateOnFiber`, i.e. *inside the service's
@@ -223,6 +235,17 @@ its date when answered.
   it is when it resolves (`afterCheck`, tested).
 
 ## Session log
+
+### 2026-10-03 — I7h
+
+- `repository.leaveOut` (one transaction; prefix matched in JS so `%`/`_`
+  in paths need no escaping), `DeviceLibraryService.leaveOut`, the folder
+  wall as a pure function (`folderWall`), `useFolderPage`, `AlbumCover`
+  (saved art through `artworkLuma`), `showAlbum` in `FieldScreen`.
+- On the Samsung: `Music / clasic`'s wall (Yann Tiersen, Mammal Hands and
+  Ludovico Einaudi measures); a cover tap closed the blind and landed inside
+  *2 Tracks from EUSA* at L1 (second try: see Traps); `Music / Samsung` left
+  out with the strike → 198 songs, the folder under the left-out door.
 
 ### 2026-10-02 — I7a–I7d, logic; moved to the Samsung
 
@@ -275,5 +298,7 @@ by `playwright-core` from `~/.hermes/hermes-agent/node_modules`):
 - `e15f583` device: folders and the summary a person keeps or leaves out (I7a)
 - `372fe0a` device: look and bring in as two halves, the music permission,
   and a look on every open (I7b–I7d)
-- `aa41c75` the phone in the nodes roster, its page, and bringing music in
+- `fa74c77` the phone in the nodes roster, its page, and bringing music in
   (I7e–I7g)
+- `bd34ba4` a kept folder's page: its albums as covers, and leaving it out
+  held (I7h)

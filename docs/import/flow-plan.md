@@ -32,7 +32,7 @@ pointed at the phone.
 | I7e | [The phone in the roster](#i7e--the-phone-in-the-roster) | `f-roster` | **done** |
 | I7f | [The phone's page](#i7f--the-phones-page) | `f-ask` `f-denied` `f-sum` `f-new` `f-phone` `f-none` | **done** |
 | I7g | [Bringing in](#i7g--bringing-in) | `f-bring` | **done** |
-| I7h | [A folder's page](#i7h--a-folders-page) | `f-folder` | not started |
+| I7h | [A folder's page](#i7h--a-folders-page) | `f-folder` | **done** |
 | I7i | [The empty field](#i7i--the-empty-field) | `f-empty` | not started |
 | I7j | [Arrival in the field](#i7j--arrival-in-the-field) | `f-arrived` | not started |
 
@@ -387,9 +387,9 @@ Which page shows is a pure function of the store, tested:
 - Covers here come from the saved album art (`artworkLuma`), not the thumbnail
   call.
 
-- [ ] page, wall, album tap
-- [ ] `leaveOut` in the repository, tested; strike wired
-- [ ] device pass against `f-folder`
+- [x] page, wall, album tap
+- [x] `leaveOut` in the repository, tested; strike wired
+- [x] device pass against `f-folder`
 
 ## I7i · The empty field
 
