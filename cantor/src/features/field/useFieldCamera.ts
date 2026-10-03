@@ -40,6 +40,10 @@ import {
   placementPoint,
   planGlide,
   planPlacementFlights,
+  RAIL_KNOBS,
+  railCamera,
+  railExtent,
+  railWanted,
   seatAfterRelease,
   seatCameraAround,
   seatCameraBounds,
@@ -55,6 +59,7 @@ import {
   type Placement,
   type PlacementFlight,
   type Point,
+  type RailExtent,
   type ShelfSeat,
   type Viewport,
 } from '../../field';
@@ -132,9 +137,11 @@ type PullDirection = 'compose' | 'engines';
 /**
  * The curve a camera flight runs on. A flight you asked for leaves and arrives
  * at rest (smootherstep); a glide leaves at the speed the finger let go at and
- * only arrives at rest (`glideEase`).
+ * only arrives at rest (`glideEase`). A jump along the rail is a smootherstep
+ * too, tagged apart so a drag on the rail knows the flight it may steer is
+ * still its own: anything that stops it resets the tag.
  */
-const FLIGHT_CURVE = { SMOOTH: 0, GLIDE: 1 } as const;
+const FLIGHT_CURVE = { SMOOTH: 0, GLIDE: 1, RAIL: 2 } as const;
 
 type Options = {
   layout: FieldLayout | null;
@@ -160,6 +167,13 @@ type Options = {
    * no inside to descend into. Returns whether it was consumed.
    */
   onClaimTap?: (placement: Placement) => boolean;
+  /**
+   * Which axis the layout is cut on — the arrangement, and for the date axis
+   * its resolution. Leaving an axis remembers where on its map the camera
+   * was, and coming back to it returns there; see `axisCameras`. Without it
+   * a regroup keeps the camera where it is, as it always did.
+   */
+  axisKey?: string;
 };
 
 type CameraState = {
@@ -192,6 +206,15 @@ type CameraState = {
   /** Static endpoints consumed by the native-clock L0 renderer. */
   recut: FieldRecutModel | null;
   gesture: ReturnType<typeof Gesture.Simultaneous>;
+  /**
+   * The index rail's touch: a finger on the rail flies the map there, then
+   * follows. Attach it to a view over the rail's strip (`RAIL_KNOBS.WIDTH_PX`
+   * in from the right edge); it does nothing away from the map or when the
+   * map is too short to have a rail (`rail`).
+   */
+  railGesture: ReturnType<typeof Gesture.Pan>;
+  /** The map's extent down the rail, or null when it is too short for one. */
+  rail: RailExtent | null;
   cameraShared: SharedValue<Camera>;
   focusKeyShared: SharedValue<string | null>;
   fitScaleShared: SharedValue<number>;
@@ -262,7 +285,12 @@ export type FieldRecutModel = Readonly<{
   toCamera: Camera;
   fromGroups: readonly Group[];
   animate: boolean;
+  /** The axis this layout is cut on; see `Options.axisKey`. */
+  axisKey?: string;
 }>;
+
+/** A map camera kept for an axis, with its scale relative to that map's FIT. */
+type AxisCamera = Readonly<{ x: number; y: number; ratio: number }>;
 
 type RecutClock = Readonly<{
   generation: number;
@@ -281,6 +309,7 @@ export function useFieldCamera({
   onRowAction,
   onHoldPlacement,
   onClaimTap,
+  axisKey,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
@@ -321,6 +350,12 @@ export function useFieldCamera({
   const layoutRef = useRef(layout);
   const focusKeyRef = useRef(focusKey);
   const recutModel = useRef<FieldRecutModel | null>(null);
+  /**
+   * Where the camera stood on each axis's map when that axis was left: album
+   * → date → album comes back to the albums you were reading, not to the top.
+   * Held for the session only; an axis never visited opens at its home.
+   */
+  const axisCameras = useRef(new Map<string, AxisCamera>());
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
   /** See the capture beside `focus`, and the strand it answers in the re-cut. */
   const standing = useRef<Placement | null>(null);
@@ -389,6 +424,10 @@ export function useFieldCamera({
    * whichever recogniser sees the touch first, cleared when the tap finishes.
    */
   const caughtGlideCandidate = useSharedValue(false);
+  /** The map's extent down the rail, or null while the map has no rail. */
+  const railExtentSharedCandidate = useSharedValue<RailExtent | null>(null);
+  /** A finger on the rail is steering the camera. */
+  const railActiveCandidate = useSharedValue(false);
   /**
    * How far an edge pull has come, in screen pixels: positive is the composer
    * being drawn down from the top, negative is engines being drawn up from the
@@ -430,20 +469,41 @@ export function useFieldCamera({
   const flightDuration = useRef(flightDurationCandidate).current;
   const mapFrameShared = useRef(mapFrameSharedCandidate).current;
   const caughtGlide = useRef(caughtGlideCandidate).current;
+  const railExtentShared = useRef(railExtentSharedCandidate).current;
+  const railActive = useRef(railActiveCandidate).current;
 
   layoutRef.current = layout;
   const seats = useMemo(
     () => (layout === null ? [] : shelfSeats(layout)),
     [layout],
   );
+  const layoutFrame = useMemo(
+    () => (layout === null ? null : mapFrame(layout)),
+    [layout],
+  );
+  const railNow = useMemo(() => {
+    if (layout === null || layoutFrame === null || viewport === null) return null;
+    const extent = railExtent(layoutFrame, layout.fitScale);
+    return railWanted(extent, layout.fitScale, viewport) ? extent : null;
+  }, [layoutFrame, layout, viewport]);
   useEffect(() => {
     shelfSeatsShared.value = seats;
-    mapFrameShared.value = layout === null ? null : mapFrame(layout);
+    mapFrameShared.value = layoutFrame;
+    railExtentShared.value = railNow;
     originShared.value = {
       centerX: layout?.fieldCenter.x ?? 0,
       groupCount: layout?.groups.length ?? 0,
     };
-  }, [layout, mapFrameShared, originShared, seats, shelfSeatsShared]);
+  }, [
+    layoutFrame,
+    layout,
+    mapFrameShared,
+    originShared,
+    railNow,
+    railExtentShared,
+    seats,
+    shelfSeatsShared,
+  ]);
 
   /**
    * FIT as the field is drawn right now: the re-cut's own value while one is
@@ -845,10 +905,50 @@ export function useFieldCamera({
         layout,
       ),
     };
+    /*
+     * A change of axis on the map: the camera's position on the old map means
+     * nothing on the new one — a height among albums is not a height among
+     * weeks. So the axis being left keeps where it was, and the axis being
+     * entered is opened where it was last left, or at its home. Held inside
+     * the new map's range: the library may have grown or shrunk since.
+     *
+     * Only at the map. Inside a shelf or a song a regroup keeps you where you
+     * are, as it always has.
+     */
+    const previousAxis = previous?.axisKey;
+    const axisChanged =
+      !firstLayout && axisKey !== undefined && previousAxis !== axisKey;
+    const atMap =
+      heading.scale / fromFitScale < LEVEL_BOUNDARIES.field && !stranded;
+    let axisCamera: Camera | null = null;
+    if (axisChanged && atMap) {
+      if (previousAxis !== undefined) {
+        axisCameras.current.set(previousAxis, {
+          x: heading.x,
+          y: heading.y,
+          ratio: heading.scale / fromFitScale,
+        });
+      }
+      const kept = axisCameras.current.get(axisKey);
+      const frame = mapFrame(layout);
+      if (kept !== undefined && frame !== null && viewport !== null) {
+        const scale = clampScale(kept.ratio * layout.fitScale, layout);
+        const range = mapCameraRange(frame, viewport, scale);
+        axisCamera = {
+          scale,
+          x: Math.min(Math.max(kept.x, range.minX), range.maxX),
+          y: Math.min(Math.max(kept.y, range.minY), range.maxY),
+        };
+      } else {
+        axisCamera = newHome;
+      }
+    }
     let toCamera = firstLayout
       ? fromCamera
       : stranded
       ? levelCameraTarget('shelf', layout, held) ?? newHome ?? fitCorrected
+      : axisCamera !== null
+      ? axisCamera
       : flyingHome
       ? newHome ?? fitCorrected
       : fitCorrected;
@@ -895,6 +995,7 @@ export function useFieldCamera({
       toCamera,
       fromGroups,
       animate,
+      axisKey,
     };
     if (stranded) strandedFocus.current = generation;
   }
@@ -1458,7 +1559,7 @@ export function useFieldCamera({
    * camera it can keep up with, which is what the level chrome and hit
    * testing are drawn from.
    */
-  const gesture = useMemo(() => {
+  const gestures = useMemo(() => {
     const knobs = FIELD_CAMERA_KNOBS;
     const publish = (next: Camera) => {
       'worklet';
@@ -1471,16 +1572,18 @@ export function useFieldCamera({
       mirrorNow(cameraShared.value);
     };
     /**
-     * Carry a throw on: `flyTo`'s clock on the glide's curve, started here on
-     * the UI thread at the instant the finger lifts. A throw that waited a hop
-     * for JS to launch it would stand still for a frame at its fastest.
+     * A flight started from the UI thread: `flyTo`'s clock, launched in the
+     * frame a finger asked for it. A throw that waited a hop for JS to launch
+     * it would stand still for a frame at its fastest, and a touch on the rail
+     * would answer a frame late. Starting the clock replaces any flight still
+     * running, here and now rather than a hop later.
      */
-    const launchGlide = (target: Camera, durationMs: number) => {
+    const launchFlight = (target: Camera, durationMs: number, curve: number) => {
       'worklet';
       // Told before the clock starts, so the landing it queues is the later
       // of the two calls JS receives.
       runOnJS(beginGlide)();
-      flightCurve.value = FLIGHT_CURVE.GLIDE;
+      flightCurve.value = curve;
       flightDuration.value = durationMs;
       flightFrom.value = cameraShared.value;
       flightTo.value = target;
@@ -1515,6 +1618,74 @@ export function useFieldCamera({
       mirrorNow(cameraShared.value);
       runOnJS(cancelCameraFlight)();
     };
+    /** Carry a throw on, on the glide's curve. */
+    const launchGlide = (target: Camera, durationMs: number) => {
+      'worklet';
+      launchFlight(target, durationMs, FLIGHT_CURVE.GLIDE);
+    };
+    /** Where a finger at `y` on the rail puts the camera, or null off the map. */
+    const railTarget = (y: number): Camera | null => {
+      'worklet';
+      const extent = railExtentShared.value;
+      const frame = mapFrameShared.value;
+      const size = viewport;
+      const fitScale = layoutFitShared.value;
+      const current = cameraShared.value;
+      if (
+        extent === null ||
+        frame === null ||
+        size === null ||
+        !(fitScale > 0) ||
+        current.scale / fitScale >= LEVEL_BOUNDARIES.field
+      ) {
+        return null;
+      }
+      return railCamera(
+        y,
+        current,
+        extent,
+        size,
+        mapCameraRange(frame, size, current.scale),
+      );
+    };
+    /*
+     * The rail. A touch flies the map to the finger — a short flight, because
+     * the map may be many screens away and a jump would lose you — and a drag
+     * then moves it with the finger. A drag that starts while that flight is
+     * still in the air moves where it is going instead, so the camera never
+     * leaves its curve for a frame.
+     */
+    const rail = Gesture.Pan()
+      .minDistance(0)
+      .maxPointers(1)
+      .onBegin(event => {
+        'worklet';
+        const target =
+          pullDestination.value === 0 ? railTarget(event.y) : null;
+        railActive.value = target !== null;
+        if (target === null) return;
+        launchFlight(target, RAIL_KNOBS.JUMP_MS, FLIGHT_CURVE.RAIL);
+      })
+      .onUpdate(event => {
+        'worklet';
+        if (!railActive.value) return;
+        const target = railTarget(event.y);
+        if (target === null) return;
+        if (flightCurve.value === FLIGHT_CURVE.RAIL && flightProgress.value < 1) {
+          flightTo.value = target;
+          return;
+        }
+        publish(target);
+      })
+      .onFinalize(() => {
+        'worklet';
+        if (!railActive.value) return;
+        railActive.value = false;
+        // A flight still in the air lands, and mirrors, by itself.
+        if (flightCurve.value !== FLIGHT_CURVE.RAIL || flightProgress.value >= 1) {
+          settle();
+        }
+      });
     const pinch = Gesture.Pinch()
       .onStart(event => {
         'worklet';
@@ -1849,7 +2020,10 @@ export function useFieldCamera({
       });
     // Exclusive, so a recognised hold cancels the tap that would otherwise
     // fire under it and descend a level the person did not ask for.
-    return Gesture.Simultaneous(pinch, pan, Gesture.Exclusive(hold, tap));
+    return {
+      field: Gesture.Simultaneous(pinch, pan, Gesture.Exclusive(hold, tap)),
+      rail,
+    };
   }, [
     beginGlide,
     cameraShared,
@@ -1865,6 +2039,8 @@ export function useFieldCamera({
     mapFrameShared,
     mirrorNow,
     mirrorOnChange,
+    railActive,
+    railExtentShared,
     panStart,
     pinchStart,
     pinching,
@@ -1893,7 +2069,9 @@ export function useFieldCamera({
     labelFromGroups: activeRecut?.fromGroups ?? [],
     transitionGeneration: activeRecut?.generation ?? 0,
     recut: activeRecut,
-    gesture,
+    gesture: gestures.field,
+    railGesture: gestures.rail,
+    rail: railNow,
     cameraShared,
     focusKeyShared,
     fitScaleShared,

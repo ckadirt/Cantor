@@ -8,6 +8,8 @@ import {
   mapCameraAround,
   mapCameraRange,
   mapFrame,
+  railBand,
+  railCamera,
   seatCameraAround,
   seatCameraBounds,
   shelfSeats,
@@ -1671,5 +1673,165 @@ describe('useFieldCamera: landing where you were, and throws', () => {
       tap.onFinalize(mark, true);
     });
     expect(latest.level).toBe('shelf');
+  });
+});
+
+describe('useFieldCamera: each axis keeps its place, and the rail', () => {
+  afterEach(() => {
+    mockReducedMotion = true;
+    jest.restoreAllMocks();
+  });
+
+  /** Two cuts of one library: the same songs by week and by month. */
+  const library = groupScenario(Array(30).fill(30));
+  const weeks = layoutField({
+    entities: library,
+    arrangement: byDate('week'),
+    viewport,
+  });
+  const months = layoutField({
+    entities: library,
+    arrangement: byDate('month'),
+    viewport,
+  });
+
+  let renderer!: ReactTestRenderer.ReactTestRenderer;
+  function AxisProbe({ field, axis }: { field: FieldLayout; axis: string }) {
+    latest = useFieldCamera({
+      layout: field,
+      viewport,
+      onOpenComposer: jest.fn(),
+      onOpenEngines: jest.fn(),
+      axisKey: axis,
+    });
+    return null;
+  }
+  async function show(field: FieldLayout, axis: string) {
+    await ReactTestRenderer.act(async () => {
+      if (renderer === undefined) {
+        renderer = ReactTestRenderer.create(
+          <AxisProbe axis={axis} field={field} />,
+        );
+      } else {
+        renderer.update(<AxisProbe axis={axis} field={field} />);
+      }
+    });
+  }
+  beforeEach(() => {
+    renderer = undefined as unknown as ReactTestRenderer.ReactTestRenderer;
+  });
+
+  async function drag(dy: number) {
+    const [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 0, translationY: dy });
+      pan.onEnd({ velocityX: 0, velocityY: 0 });
+    });
+  }
+
+  it('comes back to where it was on an axis, and opens a new one at its home', async () => {
+    await show(weeks, 'time:week');
+    await drag(-900);
+    const there = latest.cameraShared.value;
+    expect(there.y).toBeGreaterThan(weeks.fieldCenter.y);
+
+    await show(months, 'time:month');
+    // An axis never visited opens at its home, not at the old map's height.
+    expect(camera().x).toBeCloseTo(months.fieldCenter.x, 6);
+    expect(camera().y).toBeCloseTo(months.fieldCenter.y, 6);
+    await drag(-300);
+    const monthsThere = latest.cameraShared.value;
+
+    await show(weeks, 'time:week');
+    expect(camera().y).toBeCloseTo(there.y, 6);
+    expect(camera().scale).toBeCloseTo(there.scale, 6);
+
+    await show(months, 'time:month');
+    expect(camera().y).toBeCloseTo(monthsThere.y, 6);
+  });
+
+  it('keeps a remembered place inside a map that has since shrunk', async () => {
+    await show(weeks, 'time:week');
+    await drag(-100_000);
+    await show(months, 'time:month');
+    const fewer = layoutField({
+      entities: groupScenario(Array(8).fill(30)),
+      arrangement: byDate('week'),
+      viewport,
+    });
+    await show(fewer, 'time:week');
+    const range = mapCameraRange(mapFrame(fewer)!, viewport, fewer.fitScale);
+    expect(camera().y).toBeLessThanOrEqual(range.maxY + 1e-9);
+    expect(camera().y).toBeGreaterThanOrEqual(range.minY - 1e-9);
+  });
+
+  it('leaves a regroup of the same axis where it was', async () => {
+    await show(weeks, 'time:week');
+    await drag(-600);
+    const there = latest.cameraShared.value;
+    const more = layoutField({
+      entities: groupScenario(Array(31).fill(30)),
+      arrangement: byDate('week'),
+      viewport,
+    });
+    await show(more, 'time:week');
+    expect(camera().y).toBeCloseTo(there.y, 6);
+  });
+
+  it('gives a long map a rail, and a touch on it flies the map there', async () => {
+    mockReducedMotion = false;
+    await show(weeks, 'time:week');
+    expect(latest.rail).not.toBeNull();
+    const band = railBand(viewport);
+    const range = mapCameraRange(mapFrame(weeks)!, viewport, weeks.fitScale);
+    const rail = latest.railGesture as unknown as TestGesture;
+    const handlers = rail.handlers!;
+    await ReactTestRenderer.act(async () => {
+      handlers.onBegin({ y: band.bottom });
+      handlers.onFinalize({ y: band.bottom });
+    });
+    // The mock's clock lands at once: at the foot of the rail, the map's end.
+    expect(latest.cameraShared.value.y).toBeCloseTo(range.maxY, 6);
+
+    const middle = (band.top + band.bottom) / 2;
+    await ReactTestRenderer.act(async () => {
+      handlers.onBegin({ y: band.top });
+      handlers.onUpdate({ y: middle });
+      handlers.onFinalize({ y: middle });
+    });
+    const expected = railCamera(
+      middle,
+      latest.cameraShared.value,
+      latest.rail!,
+      viewport,
+      range,
+    );
+    expect(latest.cameraShared.value.y).toBeCloseTo(expected.y, 6);
+    expect(latest.camera.y).toBeCloseTo(expected.y, 6);
+  });
+
+  it('gives a short map no rail, and the rail does nothing inside a shelf', async () => {
+    const short = layoutField({
+      entities: groupScenario([3, 2]),
+      arrangement: byDate('week'),
+      viewport,
+    });
+    await show(short, 'time:week');
+    expect(latest.rail).toBeNull();
+
+    await show(weeks, 'time:week');
+    await ReactTestRenderer.act(async () => {
+      latest.descend(weeks.placements[0]);
+    });
+    expect(latest.level).toBe('shelf');
+    const at = latest.cameraShared.value;
+    const handlers = (latest.railGesture as unknown as TestGesture).handlers!;
+    await ReactTestRenderer.act(async () => {
+      handlers.onBegin({ y: 600 });
+      handlers.onUpdate({ y: 650 });
+      handlers.onFinalize({ y: 650 });
+    });
+    expect(latest.cameraShared.value).toEqual(at);
   });
 });

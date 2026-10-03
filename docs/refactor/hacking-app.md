@@ -402,6 +402,23 @@ release, on the camera flight's own clock; a touch on a glide still faster
 than `CATCH_SPEED_PX_S` stops it and is not taken as a tap. Reduced motion,
 a pinch inside the drag, or a blind that is down means no glide.
 
+A map at least `RAIL_KNOBS.MIN_SCREENS` tall gets an index rail down the
+right edge (`field/rail.ts`, drawn by `FieldRail` on its own small canvas from
+the live camera). The rail is the map squeezed into the band between header
+and foot: each run of clusters shows its index word at its name's height
+(`Arrangement.indexWords` — months with the year where it turns on the date
+axis, initials elsewhere, the longer run winning a collision), and an ink
+bracket spans what is on screen. A touch flies the band's middle there
+(`JUMP_MS`); a drag then steers that flight and, once landed, moves with the
+finger. The gesture is `useFieldCamera`'s `railGesture`, and does nothing
+away from the map.
+
+Each axis keeps its own place on the map (`useFieldCamera`'s `axisKey`; the
+date axis is one map per resolution): leaving an axis remembers the camera,
+coming back returns to it inside the map's current range, and an axis not yet
+visited this session opens at its home. Inside a shelf or a song a regroup
+still keeps you where you are.
+
 Group names are fitted to one map column at FIT (`labelMaxWidthPx`): the
 title wraps once at spaces and the second line ends in an ellipsis, growing
 upward away from the cluster; the axis key stays one line under it. Header/footer veils

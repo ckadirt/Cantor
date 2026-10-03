@@ -32,6 +32,7 @@ export {
   byDate,
   byTime,
   dateKey,
+  dateKeyMonth,
   isoWeekKey,
   localCalendarDate,
   localIsoWeekKey,
