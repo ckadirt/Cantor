@@ -104,6 +104,7 @@ function render(
   snapshots: Record<string, ConnectionSnapshot> = {},
   device: DeviceLibraryState = deviceState(),
   actions = phoneActions(),
+  startOn: 'phone' | null = null,
 ) {
   const onForget = jest.fn();
   const onRefresh = jest.fn();
@@ -138,6 +139,7 @@ function render(
           onChangeBudget={onChangeBudget}
           device={device}
           phoneActions={actions}
+          startOn={startOn}
         />
       </GestureHandlerRootView>,
     );
@@ -375,5 +377,16 @@ describe('Ledger engine pages', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  it("opens on the phone's page from the empty field", () => {
+    const { words, labels } = render(
+      {},
+      deviceState(),
+      phoneActions(),
+      'phone',
+    );
+    expect(labels()).toContain('Back to nodes');
+    expect(words()).toContain('ANDROID WILL ASK');
   });
 });

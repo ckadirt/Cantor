@@ -71,6 +71,8 @@ type Props = {
   /** The phone's own music: the roster's first entry and its page. */
   device: DeviceLibraryState;
   phoneActions: PhoneActions;
+  /** Open on the phone's page rather than the roster (the empty field's door). */
+  startOn?: 'phone' | null;
 };
 
 /**
@@ -103,6 +105,7 @@ function EnginesSheetImpl({
   onChangeBudget,
   device,
   phoneActions,
+  startOn = null,
 }: Props) {
   const pal = usePalette();
   const [draftName, setDraftName] = useState('');
@@ -150,6 +153,10 @@ function EnginesSheetImpl({
     onClose();
   };
   const isHome = page.kind === 'engines';
+  // Before the first paint, so the roster is never shown on the way.
+  React.useLayoutEffect(() => {
+    if (open && startOn === 'phone') setPage({ kind: 'phone' });
+  }, [open, startOn]);
   const { leave } = phone;
   React.useEffect(() => {
     if (open || page.kind === 'engines') return;

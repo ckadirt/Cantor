@@ -69,6 +69,7 @@ import {
   type FieldController,
   type FieldPresentation,
 } from '../features/field/useFieldController';
+import { EmptyField } from '../features/field/EmptyField';
 import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
@@ -712,6 +713,15 @@ export function FieldScreen({ identity }: Props) {
     [commands, failureWords, nodeNameOf],
   );
   const openEngines = useCallback(() => setEnginesOpen(true), []);
+  /** Where the nodes blind opens: the empty field's door opens the phone's page. */
+  const [enginesStart, setEnginesStart] = useState<'phone' | null>(null);
+  useEffect(() => {
+    if (!enginesOpen) setEnginesStart(null);
+  }, [enginesOpen]);
+  const bringInFromEmpty = useCallback(() => {
+    setEnginesStart('phone');
+    setEnginesOpen(true);
+  }, []);
   const closeEngines = useCallback(() => setEnginesOpen(false), []);
   const closeComposer = useCallback(() => setComposerOpen(false), []);
   /**
@@ -2088,6 +2098,33 @@ export function FieldScreen({ identity }: Props) {
    * known, or no module) is never read as offline.
    */
   const noConnection = phoneOnline === false;
+  /*
+   * The field with not a single song, no job, and nothing still loading:
+   * the empty field's two doors (I7i). Held a moment before it shows, so a
+   * library that loads a beat late never flashes it.
+   */
+  const deviceLoaded = useStore(
+    deviceLibrary.store,
+    state => state.status !== 'loading',
+  );
+  const noJobs = useStore(
+    controllerStore.store,
+    state => state.jobs.size === 0,
+  );
+  const nothing =
+    backends !== null &&
+    deviceLoaded &&
+    noJobs &&
+    controller.entities.length === 0;
+  const [emptyField, setEmptyField] = useState(false);
+  useEffect(() => {
+    if (!nothing) {
+      setEmptyField(false);
+      return;
+    }
+    const timer = setTimeout(() => setEmptyField(true), 600);
+    return () => clearTimeout(timer);
+  }, [nothing]);
   const playableHere = useMemo(() => {
     let count = 0;
     for (const presentation of controller.presentations.values()) {
@@ -2137,6 +2174,13 @@ export function FieldScreen({ identity }: Props) {
               />
             </View>
           </GestureDetector>
+        ) : null}
+        {emptyField ? (
+          <EmptyField
+            onBringIn={bringInFromEmpty}
+            onPair={commands.showPairing}
+            publicKey={identity.publicKey}
+          />
         ) : null}
         {layout !== null ? (
           <>
@@ -2334,6 +2378,7 @@ export function FieldScreen({ identity }: Props) {
             runtimeStore={runtime.store}
             deviceStore={deviceLibrary.store}
             phoneActions={phoneActions}
+            startOn={enginesStart}
             backends={backends}
             open={enginesOpen}
             onClose={closeEngines}

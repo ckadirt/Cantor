@@ -650,7 +650,7 @@ function FieldOverlayImpl({
 }
 
 /** `23 SONGS · 5 WEEKS`, or what the current axis counts instead. */
-function metaLine(
+export function metaLine(
   level: Level,
   songCount: number,
   groupCount: number,
@@ -658,6 +658,7 @@ function metaLine(
 ): string {
   const songs = `${songCount} ${songCount === 1 ? 'SONG' : 'SONGS'}`;
   if (level === 'shelf') return songs;
+  if (songCount === 0) return 'NO SONGS YET';
   // The axis's own noun: at L0 the bulk action's slot is empty and overlaid
   // (`actionSlot`), so `8 SONGS · 3 PLAYLISTS` has the whole row.
   return `${songs} · ${groupCount} ${noun}${groupCount === 1 ? '' : 'S'}`;
