@@ -97,15 +97,6 @@ Before the first line of UI, read:
 
 ## Open issues
 
-- **Audiobook folders found excluded, cause not found (2026-10-03).** After
-  a session of strikes and bring-ins, the four `Documents/Audiolibro/*`
-  folders were in `device_excluded_folder` (each one, by its own path)
-  though nobody had left them out. The only writers are the folder strike
-  (`leaveOut`, one folder) and `bringIn` (its `leftOut` set). Logged both on
-  the phone through the same sequence twice: every write was exactly right,
-  so it did not come back. Suspect the page's `taps` (a folder's ink, kept
-  by path across the summary, the chooser and `f-new`) leaking from one
-  choice into another. If it shows again, log `leftOut` at `bringIn` first.
 - **`2 BEING MADE` on a week of two finished node songs at a cold start
   (2026-10-03).** `groupContents` says *being made* when a cluster's entities
   are not songs (`songCount` 0): at launch the node songs were briefly jobs.
@@ -131,6 +122,11 @@ Before the first line of UI, read:
   changes still answers null, and the settled flights draw). Regression
   test in `labelMorph.test.ts`, which fails on the old code; checked on the
   phone with the exact sequence that lost them.
+
+- **2026-10-03 — Audiobook folders found left out: not a bug.** Cesar
+  left them out himself, testing on the phone while the session ran. Every
+  write to `device_excluded_folder` was logged through the same sequence and
+  was right. On this phone, ask before treating an odd state as a bug.
 
 ## Open questions (for Cesar)
 
