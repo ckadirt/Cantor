@@ -154,9 +154,13 @@ export function shelfSeats(layout: FieldLayout): readonly ShelfSeat[] {
 /**
  * Which seat the camera is standing in, or -1 when there are none.
  *
- * Nearest by squared distance to the column's *centre*, so a camera below the
- * last row of a short shelf still belongs to that shelf rather than to the one
- * whose centre happens to be closer in x.
+ * Nearest by squared distance to the column's *run* — the segment from its
+ * first row to its last — so a camera anywhere along a column is standing in
+ * it, and one below the last row of a short shelf still belongs to that shelf
+ * rather than to the one whose centre happens to be closer in x. Measured to
+ * the centre instead, a camera at the foot of a long column belonged to
+ * whatever short shelf sat under it: the header named that week, a pan was
+ * held in its column, and back climbed out to it.
  */
 export function nearestSeat(
   seats: readonly ShelfSeat[],
@@ -168,7 +172,12 @@ export function nearestSeat(
   for (let index = 0; index < seats.length; index += 1) {
     const seat = seats[index];
     const dx = seat.cx - camera.x;
-    const dy = (seat.top + seat.bottom) / 2 - camera.y;
+    const dy =
+      camera.y < seat.top
+        ? seat.top - camera.y
+        : camera.y > seat.bottom
+        ? camera.y - seat.bottom
+        : 0;
     const distance = dx * dx + dy * dy;
     if (distance < bestDistance) {
       bestDistance = distance;

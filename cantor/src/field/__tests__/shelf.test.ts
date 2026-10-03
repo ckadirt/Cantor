@@ -90,6 +90,19 @@ describe('seats', () => {
     }
   });
 
+  it('answers with a long column all along it, not with a short one under its foot', () => {
+    const seats = [
+      { key: 'long', cx: -120, top: 0, bottom: 9000 },
+      { key: 'short', cx: -120, top: 9300, bottom: 9300 },
+      { key: 'beside', cx: 120, top: 0, bottom: 300 },
+    ];
+    for (const y of [0, 4500, 8800, 9000]) {
+      expect(nearestSeat(seats, { x: -120, y, scale: 1 })).toBe(0);
+    }
+    expect(nearestSeat(seats, { x: -120, y: 9250, scale: 1 })).toBe(1);
+    expect(nearestSeat(seats, { x: 120, y: 200, scale: 1 })).toBe(2);
+  });
+
   it('has no answer when there is nothing to stand in', () => {
     expect(nearestSeat([], { x: 0, y: 0, scale: 1 })).toBe(-1);
   });
