@@ -360,6 +360,10 @@ describe('Ledger engine pages', () => {
       expect(labels()).toContain('Back to this phone');
       expect(words()).toContain('MUSIC/CLASIC · 1 SONG');
       expect(words()).toContain('HOLD · 1 LEAVE · FILES STAY');
+      // What leaving out costs is said before the hold: the tags go too.
+      expect(words()).toContain(
+        'Their tags and playlists go with them. The files stay where they are.',
+      );
       press('Open Goldberg');
       expect(actions.showAlbum).toHaveBeenCalledWith(albumKey);
       const strike = tree.root.find(
