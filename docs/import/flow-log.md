@@ -20,11 +20,14 @@ The routine for each step is [`log.md`](log.md) § "How a step is done here".
 
 ## Next session starts here
 
-**I7a–I7h are built and checked on the Samsung** with Cesar's real music
-(199 songs brought in 2026-10-02; `Music/Samsung`, a one-file brand jingle,
-left out with the strike 2026-10-03, so 198 now). **Next: I7i** (the empty
-field), then **I7j** (arrival). The leftovers of I7e–I7h are in the Status
-table.
+**I7a–I7h and I7j are built and checked on the Samsung** with Cesar's real
+music (199 songs brought in 2026-10-02; `Music/Samsung`, a one-file brand
+jingle, left out with the strike 2026-10-03, so 198 now). **Next: I7i** (the
+empty field). It can only be seen on the phone with no songs at all — a
+fresh install or `pm clear`, which also drops the agentbox pairing (Cesar
+must re-scan a QR). The leftovers are in the Status table; **read Open issues
+first**: cluster labels can go missing after an import (a renderer problem,
+not the flow's).
 
 The test phone is now **Cesar's own Samsung A52s** (`R5CRC0VVK1M`, Android 14,
 API 34, 1080×2400 at density 450 → **384 dp wide**, not the Xiaomi's 392; the
@@ -60,7 +63,7 @@ Before the first line of UI, read:
 | I7g | **done** 2026-10-02 | cell-by-cell clef change not captured mid-flight; reduced-motion crossfade unchecked |
 | I7h | **done** 2026-10-03 | — (wall, album tap into ALBUM, strike: all on the Samsung) |
 | I7i | not started | everything |
-| I7j | not started | everything |
+| I7j | **done** 2026-10-03 | L0 "cluster by cluster" not seen on the phone (the camera goes to L1); reduced motion unchecked; perf sample of a 300-song arrival not taken |
 
 ### The API the UI builds on (I7b–I7d)
 
@@ -85,6 +88,27 @@ Before the first line of UI, read:
   album being read, straight from MediaStore, never written.
 - `startLookingAgain` (`device/lookAgain.ts`) runs `refresh` after `start()`
   and on each return to the foreground, debounced 2 s; wired in `FieldScreen`.
+
+## Open issues
+
+- **Cluster labels go missing at L0 (2026-10-03), not caused by I7.** Seen
+  right after a cold start (`THIS WEEK` absent, and the node songs' week
+  reading `2 BEING MADE`), and after every strike + bring-in. A/B on the
+  phone: with the arrival's descent disabled, and again with no opening
+  passed to the canvas, the labels still vanished; any later re-cut (switch
+  the dial to ALBUM and back) restores them. So a shelf-label plan gets stuck
+  when re-cuts land in quick succession or unseen (behind the blind, or at
+  launch while node sync and the phone library both land). Suspects:
+  `labelPlan` in `FieldCanvas` (keyed on the camera's `transitionGeneration`)
+  versus `clockPlan`/`interruptedAt` (keyed on `recut.generation`), and
+  `retargetShelfLabelFlights` from an interrupted plan. Wants its own look in
+  the field renderer.
+- **Byte-identical copies are re-inspected on every scan.** A duplicate never
+  becomes a stored song, so its path always reads as new to `rowsToInspect`:
+  5 files in `Music/clasic` are hashed on every bring-in and on every
+  automatic look whose generation moved, and the folder gets a `DONE` line in
+  `f-bring` though nothing comes from it. Cheap at 5; a stored "seen paths"
+  set (or treating a known fingerprint as present) would end it.
 
 ## Open questions (for Cesar)
 
@@ -121,8 +145,8 @@ is long over. The smallest thing that does the drawing:
   0, which holds the new marks at a point behind the blind; the clock runs
   when the blind is closed (or at once if it already is, the "you can close
   this" case), and the plan is cleared when it has run.
-- **Deviation from "~520 ms apart":** the step is `min(520, 3000 /
-  albums)`. With this phone's 169 albums 520 ms would be a 90 s arrival; a
+- **Deviation from "~520 ms apart" (kept as built):** the step is `min(520,
+  3000 / albums)`. With this phone's 169 albums 520 ms would be a 90 s arrival; a
   handful of albums still get the full 520.
 - The camera goes to the group holding the first new song (the same
   pending-group mechanism as I7h's album tap), and the field's meta line says
@@ -268,6 +292,22 @@ is long over. The smallest thing that does the drawing:
 
 ## Session log
 
+### 2026-10-03 — I7j
+
+- Proposed the opening clock first (above), then built it:
+  `features/field/opening.ts` (`planOpening`, `openedAt`, tested),
+  `FaceFlight.openAt` and `NativeRowFlight.openAt`, one `openingMs` clock read
+  in `drawFieldFaces` and `drawNativeRows`, `FieldOpening` threaded through
+  `FieldCanvas`, and in `FieldScreen` the arming on a new `result`, the run
+  when the blind lifts, the descent, and `N ARRIVED FROM THIS PHONE`.
+- On the Samsung: `Music / P2P` left out and brought back (35 songs, 13
+  albums) → `See them` → the camera in *Jun 30 – Jul 6* at L1, the Wos
+  singles opening one after another top to bottom, names with their marks
+  (first build drew the names early; fixed); Back → `35 ARRIVED FROM THIS
+  PHONE`. Then the label issue above, chased with two A/B builds.
+- Trap within it: the arrival's descent must not fire mid re-cut; it reads
+  whether the commit's re-cut is still in the air when the result lands.
+
 ### 2026-10-03 — I7h
 
 - `repository.leaveOut` (one transaction; prefix matched in JS so `%`/`_`
@@ -334,3 +374,4 @@ by `playwright-core` from `~/.hermes/hermes-agent/node_modules`):
   (I7e–I7g)
 - `bd34ba4` a kept folder's page: its albums as covers, and leaving it out
   held (I7h)
+- `59c1bb2` songs from the phone arrive album by album (I7j)

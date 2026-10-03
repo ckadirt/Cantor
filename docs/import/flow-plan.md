@@ -34,7 +34,7 @@ pointed at the phone.
 | I7g | [Bringing in](#i7g--bringing-in) | `f-bring` | **done** |
 | I7h | [A folder's page](#i7h--a-folders-page) | `f-folder` | **done** |
 | I7i | [The empty field](#i7i--the-empty-field) | `f-empty` | not started |
-| I7j | [Arrival in the field](#i7j--arrival-in-the-field) | `f-arrived` | not started |
+| I7j | [Arrival in the field](#i7j--arrival-in-the-field) | `f-arrived` | **done** |
 
 Update this table, the milestone's checklist and `flow-log.md` in the same
 commit that lands the work.
@@ -424,9 +424,9 @@ Which page shows is a pure function of the store, tested:
 - Protect the measured baseline: profile a 300-song arrival in one session
   (`cantor/scripts/perf-sample.sh`).
 
-- [ ] new ids from the commit
-- [ ] album-by-album opening at L1 and L0, reduced motion crossfade
-- [ ] meta line once
+- [x] new ids from the commit
+- [x] album-by-album opening at L1 and L0, reduced motion crossfade (L1 seen on the phone; L0 and reduced motion not)
+- [x] meta line once
 - [ ] before/after frame timing in the log
 
 ---
