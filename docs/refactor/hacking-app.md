@@ -386,7 +386,25 @@ world-anchored and drawn only while the dots are. Generated songs are credited
 to their model on the artist axis — `FieldEntity.model`, the node's selector,
 read as words by `modelLabel`. At overview
 distance, dragging moves freely in both axes, even when all groups fit;
-zooming out cannot compress all groups into the viewport. Header/footer veils
+zooming out cannot compress all groups into the viewport.
+
+A cluster's seats are handed out top to bottom (`browseCluster`), so row `i`
+of the gathered column is the `i`-th mark from the top of the bloom: the
+L0→L1 gather keeps every mark's height order instead of sending neighbours
+across the oval. A tap on the map enters the shelf around the touched row
+(`shelfAround`), and back from a shelf climbs out to that cluster on the map
+(`mapCameraAround`), not to the top of the field.
+
+A released drag carries on (`field/glide.ts`, `GLIDE_KNOBS`): a cubic
+ease-out that leaves at the finger's speed and stops at the map's range
+(`mapCameraRange`) or, at L1, the column's run. It starts on the UI thread at
+release, on the camera flight's own clock; a touch on a glide still faster
+than `CATCH_SPEED_PX_S` stops it and is not taken as a tap. Reduced motion,
+a pinch inside the drag, or a blind that is down means no glide.
+
+Group names are fitted to one map column at FIT (`labelMaxWidthPx`): the
+title wraps once at spaces and the second line ends in an ellipsis, growing
+upward away from the cluster; the axis key stays one line under it. Header/footer veils
 and hit testing keep off-screen marks clear of controls. Job captions appear
 at shelf distance, leaving compact overview marks unobstructed.
 

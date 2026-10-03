@@ -1,8 +1,13 @@
 import React from 'react';
 import ReactTestRenderer from 'react-test-renderer';
 import {
+  bloomedTargetPoint,
+  GLIDE_KNOBS,
   GRAIN_ENABLED,
   LEVEL_SCALE_RATIOS,
+  mapCameraAround,
+  mapCameraRange,
+  mapFrame,
   seatCameraAround,
   seatCameraBounds,
   shelfSeats,
@@ -19,6 +24,7 @@ import {
   type Viewport,
 } from '../../../field';
 import { byDate, byPlaylist, byTime } from '../../../field/arrangements';
+import { groupScenario } from '../../../field/fixtures/groupScenarios';
 import { CURTAIN_KNOBS } from '../../curtain';
 import { FIELD_CAMERA_KNOBS, useFieldCamera } from '../useFieldCamera';
 
@@ -1405,5 +1411,265 @@ describe('useFieldCamera', () => {
       renderer.update(<TransitionProbe field={listed} />);
     });
     expect(latest.level).toBe('song');
+  });
+});
+
+describe('useFieldCamera: landing where you were, and throws', () => {
+  afterEach(() => {
+    mockReducedMotion = true;
+    jest.restoreAllMocks();
+  });
+
+  async function renderField(field: FieldLayout) {
+    function FieldProbe() {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+    await ReactTestRenderer.act(async () => {
+      ReactTestRenderer.create(<FieldProbe />);
+    });
+  }
+
+  /** Many weeks of many songs: a map several screens tall. */
+  const manyWeeks = () =>
+    layoutField({
+      entities: groupScenario(Array(30).fill(30)),
+      arrangement: byTime,
+      viewport,
+    });
+
+  it('enters a tall shelf at the row that was touched, not at its middle', async () => {
+    const field = manyWeeks();
+    await renderField(field);
+    const group = field.groups[0];
+    const seat = shelfSeats(field).find(each => each.key === group.key)!;
+    const shelfScale = field.fitScale * LEVEL_SCALE_RATIOS.shelf;
+    const bounds = seatCameraBounds(seat, viewport, shelfScale);
+    expect(bounds.max).toBeGreaterThan(bounds.min);
+    const members = field.placements.filter(p => p.groupKey === group.key);
+    for (const touched of [members[0], members[members.length - 1]]) {
+      await ReactTestRenderer.act(async () => {
+        latest.home();
+      });
+      await ReactTestRenderer.act(async () => {
+        latest.descend(touched);
+      });
+      expect(latest.level).toBe('shelf');
+      const expected = seatCameraAround(
+        seat,
+        touched.targetY,
+        viewport,
+        shelfScale,
+      );
+      expect(camera().x).toBeCloseTo(expected.x, 6);
+      expect(camera().y).toBeCloseTo(expected.y, 6);
+    }
+    // The first row lands at the top of the run and the last at its foot.
+    expect(camera().y).toBeCloseTo(bounds.max, 6);
+  });
+
+  it('climbs out of a shelf to its own cluster on the map, not to the top', async () => {
+    const field = manyWeeks();
+    await renderField(field);
+    const group = field.groups[field.groups.length - 1];
+    const touched = field.placements.find(p => p.groupKey === group.key)!;
+    await ReactTestRenderer.act(async () => {
+      latest.descend(touched);
+    });
+    expect(latest.level).toBe('shelf');
+    await ReactTestRenderer.act(async () => {
+      expect(latest.ascend()).toBe(true);
+    });
+    expect(latest.level).toBe('field');
+    const expected = mapCameraAround(field, group.key, viewport)!;
+    expect(camera()).toEqual(
+      expect.objectContaining({
+        scale: expect.closeTo(field.fitScale, 10),
+        x: expect.closeTo(expected.x, 6),
+        y: expect.closeTo(expected.y, 6),
+      }),
+    );
+    // Far down the map, and with the cluster's marks on the screen.
+    expect(camera().y).toBeGreaterThan(field.fieldCenter.y);
+    for (const placement of field.placements.filter(
+      p => p.groupKey === group.key,
+    )) {
+      const screen = worldToScreen(
+        bloomedTargetPoint(placement),
+        camera(),
+        viewport,
+      );
+      expect(screen.y).toBeGreaterThan(0);
+      expect(screen.y).toBeLessThan(viewport.height);
+    }
+  });
+
+  it("climbs out of a shelf near the top to the map's own opening view", async () => {
+    const field = manyWeeks();
+    await renderField(field);
+    await ReactTestRenderer.act(async () => {
+      latest.descend(field.placements[0]);
+    });
+    await ReactTestRenderer.act(async () => {
+      latest.ascend();
+    });
+    expect(camera().x).toBeCloseTo(field.fieldCenter.x, 6);
+    expect(camera().y).toBeCloseTo(field.fieldCenter.y, 6);
+  });
+
+  it("carries a throw on across the map, and stops it at the map's end", async () => {
+    mockReducedMotion = false;
+    const field = manyWeeks();
+    await renderField(field);
+    const start = latest.cameraShared.value;
+    const [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 0, translationY: -100 });
+      pan.onEnd({ velocityX: 0, velocityY: -2000 });
+    });
+    // The mock's clock lands at once: this is where the throw comes to rest,
+    // a third of a second's travel at the release speed past the finger.
+    const carried = (2000 * GLIDE_KNOBS.GLIDE_MS) / 1000 / 3;
+    const range = mapCameraRange(mapFrame(field)!, viewport, start.scale);
+    expect(start.y + (100 + carried) / start.scale).toBeLessThan(range.maxY);
+    expect(latest.cameraShared.value.y).toBeCloseTo(
+      start.y + (100 + carried) / start.scale,
+      6,
+    );
+    expect(latest.cameraShared.value.x).toBeCloseTo(start.x, 6);
+    expect(latest.cameraShared.value.scale).toBe(start.scale);
+
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 0, translationY: -10 });
+      pan.onEnd({ velocityX: 0, velocityY: -100_000 });
+    });
+    expect(latest.cameraShared.value.y).toBeCloseTo(range.maxY, 6);
+  });
+
+  it('lets a slow release rest where the finger left it', async () => {
+    mockReducedMotion = false;
+    const field = manyWeeks();
+    await renderField(field);
+    const start = latest.cameraShared.value;
+    const [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 0, translationY: -100 });
+      pan.onEnd({
+        velocityX: 0,
+        velocityY: -(GLIDE_KNOBS.MIN_SPEED_PX_S - 1),
+      });
+    });
+    expect(latest.cameraShared.value.y).toBeCloseTo(
+      start.y + 100 / start.scale,
+      6,
+    );
+  });
+
+  it('does not throw at all when reduced motion is asked for', async () => {
+    const field = manyWeeks();
+    await renderField(field);
+    const start = latest.cameraShared.value;
+    const [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 0, translationY: -100 });
+      pan.onEnd({ velocityX: 0, velocityY: -3000 });
+    });
+    expect(latest.cameraShared.value.y).toBeCloseTo(
+      start.y + 100 / start.scale,
+      6,
+    );
+  });
+
+  it('runs a throw on down a tall shelf, inside its run', async () => {
+    mockReducedMotion = false;
+    const field = manyWeeks();
+    await renderField(field);
+    const group = field.groups[0];
+    const members = field.placements.filter(p => p.groupKey === group.key);
+    await ReactTestRenderer.act(async () => {
+      latest.descend(members[0]);
+    });
+    expect(latest.level).toBe('shelf');
+    const seat = shelfSeats(field).find(each => each.key === group.key)!;
+    const start = latest.cameraShared.value;
+    const run = seatCameraBounds(seat, viewport, start.scale);
+    const [, pan] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 0, translationY: -20 });
+      pan.onEnd({ velocityX: 0, velocityY: -1500 });
+    });
+    const carried = (1500 * GLIDE_KNOBS.GLIDE_MS) / 1000 / 3;
+    expect(latest.cameraShared.value.y).toBeCloseTo(
+      Math.min(start.y + (20 + carried) / start.scale, run.max),
+      6,
+    );
+    expect(latest.cameraShared.value.y).toBeGreaterThan(
+      start.y + 20 / start.scale,
+    );
+    expect(latest.cameraShared.value.x).toBeCloseTo(seat.cx, 6);
+  });
+
+  it('stops a moving glide on touch, and does not take the touch as a tap', async () => {
+    mockReducedMotion = false;
+    // Installed before the gesture is built: a worklet keeps the `withTiming`
+    // it was created with. The glide's clock is then held a fifth of the way
+    // through, still fast; every other clock runs as the mock's does.
+    const reanimated = require('react-native-reanimated');
+    const actual = reanimated.withTiming;
+    let holdGlides = true;
+    jest
+      .spyOn(reanimated, 'withTiming')
+      .mockImplementation((...args: unknown[]) => {
+        const config = args[1] as { duration?: number } | undefined;
+        return holdGlides && config?.duration === GLIDE_KNOBS.GLIDE_MS
+          ? 0.2
+          : actual(...args);
+      });
+    const field = manyWeeks();
+    await renderField(field);
+    const [, pan, tap] = gestures();
+    const released = latest.cameraShared.value;
+    await ReactTestRenderer.act(async () => {
+      pan.onBegin({ x: 190, y: 400 });
+      pan.onUpdate({ translationX: 0, translationY: -10 });
+      pan.onEnd({ velocityX: 0, velocityY: -3000 });
+    });
+    holdGlides = false;
+    // Still in the air: the mock draws no frames, so the camera is where the
+    // finger let go of it.
+    expect(latest.cameraShared.value.y).toBeCloseTo(
+      released.y + 10 / released.scale,
+      6,
+    );
+    const mark = worldToScreen(
+      bloomedTargetPoint(field.placements[0]),
+      latest.cameraShared.value,
+      viewport,
+    );
+    await ReactTestRenderer.act(async () => {
+      tap.onBegin(mark);
+      tap.onEnd(mark, true);
+      tap.onFinalize(mark, true);
+    });
+    expect(latest.level).toBe('field');
+    expect(latest.focus).toBeNull();
+
+    // The next touch is an ordinary tap again.
+    await ReactTestRenderer.act(async () => {
+      tap.onBegin(mark);
+      tap.onEnd(mark, true);
+      tap.onFinalize(mark, true);
+    });
+    expect(latest.level).toBe('shelf');
   });
 });

@@ -12,4 +12,5 @@ export * from './arrangements';
 export * from './shelf';
 
 export * from './browse';
+export * from './glide';
 export * from './queue';

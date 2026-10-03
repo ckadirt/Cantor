@@ -1,5 +1,7 @@
 import { Skia, type SkCanvas, type SkFont } from '@shopify/react-native-skia';
 import {
+  BROWSE_KNOBS,
+  browseScale,
   gatherFraction,
   shelfLabelAlpha,
   type Camera,
@@ -8,21 +10,143 @@ import {
 import { LABEL_MORPH_KNOBS, type LabelFlight } from './labelMorph';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 
+/** KNOBS — how a cluster's name is fitted to its column on the map. */
+export const NATIVE_LABEL_KNOBS = {
+  /**
+   * Clear space kept between two neighbouring names, in screen pixels: a
+   * name may use its column's width less this.
+   */
+  GUTTER_PX: 14,
+  /** Lines a name may wrap onto before the last one is cut with an ellipsis. */
+  TITLE_LINES: 2,
+} as const;
+
+/**
+ * How wide one cluster's name may be drawn, in screen pixels.
+ *
+ * Names are drawn at a fixed size beside a map whose columns are a fixed width
+ * on screen (`browseScale` depends on the viewport alone), and they are only
+ * shown near the map's own distance — so the column at FIT is the room there
+ * is. A name wider than that ran into its neighbour's.
+ */
+export function labelMaxWidthPx(viewport: Viewport): number {
+  return Math.max(
+    0,
+    BROWSE_KNOBS.COLUMN_WIDTH_WORLD * browseScale(viewport) -
+      NATIVE_LABEL_KNOBS.GUTTER_PX,
+  );
+}
+
+/**
+ * A name's lines, drawn upward from the line nearest the cluster: `row` is in
+ * line heights from the name's anchor, so a title that wraps grows away from
+ * the marks rather than into them, and the second line (the axis key) keeps
+ * its place under the title.
+ */
 export function prepareNativeLabels(
   flights: readonly LabelFlight[],
   font: SkFont,
+  maxWidthPx: number = Number.POSITIVE_INFINITY,
 ) {
-  return flights.map(flight => ({
-    flight,
-    lines: [
-      { from: flight.primaryFrom, to: flight.primaryTo },
-      { from: flight.secondaryFrom, to: flight.secondaryTo },
-    ].map(line => ({
-      ...line,
-      fromWidth: labelWidth(line.from, font),
-      toWidth: labelWidth(line.to, font),
-    })),
-  }));
+  return flights.map(flight => {
+    const titleFrom = fitLines(
+      flight.primaryFrom,
+      font,
+      maxWidthPx,
+      NATIVE_LABEL_KNOBS.TITLE_LINES,
+    );
+    const titleTo = fitLines(
+      flight.primaryTo,
+      font,
+      maxWidthPx,
+      NATIVE_LABEL_KNOBS.TITLE_LINES,
+    );
+    const titleRows = Math.max(titleFrom.length, titleTo.length);
+    // Aligned on the last line, so a one-line name and a two-line name share
+    // the row nearest the cluster and the extra line is the one that fades.
+    const title = Array.from({ length: titleRows }, (_, index) => ({
+      row: index - (titleRows - 1),
+      from: titleFrom[index - (titleRows - titleFrom.length)] ?? '',
+      to: titleTo[index - (titleRows - titleTo.length)] ?? '',
+    }));
+    const key = {
+      row: 1,
+      from: fitLines(flight.secondaryFrom, font, maxWidthPx, 1)[0] ?? '',
+      to: fitLines(flight.secondaryTo, font, maxWidthPx, 1)[0] ?? '',
+    };
+    return {
+      flight,
+      lines: [...title, key].map(line => ({
+        ...line,
+        fromWidth: labelWidth(line.from, font),
+        toWidth: labelWidth(line.to, font),
+      })),
+    };
+  });
+}
+
+/**
+ * `text` broken at spaces into at most `maxLines` lines no wider than
+ * `maxWidthPx`, the last cut with an ellipsis if the rest does not fit. A word
+ * wider than a whole line is cut where it meets the edge.
+ */
+export function fitLines(
+  text: string,
+  font: SkFont,
+  maxWidthPx: number,
+  maxLines: number,
+): string[] {
+  if (text.length === 0) return [];
+  if (labelWidth(text, font) <= maxWidthPx) return [text];
+  const words = text.split(' ');
+  const lines: string[] = [];
+  let line = '';
+  let index = 0;
+  while (index < words.length && lines.length < maxLines - 1) {
+    const candidate = line.length === 0 ? words[index] : `${line} ${words[index]}`;
+    if (labelWidth(candidate, font) <= maxWidthPx) {
+      line = candidate;
+      index += 1;
+      continue;
+    }
+    if (line.length === 0) {
+      // One word wider than the line: as much of it as fits, the rest goes on.
+      const head = longestFittingPrefix(words[index], font, maxWidthPx);
+      lines.push(head);
+      words[index] = words[index].slice(head.length);
+      continue;
+    }
+    lines.push(line);
+    line = '';
+  }
+  const rest = [line, ...words.slice(index)].filter(part => part.length > 0);
+  if (rest.length > 0) lines.push(ellipsize(rest.join(' '), font, maxWidthPx));
+  return lines;
+}
+
+function ellipsize(text: string, font: SkFont, maxWidthPx: number): string {
+  if (labelWidth(text, font) <= maxWidthPx) return text;
+  // The real character when the face has one; three stops when it does not,
+  // rather than the face's missing-glyph box.
+  const mark = font.getGlyphIDs('\u2026')[0] === 0 ? '...' : '\u2026';
+  const room = maxWidthPx - labelWidth(mark, font);
+  return `${longestFittingPrefix(text, font, room).trimEnd()}${mark}`;
+}
+
+function longestFittingPrefix(
+  text: string,
+  font: SkFont,
+  maxWidthPx: number,
+): string {
+  let low = 0;
+  let high = text.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    if (labelWidth(text.slice(0, middle), font) <= maxWidthPx) low = middle;
+    else high = middle - 1;
+  }
+  // Never nothing: a line that cannot hold one character still shows one.
+  return text.slice(0, Math.max(1, low));
 }
 export function createLabelPaints(primary: string, secondary: string) {
   return [primary, secondary].map(colour => {
@@ -72,7 +196,8 @@ export function drawNativeLabels(
       labelGap;
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
-      const paint = paints[index];
+      // The title in the first ink, the key under it in the second.
+      const paint = paints[line.row > 0 ? 1 : 0];
       const same = line.from === line.to;
       const raw =
         line.from.length === 0 || line.to.length === 0
@@ -87,7 +212,7 @@ export function drawNativeLabels(
         canvas.drawText(
           line.from,
           x - line.fromWidth / 2,
-          y + index * keyGap,
+          y + line.row * keyGap,
           paint,
           font,
         );
@@ -97,7 +222,7 @@ export function drawNativeLabels(
         canvas.drawText(
           line.to,
           x - line.toWidth / 2,
-          y + index * keyGap,
+          y + line.row * keyGap,
           paint,
           font,
         );
@@ -107,7 +232,7 @@ export function drawNativeLabels(
 }
 
 /** CanvasKit may omit measureText's width; glyph advances still measure its real font. */
-function labelWidth(text: string, font: SkFont): number {
+export function labelWidth(text: string, font: SkFont): number {
   const width = font.measureText(text).width;
   return Number.isFinite(width) ? width : font.getGlyphWidths(font.getGlyphIDs(text)).reduce((sum, value) => sum + value, 0);
 }

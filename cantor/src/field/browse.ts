@@ -1,4 +1,4 @@
-import type { Point, Viewport } from './types';
+import type { Camera, FieldLayout, Point, Viewport } from './types';
 
 /** KNOBS — the map is a browsing window, never a fit of the entire library. */
 export const BROWSE_KNOBS = {
@@ -49,6 +49,7 @@ export function browseScale(viewport: Viewport): number {
 
 /** One cluster's bloomed seats, and the point its songs are packed around. */
 export type BrowseCluster = Readonly<{
+  /** Top to bottom, then left to right: seat `i` is row `i` once gathered. */
   points: Point[];
   /** The packing's middle, in the same frame as `points`. */
   hub: Point;
@@ -125,8 +126,18 @@ export function browseCluster(
   const ys = [...points.map(point => point.y), ...(hub ? [-reach, reach] : [])];
   const top = Math.min(...ys);
   const midX = (Math.min(...xs) + Math.max(...xs)) / 2;
+  // Handed out top to bottom, because the layout gives seat `i` to row `i` of
+  // the column the cluster gathers into. In the packing's own order two rows
+  // that are neighbours in the list sit a golden angle apart — on opposite
+  // sides of the oval — so every mark crossed the cluster to reach its row and
+  // a big shelf opened as an explosion. Sorted, the gather keeps everyone's
+  // height order and a mark mostly slides down into place; the top of a
+  // cluster is also the top of its list.
+  const seated = [...points].sort(
+    (left, right) => left.y - right.y || left.x - right.x,
+  );
   return {
-    points: points.map(point => ({ x: point.x - midX, y: point.y - top })),
+    points: seated.map(point => ({ x: point.x - midX, y: point.y - top })),
     hub: { x: -midX, y: -top },
   };
 }
@@ -142,4 +153,121 @@ export function inBrowseFrame(point: Point, viewport: Viewport): boolean {
     point.y >= BROWSE_KNOBS.TOP_PX &&
     point.y <= viewport.height - BROWSE_KNOBS.FOOT_PX
   );
+}
+
+/**
+ * The map's content and its home, in world units, for the UI thread.
+ *
+ * The pan at L0 is free — the surface is continuous and a drag may wander off
+ * it — but a throw is not a drag: nobody flings the field in order to look at
+ * nothing. So a glide needs edges, and the gesture needs them as plain numbers
+ * it can read inside its own worklet.
+ */
+export type MapFrame = Readonly<{
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  homeX: number;
+  homeY: number;
+}>;
+
+export function mapFrame(layout: FieldLayout): MapFrame | null {
+  const box = layout.targetBounds;
+  if (box === null) return null;
+  return {
+    left: box.x,
+    right: box.x + box.width,
+    top: box.y,
+    bottom: box.y + box.height,
+    homeX: layout.fieldCenter.x,
+    homeY: layout.fieldCenter.y,
+  };
+}
+
+export type CameraRange = Readonly<{
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+}>;
+
+/**
+ * Where the map camera may come to rest at `scale`, in world units.
+ *
+ * List semantics, as the shelf has them: at `minY` the first row of clusters
+ * hangs its names just under the header, at `maxY` the last row's marks clear
+ * the foot — the same two ends `layoutField` writes into `browseBounds`, here
+ * at any scale rather than only at FIT. Sideways the content rests a gutter in
+ * from each edge.
+ *
+ * An axis the content does not fill has nowhere to go, and the honest answer
+ * there is home: the camera the field opens on and comes back to.
+ */
+export function mapCameraRange(
+  frame: MapFrame,
+  viewport: Viewport,
+  scale: number,
+): CameraRange {
+  'worklet';
+  const halfWidth = viewport.width / 2 / scale;
+  const gutter = BROWSE_KNOBS.HORIZONTAL_PADDING_PX / 2 / scale;
+  const minX = frame.left + halfWidth - gutter;
+  const maxX = frame.right - halfWidth + gutter;
+  const minY =
+    frame.top +
+    (viewport.height / 2 - BROWSE_KNOBS.TOP_PX - BROWSE_KNOBS.LABEL_SPACE_PX) /
+      scale;
+  const maxY =
+    frame.bottom -
+    (viewport.height / 2 -
+      BROWSE_KNOBS.FOOT_PX -
+      BROWSE_KNOBS.MARK_CLEARANCE_PX) /
+      scale;
+  const across = minX <= maxX;
+  const down = minY <= maxY;
+  return {
+    minX: across ? minX : frame.homeX,
+    maxX: across ? maxX : frame.homeX,
+    minY: down ? minY : frame.homeY,
+    maxY: down ? maxY : frame.homeY,
+  };
+}
+
+/**
+ * The map camera that has one cluster on screen: where a climb out of a shelf
+ * lands.
+ *
+ * Centred on the cluster's bloom, or — for a cluster taller than the band —
+ * with its name just under the header, which is where you read one from. Kept
+ * inside the map's range, so a cluster near the top climbs out to the field's
+ * own opening view rather than to a camera that shows the header's underside.
+ */
+export function mapCameraAround(
+  layout: FieldLayout,
+  groupKey: string,
+  viewport: Viewport,
+): Camera | null {
+  const group = layout.groups.find(candidate => candidate.key === groupKey);
+  const frame = mapFrame(layout);
+  if (group === undefined || frame === null) return null;
+  const scale = layout.fitScale;
+  let bottom = group.hub === null ? group.top : group.hub.y + hubRadiusWorld();
+  for (const placement of layout.placements) {
+    if (placement.groupKey !== groupKey) continue;
+    bottom = Math.max(bottom, placement.targetY + placement.targetBloomY);
+  }
+  const named =
+    group.top +
+    (viewport.height / 2 - BROWSE_KNOBS.TOP_PX - BROWSE_KNOBS.LABEL_SPACE_PX) /
+      scale;
+  const range = mapCameraRange(frame, viewport, scale);
+  return {
+    scale,
+    x: Math.min(Math.max(group.cx, range.minX), range.maxX),
+    y: Math.min(
+      Math.max(Math.min((group.top + bottom) / 2, named), range.minY),
+      range.maxY,
+    ),
+  };
 }
