@@ -24,9 +24,8 @@ The routine for each step is [`log.md`](log.md) § "How a step is done here".
 including a fresh install run end to end: onboarding → the empty field →
 `Bring it in` → `f-ask` → Android's dialog → summary → bring-in → arrival.
 What is left is in the Status table (mostly reduced-motion and L0 checks, a
-perf sample, a 1-new-file timing) and in **Open issues** — the missing
-cluster labels are the one that shows; it is the field renderer's, not the
-flow's.
+perf sample, a 1-new-file timing) and in **Open issues**. The vanishing
+cluster labels are fixed (see Resolved).
 
 **State of the Samsung after this session** (`R5CRC0VVK1M`, Cesar's own
 phone): Cantor was **uninstalled and reinstalled** for the I7i check, as Cesar
@@ -39,10 +38,8 @@ granted. AppLock PRO asked to lock the new install; answered *Not Now*.
 
 To build on it next:
 
-1. Read Open issues, then decide with Cesar whether the label problem is
-   worth a field-renderer step before alpha.
-2. `I8` (the 300-song check, `plan.md`) can run on this phone as it is: 198
-   songs, one big cluster of 157.
+1. The label problem is fixed (Resolved, below). Read Open issues.
+2. `I8` (the 300-song check) waits: Cesar said not yet.
 3. Remaining I7 checks: reduced motion (Android's *Remove animations*) for the
    reading clef and the arrival; L0 arrival; `perf-sample.sh` during a
    200-song arrival; a 1-new-file look (needs a file copied in — ask Cesar).
@@ -100,24 +97,40 @@ Before the first line of UI, read:
 
 ## Open issues
 
-- **Cluster labels go missing at L0 (2026-10-03), not caused by I7.** Seen
-  right after a cold start (`THIS WEEK` absent, and the node songs' week
-  reading `2 BEING MADE`), and after every strike + bring-in. A/B on the
-  phone: with the arrival's descent disabled, and again with no opening
-  passed to the canvas, the labels still vanished; any later re-cut (switch
-  the dial to ALBUM and back) restores them. So a shelf-label plan gets stuck
-  when re-cuts land in quick succession or unseen (behind the blind, or at
-  launch while node sync and the phone library both land). Suspects:
-  `labelPlan` in `FieldCanvas` (keyed on the camera's `transitionGeneration`)
-  versus `clockPlan`/`interruptedAt` (keyed on `recut.generation`), and
-  `retargetShelfLabelFlights` from an interrupted plan. Wants its own look in
-  the field renderer.
+- **Audiobook folders found excluded, cause not found (2026-10-03).** After
+  a session of strikes and bring-ins, the four `Documents/Audiolibro/*`
+  folders were in `device_excluded_folder` (each one, by its own path)
+  though nobody had left them out. The only writers are the folder strike
+  (`leaveOut`, one folder) and `bringIn` (its `leftOut` set). Logged both on
+  the phone through the same sequence twice: every write was exactly right,
+  so it did not come back. Suspect the page's `taps` (a folder's ink, kept
+  by path across the summary, the chooser and `f-new`) leaking from one
+  choice into another. If it shows again, log `leftOut` at `bringIn` first.
+- **`2 BEING MADE` on a week of two finished node songs at a cold start
+  (2026-10-03).** `groupContents` says *being made* when a cluster's entities
+  are not songs (`songCount` 0): at launch the node songs were briefly jobs.
+  Not seen since (no node is paired on the Samsung now); it needs a paired
+  node to look at. Runtime, not import.
 - **Byte-identical copies are re-inspected on every scan.** A duplicate never
   becomes a stored song, so its path always reads as new to `rowsToInspect`:
   5 files in `Music/clasic` are hashed on every bring-in and on every
   automatic look whose generation moved, and the folder gets a `DONE` line in
   `f-bring` though nothing comes from it. Cheap at 5; a stored "seen paths"
   set (or treating a known fingerprint as present) would end it.
+
+## Resolved
+
+- **2026-10-03 — Cluster labels vanishing (fixed, `e37d819`).** Logged every
+  label plan on the phone: when a re-cut moved, added or removed some
+  clusters, `planShelfLabels` returned flights only for those, and the
+  native renderer draws *only* flights, so every cluster that stood still
+  lost its name until a later re-cut happened to cover it. Imports re-cut
+  often, so they showed it most; a cold start with node sync and the phone
+  library landing one after the other did too. Now a standing cluster gets a
+  standing flight in any plan that changes something (a plan where nothing
+  changes still answers null, and the settled flights draw). Regression
+  test in `labelMorph.test.ts`, which fails on the old code; checked on the
+  phone with the exact sequence that lost them.
 
 ## Open questions (for Cesar)
 
@@ -126,8 +139,11 @@ its date when answered.
 
 - DRM: folded into `Couldn't read` for now (see Deviations); a separate
   `Protected` count only if Cesar wants one.
-- Leaving a folder out drops its tags: is `HOLD · 168 LEAVE · FILES STAY`
-  enough warning?
+- ~~Leaving a folder out drops its tags: is the note enough?~~ **No**
+  (Cesar, 2026-10-03): the folder page's coda now says, before the hold,
+  *Their tags and playlists go with them. The files stay where they are.*
+  (`5360df6`). The mono note stays `HOLD · 168 LEAVE · FILES STAY`.
+- I8 on the Samsung: **not yet** (Cesar, 2026-10-03).
 
 ## I7j proposal: an opening clock (2026-10-03)
 
@@ -409,3 +425,5 @@ by `playwright-core` from `~/.hermes/hermes-agent/node_modules`):
 - `3600914` the empty field offers the phone's music and a node (I7i)
 - `a11a1db` no lattice under an empty field; an arrival's camera goes where
   it starts
+- `5360df6` leaving a folder out says its tags and playlists go with it
+- `e37d819` cluster names that stand still keep a flight when others move
