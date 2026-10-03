@@ -62,11 +62,14 @@ import {
   grainBarsOf,
   type GrainBars,
   type GrainRender,
+  type FieldOpening,
 } from '../features/field/FieldCanvas';
-import type {
-  FieldController,
-  FieldPresentation,
+import {
+  DEVICE_NODE_KEY,
+  type FieldController,
+  type FieldPresentation,
 } from '../features/field/useFieldController';
+import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
 import { LensPicker } from '../features/song/LensPicker';
@@ -903,6 +906,75 @@ export function FieldScreen({ identity }: Props) {
     onHoldPlacement,
     onClaimTap,
   });
+  /*
+   * Songs that just arrived from the phone (docs/import/flow-plan.md, I7j):
+   * armed when a bring-in commits — held at a point behind the blind — and
+   * opened album by album when the blind lifts, with the camera in the group
+   * of the first of them and the meta line saying how many came. A plan is
+   * replaced by the next, never cleared: a finished one draws every mark open.
+   */
+  const deviceResult = useStore(deviceLibrary.store, state => state.result);
+  const openingClockCandidate = useSharedValue(0);
+  const openingClock = useRef(openingClockCandidate).current;
+  const [opening, setOpening] = useState<FieldOpening | null>(null);
+  const [arrived, setArrived] = useState<number | null>(null);
+  const openingFor = useRef<typeof deviceResult>(null);
+  const openingShown = useRef(true);
+  useEffect(() => {
+    if (deviceResult === null || openingFor.current === deviceResult) return;
+    if (layout === null) return;
+    openingFor.current = deviceResult;
+    const ids = deviceResult.importedIds.map(id => `${DEVICE_NODE_KEY}:${id}`);
+    const plan = planOpening(
+      ids,
+      layout.placements,
+      key => controller.presentations.get(key)?.entity.record?.albumKey ?? null,
+    );
+    if (plan === null) return;
+    cancelAnimation(openingClock);
+    openingClock.value = 0;
+    openingShown.current = false;
+    setOpening({ plan, clock: openingClock });
+    setArrived(ids.length);
+    // Brought in from the blind, the camera goes to them; a quiet look while
+    // you browse leaves the camera where you put it.
+    const first = layout.placements.find(
+      placement => placement.entityKey === ids[0],
+    );
+    if (first !== undefined && enginesOpen) {
+      // The commit that carries them started a re-cut of its own, usually
+      // still in the air when the result lands: let it land first, as an
+      // album tap does, or the descent is flown over.
+      pendingAlbum.current = {
+        group: first.groupKey,
+        recut:
+          fieldCamera.recut !== null && fieldCamera.relayoutLinear < 1
+            ? 'seen'
+            : 'none',
+      };
+    }
+  }, [
+    controller.presentations,
+    deviceResult,
+    enginesOpen,
+    fieldCamera.recut,
+    fieldCamera.relayoutLinear,
+    layout,
+    openingClock,
+  ]);
+  // The arrival plays once nothing covers the field.
+  useEffect(() => {
+    if (opening === null || openingShown.current || enginesOpen) return;
+    openingShown.current = true;
+    openingClock.value = withTiming(opening.plan.endMs, {
+      duration: opening.plan.endMs,
+      easing: Easing.linear,
+    });
+  }, [enginesOpen, opening, openingClock]);
+  // Said once: the next time the blind opens, the meta is the count again.
+  useEffect(() => {
+    if (enginesOpen && openingShown.current) setArrived(null);
+  }, [enginesOpen]);
   const { descend, home: cameraHome } = fieldCamera;
   useEffect(() => {
     const pending = pendingAlbum.current;
@@ -2045,6 +2117,7 @@ export function FieldScreen({ identity }: Props) {
                 activeLensKey={lensKey}
                 analyses={analyses}
                 covers={covers}
+                opening={opening}
                 grainShared={grainShared}
                 // The player's focus, not the tap's: entering a shelf must
                 // not re-record this canvas. See `commitFocus`.
@@ -2204,6 +2277,7 @@ export function FieldScreen({ identity }: Props) {
           offline={offline}
           noConnection={noConnection}
           playableHere={playableHere}
+          arrived={arrived}
           onOpenComposer={openComposer}
           onOpenEngines={openEnginesFromField}
           onChangeOrder={chooseOrder}
