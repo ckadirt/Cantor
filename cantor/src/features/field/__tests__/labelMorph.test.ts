@@ -170,6 +170,36 @@ describe('shelf label morphs', () => {
    * only can if both ends of the flight are the same point — the drawing side
    * turns that into a zero offset from the settled seat.
    */
+  /**
+   * The bug that hid `THIS WEEK` after every import: when one cluster moved,
+   * the plan held flights for the clusters that changed only, and the native
+   * renderer — which draws only flights — dropped every name standing still.
+   */
+  it('keeps the names that stand still when another cluster changes', () => {
+    const week = group('W40', 'a', 'b');
+    const older = group('W25', 'c');
+    const gone = group('W27', 'd');
+    const flights = planShelfLabels(
+      [week, older, gone],
+      [week, older],
+      font,
+      NOW,
+    )!;
+    const byKey = new Map(flights.map(flight => [flight.fromGroupKey, flight]));
+    for (const key of ['W40', 'W25']) {
+      expect(byKey.get(key)).toMatchObject({
+        toGroupKey: key,
+        ownership: 'carry',
+        fromAlpha: 1,
+        targetAlpha: 1,
+      });
+    }
+    expect(byKey.get('W27')).toMatchObject({
+      ownership: 'exit',
+      targetAlpha: 0,
+    });
+  });
+
   it('leaves a cluster that did not move exactly where it is', () => {
     const august = group('2026-08', 'a', 'b');
     const year = { ...group('2026', 'a', 'b'), cx: august.cx, cy: august.cy };

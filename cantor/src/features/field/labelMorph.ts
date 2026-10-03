@@ -521,6 +521,13 @@ export function planShelfLabels(
   }
 
   const flights: LabelFlight[] = [];
+  /**
+   * Whether any name changes. A cluster that stands still still needs a
+   * flight — the native renderer draws only flights, so leaving one out made
+   * its name vanish whenever some other cluster moved — but a plan in which
+   * nothing changes is no plan: the settled field answers it.
+   */
+  let changes = false;
   const used = new Set<string>();
   const arrivals = after.map(group => ({
     group,
@@ -556,7 +563,13 @@ export function planShelfLabels(
       fromAlpha: source === null || (branches && useIndex > 0) ? 0 : 1,
       targetAlpha: 1,
     });
-    if (flight !== null) flights.push(flight);
+    if (flight !== null) {
+      flights.push(flight);
+      changes = true;
+    } else {
+      // A null plan has a source: a cluster that came from nowhere enters.
+      flights.push(standingFlight(group, nowMs, source?.key ?? group.key));
+    }
   }
 
   // Whatever is left on the old side has nowhere to become, so it folds into
@@ -585,9 +598,12 @@ export function planShelfLabels(
       fromAlpha: 1,
       targetAlpha: 0,
     });
-    if (flight !== null) flights.push(flight);
+    if (flight !== null) {
+      flights.push(flight);
+      changes = true;
+    }
   }
-  return flights.length === 0 ? null : flights;
+  return changes ? flights : null;
 }
 
 /** The cluster most of this group's songs came from, or went to. */
@@ -693,29 +709,36 @@ export function settledShelfLabelFlights(
   nowMs: number,
 ): ShelfLabelFlights | null {
   if (groups.length === 0) return null;
-  return groups.map(group => {
-    const value = read(group, nowMs);
-    const seat = { x: group.cx, y: group.cy };
-    return {
-      fromGroupKey: group.key,
-      toGroupKey: group.key,
-      from: seat,
-      to: seat,
-      fromTop: group.top,
-      toTop: group.top,
-      fromTopGathered: group.topGathered,
-      toTopGathered: group.topGathered,
-      primary: null,
-      secondary: null,
-      primaryFrom: value.primary,
-      primaryTo: value.primary,
-      secondaryFrom: value.secondary,
-      secondaryTo: value.secondary,
-      ownership: 'carry' as const,
-      fromAlpha: 1,
-      targetAlpha: 1,
-    };
-  });
+  return groups.map(group => standingFlight(group, nowMs));
+}
+
+/** One cluster's name where it is, saying what it says: a flight that stays. */
+function standingFlight(
+  group: Group,
+  nowMs: number,
+  fromGroupKey: string = group.key,
+): LabelFlight {
+  const value = read(group, nowMs);
+  const seat = { x: group.cx, y: group.cy };
+  return {
+    fromGroupKey,
+    toGroupKey: group.key,
+    from: seat,
+    to: seat,
+    fromTop: group.top,
+    toTop: group.top,
+    fromTopGathered: group.topGathered,
+    toTopGathered: group.topGathered,
+    primary: null,
+    secondary: null,
+    primaryFrom: value.primary,
+    primaryTo: value.primary,
+    secondaryFrom: value.secondary,
+    secondaryTo: value.secondary,
+    ownership: 'carry' as const,
+    fromAlpha: 1,
+    targetAlpha: 1,
+  };
 }
 
 const EMPTY_READ = { primary: '', secondary: '' } as const;
