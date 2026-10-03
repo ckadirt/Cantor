@@ -2207,6 +2207,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   });
   const mapPaints = useMemo(() => createMapPaints(palette), [palette]);
   const openingClock = opening?.clock ?? null;
+  // A field with nothing in it — no song, no job — has no ground either: the
+  // empty field's words stand on paper (`flow.html#f-empty`).
+  const ground = recut.flights.length > 0;
   const facePicture = useDerivedValue(() =>
     createPicture(
       canvas => {
@@ -2214,23 +2217,24 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         // in their recording; see `drawLattice`.
         const p = Math.min(Math.max(clock.value, 0), 1);
         const live = p >= 1 ? cameraShared.value : null;
-        drawLattice(
-          canvas,
-          {
-            x:
-              live?.x ??
-              nativeRecut.fromCamera.x +
-                (nativeRecut.toCamera.x - nativeRecut.fromCamera.x) * p,
-            y:
-              live?.y ??
-              nativeRecut.fromCamera.y +
-                (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
-            scale: nativeCameraScale(p, nativeRecut, cameraShared),
-          },
-          nativeFitScale(p, nativeRecut, fitScaleShared),
-          viewport,
-          mapPaints.lattice,
-        );
+        if (ground)
+          drawLattice(
+            canvas,
+            {
+              x:
+                live?.x ??
+                nativeRecut.fromCamera.x +
+                  (nativeRecut.toCamera.x - nativeRecut.fromCamera.x) * p,
+              y:
+                live?.y ??
+                nativeRecut.fromCamera.y +
+                  (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
+              scale: nativeCameraScale(p, nativeRecut, cameraShared),
+            },
+            nativeFitScale(p, nativeRecut, fitScaleShared),
+            viewport,
+            mapPaints.lattice,
+          );
         drawFieldFaces(
           canvas,
           faceFlights,
