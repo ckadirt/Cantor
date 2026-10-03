@@ -948,9 +948,21 @@ export function FieldScreen({ identity }: Props) {
     setArrived(ids.length);
     // Brought in from the blind, the camera goes to them; a quiet look while
     // you browse leaves the camera where you put it.
-    const first = layout.placements.find(
-      placement => placement.entityKey === ids[0],
-    );
+    // Where the arrival starts: the first of them as the field reads, which
+    // on the time axes is the newest cluster.
+    const arriving = new Set(ids);
+    let first: (typeof layout.placements)[number] | undefined;
+    for (const placement of layout.placements) {
+      if (!arriving.has(placement.entityKey)) continue;
+      if (
+        first === undefined ||
+        placement.targetY < first.targetY ||
+        (placement.targetY === first.targetY &&
+          placement.targetX < first.targetX)
+      ) {
+        first = placement;
+      }
+    }
     if (first !== undefined && enginesOpen) {
       // The commit that carries them started a re-cut of its own, usually
       // still in the air when the result lands: let it land first, as an
