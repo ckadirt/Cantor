@@ -40,6 +40,11 @@ type Props = {
   noConnection?: boolean;
   /** How many songs play from this phone, for `NO CONNECTION · N PLAYABLE HERE`. */
   playableHere?: number;
+  /**
+   * Songs that just arrived from the phone, said once in the meta line
+   * (`310 ARRIVED FROM THIS PHONE`); null says the count as usual.
+   */
+  arrived?: number | null;
   storageError: string | null;
   onOpenEngines: () => void;
   onOpenComposer: () => void;
@@ -304,6 +309,7 @@ function FieldOverlayImpl({
   offline,
   noConnection = false,
   playableHere = 0,
+  arrived = null,
   storageError,
   onOpenEngines,
   onOpenComposer,
@@ -342,6 +348,7 @@ function FieldOverlayImpl({
     offline,
     noConnection,
     playableHere,
+    arrived,
     arrangementKey,
     dateResolution,
     songCount,
@@ -439,6 +446,8 @@ function FieldOverlayImpl({
               text={
                 h.noConnection
                   ? `NO CONNECTION · ${h.playableHere ?? 0} PLAYABLE HERE`
+                  : h.arrived != null && h.level === 'field'
+                  ? `${h.arrived} ARRIVED FROM THIS PHONE`
                   : `${metaLine(h.level, h.songCount, h.groupCount, noun)}${
                       h.offline ? ' · OFFLINE' : ''
                     }`

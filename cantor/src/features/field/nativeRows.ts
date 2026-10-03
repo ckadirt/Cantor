@@ -1,3 +1,4 @@
+import { openedAt } from './opening';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 import {
   PaintStyle,
@@ -37,6 +38,8 @@ export type NativeRowFlight = Readonly<{
    * clock; absent when nothing is arriving. See `arriveInk`.
    */
   titleFrom?: number;
+  /** When the song opens, on the opening clock; absent when it is not arriving. */
+  openAt?: number;
 }>;
 
 export function createRowPaints(
@@ -77,11 +80,13 @@ export function drawNativeRows(
   yieldKey: string | null = null,
   /** The ink arrival's clock; see `arriveInk`. */
   arrival = 1,
+  /** The opening clock, elapsed ms; see `features/field/opening.ts`. */
+  openingMs = Infinity,
 ) {
   'worklet';
   if (written <= 0 || fieldAlpha <= 0) return;
   const bloom = 1 - gatherFraction(camera.scale, fitScale);
-  for (const { flight, row, titleFrom } of rows) {
+  for (const { flight, row, titleFrom, openAt } of rows) {
     if (yieldKey !== null && flight.targetPlacementKey === yieldKey) continue;
     const owner =
       flightOwnerAlpha(
@@ -89,7 +94,10 @@ export function drawNativeRows(
         flight.fromAlpha,
         flight.targetAlpha,
         progress,
-      ) * fieldAlpha;
+      ) *
+      fieldAlpha *
+      // A name arrives with its mark: nothing is written before it opens.
+      openedAt(openAt ?? -1, openingMs);
     if (owner <= 0) continue;
     const x =
       (flight.fromX +

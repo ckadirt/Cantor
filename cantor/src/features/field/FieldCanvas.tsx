@@ -23,6 +23,7 @@ import {
   songInkOf,
   type InkArrival,
 } from './arrivals';
+import { openedAt, type OpeningPlan } from './opening';
 import {
   createRowPaints,
   drawNativeRows,
@@ -321,6 +322,11 @@ type Props = {
    */
   covers?: ReadonlyMap<string, CoverArt>;
   /**
+   * Songs that just arrived from the phone, opening album by album: when each
+   * opens, and the clock (elapsed ms) they open on. See `features/field/opening.ts`.
+   */
+  opening?: FieldOpening | null;
+  /**
    * The decoded L3 window on the UI thread, never through React: see
    * `NativeFieldContentProps`.
    *
@@ -456,6 +462,7 @@ function FieldCanvasImpl({
   transportLights = null,
   analyses,
   covers,
+  opening = null,
   grainShared = undefined,
   activeLensKey = 'name',
   nowMs,
@@ -746,6 +753,7 @@ function FieldCanvasImpl({
           positionSeconds={positionSeconds}
           analyses={analyses}
           covers={covers}
+          opening={opening}
           labelFlights={labelFlights}
           hubFlights={mapFlights.hubs}
           sectionFlights={mapFlights.sections}
@@ -762,6 +770,7 @@ function FieldCanvasImpl({
   }, [
     analyses,
     covers,
+    opening,
     cameraShared,
     displayFont,
     fitScaleShared,
@@ -970,7 +979,15 @@ function useNativeCameraMotion(
 
 type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 
+/** An arrival from the phone, as the canvas draws it. */
+export type FieldOpening = Readonly<{
+  plan: OpeningPlan;
+  /** Elapsed ms; held at 0 until the arrival is shown. */
+  clock: SharedValue<number>;
+}>;
+
 type NativeFieldContentProps = Readonly<{
+  opening: FieldOpening | null;
   lensClock: LensClock;
   reducedMotion: boolean;
   recut: FieldRecutModel;
@@ -1098,6 +1115,11 @@ export type FaceFlight = Readonly<{
   isPlayer: boolean;
   /** The one song making sound, which wears the ring. */
   playing: boolean;
+  /**
+   * When this song opens out of a point, in ms on the opening clock; −1 when
+   * it is not arriving. See `features/field/opening.ts`.
+   */
+  openAt: number;
 }>;
 
 /**
@@ -1159,6 +1181,7 @@ export function faceFlightsOf(
   analyses?: ReadonlyMap<string, SongAnalysis>,
   ink?: InkArrival,
   covers?: ReadonlyMap<string, CoverArt>,
+  opening?: ReadonlyMap<string, number>,
 ): readonly FaceFlight[] {
   const result: FaceFlight[] = [];
   for (const flight of flights) {
@@ -1201,6 +1224,7 @@ export function faceFlightsOf(
       // shared across the field is how every mark once grew into the player.
       isPlayer,
       playing: flight.entityKey === playingKey,
+      openAt: opening?.get(flight.entityKey) ?? -1,
     });
   }
   return result;
@@ -1255,6 +1279,8 @@ export function drawFieldFaces(
   heard = -1,
   /** The ink arrival's clock; see `arriveInk`. */
   arrival = 1,
+  /** The opening clock, elapsed ms; see `openedAt`. */
+  openingMs = Infinity,
 ): void {
   'worklet';
   /*
@@ -1329,9 +1355,17 @@ export function drawFieldFaces(
       p,
     );
     if (owner <= 0) continue;
+    // A song just arrived opens out of a point, as a lens's coming beat does;
+    // reduced motion fades it in instead.
+    const opened = openedAt(face.openAt, openingMs);
+    if (opened <= 0) continue;
+    const openScale = reducedMotion ? 1 : opened;
     const shapeArrived = face.isPlayer ? playerShapeArrived : 0;
     const arrived = face.isPlayer ? playerArrived : 0;
-    const opacity = owner * Math.min(1, dot + becomingRow + arrived);
+    const opacity =
+      owner *
+      Math.min(1, dot + becomingRow + arrived) *
+      (reducedMotion ? opened : 1);
     if (opacity <= 0) continue;
 
     const seatX = face.fromX + (face.targetX - face.fromX) * p;
@@ -1377,7 +1411,7 @@ export function drawFieldFaces(
         face.identities[pair.b],
         players[pair.b],
         towardB,
-        pose.scale,
+        pose.scale * openScale,
         opacity,
         weight,
         fill,
@@ -1393,7 +1427,8 @@ export function drawFieldFaces(
       for (let pass = 0; pass < passes; pass++) {
         const lens = pass === 0 ? firstLens : lastLens;
         const coming = lens === lensTo;
-        const size = pose.scale * (coming ? comingScale : leavingScale);
+        const size =
+          pose.scale * openScale * (coming ? comingScale : leavingScale);
         const ink = coming ? comingInk : leavingInk;
         if (ink <= 0 || size <= 0.001) continue;
         if (players !== undefined) {
@@ -1980,6 +2015,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   positionSeconds,
   analyses,
   covers,
+  opening,
   grainShared,
   jobMarks,
   labelFlights,
@@ -2065,6 +2101,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       analyses,
       ink,
       covers,
+      opening?.plan.at,
     );
     const player = flights.find(face => face.isPlayer);
     const playerFlight =
@@ -2090,7 +2127,16 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       // before the effect below could wind it back. Null is risen.
       soundClock: rising ? bornClock(0) : null,
     };
-  }, [recut, presentations, focusKey, playingKey, analyses, ink, covers]);
+  }, [
+    recut,
+    presentations,
+    focusKey,
+    playingKey,
+    analyses,
+    ink,
+    covers,
+    opening,
+  ]);
   const faceFlights = faces.flights;
   useEffect(() => {
     if (faces.soundClock === null || faces.playerKey === undefined) return;
@@ -2160,6 +2206,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     return positionSeconds.value / faces.playerSeconds;
   });
   const mapPaints = useMemo(() => createMapPaints(palette), [palette]);
+  const openingClock = opening?.clock ?? null;
   const facePicture = useDerivedValue(() =>
     createPicture(
       canvas => {
@@ -2200,6 +2247,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           smootherstep(faces.soundClock?.value ?? 1) * soundDrawn.value,
           heard.value,
           inkClock?.value ?? 1,
+          openingClock?.value ?? Infinity,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -2233,6 +2281,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           {
             flight,
             titleFrom: ink.from.get(flight.entityKey)?.title,
+            openAt: opening?.plan.at.get(flight.entityKey),
             row: nativeRowModel(
               presentation,
               presentation.recipe,
@@ -2242,7 +2291,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           },
         ];
       }),
-    [recut, presentations, ink, displayFont, monoFont],
+    [recut, presentations, ink, displayFont, monoFont, opening],
   );
   const rowPaints = useMemo(
     () =>
@@ -2328,6 +2377,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         rowPaints,
         motion.owned.value > 0 ? playerRow.value : null,
         inkClock?.value ?? 1,
+        openingClock?.value ?? Infinity,
       );
     }, viewport);
   });
@@ -2535,15 +2585,19 @@ function nativeRowModel(
       // device song's file was never downloaded: its line is who made it.
       presentation.source === 'device'
         ? presentation.label.toUpperCase()
-        : availabilityLine({
-            audioState: presentation.localAudio.state,
-            arriving: arrivingFraction(
-              presentation.localAudio.bytes,
-              presentation.byteLength ?? undefined,
-            ),
-            byteLength: presentation.byteLength,
-            nodeLabel: presentation.label,
-          }, transfer, presentation.source === 'node' && presentation.noConnection),
+        : availabilityLine(
+            {
+              audioState: presentation.localAudio.state,
+              arriving: arrivingFraction(
+                presentation.localAudio.bytes,
+                presentation.byteLength ?? undefined,
+              ),
+              byteLength: presentation.byteLength,
+              nodeLabel: presentation.label,
+            },
+            transfer,
+            presentation.source === 'node' && presentation.noConnection,
+          ),
       monoFont,
       column,
     ),
