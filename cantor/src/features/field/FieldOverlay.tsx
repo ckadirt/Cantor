@@ -1,5 +1,11 @@
-import React, { useEffect, useRef } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+  type LayoutChangeEvent,
+} from 'react-native';
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -9,6 +15,13 @@ import Animated, {
 import { TransformText, WriteText } from '../../motion';
 import { Dial, Reveal } from '../controls';
 import { FieldLegend } from './FieldLegend';
+import {
+  NOW_PLAYING_KNOBS,
+  NowPlayingSeat,
+  lineWidth,
+  type NowPlaying,
+} from './NowPlaying';
+import { useFontScaledStyle, useMorphFont } from '../../motion/fonts';
 import type { Lens } from '../../lenses';
 import {
   ARRANGEMENTS,
@@ -69,11 +82,12 @@ type Props = {
   shelfAction: string | null;
   onShelfAction: () => void;
   /**
-   * The song the player holds, as the map's one action — `NOW · BLOODFLOW` —
-   * or null when nothing is held. It takes the same seat the shelf's bulk
-   * action takes at L1, which at L0 is empty: one seat, one act per level.
+   * The song the player holds, as the map's one action — its face turning in
+   * its clock, and its name — or null when nothing is held. It takes the same
+   * seat the shelf's bulk action takes at L1, which at L0 is empty: one seat,
+   * one act per level. See `NowPlaying.tsx`.
    */
-  nowPlaying?: string | null;
+  nowPlaying?: NowPlaying | null;
   onNowPlaying?: () => void;
   /**
    * How members are seated inside the shelf you are inside, and the control
@@ -374,15 +388,35 @@ function FieldOverlayImpl({
   // The header's one act: the shelf's bulk action inside a shelf; on the map,
   // the song the player holds — unless the count line is saying something
   // longer than a count, which this would run into.
-  const action =
-    h.level === 'shelf'
-      ? h.shelfAction
-      : h.level === 'field' && !h.noConnection && h.arrived == null
+  const action = h.level === 'shelf' ? h.shelfAction : null;
+  const held =
+    h.level === 'field' && !h.noConnection && h.arrived == null
       ? h.nowPlaying
       : null;
   const noun = onDateAxis
     ? CLUSTER_NOUN[h.dateResolution]
     : AXIS_NOUN[h.arrangementKey] ?? 'GROUP';
+  const countLine = h.noConnection
+    ? `NO CONNECTION · ${h.playableHere ?? 0} PLAYABLE HERE`
+    : h.arrived != null && h.level === 'field'
+    ? `${h.arrived} ARRIVED FROM THIS PHONE`
+    : `${metaLine(h.level, h.songCount, h.groupCount, noun)}${
+        h.offline ? ' · OFFLINE' : ''
+      }`;
+  // What the count line leaves the held song: the row, less the count's own
+  // ink and the air kept after it. Measured the way the engine lays it out.
+  const [rowWidth, setRowWidth] = useState<number | null>(null);
+  const onRowLayout = useCallback((event: LayoutChangeEvent) => {
+    setRowWidth(event.nativeEvent.layout.width);
+  }, []);
+  const countStyle = useFontScaledStyle(CHROME_STYLES.eyebrow);
+  const countFont = useMorphFont(countStyle);
+  const room =
+    rowWidth === null || countFont === null
+      ? null
+      : rowWidth -
+        lineWidth(countFont, countStyle.letterSpacing ?? 0, countLine) -
+        NOW_PLAYING_KNOBS.COUNT_GAP_PX;
   const legendShown = showLegend && h.level === 'field';
   // The key and the hint share one seat; they cross rather than cut.
   const legendIn = useSharedValue(legendShown ? 1 : 0);
@@ -459,18 +493,14 @@ function FieldOverlayImpl({
           duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
           style={styles.titleSlot}
         />
-        <View style={styles.metaRow} pointerEvents="box-none">
+        <View
+          onLayout={onRowLayout}
+          style={styles.metaRow}
+          pointerEvents="box-none"
+        >
           <View style={styles.metaCount} pointerEvents="none">
             <TransformText
-              text={
-                h.noConnection
-                  ? `NO CONNECTION · ${h.playableHere ?? 0} PLAYABLE HERE`
-                  : h.arrived != null && h.level === 'field'
-                  ? `${h.arrived} ARRIVED FROM THIS PHONE`
-                  : `${metaLine(h.level, h.songCount, h.groupCount, noun)}${
-                      h.offline ? ' · OFFLINE' : ''
-                    }`
-              }
+              text={countLine}
               charStyle={CHROME_STYLES.eyebrow}
               color={pal.faint}
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
@@ -487,19 +517,13 @@ function FieldOverlayImpl({
             */}
           <Pressable
             accessibilityElementsHidden={action === null}
-            accessibilityLabel={
-              action === null
-                ? undefined
-                : h.level === 'field'
-                ? `Go to ${action}`
-                : action
-            }
+            accessibilityLabel={action ?? undefined}
             accessibilityRole="button"
             hitSlop={space.md}
             importantForAccessibility={
               action === null ? 'no-hide-descendants' : 'yes'
             }
-            onPress={h.level === 'field' ? onNowPlaying : onShelfAction}
+            onPress={onShelfAction}
             pointerEvents={action === null ? 'none' : 'auto'}
             style={styles.actionSlot}
           >
@@ -521,6 +545,17 @@ function FieldOverlayImpl({
               />
             )}
           </Pressable>
+          <NowPlayingSeat
+            changeMs={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+            charStyle={CHROME_STYLES.eyebrow}
+            lens={lens}
+            nowPlaying={held}
+            onPress={onNowPlaying}
+            palette={pal}
+            room={room}
+            rowHeight={OVERLAY_KNOBS.EYEBROW_ROW_PX}
+            visible={!away}
+          />
         </View>
         {/*
             Always mounted, rising into a seat the header keeps for it. The
@@ -886,24 +921,3 @@ const styles = StyleSheet.create({
  * this component's props do not depend on the camera.
  */
 export const FieldOverlay = React.memo(FieldOverlayImpl);
-
-/** KNOBS — the now-playing word. */
-const NOW_PLAYING_KNOBS = {
-  /**
-   * The longest the word may be, in characters, ellipsis included: the
-   * header's count line holds `139 SONGS · 116 ALBUMS` at its other end.
-   */
-  MAX_CHARS: 20,
-} as const;
-
-/** `NOW · BLOODFLOW`, cut with an ellipsis to `NOW_PLAYING_KNOBS.MAX_CHARS`. */
-export function nowPlayingWord(state: string, title: string): string {
-  const word = `${state} · ${title.trim().toUpperCase()}`;
-  const chars = [...word];
-  return chars.length <= NOW_PLAYING_KNOBS.MAX_CHARS
-    ? word
-    : `${chars
-        .slice(0, NOW_PLAYING_KNOBS.MAX_CHARS - 1)
-        .join('')
-        .trimEnd()}\u2026`;
-}

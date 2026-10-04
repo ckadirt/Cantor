@@ -10,7 +10,13 @@ import {
   type Level,
 } from '../../../field';
 import { nameLens } from '../../../lenses';
-import { FieldOverlay, nowPlayingWord } from '../FieldOverlay';
+import { FieldOverlay } from '../FieldOverlay';
+import {
+  fitWithEllipsis,
+  lineWidth,
+  type NowPlaying,
+} from '../NowPlaying';
+import { Skia } from '@shopify/react-native-skia';
 
 // CanvasKit's system font manager is empty under Jest, so the header's
 // morphing lines have no face to lay out; what is judged here is the views
@@ -26,6 +32,14 @@ const FIT = 0.5;
 function shared<T>(value: T): SharedValue<T> {
   return { value } as SharedValue<T>;
 }
+
+const BLOODFLOW: NowPlaying = {
+  title: 'Bloodflow',
+  recipe: { seed: 7, id: 'bloodflow', model: 'test', durationMs: 120_000 },
+  playing: true,
+  positionSeconds: shared(30),
+  durationSeconds: 120,
+};
 
 /** The header's and foot's drawn opacity with the camera at `ratio`·FIT. */
 function opacities(level: Level, ratio: number) {
@@ -98,7 +112,7 @@ describe('the header and the foot give the screen to the player', () => {
 });
 
 describe("the header's one act", () => {
-  function render(level: Level, nowPlaying: string | null) {
+  function render(level: Level, nowPlaying: NowPlaying | null) {
     const onNowPlaying = jest.fn();
     const onShelfAction = jest.fn();
     let tree!: Renderer.ReactTestRenderer;
@@ -138,34 +152,48 @@ describe("the header's one act", () => {
         node.props.style !== undefined &&
         StyleSheet.flatten(node.props.style).width === 190,
     )[0];
-    return { tree, slot, onNowPlaying, onShelfAction };
+    const now = tree.root.findAll(
+      node =>
+        node.props.testID === 'now-playing' &&
+        node.props.accessibilityRole === 'button',
+    )[0];
+    return { tree, slot, now, onNowPlaying, onShelfAction };
   }
 
   it('on the map, goes to the song the player holds', () => {
-    const { tree, slot, onNowPlaying, onShelfAction } = render(
+    const { tree, slot, now, onNowPlaying, onShelfAction } = render(
       'field',
-      'NOW · BLOODFLOW',
+      BLOODFLOW,
     );
-    expect(slot.props.accessibilityLabel).toBe('Go to NOW · BLOODFLOW');
-    expect(slot.props.pointerEvents).toBe('auto');
-    Renderer.act(() => slot.props.onPress());
+    expect(now.props.accessibilityLabel).toBe('Go to Bloodflow, playing');
+    expect(now.props.pointerEvents).toBe('auto');
+    expect(slot.props.pointerEvents).toBe('none');
+    Renderer.act(() => now.props.onPress());
     expect(onNowPlaying).toHaveBeenCalledTimes(1);
     expect(onShelfAction).not.toHaveBeenCalled();
     Renderer.act(() => tree.unmount());
   });
 
+  it('says when the held song is paused', () => {
+    const { tree, now } = render('field', { ...BLOODFLOW, playing: false });
+    expect(now.props.accessibilityLabel).toBe('Go to Bloodflow, paused');
+    Renderer.act(() => tree.unmount());
+  });
+
   it('on the map with nothing held, is not there to press', () => {
-    const { tree, slot } = render('field', null);
+    const { tree, slot, now } = render('field', null);
+    expect(now.props.pointerEvents).toBe('none');
     expect(slot.props.pointerEvents).toBe('none');
     Renderer.act(() => tree.unmount());
   });
 
   it("inside a shelf, is still the shelf's own action", () => {
-    const { tree, slot, onNowPlaying, onShelfAction } = render(
+    const { tree, slot, now, onNowPlaying, onShelfAction } = render(
       'shelf',
-      'NOW · BLOODFLOW',
+      BLOODFLOW,
     );
     expect(slot.props.accessibilityLabel).toBe('DOWNLOAD ALL · 5 MB');
+    expect(now.props.pointerEvents).toBe('none');
     Renderer.act(() => slot.props.onPress());
     expect(onShelfAction).toHaveBeenCalledTimes(1);
     expect(onNowPlaying).not.toHaveBeenCalled();
@@ -173,10 +201,19 @@ describe("the header's one act", () => {
   });
 });
 
-it('names the held song in a word that fits the count line', () => {
-  expect(nowPlayingWord('NOW', 'Bloodflow')).toBe('NOW · BLOODFLOW');
-  const long = nowPlayingWord('PAUSED', 'Bringing Cultures Together');
-  expect([...long]).toHaveLength(20);
-  expect(long.endsWith('…')).toBe(true);
-  expect(long.startsWith('PAUSED · BRINGING')).toBe(true);
+describe('the held name, where the marquee may not run', () => {
+  const font = Skia.Font(undefined, 11);
+  it('is left whole when it fits', () => {
+    const room = lineWidth(font, 2, 'BLOODFLOW');
+    expect(fitWithEllipsis(font, 2, 'BLOODFLOW', room)).toBe('BLOODFLOW');
+  });
+
+  it('is cut with an ellipsis to the room it has', () => {
+    const title = 'BRINGING CULTURES TOGETHER';
+    const room = lineWidth(font, 2, title) / 2;
+    const cut = fitWithEllipsis(font, 2, title, room);
+    expect(cut.endsWith('\u2026')).toBe(true);
+    expect(title.startsWith(cut.slice(0, -1))).toBe(true);
+    expect(lineWidth(font, 2, cut)).toBeLessThanOrEqual(room);
+  });
 });
