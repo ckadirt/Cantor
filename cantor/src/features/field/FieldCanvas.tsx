@@ -69,6 +69,7 @@ import {
   REPRESENTATION_WINDOWS,
   SHELF_BOX,
   bandAlphaAt,
+  overviewShrink,
   BROWSE_KNOBS,
   faceArrival,
   gatherFraction,
@@ -1336,7 +1337,11 @@ export function drawFieldFaces(
     fitted,
     REPRESENTATION_WINDOWS.song,
   );
-  const markPose = facePoseAt(walked, 0, viewport, FACE_GROWTH);
+  // Below the map's own scale a mark shrinks with the world, so the overview
+  // is the map in miniature; see `overviewShrink`.
+  const shrink = overviewShrink(cameraScale, fitted);
+  const markAt = facePoseAt(walked, 0, viewport, FACE_GROWTH);
+  const markPose = { ...markAt, scale: markAt.scale * shrink };
   const playerPose = facePoseAt(
     walked,
     playerShapeArrived,
@@ -1345,7 +1350,8 @@ export function drawFieldFaces(
   );
   const ringCentreX = -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked;
   const ringRadius =
-    MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * walked;
+    (MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * walked) *
+    shrink;
 
   for (let index = 0; index < faces.length; index++) {
     const face = faces[index];

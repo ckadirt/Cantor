@@ -41,8 +41,12 @@ export const MAP_KNOBS = {
   LATTICE_DOT_PX: 1.8,
   /** In `faint` ink: there, and never read as content. */
   LATTICE_ALPHA: 0.4,
-  /** Halftone cells along a hub cover's side; a dot's radius is its ink. */
-  HUB_CELLS: 12,
+  /**
+   * Halftone cells along a hub cover's side; a dot's radius is its ink. About
+   * 3.3 dp a cell at the cover's 60 dp: fine enough to read as the picture,
+   * coarse enough to stay a drawing.
+   */
+  HUB_CELLS: 18,
   /** The largest halftone dot, as a share of its cell's half-width. */
   HUB_DOT_REACH: 0.92,
   /** The hairline's reach from the screen's edges, and the word's offset. */
@@ -275,11 +279,20 @@ export function drawHubs(
     if (shown <= 0) continue;
     const x = mix(flight.from?.x ?? null, flight.to?.x ?? null, progress);
     const y = mix(flight.from?.y ?? null, flight.to?.y ?? null, progress);
+    const screenX = (x - camera.x) * camera.scale + viewport.width / 2;
+    const screenY = (y - camera.y) * camera.scale + viewport.height / 2;
+    // A cover is a few hundred dots; one off the screen is not drawn at all.
+    const half = (side / 2) * camera.scale;
+    if (
+      screenY + half < 0 ||
+      screenY - half > viewport.height ||
+      screenX + half < 0 ||
+      screenX - half > viewport.width
+    ) {
+      continue;
+    }
     canvas.save();
-    canvas.translate(
-      (x - camera.x) * camera.scale + viewport.width / 2,
-      (y - camera.y) * camera.scale + viewport.height / 2,
-    );
+    canvas.translate(screenX, screenY);
     canvas.scale(camera.scale * side, camera.scale * side);
     paint.setAlphaf(shown);
     canvas.drawPath(path, paint);

@@ -19,8 +19,10 @@ import {
   railBand,
   railWindow,
   railY,
+  overviewWordAlpha,
   shelfLabelAlpha,
   type Camera,
+  type IndexRun,
   type RailExtent,
   type RailWord,
   type Viewport,
@@ -209,11 +211,148 @@ function FieldRailImpl({
 
 export const FieldRail = React.memo(FieldRailImpl);
 
+/** KNOBS — the overview's margin words, in screen pixels. */
+const MARGIN_KNOBS = {
+  /** The strip on the left the words are written in. */
+  WIDTH_PX: 112,
+  /** In from the left edge. */
+  INSET_PX: 24,
+  /** The display face, large: these are headings, not labels. */
+  WORD_SIZE_PX: 26,
+  /** The least room between two words on screen, as a share of their size. */
+  MIN_GAP_RATIO: 1.3,
+  /** How far into the header and the foot a word dissolves before it goes. */
+  EDGE_FADE_PX: 28,
+} as const;
+
+/**
+ * The overview's index, at one camera: each run's word at its first name's
+ * height on the map, in the margin the shrunken map leaves empty. A word too
+ * close to the one drawn above it is left out on this frame, so the margin
+ * thins as the map shrinks rather than overprinting.
+ */
+export function drawMarginWords(
+  canvas: SkCanvas,
+  runs: readonly IndexRun[],
+  camera: Camera,
+  fitScale: number,
+  viewport: Viewport,
+  wordFont: SkFont,
+  paint: ReturnType<typeof Skia.Paint>,
+): void {
+  'worklet';
+  const alpha = overviewWordAlpha(camera.scale, fitScale);
+  if (alpha <= 0) return;
+  const band = railBand(viewport);
+  const lift = MARGIN_KNOBS.WORD_SIZE_PX / 3;
+  const gap = MARGIN_KNOBS.WORD_SIZE_PX * MARGIN_KNOBS.MIN_GAP_RATIO;
+  // Which words have room on this frame: of two too close together, the one
+  // standing for more clusters, as on the rail.
+  const shown: { word: string; y: number; weight: number }[] = [];
+  for (const run of runs) {
+    const y = (run.worldY - camera.y) * camera.scale + viewport.height / 2;
+    if (y > band.bottom + MARGIN_KNOBS.EDGE_FADE_PX) break;
+    if (y < band.top - MARGIN_KNOBS.EDGE_FADE_PX - gap) continue;
+    const last = shown[shown.length - 1];
+    if (last === undefined || y - last.y >= gap) {
+      shown.push({ word: run.word, y, weight: run.weight });
+      continue;
+    }
+    const before = shown[shown.length - 2];
+    if (
+      run.weight > last.weight &&
+      (before === undefined || y - before.y >= gap)
+    ) {
+      shown[shown.length - 1] = { word: run.word, y, weight: run.weight };
+    }
+  }
+  for (const word of shown) {
+    const inside = Math.min(word.y - band.top, band.bottom - word.y);
+    const edge =
+      inside >= 0 ? 1 : Math.max(0, 1 + inside / MARGIN_KNOBS.EDGE_FADE_PX);
+    if (edge <= 0) continue;
+    paint.setAlphaf(alpha * edge);
+    canvas.drawText(
+      word.word,
+      MARGIN_KNOBS.INSET_PX,
+      word.y + lift,
+      paint,
+      wordFont,
+    );
+  }
+}
+
+type MarginProps = {
+  runs: readonly IndexRun[];
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
+  palette: Palette;
+  viewport: Viewport;
+};
+
+/**
+ * The overview's margin: the map's index written beside the map itself, once
+ * the map has shrunk away from the left edge. Never touched — the field under
+ * it takes every touch — and drawn from the live camera like the rail.
+ */
+function FieldMarginImpl({
+  runs,
+  cameraShared,
+  fitScaleShared,
+  palette,
+  viewport,
+}: MarginProps) {
+  const wordFont = useMorphFont({
+    fontFamily: font.display,
+    fontSize: MARGIN_KNOBS.WORD_SIZE_PX,
+  });
+  const paint = useMemo(() => {
+    const ink = Skia.Paint();
+    ink.setAntiAlias(true);
+    ink.setColor(Skia.Color(palette.muted));
+    return ink;
+  }, [palette]);
+  const picture = useDerivedValue(() =>
+    createPicture(canvas => {
+      if (wordFont === null) return;
+      drawMarginWords(
+        canvas,
+        runs,
+        cameraShared.value,
+        fitScaleShared.value,
+        viewport,
+        wordFont,
+        paint,
+      );
+    }),
+  );
+  if (runs.length === 0) return null;
+  return (
+    <View
+      accessible={false}
+      pointerEvents="none"
+      style={[styles.margin, { height: viewport.height }]}
+    >
+      <Canvas style={StyleSheet.absoluteFill}>
+        <Picture picture={picture} />
+      </Canvas>
+    </View>
+  );
+}
+
+export const FieldMargin = React.memo(FieldMarginImpl);
+
 const styles = StyleSheet.create({
   strip: {
     position: 'absolute',
     right: 0,
     top: 0,
     width: RAIL_KNOBS.WIDTH_PX,
+  },
+  margin: {
+    left: 0,
+    position: 'absolute',
+    top: 0,
+    width: MARGIN_KNOBS.WIDTH_PX,
   },
 });

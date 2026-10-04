@@ -413,6 +413,28 @@ bracket spans what is on screen. A touch flies the band's middle there
 finger. The gesture is `useFieldCamera`'s `railGesture`, and does nothing
 away from the map.
 
+Below the map's own scale is the overview (`OVERVIEW_KNOBS` in `bands.ts`):
+the camera zooms out to `overviewMinRatio` — until the whole map stands in the
+band, never past `MIN_RATIO`, and not at all for a map that already fits. It
+is the map in miniature: marks, rings and job marks shrink with the world
+(`overviewShrink`), covers are world-sized already, cluster names fade out on
+`NAME_WINDOW`, and `FieldMargin` writes each index run's word large in the
+empty left margin on `WORD_WINDOW`, the longer run winning a collision. A
+pinch that ends zoomed out settles into `mapCameraRange`, which at overview
+centres a map that fits rather than hanging it from home.
+
+Album clusters are a cover above rows of songs (`hubCluster`,
+`HUB_SIDE_WORLD` ≈ 60 dp at fit), not particles round a small cover; a row of
+covers gets `HUB_ROW_GAP_PX` more room above its names so each name reads as
+its own cover's. Covers are 18×18 halftone (`MAP_KNOBS.HUB_CELLS`) and culled
+off screen.
+
+At the map the header's action slot is the now-playing jump: `NOW · TITLE`
+or `PAUSED · TITLE` (`nowPlayingWord`, 20 characters at most) for the song
+the player holds, and a tap is `useFieldCamera`'s `visit` — out to the song's
+row in its shelf, then down into the song. At L1 the slot is the shelf's bulk
+action again.
+
 Each axis keeps its own place on the map (`useFieldCamera`'s `axisKey`; the
 date axis is one map per resolution): leaving an axis remembers the camera,
 coming back returns to it inside the map's current range, and an axis not yet

@@ -38,7 +38,9 @@ import {
   FieldA11yList,
   FieldCanvas,
   FieldOverlay,
+  FieldMargin,
   FieldRail,
+  nowPlayingWord,
   OriginMark,
   useFieldCamera,
 } from '../features/field';
@@ -104,8 +106,10 @@ import {
   gatherFraction,
   grainWindow,
   layoutField,
+  indexRuns,
   mapFrame,
   orderByKey,
+  overviewMinRatio,
   queueFrom,
   railWords,
   representationAlphas,
@@ -930,6 +934,16 @@ export function FieldScreen({ identity }: Props) {
       ? []
       : railWords(layout, frame, viewport, arrangement);
   }, [arrangement, fieldCamera.rail, layout, viewport]);
+  /** The overview's margin words, for a map that zooms out past itself. */
+  const overviewIndex = useMemo(() => {
+    const frame = layout === null ? null : mapFrame(layout);
+    return layout === null ||
+      frame === null ||
+      viewport === null ||
+      overviewMinRatio(frame, viewport) >= 1
+      ? []
+      : indexRuns(layout, arrangement);
+  }, [arrangement, layout, viewport]);
   /*
    * Songs that just arrived from the phone (docs/import/flow-plan.md, I7j):
    * armed when a bring-in commits — held at a point behind the blind — and
@@ -1186,6 +1200,34 @@ export function FieldScreen({ identity }: Props) {
       ? `${currentTrack.nodeKey}:${currentTrack.songId}`
       : null;
   const playingKey = heldKey;
+  /**
+   * The now-playing jump: the held song's row on this map, and the word that
+   * goes to it — `NOW · BLOODFLOW`, or `PAUSED · …` while it is held but
+   * silent. Short, because it shares the header's count line.
+   */
+  const heldPlacement = useMemo(
+    () =>
+      heldKey === null || layout === null
+        ? null
+        : layout.placements.find(
+            placement => placement.entityKey === heldKey,
+          ) ?? null,
+    [heldKey, layout],
+  );
+  const heldTitle =
+    heldKey === null
+      ? null
+      : controller.presentations.get(heldKey)?.title ?? null;
+  const nowPlaying =
+    heldPlacement === null || heldTitle === null
+      ? null
+      : nowPlayingWord(
+          transport.snapshot.state === 'playing' ? 'NOW' : 'PAUSED',
+          heldTitle,
+        );
+  const goToNowPlaying = useCallback(() => {
+    if (heldPlacement !== null) fieldCamera.visit(heldPlacement);
+  }, [fieldCamera, heldPlacement]);
   const focusedIsCurrent =
     focused !== null &&
     currentTrack !== null &&
@@ -2225,6 +2267,15 @@ export function FieldScreen({ identity }: Props) {
               onPress={fieldCamera.home}
             />
             {viewport !== null ? (
+              <FieldMargin
+                cameraShared={fieldCamera.cameraShared}
+                fitScaleShared={fieldCamera.fitScaleShared}
+                palette={pal}
+                runs={overviewIndex}
+                viewport={viewport}
+              />
+            ) : null}
+            {viewport !== null ? (
               <FieldRail
                 active={fieldCamera.level === 'field'}
                 cameraShared={fieldCamera.cameraShared}
@@ -2364,6 +2415,8 @@ export function FieldScreen({ identity }: Props) {
           onOpenEngines={openEnginesFromField}
           onChangeOrder={chooseOrder}
           onShelfAction={downloadShelf}
+          nowPlaying={nowPlaying}
+          onNowPlaying={goToNowPlaying}
           orderKey={orderKey}
           shelfAction={shelfDownload?.label ?? null}
           showLegend={!legendSeen}

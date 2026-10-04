@@ -3,6 +3,7 @@ import {
   REPRESENTATION_WINDOWS,
   bandAlphaAt,
   gatherFraction,
+  overviewShrink,
   type Camera,
   type PlacementFlight,
   type Viewport,
@@ -63,6 +64,7 @@ export function drawNativeJobs(
   'worklet';
   if (flights.length === 0) return;
   const bloom = 1 - gatherFraction(camera.scale, fitScale);
+  const shrink = overviewShrink(camera.scale, fitScale);
   const dotBand = bandAlphaAt(
     camera.scale,
     fitScale,
@@ -96,6 +98,8 @@ export function drawNativeJobs(
       (seatX + bloomX * bloom - camera.x) * camera.scale + viewport.width / 2,
       (seatY + bloomY * bloom - camera.y) * camera.scale + viewport.height / 2,
     );
+    // The map in miniature below its own scale, as the songs are.
+    if (shrink < 1) canvas.scale(shrink, shrink);
     if (dot > 0) drawFaded(canvas, mark.dot, dot, layer);
     if (row > 0) drawFaded(canvas, mark.row, row, layer);
     canvas.restore();

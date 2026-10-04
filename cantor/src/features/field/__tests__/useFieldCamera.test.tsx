@@ -3,6 +3,8 @@ import ReactTestRenderer from 'react-test-renderer';
 import {
   bloomedTargetPoint,
   GLIDE_KNOBS,
+  levelCameraTarget,
+  OVERVIEW_KNOBS,
   GRAIN_ENABLED,
   LEVEL_SCALE_RATIOS,
   mapCameraAround,
@@ -961,7 +963,6 @@ describe('useFieldCamera', () => {
       renderer.update(<NativeProbe field={playlist} tick={0} />);
     });
 
-
     // Anything upstream — a library refresh, a playhead tick — re-renders the
     // screen mid-flight. The UI-runtime canvas is already halfway through and
     // React state is not; the live capture belongs to the flight, not to the
@@ -1172,7 +1173,12 @@ describe('useFieldCamera', () => {
       });
       expect(latest.level).toBe('shelf');
       // The row you left is on screen, not wherever the column's middle was.
-      const expected = seatCameraAround(seat, inside.targetY, viewport, shelfScale);
+      const expected = seatCameraAround(
+        seat,
+        inside.targetY,
+        viewport,
+        shelfScale,
+      );
       expect(latest.camera.x).toBeCloseTo(expected.x, 6);
       expect(latest.camera.y).toBeCloseTo(expected.y, 6);
       const row = worldToScreen(
@@ -1809,6 +1815,64 @@ describe('useFieldCamera: each axis keeps its place, and the rail', () => {
     );
     expect(latest.cameraShared.value.y).toBeCloseTo(expected.y, 6);
     expect(latest.camera.y).toBeCloseTo(expected.y, 6);
+  });
+
+  it('zooms a long map out past itself, to its floor', async () => {
+    await show(weeks, 'time:week');
+    const [pinch] = gestures();
+    await ReactTestRenderer.act(async () => {
+      pinch.onStart({ focalX: 190, focalY: 400 });
+      pinch.onUpdate({ scale: 0.01 });
+    });
+    expect(latest.cameraShared.value.scale).toBeCloseTo(
+      weeks.fitScale * OVERVIEW_KNOBS.MIN_RATIO,
+      9,
+    );
+    expect(latest.level).toBe('field');
+  });
+
+  it('settles a pinch that ends zoomed out back inside the map', async () => {
+    mockReducedMotion = false;
+    await show(weeks, 'time:week');
+    const [pinch] = gestures();
+    await ReactTestRenderer.act(async () => {
+      // Out around a point low on the screen: the map's top slides down into
+      // the middle of the band, leaving nothing above it.
+      pinch.onStart({ focalX: 190, focalY: 700 });
+      pinch.onUpdate({ scale: 0.5 });
+    });
+    const pinched = latest.cameraShared.value;
+    const before = mapCameraRange(mapFrame(weeks)!, viewport, pinched.scale);
+    expect(pinched.y).toBeLessThan(before.minY);
+    await ReactTestRenderer.act(async () => {
+      pinch.onEnd({});
+    });
+    const settled = latest.cameraShared.value;
+    const range = mapCameraRange(mapFrame(weeks)!, viewport, settled.scale);
+    expect(settled.scale).toBeCloseTo(weeks.fitScale * 0.5, 9);
+    expect(settled.y).toBeGreaterThanOrEqual(range.minY - 1e-9);
+    expect(settled.y).toBeLessThanOrEqual(range.maxY + 1e-9);
+  });
+
+  it('goes to a song from the map, and from inside another song', async () => {
+    await show(weeks, 'time:week');
+    const far = weeks.placements[weeks.placements.length - 1];
+    await ReactTestRenderer.act(async () => {
+      latest.visit(far);
+    });
+    expect(latest.level).toBe('song');
+    expect(latest.focus?.key).toBe(far.key);
+    expect(latest.playerFocus?.key).toBe(far.key);
+
+    const other = weeks.placements[0];
+    await ReactTestRenderer.act(async () => {
+      latest.visit(other);
+    });
+    expect(latest.level).toBe('song');
+    expect(latest.focus?.key).toBe(other.key);
+    const target = levelCameraTarget('song', weeks, other)!;
+    expect(camera().x).toBeCloseTo(target.x, 6);
+    expect(camera().y).toBeCloseTo(target.y, 6);
   });
 
   it('gives a short map no rail, and the rail does nothing inside a shelf', async () => {

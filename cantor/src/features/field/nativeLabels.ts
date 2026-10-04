@@ -3,7 +3,7 @@ import {
   BROWSE_KNOBS,
   browseScale,
   gatherFraction,
-  shelfLabelAlpha,
+  mapNameAlpha,
   type Camera,
   type Viewport,
 } from '../../field';
@@ -170,7 +170,7 @@ export function drawNativeLabels(
   keyGap: number,
 ) {
   'worklet';
-  const alpha = shelfLabelAlpha(camera.scale, fitScale);
+  const alpha = mapNameAlpha(camera.scale, fitScale);
   if (alpha <= 0) return;
   const gather = gatherFraction(camera.scale, fitScale);
   for (const { flight, lines } of labels) {

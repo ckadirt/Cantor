@@ -170,23 +170,13 @@ export function railWords(
   viewport: Viewport,
   arrangement: Pick<Arrangement, 'indexWords'>,
 ): readonly RailWord[] {
-  const words = (arrangement.indexWords ?? initialWords)(layout.groups);
   const extent = railExtent(frame, layout.fitScale);
   const band = railBand(viewport);
-  // Runs first: a word, where its first cluster's name is, and how many
-  // clusters it stands for.
-  const runs: { word: string; y: number; weight: number }[] = [];
-  layout.groups.forEach((group, index) => {
-    const word = words[index] ?? '';
-    if (word.length === 0) return;
-    const last = runs[runs.length - 1];
-    if (last !== undefined && last.word === word) {
-      last.weight += 1;
-      return;
-    }
-    runs.push({ word, y: railY(group.top, extent, band), weight: 1 });
-  });
-  const kept: { word: string; y: number; weight: number }[] = [];
+  const runs = indexRuns(layout, arrangement).map(run => ({
+    ...run,
+    y: railY(run.worldY, extent, band),
+  }));
+  const kept: (typeof runs)[number][] = [];
   for (const run of runs) {
     const last = kept[kept.length - 1];
     if (last === undefined || run.y - last.y >= RAIL_KNOBS.MIN_WORD_GAP_PX) {
@@ -204,6 +194,39 @@ export function railWords(
     }
   }
   return kept.map(({ word, y }) => ({ word, y }));
+}
+
+/** One run of clusters sharing an index word, where its first name hangs. */
+export type IndexRun = Readonly<{
+  word: string;
+  /** The world height of the run's first cluster's name. */
+  worldY: number;
+  /** How many clusters the word stands for. */
+  weight: number;
+}>;
+
+/**
+ * The map's index: one entry per run of clusters that share an index word, in
+ * the map's order. The rail squeezes it down the edge (`railWords`); the
+ * overview writes it in the margin beside the map itself.
+ */
+export function indexRuns(
+  layout: FieldLayout,
+  arrangement: Pick<Arrangement, 'indexWords'>,
+): readonly IndexRun[] {
+  const words = (arrangement.indexWords ?? initialWords)(layout.groups);
+  const runs: { word: string; worldY: number; weight: number }[] = [];
+  layout.groups.forEach((group, index) => {
+    const word = words[index] ?? '';
+    if (word.length === 0) return;
+    const last = runs[runs.length - 1];
+    if (last !== undefined && last.word === word) {
+      last.weight += 1;
+      return;
+    }
+    runs.push({ word, worldY: group.top, weight: 1 });
+  });
+  return runs;
 }
 
 /**

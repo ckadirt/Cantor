@@ -1,4 +1,14 @@
-import { BROWSE_KNOBS, byTime, bloomedTargetPoint, layoutField } from '..';
+import {
+  BROWSE_KNOBS,
+  OVERVIEW_KNOBS,
+  byTime,
+  bloomedTargetPoint,
+  hubRadiusWorld,
+  layoutField,
+  mapNameAlpha,
+  overviewShrink,
+  overviewWordAlpha,
+} from '..';
 import {
   browseCluster,
   browseOffsets,
@@ -6,6 +16,7 @@ import {
   mapCameraAround,
   mapCameraRange,
   mapFrame,
+  overviewMinRatio,
 } from '../browse';
 import { groupScenario } from '../fixtures/groupScenarios';
 
@@ -78,7 +89,9 @@ it('sizes a cluster by its count, at one spacing, without coincident seats', () 
   const width =
     Math.max(...wide.map(point => point.x)) -
     Math.min(...wide.map(point => point.x));
-  expect(width).toBeLessThanOrEqual(2 * BROWSE_KNOBS.CLUSTER_MAX_RADIUS_X_WORLD);
+  expect(width).toBeLessThanOrEqual(
+    2 * BROWSE_KNOBS.CLUSTER_MAX_RADIUS_X_WORLD,
+  );
 });
 
 it('keeps the middle of a hub cluster clear, with the hub inside its seat', () => {
@@ -115,7 +128,9 @@ it('hands a cluster its seats top to bottom, so a gather keeps the height order'
     const members = layout.placements.filter(p => p.groupKey === group.key);
     for (let index = 1; index < members.length; index += 1) {
       // Row `i` of the column is the `i`-th mark from the top of the bloom.
-      expect(members[index].targetY).toBeGreaterThan(members[index - 1].targetY);
+      expect(members[index].targetY).toBeGreaterThan(
+        members[index - 1].targetY,
+      );
       expect(bloomedTargetPoint(members[index]).y).toBeGreaterThanOrEqual(
         bloomedTargetPoint(members[index - 1]).y,
       );
@@ -161,11 +176,92 @@ it('climbs out to a camera with the cluster on screen, inside the map', () => {
     expect(around.y).toBeGreaterThanOrEqual(range.minY - 1e-9);
     expect(around.y).toBeLessThanOrEqual(range.maxY + 1e-9);
     // Its name, which hangs above its highest mark, is under the header.
-    const name =
-      (group.top - around.y) * layout.fitScale + viewport.height / 2;
+    const name = (group.top - around.y) * layout.fitScale + viewport.height / 2;
     expect(name).toBeGreaterThanOrEqual(
       BROWSE_KNOBS.TOP_PX + BROWSE_KNOBS.LABEL_SPACE_PX - 1e-6,
     );
     expect(name).toBeLessThan(viewport.height - BROWSE_KNOBS.FOOT_PX);
   }
+});
+
+describe('an album cluster', () => {
+  it('puts the cover on top and its songs in centred rows under it', () => {
+    const { points, hub } = browseCluster(6, 'album:kind of blue', true);
+    const half = hubRadiusWorld();
+    expect(hub).toEqual({ x: 0, y: half });
+    const perRow =
+      Math.floor(
+        BROWSE_KNOBS.HUB_SIDE_WORLD / BROWSE_KNOBS.HUB_SONG_PITCH_WORLD,
+      ) + 1;
+    const rows = new Map<number, number[]>();
+    for (const point of points) {
+      // Every song clears the cover by at least a mark's reach.
+      expect(point.y - (hub.y + half)).toBeGreaterThanOrEqual(
+        BROWSE_KNOBS.MARK_REACH_WORLD,
+      );
+      rows.set(point.y, [...(rows.get(point.y) ?? []), point.x]);
+    }
+    const counts = [...rows.values()].map(xs => xs.length);
+    expect(counts).toEqual([perRow, 6 - perRow]);
+    for (const xs of rows.values()) {
+      expect(Math.min(...xs) + Math.max(...xs)).toBeCloseTo(0, 9);
+    }
+    const lone = browseCluster(1, 'album:single', true).points;
+    expect(lone).toEqual([
+      {
+        x: 0,
+        y: BROWSE_KNOBS.HUB_SIDE_WORLD + BROWSE_KNOBS.HUB_SONG_GAP_WORLD,
+      },
+    ]);
+  });
+});
+
+describe('the overview', () => {
+  it('zooms out until the whole map fits, never past its floor, and not at all for a short map', () => {
+    const short = makeLayout([3, 2]);
+    expect(overviewMinRatio(mapFrame(short)!, viewport)).toBe(1);
+    const long = makeLayout(Array(24).fill(24));
+    expect(overviewMinRatio(mapFrame(long)!, viewport)).toBe(
+      OVERVIEW_KNOBS.MIN_RATIO,
+    );
+    const middling = makeLayout(Array(12).fill(12));
+    const ratio = overviewMinRatio(mapFrame(middling)!, viewport);
+    expect(ratio).toBeGreaterThan(OVERVIEW_KNOBS.MIN_RATIO);
+    expect(ratio).toBeLessThan(1);
+    // At that ratio the whole map stands in the band, exactly.
+    const range = mapCameraRange(
+      mapFrame(middling)!,
+      viewport,
+      middling.fitScale * ratio,
+    );
+    expect(range.maxY - range.minY).toBeCloseTo(0, 6);
+  });
+
+  it('centres a map that fits once zoomed out, rather than hanging it from home', () => {
+    const layout = makeLayout(Array(12).fill(12));
+    const frame = mapFrame(layout)!;
+    const scale = layout.fitScale * OVERVIEW_KNOBS.MIN_RATIO;
+    const range = mapCameraRange(frame, viewport, scale);
+    expect(range.minY).toBe(range.maxY);
+    const screen = (worldY: number) =>
+      (worldY - range.minY) * scale + viewport.height / 2;
+    const above =
+      screen(frame.top) - BROWSE_KNOBS.LABEL_SPACE_PX - BROWSE_KNOBS.TOP_PX;
+    const below =
+      viewport.height -
+      BROWSE_KNOBS.FOOT_PX -
+      (screen(frame.bottom) + BROWSE_KNOBS.MARK_CLEARANCE_PX);
+    expect(above).toBeGreaterThan(0);
+    expect(below).toBeCloseTo(above, 0);
+  });
+});
+
+it('shrinks marks with the world only below the map, and hands names over to the margin', () => {
+  expect(overviewShrink(0.3, 1)).toBeCloseTo(0.3, 9);
+  expect(overviewShrink(1, 1)).toBe(1);
+  expect(overviewShrink(4, 1)).toBe(1);
+  expect(mapNameAlpha(1, 1)).toBe(1);
+  expect(mapNameAlpha(0.5, 1)).toBe(0);
+  expect(overviewWordAlpha(1, 1)).toBe(0);
+  expect(overviewWordAlpha(0.4, 1)).toBe(1);
 });
