@@ -395,6 +395,16 @@ across the oval. A tap on the map enters the shelf around the touched row
 (`shelfAround`), and back from a shelf climbs out to that cluster on the map
 (`mapCameraAround`), not to the top of the field.
 
+Crossing between the map and a shelf reshapes every cluster (blooms close
+into columns, and the columns above push everything below them down the
+world), so neither a pinch nor a flight may hold a *world point* still across
+it — the cluster you were zooming into slid out from under the fingers. A
+pinch holds the song nearest the fingers (`PINCH_ANCHOR_REACH_PX`) and moves
+the camera with that song's bloom offset as the gather changes; a flight
+that is about a song (`flyTo`'s `anchor`: a tap into a shelf, the climb back
+to the map, the now-playing trip) runs `flightCameraAt`, which carries the
+song on the eased line between its two ends. Both ends are unchanged.
+
 A released drag carries on (`field/glide.ts`, `GLIDE_KNOBS`): a cubic
 ease-out that leaves at the finger's speed and stops at the map's range
 (`mapCameraRange`) or, at L1, the column's run. It starts on the UI thread at
