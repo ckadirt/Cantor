@@ -13,4 +13,10 @@ module.exports = {
   ...reanimated,
   // Tests exercise the full-motion path; reduced motion is a device pass.
   useReducedMotion: () => false,
+  // A frame callback that never fires: the mock has no frames to give it.
+  useFrameCallback: () => ({
+    setActive: () => {},
+    isActive: false,
+    callbackId: -1,
+  }),
 };

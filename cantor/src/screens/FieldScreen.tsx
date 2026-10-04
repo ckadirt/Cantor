@@ -40,11 +40,11 @@ import {
   FieldOverlay,
   FieldMargin,
   FieldRail,
-  nowPlayingWord,
   OriginMark,
   useFieldCamera,
 } from '../features/field';
 import { loadLegendSeen, saveLegendSeen } from '../features/field/legendSeen';
+import type { NowPlaying } from '../features/field/NowPlaying';
 import {
   createFieldControllerStore,
   type FieldControllerStore,
@@ -1201,9 +1201,9 @@ export function FieldScreen({ identity }: Props) {
       : null;
   const playingKey = heldKey;
   /**
-   * The now-playing jump: the held song's row on this map, and the word that
-   * goes to it — `NOW · BLOODFLOW`, or `PAUSED · …` while it is held but
-   * silent. Short, because it shares the header's count line.
+   * The now-playing jump: the held song's row on this map, and what the header
+   * draws for it — its face turning in its clock while it sounds, at rest
+   * while it is held but silent, and its name. See `NowPlaying.tsx`.
    */
   const heldPlacement = useMemo(
     () =>
@@ -1214,17 +1214,30 @@ export function FieldScreen({ identity }: Props) {
           ) ?? null,
     [heldKey, layout],
   );
-  const heldTitle =
-    heldKey === null
-      ? null
-      : controller.presentations.get(heldKey)?.title ?? null;
-  const nowPlaying =
-    heldPlacement === null || heldTitle === null
-      ? null
-      : nowPlayingWord(
-          transport.snapshot.state === 'playing' ? 'NOW' : 'PAUSED',
-          heldTitle,
-        );
+  const heldPresentation =
+    heldKey === null ? null : controller.presentations.get(heldKey) ?? null;
+  const heldSounding = transport.snapshot.state === 'playing';
+  const heldDuration = transport.snapshot.durationSeconds;
+  const nowPlaying = useMemo<NowPlaying | null>(
+    () =>
+      heldKey === null || heldPlacement === null || heldPresentation === null
+        ? null
+        : {
+            title: heldPresentation.title,
+            recipe: heldPresentation.recipe,
+            playing: heldSounding,
+            positionSeconds: transport.positionSeconds,
+            durationSeconds: heldDuration,
+          },
+    [
+      heldDuration,
+      heldKey,
+      heldPlacement,
+      heldPresentation,
+      heldSounding,
+      transport.positionSeconds,
+    ],
+  );
   const goToNowPlaying = useCallback(() => {
     if (heldPlacement !== null) fieldCamera.visit(heldPlacement);
   }, [fieldCamera, heldPlacement]);

@@ -439,11 +439,19 @@ covers gets `HUB_ROW_GAP_PX` more room above its names so each name reads as
 its own cover's. Covers are 18×18 halftone (`MAP_KNOBS.HUB_CELLS`) and culled
 off screen.
 
-At the map the header's action slot is the now-playing jump: `NOW · TITLE`
-or `PAUSED · TITLE` (`nowPlayingWord`, 20 characters at most) for the song
-the player holds, and a tap is `useFieldCamera`'s `visit` — out to the song's
-row in its shelf, then down into the song. At L1 the slot is the shelf's bulk
-action again.
+At the map the header's action seat is the now-playing jump
+(`features/field/NowPlaying.tsx`, `now-playing-variants.html` § I): the held
+song's own lens mark inside the ring the map draws round it, the ring's arc
+its progress, and the title beside it. The face turns once per
+`NOW_PLAYING_KNOBS.TURN_S` while the song sounds; paused, speed and ink ease
+to rest over `STATE_MS`. The mark is re-recorded only when the turn or the
+arc has moved `STEP_PX` physical pixels, and its frame callback stops while
+the header is away. The title gets the row less the count line's measured
+ink; a longer one scrolls left without end like a bus sign, a second copy
+following after `MARQUEE_GAP`, at the mark's eased speed — paused, it slows to
+a stop where it stands. Under reduced motion it is cut with an ellipsis. A tap is `useFieldCamera`'s
+`visit` — out to the song's row in its shelf, then down into the song. At L1
+the seat is the shelf's bulk action, a separate slot.
 
 Each axis keeps its own place on the map (`useFieldCamera`'s `axisKey`; the
 date axis is one map per resolution): leaving an axis remembers the camera,
