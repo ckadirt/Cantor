@@ -1,4 +1,9 @@
+import { NAME_LENS_KNOBS } from '../../lenses/nameLens';
 import {
+  LEVEL_SCALE_RATIOS,
+  seatCameraBounds,
+  shelfSeats,
+  worldToScreen,
   byTime,
   byPlaylist,
   bloomedTargetPoint,
@@ -79,3 +84,41 @@ describe.each(Object.entries(GROUP_SCENARIOS))(
     );
   },
 );
+
+it('keeps every other shelf off the screen while you stand in one', () => {
+  const phone = { width: 384, height: 780 };
+  for (const counts of [
+    [1, 1, 1, 1, 1, 1],
+    [1, 30, 2, 1, 12, 1, 1],
+    [40, 3],
+  ]) {
+    const layout = layoutField({
+      entities: groupScenario(counts),
+      arrangement: byTime,
+      viewport: phone,
+    });
+    const scale = layout.fitScale * LEVEL_SCALE_RATIOS.shelf;
+    const seats = shelfSeats(layout);
+    for (const seat of seats) {
+      const bounds = seatCameraBounds(seat, phone, scale);
+      // Anywhere the camera may rest in this shelf, top to bottom.
+      for (const y of [bounds.min, (bounds.min + bounds.max) / 2, bounds.max]) {
+        const camera = { x: seat.cx, y, scale };
+        for (const other of layout.placements) {
+          if (other.groupKey === seat.key) continue;
+          const screen = worldToScreen(
+            { x: other.targetX, y: other.targetY },
+            camera,
+            phone,
+          );
+          const onScreen =
+            screen.x > -NAME_LENS_KNOBS.ROW_RIGHT_PX &&
+            screen.x < phone.width + NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX &&
+            screen.y > 0 &&
+            screen.y < phone.height;
+          expect(onScreen).toBe(false);
+        }
+      }
+    }
+  }
+});

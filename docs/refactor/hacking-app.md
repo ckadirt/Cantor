@@ -448,7 +448,9 @@ and hit testing keep off-screen marks clear of controls. Job captions appear
 at shelf distance, leaving compact overview marks unobstructed.
 
 Gathered shelves are packed separately after FIT, using their actual member
-counts and the 92 px shelf row pitch. Their centers may differ vertically from
+counts and the 92 px shelf row pitch, and stand `SHELF_CLEAR_SCREENS` (half a
+screen at shelf distance) plus a row apart vertically, so no other shelf's
+rows are on screen while you stand in one. Their centers may differ vertically from
 the map centers. Bloom offsets preserve the map pose, and the existing gather
 interpolates into the separate shelf pose without changing glyph ownership.
 
