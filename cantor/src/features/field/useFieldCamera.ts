@@ -30,6 +30,7 @@ import {
   LEVEL_SCALE_RATIOS,
   levelCameraTarget,
   levelOf,
+  flightCameraAt,
   glideEase,
   glideSpeedPxS,
   mapCameraAround,
@@ -54,6 +55,7 @@ import {
   zoomAroundFocalPoint,
   type Camera,
   type FieldLayout,
+  type FlightAnchor,
   type Group,
   type Level,
   type MapFrame,
@@ -136,6 +138,12 @@ export const FIELD_CAMERA_KNOBS = {
    * the ceiling, and the first fraction of an octave past it is still free.
    */
   PINCH_RUBBER_LOG: Math.LN2,
+  /**
+   * How near the fingers a song must be for a pinch to hold on to it, in
+   * screen pixels. Farther than this the pinch is over empty field and holds
+   * the world point under the fingers, as it always did.
+   */
+  PINCH_ANCHOR_REACH_PX: 220,
 } as const;
 
 type PullDirection = 'compose' | 'engines';
@@ -272,6 +280,12 @@ type PanStart = {
 type PinchStart = {
   focal: Point;
   camera: Camera;
+  /**
+   * The bloom offset of the song nearest the fingers, and the gather the pinch
+   * began at — or null when no song is near enough to hold on to. See the
+   * pinch's update.
+   */
+  anchor: Readonly<{ bloomX: number; bloomY: number; gather: number }> | null;
 };
 
 const EMPTY_CAMERA: Camera = { x: 0, y: 0, scale: 0.9 };
@@ -424,6 +438,8 @@ export function useFieldCamera({
   const flightToCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const flightProgressCandidate = useSharedValue(1);
   const flightCurveCandidate = useSharedValue<number>(FLIGHT_CURVE.SMOOTH);
+  /** The song the flight holds on to, or null; see `flightCameraAt`. */
+  const flightAnchorCandidate = useSharedValue<FlightAnchor | null>(null);
   const flightDurationCandidate = useSharedValue(0);
   /** The map's content, for a throw at L0 to be held inside; see `mapFrame`. */
   const mapFrameSharedCandidate = useSharedValue<MapFrame | null>(null);
@@ -436,6 +452,11 @@ export function useFieldCamera({
   const railExtentSharedCandidate = useSharedValue<RailExtent | null>(null);
   /** A finger on the rail is steering the camera. */
   const railActiveCandidate = useSharedValue(false);
+  /**
+   * Every placement's gathered seat and bloom offset, four numbers each, for
+   * the pinch to find the song under the fingers on the UI thread.
+   */
+  const anchorsSharedCandidate = useSharedValue<readonly number[]>([]);
   /** The map's own zoom floor, for the pinch; see `overviewMinRatio`. */
   const minRatioSharedCandidate = useSharedValue<number>(
     FIELD_CAMERA_KNOBS.MIN_SCALE_RATIO,
@@ -478,12 +499,14 @@ export function useFieldCamera({
   const flightTo = useRef(flightToCandidate).current;
   const flightProgress = useRef(flightProgressCandidate).current;
   const flightCurve = useRef(flightCurveCandidate).current;
+  const flightAnchor = useRef(flightAnchorCandidate).current;
   const flightDuration = useRef(flightDurationCandidate).current;
   const mapFrameShared = useRef(mapFrameSharedCandidate).current;
   const caughtGlide = useRef(caughtGlideCandidate).current;
   const railExtentShared = useRef(railExtentSharedCandidate).current;
   const railActive = useRef(railActiveCandidate).current;
   const minRatioShared = useRef(minRatioSharedCandidate).current;
+  const anchorsShared = useRef(anchorsSharedCandidate).current;
 
   layoutRef.current = layout;
   const seats = useMemo(
@@ -495,7 +518,8 @@ export function useFieldCamera({
     [layout],
   );
   const railNow = useMemo(() => {
-    if (layout === null || layoutFrame === null || viewport === null) return null;
+    if (layout === null || layoutFrame === null || viewport === null)
+      return null;
     const extent = railExtent(layoutFrame, layout.fitScale);
     return railWanted(extent, layout.fitScale, viewport) ? extent : null;
   }, [layoutFrame, layout, viewport]);
@@ -503,6 +527,15 @@ export function useFieldCamera({
     shelfSeatsShared.value = seats;
     mapFrameShared.value = layoutFrame;
     railExtentShared.value = railNow;
+    anchorsShared.value =
+      layout === null
+        ? []
+        : layout.placements.flatMap(placement => [
+            placement.targetX,
+            placement.targetY,
+            placement.targetBloomX,
+            placement.targetBloomY,
+          ]);
     minRatioShared.value =
       layoutFrame === null || viewport === null
         ? FIELD_CAMERA_KNOBS.MIN_SCALE_RATIO
@@ -512,6 +545,7 @@ export function useFieldCamera({
       groupCount: layout?.groups.length ?? 0,
     };
   }, [
+    anchorsShared,
     layoutFrame,
     layout,
     mapFrameShared,
@@ -768,6 +802,8 @@ export function useFieldCamera({
       target: Camera,
       durationMs: number = FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS,
       then: (() => void) | null = null,
+      /** The song the flight is about, held as its cluster reshapes. */
+      anchor: Placement | null = null,
     ) => {
       cancelCameraFlight();
       if (reducedMotion) {
@@ -779,6 +815,10 @@ export function useFieldCamera({
       cameraFlying.current = true;
       flightCurve.value = FLIGHT_CURVE.SMOOTH;
       flightDuration.value = durationMs;
+      flightAnchor.value =
+        anchor === null
+          ? null
+          : { bloomX: anchor.targetBloomX, bloomY: anchor.targetBloomY };
       // From the *live* camera, not React's copy of it. A flight that begins
       // where the last mirrored frame happened to land would start with a jump
       // back to it — the exact distance the gesture covered after React's last
@@ -798,6 +838,7 @@ export function useFieldCamera({
       cameraShared,
       cancelCameraFlight,
       commitCamera,
+      flightAnchor,
       flightCurve,
       flightDuration,
       flightFrom,
@@ -857,14 +898,13 @@ export function useFieldCamera({
         flightCurve.value === FLIGHT_CURVE.GLIDE
           ? glideEase(t)
           : t * t * t * (t * (t * 6 - 15) + 10);
-      const next = {
-        x: from.x + (to.x - from.x) * eased,
-        y: from.y + (to.y - from.y) * eased,
-        scale: Math.exp(
-          Math.log(from.scale) +
-            (Math.log(to.scale) - Math.log(from.scale)) * eased,
-        ),
-      };
+      const next = flightCameraAt(
+        from,
+        to,
+        eased,
+        flightAnchor.value,
+        layoutFitShared.value,
+      );
       cameraShared.value = next;
       mirrorOnChange(next);
     },
@@ -1304,7 +1344,7 @@ export function useFieldCamera({
       const drawsPlayer = next === 'song' || next === 'grain';
       commitFocus(placement.key, drawsPlayer);
       if (!drawsPlayer) {
-        flyTo(target);
+        flyTo(target, FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS, null, placement);
         return;
       }
       /*
@@ -1397,7 +1437,22 @@ export function useFieldCamera({
       (seat >= 0 && viewport !== null
         ? mapCameraAround(field, seats[seat].key, viewport)
         : null) ?? levelCameraTarget('field', field);
-    if (target) flyTo(target);
+    // The row in the middle of the view is the song the climb holds on to, so
+    // the shelf closes into its cluster around it rather than sliding away.
+    let held: Placement | null = null;
+    if (seat >= 0) {
+      const y = cameraShared.value.y;
+      for (const placement of field.placements) {
+        if (placement.groupKey !== seats[seat].key) continue;
+        if (
+          held === null ||
+          Math.abs(placement.targetY - y) < Math.abs(held.targetY - y)
+        ) {
+          held = placement;
+        }
+      }
+    }
+    if (target) flyTo(target, FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS, null, held);
     return true;
   }, [
     renderedFit,
@@ -1469,23 +1524,28 @@ export function useFieldCamera({
       const shelf = shelfAround(field, placement);
       if (shelf === null) return;
       commitFocus(null, true);
-      flyTo(shelf, FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS, () => {
-        const landedOn = layoutRef.current;
-        if (landedOn === null) return;
-        // The layout may have been re-cut under the flight; the song is asked
-        // for by its key in whatever is there now.
-        const there =
-          landedOn.placements.find(each => each.key === placement.key) ??
-          landedOn.placements.find(
-            each => each.entityKey === placement.entityKey,
-          );
-        if (there === undefined) return;
-        const target = levelCameraTarget('song', landedOn, there);
-        if (target === null) return;
-        commitFocus(there.key, true);
-        pendingDescent.current = target;
-        setDescentTicket(ticket => ticket + 1);
-      });
+      flyTo(
+        shelf,
+        FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS,
+        () => {
+          const landedOn = layoutRef.current;
+          if (landedOn === null) return;
+          // The layout may have been re-cut under the flight; the song is asked
+          // for by its key in whatever is there now.
+          const there =
+            landedOn.placements.find(each => each.key === placement.key) ??
+            landedOn.placements.find(
+              each => each.entityKey === placement.entityKey,
+            );
+          if (there === undefined) return;
+          const target = levelCameraTarget('song', landedOn, there);
+          if (target === null) return;
+          commitFocus(there.key, true);
+          pendingDescent.current = target;
+          setDescentTicket(ticket => ticket + 1);
+        },
+        placement,
+      );
     },
     [renderedFit, cameraShared, commitFocus, flyTo, shelfAround],
   );
@@ -1649,12 +1709,17 @@ export function useFieldCamera({
      * would answer a frame late. Starting the clock replaces any flight still
      * running, here and now rather than a hop later.
      */
-    const launchFlight = (target: Camera, durationMs: number, curve: number) => {
+    const launchFlight = (
+      target: Camera,
+      durationMs: number,
+      curve: number,
+    ) => {
       'worklet';
       // Told before the clock starts, so the landing it queues is the later
       // of the two calls JS receives.
       runOnJS(beginGlide)();
       flightCurve.value = curve;
+      flightAnchor.value = null;
       flightDuration.value = durationMs;
       flightFrom.value = cameraShared.value;
       flightTo.value = target;
@@ -1731,8 +1796,7 @@ export function useFieldCamera({
       .maxPointers(1)
       .onBegin(event => {
         'worklet';
-        const target =
-          pullDestination.value === 0 ? railTarget(event.y) : null;
+        const target = pullDestination.value === 0 ? railTarget(event.y) : null;
         railActive.value = target !== null;
         if (target === null) return;
         launchFlight(target, RAIL_KNOBS.JUMP_MS, FLIGHT_CURVE.RAIL);
@@ -1742,7 +1806,10 @@ export function useFieldCamera({
         if (!railActive.value) return;
         const target = railTarget(event.y);
         if (target === null) return;
-        if (flightCurve.value === FLIGHT_CURVE.RAIL && flightProgress.value < 1) {
+        if (
+          flightCurve.value === FLIGHT_CURVE.RAIL &&
+          flightProgress.value < 1
+        ) {
           flightTo.value = target;
           return;
         }
@@ -1753,7 +1820,10 @@ export function useFieldCamera({
         if (!railActive.value) return;
         railActive.value = false;
         // A flight still in the air lands, and mirrors, by itself.
-        if (flightCurve.value !== FLIGHT_CURVE.RAIL || flightProgress.value >= 1) {
+        if (
+          flightCurve.value !== FLIGHT_CURVE.RAIL ||
+          flightProgress.value >= 1
+        ) {
           settle();
         }
       });
@@ -1780,13 +1850,47 @@ export function useFieldCamera({
           layoutFitShared.value,
         );
         const size = viewport;
-        pinchStart.value = {
-          focal:
-            centred && size !== null
-              ? { x: size.width / 2, y: size.height / 2 }
-              : { x: event.focalX, y: event.focalY },
-          camera: startCamera,
-        };
+        const focal =
+          centred && size !== null
+            ? { x: size.width / 2, y: size.height / 2 }
+            : { x: event.focalX, y: event.focalY };
+        /*
+         * The song under the fingers, as drawn at this distance.
+         *
+         * Zooming between the map and the shelf reshapes every cluster: the
+         * bloom closes into a column, and the columns above push everything
+         * below them down the world. The world point under the fingers holds
+         * still, but the cluster you are zooming into does not — it slid out
+         * from under them, a long way. So the pinch holds a song instead.
+         */
+        const fitScale = layoutFitShared.value;
+        const anchors = anchorsShared.value;
+        let anchor: PinchStart['anchor'] = null;
+        if (size !== null && fitScale > 0 && !centred) {
+          const gather = gatherFraction(startCamera.scale, fitScale);
+          const reach = knobs.PINCH_ANCHOR_REACH_PX;
+          let best = reach * reach;
+          for (let index = 0; index + 3 < anchors.length; index += 4) {
+            const bloomX = anchors[index + 2];
+            const bloomY = anchors[index + 3];
+            const worldX = anchors[index] + bloomX * (1 - gather);
+            const worldY = anchors[index + 1] + bloomY * (1 - gather);
+            const dx =
+              (worldX - startCamera.x) * startCamera.scale +
+              size.width / 2 -
+              focal.x;
+            const dy =
+              (worldY - startCamera.y) * startCamera.scale +
+              size.height / 2 -
+              focal.y;
+            const distance = dx * dx + dy * dy;
+            if (distance < best) {
+              best = distance;
+              anchor = { bloomX, bloomY, gather };
+            }
+          }
+        }
+        pinchStart.value = { focal, camera: startCamera, anchor };
       })
       .onUpdate(event => {
         'worklet';
@@ -1801,14 +1905,26 @@ export function useFieldCamera({
           ),
           fitScale * knobs.MAX_SCALE_RATIO,
         );
-        publish(
-          zoomAroundFocalPoint(
-            start.camera,
-            start.focal,
-            clamped / start.camera.scale,
-            size,
-          ),
+        const zoomed = zoomAroundFocalPoint(
+          start.camera,
+          start.focal,
+          clamped / start.camera.scale,
+          size,
         );
+        const anchor = start.anchor;
+        if (anchor === null) {
+          publish(zoomed);
+          return;
+        }
+        // However far the held song has moved as its cluster reshapes, the
+        // camera moves with it, so it stays under the fingers. Outside the
+        // gather nothing reshapes, and this is the plain zoom.
+        const moved = anchor.gather - gatherFraction(clamped, fitScale);
+        publish({
+          scale: zoomed.scale,
+          x: zoomed.x + anchor.bloomX * moved,
+          y: zoomed.y + anchor.bloomY * moved,
+        });
       })
       .onEnd(() => {
         'worklet';
@@ -2048,7 +2164,12 @@ export function useFieldCamera({
                 ? planGlide(
                     current,
                     { x: 0, y: event.velocityY },
-                    { minX: seat.cx, maxX: seat.cx, minY: run.min, maxY: run.max },
+                    {
+                      minX: seat.cx,
+                      maxX: seat.cx,
+                      minY: run.min,
+                      maxY: run.max,
+                    },
                   )
                 : null;
             if (glide !== null && glide.durationMs >= knobs.SEAT_SETTLE_MS) {
@@ -2124,12 +2245,14 @@ export function useFieldCamera({
     cameraShared,
     cancelCameraFlight,
     caughtGlide,
+    flightAnchor,
     completePull,
     flightCurve,
     flightDuration,
     flightFrom,
     flightProgress,
     flightTo,
+    anchorsShared,
     layoutFitShared,
     minRatioShared,
     mapFrameShared,

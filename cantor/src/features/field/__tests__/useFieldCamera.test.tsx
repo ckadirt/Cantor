@@ -1817,6 +1817,48 @@ describe('useFieldCamera: each axis keeps its place, and the rail', () => {
     expect(latest.camera.y).toBeCloseTo(expected.y, 6);
   });
 
+  it('keeps the song under the fingers there while a pinch reshapes the clusters', async () => {
+    await show(weeks, 'time:week');
+    const start = latest.cameraShared.value;
+    // A song low on the screen, under clusters that will grow into columns.
+    const held = weeks.placements
+      .map(placement => ({
+        placement,
+        screen: worldToScreen(
+          placementPoint(
+            placement,
+            gatherFraction(start.scale, weeks.fitScale),
+          ),
+          start,
+          viewport,
+        ),
+      }))
+      .filter(({ screen }) => screen.y > 500 && screen.y < 600)[0];
+    expect(held).toBeDefined();
+    const [pinch] = gestures();
+    for (const ratio of [1.5, 2.5, 4, LEVEL_SCALE_RATIOS.shelf]) {
+      await ReactTestRenderer.act(async () => {
+        pinch.onStart({ focalX: held.screen.x, focalY: held.screen.y });
+        pinch.onUpdate({ scale: (ratio * weeks.fitScale) / start.scale });
+      });
+      const zoomed = latest.cameraShared.value;
+      const now = worldToScreen(
+        placementPoint(
+          held.placement,
+          gatherFraction(zoomed.scale, weeks.fitScale),
+        ),
+        zoomed,
+        viewport,
+      );
+      expect(now.x).toBeCloseTo(held.screen.x, 6);
+      expect(now.y).toBeCloseTo(held.screen.y, 6);
+      await ReactTestRenderer.act(async () => {
+        pinch.onEnd({});
+        latest.home();
+      });
+    }
+  });
+
   it('zooms a long map out past itself, to its floor', async () => {
     await show(weeks, 'time:week');
     const [pinch] = gestures();
