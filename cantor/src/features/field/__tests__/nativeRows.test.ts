@@ -238,3 +238,48 @@ describe('a cluster name fitted to its column', () => {
     );
   });
 });
+
+it('does not draw a group name that is off the screen', () => {
+  const layout = layoutField({
+    entities: groupScenario([1]),
+    arrangement: byTime,
+    viewport,
+  });
+  const flight = settledShelfLabelFlights(layout.groups, 0)![0];
+  const labels = prepareNativeLabels([flight], font);
+  const inkAt = (cameraY: number) => {
+    const surface = Skia.Surface.Make(400, 400)!;
+    const canvas = surface.getCanvas();
+    canvas.clear(Skia.Color('white'));
+    let drawn = 0;
+    const counting = new Proxy(canvas, {
+      get(target, property) {
+        const value = Reflect.get(target, property);
+        if (property === 'drawText') {
+          return (...args: unknown[]) => {
+            drawn += 1;
+            return (value as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    drawNativeLabels(
+      counting,
+      labels,
+      1,
+      { x: flight.to.x, y: cameraY, scale: 1 },
+      1,
+      viewport,
+      font,
+      createLabelPaints('black', '#666666'),
+      32,
+      14,
+    );
+    surface.dispose();
+    return drawn;
+  };
+  expect(inkAt(flight.toTop)).toBeGreaterThan(0);
+  expect(inkAt(flight.toTop + 5000)).toBe(0);
+  expect(inkAt(flight.toTop - 5000)).toBe(0);
+});

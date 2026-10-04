@@ -74,13 +74,22 @@ export function prepareNativeLabels(
       from: fitLines(flight.secondaryFrom, font, maxWidthPx, 1)[0] ?? '',
       to: fitLines(flight.secondaryTo, font, maxWidthPx, 1)[0] ?? '',
     };
+    const lines = [...title, key].map(line => ({
+      ...line,
+      fromWidth: labelWidth(line.from, font),
+      toWidth: labelWidth(line.to, font),
+    }));
     return {
       flight,
-      lines: [...title, key].map(line => ({
-        ...line,
-        fromWidth: labelWidth(line.from, font),
-        toWidth: labelWidth(line.to, font),
-      })),
+      lines,
+      /** Half the widest line, for telling whether the name is on screen. */
+      reach: Math.max(
+        0,
+        ...lines.map(line => Math.max(line.fromWidth, line.toWidth) / 2),
+      ),
+      /** The rows the name spans above and below its anchor. */
+      rowsAbove: Math.max(0, ...lines.map(line => -line.row)),
+      rowsBelow: Math.max(0, ...lines.map(line => line.row)),
     };
   });
 }
@@ -173,7 +182,7 @@ export function drawNativeLabels(
   const alpha = mapNameAlpha(camera.scale, fitScale);
   if (alpha <= 0) return;
   const gather = gatherFraction(camera.scale, fitScale);
-  for (const { flight, lines } of labels) {
+  for (const { flight, lines, reach, rowsAbove, rowsBelow } of labels) {
     const owner =
       alpha *
       flightOwnerAlpha(
@@ -194,6 +203,16 @@ export function drawNativeLabels(
       (fromTop + (toTop - fromTop) * progress - camera.y) * camera.scale +
       viewport.height / 2 -
       labelGap;
+    // A name off the screen is not drawn: every group's name was written on
+    // every frame, and Skia clipped all but the few in view.
+    if (
+      y + (rowsBelow + 1) * keyGap < 0 ||
+      y - (rowsAbove + 1) * keyGap > viewport.height ||
+      x + reach < 0 ||
+      x - reach > viewport.width
+    ) {
+      continue;
+    }
     for (let index = 0; index < lines.length; index++) {
       const line = lines[index];
       // The title in the first ink, the key under it in the second.

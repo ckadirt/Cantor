@@ -32,6 +32,15 @@ export const LAYOUT_KNOBS = {
    * names).
    */
   SECTION_GAP_PX: 34,
+  /**
+   * How far apart two gathered shelves stand, one above the other, in
+   * screens at shelf distance (plus one row). A shelf is somewhere you stand,
+   * and standing in a short one centres it with half a screen showing above
+   * and below: packed a row apart, the next shelf's songs showed there, with
+   * no name, under a header naming this one — and the camera could not even
+   * be dragged to them. Half a screen keeps every neighbour out of view.
+   */
+  SHELF_CLEAR_SCREENS: 0.5,
   /** Extra room above a row of album covers' names, in screen pixels. */
   HUB_ROW_GAP_PX: 28,
 } as const;
@@ -196,6 +205,12 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       ),
     ),
   );
+  // Between one shelf's last row and the next one's first: see
+  // `SHELF_CLEAR_SCREENS`.
+  const shelfClearWorld =
+    (request.viewport.height * LAYOUT_KNOBS.SHELF_CLEAR_SCREENS) /
+      (fitScale * LEVEL_SCALE_RATIOS.shelf) +
+    songGapWorld;
   const shelfCenters: number[] = [];
   shelfHalfHeights.forEach((halfHeight, row) => {
     const mapCy = seats[rows[row][0]].cy;
@@ -207,7 +222,7 @@ export function layoutField(request: LayoutRequest): FieldLayout {
             shelfCenters[row - 1] +
               shelfHalfHeights[row - 1] +
               halfHeight +
-              songGapWorld,
+              shelfClearWorld,
           ),
     );
   });
