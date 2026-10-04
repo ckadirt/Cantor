@@ -32,6 +32,8 @@ export const LAYOUT_KNOBS = {
    * names).
    */
   SECTION_GAP_PX: 34,
+  /** Extra room above a row of album covers' names, in screen pixels. */
+  HUB_ROW_GAP_PX: 28,
 } as const;
 
 /** Keep gathered song rows 92 screen pixels apart at shelf distance. */
@@ -155,7 +157,14 @@ export function layoutField(request: LayoutRequest): FieldLayout {
       height = Math.max(height, ownHeight);
     });
     bottom = rowTop + height;
-    rowTop += height + contentGap;
+    // A row of covers has its names hanging over big squares, close enough to
+    // the songs of the row above to be read as theirs: more room before the
+    // next row's names, so each name sits nearer its own cover.
+    const nextHub = rows[row + 1]?.some(index => seats[index].hub !== null);
+    rowTop +=
+      height +
+      contentGap +
+      (nextHub ? LAYOUT_KNOBS.HUB_ROW_GAP_PX / fitScale : 0);
   });
   // A field shorter than the band stands in its middle, not at its top: the
   // room left over is shared above and below instead of pooling at the foot.

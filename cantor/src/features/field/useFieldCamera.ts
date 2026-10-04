@@ -36,6 +36,7 @@ import {
   mapCameraRange,
   mapFrame,
   nearestSeat,
+  overviewMinRatio,
   placementFlightAt,
   placementPoint,
   planGlide,
@@ -95,6 +96,11 @@ export const FIELD_CAMERA_KNOBS = {
    * the two rows are one seat apart — and two full flights read as a detour.
    */
   STEP_LEG_MS: 520,
+  /**
+   * The camera's floor at the map's own scale; below it is the overview, whose
+   * floor depends on the map (`overviewMinRatio`, `OVERVIEW_KNOBS.MIN_RATIO`).
+   * This is what a map with no overview — one that already fits — stops at.
+   */
   MIN_SCALE_RATIO: 1,
   /**
    * The camera's ceiling. It bounds a *camera*, not a pinch — see
@@ -235,6 +241,8 @@ type CameraState = {
   step: (placement: Placement) => void;
   /** The song a step in its first leg is headed for, or null. */
   stepping: () => Placement | null;
+  /** Fly to a song from anywhere and open it: the now-playing jump. */
+  visit: (placement: Placement) => void;
   ascend: () => boolean;
   home: () => void;
   cancelGesture: () => void;
@@ -428,6 +436,10 @@ export function useFieldCamera({
   const railExtentSharedCandidate = useSharedValue<RailExtent | null>(null);
   /** A finger on the rail is steering the camera. */
   const railActiveCandidate = useSharedValue(false);
+  /** The map's own zoom floor, for the pinch; see `overviewMinRatio`. */
+  const minRatioSharedCandidate = useSharedValue<number>(
+    FIELD_CAMERA_KNOBS.MIN_SCALE_RATIO,
+  );
   /**
    * How far an edge pull has come, in screen pixels: positive is the composer
    * being drawn down from the top, negative is engines being drawn up from the
@@ -471,6 +483,7 @@ export function useFieldCamera({
   const caughtGlide = useRef(caughtGlideCandidate).current;
   const railExtentShared = useRef(railExtentSharedCandidate).current;
   const railActive = useRef(railActiveCandidate).current;
+  const minRatioShared = useRef(minRatioSharedCandidate).current;
 
   layoutRef.current = layout;
   const seats = useMemo(
@@ -490,6 +503,10 @@ export function useFieldCamera({
     shelfSeatsShared.value = seats;
     mapFrameShared.value = layoutFrame;
     railExtentShared.value = railNow;
+    minRatioShared.value =
+      layoutFrame === null || viewport === null
+        ? FIELD_CAMERA_KNOBS.MIN_SCALE_RATIO
+        : overviewMinRatio(layoutFrame, viewport);
     originShared.value = {
       centerX: layout?.fieldCenter.x ?? 0,
       groupCount: layout?.groups.length ?? 0,
@@ -498,11 +515,13 @@ export function useFieldCamera({
     layoutFrame,
     layout,
     mapFrameShared,
+    minRatioShared,
     originShared,
     railNow,
     railExtentShared,
     seats,
     shelfSeatsShared,
+    viewport,
   ]);
 
   /**
@@ -704,14 +723,24 @@ export function useFieldCamera({
     panStart.value = null;
   }, [cancelCameraFlight, panStart, pinchStart, pinching]);
 
+  /** The closest the camera may stand back from this map, as a multiple of FIT. */
+  const minRatioOf = useCallback(
+    (field: FieldLayout): number => {
+      const frame = mapFrame(field);
+      return frame === null || viewport === null
+        ? FIELD_CAMERA_KNOBS.MIN_SCALE_RATIO
+        : overviewMinRatio(frame, viewport);
+    },
+    [viewport],
+  );
   const clampScale = useCallback(
     (scale: number, field: FieldLayout): number => {
       return Math.min(
-        Math.max(scale, field.fitScale * FIELD_CAMERA_KNOBS.MIN_SCALE_RATIO),
+        Math.max(scale, field.fitScale * minRatioOf(field)),
         field.fitScale * FIELD_CAMERA_KNOBS.MAX_SCALE_RATIO,
       );
     },
-    [],
+    [minRatioOf],
   );
 
   /**
@@ -1418,6 +1447,48 @@ export function useFieldCamera({
     [renderedFit, cameraShared, commitFocus, flyTo, shelfAround],
   );
   const stepping = useCallback(() => stepTarget.current, []);
+  /**
+   * Go to a song from wherever the camera is: the now-playing jump.
+   *
+   * The same two moves the zoom model already makes, so the trip reads as
+   * travel and not as a cut: out to the song's row in its shelf — across the
+   * map if it has to — then down into the song, on the commit that mounts its
+   * player as every descent does. Already in it, nothing moves.
+   */
+  const visit = useCallback(
+    (placement: Placement) => {
+      const field = layoutRef.current;
+      if (field === null) return;
+      if (focusRef.current?.key === placement.key) {
+        const current = levelOf(
+          cameraShared.value.scale,
+          renderedFit(field.fitScale),
+        );
+        if (current === 'song' || current === 'grain') return;
+      }
+      const shelf = shelfAround(field, placement);
+      if (shelf === null) return;
+      commitFocus(null, true);
+      flyTo(shelf, FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS, () => {
+        const landedOn = layoutRef.current;
+        if (landedOn === null) return;
+        // The layout may have been re-cut under the flight; the song is asked
+        // for by its key in whatever is there now.
+        const there =
+          landedOn.placements.find(each => each.key === placement.key) ??
+          landedOn.placements.find(
+            each => each.entityKey === placement.entityKey,
+          );
+        if (there === undefined) return;
+        const target = levelCameraTarget('song', landedOn, there);
+        if (target === null) return;
+        commitFocus(there.key, true);
+        pendingDescent.current = target;
+        setDescentTicket(ticket => ticket + 1);
+      });
+    },
+    [renderedFit, cameraShared, commitFocus, flyTo, shelfAround],
+  );
   const home = useCallback(() => {
     const field = layoutRef.current;
     if (field === null) return;
@@ -1726,7 +1797,7 @@ export function useFieldCamera({
         const clamped = Math.min(
           Math.max(
             start.camera.scale * event.scale,
-            fitScale * knobs.MIN_SCALE_RATIO,
+            fitScale * minRatioShared.value,
           ),
           fitScale * knobs.MAX_SCALE_RATIO,
         );
@@ -1743,6 +1814,30 @@ export function useFieldCamera({
         'worklet';
         pinching.value = false;
         pinchStart.value = null;
+        // Zoomed out past the map, a pinch tends to leave it hanging from the
+        // middle of the band with nothing above it. It settles back inside the
+        // map's range, which at this distance centres a map that fits.
+        const frame = mapFrameShared.value;
+        const size = viewport;
+        const current = cameraShared.value;
+        if (
+          !reducedMotion &&
+          frame !== null &&
+          size !== null &&
+          current.scale < frame.fitScale
+        ) {
+          const range = mapCameraRange(frame, size, current.scale);
+          const x = Math.min(Math.max(current.x, range.minX), range.maxX);
+          const y = Math.min(Math.max(current.y, range.minY), range.maxY);
+          if (x !== current.x || y !== current.y) {
+            launchFlight(
+              { scale: current.scale, x, y },
+              knobs.SEAT_SETTLE_MS,
+              FLIGHT_CURVE.SMOOTH,
+            );
+            return;
+          }
+        }
         settle();
       });
     const pan = Gesture.Pan()
@@ -2036,6 +2131,7 @@ export function useFieldCamera({
     flightProgress,
     flightTo,
     layoutFitShared,
+    minRatioShared,
     mapFrameShared,
     mirrorNow,
     mirrorOnChange,
@@ -2080,6 +2176,7 @@ export function useFieldCamera({
     descend,
     step,
     stepping,
+    visit,
     ascend,
     home,
     cancelGesture,

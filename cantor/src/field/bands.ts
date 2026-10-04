@@ -23,6 +23,27 @@ export const REPRESENTATION_WINDOWS = {
  */
 export const SHELF_LABEL_WINDOW = [0, 0, 2, 3.8] as const;
 
+/**
+ * KNOBS — the overview: the map zoomed out past its own scale.
+ *
+ * The map is two columns at a scale set by the screen's width, so zooming out
+ * does not reveal more columns: it shrinks the map into a strip down the middle
+ * of the screen, marks and covers with it. What fits there is the map's shape,
+ * not its words — so the clusters' names leave on the way down, and each run's
+ * index word (the rail's) is written large in the empty margin instead.
+ */
+export const OVERVIEW_KNOBS = {
+  /** The farthest the camera zooms out, as a multiple of FIT. */
+  MIN_RATIO: 0.3,
+  /**
+   * The clusters' names, present from here up: in at 0.8× FIT, out by 0.55×.
+   * Nine-pixel names over a map at half size collide with their neighbours.
+   */
+  NAME_WINDOW: [0.55, 0.8, 2, 3.8] as const,
+  /** The margin's index words, present from here down: out by 0.6× FIT. */
+  WORD_WINDOW: [0, 0, 0.45, 0.6] as const,
+} as const;
+
 export type RepresentationAlphas = Readonly<{
   dot: number;
   row: number;
@@ -110,4 +131,28 @@ export function representationAlphas(
 export function shelfLabelAlpha(scale: number, fitScale: number): number {
   'worklet';
   return bandAlphaAt(scale, fitScale, SHELF_LABEL_WINDOW);
+}
+
+/** How present the clusters' names are; see `OVERVIEW_KNOBS.NAME_WINDOW`. */
+export function mapNameAlpha(scale: number, fitScale: number): number {
+  'worklet';
+  return bandAlphaAt(scale, fitScale, OVERVIEW_KNOBS.NAME_WINDOW);
+}
+
+/** How present the overview's margin words are. */
+export function overviewWordAlpha(scale: number, fitScale: number): number {
+  'worklet';
+  return bandAlphaAt(scale, fitScale, OVERVIEW_KNOBS.WORD_WINDOW);
+}
+
+/**
+ * What a mark's drawing is scaled by: 1 at the map and closer, and below the
+ * map's scale exactly as much as the world is, so the overview is the map in
+ * miniature rather than marks of one size piled into each other.
+ */
+export function overviewShrink(scale: number, fitScale: number): number {
+  'worklet';
+  if (!(fitScale > 0) || !(scale > 0)) return 1;
+  const ratio = scale / fitScale;
+  return ratio < 1 ? ratio : 1;
 }

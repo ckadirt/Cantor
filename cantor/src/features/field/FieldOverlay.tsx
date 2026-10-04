@@ -69,6 +69,13 @@ type Props = {
   shelfAction: string | null;
   onShelfAction: () => void;
   /**
+   * The song the player holds, as the map's one action — `NOW · BLOODFLOW` —
+   * or null when nothing is held. It takes the same seat the shelf's bulk
+   * action takes at L1, which at L0 is empty: one seat, one act per level.
+   */
+  nowPlaying?: string | null;
+  onNowPlaying?: () => void;
+  /**
    * How members are seated inside the shelf you are inside, and the control
    * that changes it. Order is position, so this is a dial like the axis is —
    * you watch a cluster re-form rather than watching a list re-sort.
@@ -322,6 +329,8 @@ function FieldOverlayImpl({
   groupLabel,
   shelfAction,
   onShelfAction,
+  nowPlaying = null,
+  onNowPlaying,
   orderKey,
   onChangeOrder,
   lens,
@@ -355,12 +364,22 @@ function FieldOverlayImpl({
     groupCount,
     groupLabel,
     shelfAction,
+    nowPlaying,
     orderKey,
   };
   const shown = useRef(live);
   if (showHeader) shown.current = live;
   const h = shown.current;
   const onDateAxis = h.arrangementKey === byTime.key;
+  // The header's one act: the shelf's bulk action inside a shelf; on the map,
+  // the song the player holds — unless the count line is saying something
+  // longer than a count, which this would run into.
+  const action =
+    h.level === 'shelf'
+      ? h.shelfAction
+      : h.level === 'field' && !h.noConnection && h.arrived == null
+      ? h.nowPlaying
+      : null;
   const noun = onDateAxis
     ? CLUSTER_NOUN[h.dateResolution]
     : AXIS_NOUN[h.arrangementKey] ?? 'GROUP';
@@ -467,20 +486,26 @@ function FieldOverlayImpl({
               you leave — one gesture, both directions.
             */}
           <Pressable
-            accessibilityElementsHidden={h.shelfAction === null}
-            accessibilityLabel={h.shelfAction ?? undefined}
+            accessibilityElementsHidden={action === null}
+            accessibilityLabel={
+              action === null
+                ? undefined
+                : h.level === 'field'
+                ? `Go to ${action}`
+                : action
+            }
             accessibilityRole="button"
             hitSlop={space.md}
             importantForAccessibility={
-              h.shelfAction === null ? 'no-hide-descendants' : 'yes'
+              action === null ? 'no-hide-descendants' : 'yes'
             }
-            onPress={onShelfAction}
-            pointerEvents={h.shelfAction === null ? 'none' : 'auto'}
+            onPress={h.level === 'field' ? onNowPlaying : onShelfAction}
+            pointerEvents={action === null ? 'none' : 'auto'}
             style={styles.actionSlot}
           >
             {({ pressed }) => (
               <WriteText
-                text={h.level === 'shelf' ? h.shelfAction ?? '' : ''}
+                text={action ?? ''}
                 charStyle={CHROME_STYLES.action}
                 color={pressed ? pal.muted : pal.ink}
                 // Both, because this slot has two gestures: it writes and
@@ -861,3 +886,24 @@ const styles = StyleSheet.create({
  * this component's props do not depend on the camera.
  */
 export const FieldOverlay = React.memo(FieldOverlayImpl);
+
+/** KNOBS — the now-playing word. */
+const NOW_PLAYING_KNOBS = {
+  /**
+   * The longest the word may be, in characters, ellipsis included: the
+   * header's count line holds `139 SONGS · 116 ALBUMS` at its other end.
+   */
+  MAX_CHARS: 20,
+} as const;
+
+/** `NOW · BLOODFLOW`, cut with an ellipsis to `NOW_PLAYING_KNOBS.MAX_CHARS`. */
+export function nowPlayingWord(state: string, title: string): string {
+  const word = `${state} · ${title.trim().toUpperCase()}`;
+  const chars = [...word];
+  return chars.length <= NOW_PLAYING_KNOBS.MAX_CHARS
+    ? word
+    : `${chars
+        .slice(0, NOW_PLAYING_KNOBS.MAX_CHARS - 1)
+        .join('')
+        .trimEnd()}\u2026`;
+}

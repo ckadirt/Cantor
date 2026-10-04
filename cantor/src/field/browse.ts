@@ -1,3 +1,4 @@
+import { OVERVIEW_KNOBS } from './bands';
 import type { Camera, FieldLayout, Point, Viewport } from './types';
 
 /** KNOBS — the map is a browsing window, never a fit of the entire library. */
@@ -27,14 +28,18 @@ export const BROWSE_KNOBS = {
   MARK_CLEARANCE_PX: 12,
   FADE_PX: 12,
   /**
-   * Seats left empty at the middle of a cluster that has something to show
-   * there — an album's cover. Eight leaves room for a cover about four marks
-   * wide.
+   * The side of what a hub cluster shows — an album's cover — in world units:
+   * about 60 dp at the map's fit. The cover is the album's face, so it leads
+   * and its songs follow under it.
    */
-  HUB_SEATS: 8,
+  HUB_SIDE_WORLD: 85,
+  /** Between the cover's foot and the middle of its first row of songs. */
+  HUB_SONG_GAP_WORLD: 24,
+  /** Between two songs in the rows under a cover, centre to centre. */
+  HUB_SONG_PITCH_WORLD: 26,
   /**
    * A mark's reach in world units at the map's fit (7.5 px over ~0.73): what
-   * the cover's corners have to stay clear of.
+   * the cover's edge has to stay clear of.
    */
   MARK_REACH_WORLD: 11,
 } as const;
@@ -55,18 +60,35 @@ export type BrowseCluster = Readonly<{
   hub: Point;
 }>;
 
-/**
- * Half the side of what a hub cluster shows in its middle, in world units: a
- * square whose corners clear the nearest song's mark. The nearest song sits
- * at the first seat past the hub, pulled in by the packing's own variation.
- */
+/** Half the side of what a hub cluster shows, in world units. */
 export function hubRadiusWorld(): number {
   'worklet';
-  const nearest =
-    BROWSE_KNOBS.CLUSTER_PITCH_WORLD *
-    Math.sqrt(BROWSE_KNOBS.HUB_SEATS + 0.5) *
-    (1 - BROWSE_KNOBS.RADIUS_VARIATION);
-  return (nearest - BROWSE_KNOBS.MARK_REACH_WORLD) / Math.SQRT2;
+  return BROWSE_KNOBS.HUB_SIDE_WORLD / 2;
+}
+
+/**
+ * A hub cluster: the cover at the top, its songs in rows under it, as many to
+ * a row as fit across the cover, each row centred. Read top to bottom and left
+ * to right, which is the order they gather into the shelf's column.
+ *
+ * Rows rather than the particle oval the other axes use, because here the
+ * cover is the cluster's face: songs scattered round it at a different angle
+ * for every album read as noise beside the one thing that identifies it.
+ */
+function hubCluster(count: number): BrowseCluster {
+  const side = BROWSE_KNOBS.HUB_SIDE_WORLD;
+  const pitch = BROWSE_KNOBS.HUB_SONG_PITCH_WORLD;
+  const perRow = Math.max(1, Math.floor(side / pitch) + 1);
+  const points = Array.from({ length: count }, (_, member) => {
+    const row = Math.floor(member / perRow);
+    const inRow = Math.min(perRow, count - row * perRow);
+    const column = member - row * perRow;
+    return {
+      x: (column - (inRow - 1) / 2) * pitch,
+      y: side + BROWSE_KNOBS.HUB_SONG_GAP_WORLD + row * pitch,
+    };
+  });
+  return { points, hub: { x: 0, y: side / 2 } };
 }
 
 /**
@@ -75,8 +97,8 @@ export function hubRadiusWorld(): number {
  * per-frame noise: refreshes preserve seats and the existing re-cut owns
  * membership transitions.
  *
- * `hub` keeps the middle `HUB_SEATS` seats empty, for a cluster whose centre
- * shows something of its own.
+ * A `hub` cluster has something of its own to show, and is laid out round it
+ * instead; see `hubCluster`.
  *
  * Offsets are measured from the top of the packing and the middle of its
  * width, which is where the group's name hangs — the hub's square included.
@@ -86,9 +108,9 @@ export function browseCluster(
   groupKey: string,
   hub = false,
 ): BrowseCluster {
+  if (hub) return hubCluster(count);
   if (count <= 0) return { points: [], hub: { x: 0, y: 0 } };
-  const skip = hub ? BROWSE_KNOBS.HUB_SEATS : 0;
-  if (count === 1 && skip === 0) {
+  if (count === 1) {
     return { points: [{ x: 0, y: 0 }], hub: { x: 0, y: 0 } };
   }
   let seed = 0;
@@ -96,7 +118,7 @@ export function browseCluster(
     seed = (seed * 31 + groupKey.charCodeAt(i)) % 2147483647;
   }
   const phase = ((seed % 360) * Math.PI) / 180;
-  const seats = count + skip;
+  const seats = count;
   const pitch = BROWSE_KNOBS.CLUSTER_PITCH_WORLD;
   const round = pitch * Math.sqrt(seats);
   const radiusX = Math.min(BROWSE_KNOBS.CLUSTER_MAX_RADIUS_X_WORLD, round);
@@ -104,7 +126,7 @@ export function browseCluster(
   const radiusY = (round * round) / radiusX;
   const goldenAngle = Math.PI * (3 - Math.sqrt(5));
   const points = Array.from({ length: count }, (_, member) => {
-    const index = member + skip;
+    const index = member;
     const angle =
       phase +
       index * goldenAngle +
@@ -119,11 +141,8 @@ export function browseCluster(
       y: Math.sin(angle) * radius * radiusY,
     };
   });
-  // Measured with the hub, so a lone song beside its cover does not claim the
-  // middle of the seat for itself, and the name hangs above the cover.
-  const reach = hub ? hubRadiusWorld() : 0;
-  const xs = [...points.map(point => point.x), ...(hub ? [-reach, reach] : [])];
-  const ys = [...points.map(point => point.y), ...(hub ? [-reach, reach] : [])];
+  const xs = points.map(point => point.x);
+  const ys = points.map(point => point.y);
   const top = Math.min(...ys);
   const midX = (Math.min(...xs) + Math.max(...xs)) / 2;
   // Handed out top to bottom, because the layout gives seat `i` to row `i` of
@@ -170,6 +189,8 @@ export type MapFrame = Readonly<{
   bottom: number;
   homeX: number;
   homeY: number;
+  /** The map's own scale, FIT: the overview is anything below it. */
+  fitScale: number;
 }>;
 
 export function mapFrame(layout: FieldLayout): MapFrame | null {
@@ -182,6 +203,7 @@ export function mapFrame(layout: FieldLayout): MapFrame | null {
     bottom: box.y + box.height,
     homeX: layout.fieldCenter.x,
     homeY: layout.fieldCenter.y,
+    fitScale: layout.fitScale,
   };
 }
 
@@ -201,8 +223,10 @@ export type CameraRange = Readonly<{
  * at any scale rather than only at FIT. Sideways the content rests a gutter in
  * from each edge.
  *
- * An axis the content does not fill has nowhere to go, and the honest answer
- * there is home: the camera the field opens on and comes back to.
+ * An axis the content does not fill has nowhere to go. At the map's own scale
+ * the honest answer there is home: the camera the field opens on and comes
+ * back to. Zoomed out past it, the map is smaller than the band and home would
+ * hang it from the band's middle, so the answer is the map's middle instead.
  */
 export function mapCameraRange(
   frame: MapFrame,
@@ -226,11 +250,14 @@ export function mapCameraRange(
       scale;
   const across = minX <= maxX;
   const down = minY <= maxY;
+  const overview = scale < frame.fitScale;
+  const restX = overview ? (minX + maxX) / 2 : frame.homeX;
+  const restY = overview ? (minY + maxY) / 2 : frame.homeY;
   return {
-    minX: across ? minX : frame.homeX,
-    maxX: across ? maxX : frame.homeX,
-    minY: down ? minY : frame.homeY,
-    maxY: down ? maxY : frame.homeY,
+    minX: across ? minX : restX,
+    maxX: across ? maxX : restX,
+    minY: down ? minY : restY,
+    maxY: down ? maxY : restY,
   };
 }
 
@@ -270,4 +297,30 @@ export function mapCameraAround(
       range.maxY,
     ),
   };
+}
+
+/**
+ * The farthest the map zooms out, as a multiple of FIT: until the whole map
+ * stands in the band, and never past `OVERVIEW_KNOBS.MIN_RATIO`. A map that
+ * already fits at its own scale has no overview at all.
+ */
+export function overviewMinRatio(frame: MapFrame, viewport: Viewport): number {
+  'worklet';
+  // The room above the first names and below the last marks is in screen
+  // pixels, as `mapCameraRange` keeps it: what has to shrink into the rest of
+  // the band is the map itself.
+  const map = frame.bottom - frame.top;
+  const band =
+    viewport.height -
+    BROWSE_KNOBS.TOP_PX -
+    BROWSE_KNOBS.FOOT_PX -
+    BROWSE_KNOBS.LABEL_SPACE_PX -
+    BROWSE_KNOBS.MARK_CLEARANCE_PX;
+  if (!(map > 0) || !(band > 0) || !(frame.fitScale > 0)) return 1;
+  const whole = band / (map * frame.fitScale);
+  return whole >= 1
+    ? 1
+    : whole < OVERVIEW_KNOBS.MIN_RATIO
+    ? OVERVIEW_KNOBS.MIN_RATIO
+    : whole;
 }
