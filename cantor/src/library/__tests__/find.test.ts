@@ -8,7 +8,13 @@ import {
   type FieldEntity,
   type FieldLayout,
 } from '../../field';
-import { buildFindIndex, findIn, foldWords, wordsMatch } from '../find';
+import {
+  buildFindIndex,
+  findIn,
+  foldWords,
+  matchRanges,
+  wordsMatch,
+} from '../find';
 
 const viewport = { width: 392, height: 852 };
 const day = 24 * 60 * 60 * 1000;
@@ -172,5 +178,22 @@ describe('find', () => {
     });
     expect(findIn(lay(byTime, 'date', []), index, 'love', null).count).toBe(0);
     expect(findIn(layout, new Map(), 'love', null).count).toBe(0);
+  });
+});
+
+describe('the matched starts of a name', () => {
+  const inked = (text: string, query: string) =>
+    matchRanges(text, query).map(range => text.slice(range.start, range.end));
+
+  it('inks each word a query word begins', () => {
+    expect(inked('Lovely Rain', 'love')).toEqual(['Love']);
+    expect(inked('Lovely Rain', 'ra lo')).toEqual(['Lo', 'Ra']);
+    expect(inked('Glove Box', 'love')).toEqual([]);
+    expect(inked('Love, Again', '')).toEqual([]);
+  });
+
+  it('measures on the original spelling, accents and all', () => {
+    expect(inked('Café Noir', 'cafe')).toEqual(['Café']);
+    expect(inked('Ñandú', 'nan')).toEqual(['Ñan']);
   });
 });

@@ -82,7 +82,8 @@ describe('the find blind', () => {
   it('gives the page to results once something is typed', () => {
     const { tree } = sheet({ tags: [], mode: 'any' });
     const input = tree.root.find(
-      node => node.props.accessibilityLabel === 'Find a song' &&
+      node =>
+        node.props.accessibilityLabel === 'Find a song' &&
         typeof node.props.onChangeText === 'function',
     );
     Renderer.act(() => input.props.onChangeText('lo'));
@@ -99,6 +100,7 @@ describe('the find blind', () => {
           onChangeFilter={() => {}}
           onClose={() => {}}
           open
+          scopeKey="week-39"
           scopeLabel="Sep 21 – 27"
           shownCount={64}
           tags={TAGS}
@@ -106,5 +108,129 @@ describe('the find blind', () => {
       );
     });
     expect(words(tree)).toContain('FIND IN SEP 21 – 27');
+  });
+});
+
+describe('the find blind, typed into', () => {
+  const { byTime, layoutField } = jest.requireActual('../../../field');
+  const { buildFindIndex } = jest.requireActual('../../../library/find');
+  const monday = Date.parse('2026-08-24T12:00:00Z');
+  const day = 24 * 3600 * 1000;
+  const titles: Record<string, string> = {
+    a: 'Lovely Rain',
+    b: 'Glove Box',
+    c: 'Love Theme',
+  };
+  const entities = [
+    ['a', 0],
+    ['b', 1],
+    ['c', 9],
+  ].map(([id, days]) => ({
+    key: `node-a:${id}`,
+    nodePublicKey: 'node-a',
+    entityId: id,
+    kind: 'song',
+    createdAtMs: monday + (days as number) * day,
+    durationMs: 60_000,
+    tags: [],
+  }));
+  const layout = layoutField({
+    entities,
+    arrangement: byTime,
+    viewport: { width: 392, height: 852 },
+  });
+  const index = buildFindIndex(
+    entities.map(entity => [entity.key, [titles[entity.entityId]]]),
+  );
+
+  function typed(query: string, scopeKey: string | null, onArrive = jest.fn()) {
+    let tree!: Renderer.ReactTestRenderer;
+    Renderer.act(() => {
+      tree = Renderer.create(
+        <FindSheet
+          filter={{ tags: [], mode: 'any' }}
+          libraryCount={3}
+          onChangeFilter={() => {}}
+          onClose={() => {}}
+          open
+          scopeKey={scopeKey}
+          scopeLabel={scopeKey === null ? null : 'This week'}
+          shownCount={3}
+          source={{
+            layout,
+            index,
+            describe: placement => ({
+              title: titles[placement.entityKey.slice('node-a:'.length)],
+              line: 'Model',
+              clef: {
+                id: placement.entityKey,
+                seed: 1,
+                model: 'm',
+                durationMs: 60_000,
+                audioState: 'remote',
+              },
+            }),
+            groupName: label => `week ${label}`,
+            noun: 'WEEK',
+            lens: jest.requireActual('../../../lenses').nameLens,
+            onArrive,
+          }}
+          tags={TAGS}
+        />,
+      );
+    });
+    const input = tree.root.find(
+      node =>
+        node.props.accessibilityLabel === 'Find a song' &&
+        typeof node.props.onChangeText === 'function',
+    );
+    Renderer.act(() => input.props.onChangeText(query));
+    return { tree, onArrive };
+  }
+
+  it('lists word-start matches by group, and arrives at the one tapped', () => {
+    const { tree, onArrive } = typed('love', null);
+    const rows = tree.root.findAll(
+      node =>
+        typeof node.type !== 'string' &&
+        node.props.accessibilityRole === 'button' &&
+        typeof node.props.accessibilityLabel === 'string' &&
+        node.props.accessibilityLabel.endsWith(', Model') &&
+        typeof node.props.onPress === 'function' &&
+        // The memo wrapper and the Pressable both carry the label.
+        node.parent?.props.accessibilityLabel !== node.props.accessibilityLabel,
+    );
+    expect(rows.map(row => row.props.accessibilityLabel.split(',')[0])).toEqual(
+      layout.placements
+        .filter((placement: { entityKey: string }) =>
+          ['node-a:a', 'node-a:c'].includes(placement.entityKey),
+        )
+        .map(
+          (placement: { entityKey: string }) =>
+            titles[placement.entityKey.slice('node-a:'.length)],
+        ),
+    );
+    expect(words(tree)).toContain('2 SONGS');
+    Renderer.act(() => rows[0].props.onPress());
+    expect(onArrive).toHaveBeenCalledTimes(1);
+  });
+
+  it('inside a shelf, finds there first and offers the rest', () => {
+    const week = layout.placements.find(
+      (placement: { entityKey: string }) => placement.entityKey === 'node-a:a',
+    ).groupKey;
+    const { tree } = typed('love', week);
+    expect(words(tree)).toContain('FIND IN THIS WEEK');
+    expect(words(tree)).toContain('1 MORE IN OTHER WEEKS');
+    Renderer.act(() =>
+      pressable(tree, '1 more in other weeks').props.onPress(),
+    );
+    expect(words(tree)).toContain('FIND');
+    expect(words(tree)).toContain('2 SONGS');
+  });
+
+  it('says when nothing matches', () => {
+    const { tree } = typed('zebra', null);
+    expect(words(tree)).toContain('No song begins a word with “zebra”.');
   });
 });
