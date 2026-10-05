@@ -94,6 +94,7 @@ import {
 } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
+  formatClock,
   MODE_POSE,
   PLAYER_TRANSPORT_KNOBS,
   PLAYER_VERB_POSE,
@@ -2135,9 +2136,24 @@ export function FieldScreen({ identity }: Props) {
           ? modelLabel(presentation.song.model)
           : presentation.device.artist ?? presentation.label;
       const tags = plainTagsOf(presentation.entity.tags);
+      // Who made it, how long it is, and how it was tagged: enough to tell
+      // two songs of the same name apart without opening either.
+      const line = [
+        who,
+        presentation.durationMs > 0
+          ? formatClock(presentation.durationMs / 1000)
+          : null,
+        tags.length === 0 ? null : tags.join(', '),
+      ]
+        .filter(part => part !== null)
+        .join(' · ');
       return {
         title: presentation.title,
-        line: tags.length === 0 ? who : `${who} · ${tags.join(', ')}`,
+        line,
+        caption:
+          presentation.source === 'node'
+            ? presentation.song.caption_summary
+            : null,
         clef: {
           ...presentation.recipe,
           audioState: presentation.localAudio.state,
