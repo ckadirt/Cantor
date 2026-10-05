@@ -1279,6 +1279,61 @@ describe('useFieldCamera', () => {
     expect(latest.camera.y).toBeCloseTo(shelfGone.fieldCenter.y, 6);
   });
 
+  it('goes home when the shelf you stand in leaves the field', async () => {
+    mockReducedMotion = true;
+    const week = Date.UTC(2026, 7, 8);
+    const pair: FieldEntity[] = [
+      entities[0],
+      {
+        ...entities[0],
+        key: 'node-a:song-c',
+        entityId: 'song-c',
+        createdAtMs: week + 40 * 24 * 3600 * 1000,
+      },
+    ];
+    const both = layoutField({
+      entities: pair,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    // A filter that keeps only song-c: song-a's month is gone.
+    const filtered = layoutField({
+      entities: [pair[1]],
+      arrangement: byDate('month'),
+      viewport,
+    });
+
+    function TransitionProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<TransitionProbe field={both} />);
+    });
+    const inside = both.placements.find(
+      placement => placement.entityKey === 'node-a:song-a',
+    )!;
+    await ReactTestRenderer.act(async () => {
+      latest.descend(inside);
+    });
+    expect(latest.level).toBe('shelf');
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={filtered} />);
+    });
+    // Not left at shelf distance over the empty page where it stood.
+    expect(latest.level).toBe('field');
+    expect(latest.camera.x).toBeCloseTo(filtered.fieldCenter.x, 6);
+    expect(latest.camera.y).toBeCloseTo(filtered.fieldCenter.y, 6);
+  });
+
   /*
    * C5: a regroup never lands on nothing. Groups move when the field is
    * re-cut; a camera left standing where one used to be showed an empty field,
