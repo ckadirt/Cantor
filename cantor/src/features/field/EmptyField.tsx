@@ -1,7 +1,9 @@
 import React from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import type { TagFilter } from '../../field';
 import { Caret, FOLIO_KNOBS, PanelPressable, PhoneSealMark } from '../controls';
 import { font, space, touch, type, usePalette } from '../../theme/tokens';
+import { emptyFilterSentence } from './filterWords';
 
 /** KNOBS — the field with nothing in it (`flow.html#f-empty`, I7i). */
 export const EMPTY_FIELD_KNOBS = {
@@ -53,6 +55,44 @@ export function EmptyField({
   );
 }
 
+/**
+ * The map when the tag filter has left nothing on it: *No songs are rainy and
+ * live*, and the one way back. Not `EmptyField`'s doors — the library is not
+ * empty, and offering to bring music in would say it was.
+ */
+export function EmptyFilter({
+  filter,
+  onClear,
+}: {
+  filter: TagFilter;
+  onClear: () => void;
+}) {
+  const pal = usePalette();
+  return (
+    <View pointerEvents="box-none" style={styles.root}>
+      <View style={styles.column}>
+        <Text style={[type.body, styles.sentence, { color: pal.ink }]}>
+          {emptyFilterSentence(filter)}
+        </Text>
+        <Pressable
+          accessibilityLabel="Clear the filter"
+          accessibilityRole="button"
+          onPress={onClear}
+          style={styles.clear}
+        >
+          {({ pressed }) => (
+            <Text
+              style={[type.eyebrow, { color: pressed ? pal.muted : pal.ink }]}
+            >
+              CLEAR
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
 function EmptyDoor({
   label,
   muted = false,
@@ -96,6 +136,12 @@ const styles = StyleSheet.create({
     width: EMPTY_FIELD_KNOBS.WIDTH_PX,
   },
   sentence: { textAlign: 'center' },
+  clear: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: touch.min,
+    minWidth: touch.min * 2,
+  },
   doors: { alignSelf: 'stretch', borderTopWidth: StyleSheet.hairlineWidth },
   door: {
     alignItems: 'center',

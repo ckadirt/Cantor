@@ -8,6 +8,7 @@ import {
 } from 'react-native';
 import Animated, {
   useAnimatedStyle,
+  useReducedMotion,
   useSharedValue,
   withTiming,
   type SharedValue,
@@ -15,12 +16,15 @@ import Animated, {
 import { TransformText, WriteText } from '../../motion';
 import { Dial, Reveal } from '../controls';
 import { FieldLegend } from './FieldLegend';
+import { filterPhrase, type PhraseSegment } from './filterWords';
 import {
   NOW_PLAYING_KNOBS,
+  NOW_PLAYING_MARK_BOX_PX,
   NowPlayingSeat,
   lineWidth,
   type NowPlaying,
 } from './NowPlaying';
+import type { SkFont } from '@shopify/react-native-skia';
 import { useFontScaledStyle, useMorphFont } from '../../motion/fonts';
 import type { Lens } from '../../lenses';
 import {
@@ -28,11 +32,13 @@ import {
   DATE_RESOLUTIONS,
   SONG_ORDERS,
   REPRESENTATION_WINDOWS,
+  EMPTY_FILTER,
   bandAlphaAt,
   byTime,
   type Camera,
   type DateResolution,
   type Level,
+  type TagFilter,
 } from '../../field';
 import { space, type, usePalette } from '../../theme/tokens';
 
@@ -70,6 +76,17 @@ type Props = {
   /** What the header counts: songs on screen, and the clusters holding them. */
   songCount: number;
   groupCount: number;
+  /**
+   * The tag filter, said on the map's count line as `10 OF 64 · RAINY OR
+   * LIVE`: the tag words open the tags, the conjunction flips the mode.
+   */
+  filter?: TagFilter;
+  /** Every song in the library, for the `OF 64`; read only while filtered. */
+  libraryCount?: number;
+  onFlipFilter?: () => void;
+  onOpenTags?: () => void;
+  /** TEMPORARY (find-plan F1): a dev way to set a filter before the blind. */
+  onCountLongPress?: () => void;
   /** The name of the cluster you are inside, at L1. */
   groupLabel: string | null;
   /**
@@ -245,6 +262,24 @@ export const OVERLAY_KNOBS = {
    * rather than pulling the action back out of step with the rest.
    */
   HEADER_CHANGE_MS: 700,
+  /**
+   * The filter's words on the count line (`RAINY OR LIVE`). A tag is marked
+   * by a dotted rule under it, the conjunction by a solid one, as the study
+   * draws them (`search-variants.html`, B·4): dotted opens, solid flips.
+   */
+  PHRASE_RULE_TOP_PX: 16,
+  PHRASE_DOT_PITCH_PX: 3,
+  /**
+   * The targets sit one space apart, so they reach up and down a finger's
+   * height and barely sideways: a wide slop on `OR` would take `RAINY`'s taps.
+   */
+  PHRASE_HIT_SLOP: { top: 14, bottom: 14, left: 3, right: 3 },
+  /**
+   * How much of a held song's name the filter's words leave beside its mark,
+   * at the least: four or five letters, enough for the marquee to read as a
+   * name passing rather than a mark with a stain beside it.
+   */
+  HELD_NAME_MIN_PX: 48,
 } as const;
 
 /**
@@ -340,6 +375,11 @@ function FieldOverlayImpl({
   onChangeDateResolution,
   songCount,
   groupCount,
+  filter = EMPTY_FILTER,
+  libraryCount = 0,
+  onFlipFilter,
+  onOpenTags,
+  onCountLongPress,
   groupLabel,
   shelfAction,
   onShelfAction,
@@ -376,6 +416,8 @@ function FieldOverlayImpl({
     dateResolution,
     songCount,
     groupCount,
+    filter,
+    libraryCount,
     groupLabel,
     shelfAction,
     nowPlaying,
@@ -396,10 +438,21 @@ function FieldOverlayImpl({
   const noun = onDateAxis
     ? CLUSTER_NOUN[h.dateResolution]
     : AXIS_NOUN[h.arrangementKey] ?? 'GROUP';
+  // The filter is said on the map's count line only: inside a shelf the line
+  // is the shelf's own count, and its right end is the bulk action's.
+  const saysFilter =
+    h.level === 'field' &&
+    !h.noConnection &&
+    h.arrived == null &&
+    h.filter.tags.length > 0;
   const countLine = h.noConnection
     ? `NO CONNECTION · ${h.playableHere ?? 0} PLAYABLE HERE`
     : h.arrived != null && h.level === 'field'
     ? `${h.arrived} ARRIVED FROM THIS PHONE`
+    : saysFilter
+    ? `${metaLine(h.level, h.songCount, h.groupCount, noun, h.libraryCount)}${
+        h.offline ? ' · OFFLINE' : ''
+      } ·`
     : `${metaLine(h.level, h.songCount, h.groupCount, noun)}${
         h.offline ? ' · OFFLINE' : ''
       }`;
@@ -411,11 +464,34 @@ function FieldOverlayImpl({
   }, []);
   const countStyle = useFontScaledStyle(CHROME_STYLES.eyebrow);
   const countFont = useMorphFont(countStyle);
+  const tracking = countStyle.letterSpacing ?? 0;
+  // Where the phrase starts: one space after the count's own ink.
+  const phraseLeft =
+    countFont === null ? 0 : lineWidth(countFont, tracking, `${countLine} `);
+  // A held song keeps its mark and the start of its name at the row's end;
+  // the phrase names fewer tags rather than running under them.
+  const heldReserve =
+    held === null
+      ? 0
+      : NOW_PLAYING_KNOBS.COUNT_GAP_PX +
+        NOW_PLAYING_MARK_BOX_PX +
+        NOW_PLAYING_KNOBS.MARK_GAP_PX +
+        OVERLAY_KNOBS.HELD_NAME_MIN_PX;
+  const phrase = filterPhrase(
+    saysFilter ? h.filter : EMPTY_FILTER,
+    text =>
+      rowWidth === null ||
+      countFont === null ||
+      phraseLeft + lineWidth(countFont, tracking, text) - tracking <=
+        rowWidth - heldReserve,
+  );
   const room =
     rowWidth === null || countFont === null
       ? null
       : rowWidth -
-        lineWidth(countFont, countStyle.letterSpacing ?? 0, countLine) -
+        (phrase.text.length > 0
+          ? phraseLeft + lineWidth(countFont, tracking, phrase.text)
+          : lineWidth(countFont, tracking, countLine)) -
         NOW_PLAYING_KNOBS.COUNT_GAP_PX;
   const legendShown = showLegend && h.level === 'field';
   // The key and the hint share one seat; they cross rather than cut.
@@ -498,7 +574,13 @@ function FieldOverlayImpl({
           style={styles.metaRow}
           pointerEvents="box-none"
         >
-          <View style={styles.metaCount} pointerEvents="none">
+          <Pressable
+            accessible={false}
+            disabled={onCountLongPress === undefined}
+            onLongPress={onCountLongPress}
+            pointerEvents={onCountLongPress === undefined ? 'none' : 'auto'}
+            style={styles.metaCount}
+          >
             <TransformText
               text={countLine}
               charStyle={CHROME_STYLES.eyebrow}
@@ -506,7 +588,21 @@ function FieldOverlayImpl({
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
               style={styles.eyebrowSlot}
             />
-          </View>
+          </Pressable>
+          {rowWidth !== null && countFont !== null ? (
+            <FilterPhraseSeat
+              font={countFont}
+              tracking={tracking}
+              left={phraseLeft}
+              width={rowWidth}
+              phrase={phrase}
+              mode={h.filter.mode}
+              onFlip={onFlipFilter}
+              onOpenTags={onOpenTags}
+              ink={pal.ink}
+              visible={!away}
+            />
+          ) : null}
           {/*
               Always mounted, and empty at every level that has no bulk action.
               An action that unmounted could not be taken back off the screen:
@@ -709,19 +805,171 @@ function FieldOverlayImpl({
   );
 }
 
-/** `23 SONGS · 5 WEEKS`, or what the current axis counts instead. */
+/**
+ * `23 SONGS · 5 WEEKS`, or what the current axis counts instead; `10 OF 64`
+ * on the map while a filter holds `libraryCount` songs back to `songCount`.
+ */
 export function metaLine(
   level: Level,
   songCount: number,
   groupCount: number,
   noun: string,
+  libraryCount: number | null = null,
 ): string {
   const songs = `${songCount} ${songCount === 1 ? 'SONG' : 'SONGS'}`;
   if (level === 'shelf') return songs;
+  // The axis's noun drops: the filter's own words take that half of the line.
+  if (libraryCount !== null) return `${songCount} OF ${libraryCount}`;
   if (songCount === 0) return 'NO SONGS YET';
   // The axis's own noun: at L0 the bulk action's slot is empty and overlaid
   // (`actionSlot`), so `8 SONGS · 3 PLAYLISTS` has the whole row.
   return `${songs} · ${groupCount} ${noun}${groupCount === 1 ? '' : 'S'}`;
+}
+
+/**
+ * The filter's words on the count line, in ink after the faint count, and the
+ * press targets inside them.
+ *
+ * One line drawn once, with its targets laid over it rather than one canvas
+ * per word: the phrase writes on and off as one gesture, and `OR` becoming
+ * `AND` morphs in place, which a row of separate words could not do. The slot
+ * is the whole row wide and slides to the count's end, so its width never
+ * changes — the engine needs a stable slot to unwrite into.
+ */
+function FilterPhraseSeat({
+  font,
+  tracking,
+  left,
+  width,
+  phrase,
+  mode,
+  onFlip,
+  onOpenTags,
+  ink,
+  visible,
+}: {
+  font: SkFont;
+  tracking: number;
+  /** Where the phrase begins, from the row's left edge. */
+  left: number;
+  width: number;
+  phrase: ReturnType<typeof filterPhrase>;
+  mode: TagFilter['mode'];
+  onFlip?: () => void;
+  onOpenTags?: () => void;
+  ink: string;
+  visible: boolean;
+}) {
+  const reducedMotion = useReducedMotion();
+  const shown = phrase.text.length > 0;
+  const x = useSharedValue(left);
+  const marks = useSharedValue(shown ? 1 : 0);
+  useEffect(() => {
+    x.value = reducedMotion
+      ? left
+      : withTiming(left, { duration: OVERLAY_KNOBS.HEADER_CHANGE_MS });
+  }, [left, reducedMotion, x]);
+  useEffect(() => {
+    marks.value = withTiming(shown ? 1 : 0, {
+      duration: OVERLAY_KNOBS.HEADER_CHANGE_MS,
+    });
+  }, [marks, shown]);
+  const seat = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }] }));
+  const underlines = useAnimatedStyle(() => ({ opacity: marks.value }));
+  return (
+    <Animated.View
+      pointerEvents="box-none"
+      style={[styles.phraseSeat, { width }, seat]}
+    >
+      <View pointerEvents="none" style={StyleSheet.absoluteFill}>
+        <WriteText
+          text={phrase.text}
+          charStyle={CHROME_STYLES.eyebrow}
+          color={ink}
+          duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+          writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+          variant="transform"
+          style={styles.eyebrowSlot}
+        />
+      </View>
+      {shown && visible
+        ? phrase.segments.map(segment => (
+            <PhraseTarget
+              key={`${segment.kind}:${segment.start}`}
+              font={font}
+              tracking={tracking}
+              text={phrase.text}
+              segment={segment}
+              mode={mode}
+              ink={ink}
+              underlines={underlines}
+              onPress={segment.kind === 'join' ? onFlip : onOpenTags}
+            />
+          ))
+        : null}
+    </Animated.View>
+  );
+}
+
+/** One word of the phrase you can press, and the rule under it that says so. */
+function PhraseTarget({
+  font,
+  tracking,
+  text,
+  segment,
+  mode,
+  ink,
+  underlines,
+  onPress,
+}: {
+  font: SkFont;
+  tracking: number;
+  text: string;
+  segment: PhraseSegment;
+  mode: TagFilter['mode'];
+  ink: string;
+  underlines: ReturnType<typeof useAnimatedStyle>;
+  onPress?: () => void;
+}) {
+  const word = text.slice(segment.start, segment.end);
+  const x = lineWidth(font, tracking, text.slice(0, segment.start));
+  // The last letter's tracking is air after the word, not the word.
+  const wordWidth = Math.max(0, lineWidth(font, tracking, word) - tracking);
+  const join = segment.kind === 'join';
+  const dots = join
+    ? []
+    : Array.from(
+        { length: Math.floor(wordWidth / OVERLAY_KNOBS.PHRASE_DOT_PITCH_PX) + 1 },
+        (_, index) => index * OVERLAY_KNOBS.PHRASE_DOT_PITCH_PX,
+      );
+  return (
+    <Pressable
+      accessibilityLabel={
+        join
+          ? mode === 'all'
+            ? 'Songs with every tag. Show songs with any of them'
+            : 'Songs with any of the tags. Show songs with all of them'
+          : `Filtered by ${text.toLocaleLowerCase()}. Choose tags`
+      }
+      accessibilityRole="button"
+      hitSlop={OVERLAY_KNOBS.PHRASE_HIT_SLOP}
+      onPress={onPress}
+      style={[styles.phraseTarget, { left: x, width: wordWidth }]}
+    >
+      <Animated.View pointerEvents="none" style={[styles.phraseRule, underlines]}>
+        {join ? (
+          <View style={[styles.phraseLine, { backgroundColor: ink }]} />
+        ) : (
+          dots.map(dot => (
+            <View
+              key={dot}
+              style={[styles.phraseDot, { backgroundColor: ink, left: dot }]}
+            />
+          ))
+        )}
+      </Animated.View>
+    </Pressable>
+  );
 }
 
 /**
@@ -835,6 +1083,26 @@ const styles = StyleSheet.create({
   },
   /** The count takes the room the action does not, and morphs inside it. */
   metaCount: { flex: 1 },
+  phraseSeat: {
+    bottom: 0,
+    height: OVERLAY_KNOBS.EYEBROW_ROW_PX,
+    left: 0,
+    position: 'absolute',
+  },
+  phraseTarget: {
+    bottom: 0,
+    height: OVERLAY_KNOBS.EYEBROW_ROW_PX,
+    position: 'absolute',
+  },
+  phraseRule: {
+    height: 1,
+    left: 0,
+    position: 'absolute',
+    right: 0,
+    top: OVERLAY_KNOBS.PHRASE_RULE_TOP_PX,
+  },
+  phraseLine: { height: StyleSheet.hairlineWidth, width: '100%' },
+  phraseDot: { height: 1, position: 'absolute', top: 0, width: 1 },
   /*
    * Overlaid, not flexed: at L0 the action is empty but still mounted (so the
    * shelf's word can unwrite on exit), and a flexed 190 px slot steals that

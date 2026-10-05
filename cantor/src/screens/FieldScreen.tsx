@@ -72,7 +72,7 @@ import {
   type FieldController,
   type FieldPresentation,
 } from '../features/field/useFieldController';
-import { EmptyField } from '../features/field/EmptyField';
+import { EmptyField, EmptyFilter } from '../features/field/EmptyField';
 import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
@@ -96,7 +96,9 @@ import { jobStateLabel } from '../jobs/policy';
 import { shelfLabel } from '../features/field/shelfLabels';
 import {
   DEFAULT_ORDER_KEY,
+  EMPTY_FILTER,
   GRAIN_ENABLED,
+  applyTagFilter,
   arrangementByKey,
   byAlbum,
   byDate,
@@ -115,11 +117,13 @@ import {
   representationAlphas,
   placementPoint,
   stepFrom,
+  tagCounts,
   visibleSecondsAt,
   worldToScreen,
   type DateResolution,
   type Placement,
   type QueueStep,
+  type TagFilter,
   type Viewport,
 } from '../field';
 import {
@@ -422,6 +426,11 @@ export function FieldScreen({ identity }: Props) {
   const [lensKey, setLensKey] = useState(DEFAULT_LENS_KEY);
   const [arrangementKey, setArrangementKey] = useState(byTime.key);
   /**
+   * Which tags the map is narrowed to. Held here, in memory only: it survives
+   * axis and level changes and is gone with the process (find-plan, 14).
+   */
+  const [tagFilter, setTagFilter] = useState<TagFilter>(EMPTY_FILTER);
+  /**
    * How members are seated, and the seed a random seating is held at.
    *
    * The seed changes only when random is asked for again, which is what makes
@@ -650,16 +659,26 @@ export function FieldScreen({ identity }: Props) {
         : arrangementByKey(arrangementKey) ?? byTime,
     [arrangementKey, dateResolution],
   );
+  /**
+   * What is on the map: the library less what the filter holds back. The same
+   * array as the library's while no filter is on, so nothing below re-cuts.
+   * Everything that names the library as a whole — the tag vocabulary, the
+   * playlists, the counts the blind shows — keeps reading `controller`.
+   */
+  const fieldEntities = useMemo(
+    () => applyTagFilter(controller.entities, tagFilter),
+    [controller.entities, tagFilter],
+  );
   const layout = useMemo(() => {
     if (viewport === null) return null;
     return layoutField({
-      entities: controller.entities,
+      entities: fieldEntities,
       arrangement,
       viewport,
       order: orderByKey(orderKey),
       orderSeed,
     });
-  }, [arrangement, controller.entities, orderKey, orderSeed, viewport]);
+  }, [arrangement, fieldEntities, orderKey, orderSeed, viewport]);
 
   const openComposer = useCallback(() => {
     setSubmitError(null);
@@ -1998,6 +2017,39 @@ export function FieldScreen({ identity }: Props) {
   }, [closeTopmostSheet, fieldCamera]);
 
   const songCount = controller.presentations.size;
+  const filtering = tagFilter.tags.length > 0;
+  /** Songs the filter leaves on the map; every song while there is none. */
+  const shownCount = useMemo(
+    () =>
+      filtering
+        ? fieldEntities.filter(entity => entity.kind === 'song').length
+        : songCount,
+    [fieldEntities, filtering, songCount],
+  );
+  const flipFilter = useCallback(() => {
+    setTagFilter(current => ({
+      ...current,
+      mode: current.mode === 'any' ? 'all' : 'any',
+    }));
+  }, []);
+  const clearFilter = useCallback(() => setTagFilter(EMPTY_FILTER), []);
+  // Opened by F3's blind; until then the count line's tag words do nothing.
+  const openTags = useCallback(() => {}, []);
+  /**
+   * TEMPORARY (find-plan F1, removed in F3): a long press on the count line
+   * narrows the map to its two most-used tags, and the next one clears it, so
+   * the filter can be judged on the phone before the blind exists.
+   */
+  const devFilter = useCallback(() => {
+    setTagFilter(current => {
+      if (current.tags.length > 0) return EMPTY_FILTER;
+      const top = [...tagCounts(controller.entities)]
+        .sort((left, right) => right.count - left.count)
+        .slice(0, 2)
+        .map(count => count.tag);
+      return { tags: top, mode: 'any' };
+    });
+  }, [controller.entities]);
   /** The cluster you are inside, named the way its axis names it. */
   const focusedGroupLabel = useMemo(() => {
     const key = fieldCamera.groupKey;
@@ -2256,6 +2308,9 @@ export function FieldScreen({ identity }: Props) {
             </View>
           </GestureDetector>
         ) : null}
+        {filtering && layout !== null && layout.placements.length === 0 ? (
+          <EmptyFilter filter={tagFilter} onClear={clearFilter} />
+        ) : null}
         {emptyField ? (
           <EmptyField
             onBringIn={bringInFromEmpty}
@@ -2434,7 +2489,12 @@ export function FieldScreen({ identity }: Props) {
           shelfAction={shelfDownload?.label ?? null}
           showLegend={!legendSeen}
           mountLegend={legendMounted}
-          songCount={shelfGroup?.entityKeys.length ?? songCount}
+          songCount={shelfGroup?.entityKeys.length ?? shownCount}
+          filter={tagFilter}
+          libraryCount={songCount}
+          onFlipFilter={flipFilter}
+          onOpenTags={openTags}
+          onCountLongPress={devFilter}
           storageError={audioError ?? storageError}
         />
       </View>

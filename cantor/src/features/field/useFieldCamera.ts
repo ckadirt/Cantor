@@ -1022,6 +1022,30 @@ export function useFieldCamera({
       ? newHome ?? fitCorrected
       : fitCorrected;
     /*
+     * The shelf you stand in can leave the field as well: a tag filter that
+     * keeps none of its songs, a forgotten node that took all of them. At
+     * shelf distance over where it stood, the page was empty under a header
+     * naming whichever seat was now nearest, with nothing to say why. So the
+     * re-cut goes home — the same answer the map gives to space it no longer
+     * fills, below.
+     */
+    if (
+      previous !== null &&
+      !stranded &&
+      newHome !== null &&
+      isShelfDistance(heading.scale, fromFitScale) &&
+      !isSongDistance(heading.scale, fromFitScale)
+    ) {
+      const leaving = shelfSeats(previous.layout);
+      const seat = nearestSeat(leaving, heading);
+      if (
+        seat >= 0 &&
+        !layout.groups.some(group => group.key === leaving[seat].key)
+      ) {
+        toCamera = newHome;
+      }
+    }
+    /*
      * At the map, a regroup that would leave the camera over space the new
      * layout does not fill goes home instead: groups move when the field is
      * re-cut, and the camera standing where one used to be showed an empty
