@@ -1,14 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  FlatList,
-  Keyboard,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  TextInput,
-  View,
-} from 'react-native';
+import { Keyboard, StyleSheet, Text, TextInput, View } from 'react-native';
 import type { FieldLayout, Placement, TagCount, TagFilter } from '../../field';
 import type { Lens } from '../../lenses';
 import {
@@ -18,55 +9,47 @@ import {
   type FindResult,
 } from '../../library/find';
 import {
-  Arrive,
-  ARRIVAL_KNOBS,
+  Coda,
+  Dial,
+  Door,
+  FOLIO_ACT_STYLE,
+  FOLIO_META_STYLE,
+  FOLIO_NOTE_STYLE,
+  FOLIO_TITLE_STYLE,
+  FolioHead,
+  LEDGER_DIAL_ITEM,
+  Measure,
   PanelPressable,
+  Rest,
+  Row,
   SongClef,
+  Stave,
   type SongClefSong,
 } from '../controls';
-import { CURTAIN_KNOBS, useKeyboardInset } from '../curtain';
 import { filterPhrase } from '../field/filterWords';
-import { font, space, touch, type, usePalette } from '../../theme/tokens';
+import { font, type, usePalette } from '../../theme/tokens';
 
 /**
- * KNOBS — the find blind, as the study draws it (`search-variants.html`,
- * B·2 and B·3), at the seats the field's own header uses so the blind's
- * three lines land where the map's were.
+ * KNOBS — the find blind, drawn as a Folio like every other blind
+ * (`folio.html`): the head with its clef, a stave of measures on the spine,
+ * and a coda for the page's one act. A found song is a roster row — its face
+ * on the spine, its name a door — the way a node is on the nodes page.
  */
 export const FIND_KNOBS = {
-  /**
-   * Above the eyebrow, inside the blind's seat gap: together they put the
-   * eyebrow where the field's stands (`space.xl` from the top).
-   */
-  HEAD_TOP_PX: space.xl - CURTAIN_KNOBS.SEAT_GAP_PX,
-  EYEBROW_ROW_PX: 15,
-  /** The query line: the title's face and size, on a hairline. */
-  QUERY_ROW_PX: 44,
-  QUERY_RULE_PX: StyleSheet.hairlineWidth,
-  /** `OR ONLY SHOW` and `ANY · ALL`, at a quieter size than the eyebrow. */
-  LIST_HEAD_SIZE_PX: 10,
-  LIST_HEAD_TOP_PX: 30,
-  /** One tag per row: a dot, its name in the display face, its count. */
-  TAG_ROW_PX: 52,
-  TAG_NAME_SIZE_PX: 21,
+  /** A song's face against the spine, as a node's station stands there. */
+  ROW_FACE_PX: 34,
+  /** The clef: up to four faces, two by two, as the nodes page draws its own. */
+  CLEF_FACE_PX: 28,
+  CLEF_GAP_PX: 4,
+  CLEF_FACES: 4,
+  /** A tag's mark against the spine: chosen is filled, unchosen a ring. */
   TAG_DOT_PX: 7,
-  TAG_DOT_GAP_PX: 12,
-  /** Between the ANY and ALL words. */
-  MODE_GAP_PX: 14,
+  TAG_NAME_SIZE_PX: 20,
   /**
-   * A result is a shelf row: the face, then the name over its place. The
-   * study seats them at 98 and 155 dp from the screen's edge; these are from
-   * the blind's content edge, which is already `space.lg` in.
+   * The most rows a find draws. Each face is a small canvas; past a page or
+   * two of matches, the next letter is a better way down than a scroll.
    */
-  RESULT_ROW_PX: 64,
-  RESULT_FACE_CENTRE_PX: 98 - space.lg,
-  RESULT_NAME_PX: 155 - space.lg,
-  RESULT_FACE_PX: 30,
-  RESULT_NAME_SIZE_PX: 17.5,
-  RESULT_LINE_SIZE_PX: 8.6,
-  /** A group's name, where the group changes, in small faint mono. */
-  GROUP_ROW_PX: 30,
-  RESULTS_TOP_PX: 22,
+  MAX_ROWS: 60,
 } as const;
 
 /** What a result row says about its song. */
@@ -141,7 +124,6 @@ export function FindSheet({
   source,
 }: Props) {
   const pal = usePalette();
-  const keyboard = useKeyboardInset();
   const [query, setQuery] = useState('');
   /** Widened past the shelf it was opened in, by the last row's offer. */
   const [wide, setWide] = useState(false);
@@ -204,161 +186,200 @@ export function FindSheet({
     ? 'FIND'
     : `FIND IN ${(scopeLabel ?? '').toUpperCase()}`;
 
+  // The clef is a drawing of the page's subject: the songs it is about —
+  // what was found, or before anything is typed, what the map shows.
+  const clefSongs = useMemo(() => {
+    if (source === undefined || layout === null) return [];
+    const placements =
+      result === null
+        ? layout.placements
+        : result.groups.flatMap(group => group.placements);
+    const seen = new Set<string>();
+    const songs: SongClefSong[] = [];
+    for (const placement of placements) {
+      if (songs.length >= FIND_KNOBS.CLEF_FACES) break;
+      if (seen.has(placement.entityKey)) continue;
+      const row = source.describe(placement);
+      if (row === null) continue;
+      seen.add(placement.entityKey);
+      songs.push(row.clef);
+    }
+    return songs;
+  }, [layout, result, source]);
+
   return (
     <View style={styles.root}>
-      <Arrive from={ARRIVAL_KNOBS.LINES_FROM} to={ARRIVAL_KNOBS.LINES_TO}>
-        <View style={styles.eyebrowRow}>
+      <FolioHead
+        clef={
+          source === undefined ? null : (
+            <FoundClef lens={source.lens} songs={clefSongs} />
+          )
+        }
+        eyebrow={eyebrow}
+        meta={
           <Text
-            accessibilityRole="header"
-            numberOfLines={1}
-            style={[type.eyebrow, styles.eyebrow, { color: pal.muted }]}
+            accessibilityLiveRegion="polite"
+            style={[FOLIO_META_STYLE, styles.meta, { color: pal.faint }]}
           >
-            {eyebrow}
+            {countLine}
           </Text>
+        }
+        nav={{
+          label: 'CLOSE',
+          accessibilityLabel: 'Close find',
+          onPress: onClose,
+        }}
+        title={
+          <TextInput
+            ref={input}
+            accessibilityLabel="Find a song"
+            autoCapitalize="none"
+            autoCorrect={false}
+            onChangeText={setQuery}
+            placeholder="a song…"
+            placeholderTextColor={pal.faint}
+            returnKeyType="search"
+            style={[FOLIO_TITLE_STYLE, styles.query, { color: pal.ink }]}
+            underlineColorAndroid="transparent"
+            value={query}
+          />
+        }
+        titleWritesItself
+      />
+      <Stave keyboardShouldPersistTaps="handled">
+        {typing && result !== null && source !== undefined ? (
+          <Results
+            onWiden={() => setWide(true)}
+            query={query}
+            result={result}
+            scoped={scoped}
+            source={source}
+          />
+        ) : !typing ? (
+          <TagPage
+            chosen={chosen}
+            filter={filter}
+            onMode={mode => onChangeFilter({ ...filter, mode })}
+            onToggle={toggle}
+            tags={tags}
+          />
+        ) : null}
+      </Stave>
+      <Coda>
+        {filtering && !typing ? (
           <PanelPressable
-            accessibilityLabel="Close find"
+            accessibilityLabel={`Show every song, not only ${filterPhrase(
+              filter,
+            ).text.toLocaleLowerCase()}`}
             accessibilityRole="button"
-            hitSlop={space.md}
-            onPress={onClose}
-            style={styles.close}
+            onPress={() => onChangeFilter({ tags: [], mode: 'any' })}
+            style={styles.act}
           >
-            <Text style={[type.eyebrow, { color: pal.muted }]}>CLOSE</Text>
+            <Text style={[FOLIO_ACT_STYLE, { color: pal.ink }]}>
+              Show every song
+            </Text>
           </PanelPressable>
-        </View>
-      </Arrive>
-      <Arrive from={ARRIVAL_KNOBS.TITLE_FROM} to={ARRIVAL_KNOBS.TITLE_TO}>
-        <TextInput
-          ref={input}
-          accessibilityLabel="Find a song"
-          autoCapitalize="none"
-          autoCorrect={false}
-          onChangeText={setQuery}
-          placeholder="a song…"
-          placeholderTextColor={pal.faint}
-          returnKeyType="search"
-          style={[styles.query, { color: pal.ink }]}
-          underlineColorAndroid="transparent"
-          value={query}
-        />
-        <View
-          style={[
-            styles.queryRule,
-            { backgroundColor: typing ? pal.ink : pal.line },
-          ]}
-        />
-        <Text
-          accessibilityLiveRegion="polite"
-          style={[type.eyebrow, styles.count, { color: pal.faint }]}
-        >
-          {countLine}
-        </Text>
-      </Arrive>
-      {typing && result !== null && source !== undefined ? (
-        <Results
-          bottomInset={keyboard}
-          grouped={!scoped}
-          onWiden={() => setWide(true)}
-          query={query}
-          result={result}
-          source={source}
-        />
-      ) : null}
-      {typing ? null : (
-        <TagList
-          bottomInset={keyboard}
-          filter={filter}
-          chosen={chosen}
-          onClear={() => onChangeFilter({ tags: [], mode: 'any' })}
-          onMode={mode => onChangeFilter({ ...filter, mode })}
-          onToggle={toggle}
-          tags={tags}
-        />
-      )}
+        ) : null}
+      </Coda>
     </View>
   );
 }
 
-/** The empty query's page: the library's tags, one per row. */
-function TagList({
+/** Up to four of the page's songs, two by two, against the spine. */
+function FoundClef({
+  songs,
+  lens,
+}: {
+  songs: readonly SongClefSong[];
+  lens: Lens;
+}) {
+  if (songs.length === 0) return null;
+  return (
+    <View style={styles.clef}>
+      {songs.map(song => (
+        <SongClef
+          key={song.id}
+          lens={lens}
+          size={FIND_KNOBS.CLEF_FACE_PX}
+          song={song}
+        />
+      ))}
+    </View>
+  );
+}
+
+/** The empty query's page: how the tags join, then the tags themselves. */
+function TagPage({
   tags,
   filter,
   chosen,
   onToggle,
   onMode,
-  onClear,
-  bottomInset,
 }: {
   tags: readonly TagCount[];
   filter: TagFilter;
   chosen: ReadonlySet<string>;
   onToggle: (tag: string) => void;
   onMode: (mode: TagFilter['mode']) => void;
-  onClear: () => void;
-  bottomInset: number;
 }) {
   const pal = usePalette();
   if (tags.length === 0) {
     return (
-      <Text style={[type.small, styles.noTags, { color: pal.muted }]}>
-        No song has a tag yet. Hold a song to give it one.
-      </Text>
+      <Measure>
+        <Row label="Only show">
+          <Text style={[type.body, { color: pal.muted }]}>
+            No song has a tag yet. Hold a song to give it one.
+          </Text>
+        </Row>
+      </Measure>
     );
   }
-  const modes: readonly TagFilter['mode'][] = ['any', 'all'];
   return (
     <>
-      <View style={styles.listHead}>
-        <Text style={[styles.listHeadText, { color: pal.faint }]}>
-          OR ONLY SHOW
-        </Text>
-        {/* The mode means nothing until there are two tags to join. */}
+      <Measure>
         {filter.tags.length >= 2 ? (
-          <View style={styles.modes}>
-            {modes.map(mode => (
-              <Pressable
-                key={mode}
-                accessibilityLabel={
-                  mode === 'any'
-                    ? 'Songs with any of these tags'
-                    : 'Songs with all of these tags'
-                }
-                accessibilityRole="button"
-                accessibilityState={{ selected: filter.mode === mode }}
-                hitSlop={space.md}
-                onPress={() => onMode(mode)}
-              >
-                <Text
-                  style={[
-                    styles.listHeadText,
-                    { color: filter.mode === mode ? pal.ink : pal.faint },
-                  ]}
-                >
-                  {mode.toUpperCase()}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
-        ) : null}
-      </View>
-      <ScrollView
-        contentContainerStyle={{ paddingBottom: bottomInset }}
-        keyboardShouldPersistTaps="handled"
-        style={styles.list}
-      >
+          <Row label="Songs with" control>
+            <Dial
+              compact
+              activeColour={pal.ink}
+              activeKey={filter.mode}
+              itemStyle={LEDGER_DIAL_ITEM}
+              items={[
+                {
+                  key: 'any',
+                  label: 'ANY OF THEM',
+                  accessibilityLabel: 'Songs with any of these tags',
+                },
+                {
+                  key: 'all',
+                  label: 'ALL OF THEM',
+                  accessibilityLabel: 'Songs with all of these tags',
+                },
+              ]}
+              onSelect={key => onMode(key as TagFilter['mode'])}
+              restColour={pal.faint}
+              textStyle={styles.dialWord}
+              tickColour={pal.ink}
+            />
+          </Row>
+        ) : (
+          <Row label="Only show">
+            <Text style={[type.body, { color: pal.muted }]}>
+              {filter.tags.length === 1
+                ? `Songs tagged ${filter.tags[0].trim()}.`
+                : 'Songs with the tags you choose.'}
+            </Text>
+          </Row>
+        )}
+      </Measure>
+      <Rest />
+      <Measure>
         {tags.map(({ tag, count }) => {
           const on = chosen.has(fold(tag));
           return (
-            <Pressable
+            <Row
               key={tag}
-              accessibilityLabel={`${tag}, ${count} ${
-                count === 1 ? 'song' : 'songs'
-              }`}
-              accessibilityRole="checkbox"
-              accessibilityState={{ checked: on }}
-              onPress={() => onToggle(tag)}
-              style={[styles.tagRow, { borderBottomColor: pal.line }]}
-            >
-              <View style={styles.tagName}>
+              mark={
                 <View
                   style={[
                     styles.dot,
@@ -367,149 +388,148 @@ function TagList({
                       : [styles.ring, { borderColor: pal.faint }],
                   ]}
                 />
+              }
+            >
+              <PanelPressable
+                accessibilityLabel={`${tag}, ${count} ${
+                  count === 1 ? 'song' : 'songs'
+                }`}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: on }}
+                onPress={() => onToggle(tag)}
+                style={styles.tagTarget}
+              >
                 <Text
                   numberOfLines={1}
-                  style={[styles.tagWord, { color: on ? pal.ink : pal.faint }]}
+                  style={[styles.tagName, { color: on ? pal.ink : pal.faint }]}
                 >
                   {tag}
                 </Text>
-              </View>
-              <Text
-                style={[
-                  styles.listHeadText,
-                  { color: on ? pal.ink : pal.faint },
-                ]}
-              >
-                {count}
-              </Text>
-            </Pressable>
+                <Text
+                  style={[
+                    FOLIO_NOTE_STYLE,
+                    { color: on ? pal.muted : pal.faint },
+                  ]}
+                >
+                  {`${count} ${count === 1 ? 'SONG' : 'SONGS'}`}
+                </Text>
+              </PanelPressable>
+            </Row>
           );
         })}
-        {filter.tags.length > 0 ? (
-          <PanelPressable
-            accessibilityLabel={`Clear the filter, ${filterPhrase(
-              filter,
-            ).text.toLocaleLowerCase()}`}
-            accessibilityRole="button"
-            onPress={onClear}
-            style={styles.clear}
-          >
-            <Text style={[type.eyebrow, { color: pal.muted }]}>CLEAR</Text>
-          </PanelPressable>
-        ) : null}
-      </ScrollView>
+      </Measure>
     </>
   );
 }
 
-type ResultItem =
-  | Readonly<{ kind: 'group'; key: string; label: string }>
-  | Readonly<{ kind: 'row'; key: string; placement: Placement; row: FindRow }>
-  | Readonly<{ kind: 'more'; key: string; count: number }>;
+type FoundSong = Readonly<{ placement: Placement; row: FindRow }>;
 
 /**
- * The matches as shelf rows, grouped the way the map is cut: a group's name
- * where the group changes, rows in the shelf's ORDER under it. Inside a shelf
- * there are no group names, and a last row offers the rest of the field.
+ * The matches as roster rows, in the order the map is cut: groups as the axis
+ * seats them, rows in the shelf's ORDER. One measure, not one per group — a
+ * find across weeks is mostly one song a week, and a spine broken after every
+ * row read as rubble. Each row names its group in its note instead, so a row
+ * read alone still says where it is. Inside a shelf the group goes without
+ * saying, and a last measure offers the rest of the field.
  */
 function Results({
   result,
   source,
   query,
-  grouped,
+  scoped,
   onWiden,
-  bottomInset,
 }: {
   result: FindResult;
   source: FindSource;
   query: string;
-  grouped: boolean;
+  scoped: boolean;
   onWiden: () => void;
-  bottomInset: number;
 }) {
   const pal = usePalette();
-  const items = useMemo(() => {
-    const list: ResultItem[] = [];
+  const groups = useMemo(() => {
+    let left: number = FIND_KNOBS.MAX_ROWS;
+    const list: { key: string; label: string; songs: FoundSong[] }[] = [];
     for (const group of result.groups) {
-      const rows = group.placements.flatMap(placement => {
+      if (left <= 0) break;
+      const songs: FoundSong[] = [];
+      for (const placement of group.placements) {
+        if (left <= 0) break;
         const row = source.describe(placement);
-        return row === null ? [] : [{ placement, row }];
-      });
-      if (rows.length === 0) continue;
-      if (grouped) {
+        if (row === null) continue;
+        songs.push({ placement, row });
+        left -= 1;
+      }
+      if (songs.length > 0) {
         list.push({
-          kind: 'group',
-          key: `group:${group.groupKey}`,
+          key: group.groupKey,
           label: source.groupName(group.label),
+          songs,
         });
       }
-      for (const { placement, row } of rows) {
-        list.push({ kind: 'row', key: placement.key, placement, row });
-      }
-    }
-    if (result.outside > 0) {
-      list.push({ kind: 'more', key: 'more', count: result.outside });
     }
     return list;
-  }, [grouped, result, source]);
-  if (items.length === 0) {
+  }, [result, source]);
+  if (groups.length === 0) {
     return (
-      <Text style={[type.small, styles.noTags, { color: pal.muted }]}>
-        {`No song begins a word with “${query.trim()}”.`}
-      </Text>
+      <Measure>
+        <Row>
+          <Text style={[type.body, { color: pal.muted }]}>
+            {`No song begins a word with “${query.trim()}”.`}
+          </Text>
+        </Row>
+      </Measure>
     );
   }
-  const plural = `${source.noun}S`;
+  const drawn = groups.reduce((sum, group) => sum + group.songs.length, 0);
+  const plural = `${source.noun}S`.toLocaleLowerCase();
   return (
-    <FlatList
-      accessibilityRole="list"
-      contentContainerStyle={{ paddingBottom: bottomInset }}
-      data={items}
-      initialNumToRender={12}
-      keyExtractor={item => item.key}
-      keyboardShouldPersistTaps="handled"
-      showsVerticalScrollIndicator={false}
-      renderItem={({ item }) =>
-        item.kind === 'group' ? (
-          <Text
-            accessibilityRole="header"
-            style={[styles.groupName, { color: pal.faint }]}
-          >
-            {item.label.toUpperCase()}
-          </Text>
-        ) : item.kind === 'more' ? (
-          <PanelPressable
-            accessibilityLabel={`${
-              item.count
-            } more in other ${plural.toLocaleLowerCase()}`}
-            accessibilityRole="button"
-            onPress={onWiden}
-            style={styles.more}
-          >
-            <Text style={[styles.moreText, { color: pal.muted }]}>
-              {`${item.count} MORE IN OTHER ${plural}`}
-            </Text>
-          </PanelPressable>
-        ) : (
-          <ResultRow
-            lens={source.lens}
-            onPress={() => source.onArrive(item.placement)}
-            query={query}
-            row={item.row}
-            group={source.groupName(
-              source.layout?.groups.find(
-                group => group.key === item.placement.groupKey,
-              )?.label ?? '',
-            )}
-          />
-        )
-      }
-      style={styles.results}
-    />
+    <>
+      <Measure>
+        {groups.flatMap(group =>
+          group.songs.map(({ placement, row }) => (
+            <FoundEntry
+              key={placement.key}
+              group={scoped ? null : group.label}
+              lens={source.lens}
+              onPress={() => source.onArrive(placement)}
+              query={query}
+              row={row}
+            />
+          )),
+        )}
+      </Measure>
+      {drawn < result.count ? (
+        <>
+          <Rest />
+          <Measure>
+            <Row>
+              <Text style={[type.small, { color: pal.muted }]}>
+                {`${result.count - drawn} more. Another letter narrows them.`}
+              </Text>
+            </Row>
+          </Measure>
+        </>
+      ) : null}
+      {result.outside > 0 ? (
+        <>
+          <Rest />
+          <Measure>
+            <Row>
+              <Door
+                accessibilityLabel={`${result.outside} more in other ${plural}`}
+                label={`${result.outside} more in other ${plural}`}
+                onPress={onWiden}
+              />
+            </Row>
+          </Measure>
+        </>
+      ) : null}
+    </>
   );
 }
 
-function ResultRow({
+/** One found song: its face on the spine, its name a door, its place under. */
+function FoundEntry({
   row,
   query,
   group,
@@ -518,70 +538,45 @@ function ResultRow({
 }: {
   row: FindRow;
   query: string;
-  group: string;
+  /** The group, said first in the note; null inside the shelf searched. */
+  group: string | null;
   lens: Lens;
   onPress: () => void;
 }) {
   const pal = usePalette();
-  const ranges = matchRanges(row.title, query);
-  // The matched starts in ink and the rest in grey; a song found by its
-  // caption or its maker has no start in its name, and reads in ink whole.
-  const spans: { text: string; hit: boolean }[] = [];
-  let at = 0;
-  for (const range of ranges) {
-    if (range.start > at) {
-      spans.push({ text: row.title.slice(at, range.start), hit: false });
-    }
-    spans.push({ text: row.title.slice(range.start, range.end), hit: true });
-    at = range.end;
-  }
-  if (at < row.title.length) {
-    spans.push({ text: row.title.slice(at), hit: ranges.length === 0 });
-  }
+  // Found by the caption rather than the name: the caption is the reason, so
+  // it is what the row says under the name.
   const byCaption =
-    ranges.length === 0 &&
+    matchRanges(row.title, query).length === 0 &&
     row.caption != null &&
     matchRanges(row.caption, query).length > 0;
-  const under = byCaption ? row.caption ?? '' : row.line;
+  const note = [group, row.line].filter(part => part !== null).join(' · ');
   return (
-    <Pressable
-      accessibilityLabel={`${row.title}, ${group}, ${under}`}
-      accessibilityRole="button"
-      onPress={onPress}
-      style={styles.resultRow}
+    <Row
+      mark={
+        <SongClef lens={lens} size={FIND_KNOBS.ROW_FACE_PX} song={row.clef} />
+      }
     >
-      {({ pressed }) => (
-        <>
-          <View pointerEvents="none" style={styles.face}>
-            <SongClef
-              lens={lens}
-              size={FIND_KNOBS.RESULT_FACE_PX}
-              song={row.clef}
-            />
-          </View>
-          <View style={styles.resultText}>
-            <Text numberOfLines={1} style={styles.resultName}>
-              {spans.map((span, index) => (
-                <Text
-                  key={index}
-                  style={{
-                    color: pressed ? pal.muted : span.hit ? pal.ink : pal.faint,
-                  }}
-                >
-                  {span.text}
-                </Text>
-              ))}
-            </Text>
-            <Text
-              numberOfLines={1}
-              style={[styles.resultLine, { color: pal.muted }]}
-            >
-              {byCaption ? `“${under}”` : under.toUpperCase()}
-            </Text>
-          </View>
-        </>
-      )}
-    </Pressable>
+      <Door
+        accessibilityLabel={`${row.title}, ${
+          byCaption ? row.caption : note
+        }. Go to the song`}
+        label={row.title}
+        name
+        onPress={onPress}
+      />
+      {byCaption ? (
+        <Text
+          numberOfLines={2}
+          style={[type.small, styles.caption, { color: pal.muted }]}
+        >
+          {`“${row.caption}”`}
+        </Text>
+      ) : null}
+      <Text numberOfLines={1} style={[FOLIO_NOTE_STYLE, { color: pal.muted }]}>
+        {note.toUpperCase()}
+      </Text>
+    </Row>
   );
 }
 
@@ -590,101 +585,29 @@ function fold(tag: string): string {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, paddingTop: FIND_KNOBS.HEAD_TOP_PX },
-  eyebrowRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    height: FIND_KNOBS.EYEBROW_ROW_PX,
-    justifyContent: 'space-between',
-  },
-  eyebrow: { flex: 1 },
-  close: { minHeight: 0, minWidth: 0 },
+  root: { flex: 1 },
   query: {
-    fontFamily: font.display,
-    fontSize: type.title.fontSize,
-    height: FIND_KNOBS.QUERY_ROW_PX,
-    marginTop: space.sm,
+    includeFontPadding: false,
     paddingHorizontal: 0,
     paddingVertical: 0,
   },
-  queryRule: { height: FIND_KNOBS.QUERY_RULE_PX },
-  count: { marginTop: space.sm },
-  listHead: {
-    alignItems: 'center',
+  meta: { lineHeight: 16 },
+  clef: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginTop: FIND_KNOBS.LIST_HEAD_TOP_PX,
+    flexWrap: 'wrap',
+    gap: FIND_KNOBS.CLEF_GAP_PX,
+    justifyContent: 'flex-end',
+    width: FIND_KNOBS.CLEF_FACE_PX * 2 + FIND_KNOBS.CLEF_GAP_PX,
   },
-  listHeadText: {
-    fontFamily: font.mono,
-    fontSize: FIND_KNOBS.LIST_HEAD_SIZE_PX,
-    letterSpacing: 1.6,
-  },
-  modes: { flexDirection: 'row', gap: FIND_KNOBS.MODE_GAP_PX },
-  list: { flex: 1 },
-  tagRow: {
-    alignItems: 'center',
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    flexDirection: 'row',
-    height: FIND_KNOBS.TAG_ROW_PX,
-    justifyContent: 'space-between',
-  },
-  tagName: { alignItems: 'center', flex: 1, flexDirection: 'row' },
+  dialWord: { ...type.eyebrow, fontSize: 12, letterSpacing: 0 },
   dot: {
     borderRadius: FIND_KNOBS.TAG_DOT_PX / 2,
     height: FIND_KNOBS.TAG_DOT_PX,
-    marginRight: FIND_KNOBS.TAG_DOT_GAP_PX,
     width: FIND_KNOBS.TAG_DOT_PX,
   },
-  ring: { borderWidth: 1 },
-  tagWord: {
-    flex: 1,
-    fontFamily: font.display,
-    fontSize: FIND_KNOBS.TAG_NAME_SIZE_PX,
-  },
-  clear: {
-    alignItems: 'flex-start',
-    justifyContent: 'center',
-    minHeight: touch.min,
-  },
-  noTags: { marginTop: FIND_KNOBS.LIST_HEAD_TOP_PX },
-  results: { flex: 1, marginTop: FIND_KNOBS.RESULTS_TOP_PX },
-  groupName: {
-    fontFamily: font.mono,
-    fontSize: FIND_KNOBS.RESULT_LINE_SIZE_PX,
-    letterSpacing: 1.4,
-    lineHeight: FIND_KNOBS.GROUP_ROW_PX,
-    paddingLeft: FIND_KNOBS.RESULT_NAME_PX,
-  },
-  resultRow: {
-    alignItems: 'center',
-    flexDirection: 'row',
-    height: FIND_KNOBS.RESULT_ROW_PX,
-  },
-  face: {
-    alignItems: 'center',
-    height: FIND_KNOBS.RESULT_FACE_PX,
-    justifyContent: 'center',
-    left: FIND_KNOBS.RESULT_FACE_CENTRE_PX - FIND_KNOBS.RESULT_FACE_PX / 2,
-    position: 'absolute',
-    width: FIND_KNOBS.RESULT_FACE_PX,
-  },
-  resultText: { flex: 1, marginLeft: FIND_KNOBS.RESULT_NAME_PX },
-  resultName: {
-    fontFamily: font.display,
-    fontSize: FIND_KNOBS.RESULT_NAME_SIZE_PX,
-  },
-  resultLine: {
-    fontFamily: font.mono,
-    fontSize: FIND_KNOBS.RESULT_LINE_SIZE_PX,
-    letterSpacing: 1.2,
-    marginTop: 3,
-  },
-  more: { justifyContent: 'center', minHeight: touch.min },
-  moreText: {
-    fontFamily: font.mono,
-    fontSize: FIND_KNOBS.LIST_HEAD_SIZE_PX,
-    letterSpacing: 1.6,
-    paddingLeft: FIND_KNOBS.RESULT_NAME_PX,
-  },
+  ring: { borderWidth: StyleSheet.hairlineWidth * 2 },
+  tagTarget: { alignItems: 'flex-start', justifyContent: 'center' },
+  tagName: { fontFamily: font.display, fontSize: FIND_KNOBS.TAG_NAME_SIZE_PX },
+  caption: { marginBottom: 2 },
+  act: { alignItems: 'flex-start', justifyContent: 'center' },
 });

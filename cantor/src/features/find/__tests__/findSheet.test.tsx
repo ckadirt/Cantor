@@ -47,10 +47,10 @@ describe('the find blind', () => {
   it('lists the tags with nothing typed, and no mode for one tag', () => {
     const { tree } = sheet({ tags: [], mode: 'any' });
     expect(words(tree)).toEqual(
-      expect.arrayContaining(['FIND', '64 SONGS', 'OR ONLY SHOW', 'live']),
+      expect.arrayContaining(['FIND', '64 SONGS', 'ONLY SHOW', 'live']),
     );
-    expect(words(tree)).not.toContain('ANY');
-    expect(words(tree)).not.toContain('CLEAR');
+    expect(words(tree)).not.toContain('ANY OF THEM');
+    expect(words(tree)).not.toContain('Show every song');
   });
 
   it('chooses a tag, and says what the map would show', () => {
@@ -74,7 +74,10 @@ describe('the find blind', () => {
     );
     expect(onChangeFilter).toHaveBeenLastCalledWith({ ...filter, mode: 'all' });
     Renderer.act(() =>
-      pressable(tree, 'Clear the filter, live or rainy').props.onPress(),
+      pressable(
+        tree,
+        'Show every song, not only live or rainy',
+      ).props.onPress(),
     );
     expect(onChangeFilter).toHaveBeenLastCalledWith({ tags: [], mode: 'any' });
   });
@@ -87,7 +90,7 @@ describe('the find blind', () => {
         typeof node.props.onChangeText === 'function',
     );
     Renderer.act(() => input.props.onChangeText('lo'));
-    expect(words(tree)).not.toContain('OR ONLY SHOW');
+    expect(words(tree)).not.toContain('ONLY SHOW');
   });
 
   it('names the shelf it was opened in', () => {
@@ -198,15 +201,18 @@ describe('the find blind, typed into', () => {
 
   it('lists word-start matches by group, and arrives at the one tapped', () => {
     const { tree, onArrive } = typed('love', null);
-    const rows = tree.root.findAll(
+    const found = tree.root.findAll(
       node =>
         typeof node.type !== 'string' &&
-        node.props.accessibilityRole === 'button' &&
         typeof node.props.accessibilityLabel === 'string' &&
-        node.props.accessibilityLabel.endsWith(', Model') &&
-        typeof node.props.onPress === 'function' &&
-        // The memo wrapper and the Pressable both carry the label.
-        node.parent?.props.accessibilityLabel !== node.props.accessibilityLabel,
+        node.props.accessibilityLabel.endsWith('. Go to the song') &&
+        typeof node.props.onPress === 'function',
+    );
+    // Each layer of the door carries the same label and handler: one each.
+    const rows = found.filter(
+      (node, index) =>
+        found.findIndex(other => other.props.onPress === node.props.onPress) ===
+        index,
     );
     expect(rows.map(row => row.props.accessibilityLabel.split(',')[0])).toEqual(
       layout.placements
@@ -229,7 +235,7 @@ describe('the find blind, typed into', () => {
     ).groupKey;
     const { tree } = typed('love', week);
     expect(words(tree)).toContain('FIND IN THIS WEEK');
-    expect(words(tree)).toContain('1 MORE IN OTHER WEEKS');
+    expect(words(tree)).toContain('1 more in other weeks');
     Renderer.act(() =>
       pressable(tree, '1 more in other weeks').props.onPress(),
     );
