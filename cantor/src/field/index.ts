@@ -16,3 +16,4 @@ export * from './glide';
 export * from './flight';
 export * from './rail';
 export * from './queue';
+export * from './filter';

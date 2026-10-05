@@ -32,7 +32,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/runtime/` | `BackendRuntime` — a plain object publishing one store: backend records, connection lifecycles, snapshots, cache hydration, persistence, outbox flush, audio inspection, feature commands. `useBackendRuntime` starts it for a component's life |
 | `src/features/` | `field/` (the canvas, camera, controller, overlays), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
 | `src/screens/` | `FieldScreen`: the one screen after onboarding — composition and wiring |
-| `src/library/` | cached library repository, query helpers, and the pure `sync` reducer |
+| `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
 | `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens — read only) |

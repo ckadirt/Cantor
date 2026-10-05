@@ -72,7 +72,7 @@ export function tagsAreFull(tags: readonly string[]): boolean {
 export const PLAYLIST_LIMITS = PLAYLIST_KNOBS;
 
 /** Compare names case-insensitively after trimming; keep the stored spelling. */
-function fold(name: string): string {
+export function fold(name: string): string {
   return name.trim().toLocaleLowerCase();
 }
 
