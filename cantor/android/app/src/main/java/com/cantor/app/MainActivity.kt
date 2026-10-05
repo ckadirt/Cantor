@@ -18,5 +18,21 @@ class MainActivity : ReactActivity() {
    * which allows you to enable New Architecture with a single boolean flags [fabricEnabled]
    */
   override fun createReactActivityDelegate(): ReactActivityDelegate =
-      DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled)
+      object : DefaultReactActivityDelegate(this, mainComponentName, fabricEnabled) {
+        override fun loadApp(appKey: String?) {
+          val app = application as MainApplication
+          val surface = app.playbackSurface.attach(app.reactHost, this@MainActivity, requireNotNull(appKey))
+          setReactSurface(surface)
+          if (!surface.isRunning) surface.start()
+          setContentView(surface.view)
+        }
+
+        override fun onDestroy() {
+          // The delegate must release its Activity, but not stop the retained
+          // surface: that would unmount the unchanged queue and audio element.
+          reactDelegate?.setReactSurface(null)
+          (application as MainApplication).playbackSurface.detach(this@MainActivity)
+          super.onDestroy()
+        }
+      }
 }

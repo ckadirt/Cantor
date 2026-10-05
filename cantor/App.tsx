@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
+  AppState,
   Pressable,
   StatusBar,
   StyleSheet,
@@ -43,6 +44,17 @@ export default function App() {
   const scheme = useColorScheme();
   const [boot, setBoot] = useState<IdentityBoot>({ state: 'loading' });
   const [identityLoadAttempt, setIdentityLoadAttempt] = useState(0);
+
+  useEffect(() => {
+    // A retained playback surface can return in a new Android Activity. Its
+    // window is new even though React's StatusBar props have not changed.
+    const subscription = AppState.addEventListener('change', state => {
+      if (state !== 'active') return;
+      StatusBar.setBackgroundColor(pal.bg);
+      StatusBar.setBarStyle(scheme === 'dark' ? 'light-content' : 'dark-content');
+    });
+    return () => subscription.remove();
+  }, [pal.bg, scheme]);
 
   useEffect(() => {
     let active = true;

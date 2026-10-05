@@ -5,7 +5,6 @@ import {
   PlaybackNotificationManager,
 } from 'react-native-audio-api';
 import type { AudioApiPlayer } from './audioApiPlayer';
-import { declarePlaybackControls } from './createAudioApiPlayer';
 
 /**
  * The one `<Audio>` element in the app, and the system wiring around it.
@@ -45,10 +44,11 @@ function PlayerHostImpl({
   );
 
   useEffect(() => {
-    // Claiming the session is what lets the foreground service keep audio alive
-    // once the screen goes off.
-    void AudioManager.setAudioSessionActivity(true);
-    AudioManager.observeAudioInterruptions(true);
+    // The adapter claims/releases focus with its playback session; this host
+    // only translates system events and retains the audio element.
+    const stop = () => {
+      player.stop().catch(error => console.warn('Could not stop playback', error));
+    };
 
     const interruption = AudioManager.addSystemEventListener(
       'interruption',
@@ -69,6 +69,14 @@ function PlayerHostImpl({
         () => void player.pause(),
       ),
       PlaybackNotificationManager.addEventListener(
+        'playbackNotificationStop',
+        stop,
+      ),
+      PlaybackNotificationManager.addEventListener(
+        'playbackNotificationDismissed',
+        stop,
+      ),
+      PlaybackNotificationManager.addEventListener(
         'playbackNotificationSeekTo',
         event => void player.seek(event.value),
       ),
@@ -82,16 +90,10 @@ function PlayerHostImpl({
       ),
     ];
 
-    // Showing the notification is not what makes it controllable: until the
-    // controls are declared the session advertises `actions=0` and the system
-    // routes no media button to us at all.
-    void declarePlaybackControls();
-
     return () => {
       interruption?.remove();
       remote.forEach(subscription => subscription?.remove());
-      void PlaybackNotificationManager.hide();
-      void AudioManager.setAudioSessionActivity(false);
+      stop();
     };
   }, [player]);
 

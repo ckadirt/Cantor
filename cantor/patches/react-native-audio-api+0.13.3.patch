@@ -42,3 +42,33 @@ index 086e348..cdb9443 100644
    private fun findExistingNotification(): Pair<Int, Notification>? {
      // Check for playback notification first (priority)
      NotificationRegistry.getBuiltNotification(PlaybackNotification.ID)?.let {
+diff --git a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt
+--- a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt
++++ b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt
+@@ -123,2 +123,4 @@
+             onRewind()
++          } else if (action == "Stop") {
++            onStop()
+           }
+@@ -346,2 +348,9 @@
+
++    // Android 13+ derives extra media buttons from custom playback actions.
++    if (hasControl(PlaybackStateCompat.ACTION_STOP)) {
++      builder.addCustomAction(
++        PlaybackStateCompat.CustomAction.Builder("Stop", "Stop", R.drawable.stop).build(),
++      )
++    }
++
+     pb = builder
+@@ -413,2 +422,11 @@
+         createAction("nextTrack", "Next track", android.R.drawable.ic_media_next, PlaybackStateCompat.ACTION_SKIP_TO_NEXT),
++      )
++      actionsList.add(index++)
++    }
++
++    // Stop is independent of Pause. Keep the three transport buttons in the
++    // compact view and offer Stop as the fourth action when expanded.
++    if (hasControl(PlaybackStateCompat.ACTION_STOP) && hasControl(PlaybackStateCompat.ACTION_PAUSE)) {
++      notificationBuilder?.addAction(
++        createAction("stop", "Stop", R.drawable.stop, PlaybackStateCompat.ACTION_STOP),
+       )

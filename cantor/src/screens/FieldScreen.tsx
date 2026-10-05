@@ -1523,7 +1523,7 @@ export function FieldScreen({ identity }: Props) {
    * advance fires in a pocket.
    */
   const fetchPath = useCallback(
-    async (presentation: FieldPresentation): Promise<string> => {
+    (presentation: FieldPresentation): Promise<string> => player.resolvePath(async () => {
       if (presentation.source === 'device') return presentation.device.path;
       const artifact = presentation.delivery;
       if (artifact === undefined) {
@@ -1543,8 +1543,8 @@ export function FieldScreen({ identity }: Props) {
         );
         return where();
       }
-    },
-    [commands],
+    }),
+    [commands, player],
   );
   const prefetch = useCallback(
     async (presentation: FieldPresentation) => {
@@ -1692,9 +1692,10 @@ export function FieldScreen({ identity }: Props) {
   ]);
   const stepFocused = useCallback(
     (direction: 1 | -1) => {
+      player.beginSession();
       queue.skip(direction, playerPlacement).catch(() => undefined);
     },
-    [playerPlacement, queue],
+    [player, playerPlacement, queue],
   );
 
   /** Play or pause the focused song; a new one makes its shelf the queue. */
@@ -1704,12 +1705,13 @@ export function FieldScreen({ identity }: Props) {
       setPlaybackError('This song has no delivery audio yet.');
       return;
     }
+    player.beginSession();
     if (focusedIsCurrent) {
       transport.toggle();
       return;
     }
     await queue.start(focused, playerPlacement);
-  }, [focused, focusedIsCurrent, playerPlacement, queue, transport]);
+  }, [focused, focusedIsCurrent, player, playerPlacement, queue, transport]);
 
   /**
    * Run one song command, keeping the sheet honest about failure.
