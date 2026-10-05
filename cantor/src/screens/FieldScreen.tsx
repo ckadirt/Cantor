@@ -35,6 +35,7 @@ import {
 } from '../runtime/diagnostics';
 import {
   audioRefOf,
+  axisNoun,
   FieldA11yList,
   FieldCanvas,
   FieldOverlay,
@@ -55,6 +56,7 @@ import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
   cancelAnimation,
+  runOnJS,
   useAnimatedReaction,
   useReducedMotion,
   useSharedValue,
@@ -73,7 +75,12 @@ import {
   type FieldPresentation,
 } from '../features/field/useFieldController';
 import { EmptyField, EmptyFilter } from '../features/field/EmptyField';
-import { FindSheet } from '../features/find/FindSheet';
+import {
+  FindSheet,
+  type FindRow,
+  type FindSource,
+} from '../features/find/FindSheet';
+import { buildFindIndex } from '../library/find';
 import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
@@ -110,6 +117,7 @@ import {
   grainWindow,
   layoutField,
   indexRuns,
+  modelLabel,
   mapFrame,
   orderByKey,
   overviewMinRatio,
@@ -131,6 +139,7 @@ import {
   allPlaylists,
   allTags,
   normalise,
+  plainTagsOf,
   playlistNameProblem,
   playlistsOf,
   tagNameProblem,
@@ -2091,6 +2100,94 @@ export function FieldScreen({ identity }: Props) {
     setFindOpen(true);
   }, [fieldCamera.groupKey, fieldCamera.level, focusedGroupLabel]);
   const closeFind = useCallback(() => setFindOpen(false), []);
+  /**
+   * What find searches, folded once per library change: a node song's name,
+   * its caption's summary and its model; a phone song's name, artist and
+   * album. Full captions and lyrics live on the node and are not here.
+   */
+  const findIndex = useMemo(
+    () =>
+      buildFindIndex(
+        [...controller.presentations.values()].map(presentation => [
+          presentation.entity.key,
+          presentation.source === 'node'
+            ? [
+                presentation.title,
+                presentation.song.caption_summary,
+                modelLabel(presentation.song.model),
+              ]
+            : [
+                presentation.title,
+                presentation.device.artist,
+                presentation.device.albumArtist,
+                presentation.album?.title,
+              ],
+        ]),
+      ),
+    [controller.presentations],
+  );
+  const describeFound = useCallback(
+    (placement: Placement): FindRow | null => {
+      const presentation = controller.presentations.get(placement.entityKey);
+      if (presentation === undefined) return null;
+      const who =
+        presentation.source === 'node'
+          ? modelLabel(presentation.song.model)
+          : presentation.device.artist ?? presentation.label;
+      const tags = plainTagsOf(presentation.entity.tags);
+      return {
+        title: presentation.title,
+        line: tags.length === 0 ? who : `${who} · ${tags.join(', ')}`,
+        clef: {
+          ...presentation.recipe,
+          audioState: presentation.localAudio.state,
+          imported: presentation.source === 'device',
+        },
+      };
+    },
+    [controller.presentations],
+  );
+  /**
+   * A result tapped: the blind goes up first, and the camera flies only once
+   * it has — the now-playing jump's own path (`visit`), from the shelf to the
+   * song, seen rather than finished behind paper.
+   */
+  const arriveAfterFind = useRef<Placement | null>(null);
+  const flushArrival = useCallback(() => {
+    const placement = arriveAfterFind.current;
+    arriveAfterFind.current = null;
+    if (placement !== null) fieldCamera.visit(placement);
+  }, [fieldCamera]);
+  useAnimatedReaction(
+    () => findPull.value <= 0.5,
+    (lifted, previous) => {
+      if (lifted && previous === false) runOnJS(flushArrival)();
+    },
+    [flushArrival],
+  );
+  const findSource = useMemo<FindSource>(
+    () => ({
+      layout,
+      index: findIndex,
+      describe: describeFound,
+      groupName: label => shelfLabel(label, nowMs).primary,
+      noun: axisNoun(arrangementKey, dateResolution),
+      lens: activeLens,
+      onArrive: placement => {
+        arriveAfterFind.current = placement;
+        setFindOpen(false);
+      },
+    }),
+    [
+      activeLens,
+      arrangementKey,
+      dateResolution,
+      describeFound,
+      findIndex,
+      layout,
+      nowMs,
+    ],
+  );
   /** Every tag the library uses, with its count, for the blind's list. */
   const libraryTags = useMemo(
     () => tagCounts(controller.entities),
@@ -2618,7 +2715,9 @@ export function FieldScreen({ identity }: Props) {
             onChangeFilter={applyFilterQuietly}
             onClose={closeFind}
             open={findOpen}
+            scopeKey={findScope?.groupKey ?? null}
             scopeLabel={findScope?.label ?? null}
+            source={findSource}
             shownCount={shownCount}
             tags={libraryTags}
           />

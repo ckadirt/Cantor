@@ -364,6 +364,16 @@ const AXIS_NOUN: Readonly<Record<string, string>> = {
   artist: 'ARTIST',
 };
 
+/** What one cluster on this axis is called: `WEEK`, `PLAYLIST`. */
+export function axisNoun(
+  arrangementKey: string,
+  dateResolution: DateResolution,
+): string {
+  return arrangementKey === byTime.key
+    ? CLUSTER_NOUN[dateResolution]
+    : AXIS_NOUN[arrangementKey] ?? 'GROUP';
+}
+
 function FieldOverlayImpl({
   level,
   cameraShared,
@@ -441,9 +451,7 @@ function FieldOverlayImpl({
     h.level === 'field' && !h.noConnection && h.arrived == null
       ? h.nowPlaying
       : null;
-  const noun = onDateAxis
-    ? CLUSTER_NOUN[h.dateResolution]
-    : AXIS_NOUN[h.arrangementKey] ?? 'GROUP';
+  const noun = axisNoun(h.arrangementKey, h.dateResolution);
   // The filter is said on the map's count line only: inside a shelf the line
   // is the shelf's own count, and its right end is the bulk action's.
   const saysFilter =

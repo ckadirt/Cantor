@@ -131,3 +131,40 @@ export function findIn(
   }
   return { groups, count, outside };
 }
+
+/** A stretch of a name to draw in ink: `[start, end)` in UTF-16 units. */
+export type MatchRange = Readonly<{ start: number; end: number }>;
+
+const RAW_WORD = /[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu;
+
+/**
+ * Where in `text` the query's words begin a word, for drawing the matched
+ * starts in ink and the rest in grey: `love` in *Lovely Rain* is `Love`.
+ *
+ * Measured on the original text, not the folded one — folding changes
+ * lengths (`é` is two units decomposed) — by folding the word one character
+ * at a time until the query word is covered.
+ */
+export function matchRanges(text: string, query: string): readonly MatchRange[] {
+  const parts = foldWords(query);
+  if (parts.length === 0) return [];
+  const ranges: MatchRange[] = [];
+  for (const found of text.matchAll(RAW_WORD)) {
+    const word = found[0];
+    const start = found.index ?? 0;
+    const folded = foldWords(word).join('');
+    const part = parts
+      .filter(each => folded.startsWith(each))
+      .reduce((longest, each) => (each.length > longest.length ? each : longest), '');
+    if (part.length === 0) continue;
+    let covered = 0;
+    let end = start;
+    for (const character of word) {
+      if (covered >= part.length) break;
+      covered += foldWords(character).join('').length;
+      end += character.length;
+    }
+    ranges.push({ start, end });
+  }
+  return ranges;
+}
