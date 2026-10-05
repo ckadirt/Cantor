@@ -210,9 +210,9 @@ describe('the find blind, typed into', () => {
     );
     // Each layer of the door carries the same label and handler: one each.
     const rows = found.filter(
-      (node, index) =>
+      (node, position) =>
         found.findIndex(other => other.props.onPress === node.props.onPress) ===
-        index,
+        position,
     );
     expect(rows.map(row => row.props.accessibilityLabel.split(',')[0])).toEqual(
       layout.placements
