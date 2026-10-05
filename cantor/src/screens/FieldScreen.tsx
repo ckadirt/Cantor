@@ -431,6 +431,21 @@ export function FieldScreen({ identity }: Props) {
    */
   const [tagFilter, setTagFilter] = useState<TagFilter>(EMPTY_FILTER);
   /**
+   * Whether the next re-cut happens behind a blind: a filter applied as the
+   * find blind closes, or cleared, re-packs the map while it is out of sight
+   * and lands without flights (`useFieldCamera`'s `recutQuiet`). Spent by
+   * the commit that carries it.
+   */
+  const [recutQuiet, setRecutQuiet] = useState(false);
+  useEffect(() => {
+    if (recutQuiet) setRecutQuiet(false);
+  }, [recutQuiet]);
+  /** Set the filter out of sight: no flights, the camera at its landing. */
+  const applyFilterQuietly = useCallback((next: TagFilter) => {
+    setRecutQuiet(true);
+    setTagFilter(next);
+  }, []);
+  /**
    * How members are seated, and the seed a random seating is held at.
    *
    * The seed changes only when random is asked for again, which is what makes
@@ -942,6 +957,8 @@ export function FieldScreen({ identity }: Props) {
       arrangementKey === byTime.key
         ? `${arrangementKey}:${dateResolution}`
         : arrangementKey,
+    filtered: tagFilter.tags.length > 0,
+    recutQuiet,
   });
   /** The rail's index words, once per map; see `field/rail.ts`. */
   const railIndex = useMemo(() => {
@@ -2038,18 +2055,20 @@ export function FieldScreen({ identity }: Props) {
   /**
    * TEMPORARY (find-plan F1, removed in F3): a long press on the count line
    * narrows the map to its two most-used tags, and the next one clears it, so
-   * the filter can be judged on the phone before the blind exists.
+   * the filter can be judged on the phone before the blind exists. Quiet, as
+   * the blind will apply it.
    */
   const devFilter = useCallback(() => {
-    setTagFilter(current => {
-      if (current.tags.length > 0) return EMPTY_FILTER;
-      const top = [...tagCounts(controller.entities)]
-        .sort((left, right) => right.count - left.count)
-        .slice(0, 2)
-        .map(count => count.tag);
-      return { tags: top, mode: 'any' };
-    });
-  }, [controller.entities]);
+    if (tagFilter.tags.length > 0) {
+      applyFilterQuietly(EMPTY_FILTER);
+      return;
+    }
+    const top = [...tagCounts(controller.entities)]
+      .sort((left, right) => right.count - left.count)
+      .slice(0, 2)
+      .map(count => count.tag);
+    applyFilterQuietly({ tags: top, mode: 'any' });
+  }, [applyFilterQuietly, controller.entities, tagFilter.tags.length]);
   /** The cluster you are inside, named the way its axis names it. */
   const focusedGroupLabel = useMemo(() => {
     const key = fieldCamera.groupKey;
