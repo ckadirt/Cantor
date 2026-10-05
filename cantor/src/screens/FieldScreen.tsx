@@ -2131,18 +2131,21 @@ export function FieldScreen({ identity }: Props) {
     (placement: Placement): FindRow | null => {
       const presentation = controller.presentations.get(placement.entityKey);
       if (presentation === undefined) return null;
+      // A phone song's artist tells it apart; a generated song's model
+      // mostly does not (most of a library is one engine), and on a row this
+      // narrow it pushed the length off the end.
       const who =
         presentation.source === 'node'
-          ? modelLabel(presentation.song.model)
+          ? null
           : presentation.device.artist ?? presentation.label;
       const tags = plainTagsOf(presentation.entity.tags);
-      // Who made it, how long it is, and how it was tagged: enough to tell
+      // How long it is, who made it, and how it was tagged: enough to tell
       // two songs of the same name apart without opening either.
       const line = [
-        who,
         presentation.durationMs > 0
           ? formatClock(presentation.durationMs / 1000)
           : null,
+        who,
         tags.length === 0 ? null : tags.join(', '),
       ]
         .filter(part => part !== null)
