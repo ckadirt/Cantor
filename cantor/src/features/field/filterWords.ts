@@ -39,13 +39,21 @@ function conjunction(filter: TagFilter): string {
  * `ULTRAFAV OR 1 MORE`, then `ULTR… OR 1 MORE` — rather than running off the
  * screen. The conjunction is never what gives way: it is the only door to the
  * mode. `2 TAGS` is the last resort, for a row with no room for it either.
+ *
+ * `brief` is for a row that has someone else to make room for — a held
+ * song's name: the line names a lone tag if it fits and otherwise counts.
  */
 export function filterPhrase(
   filter: TagFilter,
   fits: (text: string) => boolean = () => true,
+  form: 'names' | 'brief' = 'names',
 ): FilterPhrase {
   const tags = filter.tags.map(tag => tag.trim().toLocaleUpperCase());
   if (tags.length === 0) return NO_PHRASE;
+  if (form === 'brief') {
+    const lone = phraseNaming(filter, tags, 1);
+    return tags.length === 1 && fits(lone.text) ? lone : countPhrase(tags);
+  }
   const first = phraseNaming(
     filter,
     tags,
@@ -64,6 +72,10 @@ export function filterPhrase(
       if (fits(shorter.text)) return shorter;
     }
   }
+  return countPhrase(tags);
+}
+
+function countPhrase(tags: readonly string[]): FilterPhrase {
   const count = `${tags.length} ${tags.length === 1 ? 'TAG' : 'TAGS'}`;
   return {
     text: count,

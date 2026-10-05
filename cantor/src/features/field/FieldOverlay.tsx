@@ -263,23 +263,17 @@ export const OVERLAY_KNOBS = {
    */
   HEADER_CHANGE_MS: 700,
   /**
-   * The filter's words on the count line (`RAINY OR LIVE`). A tag is marked
-   * by a dotted rule under it, the conjunction by a solid one, as the study
-   * draws them (`search-variants.html`, B·4): dotted opens, solid flips.
-   */
-  PHRASE_RULE_TOP_PX: 16,
-  PHRASE_DOT_PITCH_PX: 3,
-  /**
    * The targets sit one space apart, so they reach up and down a finger's
    * height and barely sideways: a wide slop on `OR` would take `RAINY`'s taps.
    */
   PHRASE_HIT_SLOP: { top: 14, bottom: 14, left: 3, right: 3 },
   /**
    * How much of a held song's name the filter's words leave beside its mark,
-   * at the least: four or five letters, enough for the marquee to read as a
-   * name passing rather than a mark with a stain beside it.
+   * at the least. Forty-eight was five letters — `STC SC` — on a row also
+   * carrying the count and three press targets, which read as packed on the
+   * Xiaomi. A dozen letters is a name you can read as it passes.
    */
-  HELD_NAME_MIN_PX: 48,
+  HELD_NAME_MIN_PX: 120,
   /**
    * The `FIND` word's target: a finger's height, generous out to the screen
    * edge and up, and only a few points inward, where `NEW SONG`'s own target
@@ -498,6 +492,9 @@ function FieldOverlayImpl({
       countFont === null ||
       phraseLeft + lineWidth(countFont, tracking, text) - tracking <=
         rowWidth - heldReserve,
+    // A held song takes the row's second half: the filter says only how
+    // many tags, or the one, and the name gets room to be read.
+    held === null ? 'names' : 'brief',
   );
   const room =
     rowWidth === null || countFont === null
@@ -897,19 +894,12 @@ function FilterPhraseSeat({
   const reducedMotion = useReducedMotion();
   const shown = phrase.text.length > 0;
   const x = useSharedValue(left);
-  const marks = useSharedValue(shown ? 1 : 0);
   useEffect(() => {
     x.value = reducedMotion
       ? left
       : withTiming(left, { duration: OVERLAY_KNOBS.HEADER_CHANGE_MS });
   }, [left, reducedMotion, x]);
-  useEffect(() => {
-    marks.value = withTiming(shown ? 1 : 0, {
-      duration: OVERLAY_KNOBS.HEADER_CHANGE_MS,
-    });
-  }, [marks, shown]);
   const seat = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }] }));
-  const underlines = useAnimatedStyle(() => ({ opacity: marks.value }));
   return (
     <Animated.View
       pointerEvents="box-none"
@@ -935,8 +925,6 @@ function FilterPhraseSeat({
               text={phrase.text}
               segment={segment}
               mode={mode}
-              ink={ink}
-              underlines={underlines}
               onPress={segment.kind === 'join' ? onFlip : onOpenTags}
             />
           ))
@@ -945,15 +933,17 @@ function FilterPhraseSeat({
   );
 }
 
-/** One word of the phrase you can press, and the rule under it that says so. */
+/**
+ * One word of the phrase you can press. Unmarked: the words are already ink
+ * against a faint count, and rules under them were three more marks on the
+ * header's busiest line.
+ */
 function PhraseTarget({
   font,
   tracking,
   text,
   segment,
   mode,
-  ink,
-  underlines,
   onPress,
 }: {
   font: SkFont;
@@ -961,8 +951,6 @@ function PhraseTarget({
   text: string;
   segment: PhraseSegment;
   mode: TagFilter['mode'];
-  ink: string;
-  underlines: ReturnType<typeof useAnimatedStyle>;
   onPress?: () => void;
 }) {
   const word = text.slice(segment.start, segment.end);
@@ -970,12 +958,6 @@ function PhraseTarget({
   // The last letter's tracking is air after the word, not the word.
   const wordWidth = Math.max(0, lineWidth(font, tracking, word) - tracking);
   const join = segment.kind === 'join';
-  const dots = join
-    ? []
-    : Array.from(
-        { length: Math.floor(wordWidth / OVERLAY_KNOBS.PHRASE_DOT_PITCH_PX) + 1 },
-        (_, index) => index * OVERLAY_KNOBS.PHRASE_DOT_PITCH_PX,
-      );
   return (
     <Pressable
       accessibilityLabel={
@@ -989,20 +971,7 @@ function PhraseTarget({
       hitSlop={OVERLAY_KNOBS.PHRASE_HIT_SLOP}
       onPress={onPress}
       style={[styles.phraseTarget, { left: x, width: wordWidth }]}
-    >
-      <Animated.View pointerEvents="none" style={[styles.phraseRule, underlines]}>
-        {join ? (
-          <View style={[styles.phraseLine, { backgroundColor: ink }]} />
-        ) : (
-          dots.map(dot => (
-            <View
-              key={dot}
-              style={[styles.phraseDot, { backgroundColor: ink, left: dot }]}
-            />
-          ))
-        )}
-      </Animated.View>
-    </Pressable>
+    />
   );
 }
 
@@ -1136,15 +1105,6 @@ const styles = StyleSheet.create({
     height: OVERLAY_KNOBS.EYEBROW_ROW_PX,
     position: 'absolute',
   },
-  phraseRule: {
-    height: 1,
-    left: 0,
-    position: 'absolute',
-    right: 0,
-    top: OVERLAY_KNOBS.PHRASE_RULE_TOP_PX,
-  },
-  phraseLine: { height: StyleSheet.hairlineWidth, width: '100%' },
-  phraseDot: { height: 1, position: 'absolute', top: 0, width: 1 },
   /*
    * Overlaid, not flexed: at L0 the action is empty but still mounted (so the
    * shelf's word can unwrite on exit), and a flexed 190 px slot steals that

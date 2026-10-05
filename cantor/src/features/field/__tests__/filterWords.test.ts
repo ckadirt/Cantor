@@ -75,3 +75,22 @@ describe('a phrase too long for its row', () => {
     expect(counted.segments).toEqual([{ start: 0, end: 6, kind: 'more' }]);
   });
 });
+
+describe('a phrase beside a held song', () => {
+  it('names a lone tag, and counts two or more', () => {
+    expect(
+      filterPhrase({ tags: ['rainy'], mode: 'any' }, () => true, 'brief').text,
+    ).toBe('RAINY');
+    const two = filterPhrase(
+      { tags: ['rainy', 'live'], mode: 'all' },
+      () => true,
+      'brief',
+    );
+    expect(two.text).toBe('2 TAGS');
+    expect(two.segments).toEqual([{ start: 0, end: 6, kind: 'more' }]);
+    expect(
+      filterPhrase({ tags: ['ultrafav'], mode: 'any' }, () => false, 'brief')
+        .text,
+    ).toBe('1 TAG');
+  });
+});

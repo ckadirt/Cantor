@@ -140,7 +140,13 @@ describe('the find blind, typed into', () => {
     viewport: { width: 392, height: 852 },
   });
   const index = buildFindIndex(
-    entities.map(entity => [entity.key, [titles[entity.entityId]]]),
+    entities.map(entity => [
+      entity.key,
+      [
+        titles[entity.entityId],
+        entity.entityId === 'b' ? 'a quiet harbour' : null,
+      ],
+    ]),
   );
 
   function typed(query: string, scopeKey: string | null, onArrive = jest.fn()) {
@@ -162,6 +168,8 @@ describe('the find blind, typed into', () => {
             describe: placement => ({
               title: titles[placement.entityKey.slice('node-a:'.length)],
               line: 'Model',
+              caption:
+                placement.entityKey === 'node-a:b' ? 'a quiet harbour' : null,
               clef: {
                 id: placement.entityKey,
                 seed: 1,
@@ -227,6 +235,11 @@ describe('the find blind, typed into', () => {
     );
     expect(words(tree)).toContain('FIND');
     expect(words(tree)).toContain('2 SONGS');
+  });
+
+  it('says the caption when that is what matched', () => {
+    const { tree } = typed('harb', null);
+    expect(words(tree)).toContain('“a quiet harbour”');
   });
 
   it('says when nothing matches', () => {

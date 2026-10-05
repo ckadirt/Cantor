@@ -72,8 +72,13 @@ export const FIND_KNOBS = {
 /** What a result row says about its song. */
 export type FindRow = Readonly<{
   title: string;
-  /** Under the name: who made it, and its tags. */
+  /** Under the name: who made it, how long it is, and its tags. */
   line: string;
+  /**
+   * A generated song's caption summary, said instead of `line` when the
+   * query matched it rather than the name — so a row says why it is here.
+   */
+  caption?: string | null;
   clef: SongClefSong;
 }>;
 
@@ -533,9 +538,14 @@ function ResultRow({
   if (at < row.title.length) {
     spans.push({ text: row.title.slice(at), hit: ranges.length === 0 });
   }
+  const byCaption =
+    ranges.length === 0 &&
+    row.caption != null &&
+    matchRanges(row.caption, query).length > 0;
+  const under = byCaption ? row.caption ?? '' : row.line;
   return (
     <Pressable
-      accessibilityLabel={`${row.title}, ${group}, ${row.line}`}
+      accessibilityLabel={`${row.title}, ${group}, ${under}`}
       accessibilityRole="button"
       onPress={onPress}
       style={styles.resultRow}
@@ -566,7 +576,7 @@ function ResultRow({
               numberOfLines={1}
               style={[styles.resultLine, { color: pal.muted }]}
             >
-              {row.line.toUpperCase()}
+              {byCaption ? `“${under}”` : under.toUpperCase()}
             </Text>
           </View>
         </>
