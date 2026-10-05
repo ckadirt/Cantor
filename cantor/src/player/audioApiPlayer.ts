@@ -34,6 +34,8 @@ export type AudioApiPlayerDeps = {
   showNowPlaying?(info: NowPlaying): Promise<void>;
   /** Tear the notification down. */
   hideNowPlaying?(): Promise<void>;
+  /** Retain the Android playback surface only while a session exists. */
+  setSessionActive?(active: boolean): Promise<void>;
 };
 
 export type NowPlaying = {
@@ -93,6 +95,10 @@ export class AudioApiPlayer implements PlayerPort {
   private source: string | null = null;
   private pendingLoad: Deferred | null = null;
   private lastPositionPublishMs = 0;
+  private generation = 0;
+  private stopped = false;
+  private notificationWork: Promise<void> = Promise.resolve();
+  private notificationRevision = 0;
 
   /**
    * True while the adapter paused because something else took the audio output.
@@ -135,15 +141,18 @@ export class AudioApiPlayer implements PlayerPort {
         player.settleLoad('paused');
       },
       onError(error) {
+        if (player.source === null || player.stopped) return;
         player.error = error instanceof Error ? error.message : String(error);
         player.durationSeconds = 0;
         player.settleLoad('error');
       },
       onPositionChange(seconds) {
+        if (player.source === null || player.stopped) return;
         player.positionSeconds = seconds;
         player.publishPosition();
       },
       onEnded() {
+        if (player.source === null || player.stopped) return;
         player.positionSeconds = player.durationSeconds;
         player.publish('ended');
       },
@@ -153,6 +162,10 @@ export class AudioApiPlayer implements PlayerPort {
   // ---- PlayerPort -------------------------------------------------------
 
   async load(ref: AudioRef, localPath: string): Promise<void> {
+    if (this.stopped) return;
+    const generation = ++this.generation;
+    this.pendingLoad?.resolve();
+    this.pendingLoad = null;
     this.track = ref;
     this.error = null;
     this.interrupted = false;
@@ -163,11 +176,13 @@ export class AudioApiPlayer implements PlayerPort {
     try {
       duration = await this.deps.getDuration(localPath);
     } catch (error) {
+      if (generation !== this.generation || this.stopped) return;
       this.error = error instanceof Error ? error.message : String(error);
       this.durationSeconds = 0;
       this.publish('error');
       return;
     }
+    if (generation !== this.generation || this.stopped) return;
     this.durationSeconds = duration;
 
     // Reloading the track already in the element is a rewind, not a swap. This
@@ -187,6 +202,7 @@ export class AudioApiPlayer implements PlayerPort {
   }
 
   async play(): Promise<void> {
+    if (this.stopped) return;
     if (this.state === 'empty' || this.state === 'error') return;
     this.interrupted = false;
     // A media element parked at EOF does not restart on play() alone.
@@ -213,6 +229,9 @@ export class AudioApiPlayer implements PlayerPort {
   }
 
   async unload(): Promise<void> {
+    this.generation += 1;
+    this.pendingLoad?.resolve();
+    this.pendingLoad = null;
     this.handle?.pause();
     this.track = null;
     this.error = null;
@@ -221,7 +240,34 @@ export class AudioApiPlayer implements PlayerPort {
     this.interrupted = false;
     this.setSource(null);
     this.publish('empty');
-    await this.deps.hideNowPlaying?.();
+    await this.notificationWork;
+  }
+
+  /** Explicit system Stop also refuses late queue downloads until a new tap. */
+  async stop(): Promise<void> {
+    this.stopped = true;
+    if (this.state === 'empty') {
+      this.generation += 1;
+      await this.notificationWork;
+      return;
+    }
+    await this.unload();
+  }
+
+  /** Called only for a deliberate UI play/step, never an automatic advance. */
+  beginSession(): void {
+    this.stopped = false;
+  }
+
+  /** Guard asynchronous file resolution without changing the queue's tickets. */
+  async resolvePath(work: () => Promise<string>): Promise<string> {
+    if (this.stopped) throw new Error('Playback was stopped.');
+    const generation = this.generation;
+    const path = await work();
+    if (this.stopped || generation !== this.generation) {
+      throw new Error('Playback was stopped or replaced.');
+    }
+    return path;
   }
 
   snapshot(): PlayerSnapshot {
@@ -319,20 +365,29 @@ export class AudioApiPlayer implements PlayerPort {
    * notification carries an elapsed time and a speed and lets the system run its
    * own clock between updates.
    */
-  private async syncNotification(): Promise<void> {
-    const show = this.deps.showNowPlaying;
-    if (show === undefined || this.nowPlaying === null) return;
-    if (this.state === 'empty' || this.state === 'error') {
-      await this.deps.hideNowPlaying?.();
-      return;
-    }
-    await show({
-      title: this.nowPlaying.title,
-      artist: this.nowPlaying.artist,
-      durationSeconds: this.durationSeconds,
-      elapsedSeconds: this.positionSeconds,
-      state: this.state === 'playing' ? 'playing' : 'paused',
+  private syncNotification(): Promise<void> {
+    // Native show/control calls are asynchronous. Serialize them and read the
+    // latest state when they run, so an old show cannot land after Stop's hide.
+    const revision = ++this.notificationRevision;
+    this.notificationWork = this.notificationWork.catch(() => undefined).then(async () => {
+      if (revision !== this.notificationRevision) return;
+      const active = !this.stopped && this.state !== 'empty' && this.state !== 'error';
+      if (!active) {
+        await this.deps.hideNowPlaying?.();
+        await this.deps.setSessionActive?.(false);
+        return;
+      }
+      await this.deps.setSessionActive?.(true);
+      if (this.nowPlaying === null) return;
+      await this.deps.showNowPlaying?.({
+        title: this.nowPlaying.title,
+        artist: this.nowPlaying.artist,
+        durationSeconds: this.durationSeconds,
+        elapsedSeconds: this.positionSeconds,
+        state: this.state === 'playing' ? 'playing' : 'paused',
+      });
     });
+    return this.notificationWork;
   }
 
   /**

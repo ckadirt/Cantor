@@ -1,8 +1,10 @@
 import {
+  AudioManager,
   PlaybackNotificationManager,
   decodeAudioData,
   getAudioDuration,
 } from 'react-native-audio-api';
+import { NativeModules } from 'react-native';
 import { reduceNativeAudio } from '../audio/native';
 import { AudioApiPlayer, toFileUri } from './audioApiPlayer';
 import { nativeFirst } from './nativeSamples';
@@ -134,6 +136,7 @@ export async function declarePlaybackControls(): Promise<void> {
   for (const control of [
     'play',
     'pause',
+    'stop',
     'seekTo',
     'nextTrack',
     'previousTrack',
@@ -150,6 +153,7 @@ export async function declarePlaybackControls(): Promise<void> {
  * factory, not touching a feature.
  */
 export function createAudioApiPlayer(): AudioApiPlayer {
+  let sessionActive = false;
   return new AudioApiPlayer({
     getDuration: localPath => getAudioDuration(localPath),
     readSamples: nativeFirst(reduceNativeAudio, decodeSamples),
@@ -168,5 +172,13 @@ export function createAudioApiPlayer(): AudioApiPlayer {
       await declarePlaybackControls();
     },
     hideNowPlaying: () => PlaybackNotificationManager.hide(),
+    setSessionActive: async active => {
+      if (active !== sessionActive) {
+        await AudioManager.setAudioSessionActivity(active);
+        AudioManager.observeAudioInterruptions(active);
+        sessionActive = active;
+      }
+      await NativeModules.CantorPlayback.setSessionActive(active);
+    },
   });
 }

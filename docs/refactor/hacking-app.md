@@ -213,6 +213,40 @@ first flight's landing. A step can be retargeted during its first leg (a song
 that refuses at once is stepped over while the camera is still folding), and a
 follow that happens with the screen off is deferred to the next `active`.
 
+## Android playback lifetime
+
+`audio/PlaybackSurface.kt` retains the existing React surface while a playback
+session exists. `MainActivity` attaches that surface to a new window when the
+app is reopened and detaches it without unmounting on activity destruction.
+Its mutable context points at the application while detached, so the surface
+does not retain a destroyed activity. The foreground service has
+`stopWithTask=false`; retaining the service alone would not preserve the React
+audio element or the shelf queue. Queue ownership and stepping remain unchanged.
+
+`AudioApiPlayer` serializes and coalesces notification updates. Its production
+factory claims audio focus/session activity and marks the native surface active
+for the playback session, releasing both after the notification is hidden.
+`PlayerHost` translates Stop and permitted dismissal to `player.stop()`. Pause
+retains the session. The dependency patch exposes a separate Stop button for
+legacy notifications and an Android 13+ custom media action alongside Pause.
+
+Stop invalidates pending duration inspection, settles an outstanding element
+load, and refuses later automatic loads. `FieldScreen` resolves playback paths
+through `player.resolvePath`, so a download that started before Stop cannot
+restart playback. Only deliberate UI play/step calls `beginSession`; notification
+next/previous continue to call the existing queue callbacks. `usePlayer.open`
+also verifies that the requested track is ready before starting it. These are
+playback-lifetime guards, not another queue or a change to queue tickets.
+
+Once a stopped session is detached, its surface is released. If the UI remains
+open, it stays usable for another deliberate play. `App` reapplies status-bar
+appearance when becoming active because the retained React tree may now live
+in a new Android window. There is no queue persistence, process-death recovery,
+or automatic playback after Force stop or reboot.
+
+Verification and device evidence live in
+[`background-playback-log.md`](../interface/background-playback-log.md).
+
 ## Playback gestures and field lenses
 
 `player/scrubSession.ts` owns a silent seek transaction: pause once, preview on

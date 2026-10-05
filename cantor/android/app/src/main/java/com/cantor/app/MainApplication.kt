@@ -7,12 +7,16 @@ import com.facebook.react.ReactHost
 import com.facebook.react.ReactNativeApplicationEntryPoint.loadReactNative
 import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.cantor.app.audio.CantorAudioPackage
+import com.cantor.app.audio.CantorPlaybackPackage
+import com.cantor.app.audio.PlaybackSurface
 import com.cantor.app.haptics.CantorHapticsPackage
 import com.cantor.app.network.CantorNetworkPackage
 import com.cantor.app.media.CantorMediaPackage
 import com.cantor.app.security.CantorSecurePackage
 
 class MainApplication : Application(), ReactApplication {
+
+  val playbackSurface by lazy { PlaybackSurface(applicationContext) }
 
   override val reactHost: ReactHost by lazy {
     getDefaultReactHost(
@@ -21,6 +25,7 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           // Packages that cannot be autolinked yet can be added manually here, for example:
           add(CantorAudioPackage())
+          add(CantorPlaybackPackage())
           add(CantorMediaPackage())
           add(CantorSecurePackage())
           add(CantorHapticsPackage())

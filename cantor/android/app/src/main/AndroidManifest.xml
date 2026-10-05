@@ -44,7 +44,7 @@
       </activity>
       <service
         android:name="com.swmansion.audioapi.system.CentralizedForegroundService"
-        android:stopWithTask="true"
+        android:stopWithTask="false"
         android:foregroundServiceType="mediaPlayback" />
     </application>
 </manifest>

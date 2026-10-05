@@ -170,7 +170,10 @@ export function usePlayer(player: PlayerPort): PlayerController {
       scrubSession.cancel();
       setNowPlaying(player, info);
       await player.load(ref, localPath);
-      if (latest.current.state === 'error') return;
+      // Stop can settle a pending load, and another source can supersede it.
+      // Neither completion is permission to start whatever now owns the port.
+      const loaded = player.snapshot();
+      if (loaded.state !== 'paused' || !sameTrack(loaded.track, ref)) return;
       await player.play();
     },
     [player, scrubSession],
