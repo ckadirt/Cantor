@@ -1,6 +1,8 @@
 import {
   EMPTY_FILTER,
   applyTagFilter,
+  byPlaylist,
+  layoutField,
   tagCounts,
   type FieldEntity,
 } from '..';
@@ -76,5 +78,36 @@ describe('the tag filter', () => {
     const job = entity('job', ['live'], 'job');
     expect(tagCounts([twice, job])).toEqual([{ tag: 'live', count: 1 }]);
     expect(tagCounts([])).toEqual([]);
+  });
+
+  it('on the playlist axis, takes every copy of a song or none', () => {
+    const everywhere = entity('everywhere', [
+      'live',
+      'p/Late',
+      'p/Early',
+      'p/Dusk',
+    ]);
+    const quiet = entity('quiet', ['p/Late', 'p/Dusk']);
+    const lay = (entities: readonly FieldEntity[]) =>
+      layoutField({
+        entities,
+        arrangement: byPlaylist,
+        viewport: { width: 392, height: 852 },
+      });
+    const copies = (entities: readonly FieldEntity[], id: string) =>
+      lay(entities).placements.filter(
+        placement => placement.entityKey === `node-a:${id}`,
+      ).length;
+    const kept = applyTagFilter([everywhere, quiet], {
+      tags: ['live'],
+      mode: 'any',
+    });
+    expect(copies(kept, 'everywhere')).toBe(3);
+    expect(copies(kept, 'quiet')).toBe(0);
+    const gone = applyTagFilter([everywhere, quiet], {
+      tags: ['rainy'],
+      mode: 'any',
+    });
+    expect(lay(gone).placements).toEqual([]);
   });
 });
