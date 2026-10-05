@@ -1279,6 +1279,128 @@ describe('useFieldCamera', () => {
     expect(latest.camera.y).toBeCloseTo(shelfGone.fieldCenter.y, 6);
   });
 
+  describe('a filter applied behind a blind', () => {
+    const DAY = 24 * 3600 * 1000;
+    // Six months of songs, every other one tagged: a filter keeps half.
+    const library: FieldEntity[] = Array.from({ length: 12 }, (_, index) => ({
+      ...entities[0],
+      key: `node-a:song-${index}`,
+      entityId: `song-${index}`,
+      createdAtMs: Date.UTC(2026, 0, 8) + index * 16 * DAY,
+      tags: index % 2 === 0 ? ['rainy'] : [],
+    }));
+    const whole = layoutField({
+      entities: library,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const narrowed = layoutField({
+      entities: library.filter(entity => entity.tags.length > 0),
+      arrangement: byDate('month'),
+      viewport,
+    });
+
+    function FilterProbe({
+      field,
+      filtered,
+      quiet,
+    }: {
+      field: FieldLayout;
+      filtered: boolean;
+      quiet: boolean;
+    }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+        axisKey: 'time:month',
+        filtered,
+        recutQuiet: quiet,
+      });
+      return null;
+    }
+
+    async function standInAShelf() {
+      let renderer!: ReactTestRenderer.ReactTestRenderer;
+      await ReactTestRenderer.act(async () => {
+        renderer = ReactTestRenderer.create(
+          <FilterProbe field={whole} filtered={false} quiet={false} />,
+        );
+      });
+      // A shelf of untagged songs only, so the filter cannot keep it.
+      const odd = whole.placements.find(
+        placement => placement.entityKey === 'node-a:song-11',
+      )!;
+      await ReactTestRenderer.act(async () => {
+        latest.descend(odd);
+      });
+      expect(latest.level).toBe('shelf');
+      return { renderer, before: camera() };
+    }
+
+    it('lands at the narrowed home with no flights, and clearing goes back', async () => {
+      mockReducedMotion = false;
+      const { renderer, before } = await standInAShelf();
+
+      await ReactTestRenderer.act(async () => {
+        renderer.update(
+          <FilterProbe field={narrowed} filtered quiet />,
+        );
+      });
+      expect(latest.recut?.animate).toBe(false);
+      const home = levelCameraTarget('field', narrowed)!;
+      expect(latest.level).toBe('field');
+      expect(camera().x).toBeCloseTo(home.x, 6);
+      expect(camera().y).toBeCloseTo(home.y, 6);
+      expect(camera().scale).toBeCloseTo(home.scale, 6);
+
+      await ReactTestRenderer.act(async () => {
+        renderer.update(
+          <FilterProbe field={whole} filtered={false} quiet />,
+        );
+      });
+      expect(latest.recut?.animate).toBe(false);
+      expect(latest.level).toBe('shelf');
+      expect(camera().x).toBeCloseTo(before.x, 6);
+      expect(camera().y).toBeCloseTo(before.y, 6);
+      expect(camera().scale).toBeCloseTo(before.scale, 6);
+    });
+
+    it('restores on a clear seen on the map as well, animated', async () => {
+      mockReducedMotion = false;
+      const { renderer, before } = await standInAShelf();
+      await ReactTestRenderer.act(async () => {
+        renderer.update(<FilterProbe field={narrowed} filtered quiet />);
+      });
+      // CLEAR on the emptied map is in sight: a re-cut you watch.
+      await ReactTestRenderer.act(async () => {
+        renderer.update(
+          <FilterProbe field={whole} filtered={false} quiet={false} />,
+        );
+      });
+      expect(latest.recut?.animate).toBe(true);
+      expect(latest.recut?.toCamera.x).toBeCloseTo(before.x, 6);
+      expect(latest.recut?.toCamera.y).toBeCloseTo(before.y, 6);
+    });
+
+    it('flips in sight: a filter changed on the count line still flies', async () => {
+      mockReducedMotion = false;
+      let renderer!: ReactTestRenderer.ReactTestRenderer;
+      await ReactTestRenderer.act(async () => {
+        renderer = ReactTestRenderer.create(
+          <FilterProbe field={whole} filtered={false} quiet={false} />,
+        );
+      });
+      await ReactTestRenderer.act(async () => {
+        renderer.update(
+          <FilterProbe field={narrowed} filtered quiet={false} />,
+        );
+      });
+      expect(latest.recut?.animate).toBe(true);
+    });
+  });
+
   it('goes home when the shelf you stand in leaves the field', async () => {
     mockReducedMotion = true;
     const week = Date.UTC(2026, 7, 8);
@@ -1825,6 +1947,73 @@ describe('useFieldCamera: each axis keeps its place, and the rail', () => {
     const range = mapCameraRange(mapFrame(fewer)!, viewport, fewer.fitScale);
     expect(camera().y).toBeLessThanOrEqual(range.maxY + 1e-9);
     expect(camera().y).toBeGreaterThanOrEqual(range.minY - 1e-9);
+  });
+
+  it('keeps each axis\'s place on the whole map apart from a narrowed one', async () => {
+    const half = library.filter((_entity, index) => index % 2 === 0);
+    const narrowWeeks = layoutField({
+      entities: half,
+      arrangement: byDate('week'),
+      viewport,
+    });
+    const narrowMonths = layoutField({
+      entities: half,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    function FilterAxisProbe({
+      field,
+      axis,
+      filtered,
+    }: {
+      field: FieldLayout;
+      axis: string;
+      filtered: boolean;
+    }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+        axisKey: axis,
+        filtered,
+        recutQuiet: true,
+      });
+      return null;
+    }
+    let probe!: ReactTestRenderer.ReactTestRenderer;
+    async function see(field: FieldLayout, axis: string, filtered: boolean) {
+      const element = (
+        <FilterAxisProbe axis={axis} field={field} filtered={filtered} />
+      );
+      await ReactTestRenderer.act(async () => {
+        if (probe === undefined) probe = ReactTestRenderer.create(element);
+        else probe.update(element);
+      });
+    }
+
+    await see(weeks, 'time:week', false);
+    await drag(-900);
+    const weeksThere = latest.cameraShared.value;
+    await see(months, 'time:month', false);
+    await drag(-300);
+    const monthsThere = latest.cameraShared.value;
+    await see(weeks, 'time:week', false);
+
+    await see(narrowWeeks, 'time:week', true);
+    expect(camera().y).toBeCloseTo(narrowWeeks.fieldCenter.y, 6);
+    // Across axes while narrowed: each opens at its own home, and a place
+    // found on a narrowed map is not kept for the whole one.
+    await see(narrowMonths, 'time:month', true);
+    expect(camera().y).toBeCloseTo(narrowMonths.fieldCenter.y, 6);
+    await drag(-200);
+    await see(narrowWeeks, 'time:week', true);
+    expect(camera().y).toBeCloseTo(narrowWeeks.fieldCenter.y, 6);
+
+    await see(weeks, 'time:week', false);
+    expect(camera().y).toBeCloseTo(weeksThere.y, 6);
+    await see(months, 'time:month', false);
+    expect(camera().y).toBeCloseTo(monthsThere.y, 6);
   });
 
   it('leaves a regroup of the same axis where it was', async () => {

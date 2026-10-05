@@ -188,6 +188,20 @@ type Options = {
    * a regroup keeps the camera where it is, as it always did.
    */
   axisKey?: string;
+  /**
+   * Whether the layout is narrowed by a tag filter. The first filtered layout
+   * keeps the camera it replaced, and the first unfiltered one after it goes
+   * back there; while filtered, the per-axis memory is neither read nor
+   * written, so a place on a narrowed map never overwrites one on the whole.
+   */
+  filtered?: boolean;
+  /**
+   * The next re-cut happens out of sight, behind a blind: no flights, and the
+   * camera lands at once — at the new layout's home, or where it was before
+   * the filter when the filter is the thing going. The same switch reduced
+   * motion throws. Read only on the render whose layout changes.
+   */
+  recutQuiet?: boolean;
 };
 
 type CameraState = {
@@ -309,6 +323,8 @@ export type FieldRecutModel = Readonly<{
   animate: boolean;
   /** The axis this layout is cut on; see `Options.axisKey`. */
   axisKey?: string;
+  /** Whether this layout is narrowed; see `Options.filtered`. */
+  filtered?: boolean;
 }>;
 
 /** A map camera kept for an axis, with its scale relative to that map's FIT. */
@@ -332,6 +348,8 @@ export function useFieldCamera({
   onHoldPlacement,
   onClaimTap,
   axisKey,
+  filtered = false,
+  recutQuiet = false,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
@@ -378,6 +396,13 @@ export function useFieldCamera({
    * Held for the session only; an axis never visited opens at its home.
    */
   const axisCameras = useRef(new Map<string, AxisCamera>());
+  /**
+   * The camera the first filter replaced, at any level, and the axis it was
+   * on: where clearing the filter goes back to. Null while unfiltered.
+   */
+  const beforeFilter = useRef<(AxisCamera & { axisKey?: string }) | null>(
+    null,
+  );
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
   /** See the capture beside `focus`, and the strand it answers in the re-cut. */
   const standing = useRef<Placement | null>(null);
@@ -989,8 +1014,26 @@ export function useFieldCamera({
       !firstLayout && axisKey !== undefined && previousAxis !== axisKey;
     const atMap =
       heading.scale / fromFitScale < LEVEL_BOUNDARIES.field && !stranded;
+    const wasFiltered = previous?.filtered ?? false;
+    const filterArrives = !firstLayout && filtered && !wasFiltered;
+    const filterLeaves = !firstLayout && !filtered && wasFiltered;
+    if (filterArrives) {
+      const kept = {
+        x: heading.x,
+        y: heading.y,
+        ratio: heading.scale / fromFitScale,
+      };
+      beforeFilter.current = { ...kept, axisKey: previousAxis };
+      // The whole map's place on this axis is the one being left.
+      if (atMap && previousAxis !== undefined) {
+        axisCameras.current.set(previousAxis, kept);
+      }
+    }
     let axisCamera: Camera | null = null;
-    if (axisChanged && atMap) {
+    if (axisChanged && atMap && filtered && wasFiltered) {
+      // A narrowed map has no place of its own to keep or return to.
+      axisCamera = newHome;
+    } else if (axisChanged && atMap) {
       if (previousAxis !== undefined) {
         axisCameras.current.set(previousAxis, {
           x: heading.x,
@@ -1012,12 +1055,53 @@ export function useFieldCamera({
         axisCamera = newHome;
       }
     }
+    /*
+     * The filter going: back to where the first filter found the camera —
+     * on this axis, or this axis's own place when the axis changed since —
+     * held inside the whole map's range, which a library change may have
+     * moved.
+     */
+    let restored: Camera | null = null;
+    if (filterLeaves) {
+      const stash = beforeFilter.current;
+      beforeFilter.current = null;
+      const kept =
+        stash !== null && stash.axisKey === axisKey
+          ? stash
+          : axisKey === undefined
+          ? undefined
+          : axisCameras.current.get(axisKey);
+      const frame = mapFrame(layout);
+      if (
+        kept !== undefined &&
+        kept !== null &&
+        frame !== null &&
+        viewport !== null
+      ) {
+        const scale = clampScale(kept.ratio * layout.fitScale, layout);
+        const atShelf = kept.ratio >= LEVEL_BOUNDARIES.field;
+        const range = mapCameraRange(frame, viewport, scale);
+        restored = atShelf
+          ? { scale, x: kept.x, y: kept.y }
+          : {
+              scale,
+              x: Math.min(Math.max(kept.x, range.minX), range.maxX),
+              y: Math.min(Math.max(kept.y, range.minY), range.maxY),
+            };
+      } else {
+        restored = newHome;
+      }
+    }
     let toCamera = firstLayout
       ? fromCamera
-      : stranded
-      ? levelCameraTarget('shelf', layout, held) ?? newHome ?? fitCorrected
+      : restored !== null
+      ? restored
       : axisCamera !== null
       ? axisCamera
+      : recutQuiet && newHome !== null
+      ? newHome
+      : stranded
+      ? levelCameraTarget('shelf', layout, held) ?? newHome ?? fitCorrected
       : flyingHome
       ? newHome ?? fitCorrected
       : fitCorrected;
@@ -1032,6 +1116,7 @@ export function useFieldCamera({
     if (
       previous !== null &&
       !stranded &&
+      restored === null &&
       newHome !== null &&
       isShelfDistance(heading.scale, fromFitScale) &&
       !isSongDistance(heading.scale, fromFitScale)
@@ -1074,6 +1159,7 @@ export function useFieldCamera({
     const animate =
       !firstLayout &&
       !reducedMotion &&
+      !recutQuiet &&
       (flightsMove(flights) ||
         groupsChanged(fromGroups, layout.groups) ||
         camerasDiffer(fromCamera, toCamera) ||
@@ -1089,6 +1175,7 @@ export function useFieldCamera({
       fromGroups,
       animate,
       axisKey,
+      filtered,
     };
     if (stranded) strandedFocus.current = generation;
   }
