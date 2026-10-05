@@ -73,6 +73,7 @@ import {
   type FieldPresentation,
 } from '../features/field/useFieldController';
 import { EmptyField, EmptyFilter } from '../features/field/EmptyField';
+import { FindSheet } from '../features/find/FindSheet';
 import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
@@ -431,6 +432,17 @@ export function FieldScreen({ identity }: Props) {
    */
   const [tagFilter, setTagFilter] = useState<TagFilter>(EMPTY_FILTER);
   /**
+   * The find blind (find-plan F3): opened by `FIND`, or by the count line's
+   * tag words, from the map or a shelf. It names the shelf it was opened in
+   * and keeps that scope while it is down, even if a filter chosen inside it
+   * empties that shelf behind it.
+   */
+  const [findOpen, setFindOpen] = useState(false);
+  const [findScope, setFindScope] = useState<{
+    groupKey: string;
+    label: string;
+  } | null>(null);
+  /**
    * Whether the next re-cut happens behind a blind: a filter applied as the
    * find blind closes, or cleared, re-packs the map while it is out of sight
    * and lands without flights (`useFieldCamera`'s `recutQuiet`). Spent by
@@ -519,6 +531,12 @@ export function FieldScreen({ identity }: Props) {
    */
   const sheetPull = useSharedValue(0);
   const sheetDestination = useSharedValue(0);
+  /**
+   * The find blind's own, for the same reason: it comes from the top, where
+   * the field's edge pull already carries the composer. Opened by a tap only.
+   */
+  const findPull = useSharedValue(0);
+  const findDestination = useSharedValue(0);
   /** Rows whose audio command is in flight, so a second tap cannot double it. */
   const audioBusy = useRef(new Set<string>());
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -2001,6 +2019,10 @@ export function FieldScreen({ identity }: Props) {
   ]);
 
   const closeTopmostSheet = useCallback((): boolean => {
+    if (findOpen) {
+      setFindOpen(false);
+      return true;
+    }
     // `sheetOpen`, not `sheetTarget`: the subject outlives the blind by the
     // length of its run, and a back press in that window belongs to whatever
     // is behind the sheet rather than to the sheet that is already leaving.
@@ -2021,7 +2043,7 @@ export function FieldScreen({ identity }: Props) {
       return true;
     }
     return false;
-  }, [commands, composerOpen, enginesOpen, pairing, sheetOpen]);
+  }, [commands, composerOpen, enginesOpen, findOpen, pairing, sheetOpen]);
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
@@ -2050,25 +2072,6 @@ export function FieldScreen({ identity }: Props) {
     }));
   }, []);
   const clearFilter = useCallback(() => setTagFilter(EMPTY_FILTER), []);
-  // Opened by F3's blind; until then the count line's tag words do nothing.
-  const openTags = useCallback(() => {}, []);
-  /**
-   * TEMPORARY (find-plan F1, removed in F3): a long press on the count line
-   * narrows the map to its two most-used tags, and the next one clears it, so
-   * the filter can be judged on the phone before the blind exists. Quiet, as
-   * the blind will apply it.
-   */
-  const devFilter = useCallback(() => {
-    if (tagFilter.tags.length > 0) {
-      applyFilterQuietly(EMPTY_FILTER);
-      return;
-    }
-    const top = [...tagCounts(controller.entities)]
-      .sort((left, right) => right.count - left.count)
-      .slice(0, 2)
-      .map(count => count.tag);
-    applyFilterQuietly({ tags: top, mode: 'any' });
-  }, [applyFilterQuietly, controller.entities, tagFilter.tags.length]);
   /** The cluster you are inside, named the way its axis names it. */
   const focusedGroupLabel = useMemo(() => {
     const key = fieldCamera.groupKey;
@@ -2076,6 +2079,23 @@ export function FieldScreen({ identity }: Props) {
     const group = layout.groups.find(candidate => candidate.key === key);
     return group === undefined ? null : shelfLabel(group.label, nowMs).primary;
   }, [fieldCamera.groupKey, layout, nowMs]);
+  /** Open the find blind, scoped to the shelf you stand in, if any. */
+  const openFind = useCallback(() => {
+    setFindScope(
+      fieldCamera.level === 'shelf' &&
+        fieldCamera.groupKey !== null &&
+        focusedGroupLabel !== null
+        ? { groupKey: fieldCamera.groupKey, label: focusedGroupLabel }
+        : null,
+    );
+    setFindOpen(true);
+  }, [fieldCamera.groupKey, fieldCamera.level, focusedGroupLabel]);
+  const closeFind = useCallback(() => setFindOpen(false), []);
+  /** Every tag the library uses, with its count, for the blind's list. */
+  const libraryTags = useMemo(
+    () => tagCounts(controller.entities),
+    [controller.entities],
+  );
 
   /**
    * What each node would take with it, if it were forgotten.
@@ -2512,8 +2532,8 @@ export function FieldScreen({ identity }: Props) {
           filter={tagFilter}
           libraryCount={songCount}
           onFlipFilter={flipFilter}
-          onOpenTags={openTags}
-          onCountLongPress={devFilter}
+          onOpenTags={openFind}
+          onOpenFind={openFind}
           storageError={audioError ?? storageError}
         />
       </View>
@@ -2579,6 +2599,28 @@ export function FieldScreen({ identity }: Props) {
               void forgetEngine(nodePublicKey);
             }}
             onRename={commands.renameBackend}
+          />
+        </Curtain>
+      ) : null}
+      {viewport !== null ? (
+        <Curtain
+          edge="top"
+          onClose={closeFind}
+          open={findOpen}
+          destination={findDestination}
+          pull={findPull}
+          title="FIND"
+          viewportHeight={viewport.height}
+        >
+          <FindSheet
+            filter={tagFilter}
+            libraryCount={songCount}
+            onChangeFilter={applyFilterQuietly}
+            onClose={closeFind}
+            open={findOpen}
+            scopeLabel={findScope?.label ?? null}
+            shownCount={shownCount}
+            tags={libraryTags}
           />
         </Curtain>
       ) : null}

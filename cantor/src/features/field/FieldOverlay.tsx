@@ -85,8 +85,8 @@ type Props = {
   libraryCount?: number;
   onFlipFilter?: () => void;
   onOpenTags?: () => void;
-  /** TEMPORARY (find-plan F1): a dev way to set a filter before the blind. */
-  onCountLongPress?: () => void;
+  /** The `FIND` word at the eyebrow's right end, on the map and in a shelf. */
+  onOpenFind?: () => void;
   /** The name of the cluster you are inside, at L1. */
   groupLabel: string | null;
   /**
@@ -280,6 +280,12 @@ export const OVERLAY_KNOBS = {
    * name passing rather than a mark with a stain beside it.
    */
   HELD_NAME_MIN_PX: 48,
+  /**
+   * The `FIND` word's target: a finger's height, generous out to the screen
+   * edge and up, and only a few points inward, where `NEW SONG`'s own target
+   * hangs over the same line.
+   */
+  FIND_HIT_SLOP: { top: 16, bottom: 12, left: 8, right: 24 },
 } as const;
 
 /**
@@ -379,7 +385,7 @@ function FieldOverlayImpl({
   libraryCount = 0,
   onFlipFilter,
   onOpenTags,
-  onCountLongPress,
+  onOpenFind,
   groupLabel,
   shelfAction,
   onShelfAction,
@@ -555,13 +561,39 @@ function FieldOverlayImpl({
             shared alpha, so the count re-forms in place: one object, one
             gesture, which is what the paragraph above is claiming.
           */}
-        <TransformText
-          text={eyebrowLine(h.level, noun)}
-          charStyle={CHROME_STYLES.eyebrow}
-          color={pal.muted}
-          duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-          style={styles.eyebrowSlot}
-        />
+        <View style={styles.eyebrowRow} pointerEvents="box-none">
+          <TransformText
+            text={eyebrowLine(h.level, noun)}
+            charStyle={CHROME_STYLES.eyebrow}
+            color={pal.muted}
+            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+            style={styles.eyebrowSlot}
+          />
+          {/*
+              The one free seat in the header (find-plan, decision 8): the
+              eyebrow's right end. `NEW SONG` hangs over the line's centre, so
+              the word stays at the far end and its target reaches no further
+              in than its own width.
+            */}
+          <Pressable
+            accessibilityLabel="Find a song, or show only some tags"
+            accessibilityRole="button"
+            hitSlop={OVERLAY_KNOBS.FIND_HIT_SLOP}
+            onPress={onOpenFind}
+            style={styles.find}
+          >
+            {({ pressed }) => (
+              <Text
+                style={[
+                  CHROME_STYLES.eyebrow,
+                  { color: pressed ? pal.muted : pal.faint },
+                ]}
+              >
+                FIND
+              </Text>
+            )}
+          </Pressable>
+        </View>
         <TransformText
           text={h.level === 'shelf' ? h.groupLabel ?? 'Group' : 'Field'}
           charStyle={CHROME_STYLES.title}
@@ -574,13 +606,7 @@ function FieldOverlayImpl({
           style={styles.metaRow}
           pointerEvents="box-none"
         >
-          <Pressable
-            accessible={false}
-            disabled={onCountLongPress === undefined}
-            onLongPress={onCountLongPress}
-            pointerEvents={onCountLongPress === undefined ? 'none' : 'auto'}
-            style={styles.metaCount}
-          >
+          <View style={styles.metaCount} pointerEvents="none">
             <TransformText
               text={countLine}
               charStyle={CHROME_STYLES.eyebrow}
@@ -588,7 +614,7 @@ function FieldOverlayImpl({
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
               style={styles.eyebrowSlot}
             />
-          </Pressable>
+          </View>
           {rowWidth !== null && countFont !== null ? (
             <FilterPhraseSeat
               font={countFont}
@@ -1080,6 +1106,14 @@ const styles = StyleSheet.create({
   titleSlot: {
     height: OVERLAY_KNOBS.TITLE_ROW_PX,
     marginTop: space.sm,
+  },
+  eyebrowRow: { position: 'relative' },
+  find: {
+    height: OVERLAY_KNOBS.EYEBROW_ROW_PX,
+    justifyContent: 'center',
+    position: 'absolute',
+    right: 0,
+    top: 0,
   },
   /** The count takes the room the action does not, and morphs inside it. */
   metaCount: { flex: 1 },
