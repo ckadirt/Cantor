@@ -30,7 +30,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/security/` | `descriptor` verification, `carrier` and `inner` codecs, `secureTunnel` orchestration, `native` channel factory, `types` |
 | `src/backends/` | `BackendConnection` façade, `relaySocket` lifecycle, `requestRegistry`, `applicationResponses` decoders, `pairing`, `storage` |
 | `src/runtime/` | `BackendRuntime` — a plain object publishing one store: backend records, connection lifecycles, snapshots, cache hydration, persistence, outbox flush, audio inspection, feature commands. `useBackendRuntime` starts it for a component's life |
-| `src/features/` | `field/` (the canvas, camera, controller, overlays), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
+| `src/features/` | `field/` (the canvas, camera, controller, overlays), `find/` (the find blind: tags and results), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
 | `src/screens/` | `FieldScreen`: the one screen after onboarding — composition and wiring |
 | `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
 | `src/jobs/` | job repository and the submission outbox |
@@ -458,6 +458,32 @@ date axis is one map per resolution): leaving an axis remembers the camera,
 coming back returns to it inside the map's current range, and an axis not yet
 visited this session opens at its home. Inside a shelf or a song a regroup
 still keeps you where you are.
+
+A tag filter (`field/filter.ts`, `TagFilter`) takes songs out of the
+entities before `layoutField`, so the map re-packs; an empty filter returns
+the very same array, or every render would re-cut. `FieldScreen` holds it in
+memory only, and everything that names the library as a whole — the tag
+list, playlists, `OF 64` — keeps reading the unfiltered entities. The map's
+count line says it (`10 OF 64 · RAINY OR LIVE`, `features/field/
+filterWords.ts`, fitted to the row and to a held song's mark): the tag words
+open the find blind, the conjunction flips any/all with an ordinary animated
+re-cut. `useFieldCamera` takes `filtered` and `recutQuiet`. A quiet re-cut —
+a filter changed behind the fully drawn find blind — has no flights and lands
+at the new home; the first filtered layout stashes the camera it replaced, at
+any level, and the first unfiltered one returns there (that axis's own place
+if the axis changed meanwhile). While filtered, the per-axis memory is
+neither read nor written. A re-cut that removes the shelf you stand in goes
+home rather than leaving you over an empty page.
+
+Find (`features/find/FindSheet.tsx`, behind the header's `FIND`) never
+changes the map. `library/find.ts` folds each song's searchable text once per
+library change (`buildFindIndex`: case and accents off, split into words),
+and a keystroke only compares folded words — every query word must begin a
+word (`findIn`). Results come out in the layout's own order, which is the
+filtered one: groups as the axis seats them, rows in the shelf's ORDER, one
+row per placement, so a song in three playlists is three rows. Opened inside
+a shelf, find looks there first and offers the rest as a last row. A tapped
+row closes the blind and, once it has lifted, `visit`s the placement.
 
 Group names are fitted to one map column at FIT (`labelMaxWidthPx`): the
 title wraps once at spaces and the second line ends in an ellipsis, growing
