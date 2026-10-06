@@ -183,13 +183,22 @@ function planEntity(
   const usedSources = new Set<Placement>();
   const flights: PlacementFlight[] = [];
 
+  // Every exact identity is claimed before any target goes looking by
+  // distance: otherwise a new copy whose key sorts first (the found shelf's)
+  // takes the nearest mark, and that mark's own target flies from elsewhere.
+  const exact = new Map<Placement, Placement>();
   for (const target of targets) {
-    let sourceIndex = unused.findIndex(source => source.key === target.key);
-    if (sourceIndex < 0) sourceIndex = closestIndex(unused, target);
+    const sourceIndex = unused.findIndex(source => source.key === target.key);
+    if (sourceIndex >= 0) exact.set(target, unused.splice(sourceIndex, 1)[0]);
+  }
+
+  for (const target of targets) {
+    const sourceIndex = exact.has(target) ? -1 : closestIndex(unused, target);
     const source =
-      sourceIndex >= 0
+      exact.get(target) ??
+      (sourceIndex >= 0
         ? unused.splice(sourceIndex, 1)[0]
-        : closest(sources, target);
+        : closest(sources, target));
     const ownsSource = !usedSources.has(source);
     usedSources.add(source);
     flights.push(
