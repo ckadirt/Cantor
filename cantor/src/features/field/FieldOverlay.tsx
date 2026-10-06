@@ -1,12 +1,15 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
+  Keyboard,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
   type LayoutChangeEvent,
 } from 'react-native';
 import Animated, {
+  Easing,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -14,6 +17,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { TransformText, WriteText } from '../../motion';
+import { smootherstep } from '../../motion/geometry';
 import { Dial, Reveal } from '../controls';
 import { FieldLegend } from './FieldLegend';
 import { filterPhrase, type PhraseSegment } from './filterWords';
@@ -87,6 +91,16 @@ type Props = {
   onOpenTags?: () => void;
   /** The `FIND` word at the eyebrow's right end, on the map and in a shelf. */
   onOpenFind?: () => void;
+  /**
+   * Find mode (gather-plan, G1): the title line is the query, the eyebrow
+   * says `FIND` or `FOUND`, the count line counts what it found, and `CLOSE`
+   * takes `FIND`'s seat. Null outside it.
+   */
+  finding?: FindChrome | null;
+  /** Whether the soft keyboard is up, which in find mode is typing. */
+  keyboardUp?: boolean;
+  onChangeQuery?: (query: string) => void;
+  onCloseFind?: () => void;
   /** The name of the cluster you are inside, at L1. */
   groupLabel: string | null;
   /**
@@ -280,7 +294,44 @@ export const OVERLAY_KNOBS = {
    * hangs over the same line.
    */
   FIND_HIT_SLOP: { top: 16, bottom: 12, left: 8, right: 24 },
+  /**
+   * The `FIND`/`CLOSE` seat's width: `CLOSE` at the eyebrow's size and
+   * tracking, with a little air. Fixed, so the word can morph in place.
+   */
+  FIND_SEAT_WIDTH_PX: 76,
 } as const;
+
+/**
+ * KNOBS — the title line becoming the query (find-motion.html, frame III).
+ *
+ * One linear clock; `Field` leaves on the first part of it and the query
+ * arrives on the rest, each rising, so the two never stand in the same place
+ * at full ink.
+ */
+export const FIND_TITLE_KNOBS = {
+  /** The whole crossing, both ways. */
+  CROSS_MS: 500,
+  /** How far each line travels as it crosses: both rise. */
+  SHIFT_PX: 10,
+  /** When on the clock the query starts to arrive. */
+  QUERY_FROM: 0.3,
+  /** When on the clock `Field` is gone. */
+  TITLE_GONE_AT: 0.7,
+  /**
+   * The query's glyphs, lifted onto the title's baseline: a `TextInput`
+   * centres its line in the slot a little lower than the engine sets the
+   * title (measured on the Xiaomi: 7 px, 2.5 dp).
+   */
+  QUERY_BASELINE_PX: -2.5,
+} as const;
+
+/** What find mode's chrome says. */
+export type FindChrome = Readonly<{
+  query: string;
+  /** Songs found, and the groups they came from. */
+  songCount: number;
+  groupCount: number;
+}>;
 
 /**
  * KNOB — where the header and the foot give the screen to the player, in
@@ -310,6 +361,8 @@ export const CHROME_AWAY_WINDOW = [
 const CHROME_STYLES = {
   eyebrow: type.eyebrow,
   title: type.title,
+  /** `FIND` and `CLOSE` share the eyebrow's right end. */
+  find: { ...type.eyebrow, textAlign: 'right' } as const,
   /** The action is pinned to the meta row's right end; see `ACTION_WIDTH_PX`. */
   action: { ...type.eyebrow, textAlign: 'right' } as const,
   hint: { ...type.eyebrow, textAlign: 'center' } as const,
@@ -321,7 +374,12 @@ const CHROME_STYLES = {
  * numbers this used to show were the code's words for the levels, not a
  * listener's. L2 and L3 never show the header; see `showHeader`.
  */
-function eyebrowLine(level: Level, noun: string): string {
+function eyebrowLine(
+  level: Level,
+  noun: string,
+  finding: FindChrome | null = null,
+): string {
+  if (finding !== null) return hasQuery(finding) ? 'FOUND' : 'FIND';
   if (level === 'field') return `BY ${noun}`;
   if (level === 'shelf') return noun;
   return level === 'song' ? 'SONG' : 'GRAIN';
@@ -368,6 +426,25 @@ export function axisNoun(
     : AXIS_NOUN[arrangementKey] ?? 'GROUP';
 }
 
+function hasQuery(finding: FindChrome): boolean {
+  return finding.query.trim().length > 0;
+}
+
+/**
+ * Find's count line: `4 SONGS · 4 WEEKS`, in the axis's noun; `TYPE A NAME`
+ * before a letter.
+ */
+export function findCountLine(finding: FindChrome, noun: string): string {
+  if (!hasQuery(finding)) return 'TYPE A NAME';
+  if (finding.songCount === 0) return 'NO SONGS';
+  const songs = `${finding.songCount} ${
+    finding.songCount === 1 ? 'SONG' : 'SONGS'
+  }`;
+  return `${songs} · ${finding.groupCount} ${noun}${
+    finding.groupCount === 1 ? '' : 'S'
+  }`;
+}
+
 function FieldOverlayImpl({
   level,
   cameraShared,
@@ -390,6 +467,10 @@ function FieldOverlayImpl({
   onFlipFilter,
   onOpenTags,
   onOpenFind,
+  finding = null,
+  keyboardUp = false,
+  onChangeQuery,
+  onCloseFind,
   groupLabel,
   shelfAction,
   onShelfAction,
@@ -432,6 +513,8 @@ function FieldOverlayImpl({
     shelfAction,
     nowPlaying,
     orderKey,
+    finding,
+    keyboardUp,
   };
   const shown = useRef(live);
   if (showHeader) shown.current = live;
@@ -440,9 +523,14 @@ function FieldOverlayImpl({
   // The header's one act: the shelf's bulk action inside a shelf; on the map,
   // the song the player holds — unless the count line is saying something
   // longer than a count, which this would run into.
-  const action = h.level === 'shelf' ? h.shelfAction : null;
+  // While typing, the header is the query and its count, nothing else.
+  const typing = h.finding !== null && h.keyboardUp;
+  const action = h.level === 'shelf' && !typing ? h.shelfAction : null;
   const held =
-    h.level === 'field' && !h.noConnection && h.arrived == null
+    h.level === 'field' &&
+    h.finding === null &&
+    !h.noConnection &&
+    h.arrived == null
       ? h.nowPlaying
       : null;
   const noun = axisNoun(h.arrangementKey, h.dateResolution);
@@ -450,11 +538,14 @@ function FieldOverlayImpl({
   // is the shelf's own count, and its right end is the bulk action's.
   const saysFilter =
     h.level === 'field' &&
+    h.finding === null &&
     !h.noConnection &&
     h.arrived == null &&
     h.filter.tags.length > 0;
   const countLine = h.noConnection
     ? `NO CONNECTION · ${h.playableHere ?? 0} PLAYABLE HERE`
+    : h.finding !== null
+    ? findCountLine(h.finding, noun)
     : h.arrived != null && h.level === 'field'
     ? `${h.arrived} ARRIVED FROM THIS PHONE`
     : saysFilter
@@ -504,7 +595,7 @@ function FieldOverlayImpl({
           ? phraseLeft + lineWidth(countFont, tracking, phrase.text)
           : lineWidth(countFont, tracking, countLine)) -
         NOW_PLAYING_KNOBS.COUNT_GAP_PX;
-  const legendShown = showLegend && h.level === 'field';
+  const legendShown = showLegend && h.level === 'field' && h.finding === null;
   // The key and the hint share one seat; they cross rather than cut.
   const legendIn = useSharedValue(legendShown ? 1 : 0);
   useEffect(() => {
@@ -528,6 +619,59 @@ function FieldOverlayImpl({
     }),
     [cameraShared, fitScaleShared],
   );
+  /*
+   * The title line becoming the query. Not `h`: entering find happens at L0
+   * or L1, where the header is always shown.
+   */
+  const inFind = finding !== null;
+  const reducedMotion = useReducedMotion();
+  const query = useRef<TextInput>(null);
+  const crossing = useSharedValue(inFind ? 1 : 0);
+  useEffect(() => {
+    crossing.value = reducedMotion
+      ? inFind
+        ? 1
+        : 0
+      : withTiming(inFind ? 1 : 0, {
+          duration: FIND_TITLE_KNOBS.CROSS_MS,
+          easing: Easing.linear,
+        });
+    if (inFind) {
+      query.current?.focus();
+    } else {
+      query.current?.blur();
+      Keyboard.dismiss();
+    }
+  }, [crossing, inFind, reducedMotion]);
+  const titleLeaving = useAnimatedStyle(() => {
+    const gone = smootherstep(0, FIND_TITLE_KNOBS.TITLE_GONE_AT, crossing.value);
+    return {
+      opacity: 1 - gone,
+      transform: [{ translateY: -FIND_TITLE_KNOBS.SHIFT_PX * gone }],
+    };
+  });
+  const queryArriving = useAnimatedStyle(() => {
+    const here = smootherstep(FIND_TITLE_KNOBS.QUERY_FROM, 1, crossing.value);
+    return {
+      opacity: here,
+      transform: [{ translateY: FIND_TITLE_KNOBS.SHIFT_PX * (1 - here) }],
+    };
+  });
+  const queryStyle = useFontScaledStyle(CHROME_STYLES.title);
+  // The field's dials and hint leave in find mode; once the keyboard is down
+  // on a query, the hint is the shelf's.
+  const hint = legendShown
+    ? ''
+    : h.finding !== null
+    ? !typing && hasQuery(h.finding) && h.finding.songCount > 0
+      ? HINTS.shelf
+      : ''
+    : h.level === 'field'
+    ? `${HINTS.field} ${noun}`
+    : HINTS.shelf;
+  const orderOpen =
+    h.level === 'shelf' &&
+    (h.finding === null || (!typing && hasQuery(h.finding)));
   return (
     <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
       <EdgeTab
@@ -568,7 +712,7 @@ function FieldOverlayImpl({
           */}
         <View style={styles.eyebrowRow} pointerEvents="box-none">
           <TransformText
-            text={eyebrowLine(h.level, noun)}
+            text={eyebrowLine(h.level, noun, h.finding)}
             charStyle={CHROME_STYLES.eyebrow}
             color={pal.muted}
             duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
@@ -580,32 +724,75 @@ function FieldOverlayImpl({
               the word stays at the far end and its target reaches no further
               in than its own width.
             */}
+          {/*
+              In find mode the seat says `CLOSE`, the eyebrow's one way back,
+              where every blind keeps it. A word changing is a morph.
+            */}
           <Pressable
-            accessibilityLabel="Find a song, or show only some tags"
+            accessibilityLabel={
+              h.finding !== null
+                ? 'Close find'
+                : 'Find a song, or show only some tags'
+            }
             accessibilityRole="button"
             hitSlop={OVERLAY_KNOBS.FIND_HIT_SLOP}
-            onPress={onOpenFind}
+            onPress={h.finding !== null ? onCloseFind : onOpenFind}
             style={styles.find}
           >
             {({ pressed }) => (
-              <Text
-                style={[
-                  CHROME_STYLES.eyebrow,
-                  { color: pressed ? pal.muted : pal.faint },
-                ]}
-              >
-                FIND
-              </Text>
+              <TransformText
+                text={h.finding !== null ? 'CLOSE' : 'FIND'}
+                charStyle={CHROME_STYLES.find}
+                color={
+                  pressed ? pal.muted : h.finding !== null ? pal.ink : pal.faint
+                }
+                duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+                style={styles.eyebrowSlot}
+              />
             )}
           </Pressable>
         </View>
-        <TransformText
-          text={h.level === 'shelf' ? h.groupLabel ?? 'Group' : 'Field'}
-          charStyle={CHROME_STYLES.title}
-          color={pal.ink}
-          duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-          style={styles.titleSlot}
-        />
+        {/*
+            The title and the query share one seat and never stand in it at
+            full ink together: the title leaves upward on the first part of
+            the crossing and the query rises in on the rest. Both stay
+            mounted, so neither crossing waits on a commit.
+          */}
+        <View style={styles.titleSlot} pointerEvents="box-none">
+          <Animated.View
+            pointerEvents="none"
+            style={[StyleSheet.absoluteFill, titleLeaving]}
+            importantForAccessibility={inFind ? 'no-hide-descendants' : 'auto'}
+          >
+            <TransformText
+              text={h.level === 'shelf' ? h.groupLabel ?? 'Group' : 'Field'}
+              charStyle={CHROME_STYLES.title}
+              color={pal.ink}
+              duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+              style={StyleSheet.absoluteFill}
+            />
+          </Animated.View>
+          <Animated.View
+            pointerEvents={inFind ? 'auto' : 'none'}
+            style={[StyleSheet.absoluteFill, queryArriving]}
+            importantForAccessibility={inFind ? 'auto' : 'no-hide-descendants'}
+          >
+            <TextInput
+              ref={query}
+              accessibilityLabel="Find a song"
+              autoCapitalize="none"
+              autoCorrect={false}
+              cursorColor={pal.ink}
+              onChangeText={onChangeQuery}
+              placeholder="a song…"
+              placeholderTextColor={pal.faint}
+              returnKeyType="search"
+              selectionColor={pal.line}
+              style={[queryStyle, styles.query, { color: pal.ink }]}
+              value={finding?.query ?? ''}
+            />
+          </Animated.View>
+        </View>
         <View
           onLayout={onRowLayout}
           style={styles.metaRow}
@@ -690,10 +877,7 @@ function FieldOverlayImpl({
             costs nothing at L0 — it is below everything — and the control
             arrives by coming up into focus rather than by existing suddenly.
           */}
-        <Reveal
-          duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-          open={h.level === 'shelf'}
-        >
+        <Reveal duration={OVERLAY_KNOBS.HEADER_CHANGE_MS} open={orderOpen}>
           <View style={styles.orderRow} pointerEvents="box-none">
             <Text
               style={[type.eyebrow, styles.orderLabel, { color: pal.line }]}
@@ -746,7 +930,7 @@ function FieldOverlayImpl({
             below it does not move whether the dial is lit or not, and the dial
             can therefore rise and set instead of blinking in and out.
           */}
-        <Reveal open={h.level === 'field'}>
+        <Reveal open={h.level === 'field' && h.finding === null}>
           <>
             {/*
                 Resolution sits over the axis it belongs to, because it is a
@@ -798,13 +982,7 @@ function FieldOverlayImpl({
           */}
         <View style={styles.hintSeat}>
           <WriteText
-            text={
-              legendShown
-                ? ''
-                : h.level === 'field'
-                ? `${HINTS.field} ${noun}`
-                : HINTS.shelf
-            }
+            text={hint}
             charStyle={CHROME_STYLES.hint}
             color={pal.faint}
             duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
@@ -1091,6 +1269,17 @@ const styles = StyleSheet.create({
     position: 'absolute',
     right: 0,
     top: 0,
+    width: OVERLAY_KNOBS.FIND_SEAT_WIDTH_PX,
+  },
+  /** The query sits where the title's glyphs do, with no field chrome. */
+  query: {
+    height: OVERLAY_KNOBS.TITLE_ROW_PX,
+    marginTop: FIND_TITLE_KNOBS.QUERY_BASELINE_PX,
+    includeFontPadding: false,
+    margin: 0,
+    padding: 0,
+    paddingVertical: 0,
+    textAlignVertical: 'center',
   },
   /** The count takes the room the action does not, and morphs inside it. */
   metaCount: { flex: 1 },

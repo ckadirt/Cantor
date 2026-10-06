@@ -51,7 +51,7 @@ import {
   type FieldControllerStore,
 } from '../features/field/fieldControllerStore';
 import { ComposerSheet, type ComposerTarget } from '../features/composer';
-import { Curtain } from '../features/curtain';
+import { Curtain, useKeyboardInset } from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
@@ -80,7 +80,7 @@ import {
   type FindRow,
   type FindSource,
 } from '../features/find/FindSheet';
-import { buildFindIndex } from '../library/find';
+import { buildFindIndex, findIn } from '../library/find';
 import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
@@ -451,6 +451,15 @@ export function FieldScreen({ identity }: Props) {
   const [findScope, setFindScope] = useState<{
     groupKey: string;
     label: string;
+  } | null>(null);
+  /**
+   * Find mode (gather-plan): `FIND` turns the header's title line into the
+   * query. `scopeKey` is the shelf it was entered from, or null for the
+   * whole field; it is held while find is open.
+   */
+  const [finding, setFinding] = useState<{
+    query: string;
+    scopeKey: string | null;
   } | null>(null);
   /**
    * Whether the next re-cut happens behind a blind: a filter applied as the
@@ -2030,6 +2039,11 @@ export function FieldScreen({ identity }: Props) {
     viewport,
   ]);
 
+  const keyboardUp = useKeyboardInset() > 0;
+  const leaveFind = useCallback(() => setFinding(null), []);
+  const changeQuery = useCallback((query: string) => {
+    setFinding(current => (current === null ? null : { ...current, query }));
+  }, []);
   const closeTopmostSheet = useCallback((): boolean => {
     if (findOpen) {
       setFindOpen(false);
@@ -2061,11 +2075,19 @@ export function FieldScreen({ identity }: Props) {
       'hardwareBackPress',
       () => {
         if (closeTopmostSheet()) return true;
+        // Inside a song you found, back climbs to the found shelf first.
+        if (
+          finding !== null &&
+          (fieldCamera.level === 'field' || fieldCamera.level === 'shelf')
+        ) {
+          leaveFind();
+          return true;
+        }
         return fieldCamera.ascend();
       },
     );
     return () => subscription.remove();
-  }, [closeTopmostSheet, fieldCamera]);
+  }, [closeTopmostSheet, fieldCamera, finding, leaveFind]);
 
   const songCount = controller.presentations.size;
   const filtering = tagFilter.tags.length > 0;
@@ -2103,6 +2125,14 @@ export function FieldScreen({ identity }: Props) {
     setFindOpen(true);
   }, [fieldCamera.groupKey, fieldCamera.level, focusedGroupLabel]);
   const closeFind = useCallback(() => setFindOpen(false), []);
+  /** `FIND`: the title line becomes the query, scoped to the shelf you stand in. */
+  const enterFind = useCallback(() => {
+    setFinding({
+      query: '',
+      scopeKey:
+        fieldCamera.level === 'shelf' ? fieldCamera.groupKey ?? null : null,
+    });
+  }, [fieldCamera.groupKey, fieldCamera.level]);
   /**
    * What find searches, folded once per library change: a node song's name,
    * its caption's summary and its model; a phone song's name, artist and
@@ -2185,6 +2215,33 @@ export function FieldScreen({ identity }: Props) {
       if (lifted && previous === false) runOnJS(flushArrival)();
     },
     [flushArrival],
+  );
+  /**
+   * What the query finds, in field order, inside the filter: the shelf it was
+   * entered from first, with the rest counted as `outside`.
+   */
+  const found = useMemo(
+    () =>
+      finding === null || layout === null
+        ? null
+        : findIn(
+            layout,
+            findIndex,
+            finding.query,
+            finding.scopeKey === null ? null : { groupKey: finding.scopeKey },
+          ),
+    [findIndex, finding, layout],
+  );
+  const findChrome = useMemo(
+    () =>
+      finding === null
+        ? null
+        : {
+            query: finding.query,
+            songCount: found?.count ?? 0,
+            groupCount: found?.groups.length ?? 0,
+          },
+    [finding, found],
   );
   const findSource = useMemo<FindSource>(
     () => ({
@@ -2651,7 +2708,11 @@ export function FieldScreen({ identity }: Props) {
           libraryCount={songCount}
           onFlipFilter={flipFilter}
           onOpenTags={openFind}
-          onOpenFind={openFind}
+          onOpenFind={enterFind}
+          finding={findChrome}
+          keyboardUp={keyboardUp}
+          onChangeQuery={changeQuery}
+          onCloseFind={leaveFind}
           storageError={audioError ?? storageError}
         />
       </View>
