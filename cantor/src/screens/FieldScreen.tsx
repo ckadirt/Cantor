@@ -120,8 +120,12 @@ import {
   columnsFor,
   gatherFraction,
   grainWindow,
+  LEVEL_SCALE_RATIOS,
+  MAX_GATHERED,
   gatherLayout,
   isFoundGroup,
+  orderMembers,
+  shelfRowGapWorld,
   layoutField,
   indexRuns,
   modelLabel,
@@ -139,6 +143,7 @@ import {
   type DateResolution,
   type Level,
   type Placement,
+  type Point,
   type QueueStep,
   type TagFilter,
   type Viewport,
@@ -226,6 +231,12 @@ const PLAYHEAD_STEP_PX = 2;
  * going (`leavingFind`), in ms: past any gather's return flight.
  */
 const FIND_KNOBS_LEAVE_HOLD_MS = 2000;
+/**
+ * KNOBS — the found shelf's `N MORE IN OTHER WEEKS` as a target, in screen
+ * pixels from where its row's face would sit: half a row up and down, and
+ * from the face's column to past its words.
+ */
+const FOUND_FOOT_HIT_PX = { HALF_HEIGHT: 40, BEHIND: 110, AHEAD: 260 } as const;
 
 /** Where song measurements are kept, apart from every other stored key. */
 const ANALYSIS_DATABASE = 'cantor-analysis';
@@ -818,15 +829,95 @@ export function FieldScreen({ identity }: Props) {
    * the re-cut's flight plan. Taken as soon as find has a query; the same
    * object as the map otherwise, so nothing re-cuts.
    */
-  const gathered = useMemo(() => {
-    if (mapLayout === null || found === null || finding === null) return null;
-    if (finding.query.trim().length === 0) return null;
-    return gatherLayout(
-      mapLayout,
-      found.groups.flatMap(group => group.placements),
-      { centerY: finding.centerY, viewport: viewport ?? undefined },
+  /**
+   * The found shelf's songs: one copy each, the first `MAX_GATHERED` in
+   * field order, then seated in the shelf's ORDER like any other shelf's.
+   * `more` is what the cap left out; `outside` what the scope did.
+   */
+  const foundShelf = useMemo(() => {
+    if (found === null) return null;
+    const seen = new Set<string>();
+    const firsts: Placement[] = [];
+    for (const group of found.groups) {
+      for (const placement of group.placements) {
+        if (seen.has(placement.entityKey)) continue;
+        seen.add(placement.entityKey);
+        firsts.push(placement);
+      }
+    }
+    const kept = firsts.slice(0, MAX_GATHERED);
+    const placementOf = new Map(kept.map(p => [p.entityKey, p]));
+    const ordered = orderMembers(
+      kept.map(placement => placement.entityKey),
+      new Map(fieldEntities.map(entity => [entity.key, entity])),
+      orderByKey(orderKey),
+      orderSeed,
     );
-  }, [finding, found, mapLayout, viewport]);
+    return {
+      placements: ordered.flatMap(key => placementOf.get(key) ?? []),
+      more: firsts.length - kept.length,
+      outside: found.outside,
+      labels: new Map(found.groups.map(group => [group.groupKey, group.label])),
+    };
+  }, [fieldEntities, found, orderKey, orderSeed]);
+  const gathered = useMemo(() => {
+    if (mapLayout === null || foundShelf === null || finding === null) {
+      return null;
+    }
+    if (finding.query.trim().length === 0) return null;
+    return gatherLayout(mapLayout, foundShelf.placements, {
+      centerY: finding.centerY,
+      viewport: viewport ?? undefined,
+    });
+  }, [finding, foundShelf, mapLayout, viewport]);
+  /** A found row's second line: `SEP 21 – 27 · 0:15`, where it came from. */
+  const foundPlaces = useMemo(() => {
+    if (foundShelf === null) return null;
+    const places = new Map<string, string>();
+    for (const placement of foundShelf.placements) {
+      const label = foundShelf.labels.get(placement.groupKey);
+      const durationMs =
+        controller.presentations.get(placement.entityKey)?.durationMs ?? 0;
+      places.set(
+        placement.entityKey,
+        [
+          label === undefined
+            ? null
+            : shelfLabel(label, nowMs).primary.toUpperCase(),
+          durationMs > 0 ? formatClock(durationMs / 1000) : null,
+        ]
+          .filter(part => part !== null)
+          .join(' · '),
+      );
+    }
+    return places;
+  }, [controller.presentations, foundShelf, nowMs]);
+  /**
+   * The found shelf's last row: what the cap left out, or — found inside a
+   * shelf — the matches in the rest of the field, which a tap gathers too.
+   */
+  const foundFoot = useMemo(() => {
+    if (gathered === null || foundShelf === null) return null;
+    const column = gathered.placements.filter(placement =>
+      isFoundGroup(placement.groupKey),
+    );
+    const last = column[column.length - 1];
+    if (last === undefined) return null;
+    const noun = axisNoun(arrangementKey, dateResolution);
+    const text =
+      foundShelf.more > 0
+        ? `${foundShelf.more} MORE · ANOTHER LETTER NARROWS THEM`
+        : foundShelf.outside > 0
+        ? `${foundShelf.outside} MORE IN OTHER ${noun}S`
+        : null;
+    if (text === null) return null;
+    return {
+      text,
+      x: last.x,
+      y: last.y + shelfRowGapWorld(gathered.fitScale),
+      widens: foundShelf.more === 0,
+    };
+  }, [arrangementKey, dateResolution, foundShelf, gathered]);
   /** What the field draws and touches: the map, or the map gathered. */
   const layout = gathered ?? mapLayout;
 
@@ -1069,6 +1160,37 @@ export function FieldScreen({ identity }: Props) {
     [controllerStore],
   );
 
+  /**
+   * A tap on the found shelf's `N MORE IN OTHER WEEKS`: the rest of the
+   * field is gathered in place (find-plan decision 6). The row's target is
+   * the row: its height, from the face's seat to the end of its words.
+   */
+  const onTapNothing = useCallback(
+    (world: Point, level: Level) => {
+      if (
+        level !== 'shelf' ||
+        foundFoot === null ||
+        !foundFoot.widens ||
+        gathered === null
+      ) {
+        return;
+      }
+      const scale = gathered.fitScale * LEVEL_SCALE_RATIOS.shelf;
+      const across = (world.x - foundFoot.x) * scale;
+      const down = (world.y - foundFoot.y) * scale;
+      if (
+        Math.abs(down) <= FOUND_FOOT_HIT_PX.HALF_HEIGHT &&
+        across >= -FOUND_FOOT_HIT_PX.BEHIND &&
+        across <= FOUND_FOOT_HIT_PX.AHEAD
+      ) {
+        setFinding(current =>
+          current === null ? null : { ...current, scopeKey: null },
+        );
+      }
+    },
+    [foundFoot, gathered],
+  );
+
   /** Hold acts: everything about a song that is not the act of listening. */
   const onHoldPlacement = useCallback((placement: Placement) => {
     setPlaybackError(null);
@@ -1087,6 +1209,7 @@ export function FieldScreen({ identity }: Props) {
     onRowAction,
     onHoldPlacement,
     onClaimTap,
+    onTapNothing,
     // The date axis at each resolution is its own map, with its own place.
     axisKey:
       arrangementKey === byTime.key
@@ -2593,6 +2716,8 @@ export function FieldScreen({ identity }: Props) {
                 nowMs={nowMs}
                 transitionGeneration={fieldCamera.transitionGeneration}
                 recut={fieldCamera.recut}
+                foundPlaces={foundPlaces}
+                foundFoot={foundFoot}
                 presentations={controller.presentations}
                 viewport={viewport}
               />
