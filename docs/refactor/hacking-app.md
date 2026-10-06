@@ -525,21 +525,26 @@ queue and the a11y list treat it as any shelf; the rail and the overview
 index keep reading `mapLayout`. An empty query gives back the map object
 itself, so no re-cut runs.
 
-The motion is the ordinary re-cut with three additions, all from
-`planGatherCut` (`GATHER_KNOBS`): each flight may carry a `timing` — its own
-window on the cut's linear clock (staggered in shelf order), a bow, and
-whether its name writes on at its landing seat or erases where it stood —
-and the cut carries its own `durationMs` and a `recede` (the map's ink
-behind the shelf). `placementFlightAtClock` is the one place a timed flight
-is placed: the camera's capture and React's snapshot call it on the linear
-clock; the canvas recovers the linear clock from its eased one once a frame
-(`linearOfEased`) and reads the same windows (`gatherInk.ts`). The camera
-(`useFieldCamera`'s `finding`) stashes itself at the first gather
-(`beforeGather`, any level) and flies to the found shelf on the re-cut's
-clock, stays put while a query finds nothing, and returns to the stash when
-find closes — by an ordinary flight when no re-cut carries it.
-`FieldScreen.leavingFind` makes the header speak for where a closing find's
-camera is going rather than for the seats it passes.
+The motion is the study's (`find-motion.html` frame III): the map stays
+where you stood and recedes behind the shelf, and each face flies out of it
+into its row. That is two cameras (`gatherInk.ts`, `GatherCameras` on the
+re-cut model): the map is drawn through `gatherMap`, the camera when find
+opened, eased to `RECEDE_SCALE` and `RECEDE_INK`; the found shelf through the
+real camera, which `useFieldCamera` cuts to the shelf's seat at the first
+letter and back to where find began on leaving — so the shelf is a real one
+to touch, scroll (it is the only seat while it is out), order and descend
+from. A face changing sides is placed on the screen between its two
+pictures (`flightOnScreen`), by its own window of the cut's linear clock
+(`planGatherCut`: staggered in shelf order, bowed, its name written on as it
+lands or erased where it stood), and drawn somewhere between a mark and a
+row. The canvas recovers the linear clock from its eased one once a frame
+(`linearOfEased`); the camera's capture records a moving face's screen
+point back through the camera the next cut will draw it with, so a letter
+typed mid-flight carries on from where the eye is. The shelf's paper and
+faces are drawn over the map's names, its words over both; the ghost has
+faces and no words, and gives way as you go into a song. A settled scene
+follows the live camera only while it stands at the shelf, so the cut back
+to the map never shows a frame of the shelf drawn from the map's camera.
 
 Inside a shelf, find holds that shelf's matches and offers the rest as the
 column's last row (`foundFoot`, drawn by the canvas; a tap there reaches the
