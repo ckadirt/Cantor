@@ -318,3 +318,19 @@ describe('what a release means', () => {
     expect(seatAfterRelease(seats, { x: 0, y: 0, scale }, -1, gap)).toBe(-1);
   });
 });
+
+describe('a seat that hangs', () => {
+  it('rests a short column from the box top instead of its middle', () => {
+    const seat = { key: 'k', cx: 0, top: 0, bottom: 20 };
+    const viewport = { height: 800 };
+    const middle = seatCameraBounds(seat, viewport, 3);
+    expect(middle.min).toBe(10);
+    const hung = seatCameraBounds({ ...seat, hangs: true }, viewport, 3);
+    expect(hung.min).toBe(hung.max);
+    // The first row rests at the box's inner top.
+    expect((0 - hung.min) * 3 + viewport.height / 2).toBeCloseTo(
+      shelfBoxInterior().top,
+      6,
+    );
+  });
+});

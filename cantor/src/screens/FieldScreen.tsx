@@ -906,6 +906,17 @@ export function FieldScreen({ identity }: Props) {
       widens: foundShelf.more === 0,
     };
   }, [arrangementKey, dateResolution, foundShelf, gathered]);
+  /**
+   * The found rows' words, held after find closes: the rows are still on
+   * their way home, and a new element handed to the canvas mid-flight paints
+   * a frame from stale values (`FieldCanvas`'s note on the scene element).
+   */
+  const lastFoundPlaces = useRef<ReadonlyMap<string, string> | null>(null);
+  const lastFoundFoot = useRef<typeof foundFoot>(null);
+  if (foundPlaces !== null) lastFoundPlaces.current = foundPlaces;
+  if (foundFoot !== null || finding !== null) lastFoundFoot.current = foundFoot;
+  const heldFoundPlaces = foundPlaces ?? lastFoundPlaces.current;
+  const heldFoundFoot = finding === null ? lastFoundFoot.current : foundFoot;
   /** What the field draws and touches: the map, or the map gathered. */
   const layout = gathered ?? mapLayout;
 
@@ -2614,8 +2625,8 @@ export function FieldScreen({ identity }: Props) {
                 nowMs={nowMs}
                 transitionGeneration={fieldCamera.transitionGeneration}
                 recut={fieldCamera.recut}
-                foundPlaces={foundPlaces}
-                foundFoot={foundFoot}
+                foundPlaces={heldFoundPlaces}
+                foundFoot={heldFoundFoot}
                 presentations={controller.presentations}
                 viewport={viewport}
               />

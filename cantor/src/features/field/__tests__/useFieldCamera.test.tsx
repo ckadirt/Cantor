@@ -1460,6 +1460,12 @@ describe('useFieldCamera', () => {
         gathered.fitScale * LEVEL_SCALE_RATIOS.shelf,
         6,
       );
+      // The map stays where you stood, drawn through a camera of its own;
+      // the real camera cuts to the shelf rather than flying there.
+      expect(latest.recut?.gather?.map.x).toBeCloseTo(before.x, 6);
+      expect(latest.recut?.gather?.map.scale).toBeCloseTo(before.scale, 6);
+      expect(latest.recut?.gather?.fromShelf).toBeNull();
+      expect(latest.recut?.fromCamera).toEqual(latest.recut?.toCamera);
       const atShelf = latest.recut!.toCamera;
 
       // A letter that finds nothing: the faces go home, the camera stays.
@@ -1477,6 +1483,10 @@ describe('useFieldCamera', () => {
         renderer.update(<FindProbe field={map} finding={false} />);
       });
       expect(latest.recut?.recede?.to).toBe(1);
+      // Leaving cuts back too, and the faces leave the shelf's picture.
+      expect(latest.recut?.fromCamera).toEqual(latest.recut?.toCamera);
+      expect(latest.recut?.gather?.fromShelf?.x).toBeCloseTo(atShelf.x, 6);
+      expect(latest.recut?.gather?.toShelf).toBeNull();
       expect(latest.recut?.toCamera.x).toBeCloseTo(before.x, 6);
       expect(latest.recut?.toCamera.y).toBeCloseTo(before.y, 6);
       expect(latest.recut?.toCamera.scale).toBeCloseTo(before.scale, 6);

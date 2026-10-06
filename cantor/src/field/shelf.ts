@@ -2,6 +2,12 @@ import { LEVEL_BOUNDARIES } from './camera';
 import type { Camera, FieldLayout } from './types';
 
 /**
+ * Find's found shelf's group key (`gather.ts`). No axis makes a key with a
+ * NUL in it. Declared here, under the seats, because a seat needs it.
+ */
+export const FOUND_GROUP_KEY = '\u0000found';
+
+/**
  * The shelf as somewhere you can stand.
  *
  * At L1 the bloom has closed and a cluster is a column: one x, and a run of y
@@ -116,6 +122,12 @@ export type ShelfSeat = Readonly<{
   /** The first and last row's y. Equal when the shelf holds one song. */
   top: number;
   bottom: number;
+  /**
+   * A short column rests hanging from the box's top rather than on its
+   * middle: find's found shelf, whose rows stay on one line while letters
+   * change how many there are.
+   */
+  hangs?: boolean;
 }>;
 
 /**
@@ -147,6 +159,7 @@ export function shelfSeats(layout: FieldLayout): readonly ShelfSeat[] {
       cx: group.cx,
       top: extent?.top ?? group.cy,
       bottom: extent?.bottom ?? group.cy,
+      hangs: group.key === FOUND_GROUP_KEY,
     };
   });
 }
@@ -245,6 +258,7 @@ export function seatCameraBounds(
   const min = seat.top + halfHeight - interior.top / scale;
   const max = seat.bottom - halfHeight + interior.foot / scale;
   if (min > max) {
+    if (seat.hangs === true) return { min, max: min };
     const middle = (seat.top + seat.bottom) / 2;
     return { min: middle, max: middle };
   }

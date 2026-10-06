@@ -74,6 +74,12 @@ export type FlightTiming = Readonly<{
   /** The window a name is written or erased in; see `name`. */
   nameStart: number;
   nameEnd: number;
+  /**
+   * Whether the flight leaves find's found shelf rather than the map. The
+   * two are drawn through different cameras while find is open, so a face
+   * flies between their pictures of it, on the screen.
+   */
+  fromFound: boolean;
 }>;
 
 /**

@@ -1,7 +1,7 @@
 import { mapFrame } from './browse';
 import { LEVEL_SCALE_RATIOS } from './camera';
 import { LAYOUT_KNOBS, placementKey, shelfRowGapWorld } from './layout';
-import { shelfBoxInterior } from './shelf';
+import { FOUND_GROUP_KEY, shelfBoxInterior } from './shelf';
 import {
   FLIGHT_NAME,
   type FlightTiming,
@@ -25,8 +25,6 @@ import type { FieldLayout, Group, Placement, Viewport } from './types';
  * left them.
  */
 
-/** The found shelf's group key. No axis makes a key with a NUL in it. */
-export const FOUND_GROUP_KEY = '\u0000found';
 
 /**
  * KNOB — how many faces one gather may fly. Past this they read as confetti;
@@ -61,9 +59,21 @@ export const GATHER_KNOBS = {
    */
   CLOSE_RANKS_DELAY_MS: 120,
   CLOSE_RANKS_MS: 420,
-  /** The map behind a gather: its ink, and how long it takes to get there. */
+  /**
+   * The map behind a gather: its ink, its size (it settles back from you,
+   * about the middle of the screen), and how long it takes to get there.
+   */
   RECEDE_INK: 0.13,
+  RECEDE_SCALE: 0.92,
   RECEDE_MS: 500,
+  /**
+   * The paper laid under each found row, so the ghost of the map passes
+   * behind the names rather than through them: its ink, how far left of the
+   * face it starts, and its height.
+   */
+  PAPER_INK: 0.92,
+  PAPER_BEHIND_FACE_PX: 24,
+  PAPER_HEIGHT_PX: 52,
 } as const;
 
 export type GatherOptions = Readonly<{
@@ -75,10 +85,10 @@ export type GatherOptions = Readonly<{
   /** The shelf's name, for the header and the screen reader. */
   label?: string;
   /**
-   * The canvas, to know whether the column fits the shelf's box. One that
-   * does not hangs from the box's top instead of standing on its middle, so
-   * the camera at `centerY` sees the first match — and stays put while each
-   * letter lengthens or shortens the column below it.
+   * The canvas: with it, the column hangs from the shelf box's top with the
+   * camera at `centerY`, so the first match is where the eye finds it and
+   * the camera stays put while each letter lengthens or shortens the column
+   * below it. Without it, the column is centred on `centerY`.
    */
   viewport?: Viewport;
 }>;
@@ -113,10 +123,13 @@ export function gatherLayout(
   const centerY = options.centerY ?? layout.fieldCenter.y;
   const gap = shelfRowGapWorld(layout.fitScale);
   const span = (gathered.length - 1) * gap;
-  const firstY = Math.min(
-    centerY - span / 2,
-    hangingTop(centerY, layout.fitScale, options.viewport),
-  );
+  // With a viewport the column hangs from the shelf box's top, long or
+  // short, so its first row stays where the eye found it as letters change
+  // how many rows there are (the study's rows hang from one line).
+  const firstY =
+    options.viewport === undefined
+      ? centerY - span / 2
+      : hangingTop(centerY, layout.fitScale, options.viewport);
   const cy = firstY + span / 2;
   const moved = new Set(gathered.map(placement => placement.key));
   const leftBy = new Map<string, Set<string>>();
@@ -227,8 +240,20 @@ export function planGatherCut(
   flights: readonly PlacementFlight[],
   before: readonly string[],
   after: readonly string[],
+  /**
+   * The map's ink at the cut's two ends, when the caller knows better than
+   * the found shelves do: a query that found nothing keeps the map receded,
+   * and a cut that interrupts a recede starts from where it had got to.
+   */
+  recede?: Readonly<{ from: number; to: number }>,
 ): GatherCut | null {
-  if (before.length === 0 && after.length === 0) return null;
+  if (
+    before.length === 0 &&
+    after.length === 0 &&
+    (recede === undefined || (recede.from === 1 && recede.to === 1))
+  ) {
+    return null;
+  }
   const wasFound = new Map(before.map((key, index) => [key, index]));
   const isFound = new Map(after.map((key, index) => [key, index]));
   const arriving = after.filter(key => !wasFound.has(key));
@@ -266,6 +291,8 @@ export function planGatherCut(
     name,
     nameStart: at(nameStartMs),
     nameEnd: at(nameEndMs),
+    // Arrivals come from the map; stayers and leavers from the shelf.
+    fromFound: name !== FLIGHT_NAME.WRITE,
   });
   const timed = flights.map(flight => {
     const into = flight.groupKey === FOUND_GROUP_KEY;
@@ -312,8 +339,9 @@ export function planGatherCut(
   return {
     flights: timed,
     durationMs,
-    recedeFrom: before.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1,
-    recedeTo: after.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1,
+    recedeFrom:
+      recede?.from ?? (before.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1),
+    recedeTo: recede?.to ?? (after.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1),
     recedeEnd: Math.min(1, at(GATHER_KNOBS.RECEDE_MS)),
   };
 }
