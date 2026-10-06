@@ -5,7 +5,16 @@ import {
   drawNativeLabels,
 } from './nativeLabels';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
-import { gatherFaceInk, recedeInkAt, type Recede } from './gatherInk';
+import {
+  flightOnScreen,
+  gatherDrawn,
+  gatherFaceInk,
+  mapCameraAt,
+  recededAt,
+  recedeInkAt,
+  type GatherCameras,
+  type Recede,
+} from './gatherInk';
 import { drawNativeJobs, type JobMark } from './nativeJobs';
 import { useHubCovers } from './useCover';
 import {
@@ -66,6 +75,7 @@ import {
 } from 'react-native-reanimated';
 import {
   GRAIN_KNOBS,
+  LEVEL_BOUNDARIES,
   LEVEL_SCALE_RATIOS,
   REPRESENTATION_WINDOWS,
   SHELF_BOX,
@@ -1325,6 +1335,13 @@ export function drawFieldFaces(
   openingMs = Infinity,
   /** The map behind find's gather; null in any other re-cut. */
   recede: Recede | null = null,
+  /** The gather's two cameras; null in any other re-cut. */
+  gather: GatherCameras | null = null,
+  /**
+   * In a gather, which faces: 0 all, 1 the map's (under the map's names), 2
+   * the shelf's with the paper they lie on (over the map's names).
+   */
+  side = 0,
 ): void {
   'worklet';
   /*
@@ -1393,64 +1410,179 @@ export function drawFieldFaces(
     viewport,
     FACE_GROWTH,
   );
-  const ringCentreX = -NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * walked;
-  const ringRadius =
-    (MARK_RING_RADIUS_PX + (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * walked) *
-    shrink;
 
-  for (let index = 0; index < faces.length; index++) {
-    const face = faces[index];
+  /*
+   * Find's gather draws through two cameras (`GatherCameras`): the map's,
+   * held where you stood and settling back as it recedes, and the shelf's,
+   * which is the real one. A face is placed between their two pictures of
+   * it, and drawn somewhere between a mark and a row, by its own progress.
+   */
+  const drawn = gatherDrawn(gather, recede, p);
+  const mapCam =
+    drawn === null ? null : mapCameraAt(drawn.map, recede, linear);
+  /*
+   * Settled, the shelf follows the live camera — it scrolls, and you go down
+   * into its songs — but only while that camera stands at the shelf: a cut
+   * back to the map lands before this scene gives way to the next one.
+   */
+  const liveAtShelf =
+    live !== null && live.scale / fitted >= LEVEL_BOUNDARIES.field
+      ? live
+      : null;
+  const shelfTo =
+    gather === null ? null : liveAtShelf ?? gather.toShelf ?? live;
+  const receded = recededAt(recede, linear);
+  const mapWalked =
+    mapCam === null ? walked : faceArrival(mapCam.scale, fitted);
+  const mapShrink =
+    mapCam === null ? shrink : overviewShrink(mapCam.scale, fitted);
+  const mapShown =
+    mapCam === null
+      ? 1
+      : Math.min(
+          1,
+          bandAlphaAt(mapCam.scale, fitted, REPRESENTATION_WINDOWS.dot) +
+            bandAlphaAt(mapCam.scale, fitted, REPRESENTATION_WINDOWS.row),
+        );
+  // The shelf side looks as the shelf's camera sees it — which is the real
+  // camera, except while a leave cuts that back to the map.
+  const shelfScale =
+    drawn === null
+      ? cameraScale
+      : (liveAtShelf !== null && drawn.toShelf !== null
+          ? liveAtShelf
+          : drawn.toShelf ?? drawn.fromShelf ?? cameraShared.value
+        ).scale;
+  const shelfShown = Math.min(
+    1,
+    bandAlphaAt(shelfScale, fitted, REPRESENTATION_WINDOWS.dot) +
+      bandAlphaAt(shelfScale, fitted, REPRESENTATION_WINDOWS.row),
+  );
+  const shelfWalked = faceArrival(shelfScale, fitted);
+  const shelfShrink = overviewShrink(shelfScale, fitted);
+
+  const drawOne = (face: FaceFlight, rowPaper: boolean) => {
     const timing = face.timing;
     const u = timing === null ? p : flightProgressAt(timing, linear);
     const owner =
       flightOwnerAlpha(face.ownership, face.fromAlpha, face.targetAlpha, u) *
       gatherFaceInk(recede, linear, timing, face.found, u);
-    if (owner <= 0) continue;
+    if (owner <= 0) return;
     // A song just arrived opens out of a point, as a lens's coming beat does;
     // reduced motion fades it in instead.
     const opened = openedAt(face.openAt, openingMs);
-    if (opened <= 0) continue;
+    if (opened <= 0) return;
     const openScale = reducedMotion ? 1 : opened;
     const shapeArrived = face.isPlayer ? playerShapeArrived : 0;
     const arrived = face.isPlayer ? playerArrived : 0;
+    // In a gather: which picture of the face each end is.
+    const fromShelf = timing !== null && timing.fromFound;
+    const twoCameras = mapCam !== null && !face.isPlayer;
+    const atS = fromShelf ? 1 : 0;
+    const atT = face.found ? 1 : 0;
+    const towardShelf = atS + (atT - atS) * u;
+    const shown = twoCameras
+      ? mapShown + (shelfShown - mapShown) * towardShelf
+      : Math.min(1, dot + becomingRow + arrived);
+    // The map gives way as you go down into a song, as the study's does.
+    const mapLeft = twoCameras ? 1 - (1 - towardShelf) * playerArrived : 1;
     const opacity =
-      owner *
-      Math.min(1, dot + becomingRow + arrived) *
-      (reducedMotion ? opened : 1);
-    if (opacity <= 0) continue;
+      owner * shown * mapLeft * (reducedMotion ? opened : 1);
+    if (opacity <= 0) return;
 
-    const seatX = face.fromX + (face.targetX - face.fromX) * u;
-    const seatY = face.fromY + (face.targetY - face.fromY) * u;
-    const bloomX = face.fromBloomX + (face.targetBloomX - face.fromBloomX) * u;
-    const bloomY = face.fromBloomY + (face.targetBloomY - face.fromBloomY) * u;
-    const bow =
-      timing === null || timing.bowPx === 0
-        ? null
-        : bowOffsetAt(
-            face.targetX - face.fromX,
-            face.targetY - face.fromY,
-            timing.bowPx,
-            u,
-          );
-    const x =
-      (seatX + bloomX * bloom - cameraX) * cameraScale +
-      viewport.width / 2 +
-      (bow?.x ?? 0);
-    const y =
-      (seatY + bloomY * bloom - cameraY) * cameraScale +
-      viewport.height / 2 +
-      (bow?.y ?? 0);
+    let x = 0;
+    let y = 0;
+    let faceWalked = walked;
+    let faceShrink = shrink;
+    if (twoCameras && mapCam !== null && gather !== null) {
+      const target = face.found ? shelfTo ?? cameraShared.value : mapCam;
+      const source = fromShelf ? gather.fromShelf ?? target : mapCam;
+      const point = flightOnScreen(
+        face.fromX,
+        face.fromY,
+        face.fromBloomX,
+        face.fromBloomY,
+        face.targetX,
+        face.targetY,
+        face.targetBloomX,
+        face.targetBloomY,
+        source,
+        target,
+        fitted,
+        viewport,
+        u,
+        timing === null ? 0 : timing.bowPx,
+      );
+      x = point.x;
+      y = point.y;
+      faceWalked = mapWalked + (shelfWalked - mapWalked) * towardShelf;
+      faceShrink = mapShrink + (shelfShrink - mapShrink) * towardShelf;
+    } else {
+      const seatX = face.fromX + (face.targetX - face.fromX) * u;
+      const seatY = face.fromY + (face.targetY - face.fromY) * u;
+      const bloomX =
+        face.fromBloomX + (face.targetBloomX - face.fromBloomX) * u;
+      const bloomY =
+        face.fromBloomY + (face.targetBloomY - face.fromBloomY) * u;
+      const bow =
+        timing === null || timing.bowPx === 0
+          ? null
+          : bowOffsetAt(
+              face.targetX - face.fromX,
+              face.targetY - face.fromY,
+              timing.bowPx,
+              u,
+            );
+      x =
+        (seatX + bloomX * bloom - cameraX) * cameraScale +
+        viewport.width / 2 +
+        (bow?.x ?? 0);
+      y =
+        (seatY + bloomY * bloom - cameraY) * cameraScale +
+        viewport.height / 2 +
+        (bow?.y ?? 0);
+    }
+    if (rowPaper) {
+      // Paper under the row the face is becoming, so the ghost of the map
+      // passes behind its name; a leaving row's paper goes as it leaves.
+      const paper =
+        GATHER_KNOBS.PAPER_INK * receded * (face.found ? 1 : 1 - u);
+      if (paper > 0) {
+        paints.paper.setAlphaf(paper);
+        const left =
+          x -
+          NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX -
+          GATHER_KNOBS.PAPER_BEHIND_FACE_PX;
+        canvas.drawRect(
+          Skia.XYWHRect(
+            left,
+            y - GATHER_KNOBS.PAPER_HEIGHT_PX / 2,
+            viewport.width - left,
+            GATHER_KNOBS.PAPER_HEIGHT_PX,
+          ),
+          paints.paper,
+        );
+        paints.paper.setAlphaf(1);
+      }
+      return;
+    }
     // Culling, at the live camera and on the frame it is true — which is the
     // thing the node renderer could not do, because its answer would have had
     // to come back through React to unmount anything.
-    const pose = face.isPlayer ? playerPose : markPose;
+    const faceAt =
+      twoCameras ? facePoseAt(faceWalked, 0, viewport, FACE_GROWTH) : markAt;
+    const pose = face.isPlayer
+      ? playerPose
+      : twoCameras
+      ? { ...faceAt, scale: faceAt.scale * faceShrink }
+      : markPose;
     if (
       x + pose.x < -FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
       x + pose.x > viewport.width + FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
       y + pose.y < -FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
       y + pose.y > viewport.height + FIELD_CANVAS_KNOBS.OVERSCAN_PX
     ) {
-      continue;
+      return;
     }
 
     canvas.save();
@@ -1533,8 +1665,44 @@ export function drawFieldFaces(
     // ring's radius is the face's extent *plus a gap*, so it is not a multiple
     // of the face and scaling it would carry the gap along.
     if (face.playing) {
+      const ringWalked = twoCameras ? faceWalked : walked;
+      const ringShrink = twoCameras ? faceShrink : shrink;
       paints.ring.setAlphaf(opacity * rowOnly);
-      canvas.drawCircle(x + ringCentreX, y, ringRadius, paints.ring);
+      canvas.drawCircle(
+        x - NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX * ringWalked,
+        y,
+        (MARK_RING_RADIUS_PX +
+          (ROW_RING_RADIUS_PX - MARK_RING_RADIUS_PX) * ringWalked) *
+          ringShrink,
+        paints.ring,
+      );
+    }
+  };
+
+  if (mapCam === null) {
+    for (let index = 0; index < faces.length; index++) drawOne(faces[index], false);
+    return;
+  }
+  // The map first, then the paper the shelf's rows lie on, then the shelf.
+  if (side !== 2) {
+    for (let index = 0; index < faces.length; index++) {
+      const face = faces[index];
+      if (!face.found && !(face.timing !== null && face.timing.fromFound)) {
+        drawOne(face, false);
+      }
+    }
+  }
+  if (side === 1) return;
+  for (let index = 0; index < faces.length; index++) {
+    const face = faces[index];
+    if (face.found || (face.timing !== null && face.timing.fromFound)) {
+      drawOne(face, true);
+    }
+  }
+  for (let index = 0; index < faces.length; index++) {
+    const face = faces[index];
+    if (face.found || (face.timing !== null && face.timing.fromFound)) {
+      drawOne(face, false);
     }
   }
 }
@@ -2285,23 +2453,34 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         // in their recording; see `drawLattice`.
         const p = Math.min(Math.max(clock.value, 0), 1);
         const live = p >= 1 ? cameraShared.value : null;
+        // While find gathers, the map's ground is the map camera's.
+        const drawnGather = gatherDrawn(recut.gather, recede, p);
+        const mapDrawn =
+          drawnGather === null
+            ? null
+            : mapCameraAt(
+                drawnGather.map,
+                recede,
+                recede === null ? p : linearOfEased(p),
+              );
         if (ground)
           drawLattice(
             canvas,
-            {
-              x:
-                live?.x ??
-                nativeRecut.fromCamera.x +
-                  (nativeRecut.toCamera.x - nativeRecut.fromCamera.x) * p,
-              y:
-                live?.y ??
-                nativeRecut.fromCamera.y +
-                  (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
-              scale: nativeCameraScale(p, nativeRecut, cameraShared),
-            },
+            mapDrawn === null
+              ? {
+                  x:
+                    live?.x ??
+                    nativeRecut.fromCamera.x +
+                      (nativeRecut.toCamera.x - nativeRecut.fromCamera.x) * p,
+                  y:
+                    live?.y ??
+                    nativeRecut.fromCamera.y +
+                      (nativeRecut.toCamera.y - nativeRecut.fromCamera.y) * p,
+                  scale: nativeCameraScale(p, nativeRecut, cameraShared),
+                }
+              : mapDrawn,
             nativeFitScale(p, nativeRecut, fitScaleShared),
-            viewport,
-            mapPaints.lattice,
+            viewport,mapPaints.lattice,
           );
         drawFieldFaces(
           canvas,
@@ -2321,6 +2500,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           inkClock?.value ?? 1,
           openingClock?.value ?? Infinity,
           recede,
+          drawnGather,
+          drawnGather === null ? 0 : 1,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -2360,7 +2541,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
               presentation.recipe,
               displayFont,
               monoFont,
-              isFoundGroup(flight.groupKey)
+              // A row on its way out of the shelf still says where it is
+              // from until its name has gone.
+              isFoundGroup(flight.groupKey) || flight.timing?.fromFound === true
                 ? foundPlaces?.get(flight.entityKey) ?? null
                 : null,
             ),
@@ -2408,13 +2591,23 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       scale: nativeCameraScale(p, nativeRecut, cameraShared),
     };
     const hubCovers = hubPaths.value;
+    // While find gathers, the map's furniture is drawn by the map's camera.
+    const drawnGather = gatherDrawn(recut.gather, recede, p);
+    const mapCamera =
+      drawnGather === null
+        ? rowCamera
+        : mapCameraAt(
+            drawnGather.map,
+            recede,
+            recede === null ? p : linearOfEased(p),
+          );
     return createPicture(canvas => {
       const fit = nativeFitScale(p, nativeRecut, fitScaleShared);
       drawSections(
         canvas,
         sectionFlights,
         p,
-        rowCamera,
+        mapCamera,
         fit,
         viewport,
         monoFont,
@@ -2426,7 +2619,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         hubFlights,
         hubCovers,
         p,
-        rowCamera,
+        mapCamera,
         fit,
         viewport,
         mapPaints.hub,
@@ -2435,7 +2628,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         canvas,
         labels,
         p,
-        rowCamera,
+        mapCamera,
         fit,
         viewport,
         monoFont,
@@ -2444,8 +2637,34 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
         recede === null
           ? 1
-          : recedeInkAt(recede, p >= 1 ? 1 : linearOfEased(p)),
+          : recedeInkAt(recede, p >= 1 ? 1 : linearOfEased(p)) *
+              // Behind a gather the map gives way as you go into a song.
+              (drawnGather === null ? 1 : 1 - motion.arrived.value),
       );
+      if (drawnGather !== null) {
+        // The found shelf over the map's names: its paper, then its faces.
+        drawFieldFaces(
+          canvas,
+          faceFlights,
+          facePaints,
+          clock.value,
+          nativeRecut,
+          cameraShared,
+          fitScaleShared,
+          viewport,
+          lensClock.from.value,
+          lensClock.to.value,
+          lensClock.t.value,
+          reducedMotion,
+          smootherstep(faces.soundClock?.value ?? 1) * soundDrawn.value,
+          heard.value,
+          inkClock?.value ?? 1,
+          openingClock?.value ?? Infinity,
+          recede,
+          drawnGather,
+          2,
+        );
+      }
       drawNativeRows(
         canvas,
         rows,
@@ -2461,6 +2680,25 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         inkClock?.value ?? 1,
         openingClock?.value ?? Infinity,
         recede,
+        drawnGather,
+        // The ghost behind a gather has faces and no words, as the study's
+        // map has none: opened inside a shelf, its rows' names would lie
+        // under the found rows' own.
+        drawnGather === null
+          ? 0
+          : nameArrival(mapCamera.scale, fit) *
+            (1 - recededAt(recede, recede === null ? p : linearOfEased(p))),
+        drawnGather === null
+          ? motion.written.value
+          : nameArrival(
+              (p >= 1 &&
+              drawnGather.toShelf !== null &&
+              cameraShared.value.scale / fit >= LEVEL_BOUNDARIES.field
+                ? cameraShared.value
+                : drawnGather.toShelf ?? drawnGather.fromShelf ?? rowCamera
+              ).scale,
+              fit,
+            ),
       );
       // The found shelf's last row, in the meta's face at the title's
       // column, present as much as the gather is.
@@ -2495,6 +2733,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     [recut, presentations],
   );
   const jobLayer = useMemo(() => Skia.Paint(), []);
+  const jobFade = useMemo(() => Skia.Paint(), []);
   const jobsPicture = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
     const live = p >= 1 ? cameraShared.value : null;
@@ -2510,17 +2749,35 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       scale: nativeCameraScale(p, nativeRecut, cameraShared),
     };
     const marks = jobMarks.value;
+    const drawnGather = gatherDrawn(recut.gather, recede, p);
+    // A job is never found: it goes as the map recedes behind a gather.
+    const jobsLeft =
+      drawnGather === null
+        ? 1
+        : 1 - recededAt(recede, recede === null ? p : linearOfEased(p));
     return createPicture(canvas => {
+      if (jobsLeft <= 0) return;
+      if (jobsLeft < 1) {
+        jobFade.setAlphaf(jobsLeft);
+        canvas.saveLayer(jobFade);
+      }
       drawNativeJobs(
         canvas,
         jobFlights,
         marks,
         p,
-        jobCamera,
+        drawnGather === null
+          ? jobCamera
+          : mapCameraAt(
+              drawnGather.map,
+              recede,
+              recede === null ? p : linearOfEased(p),
+            ),
         nativeFitScale(p, nativeRecut, fitScaleShared),
         viewport,
         jobLayer,
       );
+      if (jobsLeft < 1) canvas.restore();
     }, viewport);
   });
   return (

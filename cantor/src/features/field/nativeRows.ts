@@ -1,8 +1,11 @@
 import { openedAt } from './opening';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 import {
+  flightOnScreen,
   gatherFaceInk,
   gatherNameAt,
+  mapCameraAt,
+  type GatherCameras,
   type Recede,
 } from './gatherInk';
 import {
@@ -17,6 +20,7 @@ import {
 } from '@shopify/react-native-skia';
 import {
   FLIGHT_NAME,
+  LEVEL_BOUNDARIES,
   bowOffsetAt,
   flightProgressAt,
   gatherFraction,
@@ -102,11 +106,28 @@ export function drawNativeRows(
   openingMs = Infinity,
   /** The map behind find's gather; null in any other re-cut. */
   recede: Recede | null = null,
+  /**
+   * The gather's two cameras, when it is still drawn through them
+   * (`gatherDrawn`): a map row is then written as the map's camera has it,
+   * a found row as the shelf's, and one changing sides between the two.
+   */
+  gather: GatherCameras | null = null,
+  /** How written a row is at the map camera's distance. */
+  mapWritten = 0,
+  /** And at the shelf camera's, which a leave has already cut away from. */
+  shelfWritten = written,
 ) {
   'worklet';
-  if (written <= 0 || fieldAlpha <= 0) return;
+  if (
+    (written <= 0 && mapWritten <= 0 && shelfWritten <= 0) ||
+    fieldAlpha <= 0
+  ) {
+    return;
+  }
   const bloom = 1 - gatherFraction(camera.scale, fitScale);
   const linear = recede === null ? progress : linearOfEased(progress);
+  const mapCam =
+    gather === null ? null : mapCameraAt(gather.map, recede, linear);
   for (const { flight, row, titleFrom, openAt } of rows) {
     if (yieldKey !== null && flight.targetPlacementKey === yieldKey) continue;
     // In a gather a name has its face's window: it writes on at the seat
@@ -134,6 +155,44 @@ export function drawNativeRows(
       // A name arrives with its mark: nothing is written before it opens.
       openedAt(openAt ?? -1, openingMs);
     if (owner <= 0 || named <= 0) continue;
+    // Which camera each end of the row is drawn through, in a gather.
+    const toFound = isFoundGroup(flight.groupKey);
+    const fromFound = timing !== undefined && timing.fromFound;
+    const side = mapCam === null ? 1 : (fromFound ? 1 : 0) + ((toFound ? 1 : 0) - (fromFound ? 1 : 0)) * at;
+    const rowWritten =
+      mapCam === null
+        ? written
+        : mapWritten + (shelfWritten - mapWritten) * side;
+    if (rowWritten <= 0) continue;
+    let gx = 0;
+    let gy = 0;
+    if (mapCam !== null && gather !== null) {
+      const target = toFound ? gather.toShelf ?? camera : mapCam;
+      const source = fromFound ? gather.fromShelf ?? target : mapCam;
+      const point = flightOnScreen(
+        flight.fromX,
+        flight.fromY,
+        flight.fromBloomX,
+        flight.fromBloomY,
+        flight.targetX,
+        flight.targetY,
+        flight.targetBloomX,
+        flight.targetBloomY,
+        source,
+        // Settled, a found row follows the live camera: the shelf scrolls.
+        toFound &&
+          progress >= 1 &&
+          camera.scale / fitScale >= LEVEL_BOUNDARIES.field
+          ? camera
+          : target,
+        fitScale,
+        viewport,
+        at,
+        at === u && timing !== undefined ? timing.bowPx : 0,
+      );
+      gx = point.x;
+      gy = point.y;
+    }
     const bow =
       timing === undefined || timing.bowPx === 0 || at !== u
         ? null
@@ -143,7 +202,7 @@ export function drawNativeRows(
             timing.bowPx,
             u,
           );
-    const x =
+    const x = mapCam !== null ? gx :
       (flight.fromX +
         (flight.targetX - flight.fromX) * at +
         (flight.fromBloomX +
@@ -153,7 +212,7 @@ export function drawNativeRows(
         camera.scale +
       viewport.width / 2 +
       (bow?.x ?? 0);
-    const y =
+    const y = mapCam !== null ? gy :
       (flight.fromY +
         (flight.targetY - flight.fromY) * at +
         (flight.fromBloomY +
@@ -190,9 +249,9 @@ export function drawNativeRows(
         ? row.titleAlpha
         : titleFrom + (row.titleAlpha - titleFrom) * arrival;
     const count = row.titleTrace?.length ?? 0;
-    const phase = writePhase(writeSubAlpha(written, count - 1, count));
+    const phase = writePhase(writeSubAlpha(rowWritten, count - 1, count));
     if (row.titleTrace !== null && phase.borderAlpha > 0) {
-      const path = traceTitlePath(row.titleTrace, written);
+      const path = traceTitlePath(row.titleTrace, rowWritten);
       paints.trace.setAlphaf(owner * titleAlpha * phase.borderAlpha);
       canvas.drawPath(path, paints.trace);
       path.dispose();
@@ -200,7 +259,7 @@ export function drawNativeRows(
     paints.title.setAlphaf(
       owner *
         titleAlpha *
-        (row.titleTrace === null ? written : phase.fillAlpha),
+        (row.titleTrace === null ? rowWritten : phase.fillAlpha),
     );
     canvas.drawText(
       row.title,
@@ -210,7 +269,7 @@ export function drawNativeRows(
       fonts.title,
     );
     if (row.action !== null) {
-      paints.meta.setAlphaf(owner * written * NAME_LENS_KNOBS.ROW_ACTION_ALPHA);
+      paints.meta.setAlphaf(owner * rowWritten * NAME_LENS_KNOBS.ROW_ACTION_ALPHA);
       canvas.drawText(
         row.action,
         row.actionX,
@@ -219,7 +278,7 @@ export function drawNativeRows(
         fonts.mono,
       );
     }
-    paints.meta.setAlphaf(owner * written);
+    paints.meta.setAlphaf(owner * rowWritten);
     canvas.drawText(
       row.meta,
       -NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX,

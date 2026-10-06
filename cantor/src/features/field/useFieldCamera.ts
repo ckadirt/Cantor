@@ -12,6 +12,13 @@ import {
 } from 'react-native-reanimated';
 import { easeSmoother } from '../../motion';
 import { cameraSummary, type OriginFrame } from './cameraSummary';
+import {
+  flightOnScreen,
+  mapCameraAt,
+  recedeInkAt,
+  screenToWorld,
+  type GatherCameras,
+} from './gatherInk';
 import { CURTAIN_KNOBS, releaseTarget, unrollMs } from '../curtain';
 import {
   inBrowseFrame,
@@ -39,6 +46,8 @@ import {
   nearestSeat,
   overviewMinRatio,
   FOUND_GROUP_KEY,
+  GATHER_KNOBS,
+  flightProgressAt,
   foundKeysOf,
   placementFlightAtClock,
   placementPoint,
@@ -349,6 +358,11 @@ export type FieldRecutModel = Readonly<{
    * either end. See `planGatherCut`.
    */
   recede?: Readonly<{ from: number; to: number; end: number }> | null;
+  /**
+   * While find gathers, the map and the found shelf are drawn through two
+   * cameras; see `GatherCameras`. Null for every other cut.
+   */
+  gather?: GatherCameras | null;
 }>;
 
 /** A map camera kept for an axis, with its scale relative to that map's FIT. */
@@ -431,6 +445,11 @@ export function useFieldCamera({
   );
   /** The camera the first gather replaced, at any level; null outside find. */
   const beforeGather = useRef<AxisCamera | null>(null);
+  /**
+   * The same camera whole: the map is drawn from it, held still, while find
+   * gathers. Null outside a gather.
+   */
+  const gatherMap = useRef<Camera | null>(null);
   const findingRef = useRef(finding);
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
   /** See the capture beside `focus`, and the strand it answers in the re-cut. */
@@ -563,10 +582,14 @@ export function useFieldCamera({
   const anchorsShared = useRef(anchorsSharedCandidate).current;
 
   layoutRef.current = layout;
-  const seats = useMemo(
-    () => (layout === null ? [] : shelfSeats(layout)),
-    [layout],
-  );
+  const seats = useMemo(() => {
+    if (layout === null) return [];
+    const all = shelfSeats(layout);
+    // Find's shelf is the only place to stand while it is out: the map
+    // behind it is a picture, not somewhere a drag can leave for.
+    const found = all.find(seat => seat.key === FOUND_GROUP_KEY);
+    return found === undefined ? all : [found];
+  }, [layout]);
   const layoutFrame = useMemo(
     () => (layout === null ? null : mapFrame(layout)),
     [layout],
@@ -635,10 +658,48 @@ export function useFieldCamera({
     }
     const linear = Math.min(Math.max(recutProgress.value, 0), 1);
     const scale = cameraShared.value.scale;
-    return model.flights.map(flight =>
-      placementFlightAtClock(flight, linear, scale),
-    );
-  }, [cameraShared, recutProgress]);
+    const gather = model.gather ?? null;
+    if (gather === null || viewport === null) {
+      return model.flights.map(flight =>
+        placementFlightAtClock(flight, linear, scale),
+      );
+    }
+    /*
+     * A gather's faces fly between two cameras' pictures of them, so where
+     * one is is a point on the screen. It is kept as the world point the
+     * next cut will draw it from: through the real camera for a face headed
+     * for the shelf, through the map's for one headed home.
+     */
+    const real = cameraShared.value;
+    const map = mapCameraAt(gather.map, model.recede ?? null, linear);
+    return model.flights.map(flight => {
+      const placed = placementFlightAtClock(flight, linear, scale);
+      const timing = flight.timing;
+      if (timing === undefined) return placed;
+      const toFound = flight.groupKey === FOUND_GROUP_KEY;
+      const source = timing.fromFound ? gather.fromShelf ?? real : map;
+      const target = toFound ? gather.toShelf ?? real : map;
+      const progress = flightProgressAt(timing, linear);
+      const point = flightOnScreen(
+        flight.fromX,
+        flight.fromY,
+        flight.fromBloomX,
+        flight.fromBloomY,
+        flight.targetX,
+        flight.targetY,
+        flight.targetBloomX,
+        flight.targetBloomY,
+        source,
+        target,
+        model.toFitScale,
+        viewport,
+        progress,
+        timing.bowPx,
+      );
+      const world = screenToWorld(point.x, point.y, toFound ? real : map, viewport);
+      return { ...placed, x: world.x, y: world.y, bloomX: 0, bloomY: 0 };
+    });
+  }, [cameraShared, recutProgress, viewport]);
   const commitCamera = useCallback(
     (next: Camera) => {
       cameraRef.current = next;
@@ -999,7 +1060,10 @@ export function useFieldCamera({
   if (
     layout !== null &&
     (recutModel.current === null ||
-      layoutsDiffer(recutModel.current.layout, layout))
+      layoutsDiffer(recutModel.current.layout, layout) ||
+      // Leaving a gather that holds nothing: the layout is the map's again
+      // already, but the map has to come forward and the camera go back.
+      (gatherMap.current !== null && !finding))
   ) {
     const previous = recutModel.current;
     const generation = (previous?.generation ?? 0) + 1;
@@ -1203,40 +1267,72 @@ export function useFieldCamera({
       toCamera = newHome;
     }
     /*
-     * Find's gather (gather-plan). A layout with the found shelf flies the
-     * camera to it, on this clock — the first one stashing the camera it
-     * replaced, at any level. A query that finds nothing takes the shelf away
-     * while find is still open: the camera stays over where it stood, so the
-     * next letter brings the faces back to it. Leaving find goes back to the
-     * stash: a shelf as it was kept, the map held inside its range.
+     * Find's gather (gather-plan, find-motion.html frame III). The map stays
+     * where you stood, drawn through a camera of its own (`gatherMap`) as it
+     * recedes; the real camera is the found shelf's, cut to it at the first
+     * letter — nothing on screen is drawn by it until the faces land — so the
+     * shelf is a real one to touch, scroll, order and descend from. Each
+     * face flies on the screen, from the map's picture of it to the shelf's.
+     * A query that finds nothing leaves the camera on the empty shelf, so the
+     * next letter brings the faces back to it; leaving cuts it back to where
+     * find began, while the faces fly home.
      */
     const foundBefore = foundKeysOf(previous?.layout ?? null);
     const foundAfter = foundKeysOf(layout);
-    if (!firstLayout && foundAfter.length > 0 && viewport !== null) {
-      if (beforeGather.current === null) {
+    let gather: GatherCameras | null = null;
+    let recutFrom = fromCamera;
+    let recedeEnds: { from: number; to: number } | undefined;
+    if (
+      !firstLayout &&
+      viewport !== null &&
+      (gatherMap.current !== null || (foundAfter.length > 0 && finding))
+    ) {
+      const opening = gatherMap.current === null;
+      if (opening) {
+        gatherMap.current = heading;
         beforeGather.current = {
           x: heading.x,
           y: heading.y,
           ratio: heading.scale / fromFitScale,
         };
       }
-      const seat = shelfSeats(layout).find(
-        candidate => candidate.key === FOUND_GROUP_KEY,
-      );
-      if (seat !== undefined) {
-        toCamera = seatCameraAround(
+      const map = gatherMap.current ?? heading;
+      const seat =
+        foundAfter.length === 0
+          ? undefined
+          : shelfSeats(layout).find(
+              candidate => candidate.key === FOUND_GROUP_KEY,
+            );
+      let toShelf: Camera | null = null;
+      if (finding && seat !== undefined) {
+        toShelf = seatCameraAround(
           seat,
-          seat.top,
+          opening ? seat.top : heading.y,
           viewport,
           layout.fitScale * LEVEL_SCALE_RATIOS.shelf,
         );
-      }
-    } else if (!firstLayout && beforeGather.current !== null) {
-      if (findingRef.current) {
+        toCamera = toShelf;
+      } else if (finding) {
         toCamera = heading;
       } else {
         toCamera = gatherReturn(layout) ?? toCamera;
+        gatherMap.current = null;
       }
+      // The real camera cuts at both ends of a gather: nothing on screen is
+      // drawn through it there, and two cameras easing at once is two
+      // motions. Between letters it moves with the shelf.
+      if (opening || !finding) recutFrom = toCamera;
+      gather = { map, fromShelf: opening ? null : heading, toShelf };
+      const was = previous?.recede ?? null;
+      recedeEnds = {
+        from:
+          was === null
+            ? 1
+            : nativeFlight.current === previous?.generation
+            ? recedeInkAt(was, Math.min(Math.max(recutProgress.value, 0), 1))
+            : was.to,
+        to: finding ? GATHER_KNOBS.RECEDE_INK : 1,
+      };
     }
     if (flying) absorbedFlight.current = generation;
     const sources = firstLayout
@@ -1247,9 +1343,10 @@ export function useFieldCamera({
       layout.placements,
       generation,
     );
-    const gatherCut = firstLayout
-      ? null
-      : planGatherCut(planned, foundBefore, foundAfter);
+    const gatherCut =
+      gather === null
+        ? null
+        : planGatherCut(planned, foundBefore, foundAfter, recedeEnds);
     const flights = gatherCut?.flights ?? planned;
     const fromGroups = previous?.layout.groups ?? [];
     const animate =
@@ -1258,15 +1355,16 @@ export function useFieldCamera({
       !recutQuiet &&
       (flightsMove(flights) ||
         groupsChanged(fromGroups, layout.groups) ||
-        camerasDiffer(fromCamera, toCamera) ||
-        fromFitScale !== layout.fitScale);
+        camerasDiffer(recutFrom, toCamera) ||
+        fromFitScale !== layout.fitScale ||
+        (gatherCut !== null && gatherCut.recedeFrom !== gatherCut.recedeTo));
     recutModel.current = {
       generation,
       layout,
       flights,
       fromFitScale,
       toFitScale: layout.fitScale,
-      fromCamera,
+      fromCamera: recutFrom,
       toCamera,
       fromGroups,
       animate,
@@ -1281,6 +1379,7 @@ export function useFieldCamera({
               to: gatherCut.recedeTo,
               end: gatherCut.recedeEnd,
             },
+      gather,
     };
     if (stranded) strandedFocus.current = generation;
   }
@@ -1401,6 +1500,15 @@ export function useFieldCamera({
     fitScaleShared.value = model.fromFitScale;
     nativeFlight.current = generation;
     setRecutClock({ generation, linear: 0 });
+    // A cut that moves the camera without a flight — find's gather, opening
+    // and leaving — is where the camera already is, for React too: the
+    // header names the place you are going, not the seats left behind.
+    if (
+      model.gather != null &&
+      !camerasDiffer(model.fromCamera, model.toCamera)
+    ) {
+      commitCamera(model.toCamera);
+    }
     // React is not told about the frames between: the canvas plays the
     // re-cut from its own clock, the reaction below moves the camera and fit
     // on the UI thread, and React hears the landing.
@@ -1432,19 +1540,6 @@ export function useFieldCamera({
     recutEnds,
     recutProgress,
   ]);
-
-  /*
-   * Leaving find with nothing gathered — a query that found nothing, then
-   * CLOSE — changes no layout, so no re-cut carries the camera back. A flight
-   * of its own does; the re-cut, when there is one, has spent the stash first.
-   */
-  useEffect(() => {
-    if (finding || beforeGather.current === null || layout === null) return;
-    const target = gatherReturn(layout);
-    if (target !== null) flyTo(target);
-    // `gatherReturn` reads refs and this render's layout; it is not a trigger.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [finding, flyTo, layout]);
 
   useEffect(
     () => () => {
