@@ -91,16 +91,32 @@ export function planPlacementFlights(
 ): readonly PlacementFlight[] {
   const beforeByEntity = groupByEntity(before);
   const afterByEntity = groupByEntity(after);
-  const entityKeys = new Set([
-    ...beforeByEntity.keys(),
-    ...afterByEntity.keys(),
-  ]);
+  const entityKeys: string[] = [...afterByEntity.keys()];
+  for (const key of beforeByEntity.keys()) {
+    if (!afterByEntity.has(key)) entityKeys.push(key);
+  }
+  entityKeys.sort();
   const result: PlacementFlight[] = [];
 
-  for (const entityKey of [...entityKeys].sort()) {
-    const sources = [...(beforeByEntity.get(entityKey) ?? [])].sort(byKey);
-    const targets = [...(afterByEntity.get(entityKey) ?? [])].sort(byKey);
-    result.push(...planEntity(sources, targets, generation));
+  for (const entityKey of entityKeys) {
+    const sources = beforeByEntity.get(entityKey) ?? [];
+    const targets = afterByEntity.get(entityKey) ?? [];
+    // Most of a re-cut — every keystroke of find's — is one mark becoming
+    // one mark: no family to align, and nothing to sort.
+    if (sources.length === 1 && targets.length === 1) {
+      const target = targets[0];
+      result.push(
+        flight(sources[0], target, alphaOf(sources[0]), 1, 'carry', target.key),
+      );
+      continue;
+    }
+    result.push(
+      ...planEntity(
+        [...sources].sort(byKey),
+        [...targets].sort(byKey),
+        generation,
+      ),
+    );
   }
   return result;
 }
