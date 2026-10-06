@@ -2465,9 +2465,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       // The found shelf's last row, in the meta's face at the title's
       // column, present as much as the gather is.
       if (foundFoot !== null && recede !== null) {
-        const ink = recedeInkAt(recede, p >= 1 ? 1 : linearOfEased(p));
+        const mapInk = recedeInkAt(recede, p >= 1 ? 1 : linearOfEased(p));
         const present = Math.min(
-          Math.max((1 - ink) / (1 - GATHER_KNOBS.RECEDE_INK), 0),
+          Math.max((1 - mapInk) / (1 - GATHER_KNOBS.RECEDE_INK), 0),
           1,
         );
         const alpha = present * motion.written.value * motion.fieldFade.value;
