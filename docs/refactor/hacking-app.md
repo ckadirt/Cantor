@@ -30,7 +30,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/security/` | `descriptor` verification, `carrier` and `inner` codecs, `secureTunnel` orchestration, `native` channel factory, `types` |
 | `src/backends/` | `BackendConnection` façade, `relaySocket` lifecycle, `requestRegistry`, `applicationResponses` decoders, `pairing`, `storage` |
 | `src/runtime/` | `BackendRuntime` — a plain object publishing one store: backend records, connection lifecycles, snapshots, cache hydration, persistence, outbox flush, audio inspection, feature commands. `useBackendRuntime` starts it for a component's life |
-| `src/features/` | `field/` (the canvas, camera, controller, overlays), `find/` (the find blind: tags and results), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
+| `src/features/` | `field/` (the canvas, camera, controller, overlays), `find/` (the tags blind, set as an index), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
 | `src/screens/` | `FieldScreen`: the one screen after onboarding — composition and wiring |
 | `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
 | `src/jobs/` | job repository and the submission outbox |
@@ -500,24 +500,54 @@ memory only, and everything that names the library as a whole — the tag
 list, playlists, `OF 64` — keeps reading the unfiltered entities. The map's
 count line says it (`10 OF 64 · RAINY OR LIVE`, `features/field/
 filterWords.ts`, fitted to the row and to a held song's mark): the tag words
-open the find blind, the conjunction flips any/all with an ordinary animated
+open the tags blind, the conjunction flips any/all with an ordinary animated
 re-cut. `useFieldCamera` takes `filtered` and `recutQuiet`. A quiet re-cut —
-a filter changed behind the fully drawn find blind — has no flights and lands
+a filter changed behind the fully drawn tags blind — has no flights and lands
 at the new home; the first filtered layout stashes the camera it replaced, at
 any level, and the first unfiltered one returns there (that axis's own place
 if the axis changed meanwhile). While filtered, the per-axis memory is
 neither read nor written. A re-cut that removes the shelf you stand in goes
 home rather than leaving you over an empty page.
 
-Find (`features/find/FindSheet.tsx`, behind the header's `FIND`) never
-changes the map. `library/find.ts` folds each song's searchable text once per
-library change (`buildFindIndex`: case and accents off, split into words),
-and a keystroke only compares folded words — every query word must begin a
-word (`findIn`). Results come out in the layout's own order, which is the
-filtered one: groups as the axis seats them, rows in the shelf's ORDER, one
-row per placement, so a song in three playlists is three rows. Opened inside
-a shelf, find looks there first and offers the rest as a last row. A tapped
-row closes the blind and, once it has lifted, `visit`s the placement.
+Find is a gather (`docs/interfacealpha/gather-plan.md`). `FIND` turns the
+header's title line into the query (`FieldScreen.finding`, a `TextInput` in
+`FieldOverlay`'s title slot, crossing with the title on one linear clock).
+`library/find.ts` folds each song's searchable text once per library change
+(`buildFindIndex`), and a keystroke only compares folded words — every query
+word must begin a word (`findIn`, over `mapLayout`, so inside the filter).
+What it finds becomes a real shelf: `field/gather.ts` `gatherLayout` copies
+the map — never `layoutField` — moving one copy of each found song, the first
+`MAX_GATHERED` (60) in field order and then in the shelf's ORDER, into a
+`FOUND_GROUP_KEY` group standing `SHELF_GAP_WORLD` left of the map's frame.
+`FieldScreen` hands everything that draws or touches the field `layout =
+gathered ?? mapLayout`, so the re-cut, hit testing, the shelf seats, the
+queue and the a11y list treat it as any shelf; the rail and the overview
+index keep reading `mapLayout`. An empty query gives back the map object
+itself, so no re-cut runs.
+
+The motion is the ordinary re-cut with three additions, all from
+`planGatherCut` (`GATHER_KNOBS`): each flight may carry a `timing` — its own
+window on the cut's linear clock (staggered in shelf order), a bow, and
+whether its name writes on at its landing seat or erases where it stood —
+and the cut carries its own `durationMs` and a `recede` (the map's ink
+behind the shelf). `placementFlightAtClock` is the one place a timed flight
+is placed: the camera's capture and React's snapshot call it on the linear
+clock; the canvas recovers the linear clock from its eased one once a frame
+(`linearOfEased`) and reads the same windows (`gatherInk.ts`). The camera
+(`useFieldCamera`'s `finding`) stashes itself at the first gather
+(`beforeGather`, any level) and flies to the found shelf on the re-cut's
+clock, stays put while a query finds nothing, and returns to the stash when
+find closes — by an ordinary flight when no re-cut carries it.
+`FieldScreen.leavingFind` makes the header speak for where a closing find's
+camera is going rather than for the seats it passes.
+
+Inside a shelf, find holds that shelf's matches and offers the rest as the
+column's last row (`foundFoot`, drawn by the canvas; a tap there reaches the
+screen through `onTapNothing`). Found rows say where they came from and how
+long they are (`foundPlaces`). Find's chrome hides the shelf's bulk action,
+the held song and the filter phrase; its hint seat holds `TAGS` while
+nothing is typed. The tags blind (`features/find/TagsSheet.tsx`) is set as a
+book's index, not as a Folio: it shares the field header's seats.
 
 Group names are fitted to one map column at FIT (`labelMaxWidthPx`): the
 title wraps once at spaces and the second line ends in an ellipsis, growing
