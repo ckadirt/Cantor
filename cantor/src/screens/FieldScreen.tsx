@@ -56,7 +56,6 @@ import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
   cancelAnimation,
-  runOnJS,
   useAnimatedReaction,
   useReducedMotion,
   useSharedValue,
@@ -79,11 +78,7 @@ import {
   EmptyFilter,
   EmptyFind,
 } from '../features/field/EmptyField';
-import {
-  FindSheet,
-  type FindRow,
-  type FindSource,
-} from '../features/find/FindSheet';
+import { TagsSheet } from '../features/find/TagsSheet';
 import { buildFindIndex, findIn } from '../library/find';
 import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
@@ -152,7 +147,6 @@ import {
   allPlaylists,
   allTags,
   normalise,
-  plainTagsOf,
   playlistNameProblem,
   playlistsOf,
   tagNameProblem,
@@ -465,16 +459,10 @@ export function FieldScreen({ identity }: Props) {
    */
   const [tagFilter, setTagFilter] = useState<TagFilter>(EMPTY_FILTER);
   /**
-   * The find blind (find-plan F3): opened by `FIND`, or by the count line's
-   * tag words, from the map or a shelf. It names the shelf it was opened in
-   * and keeps that scope while it is down, even if a filter chosen inside it
-   * empties that shelf behind it.
+   * The tags blind (gather-plan decision 9): opened by the count line's tag
+   * words, or by `TAGS` in find's hint seat.
    */
-  const [findOpen, setFindOpen] = useState(false);
-  const [findScope, setFindScope] = useState<{
-    groupKey: string;
-    label: string;
-  } | null>(null);
+  const [tagsOpen, setTagsOpen] = useState(false);
   /**
    * Find mode (gather-plan): `FIND` turns the header's title line into the
    * query. `scopeKey` is the shelf it was entered from, or null for the
@@ -589,11 +577,11 @@ export function FieldScreen({ identity }: Props) {
   const sheetPull = useSharedValue(0);
   const sheetDestination = useSharedValue(0);
   /**
-   * The find blind's own, for the same reason: it comes from the top, where
+   * The tags blind's own, for the same reason: it comes from the top, where
    * the field's edge pull already carries the composer. Opened by a tap only.
    */
-  const findPull = useSharedValue(0);
-  const findDestination = useSharedValue(0);
+  const tagsPull = useSharedValue(0);
+  const tagsDestination = useSharedValue(0);
   /** Rows whose audio command is in flight, so a second tap cannot double it. */
   const audioBusy = useRef(new Set<string>());
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -2293,8 +2281,8 @@ export function FieldScreen({ identity }: Props) {
     setFinding(current => (current === null ? null : { ...current, query }));
   }, []);
   const closeTopmostSheet = useCallback((): boolean => {
-    if (findOpen) {
-      setFindOpen(false);
+    if (tagsOpen) {
+      setTagsOpen(false);
       return true;
     }
     // `sheetOpen`, not `sheetTarget`: the subject outlives the blind by the
@@ -2317,7 +2305,7 @@ export function FieldScreen({ identity }: Props) {
       return true;
     }
     return false;
-  }, [commands, composerOpen, enginesOpen, findOpen, pairing, sheetOpen]);
+  }, [commands, composerOpen, enginesOpen, pairing, sheetOpen, tagsOpen]);
   useEffect(() => {
     const subscription = BackHandler.addEventListener(
       'hardwareBackPress',
@@ -2363,18 +2351,8 @@ export function FieldScreen({ identity }: Props) {
     const group = layout.groups.find(candidate => candidate.key === key);
     return group === undefined ? null : shelfLabel(group.label, nowMs).primary;
   }, [chromeGroupKey, layout, nowMs]);
-  /** Open the find blind, scoped to the shelf you stand in, if any. */
-  const openFind = useCallback(() => {
-    setFindScope(
-      fieldCamera.level === 'shelf' &&
-        fieldCamera.groupKey !== null &&
-        focusedGroupLabel !== null
-        ? { groupKey: fieldCamera.groupKey, label: focusedGroupLabel }
-        : null,
-    );
-    setFindOpen(true);
-  }, [fieldCamera.groupKey, fieldCamera.level, focusedGroupLabel]);
-  const closeFind = useCallback(() => setFindOpen(false), []);
+  const openTags = useCallback(() => setTagsOpen(true), []);
+  const closeTags = useCallback(() => setTagsOpen(false), []);
   /** `FIND`: the title line becomes the query, scoped to the shelf you stand in. */
   const enterFind = useCallback(() => {
     setFinding({
@@ -2386,86 +2364,6 @@ export function FieldScreen({ identity }: Props) {
       fromGroupKey: fieldCamera.groupKey,
     });
   }, [fieldCamera.cameraShared, fieldCamera.groupKey, fieldCamera.level]);
-  const describeFound = useCallback(
-    (placement: Placement): FindRow | null => {
-      const presentation = controller.presentations.get(placement.entityKey);
-      if (presentation === undefined) return null;
-      // A phone song's artist tells it apart; a generated song's model
-      // mostly does not (most of a library is one engine), and on a row this
-      // narrow it pushed the length off the end.
-      const who =
-        presentation.source === 'node'
-          ? null
-          : presentation.device.artist ?? presentation.label;
-      const tags = plainTagsOf(presentation.entity.tags);
-      // How long it is, who made it, and how it was tagged: enough to tell
-      // two songs of the same name apart without opening either.
-      const line = [
-        presentation.durationMs > 0
-          ? formatClock(presentation.durationMs / 1000)
-          : null,
-        who,
-        tags.length === 0 ? null : tags.join(', '),
-      ]
-        .filter(part => part !== null)
-        .join(' · ');
-      return {
-        title: presentation.title,
-        line,
-        caption:
-          presentation.source === 'node'
-            ? presentation.song.caption_summary
-            : null,
-        clef: {
-          ...presentation.recipe,
-          audioState: presentation.localAudio.state,
-          imported: presentation.source === 'device',
-        },
-      };
-    },
-    [controller.presentations],
-  );
-  /**
-   * A result tapped: the blind goes up first, and the camera flies only once
-   * it has — the now-playing jump's own path (`visit`), from the shelf to the
-   * song, seen rather than finished behind paper.
-   */
-  const arriveAfterFind = useRef<Placement | null>(null);
-  const flushArrival = useCallback(() => {
-    const placement = arriveAfterFind.current;
-    arriveAfterFind.current = null;
-    if (placement !== null) fieldCamera.visit(placement);
-  }, [fieldCamera]);
-  useAnimatedReaction(
-    () => findPull.value <= 0.5,
-    (lifted, previous) => {
-      if (lifted && previous === false) runOnJS(flushArrival)();
-    },
-    [flushArrival],
-  );
-  const findSource = useMemo<FindSource>(
-    () => ({
-      layout: mapLayout,
-      index: findIndex,
-      describe: describeFound,
-      groupName: label => shelfLabel(label, nowMs).primary,
-      noun: axisNoun(arrangementKey, dateResolution),
-      lens: activeLens,
-      onArrive: placement => {
-        arriveAfterFind.current = placement;
-        setFindOpen(false);
-      },
-    }),
-    [
-      activeLens,
-      arrangementKey,
-      dateResolution,
-      describeFound,
-      findIndex,
-      mapLayout,
-      nowMs,
-    ],
-  );
   /** Every tag the library uses, with its count, for the blind's list. */
   const libraryTags = useMemo(
     () => tagCounts(controller.entities),
@@ -2916,7 +2814,7 @@ export function FieldScreen({ identity }: Props) {
           filter={tagFilter}
           libraryCount={songCount}
           onFlipFilter={flipFilter}
-          onOpenTags={openFind}
+          onOpenTags={openTags}
           onOpenFind={enterFind}
           finding={findChrome}
           keyboardUp={keyboardUp}
@@ -2993,22 +2891,18 @@ export function FieldScreen({ identity }: Props) {
       {viewport !== null ? (
         <Curtain
           edge="top"
-          onClose={closeFind}
-          open={findOpen}
-          destination={findDestination}
-          pull={findPull}
-          title="FIND"
+          onClose={closeTags}
+          open={tagsOpen}
+          destination={tagsDestination}
+          pull={tagsPull}
+          title="TAGS"
           viewportHeight={viewport.height}
         >
-          <FindSheet
+          <TagsSheet
             filter={tagFilter}
             libraryCount={songCount}
             onChangeFilter={applyFilterQuietly}
-            onClose={closeFind}
-            open={findOpen}
-            scopeKey={findScope?.groupKey ?? null}
-            scopeLabel={findScope?.label ?? null}
-            source={findSource}
+            onClose={closeTags}
             shownCount={shownCount}
             tags={libraryTags}
           />
