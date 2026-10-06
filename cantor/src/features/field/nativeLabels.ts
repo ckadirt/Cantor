@@ -177,9 +177,11 @@ export function drawNativeLabels(
   paints: ReturnType<typeof createLabelPaints>,
   labelGap: number,
   keyGap: number,
+  /** The map's ink behind find's gather; 1 otherwise. */
+  ink = 1,
 ) {
   'worklet';
-  const alpha = mapNameAlpha(camera.scale, fitScale);
+  const alpha = mapNameAlpha(camera.scale, fitScale) * ink;
   if (alpha <= 0) return;
   const gather = gatherFraction(camera.scale, fitScale);
   for (const { flight, lines, reach, rowsAbove, rowsBelow } of labels) {

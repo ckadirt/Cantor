@@ -74,7 +74,11 @@ import {
   type FieldController,
   type FieldPresentation,
 } from '../features/field/useFieldController';
-import { EmptyField, EmptyFilter } from '../features/field/EmptyField';
+import {
+  EmptyField,
+  EmptyFilter,
+  EmptyFind,
+} from '../features/field/EmptyField';
 import {
   FindSheet,
   type FindRow,
@@ -116,6 +120,8 @@ import {
   columnsFor,
   gatherFraction,
   grainWindow,
+  gatherLayout,
+  isFoundGroup,
   layoutField,
   indexRuns,
   modelLabel,
@@ -131,6 +137,7 @@ import {
   visibleSecondsAt,
   worldToScreen,
   type DateResolution,
+  type Level,
   type Placement,
   type QueueStep,
   type TagFilter,
@@ -214,6 +221,11 @@ const ARRIVING_GLIDE_MS = 100;
  * heat: on the Xiaomi at L2, 1 px held ~80% of a core, 2 px ~60%, 4 px ~51%.
  */
 const PLAYHEAD_STEP_PX = 2;
+/**
+ * KNOB — the longest the header speaks for where a closing find's camera is
+ * going (`leavingFind`), in ms: past any gather's return flight.
+ */
+const FIND_KNOBS_LEAVE_HOLD_MS = 2000;
 
 /** Where song measurements are kept, apart from every other stored key. */
 const ANALYSIS_DATABASE = 'cantor-analysis';
@@ -460,6 +472,21 @@ export function FieldScreen({ identity }: Props) {
   const [finding, setFinding] = useState<{
     query: string;
     scopeKey: string | null;
+    /** The camera's height on entry: the found column stands there. */
+    centerY: number;
+    /** Where find was opened, which is where leaving it returns. */
+    fromLevel: Level;
+    fromGroupKey: string | null;
+  } | null>(null);
+  /**
+   * Find just closed and the camera is still on its way back. React hears
+   * the camera's level only at thresholds, so for that flight the header
+   * would name whatever seat it passed (`Last week`, `DOWNLOAD ALL`) before
+   * the map; it speaks for where the camera is going instead.
+   */
+  const [leavingFind, setLeavingFind] = useState<{
+    level: Level;
+    groupKey: string | null;
   } | null>(null);
   /**
    * Whether the next re-cut happens behind a blind: a filter applied as the
@@ -721,7 +748,8 @@ export function FieldScreen({ identity }: Props) {
     () => applyTagFilter(controller.entities, tagFilter),
     [controller.entities, tagFilter],
   );
-  const layout = useMemo(() => {
+  /** The map itself: what the axis, the order and the filter lay out. */
+  const mapLayout = useMemo(() => {
     if (viewport === null) return null;
     return layoutField({
       entities: fieldEntities,
@@ -731,6 +759,76 @@ export function FieldScreen({ identity }: Props) {
       orderSeed,
     });
   }, [arrangement, fieldEntities, orderKey, orderSeed, viewport]);
+  /**
+   * What find searches, folded once per library change: a node song's name,
+   * its caption's summary and its model; a phone song's name, artist and
+   * album. Full captions and lyrics live on the node and are not here.
+   */
+  const findIndex = useMemo(
+    () =>
+      buildFindIndex(
+        [...controller.presentations.values()].map(presentation => [
+          presentation.entity.key,
+          presentation.source === 'node'
+            ? [
+                presentation.title,
+                presentation.song.caption_summary,
+                modelLabel(presentation.song.model),
+              ]
+            : [
+                presentation.title,
+                presentation.device.artist,
+                presentation.device.albumArtist,
+                presentation.album?.title,
+              ],
+        ]),
+      ),
+    [controller.presentations],
+  );
+  /**
+   * What the query finds, in field order, inside the filter: the shelf it was
+   * entered from first, with the rest counted as `outside`.
+   */
+  const found = useMemo(
+    () =>
+      finding === null || mapLayout === null
+        ? null
+        : findIn(
+            mapLayout,
+            findIndex,
+            finding.query,
+            finding.scopeKey === null ? null : { groupKey: finding.scopeKey },
+          ),
+    [findIndex, finding, mapLayout],
+  );
+  const findChrome = useMemo(
+    () =>
+      finding === null
+        ? null
+        : {
+            query: finding.query,
+            songCount: found?.count ?? 0,
+            groupCount: found?.groups.length ?? 0,
+          },
+    [finding, found],
+  );
+  /**
+   * The map with what the query found standing together in one more shelf
+   * (`gatherLayout`): a copy, never a re-pack, so a letter costs a copy and
+   * the re-cut's flight plan. Taken as soon as find has a query; the same
+   * object as the map otherwise, so nothing re-cuts.
+   */
+  const gathered = useMemo(() => {
+    if (mapLayout === null || found === null || finding === null) return null;
+    if (finding.query.trim().length === 0) return null;
+    return gatherLayout(
+      mapLayout,
+      found.groups.flatMap(group => group.placements),
+      { centerY: finding.centerY, viewport: viewport ?? undefined },
+    );
+  }, [finding, found, mapLayout, viewport]);
+  /** What the field draws and touches: the map, or the map gathered. */
+  const layout = gathered ?? mapLayout;
 
   const openComposer = useCallback(() => {
     setSubmitError(null);
@@ -996,27 +1094,28 @@ export function FieldScreen({ identity }: Props) {
         : arrangementKey,
     filtered: tagFilter.tags.length > 0,
     recutQuiet,
+    finding: (finding?.query.trim().length ?? 0) > 0,
   });
   /** The rail's index words, once per map; see `field/rail.ts`. */
   const railIndex = useMemo(() => {
-    const frame = layout === null ? null : mapFrame(layout);
-    return layout === null ||
+    const frame = mapLayout === null ? null : mapFrame(mapLayout);
+    return mapLayout === null ||
       frame === null ||
       viewport === null ||
       fieldCamera.rail === null
       ? []
-      : railWords(layout, frame, viewport, arrangement);
-  }, [arrangement, fieldCamera.rail, layout, viewport]);
+      : railWords(mapLayout, frame, viewport, arrangement);
+  }, [arrangement, fieldCamera.rail, mapLayout, viewport]);
   /** The overview's margin words, for a map that zooms out past itself. */
   const overviewIndex = useMemo(() => {
-    const frame = layout === null ? null : mapFrame(layout);
-    return layout === null ||
+    const frame = mapLayout === null ? null : mapFrame(mapLayout);
+    return mapLayout === null ||
       frame === null ||
       viewport === null ||
       overviewMinRatio(frame, viewport) >= 1
       ? []
-      : indexRuns(layout, arrangement);
-  }, [arrangement, layout, viewport]);
+      : indexRuns(mapLayout, arrangement);
+  }, [arrangement, mapLayout, viewport]);
   /*
    * Songs that just arrived from the phone (docs/import/flow-plan.md, I7j):
    * armed when a bring-in commits — held at a point behind the blind — and
@@ -2040,7 +2139,33 @@ export function FieldScreen({ identity }: Props) {
   ]);
 
   const keyboardUp = useKeyboardInset() > 0;
-  const leaveFind = useCallback(() => setFinding(null), []);
+  const leaveFind = useCallback(() => {
+    if (finding !== null) {
+      setLeavingFind({ level: finding.fromLevel, groupKey: finding.fromGroupKey });
+    }
+    setFinding(null);
+  }, [finding]);
+  useEffect(() => {
+    if (leavingFind === null) return;
+    if (
+      fieldCamera.level === leavingFind.level &&
+      (leavingFind.level !== 'shelf' ||
+        fieldCamera.groupKey === leavingFind.groupKey)
+    ) {
+      setLeavingFind(null);
+      return;
+    }
+    // However the flight ends, the header goes back to the camera's word.
+    const done = setTimeout(
+      () => setLeavingFind(null),
+      FIND_KNOBS_LEAVE_HOLD_MS,
+    );
+    return () => clearTimeout(done);
+  }, [fieldCamera.groupKey, fieldCamera.level, leavingFind]);
+  /** The level and shelf the chrome speaks for; see `leavingFind`. */
+  const chromeLevel = leavingFind?.level ?? fieldCamera.level;
+  const chromeGroupKey =
+    leavingFind !== null ? leavingFind.groupKey : fieldCamera.groupKey;
   const changeQuery = useCallback((query: string) => {
     setFinding(current => (current === null ? null : { ...current, query }));
   }, []);
@@ -2108,11 +2233,13 @@ export function FieldScreen({ identity }: Props) {
   const clearFilter = useCallback(() => setTagFilter(EMPTY_FILTER), []);
   /** The cluster you are inside, named the way its axis names it. */
   const focusedGroupLabel = useMemo(() => {
-    const key = fieldCamera.groupKey;
+    const key = chromeGroupKey;
     if (key === null || layout === null) return null;
+    // The found shelf's name is the query, which the header says itself.
+    if (isFoundGroup(key)) return null;
     const group = layout.groups.find(candidate => candidate.key === key);
     return group === undefined ? null : shelfLabel(group.label, nowMs).primary;
-  }, [fieldCamera.groupKey, layout, nowMs]);
+  }, [chromeGroupKey, layout, nowMs]);
   /** Open the find blind, scoped to the shelf you stand in, if any. */
   const openFind = useCallback(() => {
     setFindScope(
@@ -2131,34 +2258,11 @@ export function FieldScreen({ identity }: Props) {
       query: '',
       scopeKey:
         fieldCamera.level === 'shelf' ? fieldCamera.groupKey ?? null : null,
+      centerY: fieldCamera.cameraShared.value.y,
+      fromLevel: fieldCamera.level,
+      fromGroupKey: fieldCamera.groupKey,
     });
-  }, [fieldCamera.groupKey, fieldCamera.level]);
-  /**
-   * What find searches, folded once per library change: a node song's name,
-   * its caption's summary and its model; a phone song's name, artist and
-   * album. Full captions and lyrics live on the node and are not here.
-   */
-  const findIndex = useMemo(
-    () =>
-      buildFindIndex(
-        [...controller.presentations.values()].map(presentation => [
-          presentation.entity.key,
-          presentation.source === 'node'
-            ? [
-                presentation.title,
-                presentation.song.caption_summary,
-                modelLabel(presentation.song.model),
-              ]
-            : [
-                presentation.title,
-                presentation.device.artist,
-                presentation.device.albumArtist,
-                presentation.album?.title,
-              ],
-        ]),
-      ),
-    [controller.presentations],
-  );
+  }, [fieldCamera.cameraShared, fieldCamera.groupKey, fieldCamera.level]);
   const describeFound = useCallback(
     (placement: Placement): FindRow | null => {
       const presentation = controller.presentations.get(placement.entityKey);
@@ -2216,36 +2320,9 @@ export function FieldScreen({ identity }: Props) {
     },
     [flushArrival],
   );
-  /**
-   * What the query finds, in field order, inside the filter: the shelf it was
-   * entered from first, with the rest counted as `outside`.
-   */
-  const found = useMemo(
-    () =>
-      finding === null || layout === null
-        ? null
-        : findIn(
-            layout,
-            findIndex,
-            finding.query,
-            finding.scopeKey === null ? null : { groupKey: finding.scopeKey },
-          ),
-    [findIndex, finding, layout],
-  );
-  const findChrome = useMemo(
-    () =>
-      finding === null
-        ? null
-        : {
-            query: finding.query,
-            songCount: found?.count ?? 0,
-            groupCount: found?.groups.length ?? 0,
-          },
-    [finding, found],
-  );
   const findSource = useMemo<FindSource>(
     () => ({
-      layout,
+      layout: mapLayout,
       index: findIndex,
       describe: describeFound,
       groupName: label => shelfLabel(label, nowMs).primary,
@@ -2262,7 +2339,7 @@ export function FieldScreen({ identity }: Props) {
       dateResolution,
       describeFound,
       findIndex,
-      layout,
+      mapLayout,
       nowMs,
     ],
   );
@@ -2370,10 +2447,10 @@ export function FieldScreen({ identity }: Props) {
 
   /** The cluster you are standing inside, at L1 and nowhere else. */
   const shelfGroup = useMemo(() => {
-    if (fieldCamera.level !== 'shelf' || layout === null) return null;
-    const groupKey = fieldCamera.groupKey;
+    if (chromeLevel !== 'shelf' || layout === null) return null;
+    const groupKey = chromeGroupKey;
     return layout.groups.find(candidate => candidate.key === groupKey) ?? null;
-  }, [fieldCamera.groupKey, fieldCamera.level, layout]);
+  }, [chromeGroupKey, chromeLevel, layout]);
 
   /**
    * Measure the shelf you are standing in, in the background.
@@ -2524,6 +2601,13 @@ export function FieldScreen({ identity }: Props) {
         ) : null}
         {filtering && layout !== null && layout.placements.length === 0 ? (
           <EmptyFilter filter={tagFilter} onClear={clearFilter} />
+        ) : null}
+        {finding !== null &&
+        finding.query.trim().length > 0 &&
+        found !== null &&
+        found.count === 0 &&
+        found.outside === 0 ? (
+          <EmptyFind query={finding.query} filtered={filtering} />
         ) : null}
         {emptyField ? (
           <EmptyField
@@ -2686,7 +2770,7 @@ export function FieldScreen({ identity }: Props) {
           groupCount={layout?.groups.length ?? 0}
           groupLabel={focusedGroupLabel}
           lens={activeLens}
-          level={fieldCamera.level}
+          level={chromeLevel}
           onChangeArrangement={setArrangementKey}
           onChangeDateResolution={setDateResolution}
           offline={offline}

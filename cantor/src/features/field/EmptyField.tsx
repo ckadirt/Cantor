@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { TagFilter } from '../../field';
+import { SHELF_BOX, type TagFilter } from '../../field';
 import { Caret, FOLIO_KNOBS, PanelPressable, PhoneSealMark } from '../controls';
 import { font, space, touch, type, usePalette } from '../../theme/tokens';
 import { emptyFilterSentence } from './filterWords';
@@ -93,6 +93,36 @@ export function EmptyFilter({
   );
 }
 
+/**
+ * Find with a query that found nothing: said under the header, where the
+ * found shelf would stand, and above the keyboard. Find looks inside the
+ * filter, so a filtered map says so.
+ */
+export function EmptyFind({
+  query,
+  filtered,
+}: {
+  query: string;
+  filtered: boolean;
+}) {
+  const pal = usePalette();
+  return (
+    <View pointerEvents="none" style={styles.findRoot}>
+      <Text
+        accessibilityLiveRegion="polite"
+        style={[type.body, styles.findSentence, { color: pal.muted }]}
+      >
+        {emptyFindSentence(query, filtered)}
+      </Text>
+    </View>
+  );
+}
+
+/** `No song begins a word with “piax”.` */
+export function emptyFindSentence(query: string, filtered: boolean): string {
+  return `No song${filtered ? ' on this map' : ''} begins a word with “${query.trim()}”.`;
+}
+
 function EmptyDoor({
   label,
   muted = false,
@@ -136,6 +166,13 @@ const styles = StyleSheet.create({
     width: EMPTY_FIELD_KNOBS.WIDTH_PX,
   },
   sentence: { textAlign: 'center' },
+  findRoot: {
+    left: space.lg,
+    position: 'absolute',
+    right: space.lg,
+    top: SHELF_BOX.TOP_PX + space.lg,
+  },
+  findSentence: { textAlign: 'left' },
   clear: {
     alignItems: 'center',
     justifyContent: 'center',

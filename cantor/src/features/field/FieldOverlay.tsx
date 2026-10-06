@@ -525,7 +525,21 @@ function FieldOverlayImpl({
   // longer than a count, which this would run into.
   // While typing, the header is the query and its count, nothing else.
   const typing = h.finding !== null && h.keyboardUp;
-  const action = h.level === 'shelf' && !typing ? h.shelfAction : null;
+  // The found shelf is find's, not a place to fetch from: its count line is
+  // the long one, and the action ran into it.
+  const action =
+    h.level === 'shelf' && h.finding === null ? h.shelfAction : null;
+  /*
+   * The title behind the query: what it said before find opened, held until
+   * the camera is back somewhere with a name of its own. Standing in the
+   * found shelf the screen hands us no name (`groupLabel` null at L1), and
+   * the line coming back would otherwise say `Group` over the leaving query.
+   */
+  const title = h.level === 'shelf' ? h.groupLabel ?? 'Group' : 'Field';
+  const restTitle = useRef(title);
+  if (h.finding === null && !(h.level === 'shelf' && h.groupLabel === null)) {
+    restTitle.current = title;
+  }
   const held =
     h.level === 'field' &&
     h.finding === null &&
@@ -626,6 +640,9 @@ function FieldOverlayImpl({
   const inFind = finding !== null;
   const reducedMotion = useReducedMotion();
   const query = useRef<TextInput>(null);
+  // The query fades out as it was, not as an empty field's placeholder.
+  const lastQuery = useRef('');
+  if (finding !== null) lastQuery.current = finding.query;
   const crossing = useSharedValue(inFind ? 1 : 0);
   useEffect(() => {
     crossing.value = reducedMotion
@@ -765,7 +782,7 @@ function FieldOverlayImpl({
             importantForAccessibility={inFind ? 'no-hide-descendants' : 'auto'}
           >
             <TransformText
-              text={h.level === 'shelf' ? h.groupLabel ?? 'Group' : 'Field'}
+              text={restTitle.current}
               charStyle={CHROME_STYLES.title}
               color={pal.ink}
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
@@ -789,7 +806,7 @@ function FieldOverlayImpl({
               returnKeyType="search"
               selectionColor={pal.line}
               style={[queryStyle, styles.query, { color: pal.ink }]}
-              value={finding?.query ?? ''}
+              value={finding?.query ?? lastQuery.current}
             />
           </Animated.View>
         </View>

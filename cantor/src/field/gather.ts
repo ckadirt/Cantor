@@ -1,6 +1,13 @@
 import { mapFrame } from './browse';
+import { LEVEL_SCALE_RATIOS } from './camera';
 import { LAYOUT_KNOBS, placementKey, shelfRowGapWorld } from './layout';
-import type { FieldLayout, Group, Placement } from './types';
+import { shelfBoxInterior } from './shelf';
+import {
+  FLIGHT_NAME,
+  type FlightTiming,
+  type PlacementFlight,
+} from './transition';
+import type { FieldLayout, Group, Placement, Viewport } from './types';
 
 /**
  * Find as a gather: the songs a query finds leave their groups and stand
@@ -28,6 +35,37 @@ export const FOUND_GROUP_KEY = '\u0000found';
  */
 export const MAX_GATHERED = 60;
 
+/**
+ * KNOBS — the gather's motion, from `find-motion.html` frame III.
+ */
+export const GATHER_KNOBS = {
+  /** One face's flight, out or home. */
+  FLIGHT_MS: 550,
+  /** Between one face's start and the next's, in shelf order. */
+  STAGGER_MS: 40,
+  /**
+   * The most the stagger may spread a gather over. Forty faces at 40 ms is
+   * a cascade longer than the flight; past this the step shrinks instead.
+   */
+  MAX_STAGGER_SPAN_MS: 600,
+  /** The arc out to the column, and the arc home on the chord's other side. */
+  BOW_OUT_PX: 70,
+  BOW_HOME_PX: -50,
+  /** A name writes on over this last part of its own face's flight. */
+  NAME_WRITE_FROM: 0.7,
+  /** A leaving name erases where it stands, in this long. */
+  NAME_ERASE_MS: 150,
+  /**
+   * The rows that stay close ranks only once the leaving names are gone —
+   * the study's fix for names crossing — and take this long to do it.
+   */
+  CLOSE_RANKS_DELAY_MS: 120,
+  CLOSE_RANKS_MS: 420,
+  /** The map behind a gather: its ink, and how long it takes to get there. */
+  RECEDE_INK: 0.13,
+  RECEDE_MS: 500,
+} as const;
+
 export type GatherOptions = Readonly<{
   /**
    * The world y the column is centred on: the camera's height when find
@@ -36,6 +74,13 @@ export type GatherOptions = Readonly<{
   centerY?: number;
   /** The shelf's name, for the header and the screen reader. */
   label?: string;
+  /**
+   * The canvas, to know whether the column fits the shelf's box. One that
+   * does not hangs from the box's top instead of standing on its middle, so
+   * the camera at `centerY` sees the first match — and stays put while each
+   * letter lengthens or shortens the column below it.
+   */
+  viewport?: Viewport;
 }>;
 
 /**
@@ -65,9 +110,14 @@ export function gatherLayout(
   const cx =
     (frame === null ? layout.fieldCenter.x : frame.left) -
     LAYOUT_KNOBS.SHELF_GAP_WORLD;
-  const cy = options.centerY ?? layout.fieldCenter.y;
+  const centerY = options.centerY ?? layout.fieldCenter.y;
   const gap = shelfRowGapWorld(layout.fitScale);
-  const firstY = cy - ((gathered.length - 1) * gap) / 2;
+  const span = (gathered.length - 1) * gap;
+  const firstY = Math.min(
+    centerY - span / 2,
+    hangingTop(centerY, layout.fitScale, options.viewport),
+  );
+  const cy = firstY + span / 2;
   const moved = new Set(gathered.map(placement => placement.key));
   const leftBy = new Map<string, Set<string>>();
   for (const placement of gathered) {
@@ -128,8 +178,149 @@ export function gatherLayout(
   return { ...layout, groups, placements };
 }
 
+/**
+ * Where a column's first row rests at the top of the shelf's box with the
+ * camera at `centerY`; no limit without a viewport.
+ */
+function hangingTop(
+  centerY: number,
+  fitScale: number,
+  viewport: Viewport | undefined,
+): number {
+  if (viewport === undefined || !(fitScale > 0)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  const scale = fitScale * LEVEL_SCALE_RATIOS.shelf;
+  return centerY - (viewport.height / 2 - shelfBoxInterior().top) / scale;
+}
+
+/** The entity keys a layout's found shelf holds, in order; empty without one. */
+export function foundKeysOf(layout: FieldLayout | null): readonly string[] {
+  return (
+    layout?.groups.find(group => group.key === FOUND_GROUP_KEY)?.entityKeys ??
+    []
+  );
+}
+
+/** A re-cut's flights with the gather's windows and bows, and its length. */
+export type GatherCut = Readonly<{
+  flights: readonly PlacementFlight[];
+  durationMs: number;
+  /** The map's ink at the cut's two ends: 1 whole, `RECEDE_INK` behind. */
+  recedeFrom: number;
+  recedeTo: number;
+  /** When on the cut's linear clock the map has finished receding. */
+  recedeEnd: number;
+}>;
+
+/**
+ * Time a re-cut into, within, or out of a gather; null when neither end has a
+ * found shelf, which leaves an ordinary re-cut alone.
+ *
+ * Faces that arrive fly out on the bow, staggered in the shelf's order, and
+ * their names write on as they land. Faces that leave fly home on the other
+ * bow, staggered in the order they stood, their names erasing where they
+ * stood. Faces that stay close ranks once the leaving names are gone. Every
+ * other flight has the whole cut, as in any re-cut.
+ */
+export function planGatherCut(
+  flights: readonly PlacementFlight[],
+  before: readonly string[],
+  after: readonly string[],
+): GatherCut | null {
+  if (before.length === 0 && after.length === 0) return null;
+  const wasFound = new Map(before.map((key, index) => [key, index]));
+  const isFound = new Map(after.map((key, index) => [key, index]));
+  const arriving = after.filter(key => !wasFound.has(key));
+  const leaving = before.filter(key => !isFound.has(key));
+  const rankOf = (keys: readonly string[]) =>
+    new Map(keys.map((key, index) => [key, index]));
+  const arrivalRank = rankOf(arriving);
+  const leavingRank = rankOf(leaving);
+  const movers = Math.max(arriving.length, leaving.length);
+  const step =
+    movers <= 1
+      ? GATHER_KNOBS.STAGGER_MS
+      : Math.min(
+          GATHER_KNOBS.STAGGER_MS,
+          GATHER_KNOBS.MAX_STAGGER_SPAN_MS / (movers - 1),
+        );
+  const staying = after.some(key => wasFound.has(key));
+  const durationMs = Math.max(
+    GATHER_KNOBS.FLIGHT_MS + step * Math.max(0, movers - 1),
+    staying ? GATHER_KNOBS.CLOSE_RANKS_DELAY_MS + GATHER_KNOBS.CLOSE_RANKS_MS : 0,
+    GATHER_KNOBS.RECEDE_MS,
+  );
+  const at = (ms: number) => ms / durationMs;
+  const windowOf = (
+    startMs: number,
+    lengthMs: number,
+    bowPx: number,
+    name: number,
+    nameStartMs: number,
+    nameEndMs: number,
+  ): FlightTiming => ({
+    start: at(startMs),
+    end: at(startMs + lengthMs),
+    bowPx,
+    name,
+    nameStart: at(nameStartMs),
+    nameEnd: at(nameEndMs),
+  });
+  const timed = flights.map(flight => {
+    const into = flight.groupKey === FOUND_GROUP_KEY;
+    const entityKey = flight.entityKey;
+    let timing: FlightTiming | undefined;
+    if (into && arrivalRank.has(entityKey)) {
+      const start = (arrivalRank.get(entityKey) ?? 0) * step;
+      const land = start + GATHER_KNOBS.FLIGHT_MS * GATHER_KNOBS.NAME_WRITE_FROM;
+      timing = windowOf(
+        start,
+        GATHER_KNOBS.FLIGHT_MS,
+        GATHER_KNOBS.BOW_OUT_PX,
+        FLIGHT_NAME.WRITE,
+        land,
+        start + GATHER_KNOBS.FLIGHT_MS,
+      );
+    } else if (into) {
+      timing = windowOf(
+        GATHER_KNOBS.CLOSE_RANKS_DELAY_MS,
+        GATHER_KNOBS.CLOSE_RANKS_MS,
+        0,
+        FLIGHT_NAME.RIDE,
+        0,
+        0,
+      );
+    } else if (
+      leavingRank.has(entityKey) &&
+      flight.targetPlacementKey !== null &&
+      // A song's other playlist copies never left; only the one that did.
+      (flight.fromX !== flight.targetX || flight.fromY !== flight.targetY)
+    ) {
+      const start = (leavingRank.get(entityKey) ?? 0) * step;
+      timing = windowOf(
+        start,
+        GATHER_KNOBS.FLIGHT_MS,
+        GATHER_KNOBS.BOW_HOME_PX,
+        FLIGHT_NAME.ERASE,
+        start,
+        start + GATHER_KNOBS.NAME_ERASE_MS,
+      );
+    }
+    return timing === undefined ? flight : { ...flight, timing };
+  });
+  return {
+    flights: timed,
+    durationMs,
+    recedeFrom: before.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1,
+    recedeTo: after.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1,
+    recedeEnd: Math.min(1, at(GATHER_KNOBS.RECEDE_MS)),
+  };
+}
+
 /** Whether `groupKey` is the found shelf. */
 export function isFoundGroup(groupKey: string | null | undefined): boolean {
+  'worklet';
   return groupKey === FOUND_GROUP_KEY;
 }
 

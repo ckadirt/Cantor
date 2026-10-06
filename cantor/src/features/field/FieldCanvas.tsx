@@ -5,6 +5,7 @@ import {
   drawNativeLabels,
 } from './nativeLabels';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
+import { gatherFaceInk, recedeInkAt, type Recede } from './gatherInk';
 import { drawNativeJobs, type JobMark } from './nativeJobs';
 import { useHubCovers } from './useCover';
 import {
@@ -69,6 +70,10 @@ import {
   REPRESENTATION_WINDOWS,
   SHELF_BOX,
   bandAlphaAt,
+  bowOffsetAt,
+  flightProgressAt,
+  isFoundGroup,
+  linearOfEased,
   overviewShrink,
   BROWSE_KNOBS,
   faceArrival,
@@ -81,6 +86,7 @@ import {
   type FieldLayout,
   type Group,
   type FlightOwnership,
+  type FlightTiming,
   type PlacementFlight,
   type Point,
   type RepresentationAlphas,
@@ -567,11 +573,17 @@ function FieldCanvasImpl({
     // for it — nothing moved and nothing was renamed. The native renderer
     // draws only flights, so without a standing-still one to draw it would
     // have no names.
+    // Find's found shelf hangs no name over its column: the header's title
+    // line is the query, and that is its name.
+    const named = (groups: readonly Group[]) =>
+      groups.some(group => isFoundGroup(group.key))
+        ? groups.filter(group => !isFoundGroup(group.key))
+        : groups;
+    const from = named(labelFromGroups);
+    const to = named(layout.groups);
     const planned =
-      labelFromGroups.length === 0
-        ? null
-        : planShelfLabels(labelFromGroups, layout.groups, monoFont, nowMs);
-    return planned ?? settledShelfLabelFlights(layout.groups, nowMs);
+      from.length === 0 ? null : planShelfLabels(from, to, monoFont, nowMs);
+    return planned ?? settledShelfLabelFlights(to, nowMs);
   }, [labelFromGroups, layout, monoFont, nowMs]);
   const labelPlan = useRef<{
     generation: number;
@@ -1122,6 +1134,10 @@ export type FaceFlight = Readonly<{
    * it is not arriving. See `features/field/opening.ts`.
    */
   openAt: number;
+  /** The flight's own window and bow in a gather; null in any other re-cut. */
+  timing: FlightTiming | null;
+  /** Whether it is headed for find's found shelf, which never recedes. */
+  found: boolean;
 }>;
 
 /**
@@ -1227,6 +1243,8 @@ export function faceFlightsOf(
       isPlayer,
       playing: flight.entityKey === playingKey,
       openAt: opening?.get(flight.entityKey) ?? -1,
+      timing: flight.timing ?? null,
+      found: isFoundGroup(flight.groupKey),
     });
   }
   return result;
@@ -1283,6 +1301,8 @@ export function drawFieldFaces(
   arrival = 1,
   /** The opening clock, elapsed ms; see `openedAt`. */
   openingMs = Infinity,
+  /** The map behind find's gather; null in any other re-cut. */
+  recede: Recede | null = null,
 ): void {
   'worklet';
   /*
@@ -1306,6 +1326,9 @@ export function drawFieldFaces(
   const firstLens = lensFrom < lensTo ? lensFrom : lensTo;
   const lastLens = lensFrom < lensTo ? lensTo : lensFrom;
   const p = Math.min(Math.max(progress, 0), 1);
+  // A gather's faces each keep a window of the clock: the linear time it is
+  // cut from, recovered once for the whole field.
+  const linear = recede === null ? p : linearOfEased(p);
   const live = p >= 1 ? cameraShared.value : null;
   const cameraX =
     live === null
@@ -1355,12 +1378,11 @@ export function drawFieldFaces(
 
   for (let index = 0; index < faces.length; index++) {
     const face = faces[index];
-    const owner = flightOwnerAlpha(
-      face.ownership,
-      face.fromAlpha,
-      face.targetAlpha,
-      p,
-    );
+    const timing = face.timing;
+    const u = timing === null ? p : flightProgressAt(timing, linear);
+    const owner =
+      flightOwnerAlpha(face.ownership, face.fromAlpha, face.targetAlpha, u) *
+      gatherFaceInk(recede, linear, timing, face.found, u);
     if (owner <= 0) continue;
     // A song just arrived opens out of a point, as a lens's coming beat does;
     // reduced motion fades it in instead.
@@ -1375,14 +1397,27 @@ export function drawFieldFaces(
       (reducedMotion ? opened : 1);
     if (opacity <= 0) continue;
 
-    const seatX = face.fromX + (face.targetX - face.fromX) * p;
-    const seatY = face.fromY + (face.targetY - face.fromY) * p;
-    const bloomX = face.fromBloomX + (face.targetBloomX - face.fromBloomX) * p;
-    const bloomY = face.fromBloomY + (face.targetBloomY - face.fromBloomY) * p;
+    const seatX = face.fromX + (face.targetX - face.fromX) * u;
+    const seatY = face.fromY + (face.targetY - face.fromY) * u;
+    const bloomX = face.fromBloomX + (face.targetBloomX - face.fromBloomX) * u;
+    const bloomY = face.fromBloomY + (face.targetBloomY - face.fromBloomY) * u;
+    const bow =
+      timing === null || timing.bowPx === 0
+        ? null
+        : bowOffsetAt(
+            face.targetX - face.fromX,
+            face.targetY - face.fromY,
+            timing.bowPx,
+            u,
+          );
     const x =
-      (seatX + bloomX * bloom - cameraX) * cameraScale + viewport.width / 2;
+      (seatX + bloomX * bloom - cameraX) * cameraScale +
+      viewport.width / 2 +
+      (bow?.x ?? 0);
     const y =
-      (seatY + bloomY * bloom - cameraY) * cameraScale + viewport.height / 2;
+      (seatY + bloomY * bloom - cameraY) * cameraScale +
+      viewport.height / 2 +
+      (bow?.y ?? 0);
     // Culling, at the live camera and on the frame it is true — which is the
     // thing the node renderer could not do, because its answer would have had
     // to come back through React to unmount anything.
@@ -2042,10 +2077,12 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   useEffect(() => {
     if (!recut.animate || clock.value >= 1) return;
     clock.value = withTiming(1, {
-      duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+      duration: recut.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
       easing: nativeSmootherstep,
     });
   }, [clock, recut]);
+  /** The map behind find's gather; null for any other re-cut. */
+  const recede = recut.recede ?? null;
   // Worklets need camera endpoints, not the entire layout and flight family.
   const nativeRecut = useMemo<NativeRecut>(
     () => ({
@@ -2259,6 +2296,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           heard.value,
           inkClock?.value ?? 1,
           openingClock?.value ?? Infinity,
+          recede,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -2377,6 +2415,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         labelPaints,
         FIELD_CANVAS_KNOBS.SHELF_LABEL_GAP_PX,
         FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
+        recede === null
+          ? 1
+          : recedeInkAt(recede, p >= 1 ? 1 : linearOfEased(p)),
       );
       drawNativeRows(
         canvas,
@@ -2392,6 +2433,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         motion.owned.value > 0 ? playerRow.value : null,
         inkClock?.value ?? 1,
         openingClock?.value ?? Infinity,
+        recede,
       );
     }, viewport);
   });
