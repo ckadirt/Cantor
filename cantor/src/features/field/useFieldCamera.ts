@@ -38,8 +38,11 @@ import {
   mapFrame,
   nearestSeat,
   overviewMinRatio,
-  placementFlightAt,
+  FOUND_GROUP_KEY,
+  foundKeysOf,
+  placementFlightAtClock,
   placementPoint,
+  planGatherCut,
   planGlide,
   planPlacementFlights,
   RAIL_KNOBS,
@@ -202,6 +205,13 @@ type Options = {
    * motion throws. Read only on the render whose layout changes.
    */
   recutQuiet?: boolean;
+  /**
+   * Find mode has a query (gather-plan). A layout that gains the found shelf
+   * stashes the camera and flies it to the shelf on the re-cut's own clock;
+   * while this holds, a re-cut that empties the shelf leaves the camera where
+   * it stands; once it does not, the camera goes back to the stash.
+   */
+  finding?: boolean;
 };
 
 type CameraState = {
@@ -325,6 +335,14 @@ export type FieldRecutModel = Readonly<{
   axisKey?: string;
   /** Whether this layout is narrowed; see `Options.filtered`. */
   filtered?: boolean;
+  /** How long the re-cut's clock runs: `RELAYOUT_MS`, or the gather's own. */
+  durationMs?: number;
+  /**
+   * The map's ink behind a gather at the cut's two ends, and when on its
+   * linear clock it has receded; null for any cut with no found shelf at
+   * either end. See `planGatherCut`.
+   */
+  recede?: Readonly<{ from: number; to: number; end: number }> | null;
 }>;
 
 /** A map camera kept for an axis, with its scale relative to that map's FIT. */
@@ -350,6 +368,7 @@ export function useFieldCamera({
   axisKey,
   filtered = false,
   recutQuiet = false,
+  finding = false,
 }: Options): CameraState {
   const reducedMotion = useReducedMotion();
   const [camera, setCameraState] = useState<Camera>(EMPTY_CAMERA);
@@ -403,6 +422,9 @@ export function useFieldCamera({
   const beforeFilter = useRef<(AxisCamera & { axisKey?: string }) | null>(
     null,
   );
+  /** The camera the first gather replaced, at any level; null outside find. */
+  const beforeGather = useRef<AxisCamera | null>(null);
+  const findingRef = useRef(finding);
   const lastVisualPlacements = useRef<readonly Placement[]>([]);
   /** See the capture beside `focus`, and the strand it answers in the re-cut. */
   const standing = useRef<Placement | null>(null);
@@ -604,9 +626,12 @@ export function useFieldCamera({
     if (model === null || nativeFlight.current !== model.generation) {
       return lastVisualPlacements.current;
     }
-    const eased = smootherstep(Math.min(Math.max(recutProgress.value, 0), 1));
-    return model.flights.map(flight => placementFlightAt(flight, eased));
-  }, [recutProgress]);
+    const linear = Math.min(Math.max(recutProgress.value, 0), 1);
+    const scale = cameraShared.value.scale;
+    return model.flights.map(flight =>
+      placementFlightAtClock(flight, linear, scale),
+    );
+  }, [cameraShared, recutProgress]);
   const commitCamera = useCallback(
     (next: Camera) => {
       cameraRef.current = next;
@@ -935,6 +960,30 @@ export function useFieldCamera({
     },
   );
 
+  findingRef.current = finding;
+  /**
+   * Where leaving find goes: the camera the first gather replaced, spent. A
+   * shelf as it was kept; the map held inside its current range.
+   */
+  const gatherReturn = (field: FieldLayout): Camera | null => {
+    const kept = beforeGather.current;
+    beforeGather.current = null;
+    if (kept === null) return null;
+    const scale = clampScale(kept.ratio * field.fitScale, field);
+    if (kept.ratio >= LEVEL_BOUNDARIES.field) {
+      return { scale, x: kept.x, y: kept.y };
+    }
+    const frame = mapFrame(field);
+    if (frame === null || viewport === null) {
+      return levelCameraTarget('field', field);
+    }
+    const range = mapCameraRange(frame, viewport, scale);
+    return {
+      scale,
+      x: Math.min(Math.max(kept.x, range.minX), range.maxX),
+      y: Math.min(Math.max(kept.y, range.minY), range.maxY),
+    };
+  };
   /*
    * Diff and capture during render, following the motion engine's trigger
    * ritual. The prop change itself creates a born generation at progress zero;
@@ -1146,15 +1195,55 @@ export function useFieldCamera({
     ) {
       toCamera = newHome;
     }
+    /*
+     * Find's gather (gather-plan). A layout with the found shelf flies the
+     * camera to it, on this clock — the first one stashing the camera it
+     * replaced, at any level. A query that finds nothing takes the shelf away
+     * while find is still open: the camera stays over where it stood, so the
+     * next letter brings the faces back to it. Leaving find goes back to the
+     * stash: a shelf as it was kept, the map held inside its range.
+     */
+    const foundBefore = foundKeysOf(previous?.layout ?? null);
+    const foundAfter = foundKeysOf(layout);
+    if (!firstLayout && foundAfter.length > 0 && viewport !== null) {
+      if (beforeGather.current === null) {
+        beforeGather.current = {
+          x: heading.x,
+          y: heading.y,
+          ratio: heading.scale / fromFitScale,
+        };
+      }
+      const seat = shelfSeats(layout).find(
+        candidate => candidate.key === FOUND_GROUP_KEY,
+      );
+      if (seat !== undefined) {
+        toCamera = seatCameraAround(
+          seat,
+          seat.top,
+          viewport,
+          layout.fitScale * LEVEL_SCALE_RATIOS.shelf,
+        );
+      }
+    } else if (!firstLayout && beforeGather.current !== null) {
+      if (findingRef.current) {
+        toCamera = heading;
+      } else {
+        toCamera = gatherReturn(layout) ?? toCamera;
+      }
+    }
     if (flying) absorbedFlight.current = generation;
     const sources = firstLayout
       ? layout.placements
       : liveCapture().filter(stillDrawn);
-    const flights = planPlacementFlights(
+    const planned = planPlacementFlights(
       sources,
       layout.placements,
       generation,
     );
+    const gatherCut = firstLayout
+      ? null
+      : planGatherCut(planned, foundBefore, foundAfter);
+    const flights = gatherCut?.flights ?? planned;
     const fromGroups = previous?.layout.groups ?? [];
     const animate =
       !firstLayout &&
@@ -1176,6 +1265,15 @@ export function useFieldCamera({
       animate,
       axisKey,
       filtered,
+      durationMs: gatherCut?.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+      recede:
+        gatherCut === null
+          ? null
+          : {
+              from: gatherCut.recedeFrom,
+              to: gatherCut.recedeTo,
+              end: gatherCut.recedeEnd,
+            },
     };
     if (stranded) strandedFocus.current = generation;
   }
@@ -1207,9 +1305,9 @@ export function useFieldCamera({
       activeRecut === null
         ? []
         : activeRecut.flights.map(flight =>
-            placementFlightAt(flight, layoutProgress),
+            placementFlightAtClock(flight, relayoutLinear, renderedCamera.scale),
           ),
-    [activeRecut, layoutProgress],
+    [activeRecut, relayoutLinear, renderedCamera.scale],
   );
   const renderedPlacements = useMemo(
     () =>
@@ -1308,7 +1406,10 @@ export function useFieldCamera({
     recutProgress.value = 0;
     recutProgress.value = withTiming(
       1,
-      { duration: FIELD_CAMERA_KNOBS.RELAYOUT_MS, easing: Easing.linear },
+      {
+        duration: model.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+        easing: Easing.linear,
+      },
       finished => {
         'worklet';
         if (finished === true) runOnJS(landRecut)(generation);
@@ -1324,6 +1425,19 @@ export function useFieldCamera({
     recutEnds,
     recutProgress,
   ]);
+
+  /*
+   * Leaving find with nothing gathered — a query that found nothing, then
+   * CLOSE — changes no layout, so no re-cut carries the camera back. A flight
+   * of its own does; the re-cut, when there is one, has spent the stash first.
+   */
+  useEffect(() => {
+    if (finding || beforeGather.current === null || layout === null) return;
+    const target = gatherReturn(layout);
+    if (target !== null) flyTo(target);
+    // `gatherReturn` reads refs and this render's layout; it is not a trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finding, flyTo, layout]);
 
   useEffect(
     () => () => {

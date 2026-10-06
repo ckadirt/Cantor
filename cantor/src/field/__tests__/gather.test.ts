@@ -1,6 +1,13 @@
 import {
+  FLIGHT_NAME,
   FOUND_GROUP_KEY,
+  GATHER_KNOBS,
   MAX_GATHERED,
+  bowOffsetAt,
+  foundKeysOf,
+  linearOfEased,
+  placementFlightAtClock,
+  planGatherCut,
   byPlaylist,
   byTime,
   gatherLayout,
@@ -235,5 +242,161 @@ describe('gatherLayout', () => {
   it('returns the very same layout when nothing is found', () => {
     const layout = byDate();
     expect(gatherLayout(layout, [])).toBe(layout);
+  });
+});
+
+describe('planGatherCut', () => {
+  const flightsInto = (layout: FieldLayout, gathered: FieldLayout) =>
+    planPlacementFlights(layout.placements, gathered.placements, 1);
+
+  it('leaves an ordinary re-cut alone', () => {
+    const layout = byDate();
+    expect(planGatherCut(flightsInto(layout, layout), [], [])).toBeNull();
+  });
+
+  it('staggers arrivals in shelf order, bowed out, names writing as they land', () => {
+    const layout = byDate();
+    const found = everyOther(layout);
+    const gathered = gatherLayout(layout, found);
+    const cut = planGatherCut(
+      flightsInto(layout, gathered),
+      [],
+      foundKeysOf(gathered),
+    );
+    expect(cut).not.toBeNull();
+    if (cut === null) return;
+    const arriving = cut.flights
+      .filter(f => f.groupKey === FOUND_GROUP_KEY)
+      .sort(
+        (a, b) =>
+          found.findIndex(p => p.entityKey === a.entityKey) -
+          found.findIndex(p => p.entityKey === b.entityKey),
+      );
+    const ms = (fraction: number) => fraction * cut.durationMs;
+    arriving.forEach((f, index) => {
+      expect(f.timing?.bowPx).toBe(GATHER_KNOBS.BOW_OUT_PX);
+      expect(f.timing?.name).toBe(FLIGHT_NAME.WRITE);
+      expect(ms(f.timing?.start ?? -1)).toBeCloseTo(
+        index * GATHER_KNOBS.STAGGER_MS,
+      );
+      expect(ms((f.timing?.end ?? 0) - (f.timing?.start ?? 0))).toBeCloseTo(
+        GATHER_KNOBS.FLIGHT_MS,
+      );
+      expect(ms(f.timing?.nameStart ?? 0)).toBeCloseTo(
+        index * GATHER_KNOBS.STAGGER_MS +
+          GATHER_KNOBS.FLIGHT_MS * GATHER_KNOBS.NAME_WRITE_FROM,
+      );
+    });
+    // Every window ends inside the clock.
+    expect(
+      cut.flights.every(f => f.timing === undefined || f.timing.end <= 1),
+    ).toBe(true);
+    // The rest of the map has the whole cut, and recedes.
+    expect(
+      cut.flights.filter(f => f.timing === undefined).length,
+    ).toBe(layout.placements.length - found.length);
+    expect([cut.recedeFrom, cut.recedeTo]).toEqual([
+      1,
+      GATHER_KNOBS.RECEDE_INK,
+    ]);
+  });
+
+  it('sends leavers home on the other bow and lets the rest close ranks after', () => {
+    const layout = byDate();
+    const wide = gatherLayout(layout, layout.placements.slice(0, 4));
+    const narrow = gatherLayout(layout, layout.placements.slice(1, 3));
+    const cut = planGatherCut(
+      planPlacementFlights(wide.placements, narrow.placements, 2),
+      foundKeysOf(wide),
+      foundKeysOf(narrow),
+    );
+    if (cut === null) throw new Error('no cut');
+    const leaving = cut.flights.filter(
+      f => f.timing?.name === FLIGHT_NAME.ERASE,
+    );
+    expect(leaving.map(f => f.entityKey).sort()).toEqual(
+      [layout.placements[0], layout.placements[3]]
+        .map(p => p.entityKey)
+        .sort(),
+    );
+    expect(leaving.every(f => f.timing?.bowPx === GATHER_KNOBS.BOW_HOME_PX)).toBe(
+      true,
+    );
+    leaving.forEach(f => {
+      const timing = f.timing;
+      if (timing === undefined) return;
+      expect((timing.nameEnd - timing.nameStart) * cut.durationMs).toBeCloseTo(
+        GATHER_KNOBS.NAME_ERASE_MS,
+      );
+    });
+    const staying = cut.flights.filter(
+      f => f.groupKey === FOUND_GROUP_KEY,
+    );
+    staying.forEach(f =>
+      expect((f.timing?.start ?? 0) * cut.durationMs).toBeCloseTo(
+        GATHER_KNOBS.CLOSE_RANKS_DELAY_MS,
+      ),
+    );
+    expect([cut.recedeFrom, cut.recedeTo]).toEqual([
+      GATHER_KNOBS.RECEDE_INK,
+      GATHER_KNOBS.RECEDE_INK,
+    ]);
+  });
+
+  it('keeps a long stagger inside its span', () => {
+    const many = Array.from({ length: 90 }, (_, index) =>
+      song(`m${index}`, start + Math.floor(index / 15) * 7 * day + index),
+    );
+    const layout = layoutField({ entities: many, arrangement: byTime, viewport });
+    const gathered = gatherLayout(layout, layout.placements);
+    const cut = planGatherCut(
+      planPlacementFlights(layout.placements, gathered.placements, 1),
+      [],
+      foundKeysOf(gathered),
+    );
+    expect(cut?.durationMs).toBeCloseTo(
+      GATHER_KNOBS.FLIGHT_MS + GATHER_KNOBS.MAX_STAGGER_SPAN_MS,
+    );
+  });
+});
+
+describe('a timed flight on the linear clock', () => {
+  it('starts and lands where it should, and bows between', () => {
+    const layout = byDate();
+    const gathered = gatherLayout(layout, everyOther(layout));
+    const cut = planGatherCut(
+      planPlacementFlights(layout.placements, gathered.placements, 1),
+      [],
+      foundKeysOf(gathered),
+    );
+    const flight = cut?.flights.find(f => f.timing !== undefined);
+    if (flight === undefined) throw new Error('no timed flight');
+    const at = (linear: number) => placementFlightAtClock(flight, linear, 2);
+    expect([at(0).x, at(0).y]).toEqual([flight.fromX, flight.fromY]);
+    expect(at(1).x).toBeCloseTo(flight.targetX);
+    expect(at(1).y).toBeCloseTo(flight.targetY);
+    const timing = flight.timing;
+    if (timing === undefined) return;
+    const mid = at((timing.start + timing.end) / 2);
+    const straightX = (flight.fromX + flight.targetX) / 2;
+    const straightY = (flight.fromY + flight.targetY) / 2;
+    // Half the bow, in world units at 2 px each.
+    expect(Math.hypot(mid.x - straightX, mid.y - straightY)).toBeCloseTo(
+      GATHER_KNOBS.BOW_OUT_PX / 2 / 2,
+    );
+  });
+
+  it('bows out and home on opposite sides of the chord', () => {
+    const out = bowOffsetAt(-100, 40, 70, 0.5);
+    const home = bowOffsetAt(100, -40, -50, 0.5);
+    expect(out.x).toBeLessThan(0);
+    expect(home.x).toBeGreaterThan(0);
+  });
+
+  it('recovers the linear clock under the eased one', () => {
+    for (const t of [0, 0.1, 0.37, 0.5, 0.82, 1]) {
+      const eased = t * t * t * (t * (t * 6 - 15) + 10);
+      expect(linearOfEased(eased)).toBeCloseTo(t, 5);
+    }
   });
 });

@@ -19,6 +19,8 @@ import {
   placementPoint,
   gatherFraction,
   layoutField,
+  gatherLayout,
+  FOUND_GROUP_KEY,
   placementFlightAt,
   smootherstep,
   screenToWorld,
@@ -1398,6 +1400,86 @@ describe('useFieldCamera', () => {
         );
       });
       expect(latest.recut?.animate).toBe(true);
+    });
+  });
+
+  describe('find gathers', () => {
+    const DAY = 24 * 3600 * 1000;
+    const library: FieldEntity[] = Array.from({ length: 12 }, (_, index) => ({
+      ...entities[0],
+      key: `node-a:song-${index}`,
+      entityId: `song-${index}`,
+      createdAtMs: Date.UTC(2026, 0, 8) + index * 16 * DAY,
+    }));
+    const map = layoutField({
+      entities: library,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const gathered = gatherLayout(
+      map,
+      map.placements.filter((_, index) => index % 3 === 0),
+      { viewport },
+    );
+
+    function FindProbe({
+      field,
+      finding,
+    }: {
+      field: FieldLayout;
+      finding: boolean;
+    }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+        axisKey: 'time:month',
+        finding,
+      });
+      return null;
+    }
+
+    it('flies to the found shelf on the re-cut, holds over an empty query, and goes back', async () => {
+      mockReducedMotion = false;
+      let renderer!: ReactTestRenderer.ReactTestRenderer;
+      await ReactTestRenderer.act(async () => {
+        renderer = ReactTestRenderer.create(
+          <FindProbe field={map} finding={false} />,
+        );
+      });
+      const before = camera();
+      await ReactTestRenderer.act(async () => {
+        renderer.update(<FindProbe field={gathered} finding />);
+      });
+      const shelf = gathered.groups.find(group => group.key === FOUND_GROUP_KEY)!;
+      expect(latest.recut?.animate).toBe(true);
+      expect(latest.recut?.recede?.to).toBeLessThan(1);
+      expect(latest.recut?.toCamera.x).toBeCloseTo(shelf.cx, 6);
+      expect(latest.recut?.toCamera.scale).toBeCloseTo(
+        gathered.fitScale * LEVEL_SCALE_RATIOS.shelf,
+        6,
+      );
+      const atShelf = latest.recut!.toCamera;
+
+      // A letter that finds nothing: the faces go home, the camera stays.
+      await ReactTestRenderer.act(async () => {
+        renderer.update(<FindProbe field={map} finding />);
+      });
+      expect(latest.recut?.toCamera.x).toBeCloseTo(atShelf.x, 6);
+      expect(latest.recut?.toCamera.y).toBeCloseTo(atShelf.y, 6);
+
+      // The next brings them back; leaving goes back to where find began.
+      await ReactTestRenderer.act(async () => {
+        renderer.update(<FindProbe field={gathered} finding />);
+      });
+      await ReactTestRenderer.act(async () => {
+        renderer.update(<FindProbe field={map} finding={false} />);
+      });
+      expect(latest.recut?.recede?.to).toBe(1);
+      expect(latest.recut?.toCamera.x).toBeCloseTo(before.x, 6);
+      expect(latest.recut?.toCamera.y).toBeCloseTo(before.y, 6);
+      expect(latest.recut?.toCamera.scale).toBeCloseTo(before.scale, 6);
     });
   });
 
