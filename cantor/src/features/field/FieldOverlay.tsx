@@ -677,10 +677,14 @@ function FieldOverlayImpl({
   const queryStyle = useFontScaledStyle(CHROME_STYLES.title);
   // The field's dials and hint leave in find mode; once the keyboard is down
   // on a query, the hint is the shelf's.
+  // Find with nothing typed offers the tags in this seat (decision 10).
+  const tagsDoor = h.finding !== null && !hasQuery(h.finding);
   const hint = legendShown
     ? ''
+    : tagsDoor
+    ? 'TAGS'
     : h.finding !== null
-    ? !typing && hasQuery(h.finding) && h.finding.songCount > 0
+    ? !typing && h.finding.songCount > 0
       ? HINTS.shelf
       : ''
     : h.level === 'field'
@@ -997,7 +1001,16 @@ function FieldOverlayImpl({
             field cannot say for itself. The hint writes itself back in when
             the key leaves.
           */}
-        <View style={styles.hintSeat}>
+        <Pressable
+          accessibilityElementsHidden={!tagsDoor}
+          accessibilityLabel={tagsDoor ? 'Show only some tags' : undefined}
+          accessibilityRole={tagsDoor ? 'button' : undefined}
+          hitSlop={space.md}
+          importantForAccessibility={tagsDoor ? 'yes' : 'no-hide-descendants'}
+          onPress={tagsDoor ? onOpenTags : undefined}
+          pointerEvents={tagsDoor ? 'auto' : 'none'}
+          style={styles.hintSeat}
+        >
           <WriteText
             text={hint}
             charStyle={CHROME_STYLES.hint}
@@ -1018,7 +1031,7 @@ function FieldOverlayImpl({
               <FieldLegend lens={lens} palette={pal} />
             </Animated.View>
           ) : null}
-        </View>
+        </Pressable>
       </Animated.View>
       <EdgeTab
         accessibilityLabel="Open nodes"
