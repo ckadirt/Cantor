@@ -72,6 +72,7 @@ import {
   bandAlphaAt,
   bowOffsetAt,
   flightProgressAt,
+  GATHER_KNOBS,
   isFoundGroup,
   linearOfEased,
   overviewShrink,
@@ -356,6 +357,16 @@ type Props = {
   transitionGeneration?: number;
   /** The re-cut being drawn: flights, camera endpoints, generation. */
   recut?: FieldRecutModel | null;
+  /**
+   * What a found row says under its name — where it came from and how long
+   * it is — by entity key; see gather-plan, G3.
+   */
+  foundPlaces?: ReadonlyMap<string, string> | null;
+  /**
+   * The found shelf's last row, which is not a song — `3 MORE IN OTHER
+   * WEEKS` — at the world point of the row it stands in.
+   */
+  foundFoot?: FoundFoot | null;
 };
 
 /**
@@ -477,6 +488,8 @@ function FieldCanvasImpl({
   labelFromGroups = [],
   transitionGeneration = 0,
   recut = null,
+  foundPlaces = null,
+  foundFoot = null,
 }: Props) {
   // Removed songs still own ink in the outgoing placement flights. Keep only
   // that drawing data until the flight family is replaced; it never re-enters
@@ -750,6 +763,8 @@ function FieldCanvasImpl({
         <NativeFieldContent
           key={recut.generation}
           recut={recut}
+          foundPlaces={foundPlaces}
+          foundFoot={foundFoot}
           lensClock={lensClock}
           reducedMotion={reducedMotion}
           clock={nativeClock}
@@ -784,6 +799,8 @@ function FieldCanvasImpl({
   }, [
     analyses,
     covers,
+    foundFoot,
+    foundPlaces,
     opening,
     cameraShared,
     displayFont,
@@ -993,6 +1010,9 @@ function useNativeCameraMotion(
 
 type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 
+/** The found shelf's last row: its words and the world point of its seat. */
+export type FoundFoot = Readonly<{ text: string; x: number; y: number }>;
+
 /** An arrival from the phone, as the canvas draws it. */
 export type FieldOpening = Readonly<{
   plan: OpeningPlan;
@@ -1002,6 +1022,8 @@ export type FieldOpening = Readonly<{
 
 type NativeFieldContentProps = Readonly<{
   opening: FieldOpening | null;
+  foundPlaces: ReadonlyMap<string, string> | null;
+  foundFoot: FoundFoot | null;
   lensClock: LensClock;
   reducedMotion: boolean;
   recut: FieldRecutModel;
@@ -2041,6 +2063,8 @@ function songDetailOf(
 }
 
 const NativeFieldContent = React.memo(function NativeFieldContent({
+  foundPlaces,
+  foundFoot,
   lensClock,
   reducedMotion,
   recut,
@@ -2336,11 +2360,14 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
               presentation.recipe,
               displayFont,
               monoFont,
+              isFoundGroup(flight.groupKey)
+                ? foundPlaces?.get(flight.entityKey) ?? null
+                : null,
             ),
           },
         ];
       }),
-    [recut, presentations, ink, displayFont, monoFont, opening],
+    [recut, presentations, ink, displayFont, monoFont, opening, foundPlaces],
   );
   const rowPaints = useMemo(
     () =>
@@ -2435,6 +2462,30 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         openingClock?.value ?? Infinity,
         recede,
       );
+      // The found shelf's last row, in the meta's face at the title's
+      // column, present as much as the gather is.
+      if (foundFoot !== null && recede !== null) {
+        const ink = recedeInkAt(recede, p >= 1 ? 1 : linearOfEased(p));
+        const present = Math.min(
+          Math.max((1 - ink) / (1 - GATHER_KNOBS.RECEDE_INK), 0),
+          1,
+        );
+        const alpha = present * motion.written.value * motion.fieldFade.value;
+        if (alpha > 0) {
+          rowPaints.meta.setAlphaf(alpha);
+          canvas.drawText(
+            foundFoot.text,
+            (foundFoot.x - rowCamera.x) * rowCamera.scale +
+              viewport.width / 2 -
+              NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX,
+            (foundFoot.y - rowCamera.y) * rowCamera.scale +
+              viewport.height / 2 +
+              NAME_LENS_KNOBS.ROW_TITLE_BASELINE_PX,
+            rowPaints.meta,
+            monoFont,
+          );
+        }
+      }
     }, viewport);
   });
   // Whatever in this re-cut is not a song is a job; one whose mark has not
@@ -2604,6 +2655,8 @@ function nativeRowModel(
   recipe: Parameters<typeof nameLensFacePath>[0],
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>,
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>,
+  /** A line said instead of the availability: a found row's place. */
+  metaOverride: string | null = null,
 ): NativeRowModel {
   const availability = availabilityOf(presentation.localAudio.state);
   // The action word is right-aligned against the row's edge and the title is
@@ -2639,7 +2692,11 @@ function nativeRowModel(
       // Cut to the same column as the title: `CACHED · MAY BE RECLAIMED` is
       // the longest line here and it must not run under the action word. A
       // device song's file was never downloaded: its line is who made it.
-      presentation.source === 'device'
+      // A found row says where it came from instead; its face's ink still
+      // says what is on the phone.
+      metaOverride !== null
+        ? metaOverride
+        : presentation.source === 'device'
         ? presentation.label.toUpperCase()
         : availabilityLine(
             {

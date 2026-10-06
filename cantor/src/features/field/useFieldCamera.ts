@@ -185,6 +185,12 @@ type Options = {
    */
   onClaimTap?: (placement: Placement) => boolean;
   /**
+   * A tap that landed on no mark, in world units, with the level it was
+   * made at: for what the screen draws on the field that is not a song —
+   * the found shelf's last row.
+   */
+  onTapNothing?: (world: Point, level: Level) => void;
+  /**
    * Which axis the layout is cut on — the arrangement, and for the date axis
    * its resolution. Leaving an axis remembers where on its map the camera
    * was, and coming back to it returns there; see `axisCameras`. Without it
@@ -365,6 +371,7 @@ export function useFieldCamera({
   onRowAction,
   onHoldPlacement,
   onClaimTap,
+  onTapNothing,
   axisKey,
   filtered = false,
   recutQuiet = false,
@@ -1846,7 +1853,17 @@ export function useFieldCamera({
         hitLevel,
         hitFitScale,
       );
-      if (hit === null) return;
+      if (hit === null) {
+        const at = cameraShared.value;
+        onTapNothing?.(
+          {
+            x: at.x + (point.x - size.width / 2) / at.scale,
+            y: at.y + (point.y - size.height / 2) / at.scale,
+          },
+          hitLevel,
+        );
+        return;
+      }
       // A job is a mark with nothing inside it: tapping one opens what it is
       // doing rather than flying the camera into an empty seat.
       if (onClaimTap?.(hit) === true) return;
@@ -1858,6 +1875,7 @@ export function useFieldCamera({
       descend,
       onClaimTap,
       onRowAction,
+      onTapNothing,
       renderedPlacements,
       viewport,
     ],
