@@ -89,3 +89,14 @@ const styles = StyleSheet.create({
  * this component's props do not depend on the camera.
  */
 export const FieldA11yList = React.memo(FieldA11yListImpl);
+
+/**
+ * The list, a render behind the field. Every re-cut hands it a new layout, and
+ * at the map it rebuilt an accessible element per placement in the same
+ * render that sends the field its cut — 43 ms on the Xiaomi's debug build when
+ * find gave the map back. A screen reader can hear the new layout a moment
+ * later; the eye cannot wait for it.
+ */
+export function DeferredA11yList(props: Props) {
+  return <FieldA11yList {...React.useDeferredValue(props)} />;
+}
