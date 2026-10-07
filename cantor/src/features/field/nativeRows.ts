@@ -4,6 +4,7 @@ import {
   flightOnScreen,
   gatherFaceInk,
   gatherNameAt,
+  nameHome,
   mapCameraAt,
   type GatherCameras,
   type Recede,
@@ -55,6 +56,8 @@ export type NativeRowModel = Readonly<{
 export type NativeRowFlight = Readonly<{
   flight: PlacementFlight;
   row: NativeRowModel;
+  /** A row leaving find's shelf, as it reads once its name is home. */
+  homeRow?: NativeRowModel;
   /**
    * The title's alpha when its ink last changed, reached by the arrival
    * clock; absent when nothing is arriving. See `arriveInk`.
@@ -128,7 +131,7 @@ export function drawNativeRows(
   const linear = recede === null ? progress : linearOfEased(progress);
   const mapCam =
     gather === null ? null : mapCameraAt(gather.map, recede, linear);
-  for (const { flight, row, titleFrom, openAt } of rows) {
+  for (const { flight, row: shelfRow, homeRow, titleFrom, openAt } of rows) {
     if (yieldKey !== null && flight.targetPlacementKey === yieldKey) continue;
     // In a gather a name has its face's window: it writes on at the seat
     // its face is landing in, erases where it stood, or rides along.
@@ -140,9 +143,14 @@ export function drawNativeRows(
         : timing.name === FLIGHT_NAME.WRITE
         ? 1
         : timing.name === FLIGHT_NAME.ERASE
-        ? 0
+        ? // Erased where it stood, then written back on at home.
+          nameHome(timing, linear)
+          ? 1
+          : 0
         : u;
     const named = gatherNameAt(timing, linear);
+    const row =
+      homeRow !== undefined && nameHome(timing, linear) ? homeRow : shelfRow;
     const owner =
       flightOwnerAlpha(
         flight.ownership,
