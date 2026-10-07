@@ -312,6 +312,11 @@ type Props = {
    * which captures an interrupted gather from it; see `DrawnClock`.
    */
   drawnClockShared?: SharedValue<DrawnClock>;
+  /**
+   * Filled with the canvas's way to send a cut before React renders it — a
+   * letter in find (`useFieldCamera`'s `recutNow`).
+   */
+  installRef?: { current: CutInstaller | null };
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   jobs?: ReadonlyMap<string, JobPresentation>;
@@ -497,6 +502,7 @@ function FieldCanvasImpl({
   cameraShared,
   fitScaleShared,
   drawnClockShared,
+  installRef,
   viewport,
   presentations: currentPresentations,
   jobs,
@@ -849,62 +855,95 @@ function FieldCanvasImpl({
     [labelFlights, monoFont, labelWidthPx],
   );
   const installed = useRef<number | null>(null);
+  /**
+   * Send a cut to the scene. From the layout effect below, after the render
+   * that carries it; or straight from a keystroke in find, before React has
+   * rendered it (`installRef`, `useFieldCamera`'s `recutNow`). A cut older
+   * than the one on the canvas is never sent: a render still carrying it
+   * would take the canvas back to it.
+   */
+  const sendCut = (
+    next: FieldRecutModel,
+    places: ReadonlyMap<string, string> | null,
+    foot: FoundFoot | null,
+  ) => {
+    if (monoFont === null) return;
+    if (installed.current !== null && next.generation < installed.current) {
+      return;
+    }
+    const fitted: Record<string, string> = {};
+    if (places !== null) {
+      for (const [key, text] of places) {
+        const song = songCache.current.get(key);
+        if (song !== undefined) {
+          fitted[key] = fitText(text, monoFont, song.draw.column);
+        }
+      }
+    }
+    const cutData: NativeCut = {
+      generation: next.generation,
+      animate: next.animate,
+      durationMs: next.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+      recut: {
+        fromCamera: next.fromCamera,
+        toCamera: next.toCamera,
+        fromFitScale: next.fromFitScale,
+        toFitScale: next.toFitScale,
+      },
+      recede: next.recede ?? null,
+      gather: next.gather ?? null,
+      flights: next.flights,
+      places: fitted,
+      // A find cut keeps the map's groups as they were, so the names on the
+      // canvas are already the right ones; the render plans them anew.
+      labels: preparedLabels,
+      hubs: mapFlights.hubs,
+      sections: mapFlights.sections,
+      foundFoot: foot,
+    };
+    const restart = installed.current !== next.generation;
+    if (seenGeneration.current !== next.generation) {
+      // Sent before its render: what that render's label plan is captured
+      // at, as the render would have read it; see `interruptedAt`.
+      interruptedAt.current =
+        seenGeneration.current === null ? 1 : scene.clock.value;
+      seenGeneration.current = next.generation;
+    }
+    installed.current = next.generation;
+    const cut = scene.cut;
+    const clock = scene.clock;
+    const install = () => {
+      'worklet';
+      cut.value = cutData;
+      if (!restart) return;
+      cancelAnimation(clock);
+      // A re-cut that does not animate lands at once, so reduced motion
+      // shows the new cut instead of one stale frame.
+      if (!cutData.animate) {
+        clock.value = 1;
+        return;
+      }
+      clock.value = 0;
+      clock.value = withTiming(1, {
+        duration: cutData.durationMs,
+        easing: nativeSmootherstep,
+      });
+    };
+    runOnUI(install)();
+  };
+  const sendCutRef = useRef(sendCut);
+  sendCutRef.current = sendCut;
+  if (installRef !== undefined) {
+    installRef.current = sendCut;
+  }
   // A layout effect, as the songs' is — that one is declared first, so a cut
   // never reaches the UI thread ahead of a song it names. The UI thread ran a
   // passive effect's install up to 56 ms after it was sent, behind the
   // commit's own view updates; a layout effect's, about one frame (measured
   // on the Xiaomi).
   useLayoutEffect(() => {
-    if (recut === null || monoFont === null) return;
-    const places: Record<string, string> = {};
-    if (foundPlaces !== null) {
-      for (const [key, text] of foundPlaces) {
-        const song = songCache.current.get(key);
-        if (song !== undefined) {
-          places[key] = fitText(text, monoFont, song.draw.column);
-        }
-      }
-    }
-    const next: NativeCut = {
-      generation: recut.generation,
-      animate: recut.animate,
-      durationMs: recut.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
-      recut: {
-        fromCamera: recut.fromCamera,
-        toCamera: recut.toCamera,
-        fromFitScale: recut.fromFitScale,
-        toFitScale: recut.toFitScale,
-      },
-      recede: recut.recede ?? null,
-      gather: recut.gather ?? null,
-      flights: recut.flights,
-      places,
-      labels: preparedLabels,
-      hubs: mapFlights.hubs,
-      sections: mapFlights.sections,
-      foundFoot,
-    };
-    const restart = installed.current !== recut.generation;
-    installed.current = recut.generation;
-    const cut = scene.cut;
-    const clock = scene.clock;
-    runOnUI(() => {
-      'worklet';
-      cut.value = next;
-      if (!restart) return;
-      cancelAnimation(clock);
-      // A re-cut that does not animate lands at once, so reduced motion
-      // shows the new cut instead of one stale frame.
-      if (!next.animate) {
-        clock.value = 1;
-        return;
-      }
-      clock.value = 0;
-      clock.value = withTiming(1, {
-        duration: next.durationMs,
-        easing: nativeSmootherstep,
-      });
-    })();
+    if (recut === null) return;
+    sendCutRef.current(recut, foundPlaces, foundFoot);
   }, [
     foundFoot,
     foundPlaces,
@@ -913,7 +952,6 @@ function FieldCanvasImpl({
     preparedLabels,
     presentations,
     recut,
-    scene,
   ]);
 
   /*
@@ -1161,6 +1199,13 @@ function levelsOf(analysis: SongAnalysis | undefined): readonly number[] {
  * one written below arrives as `undefined`. The same rule the band maths in
  * `bands.ts` is ordered by.
  */
+/** Send a cut to the canvas outside a render; see `FieldCanvas`'s `sendCut`. */
+export type CutInstaller = (
+  recut: FieldRecutModel,
+  places: ReadonlyMap<string, string> | null,
+  foot: FoundFoot | null,
+) => void;
+
 /** Before any cut is on the canvas: the clock reads 1, so the live camera. */
 const EMPTY_RECUT: NativeRecut = {
   fromCamera: { x: 0, y: 0, scale: 1 },

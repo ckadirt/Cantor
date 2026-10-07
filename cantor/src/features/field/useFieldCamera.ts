@@ -284,6 +284,8 @@ type CameraState = {
   fitScaleShared: SharedValue<number>;
   /** The canvas's clock for the re-cut it draws; see `DrawnClock`. */
   drawnClockShared: SharedValue<DrawnClock>;
+  /** Plan and start a re-cut before React renders it; see `recutNow`. */
+  recutNow: (layout: FieldLayout, finding: boolean) => FieldRecutModel | null;
   /** How far an edge pull has come, in screen pixels; see the shared value. */
   pullShared: SharedValue<number>;
   /** Where the blind is currently headed, or NaN while a finger owns it. */
@@ -1121,19 +1123,21 @@ export function useFieldCamera({
       y: Math.min(Math.max(kept.y, range.minY), range.maxY),
     };
   };
+  /** Whether `layout` is a re-cut of what the camera last planned. */
+  const recutWanted = (next: FieldLayout, nextFinding: boolean): boolean =>
+    recutModel.current === null ||
+    layoutsDiffer(recutModel.current.layout, next) ||
+    // Leaving a gather that holds nothing: the layout is the map's again
+    // already, but the map has to come forward and the camera go back.
+    (gatherMap.current !== null && !nextFinding);
   /*
-   * Diff and capture during render, following the motion engine's trigger
-   * ritual. The prop change itself creates a born generation at progress zero;
-   * no commit can therefore expose the new target under the old 1.0 clock.
+   * Diff and capture, following the motion engine's trigger ritual: during
+   * render, or — for a letter typed into find — from the keystroke itself,
+   * before React renders (`recutNow`). Either way the new model is born at
+   * progress zero; no commit can expose the new target under the old clock.
    */
-  if (
-    layout !== null &&
-    (recutModel.current === null ||
-      layoutsDiffer(recutModel.current.layout, layout) ||
-      // Leaving a gather that holds nothing: the layout is the map's again
-      // already, but the map has to come forward and the camera go back.
-      (gatherMap.current !== null && !finding))
-  ) {
+  // eslint-disable-next-line @typescript-eslint/no-shadow
+  const planRecut = (layout: FieldLayout, finding: boolean): void => {
     const previous = recutModel.current;
     const generation = (previous?.generation ?? 0) + 1;
     const firstLayout = previous === null;
@@ -1457,7 +1461,19 @@ export function useFieldCamera({
       gather,
     };
     if (stranded) strandedFocus.current = generation;
+  };
+  if (layout !== null && recutWanted(layout, finding)) {
+    planRecut(layout, finding);
   }
+  /**
+   * The latest render's planning, for the keystroke to plan with: the props
+   * a letter does not change (viewport, axis, filter) are this render's.
+   */
+  const planNow = useRef<{
+    wanted: typeof recutWanted;
+    plan: typeof planRecut;
+  } | null>(null);
+  planNow.current = { wanted: recutWanted, plan: planRecut };
 
   const activeRecut = recutModel.current;
   const recutBorn =
@@ -1545,11 +1561,16 @@ export function useFieldCamera({
     },
     [cameraShared, landRecut, pendingCut, recutProgress],
   );
+  // Whichever arrives second — the canvas drawing the cut, or the cut
+  // waiting for it — starts it.
   useAnimatedReaction(
-    () => drawnClock.value.generation,
-    drawn => {
+    () => ({
+      drawn: drawnClock.value.generation,
+      pending: pendingCut.value === null ? -1 : pendingCut.value.generation,
+    }),
+    now => {
       'worklet';
-      startPendingCut(drawn);
+      if (now.pending >= 0) startPendingCut(now.drawn);
     },
   );
   /**
@@ -1586,88 +1607,133 @@ export function useFieldCamera({
     },
   );
 
-  useEffect(() => {
-    const model = recutModel.current;
-    if (model === null) return;
-    const generation = model.generation;
-    if (absorbedFlight.current === generation) {
-      absorbedFlight.current = null;
-      cancelCameraFlight();
-    }
-    cancelRelayout();
-    if (!model.animate) {
-      nativeFlight.current = null;
-      commitCamera(model.toCamera);
-      fitScaleShared.value = model.toFitScale;
-      setRecutClock({ generation, linear: 1 });
-      return;
-    }
-    fitScaleShared.value = model.fromFitScale;
-    nativeFlight.current = generation;
-    setRecutClock({ generation, linear: 0 });
-    // React is not told about the frames between: the canvas plays the
-    // re-cut from its own clock, the reaction below moves the camera and fit
-    // on the UI thread, and React hears the landing.
-    recutEnds.value = {
-      fromCamera: model.fromCamera,
-      toCamera: model.toCamera,
-      fromFitScale: model.fromFitScale,
-      toFitScale: model.toFitScale,
-    };
-    if (model.gather != null) {
-      // A cut that moves the camera without a flight — find's gather,
-      // opening and leaving — is where the camera already is, for React
-      // too: the header names the place you are going, not the seats left
-      // behind.
-      const cut = !camerasDiffer(model.fromCamera, model.toCamera);
-      if (cut) tellCamera(model.toCamera);
-      /*
-       * The camera itself waits for the canvas. The scene still on screen
-       * until the new one is built is drawn through the live camera; cut it
-       * to the shelf at once and the map behind is drawn from the shelf's
-       * camera, over empty field, for the frames that takes — the flash on
-       * the first letter. Started with the canvas, the camera's clock is
-       * also the one the faces fly on.
-       */
-      pendingCut.value = {
-        generation,
+  /** The re-cut the camera has started, so it is started once. */
+  const startedRecut = useRef<number | null>(null);
+  /** A gather's start, should the canvas never say it is drawing. */
+  const pendingFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Start a planned re-cut: from the effect after the render that planned
+   * it, or from the keystroke that planned it before React rendered.
+   */
+  const startRecut = useCallback(
+    (model: FieldRecutModel) => {
+      const generation = model.generation;
+      if (startedRecut.current === generation) return;
+      startedRecut.current = generation;
+      if (pendingFallback.current !== null) {
+        clearTimeout(pendingFallback.current);
+        pendingFallback.current = null;
+      }
+      if (absorbedFlight.current === generation) {
+        absorbedFlight.current = null;
+        cancelCameraFlight();
+      }
+      cancelRelayout();
+      if (!model.animate) {
+        nativeFlight.current = null;
+        commitCamera(model.toCamera);
+        fitScaleShared.value = model.toFitScale;
+        setRecutClock({ generation, linear: 1 });
+        return;
+      }
+      fitScaleShared.value = model.fromFitScale;
+      nativeFlight.current = generation;
+      setRecutClock({ generation, linear: 0 });
+      // React is not told about the frames between: the canvas plays the
+      // re-cut from its own clock, the reaction below moves the camera and
+      // fit on the UI thread, and React hears the landing.
+      recutEnds.value = {
         fromCamera: model.fromCamera,
         toCamera: model.toCamera,
-        cut,
-        durationMs: model.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+        fromFitScale: model.fromFitScale,
+        toFitScale: model.toFitScale,
       };
-      // Should the canvas never say (it is not drawing), start anyway.
-      const fallback = setTimeout(
-        () => runOnUI(startPendingCut)(Number.MAX_SAFE_INTEGER),
-        FIELD_CAMERA_KNOBS.PENDING_CUT_MAX_MS,
+      if (model.gather != null) {
+        // A cut that moves the camera without a flight — find's gather,
+        // opening and leaving — is where the camera already is, for React
+        // too: the header names the place you are going, not the seats left
+        // behind.
+        const cut = !camerasDiffer(model.fromCamera, model.toCamera);
+        if (cut) tellCamera(model.toCamera);
+        /*
+         * The camera itself waits for the canvas. The scene still on screen
+         * until the new cut is drawn is drawn through the live camera; cut it
+         * to the shelf at once and the map behind is drawn from the shelf's
+         * camera, over empty field, for the frames that takes — the flash on
+         * the first letter. Started with the canvas, the camera's clock is
+         * also the one the faces fly on.
+         */
+        pendingCut.value = {
+          generation,
+          fromCamera: model.fromCamera,
+          toCamera: model.toCamera,
+          cut,
+          durationMs: model.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+        };
+        // Should the canvas never say (it is not drawing), start anyway.
+        pendingFallback.current = setTimeout(() => {
+          pendingFallback.current = null;
+          runOnUI(startPendingCut)(Number.MAX_SAFE_INTEGER);
+        }, FIELD_CAMERA_KNOBS.PENDING_CUT_MAX_MS);
+        return;
+      }
+      recutProgress.value = 0;
+      recutProgress.value = withTiming(
+        1,
+        {
+          duration: model.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+          easing: Easing.linear,
+        },
+        finished => {
+          'worklet';
+          if (finished === true) runOnJS(landRecut)(generation);
+        },
       );
-      return () => clearTimeout(fallback);
-    }
-    recutProgress.value = 0;
-    recutProgress.value = withTiming(
-      1,
-      {
-        duration: model.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
-        easing: Easing.linear,
-      },
-      finished => {
-        'worklet';
-        if (finished === true) runOnJS(landRecut)(generation);
-      },
-    );
-  }, [
-    activeRecut?.generation,
-    cancelCameraFlight,
-    cancelRelayout,
-    commitCamera,
-    fitScaleShared,
-    landRecut,
-    pendingCut,
-    recutEnds,
-    recutProgress,
-    startPendingCut,
-    tellCamera,
-  ]);
+    },
+    [
+      cancelCameraFlight,
+      cancelRelayout,
+      commitCamera,
+      fitScaleShared,
+      landRecut,
+      pendingCut,
+      recutEnds,
+      recutProgress,
+      startPendingCut,
+      tellCamera,
+    ],
+  );
+  useEffect(() => {
+    const model = recutModel.current;
+    if (model !== null) startRecut(model);
+  }, [activeRecut?.generation, startRecut]);
+  useEffect(
+    () => () => {
+      if (pendingFallback.current !== null) clearTimeout(pendingFallback.current);
+    },
+    [],
+  );
+  /**
+   * A re-cut planned and started from outside a render: a letter typed into
+   * find, before React has rendered it (`FieldScreen.changeQuery`). The
+   * render that follows hands the same layout and finds nothing to plan.
+   * Answers the model for the canvas to install, or null when `layout` is no
+   * re-cut of what the camera has.
+   */
+  const recutNow = useCallback(
+    (next: FieldLayout, nextFinding: boolean): FieldRecutModel | null => {
+      const planning = planNow.current;
+      if (planning === null || !planning.wanted(next, nextFinding)) return null;
+      findingRef.current = nextFinding;
+      layoutRef.current = next;
+      planning.plan(next, nextFinding);
+      const model = recutModel.current;
+      if (model === null) return null;
+      startRecut(model);
+      return model;
+    },
+    [startRecut],
+  );
 
   useEffect(
     () => () => {
@@ -2761,6 +2827,7 @@ export function useFieldCamera({
     focusKeyShared,
     fitScaleShared,
     drawnClockShared: drawnClock,
+    recutNow,
     pullShared,
     pullDestinationShared: pullDestination,
     descend,
