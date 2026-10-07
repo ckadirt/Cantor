@@ -643,3 +643,19 @@ does (`DeferredA11yList`: 43 ms debug when a re-cut hands it the whole map).
 The query field is therefore uncontrolled — a controlled value a render behind
 would write old letters back — and is cleared when find opens. After these,
 release measured 49–93 ms (≈70 typical) from key to the gather's first frame.
+
+**A letter is sent from the keystroke.** `FieldScreen.changeQuery` runs
+find's chain itself (`features/find/chain.ts`, through `findFor`, which caches
+one result per query and world), asks the camera to plan and start the cut
+(`useFieldCamera`'s `recutNow`: the render-time diff as a function, `planNow`,
+and `startRecut`, which starts a cut once), and hands it to the canvas
+(`installRef` → `sendCut`, which never sends a cut older than the one on the
+canvas). Then it sets the state; the render that follows reads the same cached
+layout, finds the cut already planned, and brings the chrome up to date. The
+state must be set in the same handler as `recutNow`: `recutNow` sets camera
+state too, and a render between them would see the new cut with the old
+layout and plan its way back. The camera's gather start watches both the
+canvas's drawn generation and its own pending cut — whichever arrives second
+starts it. Release, key → the cut's first recorded frame: 20–39 ms. What is
+left is the UI thread's own work for the keystroke (the text field), which a
+synchronous send (`executeOnUIRuntimeSync`) did not beat.
