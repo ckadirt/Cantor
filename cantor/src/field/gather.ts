@@ -215,6 +215,16 @@ export function foundKeysOf(layout: FieldLayout | null): readonly string[] {
   );
 }
 
+/**
+ * How a face on the found shelf stood when a cut interrupted the one carrying
+ * it there: how written its name was, its ink, and how far it had come from
+ * the map's picture to the shelf's. See `FlightTiming.nameFrom`.
+ */
+export type GatherHeld = Readonly<{ name: number; ink: number; side: number }>;
+
+/** A face that had landed on the shelf. */
+const LANDED: GatherHeld = { name: 1, ink: 1, side: 1 };
+
 /** A re-cut's flights with the gather's windows and bows, and its length. */
 export type GatherCut = Readonly<{
   flights: readonly PlacementFlight[];
@@ -246,6 +256,11 @@ export function planGatherCut(
    * and a cut that interrupts a recede starts from where it had got to.
    */
   recede?: Readonly<{ from: number; to: number }>,
+  /**
+   * How each face on the shelf stood when this cut interrupted the last, by
+   * entity (`GatherHeld`); one that is absent had landed.
+   */
+  held?: ReadonlyMap<string, GatherHeld>,
 ): GatherCut | null {
   if (
     before.length === 0 &&
@@ -277,6 +292,8 @@ export function planGatherCut(
     GATHER_KNOBS.RECEDE_MS,
   );
   const at = (ms: number) => ms / durationMs;
+  const recedeFrom =
+    recede?.from ?? (before.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1);
   const windowOf = (
     startMs: number,
     lengthMs: number,
@@ -284,6 +301,9 @@ export function planGatherCut(
     name: number,
     nameStartMs: number,
     nameEndMs: number,
+    // Arrivals come from the map; stayers and leavers from the shelf, as
+    // far as they had got to it.
+    from: GatherHeld | null,
   ): FlightTiming => ({
     start: at(startMs),
     end: at(startMs + lengthMs),
@@ -291,8 +311,10 @@ export function planGatherCut(
     name,
     nameStart: at(nameStartMs),
     nameEnd: at(nameEndMs),
-    // Arrivals come from the map; stayers and leavers from the shelf.
-    fromFound: name !== FLIGHT_NAME.WRITE,
+    fromFound: from !== null,
+    nameFrom: from?.name ?? 0,
+    inkFrom: from?.ink ?? recedeFrom,
+    sideFrom: from?.side ?? 0,
   });
   const timed = flights.map(flight => {
     const into = flight.groupKey === FOUND_GROUP_KEY;
@@ -308,15 +330,25 @@ export function planGatherCut(
         FLIGHT_NAME.WRITE,
         land,
         start + GATHER_KNOBS.FLIGHT_MS,
+        null,
       );
     } else if (into) {
+      const from = held?.get(entityKey) ?? LANDED;
+      // A stayer caught before its name was written finishes writing it as
+      // it lands, as an arrival's does; one that had landed rides.
+      const writing = from.name < 1;
+      const start = GATHER_KNOBS.CLOSE_RANKS_DELAY_MS;
+      const end = start + GATHER_KNOBS.CLOSE_RANKS_MS;
       timing = windowOf(
-        GATHER_KNOBS.CLOSE_RANKS_DELAY_MS,
+        start,
         GATHER_KNOBS.CLOSE_RANKS_MS,
         0,
-        FLIGHT_NAME.RIDE,
-        0,
-        0,
+        writing ? FLIGHT_NAME.WRITE : FLIGHT_NAME.RIDE,
+        writing
+          ? start + GATHER_KNOBS.CLOSE_RANKS_MS * GATHER_KNOBS.NAME_WRITE_FROM
+          : 0,
+        writing ? end : 0,
+        from,
       );
     } else if (
       leavingRank.has(entityKey) &&
@@ -332,6 +364,7 @@ export function planGatherCut(
         FLIGHT_NAME.ERASE,
         start,
         start + GATHER_KNOBS.NAME_ERASE_MS,
+        held?.get(entityKey) ?? LANDED,
       );
     }
     return timing === undefined ? flight : { ...flight, timing };
@@ -339,8 +372,7 @@ export function planGatherCut(
   return {
     flights: timed,
     durationMs,
-    recedeFrom:
-      recede?.from ?? (before.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1),
+    recedeFrom,
     recedeTo: recede?.to ?? (after.length > 0 ? GATHER_KNOBS.RECEDE_INK : 1),
     recedeEnd: Math.min(1, at(GATHER_KNOBS.RECEDE_MS)),
   };

@@ -80,6 +80,16 @@ export type FlightTiming = Readonly<{
    * flies between their pictures of it, on the screen.
    */
   fromFound: boolean;
+  /**
+   * How the face stood when its window opened, for a cut that interrupts
+   * another: how written its name was (0..1), its ink, and how far it had
+   * come from the map's picture to the shelf's (0 map, 1 shelf). A face
+   * caught before it landed resumes from there — not from a landed row, whose
+   * name and ink it never had on screen.
+   */
+  nameFrom: number;
+  inkFrom: number;
+  sideFrom: number;
 }>;
 
 /**

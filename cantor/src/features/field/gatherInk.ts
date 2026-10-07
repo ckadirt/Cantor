@@ -31,8 +31,9 @@ export function recedeInkAt(recede: Recede, linear: number): number {
 
 /**
  * One face's ink during a gather: the found shelf's in full, a face flying
- * in from the map brightening as it comes, one flying home fading to the
- * map's, and the map's otherwise. `progress` is the face's own, eased.
+ * in brightening from the ink it had as it comes, one flying home fading
+ * from its own to the map's, and the map's otherwise. `progress` is the
+ * face's own, eased.
  */
 export function gatherFaceInk(
   recede: Recede | null,
@@ -43,19 +44,19 @@ export function gatherFaceInk(
 ): number {
   'worklet';
   if (recede === null) return 1;
-  const name = timing == null ? FLIGHT_NAME.RIDE : timing.name;
   if (found) {
-    return name === FLIGHT_NAME.WRITE
-      ? recede.from + (1 - recede.from) * progress
-      : 1;
+    return timing == null ? 1 : timing.inkFrom + (1 - timing.inkFrom) * progress;
   }
-  if (name === FLIGHT_NAME.ERASE) return 1 + (recede.to - 1) * progress;
+  if (timing != null && timing.name === FLIGHT_NAME.ERASE) {
+    return timing.inkFrom + (recede.to - timing.inkFrom) * progress;
+  }
   return recedeInkAt(recede, linear);
 }
 
 /**
  * How much of a name is written, 0..1: written on in its window as its face
- * lands, erased in its window as its face leaves, whole otherwise.
+ * lands, erased in its window as its face leaves, whole otherwise — each
+ * from as written as it was when its window opened.
  */
 export function gatherNameAt(
   timing: FlightTiming | undefined | null,
@@ -67,7 +68,9 @@ export function gatherNameAt(
   const raw = span > 0 ? (linear - timing.nameStart) / span : linear >= timing.nameEnd ? 1 : 0;
   const t = raw < 0 ? 0 : raw > 1 ? 1 : raw;
   const eased = t * t * t * (t * (t * 6 - 15) + 10);
-  return timing.name === FLIGHT_NAME.WRITE ? eased : 1 - eased;
+  return timing.name === FLIGHT_NAME.WRITE
+    ? timing.nameFrom + (1 - timing.nameFrom) * eased
+    : timing.nameFrom * (1 - eased);
 }
 
 /**

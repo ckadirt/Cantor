@@ -4,6 +4,7 @@ import {
   Easing,
   cancelAnimation,
   runOnJS,
+  runOnUI,
   useAnimatedReaction,
   useReducedMotion,
   useSharedValue,
@@ -14,6 +15,8 @@ import { easeSmoother } from '../../motion';
 import { cameraSummary, type OriginFrame } from './cameraSummary';
 import {
   flightOnScreen,
+  gatherFaceInk,
+  gatherNameAt,
   mapCameraAt,
   recedeInkAt,
   screenToWorld,
@@ -49,6 +52,7 @@ import {
   GATHER_KNOBS,
   flightProgressAt,
   foundKeysOf,
+  linearOfEased,
   placementFlightAtClock,
   placementPoint,
   planGatherCut,
@@ -68,6 +72,7 @@ import {
   type Camera,
   type FieldLayout,
   type FlightAnchor,
+  type GatherHeld,
   type Group,
   type Level,
   type MapFrame,
@@ -83,6 +88,12 @@ import {
 export const FIELD_CAMERA_KNOBS = {
   CAMERA_FLIGHT_MS: 700,
   RELAYOUT_MS: 850,
+  /**
+   * The longest a gather's cut waits for the canvas to start drawing it
+   * before the camera starts without it. The phone builds a scene in about
+   * 130 ms (release) to 450 ms (debug).
+   */
+  PENDING_CUT_MAX_MS: 600,
   TAP_SLOP_PX: 8,
   /**
    * Hold acts. Long enough that a slow tap is still a tap and a pan that
@@ -271,6 +282,8 @@ type CameraState = {
   cameraShared: SharedValue<Camera>;
   focusKeyShared: SharedValue<string | null>;
   fitScaleShared: SharedValue<number>;
+  /** The canvas's clock for the re-cut it draws; see `DrawnClock`. */
+  drawnClockShared: SharedValue<DrawnClock>;
   /** How far an edge pull has come, in screen pixels; see the shared value. */
   pullShared: SharedValue<number>;
   /** Where the blind is currently headed, or NaN while a finger owns it. */
@@ -506,6 +519,18 @@ export function useFieldCamera({
    * next re-cut needs, once, if it interrupts this one (`liveCapture`).
    */
   const recutProgressCandidate = useSharedValue(1);
+  /**
+   * The canvas's own clock for the re-cut it is drawing, eased, and which
+   * re-cut that is. It starts once the canvas has built the new scene, which
+   * on the phone is a few hundred milliseconds after `recutProgress` does; a
+   * gather interrupted mid-flight is captured from this one, so the next cut
+   * starts from what was on the screen and not from where the faces would
+   * have been.
+   */
+  const drawnClockCandidate = useSharedValue<DrawnClock>({
+    generation: 0,
+    eased: 1,
+  });
   const recutEndsCandidate = useSharedValue<RecutEnds | null>(null);
   const flightFromCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const flightToCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
@@ -567,6 +592,16 @@ export function useFieldCamera({
   const pullDestination = useRef(pullDestinationCandidate).current;
   const shelfSeatsShared = useRef(shelfSeatsSharedCandidate).current;
   const recutProgress = useRef(recutProgressCandidate).current;
+  const drawnClock = useRef(drawnClockCandidate).current;
+  /**
+   * A gather's cut waiting for the canvas to draw it; see `PendingCut`.
+   * Until then the camera stays where the scene still on screen is drawn
+   * from.
+   */
+  const pendingCutCandidate = useSharedValue<PendingCut | null>(null);
+  const pendingCut = useRef(pendingCutCandidate).current;
+  /** How each face on the found shelf stood at the last capture; see `GatherHeld`. */
+  const capturedHeld = useRef<ReadonlyMap<string, GatherHeld>>(new Map());
   const recutEnds = useRef(recutEndsCandidate).current;
   const flightFrom = useRef(flightFromCandidate).current;
   const flightTo = useRef(flightToCandidate).current;
@@ -652,27 +687,34 @@ export function useFieldCamera({
    * re-cut — rather than on every frame of this one.
    */
   const liveCapture = useCallback((): readonly Placement[] => {
+    capturedHeld.current = new Map();
     const model = recutModel.current;
-    if (model === null || nativeFlight.current !== model.generation) {
-      return lastVisualPlacements.current;
-    }
-    const linear = Math.min(Math.max(recutProgress.value, 0), 1);
+    if (model === null) return lastVisualPlacements.current;
     const scale = cameraShared.value.scale;
     const gather = model.gather ?? null;
     if (gather === null || viewport === null) {
+      if (nativeFlight.current !== model.generation) {
+        return lastVisualPlacements.current;
+      }
+      const linear = Math.min(Math.max(recutProgress.value, 0), 1);
       return model.flights.map(flight =>
         placementFlightAtClock(flight, linear, scale),
       );
     }
+    // A gather is where the canvas has drawn it, which can be behind the
+    // camera's clock, or not begun at all.
+    const linear = drawnLinear(drawnClock.value, model);
+    if (linear >= 1) return lastVisualPlacements.current;
+    const held = new Map<string, GatherHeld>();
     /*
      * A gather's faces fly between two cameras' pictures of them, so where
      * one is is a point on the screen. It is kept as the world point the
      * next cut will draw it from: through the real camera for a face headed
      * for the shelf, through the map's for one headed home.
      */
-    const real = cameraShared.value;
+    const real = pendingCut.value?.fromCamera ?? cameraShared.value;
     const map = mapCameraAt(gather.map, model.recede ?? null, linear);
-    return model.flights.map(flight => {
+    const captured = model.flights.map(flight => {
       const placed = placementFlightAtClock(flight, linear, scale);
       const timing = flight.timing;
       if (timing === undefined) return placed;
@@ -680,6 +722,13 @@ export function useFieldCamera({
       const source = timing.fromFound ? gather.fromShelf ?? real : map;
       const target = toFound ? gather.toShelf ?? real : map;
       const progress = flightProgressAt(timing, linear);
+      if (toFound) {
+        held.set(flight.entityKey, {
+          name: gatherNameAt(timing, linear),
+          ink: gatherFaceInk(model.recede ?? null, linear, timing, true, progress),
+          side: timing.sideFrom + (1 - timing.sideFrom) * progress,
+        });
+      }
       const point = flightOnScreen(
         flight.fromX,
         flight.fromY,
@@ -699,7 +748,26 @@ export function useFieldCamera({
       const world = screenToWorld(point.x, point.y, toFound ? real : map, viewport);
       return { ...placed, x: world.x, y: world.y, bloomX: 0, bloomY: 0 };
     });
-  }, [cameraShared, recutProgress, viewport]);
+    capturedHeld.current = held;
+    return captured;
+  }, [cameraShared, drawnClock, pendingCut, recutProgress, viewport]);
+  /**
+   * Tell React, and the chrome on the UI thread, where the camera is going,
+   * ahead of the camera itself; see `commitCamera`.
+   */
+  const tellCamera = useCallback(
+    (next: Camera) => {
+      cameraRef.current = next;
+      summaryShared.value = cameraSummary(
+        next,
+        fitScaleShared.value,
+        shelfSeatsShared.value,
+        originShared.value,
+      );
+      setCameraState(next);
+    },
+    [fitScaleShared, originShared, shelfSeatsShared, summaryShared],
+  );
   const commitCamera = useCallback(
     (next: Camera) => {
       cameraRef.current = next;
@@ -867,7 +935,8 @@ export function useFieldCamera({
   }, []);
   const cancelRelayout = useCallback(() => {
     cancelAnimation(recutProgress);
-  }, [recutProgress]);
+    pendingCut.value = null;
+  }, [pendingCut, recutProgress]);
   const cancelGesture = useCallback(() => {
     cancelCameraFlight();
     pinching.value = false;
@@ -1071,7 +1140,7 @@ export function useFieldCamera({
     const fromFitScale = renderedFit(previous?.toFitScale ?? layout.fitScale);
     const fromCamera = firstLayout
       ? levelCameraTarget('field', layout) ?? EMPTY_CAMERA
-      : cameraShared.value;
+      : pendingCut.value?.fromCamera ?? cameraShared.value;
     /*
      * The song you are standing in can leave the field under you: forgetting
      * an engine takes its songs while you may be reading one.
@@ -1328,9 +1397,9 @@ export function useFieldCamera({
         from:
           was === null
             ? 1
-            : nativeFlight.current === previous?.generation
-            ? recedeInkAt(was, Math.min(Math.max(recutProgress.value, 0), 1))
-            : was.to,
+            : previous === null
+            ? was.to
+            : recedeInkAt(was, drawnLinear(drawnClock.value, previous)),
         to: finding ? GATHER_KNOBS.RECEDE_INK : 1,
       };
     }
@@ -1346,7 +1415,13 @@ export function useFieldCamera({
     const gatherCut =
       gather === null
         ? null
-        : planGatherCut(planned, foundBefore, foundAfter, recedeEnds);
+        : planGatherCut(
+            planned,
+            foundBefore,
+            foundAfter,
+            recedeEnds,
+            capturedHeld.current,
+          );
     const flights = gatherCut?.flights ?? planned;
     const fromGroups = previous?.layout.groups ?? [];
     const animate =
@@ -1448,6 +1523,36 @@ export function useFieldCamera({
     [commitCamera],
   );
   /**
+   * Start a gather's waiting cut once the canvas draws `drawn` or a later
+   * re-cut: the camera cuts, and the re-cut's clock starts with the faces'.
+   */
+  const startPendingCut = useCallback(
+    (drawn: number) => {
+      'worklet';
+      const pending = pendingCut.value;
+      if (pending === null || drawn < pending.generation) return;
+      pendingCut.value = null;
+      if (pending.cut) cameraShared.value = pending.toCamera;
+      recutProgress.value = 0;
+      recutProgress.value = withTiming(
+        1,
+        { duration: pending.durationMs, easing: Easing.linear },
+        finished => {
+          'worklet';
+          if (finished === true) runOnJS(landRecut)(pending.generation);
+        },
+      );
+    },
+    [cameraShared, landRecut, pendingCut, recutProgress],
+  );
+  useAnimatedReaction(
+    () => drawnClock.value.generation,
+    drawn => {
+      'worklet';
+      startPendingCut(drawn);
+    },
+  );
+  /**
    * The re-cut's camera and fit, one frame at a time on the UI thread.
    *
    * The same curves a camera flight uses (see the reaction on
@@ -1500,15 +1605,6 @@ export function useFieldCamera({
     fitScaleShared.value = model.fromFitScale;
     nativeFlight.current = generation;
     setRecutClock({ generation, linear: 0 });
-    // A cut that moves the camera without a flight — find's gather, opening
-    // and leaving — is where the camera already is, for React too: the
-    // header names the place you are going, not the seats left behind.
-    if (
-      model.gather != null &&
-      !camerasDiffer(model.fromCamera, model.toCamera)
-    ) {
-      commitCamera(model.toCamera);
-    }
     // React is not told about the frames between: the canvas plays the
     // re-cut from its own clock, the reaction below moves the camera and fit
     // on the UI thread, and React hears the landing.
@@ -1518,6 +1614,35 @@ export function useFieldCamera({
       fromFitScale: model.fromFitScale,
       toFitScale: model.toFitScale,
     };
+    if (model.gather != null) {
+      // A cut that moves the camera without a flight — find's gather,
+      // opening and leaving — is where the camera already is, for React
+      // too: the header names the place you are going, not the seats left
+      // behind.
+      const cut = !camerasDiffer(model.fromCamera, model.toCamera);
+      if (cut) tellCamera(model.toCamera);
+      /*
+       * The camera itself waits for the canvas. The scene still on screen
+       * until the new one is built is drawn through the live camera; cut it
+       * to the shelf at once and the map behind is drawn from the shelf's
+       * camera, over empty field, for the frames that takes — the flash on
+       * the first letter. Started with the canvas, the camera's clock is
+       * also the one the faces fly on.
+       */
+      pendingCut.value = {
+        generation,
+        fromCamera: model.fromCamera,
+        toCamera: model.toCamera,
+        cut,
+        durationMs: model.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+      };
+      // Should the canvas never say (it is not drawing), start anyway.
+      const fallback = setTimeout(
+        () => runOnUI(startPendingCut)(Number.MAX_SAFE_INTEGER),
+        FIELD_CAMERA_KNOBS.PENDING_CUT_MAX_MS,
+      );
+      return () => clearTimeout(fallback);
+    }
     recutProgress.value = 0;
     recutProgress.value = withTiming(
       1,
@@ -1537,8 +1662,11 @@ export function useFieldCamera({
     commitCamera,
     fitScaleShared,
     landRecut,
+    pendingCut,
     recutEnds,
     recutProgress,
+    startPendingCut,
+    tellCamera,
   ]);
 
   useEffect(
@@ -2632,6 +2760,7 @@ export function useFieldCamera({
     cameraShared,
     focusKeyShared,
     fitScaleShared,
+    drawnClockShared: drawnClock,
     pullShared,
     pullDestinationShared: pullDestination,
     descend,
@@ -2642,6 +2771,35 @@ export function useFieldCamera({
     home,
     cancelGesture,
   };
+}
+
+/**
+ * A gather's re-cut, planned and waiting for the canvas to start drawing it:
+ * the camera it starts from (where the next cut finds it, meanwhile), the one
+ * it ends at, whether it cuts there, and its length.
+ */
+type PendingCut = Readonly<{
+  generation: number;
+  fromCamera: Camera;
+  toCamera: Camera;
+  cut: boolean;
+  durationMs: number;
+}>;
+
+/** The canvas's own clock for one re-cut, eased, and which re-cut it is. */
+export type DrawnClock = Readonly<{ generation: number; eased: number }>;
+
+/**
+ * The linear time the canvas has drawn a re-cut to: 0 while it has not begun
+ * drawing it, and 1 for one that does not animate.
+ */
+function drawnLinear(
+  clock: DrawnClock,
+  model: Readonly<{ generation: number; animate: boolean }>,
+): number {
+  if (!model.animate) return 1;
+  if (clock.generation !== model.generation) return 0;
+  return linearOfEased(Math.min(Math.max(clock.eased, 0), 1));
 }
 
 /**

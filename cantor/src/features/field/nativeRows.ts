@@ -158,7 +158,9 @@ export function drawNativeRows(
     // Which camera each end of the row is drawn through, in a gather.
     const toFound = isFoundGroup(flight.groupKey);
     const fromFound = timing !== undefined && timing.fromFound;
-    const side = mapCam === null ? 1 : (fromFound ? 1 : 0) + ((toFound ? 1 : 0) - (fromFound ? 1 : 0)) * at;
+    const sideFrom = timing === undefined ? 0 : timing.sideFrom;
+    const side =
+      mapCam === null ? 1 : sideFrom + ((toFound ? 1 : 0) - sideFrom) * at;
     const rowWritten =
       mapCam === null
         ? written

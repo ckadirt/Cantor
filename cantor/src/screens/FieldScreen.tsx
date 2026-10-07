@@ -2619,6 +2619,7 @@ export function FieldScreen({ identity }: Props) {
                 controllerStore={controllerStore}
                 cameraShared={fieldCamera.cameraShared}
                 fitScaleShared={fieldCamera.fitScaleShared}
+                drawnClockShared={fieldCamera.drawnClockShared}
                 layout={layout}
                 labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}
