@@ -36,9 +36,9 @@ import {
 import {
   audioRefOf,
   axisNoun,
-  FieldA11yList,
+  DeferredA11yList,
   FieldCanvas,
-  FieldOverlay,
+  FindDeferredOverlay,
   FieldMargin,
   FieldRail,
   OriginMark,
@@ -2672,7 +2672,7 @@ export function FieldScreen({ identity }: Props) {
         ) : null}
         {layout !== null ? (
           <>
-            <FieldA11yList
+            <DeferredA11yList
               focus={fieldCamera.focus}
               layout={layout}
               level={fieldCamera.level}
@@ -2816,7 +2816,7 @@ export function FieldScreen({ identity }: Props) {
             />
           </View>
         ) : null}
-        <FieldOverlay
+        <FindDeferredOverlay
           arrangementKey={arrangementKey}
           cameraShared={fieldCamera.cameraShared}
           fitScaleShared={fieldCamera.fitScaleShared}

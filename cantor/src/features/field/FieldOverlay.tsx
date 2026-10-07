@@ -646,9 +646,6 @@ function FieldOverlayImpl({
   const inFind = finding !== null;
   const reducedMotion = useReducedMotion();
   const query = useRef<TextInput>(null);
-  // The query fades out as it was, not as an empty field's placeholder.
-  const lastQuery = useRef('');
-  if (finding !== null) lastQuery.current = finding.query;
   const crossing = useSharedValue(inFind ? 1 : 0);
   useEffect(() => {
     crossing.value = reducedMotion
@@ -660,6 +657,9 @@ function FieldOverlayImpl({
           easing: Easing.linear,
         });
     if (inFind) {
+      // The field holds its own text (see the input below): a new find
+      // starts empty.
+      query.current?.clear();
       query.current?.focus();
     } else {
       query.current?.blur();
@@ -826,7 +826,12 @@ function FieldOverlayImpl({
               returnKeyType="search"
               selectionColor={pal.line}
               style={[queryStyle, styles.query, { color: pal.ink }]}
-              value={finding?.query ?? lastQuery.current}
+              // Uncontrolled: the field is the query's one owner, and React
+              // hears it. While typing, the overlay renders a step behind the
+              // field (`FindDeferredOverlay`), and a controlled value a step
+              // behind would write old letters back. Left as it was on
+              // leaving, so the query fades out as typed.
+              defaultValue=""
             />
           </Animated.View>
         </View>
@@ -1426,3 +1431,19 @@ const styles = StyleSheet.create({
  * this component's props do not depend on the camera.
  */
 export const FieldOverlay = React.memo(FieldOverlayImpl);
+
+/**
+ * The overlay, a render behind while a query is being typed.
+ *
+ * A letter in find re-renders the screen to send the field its cut, and the
+ * overlay's subtree was a third of that render (10–12 ms on the Xiaomi's debug
+ * build) for chrome that can follow a frame later: the count, the eyebrow,
+ * the foot. Deferred, the overlay keeps the props it had through the urgent
+ * render, which commits the cut, and takes the new ones in the render after.
+ * Opening and leaving find are not deferred: the title line crosses at once.
+ */
+export function FindDeferredOverlay(props: Props) {
+  const deferred = useDeferredValue(props);
+  const typing = props.finding !== null && deferred.finding !== null;
+  return <FieldOverlay {...(typing ? deferred : props)} />;
+}
