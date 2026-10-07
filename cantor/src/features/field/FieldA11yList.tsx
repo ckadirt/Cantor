@@ -30,9 +30,13 @@ function FieldA11yListImpl({
   return (
     <View accessible={false} style={styles.root}>
       {level === 'field'
-        ? layout.groups.map(group => (
+        ? layout.groups.map((group, index) => (
             <Pressable
-              key={`group:${group.key}`}
+              // By position, not by group: these are invisible targets, and a
+              // re-cut that renamed every key (an axis change does — a
+              // placement's key carries its arrangement) remounted every one
+              // of them in one frame, ~25 ms of view creation mid-flight.
+              key={`group:${index}`}
               accessibilityHint="Opens this week of songs"
               accessibilityLabel={`${group.label}, ${group.entityKeys.length} songs`}
               accessibilityRole="button"
@@ -46,7 +50,7 @@ function FieldA11yListImpl({
             />
           ))
         : null}
-      {visible.map(placement => {
+      {visible.map((placement, index) => {
         const presentation = presentations.get(placement.entityKey);
         const group = layout.groups.find(
           candidate => candidate.key === placement.groupKey,
@@ -54,7 +58,7 @@ function FieldA11yListImpl({
         if (presentation === undefined || group === undefined) return null;
         return (
           <Pressable
-            key={placement.key}
+            key={`song:${index}`}
             accessibilityHint={
               level === 'field'
                 ? 'Opens this song group'
