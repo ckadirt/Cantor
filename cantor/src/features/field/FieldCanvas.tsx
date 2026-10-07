@@ -16,6 +16,15 @@ import {
   type Recede,
 } from './gatherInk';
 import { drawNativeJobs, type JobMark } from './nativeJobs';
+import {
+  joinFaces,
+  joinJobs,
+  joinRows,
+  type FocusDraw,
+  type NativeCut,
+  type NativeRecut,
+  type SongDraw,
+} from './livingScene';
 import { useHubCovers } from './useCover';
 import {
   createMapPaints,
@@ -24,8 +33,6 @@ import {
   drawSections,
   planHubFlights,
   planSectionFlights,
-  type HubFlight,
-  type SectionFlight,
 } from './nativeMap';
 import {
   ARRIVAL_KNOBS,
@@ -33,6 +40,7 @@ import {
   mix,
   songInkOf,
   type InkArrival,
+  type SongInk,
 } from './arrivals';
 import { openedAt, type OpeningPlan } from './opening';
 import {
@@ -42,7 +50,7 @@ import {
 } from './nativeRows';
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import { lensWeight, useLensClock, type LensClock } from './lensClock';
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { StyleSheet } from 'react-native';
 import {
   Canvas,
@@ -67,6 +75,7 @@ import {
   cancelAnimation,
   Easing,
   useReducedMotion,
+  runOnUI,
   useAnimatedReaction,
   useDerivedValue,
   useSharedValue,
@@ -131,7 +140,6 @@ import {
   type CoverArt,
 } from '../../lenses';
 import { easeSmoother } from '../../motion';
-import { bornClock } from '../../motion/clock';
 import { useMorphFont } from '../../motion/fonts';
 import { writePhase, writeSubAlpha } from '../../motion/text';
 import { titleTracePaths, traceTitlePath } from './titleTrace';
@@ -565,33 +573,35 @@ function FieldCanvasImpl({
     fontFamily: font.mono,
     fontSize: textType.eyebrow.fontSize,
   });
-  // House rule 5: born clocks, generation keys. A clock shared across
-  // generations could advance while the outgoing
-  // generation's mappers are still installed — `useDerivedValue` restarts them
-  // from a *passive* effect, one scheduling step later — so the outgoing tree
-  // reads the newborn clock for a frame and paints its own source pose. Tap
-  // the dial back and forth and that pose is the arrangement you are returning
-  // to: the destination, flashed once before the animation starts.
-  const clockPlan = useRef<{
-    generation: number;
-    clock: SharedValue<number>;
-  } | null>(null);
+  /*
+   * The living scene's shared values (`livingScene.ts`): made once, for the
+   * canvas's life. Native shared values are stable; the Jest mock is not, so
+   * each is held by ref, as `useFieldCamera` holds its own.
+   */
+  const sceneCandidate: LivingScene = {
+    cut: useSharedValue<NativeCut | null>(null),
+    clock: useSharedValue(1),
+    songs: useSharedValue<Readonly<Record<string, SongDraw>>>({}),
+    focus: useSharedValue<FocusDraw | null>(null),
+    playing: useSharedValue<string | null>(null),
+    inkFrom: useSharedValue<Readonly<Record<string, SongInk>>>({}),
+    inkClock: useSharedValue(1),
+    openAt: useSharedValue<Readonly<Record<string, number>>>({}),
+    soundClock: useSharedValue(1),
+  };
+  const scene = useRef(sceneCandidate).current;
   /**
    * Where the outgoing re-cut's clock stood when the next one was born: 1 if
    * it had landed. This is what the canvas drew the labels at, so it is what
    * an interrupted label plan is captured at (`retargetShelfLabelFlights`).
    */
   const interruptedAt = useRef(1);
-  if (recut !== null && clockPlan.current?.generation !== recut.generation) {
-    interruptedAt.current = clockPlan.current?.clock.value ?? 1;
-    // A re-cut that does not animate is born finished rather than born at its
-    // source, so reduced motion shows the new cut instead of one stale frame.
-    clockPlan.current = {
-      generation: recut.generation,
-      clock: bornClock(recut.animate ? 0 : 1),
-    };
+  const seenGeneration = useRef<number | null>(null);
+  if (recut !== null && seenGeneration.current !== recut.generation) {
+    interruptedAt.current =
+      seenGeneration.current === null ? 1 : scene.clock.value;
+    seenGeneration.current = recut.generation;
   }
-  const nativeClock = clockPlan.current?.clock ?? null;
   /**
    * The label transition, planned once per re-cut.
    *
@@ -745,6 +755,294 @@ function FieldCanvasImpl({
     [cameraShared, fitScaleShared, palette.bg, viewport, browsing],
   );
 
+  /*
+   * Every song's drawing, sent to the UI thread when it changes and only
+   * then: a re-cut moves songs, it does not redraw them. Ink that changes
+   * while you look — a file found at launch, a download landing — arrives on
+   * the scene's ink clock, restarted with the songs it moves in one UI task.
+   */
+  const songCache = useRef(
+    new Map<string, { presentation: FieldPresentation; draw: SongDraw }>(),
+  );
+  const lastInk = useRef<InkArrival | null>(null);
+  useLayoutEffect(() => {
+    if (displayFont === null || monoFont === null) return;
+    const cache = songCache.current;
+    const changed: Record<string, SongDraw> = {};
+    let any = false;
+    for (const [key, presentation] of presentations) {
+      const kept = cache.get(key);
+      if (
+        kept !== undefined &&
+        (kept.presentation === presentation ||
+          sameDrawnSong(kept.presentation, presentation))
+      ) {
+        continue;
+      }
+      const draw = songDrawOf(presentation, displayFont, monoFont);
+      cache.set(key, { presentation, draw });
+      changed[key] = draw;
+      any = true;
+    }
+    const removed: string[] = [];
+    for (const key of [...cache.keys()]) {
+      if (presentations.has(key)) continue;
+      cache.delete(key);
+      removed.push(key);
+    }
+    const ink = arriveInk(lastInk.current, presentations);
+    const arriving = ink !== lastInk.current && ink.clock !== null;
+    // The arrival runs on the scene's ink clock, so the next one reads where
+    // this one has got to from it.
+    lastInk.current = arriving ? { ...ink, clock: scene.inkClock } : ink;
+    if (!any && removed.length === 0 && !arriving) return;
+    const from = arriving ? Object.fromEntries(ink.from) : null;
+    const songs = scene.songs;
+    const inkFrom = scene.inkFrom;
+    const inkClock = scene.inkClock;
+    runOnUI(() => {
+      'worklet';
+      // A copy made here, on the UI thread, crosses nothing: only the songs
+      // that changed were sent.
+      const next: Record<string, SongDraw> = { ...songs.value, ...changed };
+      for (let index = 0; index < removed.length; index++) {
+        delete next[removed[index]];
+      }
+      songs.value = next;
+      if (from !== null) {
+        inkFrom.value = from;
+        cancelAnimation(inkClock);
+        inkClock.value = 0;
+        inkClock.value = withTiming(1, {
+          duration: ARRIVAL_KNOBS.INK_MS,
+          easing: easeSmoother,
+        });
+      }
+    })();
+  }, [displayFont, monoFont, presentations, scene]);
+  useEffect(() => {
+    scene.playing.value = playingKey;
+  }, [playingKey, scene]);
+  useEffect(() => {
+    scene.openAt.value =
+      opening === null ? {} : Object.fromEntries(opening.plan.at);
+  }, [opening, scene]);
+  // The arrival's own clock while there is one, and the last one after: it
+  // has run past every song by then, as an absent one reads.
+  const openingFallback = useSharedValue(Infinity);
+  const lastOpeningClock = useRef(opening?.clock ?? openingFallback);
+  lastOpeningClock.current = opening?.clock ?? lastOpeningClock.current;
+  const openingClock = lastOpeningClock.current;
+
+  /*
+   * The cut, sent as plain data and installed with its clock in one UI task:
+   * the frame that first reads the new cut reads its clock at the start, and
+   * no frame pairs one cut's data with another's clock. That is house rule 5,
+   * kept without building a scene per cut.
+   */
+  const labelWidthPx = labelMaxWidthPx(viewport);
+  const preparedLabels = useMemo(
+    () =>
+      monoFont === null
+        ? []
+        : prepareNativeLabels(labelFlights ?? [], monoFont, labelWidthPx),
+    [labelFlights, monoFont, labelWidthPx],
+  );
+  const installed = useRef<number | null>(null);
+  // A layout effect, as the songs' is — that one is declared first, so a cut
+  // never reaches the UI thread ahead of a song it names. The UI thread ran a
+  // passive effect's install up to 56 ms after it was sent, behind the
+  // commit's own view updates; a layout effect's, about one frame (measured
+  // on the Xiaomi).
+  useLayoutEffect(() => {
+    if (recut === null || monoFont === null) return;
+    const places: Record<string, string> = {};
+    if (foundPlaces !== null) {
+      for (const [key, text] of foundPlaces) {
+        const song = songCache.current.get(key);
+        if (song !== undefined) {
+          places[key] = fitText(text, monoFont, song.draw.column);
+        }
+      }
+    }
+    const next: NativeCut = {
+      generation: recut.generation,
+      animate: recut.animate,
+      durationMs: recut.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
+      recut: {
+        fromCamera: recut.fromCamera,
+        toCamera: recut.toCamera,
+        fromFitScale: recut.fromFitScale,
+        toFitScale: recut.toFitScale,
+      },
+      recede: recut.recede ?? null,
+      gather: recut.gather ?? null,
+      flights: recut.flights,
+      places,
+      labels: preparedLabels,
+      hubs: mapFlights.hubs,
+      sections: mapFlights.sections,
+      foundFoot,
+    };
+    const restart = installed.current !== recut.generation;
+    installed.current = recut.generation;
+    const cut = scene.cut;
+    const clock = scene.clock;
+    runOnUI(() => {
+      'worklet';
+      cut.value = next;
+      if (!restart) return;
+      cancelAnimation(clock);
+      // A re-cut that does not animate lands at once, so reduced motion
+      // shows the new cut instead of one stale frame.
+      if (!next.animate) {
+        clock.value = 1;
+        return;
+      }
+      clock.value = 0;
+      clock.value = withTiming(1, {
+        duration: next.durationMs,
+        easing: nativeSmootherstep,
+      });
+    })();
+  }, [
+    foundFoot,
+    foundPlaces,
+    mapFlights,
+    monoFont,
+    preparedLabels,
+    presentations,
+    recut,
+    scene,
+  ]);
+
+  /*
+   * The focus: the one song the camera is in, whose face grows into the
+   * player. Its player models go to the faces' join; its flight, row and
+   * detail mount as the focus layer, keyed by the cut and the song.
+   */
+  const focusFlight = useMemo(
+    () =>
+      focusKey === null || recut === null
+        ? null
+        : recut.flights.find(flight => flight.targetPlacementKey === focusKey) ??
+          null,
+    [focusKey, recut],
+  );
+  const focusEntity = focusFlight?.entityKey ?? null;
+  const focusPresentation =
+    focusEntity === null ? undefined : presentations.get(focusEntity);
+  const focusAnalysis =
+    focusEntity === null ? undefined : analyses?.get(focusEntity);
+  const focusCover =
+    focusEntity === null ? null : covers?.get(focusEntity) ?? null;
+  const focusDraw = useMemo<FocusDraw | null>(
+    () =>
+      focusKey === null || focusPresentation === undefined
+        ? null
+        : {
+            placementKey: focusKey,
+            players: LENSES.map(lens =>
+              lens.player(focusPresentation.recipe, focusAnalysis, focusCover),
+            ),
+            seconds: focusPresentation.durationMs / 1000,
+          },
+    [focusAnalysis, focusCover, focusKey, focusPresentation],
+  );
+  /**
+   * The songs whose sound has already been shown, so a measurement that lands
+   * while you are looking rises into the seal rather than appearing in it —
+   * which it would otherwise do mid-descent, since a song is measured as it
+   * opens.
+   */
+  const soundShown = useRef(new Set<string>());
+  useEffect(() => {
+    const key = focusPresentation?.entity.key;
+    const rising =
+      focusDraw !== null &&
+      key !== undefined &&
+      !soundShown.current.has(key) &&
+      focusDraw.players.some(model => model !== null && model.sound != null);
+    if (rising && key !== undefined) soundShown.current.add(key);
+    const focus = scene.focus;
+    const soundClock = scene.soundClock;
+    const duration = reducedMotion ? 0 : SEAL_PLAYER_KNOBS.SOUND_MS;
+    runOnUI(() => {
+      'worklet';
+      focus.value = focusDraw;
+      if (!rising) return;
+      cancelAnimation(soundClock);
+      soundClock.value = 0;
+      soundClock.value = withTiming(1, { duration, easing: Easing.linear });
+    })();
+  }, [focusDraw, focusPresentation, reducedMotion, scene]);
+  const focusLayer = useMemo<FocusLayer | null>(() => {
+    if (
+      recut === null ||
+      focusFlight === null ||
+      focusPresentation === undefined ||
+      displayFont === null ||
+      monoFont === null ||
+      songTitleFont === null ||
+      songMetaFont === null
+    ) {
+      return null;
+    }
+    const row = nativeRowModel(
+      focusPresentation,
+      focusPresentation.recipe,
+      displayFont,
+      monoFont,
+    );
+    return {
+      key: `${recut.generation}:${focusFlight.key}`,
+      generation: recut.generation,
+      recut: {
+        fromCamera: recut.fromCamera,
+        toCamera: recut.toCamera,
+        fromFitScale: recut.fromFitScale,
+        toFitScale: recut.toFitScale,
+      },
+      flight: focusFlight,
+      row,
+      titleFrom:
+        lastInk.current?.from.get(focusFlight.entityKey)?.title ??
+        row.titleAlpha,
+      song: nativeSongModel(
+        focusPresentation,
+        viewport,
+        row.title,
+        row.meta,
+        row.action === null ? 0 : textWidth(row.action, monoFont),
+        {
+          rowTitle: displayFont,
+          songTitle: songTitleFont,
+          rowMeta: monoFont,
+          songMeta: songMetaFont,
+        },
+      ),
+      detail: songDetailOf(
+        recut.flights,
+        presentations,
+        analyses,
+        focusKey,
+      ),
+      durationSeconds: focusPresentation.durationMs / 1000,
+    };
+  }, [
+    analyses,
+    displayFont,
+    focusFlight,
+    focusKey,
+    focusPresentation,
+    monoFont,
+    presentations,
+    recut,
+    songMetaFont,
+    songTitleFont,
+    viewport,
+  ]);
+
   /**
    * The scene element, held by identity.
    *
@@ -759,14 +1057,14 @@ function FieldCanvasImpl({
    * for a frame. A pan mirrors a camera into React, a playing song ticks the
    * playhead, a library refresh lands — each was a flicker.
    *
-   * Nothing here reads the camera: the scene is a function of the re-cut, and
-   * the camera reaches it through `cameraShared` on the UI thread. So the
-   * element only has to change when the re-cut does.
+   * Nothing here reads the camera or the cut: both reach the scene through
+   * shared values on the UI thread. So the element changes only with the
+   * focus, the fonts and the palette — not with a re-cut.
    */
+  const hasCut = recut !== null;
   const nativeScene = useMemo(() => {
     if (
-      recut === null ||
-      nativeClock === null ||
+      !hasCut ||
       monoFont === null ||
       displayFont === null ||
       songTitleFont === null ||
@@ -781,32 +1079,21 @@ function FieldCanvasImpl({
     return (
       <>
         <NativeFieldContent
-          key={recut.generation}
-          recut={recut}
-          foundPlaces={foundPlaces}
-          foundFoot={foundFoot}
+          scene={scene}
+          focus={focusLayer}
+          openingClock={openingClock}
           lensClock={lensClock}
           reducedMotion={reducedMotion}
-          clock={nativeClock}
           drawnClock={drawnClockShared ?? null}
           cameraShared={cameraShared}
           fitScaleShared={fitScaleShared}
           viewport={viewport}
-          presentations={presentations}
-          playingKey={playingKey}
-          focusKey={focusKey}
           grainShared={grainValue}
           jobMarks={jobMarks}
           transportPlaying={transportPlaying}
           transportArriving={transportArriving}
           transportLights={transportLights}
           positionSeconds={positionSeconds}
-          analyses={analyses}
-          covers={covers}
-          opening={opening}
-          labelFlights={labelFlights}
-          hubFlights={mapFlights.hubs}
-          sectionFlights={mapFlights.sections}
           hubPaths={hubPaths}
           displayFont={displayFont}
           songTitleFont={songTitleFont}
@@ -818,35 +1105,29 @@ function FieldCanvasImpl({
       </>
     );
   }, [
-    analyses,
-    covers,
-    foundFoot,
-    foundPlaces,
-    opening,
     cameraShared,
     displayFont,
-    fitScaleShared,
-    focusKey,
-    grainValue,
-    jobMarks,
-    labelFlights,
-    mapFlights,
-    hubPaths,
-    monoFont,
-    nativeClock,
     drawnClockShared,
+    fitScaleShared,
+    focusLayer,
+    grainValue,
+    hubPaths,
+    jobMarks,
     lensClock,
-    reducedMotion,
+    monoFont,
+    openingClock,
     palette,
-    playingKey,
     positionSeconds,
-    presentations,
-    recut,
+    // Only whether there is a cut, not which: a re-cut reaches the scene as
+    // a shared value.
+    hasCut,
+    reducedMotion,
+    scene,
     songMetaFont,
     songTitleFont,
-    transportPlaying,
     transportArriving,
     transportLights,
+    transportPlaying,
     veil,
     viewport,
   ]);
@@ -880,10 +1161,13 @@ function levelsOf(analysis: SongAnalysis | undefined): readonly number[] {
  * one written below arrives as `undefined`. The same rule the band maths in
  * `bands.ts` is ordered by.
  */
-type NativeRecut = Pick<
-  FieldRecutModel,
-  'fromCamera' | 'toCamera' | 'fromFitScale' | 'toFitScale'
->;
+/** Before any cut is on the canvas: the clock reads 1, so the live camera. */
+const EMPTY_RECUT: NativeRecut = {
+  fromCamera: { x: 0, y: 0, scale: 1 },
+  toCamera: { x: 0, y: 0, scale: 1 },
+  fromFitScale: 1,
+  toFitScale: 1,
+};
 
 function nativeCameraScale(
   progress: number,
@@ -921,10 +1205,10 @@ function nativeFitScale(
 }
 
 // These camera-only values are identical for every song. Install their
-// mappers once per generation, rather than once per placement.
+// mappers once for the scene's life, rather than once per placement.
 function useNativeCameraMotion(
   clock: SharedValue<number>,
-  recut: NativeRecut,
+  cut: SharedValue<NativeCut | null>,
   cameraShared: SharedValue<Camera>,
   fitScaleShared: SharedValue<number>,
   viewport: Viewport,
@@ -932,10 +1216,18 @@ function useNativeCameraMotion(
   const zero = useSharedValue(0);
   const one = useSharedValue(1);
   const scale = useDerivedValue(() =>
-    nativeCameraScale(clock.value, recut, cameraShared),
+    nativeCameraScale(
+      clock.value,
+      cut.value === null ? EMPTY_RECUT : cut.value.recut,
+      cameraShared,
+    ),
   );
   const fit = useDerivedValue(() =>
-    nativeFitScale(clock.value, recut, fitScaleShared),
+    nativeFitScale(
+      clock.value,
+      cut.value === null ? EMPTY_RECUT : cut.value.recut,
+      fitScaleShared,
+    ),
   );
   const becomingRow = useDerivedValue(() =>
     bandAlphaAt(scale.value, fit.value, REPRESENTATION_WINDOWS.row),
@@ -1042,30 +1334,59 @@ export type FieldOpening = Readonly<{
   clock: SharedValue<number>;
 }>;
 
+/**
+ * The living scene's shared values, made once for the canvas's life: the
+ * cut on the canvas and its clock, every song's drawing, the focus, and the
+ * clocks that belong to songs rather than cuts. See `livingScene.ts`.
+ */
+type LivingScene = Readonly<{
+  cut: SharedValue<NativeCut | null>;
+  /** Eased 0 → 1 across the cut on the canvas; restarted with it. */
+  clock: SharedValue<number>;
+  songs: SharedValue<Readonly<Record<string, SongDraw>>>;
+  focus: SharedValue<FocusDraw | null>;
+  playing: SharedValue<string | null>;
+  /** Where each song whose ink is arriving was drawn; see `arriveInk`. */
+  inkFrom: SharedValue<Readonly<Record<string, SongInk>>>;
+  inkClock: SharedValue<number>;
+  /** When each arriving song opens, on the opening clock. */
+  openAt: SharedValue<Readonly<Record<string, number>>>;
+  /** The focused player's sound rising; 1 is risen. */
+  soundClock: SharedValue<number>;
+}>;
+
+/**
+ * The focused song's flight, player and detail: the one part of the scene
+ * still mounted per focus, and per cut while there is a focus (`key`).
+ */
+type FocusLayer = Readonly<{
+  key: string;
+  generation: number;
+  recut: NativeRecut;
+  flight: PlacementFlight;
+  row: NativeRowModel;
+  titleFrom: number;
+  song: NativeSongModel | null;
+  detail: SongDetailModel | null;
+  durationSeconds: number;
+}>;
+
 type NativeFieldContentProps = Readonly<{
-  opening: FieldOpening | null;
-  foundPlaces: ReadonlyMap<string, string> | null;
-  foundFoot: FoundFoot | null;
+  scene: LivingScene;
+  focus: FocusLayer | null;
+  openingClock: SharedValue<number>;
   lensClock: LensClock;
   reducedMotion: boolean;
-  recut: FieldRecutModel;
-  clock: SharedValue<number>;
-  /** Where this scene has drawn its re-cut to, for the camera hook. */
+  /** Where the scene has drawn its cut to, for the camera hook. */
   drawnClock: SharedValue<DrawnClock> | null;
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
   viewport: Viewport;
-  presentations: ReadonlyMap<string, FieldPresentation>;
-  playingKey: string | null;
-  /** The song the camera is focused on: the one that is allowed to be a player. */
-  focusKey: string | null;
   /** The play-to-pause morph, 0..1, for the song the player holds. */
   transportPlaying: SharedValue<number> | null;
   transportArriving: SharedValue<number> | null;
   transportLights: SharedValue<number[]> | null;
   positionSeconds: SharedValue<number> | null;
-  analyses: ReadonlyMap<string, SongAnalysis> | undefined;
-  covers: ReadonlyMap<string, CoverArt> | undefined;
   /**
    * The decoded window L3 draws, as a shared value rather than a prop.
    *
@@ -1081,14 +1402,10 @@ type NativeFieldContentProps = Readonly<{
    * `Canvas` a fresh element. See `drawNativeJobs`.
    */
   jobMarks: SharedValue<Readonly<Record<string, JobMark>>>;
-  labelFlights: ShelfLabelFlights | null;
   /**
-   * The map's furniture across this re-cut — album covers and the hairlines
-   * between an axis's parts — and the covers' halftone paths, a shared value
-   * for `jobMarks`' reason: they land one by one after the field is drawn.
+   * The album covers' halftone paths, a shared value for `jobMarks`' reason:
+   * they land one by one after the field is drawn.
    */
-  hubFlights: readonly HubFlight[];
-  sectionFlights: readonly SectionFlight[];
   hubPaths: SharedValue<Readonly<Record<string, SkPath>>>;
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
   songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
@@ -2214,31 +2531,21 @@ function songDetailOf(
 }
 
 const NativeFieldContent = React.memo(function NativeFieldContent({
-  foundPlaces,
-  foundFoot,
+  scene,
+  focus,
+  openingClock,
   lensClock,
   reducedMotion,
-  recut,
-  clock,
   drawnClock,
   cameraShared,
   fitScaleShared,
   viewport,
-  presentations,
-  playingKey,
-  focusKey,
   transportPlaying,
   transportArriving,
   transportLights,
   positionSeconds,
-  analyses,
-  covers,
-  opening,
   grainShared,
   jobMarks,
-  labelFlights,
-  hubFlights,
-  sectionFlights,
   hubPaths,
   displayFont,
   songTitleFont,
@@ -2246,50 +2553,22 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   font: monoFont,
   palette,
 }: NativeFieldContentProps) {
-  // Canvas reconciles its children in a separate React root. Starting this
-  // clock in FieldCanvas's layout effect spends the flight while that root is
-  // still building glyphs and installing mappers. Start after this generation's
-  // child effects instead, when the drawing can follow the entire clock.
-  useEffect(() => {
-    if (!recut.animate || clock.value >= 1) return;
-    clock.value = withTiming(1, {
-      duration: recut.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
-      easing: nativeSmootherstep,
-    });
-  }, [clock, recut]);
-  // The camera hook captures an interrupted gather from what this scene has
-  // drawn, which starts later than its own clock does.
-  const drawnGeneration = recut.generation;
+  const cutShared = scene.cut;
+  const clock = scene.clock;
+  // Where the canvas has drawn the cut to, for the camera hook, which
+  // captures an interrupted gather from it.
   useAnimatedReaction(
-    () => clock.value,
-    eased => {
-      // An outgoing scene's last frames must not speak over the new one's.
-      if (drawnClock !== null && drawnClock.value.generation <= drawnGeneration) {
-        drawnClock.value = { generation: drawnGeneration, eased };
-      }
-    },
-  );
-  /** The map behind find's gather; null for any other re-cut. */
-  const recede = recut.recede ?? null;
-  /**
-   * The gather's two cameras, held apart from the re-cut: a worklet that
-   * read `recut.gather` would capture the whole re-cut — both layouts and
-   * every flight — and copy it to the UI thread on every letter.
-   */
-  const gatherCameras = recut.gather ?? null;
-  // Worklets need camera endpoints, not the entire layout and flight family.
-  const nativeRecut = useMemo<NativeRecut>(
     () => ({
-      fromCamera: recut.fromCamera,
-      toCamera: recut.toCamera,
-      fromFitScale: recut.fromFitScale,
-      toFitScale: recut.toFitScale,
+      generation: cutShared.value === null ? 0 : cutShared.value.generation,
+      eased: clock.value,
     }),
-    [recut],
+    drawn => {
+      if (drawnClock !== null) drawnClock.value = drawn;
+    },
   );
   const motion = useNativeCameraMotion(
     clock,
-    nativeRecut,
+    cutShared,
     cameraShared,
     fitScaleShared,
     viewport,
@@ -2297,93 +2576,28 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   /*
    * The whole field's faces, as one node and one mapper. See `drawFieldFaces`.
    *
-   * Both memos are keyed on the re-cut and the palette alone: nothing here
-   * reads the camera from React, so the picture's *recipe* is rebuilt once per
-   * re-cut while the picture itself is re-recorded on the UI thread every
-   * frame. That is the same discipline the scene element keeps, one level
-   * down.
+   * Joined on the UI thread from the cut and the songs (`joinFaces`) when
+   * either changes, and drawn every frame from the join: nothing here is
+   * rebuilt by a re-cut, so no re-cut installs a worklet.
    */
   const facePaints = useMemo(() => createFacePaints(palette), [palette]);
-  /**
-   * The songs whose sound has already been shown, so a measurement that lands
-   * while you are looking rises into the seal rather than appearing in it —
-   * which it would otherwise do mid-descent, since a song is measured as it
-   * opens.
-   */
-  const soundShown = useRef(new Set<string>());
-  /*
-   * Ink that changes while you look — a file found at launch, a download
-   * landing — arrives on its own clock instead of in one frame. The last
-   * committed arrival is what the next one starts from; see `arriveInk`.
-   */
-  const lastInk = useRef<InkArrival | null>(null);
-  const ink = useMemo(
-    () => arriveInk(lastInk.current, presentations),
-    [presentations],
+  const songs = scene.songs;
+  const focusDraw = scene.focus;
+  const playing = scene.playing;
+  const inkFrom = scene.inkFrom;
+  const openAt = scene.openAt;
+  const inkClock = scene.inkClock;
+  const soundClock = scene.soundClock;
+  const faceFlights = useDerivedValue(() =>
+    joinFaces(
+      cutShared.value,
+      songs.value,
+      focusDraw.value,
+      playing.value,
+      inkFrom.value,
+      openAt.value,
+    ),
   );
-  const inkClock = ink.clock;
-  useEffect(() => {
-    lastInk.current = ink;
-    if (ink.clock === null) return;
-    ink.clock.value = withTiming(1, {
-      duration: ARRIVAL_KNOBS.INK_MS,
-      easing: easeSmoother,
-    });
-  }, [ink]);
-  const faces = useMemo(() => {
-    const flights = faceFlightsOf(
-      recut.flights,
-      presentations,
-      focusKey,
-      playingKey,
-      analyses,
-      ink,
-      covers,
-      opening?.plan.at,
-    );
-    const player = flights.find(face => face.isPlayer);
-    const playerFlight =
-      focusKey === null
-        ? undefined
-        : recut.flights.find(flight => flight.targetPlacementKey === focusKey);
-    const presentation =
-      playerFlight === undefined
-        ? undefined
-        : presentations.get(playerFlight.entityKey);
-    const key = presentation?.entity.key;
-    const rising =
-      player?.players?.some(model => model !== null && model.sound != null) ===
-        true &&
-      key !== undefined &&
-      !soundShown.current.has(key);
-    return {
-      flights,
-      playerKey: key,
-      playerSeconds: (presentation?.durationMs ?? 0) / 1000,
-      // Born with the faces, and at its start, when the sound has to rise: a
-      // clock shared across generations would paint the risen sound for a frame
-      // before the effect below could wind it back. Null is risen.
-      soundClock: rising ? bornClock(0) : null,
-    };
-  }, [
-    recut,
-    presentations,
-    focusKey,
-    playingKey,
-    analyses,
-    ink,
-    covers,
-    opening,
-  ]);
-  const faceFlights = faces.flights;
-  useEffect(() => {
-    if (faces.soundClock === null || faces.playerKey === undefined) return;
-    soundShown.current.add(faces.playerKey);
-    faces.soundClock.value = withTiming(1, {
-      duration: reducedMotion ? 0 : SEAL_PLAYER_KNOBS.SOUND_MS,
-      easing: Easing.linear,
-    });
-  }, [faces, reducedMotion]);
   /*
    * A player's sound waits for the descent, as the circle's ring does.
    *
@@ -2395,6 +2609,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * reset only while hidden, keep the ink while the camera carries it out.
    */
   const soundPhase = useDerivedValue(() => {
+    const cut = cutShared.value;
+    const nativeRecut = cut === null ? EMPTY_RECUT : cut.recut;
     const fitted = nativeFitScale(clock.value, nativeRecut, fitScaleShared);
     const ratio =
       fitted > 0
@@ -2429,6 +2645,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * at -1 and the faces stay recorded while the song plays.
    */
   const heard = useDerivedValue(() => {
+    const seconds =
+      focusDraw.value === null ? 0 : focusDraw.value.seconds;
     if (
       lensesShowing(
         'hearsPlayhead',
@@ -2437,26 +2655,26 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         lensClock.t.value,
       ) <= 0 ||
       positionSeconds === null ||
-      faces.playerSeconds <= 0
+      seconds <= 0
     ) {
       return -1;
     }
-    return positionSeconds.value / faces.playerSeconds;
+    return positionSeconds.value / seconds;
   });
   const mapPaints = useMemo(() => createMapPaints(palette), [palette]);
-  const openingClock = opening?.clock ?? null;
-  // A field with nothing in it — no song, no job — has no ground either: the
-  // empty field's words stand on paper (`flow.html#f-empty`).
-  const ground = recut.flights.length > 0;
   const facePicture = useDerivedValue(() =>
     createPicture(
       canvas => {
+        const cut = cutShared.value;
+        if (cut === null) return;
+        const nativeRecut = cut.recut;
+        const recede = cut.recede;
         // The lattice is the ground the faces stand on, so it is drawn first
         // in their recording; see `drawLattice`.
         const p = Math.min(Math.max(clock.value, 0), 1);
         const live = p >= 1 ? cameraShared.value : null;
         // While find gathers, the map's ground is the map camera's.
-        const drawnGather = gatherDrawn(gatherCameras, recede, p);
+        const drawnGather = gatherDrawn(cut.gather, recede, p);
         const mapDrawn =
           drawnGather === null
             ? null
@@ -2465,7 +2683,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
                 recede,
                 recede === null ? p : linearOfEased(p),
               );
-        if (ground)
+        // A field with nothing in it — no song, no job — has no ground
+        // either: the empty field's words stand on paper
+        // (`flow.html#f-empty`).
+        if (cut.flights.length > 0)
           drawLattice(
             canvas,
             mapDrawn === null
@@ -2482,14 +2703,15 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
                 }
               : mapDrawn,
             nativeFitScale(p, nativeRecut, fitScaleShared),
-            viewport,mapPaints.lattice,
+            viewport,
+            mapPaints.lattice,
             1 -
               (1 - GATHER_KNOBS.RECEDE_LATTICE_INK) *
                 recededAt(recede, recede === null ? p : linearOfEased(p)),
           );
         drawFieldFaces(
           canvas,
-          faceFlights,
+          faceFlights.value,
           facePaints,
           clock.value,
           nativeRecut,
@@ -2500,10 +2722,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           lensClock.to.value,
           lensClock.t.value,
           reducedMotion,
-          smootherstep(faces.soundClock?.value ?? 1) * soundDrawn.value,
+          smootherstep(soundClock.value) * soundDrawn.value,
           heard.value,
-          inkClock?.value ?? 1,
-          openingClock?.value ?? Infinity,
+          inkClock.value,
+          openingClock.value,
           recede,
           drawnGather,
           drawnGather === null ? 0 : 1,
@@ -2511,10 +2733,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       },
       { width: viewport.width, height: viewport.height },
     ),
-  );
-  const songDetail = useMemo(
-    () => songDetailOf(recut.flights, presentations, analyses, focusKey),
-    [recut, presentations, analyses, focusKey],
   );
   /**
    * The row the player's flight has taken over, once that flight is live on
@@ -2531,43 +2749,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   const playerRow = useSharedValue<string | null>(null);
   // Every row, the focused one included: who draws it is decided per frame,
   // by `motion.owned`, not by which rows this list holds.
-  const rows = useMemo(
-    () =>
-      recut.flights.flatMap(flight => {
-        const presentation = presentations.get(flight.entityKey);
-        if (!presentation) return [];
-        return [
-          {
-            flight,
-            titleFrom: ink.from.get(flight.entityKey)?.title,
-            openAt: opening?.plan.at.get(flight.entityKey),
-            row: nativeRowModel(
-              presentation,
-              presentation.recipe,
-              displayFont,
-              monoFont,
-              // A row on its way out of the shelf still says where it is
-              // from until its name has gone.
-              isFoundGroup(flight.groupKey) || flight.timing?.fromFound === true
-                ? foundPlaces?.get(flight.entityKey) ?? null
-                : null,
-            ),
-            // And once home, says what any row there says.
-            homeRow:
-              !isFoundGroup(flight.groupKey) &&
-              flight.timing?.fromFound === true
-                ? nativeRowModel(
-                    presentation,
-                    presentation.recipe,
-                    displayFont,
-                    monoFont,
-                    null,
-                  )
-                : undefined,
-          },
-        ];
-      }),
-    [recut, presentations, ink, displayFont, monoFont, opening, foundPlaces],
+  const rows = useDerivedValue(() =>
+    joinRows(cutShared.value, songs.value, inkFrom.value, openAt.value),
   );
   const rowPaints = useMemo(
     () =>
@@ -2582,19 +2765,17 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     () => ({ title: displayFont, mono: monoFont }),
     [displayFont, monoFont],
   );
-  // A number, so a viewport handed down as a fresh object does not re-fit
-  // every name.
-  const labelWidthPx = labelMaxWidthPx(viewport);
-  const labels = useMemo(
-    () => prepareNativeLabels(labelFlights ?? [], monoFont, labelWidthPx),
-    [labelFlights, monoFont, labelWidthPx],
-  );
   const labelPaints = useMemo(
     () => createLabelPaints(palette.muted, palette.faint),
     [palette],
   );
   const rowsPicture = useDerivedValue(() => {
+    const cut = cutShared.value;
     const p = Math.min(Math.max(clock.value, 0), 1);
+    if (cut === null) return createPicture(() => {}, viewport);
+    const nativeRecut = cut.recut;
+    const recede = cut.recede;
+    const foundFoot = cut.foundFoot;
     const live = p >= 1 ? cameraShared.value : null;
     const rowCamera = {
       x:
@@ -2609,7 +2790,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     };
     const hubCovers = hubPaths.value;
     // While find gathers, the map's furniture is drawn by the map's camera.
-    const drawnGather = gatherDrawn(gatherCameras, recede, p);
+    const drawnGather = gatherDrawn(cut.gather, recede, p);
     const mapCamera =
       drawnGather === null
         ? rowCamera
@@ -2622,7 +2803,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       const fit = nativeFitScale(p, nativeRecut, fitScaleShared);
       drawSections(
         canvas,
-        sectionFlights,
+        cut.sections,
         p,
         mapCamera,
         fit,
@@ -2633,7 +2814,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       );
       drawHubs(
         canvas,
-        hubFlights,
+        cut.hubs,
         hubCovers,
         p,
         mapCamera,
@@ -2643,7 +2824,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       );
       drawNativeLabels(
         canvas,
-        labels,
+        cut.labels as ReturnType<typeof prepareNativeLabels>,
         p,
         mapCamera,
         fit,
@@ -2664,7 +2845,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         // The found shelf's faces over the map's names.
         drawFieldFaces(
           canvas,
-          faceFlights,
+          faceFlights.value,
           facePaints,
           clock.value,
           nativeRecut,
@@ -2675,10 +2856,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           lensClock.to.value,
           lensClock.t.value,
           reducedMotion,
-          smootherstep(faces.soundClock?.value ?? 1) * soundDrawn.value,
+          smootherstep(soundClock.value) * soundDrawn.value,
           heard.value,
-          inkClock?.value ?? 1,
-          openingClock?.value ?? Infinity,
+          inkClock.value,
+          openingClock.value,
           recede,
           drawnGather,
           2,
@@ -2686,7 +2867,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       }
       drawNativeRows(
         canvas,
-        rows,
+        rows.value,
         p,
         rowCamera,
         fit,
@@ -2696,8 +2877,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         rowFonts,
         rowPaints,
         motion.owned.value > 0 ? playerRow.value : null,
-        inkClock?.value ?? 1,
-        openingClock?.value ?? Infinity,
+        inkClock.value,
+        openingClock.value,
         recede,
         drawnGather,
         // The ghost behind a gather has faces and no words, as the study's
@@ -2747,14 +2928,17 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   });
   // Whatever in this re-cut is not a song is a job; one whose mark has not
   // arrived, or has left, draws nothing.
-  const jobFlights = useMemo(
-    () => recut.flights.filter(flight => !presentations.has(flight.entityKey)),
-    [recut, presentations],
+  const jobFlights = useDerivedValue(() =>
+    joinJobs(cutShared.value, songs.value),
   );
   const jobLayer = useMemo(() => Skia.Paint(), []);
   const jobFade = useMemo(() => Skia.Paint(), []);
   const jobsPicture = useDerivedValue(() => {
+    const cut = cutShared.value;
     const p = Math.min(Math.max(clock.value, 0), 1);
+    if (cut === null) return createPicture(() => {}, viewport);
+    const nativeRecut = cut.recut;
+    const recede = cut.recede;
     const live = p >= 1 ? cameraShared.value : null;
     const jobCamera = {
       x:
@@ -2768,7 +2952,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       scale: nativeCameraScale(p, nativeRecut, cameraShared),
     };
     const marks = jobMarks.value;
-    const drawnGather = gatherDrawn(gatherCameras, recede, p);
+    const drawnGather = gatherDrawn(cut.gather, recede, p);
     // A job is never found: it goes as the map recedes behind a gather.
     const jobsLeft =
       drawnGather === null
@@ -2782,7 +2966,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       }
       drawNativeJobs(
         canvas,
-        jobFlights,
+        jobFlights.value,
         marks,
         p,
         drawnGather === null
@@ -2808,92 +2992,171 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         when they were the ring's — the measurement is what the timeline is
         drawn over, at either end of the crossing.
       */}
-      <NativeSongDetail
-        lensClock={lensClock}
-        cameraShared={cameraShared}
-        clock={clock}
-        fitScaleShared={fitScaleShared}
-        grainShared={grainShared}
-        model={songDetail}
-        palette={palette}
-        positionSeconds={positionSeconds}
-        recut={nativeRecut}
-        viewport={viewport}
-      />
+      {focus === null ? null : (
+        <FocusDetail
+          key={`detail:${focus.key}`}
+          focus={focus}
+          scene={scene}
+          lensClock={lensClock}
+          cameraShared={cameraShared}
+          fitScaleShared={fitScaleShared}
+          grainShared={grainShared}
+          palette={palette}
+          positionSeconds={positionSeconds}
+          viewport={viewport}
+        />
+      )}
       <Picture picture={rowsPicture} />
-      {recut.flights.map(flight => {
-        if (focusKey === null || flight.targetPlacementKey !== focusKey)
-          return null;
-        const presentation = presentations.get(flight.entityKey);
-        if (presentation === undefined) return null;
-        const recipe = presentation.recipe;
-        const row = nativeRowModel(presentation, recipe, displayFont, monoFont);
-        /*
-         * Exactly one song in the field is the player, so exactly one flight
-         * pays for the sampling `nativeSongModel` does. Every other mark is the
-         * two nodes it has always been.
-         *
-         * Matched on the *placement* the flight is landing on, not on the
-         * entity: one song can sit in several groups at once — a date mark and
-         * a playlist membership are two placements of one entity — and only the
-         * one the camera actually arrived at is the player. `focusKey` is a
-         * placement key for the same reason, which is what the picture compares
-         * against too. An outgoing copy carries a null target and so can never
-         * be it, which is right: a mark on its way out of the field is not
-         * somewhere you have arrived.
-         */
-        const focused =
-          focusKey !== null && flight.targetPlacementKey === focusKey;
-        return (
-          <NativePlacementFlight
-            lensClock={lensClock}
-            key={flight.key}
-            playerRow={playerRow}
-            motion={motion}
-            flight={flight}
-            clock={clock}
-            cameraShared={cameraShared}
-            fitScaleShared={fitScaleShared}
-            recut={nativeRecut}
-            viewport={viewport}
-            row={row}
-            titleFrom={ink.from.get(flight.entityKey)?.title ?? row.titleAlpha}
-            inkClock={inkClock}
-            song={
-              focused
-                ? nativeSongModel(
-                    presentation,
-                    viewport,
-                    row.title,
-                    row.meta,
-                    row.action === null ? 0 : textWidth(row.action, monoFont),
-                    {
-                      rowTitle: displayFont,
-                      songTitle: songTitleFont,
-                      rowMeta: monoFont,
-                      songMeta: songMetaFont,
-                    },
-                  )
-                : null
-            }
-            songTitleFont={songTitleFont}
-            songMetaFont={songMetaFont}
-            positionSeconds={focused ? positionSeconds : null}
-            transportPlaying={focused ? transportPlaying : null}
-            transportArriving={focused ? transportArriving : null}
-            transportLights={focused ? transportLights : null}
-            durationSeconds={presentation.durationMs / 1000}
-            displayFont={displayFont}
-            monoFont={monoFont}
-            color={palette.ink}
-            mutedColor={palette.muted}
-          />
-        );
-      })}
+      {focus === null ? null : (
+        <FocusFlight
+          key={`flight:${focus.key}`}
+          focus={focus}
+          scene={scene}
+          lensClock={lensClock}
+          playerRow={playerRow}
+          motion={motion}
+          cameraShared={cameraShared}
+          fitScaleShared={fitScaleShared}
+          viewport={viewport}
+          songTitleFont={songTitleFont}
+          songMetaFont={songMetaFont}
+          positionSeconds={positionSeconds}
+          transportPlaying={transportPlaying}
+          transportArriving={transportArriving}
+          transportLights={transportLights}
+          displayFont={displayFont}
+          monoFont={monoFont}
+          palette={palette}
+        />
+      )}
       <Picture picture={jobsPicture} />
     </>
   );
 });
+
+/**
+ * A focus layer's clock: the scene's while the cut it was built for is the
+ * one on the canvas, and landed once another has replaced it — so a layer on
+ * its way out never draws one frame against the next cut's clock (house rule
+ * 5, kept for the one part of the scene that still mounts per focus).
+ */
+function useFocusClock(scene: LivingScene, generation: number) {
+  const cut = scene.cut;
+  const clock = scene.clock;
+  return useDerivedValue(() =>
+    cut.value !== null && cut.value.generation === generation
+      ? clock.value
+      : 1,
+  );
+}
+
+/** The focused song's detail loop, under the rows; see `NativeSongDetail`. */
+function FocusDetail({
+  focus,
+  scene,
+  lensClock,
+  cameraShared,
+  fitScaleShared,
+  grainShared,
+  palette,
+  positionSeconds,
+  viewport,
+}: {
+  focus: FocusLayer;
+  scene: LivingScene;
+  lensClock: LensClock;
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
+  grainShared: SharedValue<GrainBars | null>;
+  palette: Palette;
+  positionSeconds: SharedValue<number> | null;
+  viewport: Viewport;
+}) {
+  const clock = useFocusClock(scene, focus.generation);
+  return (
+    <NativeSongDetail
+      lensClock={lensClock}
+      cameraShared={cameraShared}
+      clock={clock}
+      fitScaleShared={fitScaleShared}
+      grainShared={grainShared}
+      model={focus.detail}
+      palette={palette}
+      positionSeconds={positionSeconds}
+      recut={focus.recut}
+      viewport={viewport}
+    />
+  );
+}
+
+/** The focused song's flight and player, over the rows. */
+function FocusFlight({
+  focus,
+  scene,
+  lensClock,
+  playerRow,
+  motion,
+  cameraShared,
+  fitScaleShared,
+  viewport,
+  songTitleFont,
+  songMetaFont,
+  positionSeconds,
+  transportPlaying,
+  transportArriving,
+  transportLights,
+  displayFont,
+  monoFont,
+  palette,
+}: {
+  focus: FocusLayer;
+  scene: LivingScene;
+  lensClock: LensClock;
+  playerRow: SharedValue<string | null>;
+  motion: NativeCameraMotion;
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
+  viewport: Viewport;
+  songTitleFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  songMetaFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  positionSeconds: SharedValue<number> | null;
+  transportPlaying: SharedValue<number> | null;
+  transportArriving: SharedValue<number> | null;
+  transportLights: SharedValue<number[]> | null;
+  displayFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  monoFont: NonNullable<ReturnType<typeof useMorphFont>>;
+  palette: Palette;
+}) {
+  const clock = useFocusClock(scene, focus.generation);
+  return (
+    <NativePlacementFlight
+      lensClock={lensClock}
+      playerRow={playerRow}
+      motion={motion}
+      flight={focus.flight}
+      clock={clock}
+      cameraShared={cameraShared}
+      fitScaleShared={fitScaleShared}
+      recut={focus.recut}
+      viewport={viewport}
+      row={focus.row}
+      titleFrom={focus.titleFrom}
+      inkClock={scene.inkClock}
+      song={focus.song}
+      songTitleFont={songTitleFont}
+      songMetaFont={songMetaFont}
+      positionSeconds={positionSeconds}
+      transportPlaying={transportPlaying}
+      transportArriving={transportArriving}
+      transportLights={transportLights}
+      durationSeconds={focus.durationSeconds}
+      displayFont={displayFont}
+      monoFont={monoFont}
+      color={palette.ink}
+      mutedColor={palette.muted}
+    />
+  );
+}
 
 /**
  * Everything about a row that does not answer to the camera.
@@ -2926,19 +3189,34 @@ function arrivingOf(presentation: FieldPresentation): number {
   return share ?? ARRIVING_UNKNOWN;
 }
 
-function nativeRowModel(
+/**
+ * A song as the scene keeps it, whatever cut it is in (`SongDraw`): built once
+ * per drawn change of its presentation.
+ */
+function songDrawOf(
   presentation: FieldPresentation,
-  recipe: Parameters<typeof nameLensFacePath>[0],
   displayFont: NonNullable<ReturnType<typeof useMorphFont>>,
   monoFont: NonNullable<ReturnType<typeof useMorphFont>>,
-  /** A line said instead of the availability: a found row's place. */
-  metaOverride: string | null = null,
-): NativeRowModel {
+): SongDraw {
+  return {
+    identities: LENSES.map(lens => lens.identity(presentation.recipe)),
+    row: nativeRowModel(presentation, presentation.recipe, displayFont, monoFont),
+    column: rowColumnOf(presentation, monoFont).column,
+    ink: songInkOf(presentation),
+    arriving: arrivingOf(presentation),
+  };
+}
+
+/**
+ * A row's action word and the column its lines are cut to: the action is
+ * right-aligned against the row's edge and the title is cut to whatever is
+ * left, so a long title cannot run under the word that acts on it.
+ */
+function rowColumnOf(
+  presentation: FieldPresentation,
+  monoFont: NonNullable<ReturnType<typeof useMorphFont>>,
+) {
   const availability = availabilityOf(presentation.localAudio.state);
-  // The action word is right-aligned against the row's edge and the title is
-  // cut to whatever is left, so a long title cannot run under the word that
-  // acts on it. Both are measured from the row's own point, which is the
-  // origin of the group the UI thread moves.
   const transfer =
     presentation.source === 'node' ? presentation.transfer : null;
   const action = presentation.audioActions
@@ -2951,11 +3229,32 @@ function nativeRowModel(
     action === null
       ? rowRight
       : rowRight - actionWidth - NAME_LENS_KNOBS.ROW_TITLE_GAP_PX;
-  const column = titleRight - titleLeft;
+  return {
+    availability,
+    transfer,
+    action,
+    actionX: rowRight - actionWidth,
+    titleLeft,
+    column: titleRight - titleLeft,
+  };
+}
+
+function nativeRowModel(
+  presentation: FieldPresentation,
+  recipe: Parameters<typeof nameLensFacePath>[0],
+  displayFont: NonNullable<ReturnType<typeof useMorphFont>>,
+  monoFont: NonNullable<ReturnType<typeof useMorphFont>>,
+  /** A line said instead of the availability: a found row's place. */
+  metaOverride: string | null = null,
+): NativeRowModel {
+  // Both measured from the row's own point, which is the origin of the
+  // group the UI thread moves.
+  const { availability, transfer, action, actionX, titleLeft, column } =
+    rowColumnOf(presentation, monoFont);
   const title = fitText(presentation.title, displayFont, column);
   return {
     action,
-    actionX: rowRight - actionWidth,
+    actionX,
     title,
     titleTrace: titleTracePaths(
       title,

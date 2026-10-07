@@ -1,13 +1,12 @@
 /**
- * House rule 5, on the field canvas: born clocks, generation keys.
+ * House rule 5, on the field canvas, as the living scene keeps it.
  *
- * A re-cut clock shared across generations is advanced by the canvas's layout
- * effect while the outgoing generation's `useDerivedValue` mappers are still
- * installed — Reanimated restarts those from a *passive* effect, one step
- * later. The outgoing tree therefore reads the newborn clock for a frame and
- * paints its own source pose, which after a back-and-forth on the arrangement
- * dial is the cut you are returning to: the destination, flashed once before
- * the animation starts.
+ * A clock shared across cuts must never be read by one cut's drawing while it
+ * belongs to another's: that is how the destination once flashed for a frame
+ * after a back-and-forth on the arrangement dial. The canvas used to keep the
+ * rule by building a scene per cut, each with a born clock. Now it has one
+ * scene and one clock, and keeps it by installing a cut and restarting the
+ * clock in the same UI-thread task (`livingScene.ts`).
  */
 import React from 'react';
 import { Canvas, Skia } from '@shopify/react-native-skia';
@@ -158,42 +157,66 @@ describe('field canvas re-cut clock', () => {
     mockBornClocks.length = 0;
   });
 
-  it('keeps the clock at its source until the native scene mounts', async () => {
-    const recut = recutBetween(1, month, year, true);
-    const cameraShared = { value: cameraFor(year) };
-    const fitScaleShared = { value: year.fitScale };
-    const canvas = (ready: boolean) => (
+  /** The living scene's shared values, as the canvas hands them to it. */
+  const sceneOf = (renderer: ReactTestRenderer.ReactTestRenderer) =>
+    renderer.root.findByType(Canvas).props.children.props.children[0].props
+      .scene as {
+      cut: { value: { generation: number; labels: readonly unknown[] } | null };
+      clock: { value: number };
+    };
+
+  it('installs each cut with its clock at the start, on the scene it already has', async () => {
+    // A clock that does not run: what the first frame after an install reads.
+    const reanimated = require('react-native-reanimated');
+    const timing = jest
+      .spyOn(reanimated, 'withTiming')
+      .mockImplementation(() => 0 as never);
+    const cameraShared = { value: cameraFor(month) };
+    const fitScaleShared = { value: month.fitScale };
+    const canvas = (recut: FieldRecutModel, layout: FieldLayout, nowMs = 0) => (
       <FieldCanvas
         cameraShared={cameraShared as never}
         fitScaleShared={fitScaleShared as never}
-        layout={year}
+        layout={layout}
         labelFromGroups={recut.fromGroups}
         palette={palette}
+        nowMs={nowMs}
         recut={recut}
         transitionGeneration={recut.generation}
         presentations={presentations}
         viewport={viewport}
-        // A new prop per state, so the memoised canvas renders again.
-        nowMs={ready ? Date.UTC(2026, 7, 30) : Date.UTC(2026, 7, 29)}
       />
     );
-    // The fonts are what the scene waits for: until they load, the canvas is
-    // paper and nothing may spend the re-cut's clock.
-    const font = mockFont;
-    mockFont = null;
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(canvas(false));
+      renderer = ReactTestRenderer.create(
+        canvas(recutBetween(1, month, month, false), month),
+      );
     });
-    const clock = mockBornClocks[0].clock;
-    expect(clock.value).toBe(0);
-    mockFont = font;
+    const element = renderer.root.findByType(Canvas).props.children;
+    const scene = sceneOf(renderer);
+    // A cut that does not animate lands at once, so reduced motion shows the
+    // new arrangement rather than one stale frame of the old one.
+    expect(scene.cut.value?.generation).toBe(1);
+    expect(scene.clock.value).toBe(1);
+
     await ReactTestRenderer.act(async () => {
-      renderer.update(canvas(true));
+      renderer.update(canvas(recutBetween(2, month, year, true), year));
     });
-    // The timing mock completes immediately; only the mounted drawing starts it.
-    expect(clock.value).toBe(1);
-    expect(mockBornClocks).toHaveLength(1);
+    // The new cut and its clock's start arrive together.
+    expect(scene.cut.value?.generation).toBe(2);
+    expect(scene.clock.value).toBe(0);
+    // On the scene the canvas already had: a re-cut builds nothing.
+    expect(renderer.root.findByType(Canvas).props.children).toBe(element);
+    expect(sceneOf(renderer)).toBe(scene);
+
+    // A render that is not a new cut leaves the clock where it is.
+    scene.clock.value = 0.5;
+    await ReactTestRenderer.act(async () => {
+      renderer.update(canvas(recutBetween(2, month, year, true), year, 1));
+    });
+    expect(scene.clock.value).toBe(0.5);
+    timing.mockRestore();
     await ReactTestRenderer.act(async () => renderer.unmount());
   });
 
@@ -203,6 +226,8 @@ describe('field canvas re-cut clock', () => {
     const labelMorph = require('../labelMorph');
     jest.spyOn(labelMorph, 'captureLabelText').mockReturnValue(null);
     jest.spyOn(labelMorph, 'captureLabelMorph').mockReturnValue(null);
+    const nativeLabels = require('../nativeLabels');
+    const prepared = jest.spyOn(nativeLabels, 'prepareNativeLabels');
     const cameraShared = { value: cameraFor(year) };
     const fitScaleShared = { value: year.fitScale };
     const canvas = (recut: FieldRecutModel, from: FieldLayout) => (
@@ -219,14 +244,14 @@ describe('field canvas re-cut clock', () => {
         viewport={viewport}
       />
     );
-    const labelsOf = (renderer: ReactTestRenderer.ReactTestRenderer) =>
-      renderer.root.findByType(Canvas).props.children.props.children[0].props
-        .labelFlights as readonly {
-        fromGroupKey: string | null;
-        toGroupKey: string | null;
-        from: { x: number; y: number };
-        to: { x: number; y: number };
-      }[];
+    type Flight = {
+      fromGroupKey: string | null;
+      toGroupKey: string | null;
+      from: { x: number; y: number };
+      to: { x: number; y: number };
+    };
+    const lastLabels = () =>
+      prepared.mock.calls.slice(-1)[0][0] as readonly Flight[];
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
@@ -234,14 +259,14 @@ describe('field canvas re-cut clock', () => {
         canvas(recutBetween(1, month, year, true), month),
       );
     });
-    const first = labelsOf(renderer);
+    const first = lastLabels();
     // Halfway through, as the UI thread would have it when the dial is
     // tapped again. The clock is already eased: this is where the canvas drew.
-    mockBornClocks[0].clock.value = 0.5;
+    sceneOf(renderer).clock.value = 0.5;
     await ReactTestRenderer.act(async () => {
       renderer.update(canvas(recutBetween(2, year, month, true), year));
     });
-    const second = labelsOf(renderer);
+    const second = lastLabels();
 
     const moved = first.filter(
       flight =>
@@ -271,55 +296,6 @@ describe('field canvas re-cut clock', () => {
     }
     await ReactTestRenderer.act(async () => renderer.unmount());
     jest.restoreAllMocks();
-  });
-
-  it('gives every generation its own clock and never advances the last one', async () => {
-    const first = recutBetween(1, month, month, false);
-    const second = recutBetween(2, month, year, true);
-    const cameraShared = { value: cameraFor(month) };
-    const fitScaleShared = { value: month.fitScale };
-
-    const canvas = (recut: FieldRecutModel, layout: FieldLayout) => (
-      <FieldCanvas
-        cameraShared={cameraShared as never}
-        fitScaleShared={fitScaleShared as never}
-        layout={layout}
-        labelFromGroups={recut.fromGroups}
-        palette={palette}
-        nowMs={Date.UTC(2026, 7, 30)}
-        recut={recut}
-        transitionGeneration={recut.generation}
-        presentations={new Map()}
-        viewport={viewport}
-      />
-    );
-
-    let renderer!: ReactTestRenderer.ReactTestRenderer;
-    await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(canvas(first, month));
-    });
-    expect(mockBornClocks).toHaveLength(1);
-    // A cut that does not animate is born finished, so reduced motion shows
-    // the new arrangement rather than one stale frame of the old one.
-    expect(mockBornClocks[0].born).toBe(1);
-    const settled = mockBornClocks[0].clock.value;
-
-    await ReactTestRenderer.act(async () => {
-      renderer.update(canvas(second, year));
-    });
-    expect(mockBornClocks).toHaveLength(2);
-    expect(mockBornClocks[1].born).toBe(0);
-    expect(mockBornClocks[1].clock).not.toBe(mockBornClocks[0].clock);
-    // The outgoing generation's clock is inert. Whatever is still reading it
-    // holds the pose it was left on instead of being dragged to a progress
-    // that belongs to a cut it knows nothing about.
-    expect(mockBornClocks[0].clock.value).toBe(settled);
-
-    // A re-render that is not a new generation reuses the clock it has.
-    await ReactTestRenderer.act(async () => {
-      renderer.update(canvas(second, year));
-    });
-    expect(mockBornClocks).toHaveLength(2);
   });
 
   /**
