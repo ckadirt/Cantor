@@ -35,7 +35,6 @@ import {
 } from '../runtime/diagnostics';
 import {
   audioRefOf,
-  axisNoun,
   DeferredA11yList,
   FieldCanvas,
   FindDeferredOverlay,
@@ -66,6 +65,7 @@ import {
   grainBarsOf,
   type GrainBars,
   type GrainRender,
+  type CutInstaller,
   type FieldOpening,
 } from '../features/field/FieldCanvas';
 import {
@@ -79,7 +79,13 @@ import {
   EmptyFind,
 } from '../features/field/EmptyField';
 import { TagsSheet } from '../features/find/TagsSheet';
-import { buildFindIndex, findIn } from '../library/find';
+import {
+  findChain,
+  sameFindWorld,
+  type FindChainResult,
+  type FindQuery,
+} from '../features/find/chain';
+import { buildFindIndex } from '../library/find';
 import { planOpening } from '../features/field/opening';
 import { useShelfQueue } from '../features/field/useShelfQueue';
 import { easeSmoother } from '../motion';
@@ -93,7 +99,6 @@ import {
 } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
 import {
-  formatClock,
   MODE_POSE,
   PLAYER_TRANSPORT_KNOBS,
   PLAYER_VERB_POSE,
@@ -116,11 +121,7 @@ import {
   gatherFraction,
   grainWindow,
   LEVEL_SCALE_RATIOS,
-  MAX_GATHERED,
-  gatherLayout,
   isFoundGroup,
-  orderMembers,
-  shelfRowGapWorld,
   layoutField,
   indexRuns,
   modelLabel,
@@ -789,21 +790,65 @@ export function FieldScreen({ identity }: Props) {
     [controller.presentations],
   );
   /**
-   * What the query finds, in field order, inside the filter: the shelf it was
-   * entered from first, with the rest counted as `outside`.
+   * Find's whole chain for one query — what it finds, the found shelf, the
+   * map gathered, the rows' place lines, the foot — as one function the
+   * keystroke itself can call (`changeQuery`) before React renders, and the
+   * render calls after. Both get the same objects for the same query and
+   * world, so the render finds the cut the keystroke already started and
+   * plans nothing (`useFieldCamera`'s `recutNow`).
    */
-  const found = useMemo(
-    () =>
-      finding === null || mapLayout === null
-        ? null
-        : findIn(
-            mapLayout,
-            findIndex,
-            finding.query,
-            finding.scopeKey === null ? null : { groupKey: finding.scopeKey },
-          ),
-    [findIndex, finding, mapLayout],
-  );
+  const findWorld = {
+    mapLayout,
+    findIndex,
+    fieldEntities,
+    orderKey,
+    orderSeed,
+    viewport,
+    presentations: controller.presentations,
+    nowMs,
+    arrangementKey,
+    dateResolution,
+  };
+  const findWorldRef = useRef(findWorld);
+  findWorldRef.current = findWorld;
+  const findCache = useRef<{
+    world: typeof findWorld;
+    query: FindQuery;
+    result: FindChainResult;
+  } | null>(null);
+  /**
+   * Every song found since the app opened keeps its place line, and the map is
+   * handed back by identity until a line actually changes: a row leaving the
+   * shelf on a letter still says where it came from as it flies, and a new
+   * map handed to the canvas mid-flight paints a frame from stale values
+   * (`FieldCanvas`'s note on the scene element).
+   */
+  const placesMemory = useRef<ReadonlyMap<string, string>>(new Map());
+  const findFor = useCallback((query: FindQuery | null): FindChainResult | null => {
+    if (query === null) return null;
+    const world = findWorldRef.current;
+    const cached = findCache.current;
+    if (
+      cached !== null &&
+      cached.query.query === query.query &&
+      cached.query.scopeKey === query.scopeKey &&
+      cached.query.centerY === query.centerY &&
+      sameFindWorld(cached.world, world)
+    ) {
+      return cached.result;
+    }
+    const result = findChain(query, world, placesMemory.current);
+    if (result.places !== null) placesMemory.current = result.places;
+    findCache.current = { world, query, result };
+    return result;
+  }, []);
+  const findResult = findFor(finding);
+  /** The find state as the last keystroke left it, ahead of React. */
+  const findingNow = useRef(finding);
+  findingNow.current = finding;
+  /** The canvas's way to send a cut outside a render; see `changeQuery`. */
+  const canvasInstall = useRef<CutInstaller | null>(null);
+  const found = findResult?.found ?? null;
   const findChrome = useMemo(
     () =>
       finding === null
@@ -815,117 +860,9 @@ export function FieldScreen({ identity }: Props) {
           },
     [finding, found],
   );
-  /**
-   * The map with what the query found standing together in one more shelf
-   * (`gatherLayout`): a copy, never a re-pack, so a letter costs a copy and
-   * the re-cut's flight plan. Taken as soon as find has a query; the same
-   * object as the map otherwise, so nothing re-cuts.
-   */
-  /**
-   * The found shelf's songs: one copy each, the first `MAX_GATHERED` in
-   * field order, then seated in the shelf's ORDER like any other shelf's.
-   * `more` is what the cap left out; `outside` what the scope did.
-   */
-  const foundShelf = useMemo(() => {
-    if (found === null) return null;
-    const seen = new Set<string>();
-    const firsts: Placement[] = [];
-    for (const group of found.groups) {
-      for (const placement of group.placements) {
-        if (seen.has(placement.entityKey)) continue;
-        seen.add(placement.entityKey);
-        firsts.push(placement);
-      }
-    }
-    const kept = firsts.slice(0, MAX_GATHERED);
-    const placementOf = new Map(kept.map(p => [p.entityKey, p]));
-    const ordered = orderMembers(
-      kept.map(placement => placement.entityKey),
-      new Map(fieldEntities.map(entity => [entity.key, entity])),
-      orderByKey(orderKey),
-      orderSeed,
-    );
-    return {
-      placements: ordered.flatMap(key => placementOf.get(key) ?? []),
-      more: firsts.length - kept.length,
-      outside: found.outside,
-      labels: new Map(found.groups.map(group => [group.groupKey, group.label])),
-    };
-  }, [fieldEntities, found, orderKey, orderSeed]);
-  const gathered = useMemo(() => {
-    if (mapLayout === null || foundShelf === null || finding === null) {
-      return null;
-    }
-    if (finding.query.trim().length === 0) return null;
-    return gatherLayout(mapLayout, foundShelf.placements, {
-      centerY: finding.centerY,
-      viewport: viewport ?? undefined,
-    });
-  }, [finding, foundShelf, mapLayout, viewport]);
-  /**
-   * A found row's second line: `SEP 21 – 27 · 0:15`, where it came from.
-   *
-   * Every song found since the app opened keeps its line, and the map is
-   * handed back by identity until a line actually changes: a row leaving the
-   * shelf on a letter still says where it came from as it flies, and a new
-   * map handed to the canvas mid-flight paints a frame from stale values
-   * (`FieldCanvas`'s note on the scene element).
-   */
-  const placesMemory = useRef<ReadonlyMap<string, string>>(new Map());
-  const foundPlaces = useMemo(() => {
-    if (foundShelf === null) return null;
-    const known = placesMemory.current;
-    const places = new Map(known);
-    let changed = false;
-    for (const placement of foundShelf.placements) {
-      const label = foundShelf.labels.get(placement.groupKey);
-      const durationMs =
-        controller.presentations.get(placement.entityKey)?.durationMs ?? 0;
-      places.set(
-        placement.entityKey,
-        [
-          label === undefined
-            ? null
-            : shelfLabel(label, nowMs).primary.toUpperCase(),
-          durationMs > 0 ? formatClock(durationMs / 1000) : null,
-        ]
-          .filter(part => part !== null)
-          .join(' · '),
-      );
-      if (places.get(placement.entityKey) !== known.get(placement.entityKey)) {
-        changed = true;
-      }
-    }
-    if (!changed) return known;
-    placesMemory.current = places;
-    return places;
-  }, [controller.presentations, foundShelf, nowMs]);
-  /**
-   * The found shelf's last row: what the cap left out, or — found inside a
-   * shelf — the matches in the rest of the field, which a tap gathers too.
-   */
-  const foundFoot = useMemo(() => {
-    if (gathered === null || foundShelf === null) return null;
-    const column = gathered.placements.filter(placement =>
-      isFoundGroup(placement.groupKey),
-    );
-    const last = column[column.length - 1];
-    if (last === undefined) return null;
-    const noun = axisNoun(arrangementKey, dateResolution);
-    const text =
-      foundShelf.more > 0
-        ? `${foundShelf.more} MORE · ANOTHER LETTER NARROWS THEM`
-        : foundShelf.outside > 0
-        ? `${foundShelf.outside} MORE IN OTHER ${noun}S`
-        : null;
-    if (text === null) return null;
-    return {
-      text,
-      x: last.x,
-      y: last.y + shelfRowGapWorld(gathered.fitScale),
-      widens: foundShelf.more === 0,
-    };
-  }, [arrangementKey, dateResolution, foundShelf, gathered]);
+  const gathered = findResult?.gathered ?? null;
+  const foundPlaces = findResult?.places ?? null;
+  const foundFoot = findResult?.foot ?? null;
   /**
    * The found rows' words, held after find closes: the rows are still on
    * their way home, and a new element handed to the canvas mid-flight paints
@@ -2307,9 +2244,43 @@ export function FieldScreen({ identity }: Props) {
   const chromeLevel = leavingFind?.level ?? fieldCamera.level;
   const chromeGroupKey =
     leavingFind !== null ? leavingFind.groupKey : fieldCamera.groupKey;
-  const changeQuery = useCallback((query: string) => {
-    setFinding(current => (current === null ? null : { ...current, query }));
-  }, []);
+  /**
+   * A letter, sent to the field before React renders it.
+   *
+   * The render a letter needs — the screen, the camera's plan, the canvas,
+   * the commit — took ~20 ms on a release build and more on the Xiaomi's
+   * debug one, and the gather could not start until it had. So the keystroke
+   * runs find's chain itself (`findFor`), has the camera plan and start the
+   * cut (`recutNow`), and hands it to the canvas (`canvasInstall`), which
+   * sends it to the UI thread at once. The render that follows reads the same
+   * cached layout, finds the cut already planned, and only brings the rest of
+   * the screen up to date.
+   */
+  const recutNow = fieldCamera.recutNow;
+  const changeQuery = useCallback(
+    (query: string) => {
+      const current = findingNow.current;
+      if (current !== null && current.query !== query) {
+        const next = { ...current, query };
+        findingNow.current = next;
+        const result = findFor(next);
+        const layoutNext =
+          result?.gathered ?? findWorldRef.current.mapLayout;
+        if (layoutNext !== null) {
+          const cut = recutNow(layoutNext, query.trim().length > 0);
+          if (cut !== null) {
+            canvasInstall.current?.(
+              cut,
+              result?.places ?? null,
+              result?.foot ?? null,
+            );
+          }
+        }
+      }
+      setFinding(state => (state === null ? null : { ...state, query }));
+    },
+    [findFor, recutNow],
+  );
   const closeTopmostSheet = useCallback((): boolean => {
     if (tagsOpen) {
       setTagsOpen(false);
@@ -2624,6 +2595,7 @@ export function FieldScreen({ identity }: Props) {
                 cameraShared={fieldCamera.cameraShared}
                 fitScaleShared={fieldCamera.fitScaleShared}
                 drawnClockShared={fieldCamera.drawnClockShared}
+                installRef={canvasInstall}
                 layout={layout}
                 labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}

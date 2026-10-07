@@ -1440,6 +1440,31 @@ describe('useFieldCamera', () => {
       return null;
     }
 
+    it('plans a letter before React renders it, and the render plans nothing more', async () => {
+      mockReducedMotion = false;
+      let renderer!: ReactTestRenderer.ReactTestRenderer;
+      await ReactTestRenderer.act(async () => {
+        renderer = ReactTestRenderer.create(
+          <FindProbe field={map} finding={false} />,
+        );
+      });
+      const before = latest.recut?.generation ?? 0;
+      let planned: ReturnType<typeof latest.recutNow> = null;
+      // As a keystroke does: plan first, then hand React the same layout in
+      // the same batch.
+      await ReactTestRenderer.act(async () => {
+        planned = latest.recutNow(gathered, true);
+        renderer.update(<FindProbe field={gathered} finding />);
+      });
+      expect(planned).not.toBeNull();
+      expect(planned!.generation).toBe(before + 1);
+      expect(planned!.layout).toBe(gathered);
+      // The render found the keystroke's cut, not a new one.
+      expect(latest.recut).toBe(planned);
+      // And asking again for the same layout plans nothing.
+      expect(latest.recutNow(gathered, true)).toBeNull();
+    });
+
     it('flies to the found shelf on the re-cut, holds over an empty query, and goes back', async () => {
       mockReducedMotion = false;
       let renderer!: ReactTestRenderer.ReactTestRenderer;
