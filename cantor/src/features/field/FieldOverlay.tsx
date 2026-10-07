@@ -1,4 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+} from 'react';
 import {
   Keyboard,
   Pressable,
@@ -693,6 +699,16 @@ function FieldOverlayImpl({
   const orderOpen =
     h.level === 'shelf' &&
     (h.finding === null || (!typing && hasQuery(h.finding)));
+  /*
+   * The two lines a letter in find changes, a render behind it. A morph is
+   * planned while it renders — the count line's glyph outlines, about 30 ms
+   * on the Xiaomi's debug build — and the field's cut is sent only once the
+   * whole tree has rendered, so planning the header first held every letter's
+   * gather back by that long. Deferred, React commits the field first and
+   * plans the header in the render after, which a quicker letter replaces.
+   */
+  const eyebrowText = useDeferredValue(eyebrowLine(h.level, noun, h.finding));
+  const countText = useDeferredValue(countLine);
   return (
     <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
       <EdgeTab
@@ -733,7 +749,7 @@ function FieldOverlayImpl({
           */}
         <View style={styles.eyebrowRow} pointerEvents="box-none">
           <TransformText
-            text={eyebrowLine(h.level, noun, h.finding)}
+            text={eyebrowText}
             charStyle={CHROME_STYLES.eyebrow}
             color={pal.muted}
             duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
@@ -821,7 +837,7 @@ function FieldOverlayImpl({
         >
           <View style={styles.metaCount} pointerEvents="none">
             <TransformText
-              text={countLine}
+              text={countText}
               charStyle={CHROME_STYLES.eyebrow}
               color={pal.faint}
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
