@@ -239,6 +239,15 @@ describe('gatherLayout', () => {
     expect(gathered.placements).toHaveLength(layout.placements.length);
   });
 
+  it('keeps every group\'s song count, so the heads behind it never change', () => {
+    const layout = byDate();
+    const gathered = gatherLayout(layout, everyOther(layout));
+    for (const group of layout.groups) {
+      const kept = gathered.groups.find(other => other.key === group.key);
+      expect(kept?.songCount).toBe(group.songCount);
+    }
+  });
+
   it('returns the very same layout when nothing is found', () => {
     const layout = byDate();
     expect(gatherLayout(layout, [])).toBe(layout);

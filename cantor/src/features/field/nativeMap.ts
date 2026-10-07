@@ -117,9 +117,12 @@ export function drawLattice(
   fitScale: number,
   viewport: Viewport,
   lattice: MapPaints['lattice'],
+  /** How present the lattice is: less of it behind find's gather. */
+  ink = 1,
 ): void {
   'worklet';
-  const alpha = bandAlphaAt(camera.scale, fitScale, REPRESENTATION_WINDOWS.dot);
+  const alpha =
+    bandAlphaAt(camera.scale, fitScale, REPRESENTATION_WINDOWS.dot) * ink;
   const pitch = MAP_KNOBS.LATTICE_WORLD * camera.scale;
   if (alpha <= 0 || pitch < MAP_KNOBS.LATTICE_MIN_PX) return;
   lattice.paint.setShader(
