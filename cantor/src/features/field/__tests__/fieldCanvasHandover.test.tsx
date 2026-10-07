@@ -32,7 +32,17 @@ import type { FieldRecutModel } from '../useFieldCamera';
 /** Every shared value the canvas built, in creation order. */
 const drawRows = jest.spyOn(nativeRows, 'drawNativeRows');
 
-function rowText() {
+/**
+ * Every string the rows' picture drew, once each picture has been read.
+ *
+ * The scene's pictures are derived from shared values the canvas writes
+ * after it renders (`livingScene.ts`), so they are read here, as the UI
+ * thread would on its next frame.
+ */
+function rowText(renderer?: ReactTestRenderer.ReactTestRenderer) {
+  for (const node of renderer?.root.findAllByType(Picture) ?? []) {
+    (node.props.picture as { value?: unknown } | null)?.value;
+  }
   const rows = drawRows.mock.calls.slice(-1)[0]?.[1] ?? [];
   return rows.flatMap(({ row }) => [row.title, row.meta, row.action]);
 }
@@ -53,6 +63,16 @@ jest.mock('react-native-reanimated', () => {
      * this file tests. The real hook keeps one object for the component's life,
      * which is what this does.
      */
+    /**
+     * Computed when read, from the shared values as they are then — what
+     * the UI thread does on a frame. The library's mock computes once per
+     * render, before the effects that send the scene its cut.
+     */
+    useDerivedValue: (updater: () => unknown) => ({
+      get value() {
+        return updater();
+      },
+    }),
     useSharedValue: (initial: unknown) => {
       const held: { current: { value: unknown } | null } =
         react.useRef(null);
@@ -264,14 +284,14 @@ describe('field canvas L0 to L1 handover', () => {
       expect(recordedPictures(renderer)).toHaveLength(0);
       // Its batched recipe survives data removal; only UI-thread exit opacity
       // hides them. The surviving song retains the native detail drawing too.
-      expect(rowText()).toContain('Song song-b');
+      expect(rowText(renderer)).toContain('Song song-b');
     }
     const settled = { ...removed, generation: 3,
       flights: planPlacementFlights(remaining.placements, remaining.placements, 3),
       fromGroups: remaining.groups, animate: false };
     await ReactTestRenderer.act(async () => renderer.update(render(settled, data, 3)));
     expect(recordedPictures(renderer)).toHaveLength(0);
-    expect(rowText()).not.toContain('Song song-b');
+    expect(rowText(renderer)).not.toContain('Song song-b');
     await ReactTestRenderer.act(async () => renderer.unmount());
   });
 
@@ -315,7 +335,7 @@ describe('field canvas L0 to L1 handover', () => {
     expect(recordedPictures(renderer)).toHaveLength(0);
     // The row's text recipe reaches the UI-thread batch, which redraws
     // at screen-sized font metrics rather than scaling a baked picture.
-    const drawn = rowText();
+    const drawn = rowText(renderer);
     // The title, the availability line and the action word: the three strings
     // `nameLens` draws for a row, from the same two functions it calls.
     expect(drawn).toContain('Song song-a');
@@ -445,8 +465,6 @@ describe('field canvas L0 to L1 handover', () => {
         .findAllByType(Path)
         .filter(node => node.props.strokeCap === 'round'),
     ).toHaveLength(0);
-    expect(
-      rowText(),
-    ).toContain('Song song-a');
+    expect(rowText(renderer)).toContain('Song song-a');
   });
 });
