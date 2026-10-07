@@ -270,18 +270,23 @@ function analysisRefOf(
 }
 
 /**
- * The field canvas with the jobs it draws, read here rather than in
- * `FieldScreen`: a job's progress re-renders this, and the canvas takes the
- * new mark through a shared value (`jobMarks`), not the screen around it.
+ * The field canvas with the jobs it draws and the songs' measurements, read
+ * here rather than in `FieldScreen`: a job's progress re-renders this, and
+ * the canvas takes the new mark through a shared value (`jobMarks`), not the
+ * screen around it. Measurements land one song at a time — a find's first
+ * letter opens a dozen — and each one re-rendered the whole screen.
  */
 function LiveFieldCanvas({
   controllerStore,
+  analysisStore,
   ...props
-}: Omit<React.ComponentProps<typeof FieldCanvas>, 'jobs'> & {
+}: Omit<React.ComponentProps<typeof FieldCanvas>, 'jobs' | 'analyses'> & {
   controllerStore: FieldControllerStore;
+  analysisStore: AnalysisStore<AnalysisSource>;
 }) {
   const jobs = useStore(controllerStore.store, jobsOf);
-  return <FieldCanvas {...props} jobs={jobs} />;
+  const analyses = useStore(analysisStore.store, everything);
+  return <FieldCanvas {...props} jobs={jobs} analyses={analyses} />;
 }
 
 function jobsOf(controller: FieldController) {
@@ -623,7 +628,6 @@ export function FieldScreen({ identity }: Props) {
     [commands, player],
   );
   useEffect(() => () => analysisStore.dispose(), [analysisStore]);
-  const analyses = useStore(analysisStore.store, everything);
   /*
    * The field's projection of the runtime: songs and entities here, which a
    * job's progress leaves as the same objects; the jobs where they are drawn.
@@ -2624,7 +2628,7 @@ export function FieldScreen({ identity }: Props) {
                 labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}
                 activeLensKey={lensKey}
-                analyses={analyses}
+                analysisStore={analysisStore}
                 covers={covers}
                 opening={opening}
                 grainShared={grainShared}
