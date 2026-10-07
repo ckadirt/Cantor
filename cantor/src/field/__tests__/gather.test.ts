@@ -352,6 +352,53 @@ describe('planGatherCut', () => {
     ]);
   });
 
+  it('resumes faces caught before they landed from how they stood', () => {
+    const layout = byDate();
+    const wide = gatherLayout(layout, layout.placements.slice(0, 4));
+    const narrow = gatherLayout(layout, layout.placements.slice(1, 3));
+    const [leaver, stayer, landed] = [0, 1, 2].map(
+      index => layout.placements[index].entityKey,
+    );
+    // The leaver never got off the map; the stayer was half written.
+    const held = new Map([
+      [leaver, { name: 0, ink: 0.4, side: 0.1 }],
+      [stayer, { name: 0.5, ink: 0.8, side: 0.9 }],
+    ]);
+    const cut = planGatherCut(
+      planPlacementFlights(wide.placements, narrow.placements, 2),
+      foundKeysOf(wide),
+      foundKeysOf(narrow),
+      undefined,
+      held,
+    );
+    if (cut === null) throw new Error('no cut');
+    const timingOf = (entityKey: string) =>
+      cut.flights.find(
+        f => f.entityKey === entityKey && f.timing !== undefined,
+      )?.timing;
+    expect(timingOf(leaver)).toMatchObject({
+      name: FLIGHT_NAME.ERASE,
+      nameFrom: 0,
+      inkFrom: 0.4,
+      sideFrom: 0.1,
+      fromFound: true,
+    });
+    expect(timingOf(stayer)).toMatchObject({
+      name: FLIGHT_NAME.WRITE,
+      nameFrom: 0.5,
+      inkFrom: 0.8,
+      sideFrom: 0.9,
+      fromFound: true,
+    });
+    // One that had landed rides, whole.
+    expect(timingOf(landed)).toMatchObject({
+      name: FLIGHT_NAME.RIDE,
+      nameFrom: 1,
+      inkFrom: 1,
+      sideFrom: 1,
+    });
+  });
+
   it('keeps a long stagger inside its span', () => {
     const many = Array.from({ length: 90 }, (_, index) =>
       song(`m${index}`, start + Math.floor(index / 15) * 7 * day + index),

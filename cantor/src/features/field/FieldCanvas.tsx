@@ -170,7 +170,11 @@ import {
   type FieldPresentation,
   type JobPresentation,
 } from './useFieldController';
-import { FIELD_CAMERA_KNOBS, type FieldRecutModel } from './useFieldCamera';
+import {
+  FIELD_CAMERA_KNOBS,
+  type DrawnClock,
+  type FieldRecutModel,
+} from './useFieldCamera';
 
 /** KNOBS — screen-space culling and row dimensions from the HTML prototype. */
 const FIELD_CANVAS_KNOBS = {
@@ -295,6 +299,11 @@ type Props = {
    * every frame from its own tick.
    */
   fitScaleShared: SharedValue<number>;
+  /**
+   * Where the canvas has drawn the re-cut to, told back to the camera hook,
+   * which captures an interrupted gather from it; see `DrawnClock`.
+   */
+  drawnClockShared?: SharedValue<DrawnClock>;
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   jobs?: ReadonlyMap<string, JobPresentation>;
@@ -479,6 +488,7 @@ function FieldCanvasImpl({
   layout,
   cameraShared,
   fitScaleShared,
+  drawnClockShared,
   viewport,
   presentations: currentPresentations,
   jobs,
@@ -778,6 +788,7 @@ function FieldCanvasImpl({
           lensClock={lensClock}
           reducedMotion={reducedMotion}
           clock={nativeClock}
+          drawnClock={drawnClockShared ?? null}
           cameraShared={cameraShared}
           fitScaleShared={fitScaleShared}
           viewport={viewport}
@@ -823,6 +834,7 @@ function FieldCanvasImpl({
     hubPaths,
     monoFont,
     nativeClock,
+    drawnClockShared,
     lensClock,
     reducedMotion,
     palette,
@@ -1038,6 +1050,8 @@ type NativeFieldContentProps = Readonly<{
   reducedMotion: boolean;
   recut: FieldRecutModel;
   clock: SharedValue<number>;
+  /** Where this scene has drawn its re-cut to, for the camera hook. */
+  drawnClock: SharedValue<DrawnClock> | null;
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
   viewport: Viewport;
@@ -1477,7 +1491,7 @@ export function drawFieldFaces(
     // In a gather: which picture of the face each end is.
     const fromShelf = timing !== null && timing.fromFound;
     const twoCameras = mapCam !== null && !face.isPlayer;
-    const atS = fromShelf ? 1 : 0;
+    const atS = timing === null ? 0 : timing.sideFrom;
     const atT = face.found ? 1 : 0;
     const towardShelf = atS + (atT - atS) * u;
     const shown = twoCameras
@@ -2206,6 +2220,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   reducedMotion,
   recut,
   clock,
+  drawnClock,
   cameraShared,
   fitScaleShared,
   viewport,
@@ -2242,6 +2257,18 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       easing: nativeSmootherstep,
     });
   }, [clock, recut]);
+  // The camera hook captures an interrupted gather from what this scene has
+  // drawn, which starts later than its own clock does.
+  const drawnGeneration = recut.generation;
+  useAnimatedReaction(
+    () => clock.value,
+    eased => {
+      // An outgoing scene's last frames must not speak over the new one's.
+      if (drawnClock !== null && drawnClock.value.generation <= drawnGeneration) {
+        drawnClock.value = { generation: drawnGeneration, eased };
+      }
+    },
+  );
   /** The map behind find's gather; null for any other re-cut. */
   const recede = recut.recede ?? null;
   /**
