@@ -53,10 +53,28 @@ export function gatherFaceInk(
   return recedeInkAt(recede, linear);
 }
 
+/** Whether a leaving name has been erased and belongs at its home seat now. */
+export function nameHome(
+  timing: FlightTiming | undefined | null,
+  linear: number,
+): boolean {
+  'worklet';
+  return (
+    timing != null &&
+    timing.name === FLIGHT_NAME.ERASE &&
+    linear >= timing.nameEnd
+  );
+}
+
 /**
  * How much of a name is written, 0..1: written on in its window as its face
  * lands, erased in its window as its face leaves, whole otherwise — each
  * from as written as it was when its window opened.
+ *
+ * A name erased where it stood is written back on at its face's home seat,
+ * over the end of the face's flight as an arriving name is (`nameHome`):
+ * the scene a leave draws stays on screen after it lands, and a row that
+ * has gone home is an ordinary row again, name and all.
  */
 export function gatherNameAt(
   timing: FlightTiming | undefined | null,
@@ -64,6 +82,14 @@ export function gatherNameAt(
 ): number {
   'worklet';
   if (timing == null || timing.name === FLIGHT_NAME.RIDE) return 1;
+  if (nameHome(timing, linear)) {
+    const from =
+      timing.start + (timing.end - timing.start) * GATHER_KNOBS.NAME_WRITE_FROM;
+    const span = timing.end - from;
+    const raw = span > 0 ? (linear - from) / span : 1;
+    const t = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+    return t * t * t * (t * (t * 6 - 15) + 10);
+  }
   const span = timing.nameEnd - timing.nameStart;
   const raw = span > 0 ? (linear - timing.nameStart) / span : linear >= timing.nameEnd ? 1 : 0;
   const t = raw < 0 ? 0 : raw > 1 ? 1 : raw;
@@ -72,6 +98,7 @@ export function gatherNameAt(
     ? timing.nameFrom + (1 - timing.nameFrom) * eased
     : timing.nameFrom * (1 - eased);
 }
+
 
 /**
  * The two cameras a gather is drawn through (gather-plan, find-motion.html

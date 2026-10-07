@@ -2552,6 +2552,18 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
                 ? foundPlaces?.get(flight.entityKey) ?? null
                 : null,
             ),
+            // And once home, says what any row there says.
+            homeRow:
+              !isFoundGroup(flight.groupKey) &&
+              flight.timing?.fromFound === true
+                ? nativeRowModel(
+                    presentation,
+                    presentation.recipe,
+                    displayFont,
+                    monoFont,
+                    null,
+                  )
+                : undefined,
           },
         ];
       }),
