@@ -160,6 +160,13 @@ forever.
    `WriteScene`, keyed with the nodes that read it, so an outgoing generation
    keeps reading the clock it was mounted with. Any binding a generation's
    nodes read must be created inside that generation's keyed component.
+   **The field canvas keeps the rule without generations**
+   (`features/field/livingScene.ts`): one scene, one clock, and each cut
+   installed together with its clock's restart in a single UI-thread task, so
+   there is no outgoing tree to read the newborn clock. Remounting it per cut
+   cost a quarter of a second of UI thread per find letter. A component that
+   still mounts per cut beside a living clock reads it through a guard
+   (`useFocusClock`: the clock while its cut is on the canvas, landed after).
 6. **Verb identity is the contract.** `interpolatePaths` silently misdraws if
    from/to verbs diverge. Builders guarantee identity by construction and
    assert it in dev (`assertInterpolatable`); keep both sides of any new

@@ -268,8 +268,9 @@ The seal's geometry is pure and Skia-free in `lenses/seal.ts` (masks, Peano
 order, per-dot sound, `sealDotAt`); its identity is one cached path per song
 (`sealMarkPath`); its player is drawn a dot at a time by `drawSealPlayer`
 (`lenses/sealPlayer.ts`): mark dots split into their children as
-`songShapeArrival` runs, and the sound rises on a born clock
-(`SEAL_PLAYER_KNOBS.SOUND_MS`) when a measurement lands. `seekGesture` asks the
+`songShapeArrival` runs, and the sound rises on the scene's sound clock
+(`SEAL_PLAYER_KNOBS.SOUND_MS`), restarted with the focus, when a measurement
+lands. `seekGesture` asks the
 lens drawn at the player what a touch means (`Lens.touch`): the circle scrubs by
 angle; the seal scrubs by rim angle and treats a touch that starts on the dust
 as a tap that jumps to the dot under it.
@@ -597,3 +598,41 @@ text before tracing it, and return immediately when the row has not arrived.
 
 Jobs are drawn inside the native scene, under the map/shelf veils, so the veils
 protect the header from failed jobs as they do from songs.
+
+### The living scene
+
+`NativeFieldContent` is mounted once for the canvas's life and never keyed by
+re-cut (`features/field/livingScene.ts`). Every re-cut used to build a scene of
+its own, and the phone paid for each twice on the UI thread: installing a fresh
+set of worklet closures (~150 ms on the Xiaomi's debug build) and unpacking what
+they captured (~130 ms). A letter typed into find is a re-cut, so each letter
+froze the canvas.
+
+- **The cut is a shared value** (`NativeCut`): plain data — flights, found
+  places, prepared labels, hubs, sections, cameras, recede, gather cameras,
+  found foot. `FieldCanvas` installs it from a layout effect with one `runOnUI`
+  that sets the cut and restarts the scene's one clock in the same UI task, so
+  no frame pairs one cut's data with another's clock (motion rule 5, kept
+  without a generation). A render that is not a new cut updates the data and
+  leaves the clock alone.
+- **Songs are a store** (`SongDraw`: lens identities, row model, ink,
+  download). Built once per drawn change of a presentation (`sameDrawnSong`)
+  and sent only for the songs that changed, with the ink arrival's `from` and
+  clock in the same UI task.
+- **Joined on the UI thread**: `joinFaces`, `joinRows`, `joinJobs` turn cut +
+  songs + focus into the arrays `drawFieldFaces` and `drawNativeRows` take,
+  when an input changes, never per frame.
+- **The focus layer** (`FocusDetail`, `FocusFlight`) is the one part still
+  mounted per focus and per cut while focused. It reads the clock through
+  `useFocusClock`: the scene's while its cut is on the canvas, landed after.
+- Anything a scene worklet captures must keep its identity across cuts
+  (shared values, memoised paints and fonts). A captured value that changes
+  per cut re-creates the worklet, which is the cost this removed.
+
+Measured per letter in find, keypress to the first frame of the gather
+(Xiaomi, 64 songs): debug 410–800 ms → 84–120 ms; release ~86 ms, of which
+~40 ms is React rendering the screen and ~45 ms is the UI thread taking the cut
+and drawing its first frame. Song measurements are read by the canvas wrapper
+(`LiveFieldCanvas`), not `FieldScreen`: each one landing used to re-render the
+whole screen. The header's eyebrow and count line are `useDeferredValue`d so
+their morph planning (~30 ms debug) runs after the cut is sent.
