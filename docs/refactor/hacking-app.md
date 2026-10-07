@@ -636,3 +636,10 @@ and drawing its first frame. Song measurements are read by the canvas wrapper
 (`LiveFieldCanvas`), not `FieldScreen`: each one landing used to re-render the
 whole screen. The header's eyebrow and count line are `useDeferredValue`d so
 their morph planning (~30 ms debug) runs after the cut is sent.
+
+While a query is typed the whole overlay renders a step behind
+(`FindDeferredOverlay`: 10–12 ms debug per letter), and the a11y list always
+does (`DeferredA11yList`: 43 ms debug when a re-cut hands it the whole map).
+The query field is therefore uncontrolled — a controlled value a render behind
+would write old letters back — and is cleared when find opens. After these,
+release measured 49–93 ms (≈70 typical) from key to the gather's first frame.
