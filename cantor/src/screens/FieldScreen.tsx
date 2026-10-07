@@ -858,10 +858,21 @@ export function FieldScreen({ identity }: Props) {
       viewport: viewport ?? undefined,
     });
   }, [finding, foundShelf, mapLayout, viewport]);
-  /** A found row's second line: `SEP 21 – 27 · 0:15`, where it came from. */
+  /**
+   * A found row's second line: `SEP 21 – 27 · 0:15`, where it came from.
+   *
+   * Every song found since the app opened keeps its line, and the map is
+   * handed back by identity until a line actually changes: a row leaving the
+   * shelf on a letter still says where it came from as it flies, and a new
+   * map handed to the canvas mid-flight paints a frame from stale values
+   * (`FieldCanvas`'s note on the scene element).
+   */
+  const placesMemory = useRef<ReadonlyMap<string, string>>(new Map());
   const foundPlaces = useMemo(() => {
     if (foundShelf === null) return null;
-    const places = new Map<string, string>();
+    const known = placesMemory.current;
+    const places = new Map(known);
+    let changed = false;
     for (const placement of foundShelf.placements) {
       const label = foundShelf.labels.get(placement.groupKey);
       const durationMs =
@@ -877,7 +888,12 @@ export function FieldScreen({ identity }: Props) {
           .filter(part => part !== null)
           .join(' · '),
       );
+      if (places.get(placement.entityKey) !== known.get(placement.entityKey)) {
+        changed = true;
+      }
     }
+    if (!changed) return known;
+    placesMemory.current = places;
     return places;
   }, [controller.presentations, foundShelf, nowMs]);
   /**
@@ -911,11 +927,10 @@ export function FieldScreen({ identity }: Props) {
    * their way home, and a new element handed to the canvas mid-flight paints
    * a frame from stale values (`FieldCanvas`'s note on the scene element).
    */
-  const lastFoundPlaces = useRef<ReadonlyMap<string, string> | null>(null);
   const lastFoundFoot = useRef<typeof foundFoot>(null);
-  if (foundPlaces !== null) lastFoundPlaces.current = foundPlaces;
   if (foundFoot !== null || finding !== null) lastFoundFoot.current = foundFoot;
-  const heldFoundPlaces = foundPlaces ?? lastFoundPlaces.current;
+  const heldFoundPlaces =
+    foundPlaces ?? (placesMemory.current.size > 0 ? placesMemory.current : null);
   const heldFoundFoot = finding === null ? lastFoundFoot.current : foundFoot;
   /** What the field draws and touches: the map, or the map gathered. */
   const layout = gathered ?? mapLayout;

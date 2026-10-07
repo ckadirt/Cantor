@@ -1339,7 +1339,7 @@ export function drawFieldFaces(
   gather: GatherCameras | null = null,
   /**
    * In a gather, which faces: 0 all, 1 the map's (under the map's names), 2
-   * the shelf's with the paper they lie on (over the map's names).
+   * the shelf's (over the map's names).
    */
   side = 0,
 ): void {
@@ -1431,7 +1431,6 @@ export function drawFieldFaces(
       : null;
   const shelfTo =
     gather === null ? null : liveAtShelf ?? gather.toShelf ?? live;
-  const receded = recededAt(recede, linear);
   const mapWalked =
     mapCam === null ? walked : faceArrival(mapCam.scale, fitted);
   const mapShrink =
@@ -1461,7 +1460,7 @@ export function drawFieldFaces(
   const shelfWalked = faceArrival(shelfScale, fitted);
   const shelfShrink = overviewShrink(shelfScale, fitted);
 
-  const drawOne = (face: FaceFlight, rowPaper: boolean) => {
+  const drawOne = (face: FaceFlight) => {
     const timing = face.timing;
     const u = timing === null ? p : flightProgressAt(timing, linear);
     const owner =
@@ -1541,30 +1540,6 @@ export function drawFieldFaces(
         (seatY + bloomY * bloom - cameraY) * cameraScale +
         viewport.height / 2 +
         (bow?.y ?? 0);
-    }
-    if (rowPaper) {
-      // Paper under the row the face is becoming, so the ghost of the map
-      // passes behind its name; a leaving row's paper goes as it leaves.
-      const paper =
-        GATHER_KNOBS.PAPER_INK * receded * (face.found ? 1 : 1 - u);
-      if (paper > 0) {
-        paints.paper.setAlphaf(paper);
-        const left =
-          x -
-          NAME_LENS_KNOBS.ROW_PREVIEW_OFFSET_PX -
-          GATHER_KNOBS.PAPER_BEHIND_FACE_PX;
-        canvas.drawRect(
-          Skia.XYWHRect(
-            left,
-            y - GATHER_KNOBS.PAPER_HEIGHT_PX / 2,
-            viewport.width - left,
-            GATHER_KNOBS.PAPER_HEIGHT_PX,
-          ),
-          paints.paper,
-        );
-        paints.paper.setAlphaf(1);
-      }
-      return;
     }
     // Culling, at the live camera and on the frame it is true — which is the
     // thing the node renderer could not do, because its answer would have had
@@ -1680,15 +1655,15 @@ export function drawFieldFaces(
   };
 
   if (mapCam === null) {
-    for (let index = 0; index < faces.length; index++) drawOne(faces[index], false);
+    for (let index = 0; index < faces.length; index++) drawOne(faces[index]);
     return;
   }
-  // The map first, then the paper the shelf's rows lie on, then the shelf.
+  // The map first, then the shelf.
   if (side !== 2) {
     for (let index = 0; index < faces.length; index++) {
       const face = faces[index];
       if (!face.found && !(face.timing !== null && face.timing.fromFound)) {
-        drawOne(face, false);
+        drawOne(face);
       }
     }
   }
@@ -1696,13 +1671,7 @@ export function drawFieldFaces(
   for (let index = 0; index < faces.length; index++) {
     const face = faces[index];
     if (face.found || (face.timing !== null && face.timing.fromFound)) {
-      drawOne(face, true);
-    }
-  }
-  for (let index = 0; index < faces.length; index++) {
-    const face = faces[index];
-    if (face.found || (face.timing !== null && face.timing.fromFound)) {
-      drawOne(face, false);
+      drawOne(face);
     }
   }
 }
@@ -2275,6 +2244,12 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   }, [clock, recut]);
   /** The map behind find's gather; null for any other re-cut. */
   const recede = recut.recede ?? null;
+  /**
+   * The gather's two cameras, held apart from the re-cut: a worklet that
+   * read `recut.gather` would capture the whole re-cut — both layouts and
+   * every flight — and copy it to the UI thread on every letter.
+   */
+  const gatherCameras = recut.gather ?? null;
   // Worklets need camera endpoints, not the entire layout and flight family.
   const nativeRecut = useMemo<NativeRecut>(
     () => ({
@@ -2454,7 +2429,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         const p = Math.min(Math.max(clock.value, 0), 1);
         const live = p >= 1 ? cameraShared.value : null;
         // While find gathers, the map's ground is the map camera's.
-        const drawnGather = gatherDrawn(recut.gather, recede, p);
+        const drawnGather = gatherDrawn(gatherCameras, recede, p);
         const mapDrawn =
           drawnGather === null
             ? null
@@ -2481,6 +2456,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
               : mapDrawn,
             nativeFitScale(p, nativeRecut, fitScaleShared),
             viewport,mapPaints.lattice,
+            1 -
+              (1 - GATHER_KNOBS.RECEDE_LATTICE_INK) *
+                recededAt(recede, recede === null ? p : linearOfEased(p)),
           );
         drawFieldFaces(
           canvas,
@@ -2592,7 +2570,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     };
     const hubCovers = hubPaths.value;
     // While find gathers, the map's furniture is drawn by the map's camera.
-    const drawnGather = gatherDrawn(recut.gather, recede, p);
+    const drawnGather = gatherDrawn(gatherCameras, recede, p);
     const mapCamera =
       drawnGather === null
         ? rowCamera
@@ -2637,12 +2615,14 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         FIELD_CANVAS_KNOBS.SHELF_KEY_GAP_PX,
         recede === null
           ? 1
-          : recedeInkAt(recede, p >= 1 ? 1 : linearOfEased(p)) *
+          : (1 -
+              (1 - GATHER_KNOBS.RECEDE_HEAD_INK) *
+                recededAt(recede, p >= 1 ? 1 : linearOfEased(p))) *
               // Behind a gather the map gives way as you go into a song.
               (drawnGather === null ? 1 : 1 - motion.arrived.value),
       );
       if (drawnGather !== null) {
-        // The found shelf over the map's names: its paper, then its faces.
+        // The found shelf's faces over the map's names.
         drawFieldFaces(
           canvas,
           faceFlights,
@@ -2749,7 +2729,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       scale: nativeCameraScale(p, nativeRecut, cameraShared),
     };
     const marks = jobMarks.value;
-    const drawnGather = gatherDrawn(recut.gather, recede, p);
+    const drawnGather = gatherDrawn(gatherCameras, recede, p);
     // A job is never found: it goes as the map recedes behind a gather.
     const jobsLeft =
       drawnGather === null
@@ -3559,6 +3539,10 @@ function retargetShelfLabelFlights(
   const capturedByGroup = new Map<string, CapturedShelfFlight>();
   for (const flight of current) {
     if (flight.toGroupKey === null) continue;
+    // A name standing still is already where the next plan starts it, as the
+    // next plan says it: capturing it would sample its contours to morph it
+    // into itself — every head of the map behind find's gather, per letter.
+    if (standingStill(flight)) continue;
     const captured: CapturedShelfFlight = {
       point: {
         x: flight.from.x + (flight.to.x - flight.from.x) * travel,
@@ -3622,6 +3606,21 @@ function retargetShelfLabelFlights(
       secondaryFrom: captured.secondary?.text ?? flight.secondaryFrom,
     };
   });
+}
+
+/** A label flight that neither moves, morphs nor changes its ink. */
+function standingStill(flight: LabelFlight): boolean {
+  return (
+    flight.primary === null &&
+    flight.secondary === null &&
+    flight.primaryFrom === flight.primaryTo &&
+    flight.secondaryFrom === flight.secondaryTo &&
+    flight.from.x === flight.to.x &&
+    flight.from.y === flight.to.y &&
+    flight.fromTop === flight.toTop &&
+    flight.fromTopGathered === flight.toTopGathered &&
+    flight.fromAlpha === flight.targetAlpha
+  );
 }
 
 function captureFlightLine(

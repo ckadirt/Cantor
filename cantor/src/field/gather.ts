@@ -67,13 +67,11 @@ export const GATHER_KNOBS = {
   RECEDE_SCALE: 0.92,
   RECEDE_MS: 500,
   /**
-   * The paper laid under each found row, so the ghost of the map passes
-   * behind the names rather than through them: its ink, how far left of the
-   * face it starts, and its height.
+   * The map's heads and its lattice recede further and less than its faces,
+   * as the study's do: a week's name must not read through a found row.
    */
-  PAPER_INK: 0.92,
-  PAPER_BEHIND_FACE_PX: 24,
-  PAPER_HEIGHT_PX: 52,
+  RECEDE_HEAD_INK: 0.08,
+  RECEDE_LATTICE_INK: 0.35,
 } as const;
 
 export type GatherOptions = Readonly<{
@@ -139,13 +137,15 @@ export function gatherLayout(
     leftBy.set(placement.groupKey, left);
   }
 
+  // A group keeps its song count: the map behind the gather still holds
+  // what it held, and its heads say so (the study's heads never change). A
+  // count that moved with each letter would morph every head on every letter.
   const groups: Group[] = layout.groups.map(group => {
     const left = leftBy.get(group.key);
     if (left === undefined) return group;
     return {
       ...group,
       entityKeys: group.entityKeys.filter(key => !left.has(key)),
-      songCount: Math.max(0, group.songCount - left.size),
     };
   });
   const entityKeys = gathered.map(placement => placement.entityKey);
