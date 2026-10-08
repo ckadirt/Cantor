@@ -19,7 +19,14 @@
  * the tree: animated outlines hand ownership to mounted Glyphs on the UI
  * thread, preserving the Flicker Law across React commits and Skia mapper ticks.
  */
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, {
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { StyleSheet, View, type StyleProp, type TextStyle, type ViewStyle } from 'react-native';
 import {
   Canvas,
@@ -732,7 +739,72 @@ export type MorphTextProps = {
   /** External 0..1 clock; the component stops driving its own. Read-only
    *  derived clocks are fine — the component never writes to it. */
   progress?: SharedValue<number> | DerivedValue<number>;
+  /**
+   * Drawn on the nearest `MorphHost`'s canvas instead of a canvas of its own.
+   * Only for a text whose container does not move or fade on its own: the
+   * host's canvas cannot see those animations. See `MorphHost`.
+   */
+  hosted?: boolean;
+  /** The text's opacity on the host's canvas, for a container that fades. */
+  hostOpacity?: SharedValue<number> | DerivedValue<number>;
 };
+
+/**
+ * One Skia canvas for several morphing texts.
+ *
+ * Every `MorphText` draws on a canvas of its own, and every canvas that
+ * changes is presented on its own each frame. On the Xiaomi, a second canvas
+ * animating beside the field cost ~1.7 ms a frame and each further one ~0.6,
+ * whatever it drew: an axis change morphs the header's eyebrow and count and
+ * the foot's hint while the field re-cuts, and the five canvases between them
+ * took the frame over budget. Under a host, a text marked `hosted` keeps its
+ * view — for layout and the screen reader — and hands its drawing to the
+ * host's one canvas, placed where its view stands.
+ */
+type MorphHostApi = Readonly<{
+  root: React.RefObject<View | null>;
+  place: (id: number, node: React.ReactElement | null) => void;
+}>;
+const MorphHostContext = React.createContext<MorphHostApi | null>(null);
+let nextHostedId = 1;
+
+export function MorphHost({
+  children,
+  style,
+}: {
+  children: React.ReactNode;
+  style?: StyleProp<ViewStyle>;
+}) {
+  const root = useRef<View>(null);
+  const [nodes, setNodes] = useState<ReadonlyMap<number, React.ReactElement>>(
+    () => new Map(),
+  );
+  const api = useMemo<MorphHostApi>(
+    () => ({
+      root,
+      place: (id, node) =>
+        setNodes(previous => {
+          if (node === null ? !previous.has(id) : previous.get(id) === node) {
+            return previous;
+          }
+          const next = new Map(previous);
+          if (node === null) next.delete(id);
+          else next.set(id, node);
+          return next;
+        }),
+    }),
+    [],
+  );
+  const drawn = useMemo(() => [...nodes.values()], [nodes]);
+  return (
+    <View ref={root} collapsable={false} pointerEvents="box-none" style={style}>
+      <MorphHostContext.Provider value={api}>{children}</MorphHostContext.Provider>
+      <Canvas pointerEvents="none" style={StyleSheet.absoluteFill}>
+        {drawn}
+      </Canvas>
+    </View>
+  );
+}
 
 /**
  * Memoized so unrelated parent commits cannot re-record a ticking Canvas.
@@ -751,8 +823,12 @@ function MorphTextImpl({
   appearance = 'none',
   style,
   progress,
+  hosted = false,
+  hostOpacity,
 }: MorphTextProps) {
   const charStyle = useFontScaledStyle(authoredStyle, allowFontScaling);
+  const host = useContext(MorphHostContext);
+  const onHost = hosted && host !== null;
   const idle = useSharedValue(1);
   const reduced = useReducedMotion();
   const font = useMorphFont(charStyle);
@@ -855,43 +931,100 @@ function MorphTextImpl({
     return () => cancelAnimation(clock);
   }, [model, progress]);
 
+  const scene =
+    model && font ? (
+      model.kind === 'write' || model.kind === 'erase' ? (
+        <WriteScene
+          key={`wr${model.gen}`}
+          model={model}
+          tt={tt}
+          font={font}
+          color={color}
+        />
+      ) : model.kind === 'settled' ? (
+        <Glyphs
+          key={`set${model.gen}`}
+          font={font}
+          glyphs={model.enterGlyphs}
+          color={color}
+        />
+      ) : (
+        /* One keyed instance per generation: layers AND their reanimated
+           bindings remount together, so an outgoing generation can never
+           repaint against the next generation's newborn clock. */
+        <TransitionGlyphs
+          key={`tr${model.gen}`}
+          model={model}
+          tt={tt}
+          font={font}
+          color={color}
+        />
+      )
+    ) : null;
+
+  // On a host: where this text's view stands on the host's canvas.
+  const box = useRef<View>(null);
+  const [seat, setSeat] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+  const measureSeat = () => {
+    const rootView = host?.root.current;
+    if (!onHost || box.current === null || rootView == null) return;
+    box.current.measureLayout(rootView, (x, y, w, h) =>
+      setSeat(previous =>
+        previous !== null &&
+        previous.x === x &&
+        previous.y === y &&
+        previous.width === w &&
+        previous.height === h
+          ? previous
+          : { x, y, width: w, height: h },
+      ),
+    );
+  };
+  const hostedId = useRef(0);
+  if (hostedId.current === 0) hostedId.current = nextHostedId++;
+  const hostedNode = useMemo(
+    () =>
+      !onHost || seat === null || scene === null ? null : (
+        <Group
+          key={hostedId.current}
+          clip={Skia.XYWHRect(0, 0, seat.width, seat.height)}
+          opacity={hostOpacity ?? 1}
+          transform={[{ translateX: seat.x }, { translateY: seat.y }]}
+        >
+          {scene}
+        </Group>
+      ),
+    // `scene` is rebuilt every render; what it is made of is below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onHost, seat, model, font, color, tt, hostOpacity],
+  );
+  useLayoutEffect(() => {
+    if (host !== null && onHost) host.place(hostedId.current, hostedNode);
+  }, [host, hostedNode, onHost]);
+  useEffect(
+    () => () => host?.place(hostedId.current, null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+
   return (
     <View
+      ref={box}
       style={style}
-      onLayout={e => setWidth(e.nativeEvent.layout.width)}
+      onLayout={e => {
+        setWidth(e.nativeEvent.layout.width);
+        measureSeat();
+      }}
       accessible
       accessibilityRole="text"
       accessibilityLabel={text}>
-      {model && font && (
-        <Canvas style={StyleSheet.absoluteFill}>
-          {model.kind === 'write' || model.kind === 'erase' ? (
-            <WriteScene
-              key={`wr${model.gen}`}
-              model={model}
-              tt={tt}
-              font={font}
-              color={color}
-            />
-          ) : model.kind === 'settled' ? (
-            <Glyphs
-              key={`set${model.gen}`}
-              font={font}
-              glyphs={model.enterGlyphs}
-              color={color}
-            />
-          ) : (
-            /* One keyed instance per generation: layers AND their reanimated
-               bindings remount together, so an outgoing generation can never
-               repaint against the next generation's newborn clock. */
-            <TransitionGlyphs
-              key={`tr${model.gen}`}
-              model={model}
-              tt={tt}
-              font={font}
-              color={color}
-            />
-          )}
-        </Canvas>
+      {!onHost && scene !== null && (
+        <Canvas style={StyleSheet.absoluteFill}>{scene}</Canvas>
       )}
     </View>
   );

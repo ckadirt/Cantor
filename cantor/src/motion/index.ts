@@ -45,6 +45,7 @@ export {
 export {
   CrossfadeText,
   MatchingText,
+  MorphHost,
   MorphText,
   MorphTextSequence,
   TransformText,
