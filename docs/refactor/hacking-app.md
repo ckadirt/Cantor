@@ -667,6 +667,24 @@ draw on one `MorphHost` canvas. The dial's tick slides by transform, not by
 renames every placement does not remount ~70 views mid-flight. Release, week ↔
 month: p90 19 → 17.4 ms, frames > 20 ms 15 → ~5, longest 61 → ~25 ms.
 Measure with perfetto (`gfx`/`view` atrace + `Choreographer#doFrame` per
-frame, `eglSwapBuffers` per frame for surfaces) on a release build. What is
+frame, `eglSwapBuffers` per frame for surfaces) on a release build.
+
+**Faces are stamps.** With a real library the faces are the frame: 194 songs
+on a Samsung A52s (120 Hz) cost ~13 ms a frame as paths. A lens may declare
+its mark as a few looks (`MarkSprites` in `lenses/contract.ts`: the circle's
+filled and outline-only, the seal's dots and filled dots, each with its line);
+`features/field/faceAtlas.ts` draws every song's looks once into one image at
+the map's mark size, and `drawFieldFaces` stamps every plain face with one
+`drawAtlas` a frame — one stamp per face, its alpha in the stamp's colour,
+transforms and colours pooled and set in place. A face that is not a plain
+mark (the player, a playing ring, a download, an ink between looks, bigger
+than the stamps, or a song changed since they were drawn) is drawn as paths,
+the batch flushed first so overlap order never changes. The image is drawn
+again only once the size holds still (≥ 250 ms apart) or, for changed songs,
+≥ 2 s apart: a redraw is ~75 ms on the A52s. Release, A52s: axis change
+median 23.6 → ~11–14 ms (thermal), frames > 16.7 ms 260 → ~20–35; find
+median 20.7 → ~12.5, longest 116 → ~25 ms. The web Skia under Jest ignores
+`drawAtlas` colours, so `faceAtlas.test.ts` compares pixels at full ink and
+checks each look's alpha by value. What is
 left is the UI thread's own work for the keystroke (the text field), which a
 synchronous send (`executeOnUIRuntimeSync`) did not beat.
