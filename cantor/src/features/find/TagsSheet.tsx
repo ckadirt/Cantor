@@ -63,7 +63,7 @@ type Props = {
 
 /**
  * The tags, as an index: which songs the map shows. Opened from the count
- * line's tag words, or from `TAGS` in find's hint seat.
+ * line's tag words, on the map or in find before a letter.
  */
 export function TagsSheet({
   onClose,

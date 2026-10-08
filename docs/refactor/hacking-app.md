@@ -551,8 +551,9 @@ Inside a shelf, find holds that shelf's matches and offers the rest as the
 column's last row (`foundFoot`, drawn by the canvas; a tap there reaches the
 screen through `onTapNothing`). Found rows say where they came from and how
 long they are (`foundPlaces`). Find's chrome hides the shelf's bulk action,
-the held song and the filter phrase; its hint seat holds `TAGS` while
-nothing is typed. The tags blind (`features/find/TagsSheet.tsx`) is set as a
+and the held song. While nothing is typed, the count line ends in the tags'
+door, as on the map: `TYPE A NAME · TAGS`, or the filter's own words; the
+foot is under the keyboard, so the door is never there. The tags blind (`features/find/TagsSheet.tsx`) is set as a
 book's index, not as a Folio: it shares the field header's seats.
 
 Group names are fitted to one map column at FIT (`labelMaxWidthPx`): the
