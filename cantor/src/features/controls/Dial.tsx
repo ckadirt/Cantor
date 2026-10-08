@@ -59,6 +59,9 @@ export type DialItem = Readonly<{
  *
  * Each word reports its own box through `onLayout`; nothing here measures text.
  */
+/** The tick's laid-out length, which `scaleX` stretches to the word's. */
+const TICK_BASE_PX = 100;
+
 export function Dial({
   activeColour,
   activeKey,
@@ -125,10 +128,16 @@ export function Dial({
     width.value = withTiming(target.width, timing);
   }, [left, reducedMotion, target, width]);
 
+  // Moved and stretched, never resized: a hairline scaled along its length
+  // is the same line, and transforms leave layout alone. Animating `width`
+  // re-laid out the screen on every frame of the slide — on an axis change,
+  // every frame of the field's re-cut too.
   const tick = useAnimatedStyle(() => ({
     opacity: width.value > 0 ? 1 : 0,
-    transform: [{ translateX: left.value }],
-    width: width.value,
+    transform: [
+      { translateX: left.value },
+      { scaleX: width.value / TICK_BASE_PX },
+    ],
   }));
 
   // The tick is measured against the same box the words are laid out in, so it
@@ -220,5 +229,7 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     left: 0,
     position: 'absolute',
+    transformOrigin: 'left',
+    width: TICK_BASE_PX,
   },
 });
