@@ -17,12 +17,13 @@ import {
 import Animated, {
   Easing,
   useAnimatedStyle,
+  useDerivedValue,
   useReducedMotion,
   useSharedValue,
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
-import { TransformText, WriteText } from '../../motion';
+import { MorphHost, TransformText, WriteText } from '../../motion';
 import { smootherstep } from '../../motion/geometry';
 import { Dial, Reveal } from '../controls';
 import { FieldLegend } from './FieldLegend';
@@ -639,6 +640,14 @@ function FieldOverlayImpl({
     }),
     [cameraShared, fitScaleShared],
   );
+  /**
+   * The same, for the lines the header and foot hand to the overlay's one
+   * canvas (`MorphHost`): that canvas is not inside their views, so it does
+   * not fade with them by itself.
+   */
+  const presentOpacity = useDerivedValue(() =>
+    1 - bandAlphaAt(cameraShared.value.scale, fitScaleShared.value, CHROME_AWAY_WINDOW),
+  );
   /*
    * The title line becoming the query. Not `h`: entering find happens at L0
    * or L1, where the header is always shown.
@@ -710,7 +719,7 @@ function FieldOverlayImpl({
   const eyebrowText = useDeferredValue(eyebrowLine(h.level, noun, h.finding));
   const countText = useDeferredValue(countLine);
   return (
-    <View pointerEvents="box-none" style={StyleSheet.absoluteFill}>
+    <MorphHost style={StyleSheet.absoluteFill}>
       <EdgeTab
         accessibilityLabel="Open the composer"
         colour={pal.faint}
@@ -753,6 +762,8 @@ function FieldOverlayImpl({
             charStyle={CHROME_STYLES.eyebrow}
             color={pal.muted}
             duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+            hosted
+            hostOpacity={presentOpacity}
             style={styles.eyebrowSlot}
           />
           {/*
@@ -846,6 +857,8 @@ function FieldOverlayImpl({
               charStyle={CHROME_STYLES.eyebrow}
               color={pal.faint}
               duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+              hosted
+              hostOpacity={presentOpacity}
               style={styles.eyebrowSlot}
             />
           </View>
@@ -1037,6 +1050,8 @@ function FieldOverlayImpl({
             charStyle={CHROME_STYLES.hint}
             color={pal.faint}
             duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+            hosted
+            hostOpacity={presentOpacity}
             writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
             variant="transform"
             style={styles.hintSlot}
@@ -1061,7 +1076,7 @@ function FieldOverlayImpl({
         label="NODES"
         onPress={onOpenEngines}
       />
-    </View>
+    </MorphHost>
   );
 }
 
