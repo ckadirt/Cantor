@@ -2595,6 +2595,7 @@ export function FieldScreen({ identity }: Props) {
                 cameraShared={fieldCamera.cameraShared}
                 fitScaleShared={fieldCamera.fitScaleShared}
                 drawnClockShared={fieldCamera.drawnClockShared}
+                cutClockShared={fieldCamera.cutClockShared}
                 installRef={canvasInstall}
                 layout={layout}
                 labelFromGroups={fieldCamera.labelFromGroups}
