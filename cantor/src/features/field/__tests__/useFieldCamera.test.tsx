@@ -120,6 +120,20 @@ function holdRecut(progress: number): () => void {
   return () => finish?.(true);
 }
 
+/**
+ * Stand the canvas's clock where it has drawn the re-cut in the air to: the
+ * Jest mock runs no reactions, so the canvas never says so itself.
+ */
+function round(value: number): number {
+  return Math.round(value * 1e4) / 1e4;
+}
+
+function drawnTo(eased: number): void {
+  const generation = latest.recut!.generation;
+  latest.cutClockShared.value = eased;
+  latest.drawnClockShared.value = { generation, eased };
+}
+
 function Probe({
   layout,
   onOpenComposer,
@@ -769,20 +783,23 @@ describe('useFieldCamera', () => {
         placementFlightAt(flight, smootherstep(0.5)),
       )
       .map(item => ({
-        x: item.x,
-        y: item.y,
+        x: round(item.x),
+        y: round(item.y),
         bloomX: item.bloomX,
         bloomY: item.bloomY,
         opacity: item.opacity,
       }));
     renders.length = 0;
+    drawnTo(smootherstep(0.5));
 
     await ReactTestRenderer.act(async () => {
       renderer.update(<TransitionProbe field={year} />);
     });
+    // The canvas's clock is eased; taken back to linear time, it is good to
+    // well under a pixel.
     const retarget = renders[0].visualPlacements.map(item => ({
-      x: item.x,
-      y: item.y,
+      x: round(item.x),
+      y: round(item.y),
       bloomX: item.bloomX,
       bloomY: item.bloomY,
       opacity: item.opacity,
@@ -796,6 +813,84 @@ describe('useFieldCamera', () => {
       (left.opacity ?? 0) - (right.opacity ?? 0);
     expect(retarget.sort(byPose)).toEqual(midpoint.sort(byPose));
     expect(renders[0].relayoutLinear).toBe(0);
+  });
+
+  /*
+   * Week, then year before month has landed. The camera's clock runs ahead of
+   * the canvas's by the frames the canvas took to start, and the canvas kept
+   * playing while the next cut was built; the next cut began from where things
+   * were when it was asked, and the picture jumped back as it started.
+   */
+  it('starts an interrupting re-cut from the frame the canvas drew, held there', async () => {
+    mockReducedMotion = false;
+    holdRecut(0.8);
+    const tagged = [{ ...entities[0], tags: ['p/Drive', 'p/Focus'] }];
+    const month = layoutField({
+      entities: tagged,
+      arrangement: byDate('month'),
+      viewport,
+    });
+    const playlist = layoutField({
+      entities: tagged,
+      arrangement: byPlaylist,
+      viewport,
+    });
+    const year = layoutField({
+      entities: tagged,
+      arrangement: byDate('year'),
+      viewport,
+    });
+    function HeldProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<HeldProbe field={month} />);
+    });
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<HeldProbe field={playlist} />);
+    });
+    const interrupted = latest.recut!;
+    const drawn = 0.3;
+    drawnTo(drawn);
+    const reanimated = require('react-native-reanimated');
+    const cancel = jest.spyOn(reanimated, 'cancelAnimation');
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<HeldProbe field={year} />);
+    });
+    // Both clocks stop where the canvas stands, before anything is captured.
+    expect(cancel).toHaveBeenCalledWith(latest.cutClockShared);
+    expect(latest.cutClockShared.value).toBe(drawn);
+    const next = latest.recut!;
+    expect(next.generation).toBe(interrupted.generation + 1);
+    const onScreen = interrupted.flights
+      .map(flight => placementFlightAt(flight, drawn))
+      .filter(placement => placement.targetPlacementKey !== null)
+      .map(placement => [round(placement.x), round(placement.y)]);
+    const sources = next.flights
+      .filter(flight => flight.fromAlpha > 0)
+      .map(flight => [round(flight.fromX), round(flight.fromY)]);
+    expect(sources).toEqual(expect.arrayContaining(onScreen));
+    const fit = Math.exp(
+      Math.log(interrupted.fromFitScale) +
+        (Math.log(interrupted.toFitScale) -
+          Math.log(interrupted.fromFitScale)) *
+          drawn,
+    );
+    expect(next.fromFitScale).toBeCloseTo(fit, 10);
+    expect(next.fromCamera.y).toBeCloseTo(
+      interrupted.fromCamera.y +
+        (interrupted.toCamera.y - interrupted.fromCamera.y) * drawn,
+      10,
+    );
+    cancel.mockRestore();
   });
 
   it('does not restart a re-cut for an equivalent rebuilt layout', async () => {
@@ -972,6 +1067,7 @@ describe('useFieldCamera', () => {
     await ReactTestRenderer.act(async () => {
       renderer.update(<NativeProbe field={playlist} tick={1} />);
     });
+    drawnTo(smootherstep(0.5));
 
     await ReactTestRenderer.act(async () => {
       renderer.update(<NativeProbe field={year} tick={1} />);
@@ -1027,6 +1123,7 @@ describe('useFieldCamera', () => {
     const rendersAtBorn = renderCount;
 
     expect(renderCount).toBe(rendersAtBorn);
+    drawnTo(smootherstep(0.5));
 
     await ReactTestRenderer.act(async () => {
       renderer.update(<NativeProbe field={year} />);

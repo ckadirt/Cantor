@@ -3,6 +3,7 @@ import {
   prepareNativeLabels,
   createLabelPaints,
   drawNativeLabels,
+  heldLabelText,
 } from './nativeLabels';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 import {
@@ -161,13 +162,9 @@ import { compoundPolygonPath } from '../../motion/geometry';
 import { resolveSilhouette } from '../../motion/silhouette';
 import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
 import {
-  captureLabelMorph,
-  captureLabelText,
   labelFlightAlpha,
   planShelfLabels,
-  retargetCapturedLabel,
   settledShelfLabelFlights,
-  type CapturedLabelMorph,
   type LabelFlight,
   type ShelfLabelFlights,
 } from './labelMorph';
@@ -322,6 +319,11 @@ type Props = {
    * which captures an interrupted gather from it; see `DrawnClock`.
    */
   drawnClockShared?: SharedValue<DrawnClock>;
+  /**
+   * The clock the canvas plays a re-cut on, when the camera hook owns it to
+   * hold an interrupted one; the canvas's own otherwise.
+   */
+  cutClockShared?: SharedValue<number>;
   /**
    * Filled with the canvas's way to send a cut before React renders it — a
    * letter in find (`useFieldCamera`'s `recutNow`).
@@ -512,6 +514,7 @@ function FieldCanvasImpl({
   cameraShared,
   fitScaleShared,
   drawnClockShared,
+  cutClockShared,
   installRef,
   viewport,
   presentations: currentPresentations,
@@ -594,9 +597,10 @@ function FieldCanvasImpl({
    * canvas's life. Native shared values are stable; the Jest mock is not, so
    * each is held by ref, as `useFieldCamera` holds its own.
    */
+  const ownClock = useSharedValue(1);
   const sceneCandidate: LivingScene = {
     cut: useSharedValue<NativeCut | null>(null),
-    clock: useSharedValue(1),
+    clock: cutClockShared ?? ownClock,
     songs: useSharedValue<Readonly<Record<string, SongDraw>>>({}),
     focus: useSharedValue<FocusDraw | null>(null),
     playing: useSharedValue<string | null>(null),
@@ -669,7 +673,6 @@ function FieldCanvasImpl({
               previous.flights,
               interruptedAt.current,
               semanticLabelFlights,
-              monoFont,
             )
           : semanticLabelFlights,
     };
@@ -4022,36 +4025,39 @@ type CapturedShelfFlight = Readonly<{
    */
   top: number;
   topGathered: number;
-  primary: CapturedLabelMorph | null;
-  secondary: CapturedLabelMorph | null;
+  /** The text on the screen, as `heldLabelText` reads it. */
+  primary: string;
+  secondary: string;
   survives: boolean;
   alpha: number;
 }>;
 
 /**
- * Retarget label flights from the exact paths and world anchor drawn by the
- * interrupted generation. This is the field-canvas equivalent of
- * `captureSilhouette`: the next filter never restarts from either semantic
- * endpoint when the person taps the dial mid-morph.
+ * Retarget label flights from the text, world anchor and ink drawn by the
+ * interrupted generation: the next filter never restarts from either semantic
+ * endpoint when the person taps the dial mid-change.
  *
  * `progress` is the value the canvas drew at — the re-cut's clock, which is
  * already eased — so it is used as it is. It once took React's un-eased copy
  * and eased it here; on the native path React's copy stands at 0 for the
  * whole flight, and the names restarted from their source.
+ *
+ * The canvas draws a name as text crossfading between two lines, so the text
+ * is what is captured. This used to sample every changing name's glyph
+ * outlines for a path morph the canvas never draws: about 120 ms on the
+ * Samsung, during which the interrupted re-cut stood held on the screen.
  */
 function retargetShelfLabelFlights(
   current: ShelfLabelFlights,
   progress: number,
   next: ShelfLabelFlights,
-  labelFont: Parameters<typeof captureLabelMorph>[2],
 ): ShelfLabelFlights {
   const travel = progress;
   const capturedByGroup = new Map<string, CapturedShelfFlight>();
   for (const flight of current) {
     if (flight.toGroupKey === null) continue;
     // A name standing still is already where the next plan starts it, as the
-    // next plan says it: capturing it would sample its contours to morph it
-    // into itself — every head of the map behind find's gather, per letter.
+    // next plan says it.
     if (standingStill(flight)) continue;
     const captured: CapturedShelfFlight = {
       point: {
@@ -4062,17 +4068,11 @@ function retargetShelfLabelFlights(
       topGathered:
         flight.fromTopGathered +
         (flight.toTopGathered - flight.fromTopGathered) * travel,
-      primary: captureFlightLine(
-        flight.primary,
-        flight.primaryTo,
-        progress,
-        labelFont,
-      ),
-      secondary: captureFlightLine(
-        flight.secondary,
+      primary: heldLabelText(flight.primaryFrom, flight.primaryTo, progress),
+      secondary: heldLabelText(
+        flight.secondaryFrom,
         flight.secondaryTo,
         progress,
-        labelFont,
       ),
       survives: flight.primaryTo.length > 0,
       alpha: labelFlightAlpha(flight, travel),
@@ -4096,24 +4096,8 @@ function retargetShelfLabelFlights(
       fromTopGathered: captured.topGathered,
       fromAlpha:
         flight.ownership === 'branch' ? flight.fromAlpha : captured.alpha,
-      primary:
-        captured.primary === null
-          ? flight.primary
-          : retargetCapturedLabel(
-              captured.primary,
-              flight.primaryTo,
-              labelFont,
-            ) ?? flight.primary,
-      secondary:
-        captured.secondary === null
-          ? flight.secondary
-          : retargetCapturedLabel(
-              captured.secondary,
-              flight.secondaryTo,
-              labelFont,
-            ) ?? flight.secondary,
-      primaryFrom: captured.primary?.text ?? flight.primaryFrom,
-      secondaryFrom: captured.secondary?.text ?? flight.secondaryFrom,
+      primaryFrom: captured.primary,
+      secondaryFrom: captured.secondary,
     };
   });
 }
@@ -4131,17 +4115,6 @@ function standingStill(flight: LabelFlight): boolean {
     flight.fromTopGathered === flight.toTopGathered &&
     flight.fromAlpha === flight.targetAlpha
   );
-}
-
-function captureFlightLine(
-  morph: LabelFlight['primary'],
-  settledText: string,
-  progress: number,
-  labelFont: Parameters<typeof captureLabelMorph>[2],
-): CapturedLabelMorph | null {
-  return morph === null
-    ? captureLabelText(settledText, labelFont)
-    : captureLabelMorph(morph, progress, labelFont);
 }
 
 /**

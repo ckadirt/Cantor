@@ -38,6 +38,28 @@ export function labelMaxWidthPx(viewport: Viewport): number {
 }
 
 /**
+ * The text of a name the canvas shows most of at `progress`: the line leaving
+ * until the crossfade is half done, the one arriving after. The same windows
+ * the draw below crossfades in, so an interrupted name resumes as the line
+ * that was on the screen.
+ */
+export function heldLabelText(
+  from: string,
+  to: string,
+  progress: number,
+): string {
+  if (from === to) return from;
+  const raw =
+    from.length === 0 || to.length === 0
+      ? progress / LABEL_MORPH_KNOBS.FADE_END
+      : (progress - LABEL_MORPH_KNOBS.FIELD_CROSSFADE_START) /
+        (LABEL_MORPH_KNOBS.FIELD_CROSSFADE_END -
+          LABEL_MORPH_KNOBS.FIELD_CROSSFADE_START);
+  const t = Math.min(Math.max(raw, 0), 1);
+  return t * t * t * (t * (t * 6 - 15) + 10) < 0.5 ? from : to;
+}
+
+/**
  * A name's lines, drawn upward from the line nearest the cluster: `row` is in
  * line heights from the name's anchor, so a title that wraps grows away from
  * the marks rather than into them, and the second line (the axis key) keeps

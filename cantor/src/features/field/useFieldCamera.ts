@@ -11,6 +11,7 @@ import {
   withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
+import { runOnUISync } from 'react-native-worklets';
 import { easeSmoother } from '../../motion';
 import { cameraSummary, type OriginFrame } from './cameraSummary';
 import {
@@ -284,6 +285,8 @@ type CameraState = {
   fitScaleShared: SharedValue<number>;
   /** The canvas's clock for the re-cut it draws; see `DrawnClock`. */
   drawnClockShared: SharedValue<DrawnClock>;
+  /** The canvas's eased re-cut clock itself, which an interruption holds. */
+  cutClockShared: SharedValue<number>;
   /** Plan and start a re-cut before React renders it; see `recutNow`. */
   recutNow: (layout: FieldLayout, finding: boolean) => FieldRecutModel | null;
   /** How far an edge pull has come, in screen pixels; see the shared value. */
@@ -533,6 +536,11 @@ export function useFieldCamera({
     generation: 0,
     eased: 1,
   });
+  /**
+   * The clock the canvas plays a re-cut on, owned here so an interruption can
+   * stop it in the same instant as the camera's; see `holdInterrupted`.
+   */
+  const cutClockCandidate = useSharedValue(1);
   const recutEndsCandidate = useSharedValue<RecutEnds | null>(null);
   const flightFromCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
   const flightToCandidate = useSharedValue<Camera>(EMPTY_CAMERA);
@@ -595,6 +603,12 @@ export function useFieldCamera({
   const shelfSeatsShared = useRef(shelfSeatsSharedCandidate).current;
   const recutProgress = useRef(recutProgressCandidate).current;
   const drawnClock = useRef(drawnClockCandidate).current;
+  const cutClock = useRef(cutClockCandidate).current;
+  /**
+   * Where an interrupted re-cut was held, eased, and which re-cut that was;
+   * see `holdInterrupted`.
+   */
+  const heldAt = useRef<{ generation: number; eased: number } | null>(null);
   /**
    * A gather's cut waiting for the canvas to draw it; see `PendingCut`.
    * Until then the camera stays where the scene still on screen is drawn
@@ -698,7 +712,13 @@ export function useFieldCamera({
       if (nativeFlight.current !== model.generation) {
         return lastVisualPlacements.current;
       }
-      const linear = Math.min(Math.max(recutProgress.value, 0), 1);
+      // Where the canvas has drawn it, held there; the camera's own clock
+      // runs ahead of the canvas's by the frames the canvas took to start.
+      const held = heldAt.current;
+      const linear =
+        held !== null && held.generation === model.generation
+          ? linearOfEased(held.eased)
+          : Math.min(Math.max(recutProgress.value, 0), 1);
       return model.flights.map(flight =>
         placementFlightAtClock(flight, linear, scale),
       );
@@ -1136,11 +1156,67 @@ export function useFieldCamera({
    * before React renders (`recutNow`). Either way the new model is born at
    * progress zero; no commit can expose the new target under the old clock.
    */
+  /**
+   * A re-cut interrupted in the air — week, then year before month has
+   * landed — held where the canvas has drawn it.
+   *
+   * The next cut takes some frames to plan and build, and the one on screen
+   * kept playing through them: it started from where things were when it was
+   * asked, so the picture jumped back by those frames as it began (the names
+   * all the way back to the weeks). Both clocks stop together, on the UI
+   * thread, and the camera and fit are set to what the canvas drew, so the
+   * next cut starts from the frame left on the screen. A gather keeps its own
+   * capture (`liveCapture`).
+   */
+  const holdInterrupted = (previous: FieldRecutModel | null): void => {
+    heldAt.current = null;
+    if (
+      previous === null ||
+      !previous.animate ||
+      previous.gather != null ||
+      nativeFlight.current !== previous.generation
+    ) {
+      return;
+    }
+    const generation = previous.generation;
+    const eased = runOnUISync(() => {
+      'worklet';
+      cancelAnimation(cutClock);
+      cancelAnimation(recutProgress);
+      // Not begun on the canvas: what it shows is where this cut starts.
+      const at =
+        drawnClock.value.generation === generation
+          ? Math.min(Math.max(cutClock.value, 0), 1)
+          : 0;
+      const ends = recutEnds.value;
+      if (ends !== null) {
+        const from = ends.fromCamera;
+        const to = ends.toCamera;
+        fitScaleShared.value = Math.exp(
+          Math.log(ends.fromFitScale) +
+            (Math.log(ends.toFitScale) - Math.log(ends.fromFitScale)) * at,
+        );
+        if (from.scale > 0 && to.scale > 0) {
+          cameraShared.value = {
+            x: from.x + (to.x - from.x) * at,
+            y: from.y + (to.y - from.y) * at,
+            scale: Math.exp(
+              Math.log(from.scale) +
+                (Math.log(to.scale) - Math.log(from.scale)) * at,
+            ),
+          };
+        }
+      }
+      return at;
+    });
+    heldAt.current = { generation, eased };
+  };
   // eslint-disable-next-line @typescript-eslint/no-shadow
   const planRecut = (layout: FieldLayout, finding: boolean): void => {
     const previous = recutModel.current;
     const generation = (previous?.generation ?? 0) + 1;
     const firstLayout = previous === null;
+    holdInterrupted(previous);
     const fromFitScale = renderedFit(previous?.toFitScale ?? layout.fitScale);
     const fromCamera = firstLayout
       ? levelCameraTarget('field', layout) ?? EMPTY_CAMERA
@@ -2827,6 +2903,7 @@ export function useFieldCamera({
     focusKeyShared,
     fitScaleShared,
     drawnClockShared: drawnClock,
+    cutClockShared: cutClock,
     recutNow,
     pullShared,
     pullDestinationShared: pullDestination,
