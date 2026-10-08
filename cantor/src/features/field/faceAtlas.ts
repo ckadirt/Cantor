@@ -36,16 +36,30 @@ export const FACE_ATLAS_KNOBS = {
    */
   FIT_LOW: 0.9,
   FIT_HIGH: 1.1,
-  /** The least time between two redraws of the stamps, while the size moves. */
+  /** The least time between two redraws of the stamps for a new size. */
   REDRAW_MS: 250,
+  /**
+   * The least time between two redraws for songs that changed or arrived:
+   * a download's progress changes its song many times a second, and until
+   * the redraw that song is drawn as paths.
+   */
+  RESTOCK_MS: 2000,
   /** The image's widest row, and its tallest, in pixels. */
   MAX_SIDE_PX: 4096,
   /** Clear pixels round each stamp, so filtering never reaches a neighbour. */
   GUTTER_PX: 2,
 } as const;
 
-/** One song's stamps under one lens: a source rect per layer. */
-type Stamp = Readonly<{ rects: readonly SkRect[]; half: number }>;
+/**
+ * One song's stamps under one lens: a source rect per look, and the identity
+ * they were drawn from — a song whose identity has changed since is drawn as
+ * paths until the stamps are drawn again.
+ */
+type Stamp = Readonly<{
+  rects: readonly SkRect[];
+  half: number;
+  identity: LensIdentity;
+}>;
 
 export type FaceAtlas = Readonly<{
   /** The songs record it was drawn from, compared by identity. */
@@ -55,6 +69,11 @@ export type FaceAtlas = Readonly<{
   /** The face size it was drawn at; see `drawFieldFaces`' `markPose`. */
   size: number;
   image: SkImage | null;
+  /**
+   * What the field last asked for, so a redraw waits for the size to hold
+   * still and for the songs to be checked once per change of the record.
+   */
+  asked: { size: number; songs: object | null; songsCovered: boolean };
   /** By lens (`LENSES` index), then by entity key. */
   stamps: Readonly<Record<number, Readonly<Record<string, Stamp>>>>;
   builtAt: number;
@@ -138,13 +157,17 @@ function drawFaceAtlas(
     }
   }
   const height = y + rowHeight;
-  const stamps: Record<number, Record<string, { rects: SkRect[]; half: number }>> = {};
+  const stamps: Record<
+    number,
+    Record<string, { rects: SkRect[]; half: number; identity: LensIdentity }>
+  > = {};
+  const asked = { size, songs, songsCovered: true };
   if (cells.length === 0 || width === 0 || height === 0) {
-    return { songs, lenses: key, size, image: null, stamps, builtAt: now() };
+    return { songs, lenses: key, size, image: null, asked, stamps, builtAt: now() };
   }
   const surface = Skia.Surface.Make(width, height);
   if (surface === null) {
-    return { songs, lenses: key, size, image: null, stamps, builtAt: now() };
+    return { songs, lenses: key, size, image: null, asked, stamps, builtAt: now() };
   }
   const canvas = surface.getCanvas();
   for (let index = 0; index < cells.length; index++) {
@@ -158,19 +181,45 @@ function drawFaceAtlas(
     canvas.restore();
     const byEntity = stamps[cell.lens] ?? {};
     stamps[cell.lens] = byEntity;
-    const stamp = byEntity[cell.entity] ?? { rects: [], half: cell.side / 2 };
+    const stamp = byEntity[cell.entity] ?? {
+      rects: [],
+      half: cell.side / 2,
+      identity: cell.identity,
+    };
     stamp.rects[cell.layer] = Skia.XYWHRect(cell.x, cell.y, cell.side, cell.side);
     byEntity[cell.entity] = stamp;
   }
   surface.flush();
   const image = surface.makeImageSnapshot();
-  return { songs, lenses: key, size, image, stamps, builtAt: now() };
+  return { songs, lenses: key, size, image, asked, stamps, builtAt: now() };
 }
 
 /**
  * The atlas for these lenses at `size`: the one there is when it still fits,
  * else drawn anew — at most once per `REDRAW_MS` while only the size moves.
  */
+/** Whether every song has its stamps, drawn from its identity as it is now. */
+function coversSongs(
+  atlas: FaceAtlas,
+  songs: FaceStamping['songs'],
+  lenses: readonly number[],
+): boolean {
+  'worklet';
+  for (const entity in songs) {
+    const identities = songs[entity].identities;
+    for (let l = 0; l < lenses.length; l++) {
+      const lens = lenses[l];
+      if (LENS_UI[lens].sprites === undefined) continue;
+      const byEntity = atlas.stamps[lens];
+      const stamp = byEntity === undefined ? undefined : byEntity[entity];
+      if (stamp === undefined || stamp.identity !== identities[lens]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 export function faceAtlasFor(
   stamping: FaceStamping,
   lenses: readonly number[],
@@ -180,13 +229,30 @@ export function faceAtlasFor(
   'worklet';
   const key = lenses.join(',');
   const current = stamping.atlas.value;
-  if (current !== null && current.songs === stamping.songs && current.lenses === key) {
-    const fit = size / current.size;
-    if (fit >= FACE_ATLAS_KNOBS.FIT_LOW && fit <= FACE_ATLAS_KNOBS.FIT_HIGH) {
-      return current;
-    }
-    if (now() - current.builtAt < FACE_ATLAS_KNOBS.REDRAW_MS) return current;
+  if (current === null || current.lenses !== key) {
+    const built = drawFaceAtlas(stamping, lenses, key, size, paints);
+    stamping.atlas.value = built;
+    return built;
   }
+  const asked = current.asked;
+  // Drawn again only once the size holds still: a zoom passes through every
+  // size, and a redraw is ~75 ms on the A52s. Meanwhile faces bigger than the
+  // stamps are drawn as paths and smaller ones stamped small.
+  const still = asked.size === size;
+  asked.size = size;
+  const fit = size / current.size;
+  const sized =
+    fit >= FACE_ATLAS_KNOBS.FIT_LOW && fit <= FACE_ATLAS_KNOBS.FIT_HIGH;
+  if (asked.songs !== stamping.songs) {
+    asked.songs = stamping.songs;
+    asked.songsCovered = coversSongs(current, stamping.songs, lenses);
+  }
+  if (sized && asked.songsCovered) return current;
+  if (!still) return current;
+  const wait = sized
+    ? FACE_ATLAS_KNOBS.RESTOCK_MS
+    : FACE_ATLAS_KNOBS.REDRAW_MS;
+  if (now() - current.builtAt < wait) return current;
   const built = drawFaceAtlas(stamping, lenses, key, size, paints);
   stamping.atlas.value = built;
   return built;
@@ -259,14 +325,16 @@ export function canStamp(
   atlas: FaceAtlas,
   lens: number,
   entityKey: string,
+  identity: LensIdentity,
   size: number,
 ): boolean {
   'worklet';
   const byEntity = atlas.stamps[lens];
+  const stamp = byEntity === undefined ? undefined : byEntity[entityKey];
   return (
     atlas.image !== null &&
-    byEntity !== undefined &&
-    byEntity[entityKey] !== undefined &&
+    stamp !== undefined &&
+    stamp.identity === identity &&
     size / atlas.size <= FACE_ATLAS_KNOBS.FIT_HIGH
   );
 }

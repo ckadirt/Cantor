@@ -1808,22 +1808,6 @@ export function drawFieldFaces(
   const shrink = overviewShrink(cameraScale, fitted);
   const markAt = facePoseAt(walked, 0, viewport, FACE_GROWTH);
   const markPose = { ...markAt, scale: markAt.scale * shrink };
-  // Plain marks are stamped from an image drawn at the marks' size, in the
-  // order the faces are met; see `faceAtlas.ts`.
-  const atlas =
-    stamping === null
-      ? null
-      : faceAtlasFor(
-          stamping,
-          firstLens === lastLens ? [firstLens] : [firstLens, lastLens],
-          markPose.scale,
-          paints,
-        );
-  const batch = createStampBatch(stamping === null ? null : stamping.pool.value);
-  const layerAlphas = [
-    [0, 0, 0, 0],
-    [0, 0, 0, 0],
-  ];
   const playerPose = facePoseAt(
     walked,
     playerShapeArrived,
@@ -1855,6 +1839,27 @@ export function drawFieldFaces(
     mapCam === null ? walked : faceArrival(mapCam.scale, fitted);
   const mapShrink =
     mapCam === null ? shrink : overviewShrink(mapCam.scale, fitted);
+  // Plain marks are stamped from an image drawn at the marks' size, in the
+  // order the faces are met; see `faceAtlas.ts`. The map's marks: in find's
+  // gather the real camera stands at the found shelf, whose faces are the
+  // few drawn as paths.
+  const atlas =
+    stamping === null
+      ? null
+      : faceAtlasFor(
+          stamping,
+          firstLens === lastLens ? [firstLens] : [firstLens, lastLens],
+          mapCam === null
+            ? markPose.scale
+            : facePoseAt(mapWalked, 0, viewport, FACE_GROWTH).scale *
+                mapShrink,
+          paints,
+        );
+  const batch = createStampBatch(stamping === null ? null : stamping.pool.value);
+  const layerAlphas = [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+  ];
   const mapShown =
     mapCam === null
       ? 1
@@ -2000,7 +2005,7 @@ export function drawFieldFaces(
         const sprites = LENS_UI[lens].sprites;
         stampable =
           sprites !== undefined &&
-          canStamp(atlas, lens, face.entityKey, size) &&
+          canStamp(atlas, lens, face.entityKey, face.identities[lens], size) &&
           sprites.alphas(
             opacity * ink,
             weight,
