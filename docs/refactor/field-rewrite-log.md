@@ -1058,6 +1058,35 @@ from the UI thread (as `jobMarks` and `hubPaths` already are) would leave no
 `redraw()` and no mapper reinstall at the start of a motion. It is renderer
 surgery under the Flicker Law — plan it here and agree it with Cesar first.
 
+## An interrupted re-cut is held where it was drawn (2026-10-08)
+
+Cesar, on the Samsung: week → month, then year before month lands, and the
+field flickers. Recorded with `adb exec-out screenrecord --output-format=h264
+--size 720x1600 -` (streamed to the desktop: nothing written to the phone;
+the full 1080×2400 fails with `Encoder failed (err=-38)`) and cut into frames
+with `ffmpeg -vsync 0`: the names went back from `MARCH` to `MAR 16 – 22` and
+the edge veils came back, then the year cut flew from there.
+
+- Not the capture's maths: logged on the phone, `liveCapture` and
+  `interruptedAt` both read month's clock right (~0.2 eased).
+- The capture is taken when the next cut is planned, and the canvas installs
+  it ~160 ms later (the render, its commit, the layout effect). The month cut
+  kept playing through those frames, so the year cut began behind the screen.
+- `holdInterrupted` (`useFieldCamera`): at the plan, one `runOnUISync` stops
+  the camera's clock and the canvas's together and sets the camera and fit to
+  what the canvas drew; `liveCapture` takes the faces from the canvas's eased
+  clock (`heldAt`), not from the camera's, which runs ahead of it. The canvas's
+  clock is the hook's now (`cutClockShared`), so the hook can stop it.
+- 118 ms of the 160 was `retargetShelfLabelFlights` sampling every changing
+  name's glyph outlines for a path morph the native renderer never draws (it
+  crossfades text). It captures the text on the screen now
+  (`heldLabelText`): 6 ms. Hold to install measured 42–49 ms on the Samsung.
+- Left: tapped mid-crossfade, the faint arriving name (`OCTOBER` under
+  `LAST WEEK`) drops for the held frames, because a name crossfades two lines
+  and the resumed one starts from the line that owned the screen.
+- Tests: `useFieldCamera.test.tsx` "starts an interrupting re-cut from the
+  frame the canvas drew, held there"; `nativeLabels.test.ts`, 3.
+
 ## Open questions (for Cesar)
 
 - **Does an interrupted regroup glide now?** (`671af18`.) Tap MONTH then
@@ -1087,6 +1116,10 @@ surgery under the Flicker Law — plan it here and agree it with Cesar first.
 
 ## Traps (learned the hard way)
 
+- **A capture taken at the plan is stale at the install.** Anything the
+  next re-cut starts from is read in a render, and the canvas starts it a
+  commit later; hold the motion on screen at the read (`holdInterrupted`), or
+  the next motion begins behind what was drawn.
 - **`input swipe` cannot measure frame pacing.** The canvas redraws per
   touch event, and injected moves arrive about every 33 ms, so a swipe loop
   reads ~33 ms per frame on any build. Time motions the UI thread animates
