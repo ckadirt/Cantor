@@ -656,6 +656,17 @@ state must be set in the same handler as `recutNow`: `recutNow` sets camera
 state too, and a render between them would see the new cut with the old
 layout and plan its way back. The camera's gather start watches both the
 canvas's drawn generation and its own pending cut — whichever arrives second
-starts it. Release, key → the cut's first recorded frame: 20–39 ms. What is
+starts it. Release, key → the cut's first recorded frame: 20–39 ms.
+
+**Frames during a re-cut.** The field's own drawing is ~1 ms of a frame; what
+filled the rest on an axis change was surfaces and layout. Every animating Skia
+canvas presents on its own (the second costs ~1.7 ms, each further one ~0.6),
+so the overlay's morphing lines that move together — eyebrow, count, hint —
+draw on one `MorphHost` canvas. The dial's tick slides by transform, not by
+`left`/`width`. The a11y targets are keyed by position, so a re-cut that
+renames every placement does not remount ~70 views mid-flight. Release, week ↔
+month: p90 19 → 17.4 ms, frames > 20 ms 15 → ~5, longest 61 → ~25 ms.
+Measure with perfetto (`gfx`/`view` atrace + `Choreographer#doFrame` per
+frame, `eglSwapBuffers` per frame for surfaces) on a release build. What is
 left is the UI thread's own work for the keystroke (the text field), which a
 synchronous send (`executeOnUIRuntimeSync`) did not beat.

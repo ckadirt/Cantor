@@ -85,6 +85,7 @@ const clock = useSharedValue(0);
 | --- | --- | --- |
 | `MorphText` | Any animated text | `text`, `charStyle`, `color`, `variant` (`matching` \| `transform` \| `crossfade`), `appearance` (`write` \| `fade` \| `none`), `duration`, `progress?`, `style` (fixed height!) |
 | `TransformText` / `MatchingText` / `CrossfadeText` / `WriteText` | Same engine, explicit vocabulary at call sites | as `MorphText`, minus the pinned prop |
+| `MorphHost` | Wraps a region whose morphing lines should share one canvas. A `MorphText` inside it with `hosted` (and `hostOpacity?` for a container that fades) keeps its view for layout and the screen reader and draws on the host's canvas at its view's place. Only for lines whose container does not move or fade on its own: every animating canvas is presented on its own each frame, and on the Xiaomi a second one beside the field cost ~1.7 ms a frame (`FieldOverlay` hosts its eyebrow, count and hint) | `style`; on the text, `hosted`, `hostOpacity?` |
 | `MorphTextSequence` | Several planned text transforms on one canvas, each in its own window of one external clock | `items` (with `start`/`end` windows and optional source slots), `writeWindow?`, `progress` |
 | `MorphShape` | Shape/symbol morphing, moving, first-mount growth | `shape`, `width/height`, `scale`, `strokeWidth`, `aspectRatio`, `inkInset`, `centerX/Y`, `appearance` (`write`), `duration`, `progress?` |
 | `AnimatedSymbol` / `WriteSymbol` | `MorphShape` keyed by canonical symbol name | `symbol` + `MorphShape` props |
