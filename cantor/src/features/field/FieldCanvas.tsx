@@ -17,6 +17,16 @@ import {
 } from './gatherInk';
 import { drawNativeJobs, type JobMark } from './nativeJobs';
 import {
+  canStamp,
+  createStampBatch,
+  faceAtlasFor,
+  flushStamps,
+  stampFace,
+  type FaceAtlas,
+  type FaceStamping,
+  type StampPool,
+} from './faceAtlas';
+import {
   joinFaces,
   joinJobs,
   joinRows,
@@ -51,7 +61,7 @@ import {
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import { lensWeight, useLensClock, type LensClock } from './lensClock';
 import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import { StyleSheet } from 'react-native';
+import { PixelRatio, StyleSheet } from 'react-native';
 import {
   Canvas,
   Fill,
@@ -1206,6 +1216,9 @@ export type CutInstaller = (
   foot: FoundFoot | null,
 ) => void;
 
+/** Device pixels per canvas unit, for drawing the faces' stamps sharp. */
+const PIXEL_RATIO = PixelRatio.get();
+
 /** Before any cut is on the canvas: the clock reads 1, so the live camera. */
 const EMPTY_RECUT: NativeRecut = {
   fromCamera: { x: 0, y: 0, scale: 1 },
@@ -1495,6 +1508,8 @@ type NativeFieldContentProps = Readonly<{
  * `NativePlacementFlight`.
  */
 export type FaceFlight = Readonly<{
+  /** The song, for its stamps; see `faceAtlas.ts`. */
+  entityKey: string;
   /**
    * The song as every lens draws it, in `LENSES` order: what each lens's
    * `identity` built from the recipe (see `lenses/contract.ts`). Every lens,
@@ -1619,6 +1634,7 @@ export function faceFlightsOf(
     const isPlayer =
       focusKey !== null && flight.targetPlacementKey === focusKey;
     result.push({
+      entityKey: flight.entityKey,
       identities: LENSES.map(lens => lens.identity(recipe)),
       players: isPlayer
         ? LENSES.map(lens =>
@@ -1665,6 +1681,8 @@ type FacePaints = Readonly<{
   ring: SkPaint;
   /** The ground, for the seal's bead, which is a hole in the thread. */
   paper: SkPaint;
+  /** What stamps are drawn with; their ink is in the image. */
+  stamp?: SkPaint;
 }>;
 
 function createFacePaints(palette: Palette): FacePaints {
@@ -1673,7 +1691,15 @@ function createFacePaints(palette: Palette): FacePaints {
   const ring = paint(palette.ink);
   ring.setStyle(PaintStyle.Stroke);
   ring.setStrokeWidth(NAME_LENS_KNOBS.PLAYING_RING_WIDTH_PX);
-  return { fill: paint(palette.ink), stroke, ring, paper: paint(palette.bg) };
+  const stamp = Skia.Paint();
+  stamp.setAntiAlias(true);
+  return {
+    fill: paint(palette.ink),
+    stroke,
+    ring,
+    paper: paint(palette.bg),
+    stamp,
+  };
 }
 
 /**
@@ -1718,6 +1744,8 @@ export function drawFieldFaces(
    * the shelf's (over the map's names).
    */
   side = 0,
+  /** Plain marks as stamps rather than paths; see `faceAtlas.ts`. */
+  stamping: FaceStamping | null = null,
 ): void {
   'worklet';
   /*
@@ -1780,6 +1808,22 @@ export function drawFieldFaces(
   const shrink = overviewShrink(cameraScale, fitted);
   const markAt = facePoseAt(walked, 0, viewport, FACE_GROWTH);
   const markPose = { ...markAt, scale: markAt.scale * shrink };
+  // Plain marks are stamped from an image drawn at the marks' size, in the
+  // order the faces are met; see `faceAtlas.ts`.
+  const atlas =
+    stamping === null
+      ? null
+      : faceAtlasFor(
+          stamping,
+          firstLens === lastLens ? [firstLens] : [firstLens, lastLens],
+          markPose.scale,
+          paints,
+        );
+  const batch = createStampBatch(stamping === null ? null : stamping.pool.value);
+  const layerAlphas = [
+    [0, 0, 0, 0],
+    [0, 0, 0, 0],
+  ];
   const playerPose = facePoseAt(
     walked,
     playerShapeArrived,
@@ -1936,11 +1980,62 @@ export function drawFieldFaces(
       return;
     }
 
-    canvas.save();
-    canvas.translate(x + pose.x, y + pose.y);
     const weight = mix(face.fromWeight, face.weight, arrival);
     const fill = mix(face.fromFill, face.fill, arrival);
     const players = face.players;
+    if (atlas !== null && players === undefined && !face.playing) {
+      // Every pass of the face stamped, or none: a face is one object.
+      const passCount = firstLens === lastLens ? 1 : 2;
+      let stampable = true;
+      for (let pass = 0; pass < passCount && stampable; pass++) {
+        const lens = pass === 0 ? firstLens : lastLens;
+        const coming = lens === lensTo;
+        const size =
+          pose.scale * openScale * (coming ? comingScale : leavingScale);
+        const ink = coming ? comingInk : leavingInk;
+        if (ink <= 0 || size <= 0.001) {
+          layerAlphas[pass][0] = -1;
+          continue;
+        }
+        const sprites = LENS_UI[lens].sprites;
+        stampable =
+          sprites !== undefined &&
+          canStamp(atlas, lens, face.entityKey, size) &&
+          sprites.alphas(
+            opacity * ink,
+            weight,
+            fill,
+            face.arriving,
+            layerAlphas[pass],
+          );
+      }
+      if (stampable) {
+        for (let pass = 0; pass < passCount; pass++) {
+          if (layerAlphas[pass][0] === -1) continue;
+          const lens = pass === 0 ? firstLens : lastLens;
+          const coming = lens === lensTo;
+          const sprites = LENS_UI[lens].sprites;
+          if (sprites === undefined) continue;
+          stampFace(
+            batch,
+            atlas,
+            lens,
+            face.entityKey,
+            x + pose.x,
+            y + pose.y,
+            pose.scale * openScale * (coming ? comingScale : leavingScale),
+            layerAlphas[pass],
+            sprites.layers,
+            stamping === null ? 1 : stamping.pixelRatio,
+          );
+        }
+        return;
+      }
+    }
+    // Drawn as paths: what was stamped before it goes down first.
+    flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+    canvas.save();
+    canvas.translate(x + pose.x, y + pose.y);
     const pair =
       players === undefined || reducedMotion || lensFrom === lensTo
         ? null
@@ -2032,6 +2127,7 @@ export function drawFieldFaces(
 
   if (mapCam === null) {
     for (let index = 0; index < faces.length; index++) drawOne(faces[index]);
+    flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
     return;
   }
   // The map first, then the shelf.
@@ -2043,13 +2139,17 @@ export function drawFieldFaces(
       }
     }
   }
-  if (side === 1) return;
+  if (side === 1) {
+    flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+    return;
+  }
   for (let index = 0; index < faces.length; index++) {
     const face = faces[index];
     if (face.found || (face.timing !== null && face.timing.fromFound)) {
       drawOne(face);
     }
   }
+  flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
 }
 
 /**
@@ -2626,6 +2726,14 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * rebuilt by a re-cut, so no re-cut installs a worklet.
    */
   const facePaints = useMemo(() => createFacePaints(palette), [palette]);
+  // The faces' stamps, drawn on the UI thread when the songs, the lenses
+  // showing or the marks' size change; see `faceAtlas.ts`.
+  const faceAtlas = useSharedValue<FaceAtlas | null>(null);
+  const stampPool = useSharedValue<StampPool>({ xforms: [], colors: [] });
+  useEffect(() => {
+    // Their ink is the palette's.
+    faceAtlas.value = null;
+  }, [faceAtlas, facePaints]);
   const songs = scene.songs;
   const focusDraw = scene.focus;
   const playing = scene.playing;
@@ -2774,6 +2882,13 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           recede,
           drawnGather,
           drawnGather === null ? 0 : 1,
+          {
+            atlas: faceAtlas,
+            pool: stampPool,
+            songs: songs.value,
+            pixelRatio: PIXEL_RATIO,
+            hairlinePx: FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+          },
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -2908,6 +3023,13 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           recede,
           drawnGather,
           2,
+          {
+            atlas: faceAtlas,
+            pool: stampPool,
+            songs: songs.value,
+            pixelRatio: PIXEL_RATIO,
+            hairlinePx: FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+          },
         );
       }
       drawNativeRows(

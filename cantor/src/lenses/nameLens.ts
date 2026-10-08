@@ -15,6 +15,7 @@ import {
   arrivedShare,
   type LensIdentity,
   type LensPlayer,
+  type MarkSprites,
   type MarkPaints,
   type PlayerPaints,
 } from './contract';
@@ -244,6 +245,55 @@ export function drawCircleMark(
 }
 
 /**
+ * The circle as stamps, one per look: filled with its outline (a song on the
+ * phone), and the outline alone. A mark in either look is one stamp at one
+ * alpha; a download's arc, or an ink between the two looks, is drawn by
+ * `drawCircleMark`.
+ */
+export const circleSprites: MarkSprites = {
+  layers: 2,
+  reach: identity => {
+    'worklet';
+    const bounds = (identity as SkPath).computeTightBounds();
+    return Math.max(
+      Math.abs(bounds.x),
+      Math.abs(bounds.y),
+      Math.abs(bounds.x + bounds.width),
+      Math.abs(bounds.y + bounds.height),
+    );
+  },
+  drawLayer: (canvas, identity, layer, size, hairlinePx, paints) => {
+    'worklet';
+    const path = identity as SkPath;
+    canvas.save();
+    canvas.scale(size, size);
+    if (layer === 0) {
+      paints.fill.setAlphaf(1);
+      canvas.drawPath(path, paints.fill);
+    }
+    paints.stroke.setAlphaf(1);
+    paints.stroke.setStrokeWidth(hairlinePx / size);
+    canvas.drawPath(path, paints.stroke);
+    canvas.restore();
+  },
+  alphas: (alpha, weight, fill, arriving, out) => {
+    'worklet';
+    if (arriving !== ARRIVING_NONE) return false;
+    if (fill >= 1) {
+      out[0] = alpha * weight;
+      out[1] = 0;
+      return true;
+    }
+    if (fill <= 0) {
+      out[0] = 0;
+      out[1] = alpha * weight;
+      return true;
+    }
+    return false;
+  },
+};
+
+/**
  * The circle as the player is its mark, grown: one contour at every distance
  * (`cantor/AGENTS.md`, "one drawing, three poses"). Its sound is the ring of
  * ticks round it (`ringTicks`) and its clock the arc and hand, which the
@@ -306,6 +356,7 @@ export const nameLens: Lens = {
   },
   ui: {
     drawMark: drawCircleMark,
+    sprites: circleSprites,
     drawPlayer: drawCirclePlayer,
     ringTicks: 1,
     hearsPlayhead: 0,
