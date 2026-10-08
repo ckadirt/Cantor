@@ -23,6 +23,7 @@ import {
   type LensIdentity,
   type LensPlayer,
   type MarkPaints,
+  type MarkSprites,
   type PlayerPaints,
 } from './contract';
 import type { FaceRecipe } from './face';
@@ -172,6 +173,53 @@ function drawSealSpindle(
   paints.stroke.setStrokeWidth(hairlinePx / size);
   canvas.drawCircle(0, 0, mark.spindle, paints.stroke);
 }
+
+/**
+ * The seal as stamps, one per look: its dots with the spindle (a song on the
+ * node), and its filled dots with the spindle (one kept on the phone). A
+ * download, an ink between the two, or a filled mark whose spindle is fainter
+ * than its dots, is drawn by `drawSealMark`.
+ */
+const sealSprites: MarkSprites = {
+  layers: 2,
+  reach: identity => {
+    'worklet';
+    const mark = identity as SealMark;
+    const bounds = mark.filled.computeTightBounds();
+    return Math.max(
+      Math.abs(bounds.x),
+      Math.abs(bounds.y),
+      Math.abs(bounds.x + bounds.width),
+      Math.abs(bounds.y + bounds.height),
+      mark.spindle,
+    );
+  },
+  drawLayer: (canvas, identity, layer, size, hairlinePx, paints) => {
+    'worklet';
+    const mark = identity as SealMark;
+    canvas.save();
+    canvas.scale(size, size);
+    paints.fill.setAlphaf(1);
+    canvas.drawPath(layer === 0 ? mark.dots : mark.filled, paints.fill);
+    drawSealSpindle(canvas, mark, 1, hairlinePx, size, paints);
+    canvas.restore();
+  },
+  alphas: (alpha, weight, fill, arriving, out) => {
+    'worklet';
+    if (arriving !== ARRIVING_NONE) return false;
+    if (fill <= 0) {
+      out[0] = alpha * weight;
+      out[1] = 0;
+      return true;
+    }
+    if (fill >= 1 && weight >= 1) {
+      out[0] = 0;
+      out[1] = alpha;
+      return true;
+    }
+    return false;
+  },
+};
 
 /**
  * The seal as a mark or a row's face, keeping the circle's reading in its own
@@ -344,6 +392,7 @@ export const sealLens: Lens = {
   },
   ui: {
     drawMark: drawSealMark,
+    sprites: sealSprites,
     drawPlayer: drawSealAsPlayer,
     ringTicks: 0,
     hearsPlayhead: 1,

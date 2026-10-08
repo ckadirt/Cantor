@@ -98,6 +98,8 @@ export type FocusDraw = Readonly<{
  * `drawFieldFaces` walks; see `FaceFlight` there.
  */
 export type JoinedFace = Readonly<{
+  /** The song, for its stamps; see `faceAtlas.ts`. */
+  entityKey: string;
   identities: readonly LensIdentity[];
   players?: readonly (LensPlayer | null)[];
   fromX: number;
@@ -150,6 +152,7 @@ export function joinFaces(
       focus !== null && flight.targetPlacementKey === focus.placementKey;
     const opens = openAt[flight.entityKey];
     result.push({
+      entityKey: flight.entityKey,
       identities: song.identities,
       players: isPlayer ? focus.players : undefined,
       fromX: flight.fromX,

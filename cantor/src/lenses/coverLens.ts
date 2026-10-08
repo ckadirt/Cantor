@@ -1,7 +1,7 @@
 import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
 import type { LensIdentity, LensPlayer, PlayerPaints } from './contract';
 import type { CoverArt } from './cover';
-import { drawCircleMark, nameLens } from './nameLens';
+import { circleSprites, drawCircleMark, nameLens } from './nameLens';
 import { SEAL_MARK_SIDE_PX, sealLens, sealRimAt } from './sealLens';
 import type { Lens } from './types';
 
@@ -159,6 +159,7 @@ export const coverLens: Lens = {
   },
   ui: {
     drawMark: drawCircleMark,
+    sprites: circleSprites,
     drawPlayer: drawCoverPlayer,
     ringTicks: 0,
     hearsPlayhead: 0,

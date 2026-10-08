@@ -128,6 +128,48 @@ export type ClockShape = Readonly<{
   knobRadiusPx: number;
 }>;
 
+/**
+ * A mark as a few looks, each drawn once at full ink, so the field can stamp
+ * many marks from one prepared image (`features/field/faceAtlas.ts`) instead
+ * of drawing each mark's paths every frame — at 194 songs the paths cost
+ * ~13 ms a frame on a Samsung A52s. Optional: a lens without it is drawn by
+ * `drawMark`, as before.
+ */
+export type MarkSprites = Readonly<{
+  /**
+   * How many looks a mark of this lens has (`drawLayer`'s `layer`). A mark is
+   * one look at a time — one stamp — at its own alpha (`alphas`).
+   */
+  layers: number;
+  /** How far from its centre a mark reaches at size 1, its line included. */
+  reach: (identity: LensIdentity) => number;
+  /**
+   * One look at full ink, centred on the origin, at `size` (as `drawMark`'s),
+   * its line `hairlinePx` wide on screen.
+   */
+  drawLayer: (
+    canvas: SkCanvas,
+    identity: LensIdentity,
+    layer: number,
+    size: number,
+    hairlinePx: number,
+    paints: MarkPaints,
+  ) => void;
+  /**
+   * Each look's alpha for a mark drawn with `drawMark`'s `alpha`, `weight`
+   * and `fill`, into `out` (one of them non-zero); false when no look is this
+   * mark — a download in progress, an ink between two states — which is then
+   * drawn by `drawMark`.
+   */
+  alphas: (
+    alpha: number,
+    weight: number,
+    fill: number,
+    arriving: number,
+    out: number[],
+  ) => boolean;
+}>;
+
 export type LensUi = Readonly<{
   /**
    * The song as a mark (L0) or the face beside a row (L1).
@@ -159,6 +201,8 @@ export type LensUi = Readonly<{
     hairlinePx: number,
     paints: MarkPaints,
   ) => void;
+  /** The mark as stamp layers; see `MarkSprites`. */
+  sprites?: MarkSprites;
   /**
    * The song as the player (L2), from where it leaves its row onwards.
    *
