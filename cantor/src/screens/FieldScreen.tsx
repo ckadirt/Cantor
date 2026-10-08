@@ -466,7 +466,7 @@ export function FieldScreen({ identity }: Props) {
   const [tagFilter, setTagFilter] = useState<TagFilter>(EMPTY_FILTER);
   /**
    * The tags blind (gather-plan decision 9): opened by the count line's tag
-   * words, or by `TAGS` in find's hint seat.
+   * words, on the map or in find before a letter.
    */
   const [tagsOpen, setTagsOpen] = useState(false);
   /**

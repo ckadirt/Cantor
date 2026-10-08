@@ -217,3 +217,62 @@ describe('the held name, where the marquee may not run', () => {
     expect(lineWidth(font, 2, cut)).toBeLessThanOrEqual(room);
   });
 });
+
+describe("find's door to the tags", () => {
+  function render(query: string) {
+    let tree!: Renderer.ReactTestRenderer;
+    Renderer.act(() => {
+      tree = Renderer.create(
+        <FieldOverlay
+          arrangementKey={byTime.key}
+          cameraShared={shared({ x: 0, y: 0, scale: FIT })}
+          dateResolution="week"
+          fitScaleShared={shared(FIT)}
+          finding={{ query, songCount: 4, groupCount: 4 }}
+          groupCount={3}
+          groupLabel="This week"
+          lens={nameLens}
+          level="field"
+          offline={false}
+          onChangeArrangement={() => {}}
+          onChangeDateResolution={() => {}}
+          onChangeOrder={() => {}}
+          onOpenComposer={() => {}}
+          onOpenEngines={() => {}}
+          onOpenTags={() => {}}
+          onShelfAction={() => {}}
+          orderKey="date"
+          shelfAction={null}
+          showLegend={false}
+          mountLegend={false}
+          songCount={8}
+          storageError={null}
+        />,
+      );
+    });
+    const texts = tree.root
+      .findAll(node => typeof node.props.text === 'string')
+      .map(node => node.props.text as string);
+    const foot = tree.root.findAll(
+      node =>
+        node.props.accessibilityLabel === 'Show only some tags' &&
+        typeof node.props.onPress === 'function',
+    );
+    return { tree, texts, foot };
+  }
+
+  // The foot is under the keyboard while find types; the count line is not.
+  it('is on the count line before a letter, not in the foot', () => {
+    const { tree, texts, foot } = render('');
+    expect(texts).toContain('TYPE A NAME ·');
+    expect(texts).not.toContain('TAGS');
+    expect(foot).toHaveLength(0);
+    Renderer.act(() => tree.unmount());
+  });
+
+  it('leaves with the first letter', () => {
+    const { tree, texts } = render('p');
+    expect(texts).toContain('4 SONGS · 4 WEEKS');
+    Renderer.act(() => tree.unmount());
+  });
+});

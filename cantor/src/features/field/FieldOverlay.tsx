@@ -27,7 +27,11 @@ import { MorphHost, TransformText, WriteText } from '../../motion';
 import { smootherstep } from '../../motion/geometry';
 import { Dial, Reveal } from '../controls';
 import { FieldLegend } from './FieldLegend';
-import { filterPhrase, type PhraseSegment } from './filterWords';
+import {
+  filterPhrase,
+  type FilterPhrase,
+  type PhraseSegment,
+} from './filterWords';
 import {
   NOW_PLAYING_KNOBS,
   NOW_PLAYING_MARK_BOX_PX,
@@ -437,6 +441,12 @@ function hasQuery(finding: FindChrome): boolean {
   return finding.query.trim().length > 0;
 }
 
+/** Find's door to the tags when no filter is on: one word, in ink. */
+const TAGS_PHRASE: FilterPhrase = {
+  text: 'TAGS',
+  segments: [{ start: 0, end: 4, kind: 'more' }],
+};
+
 /**
  * Find's count line: `4 SONGS · 4 WEEKS`, in the axis's noun; `TYPE A NAME`
  * before a letter.
@@ -563,8 +573,14 @@ function FieldOverlayImpl({
     !h.noConnection &&
     h.arrived == null &&
     h.filter.tags.length > 0;
+  // Find with nothing typed keeps the tags at the count line's end, as the map
+  // does: the foot is under the keyboard. `TAGS`, or the filter find searches.
+  const tagsDoor =
+    h.finding !== null && !hasQuery(h.finding) && !h.noConnection;
   const countLine = h.noConnection
     ? `NO CONNECTION · ${h.playableHere ?? 0} PLAYABLE HERE`
+    : tagsDoor
+    ? `${findCountLine(h.finding!, noun)} ·`
     : h.finding !== null
     ? findCountLine(h.finding, noun)
     : h.arrived != null && h.level === 'field'
@@ -598,7 +614,7 @@ function FieldOverlayImpl({
         NOW_PLAYING_KNOBS.MARK_GAP_PX +
         OVERLAY_KNOBS.HELD_NAME_MIN_PX;
   const phrase = filterPhrase(
-    saysFilter ? h.filter : EMPTY_FILTER,
+    saysFilter || tagsDoor ? h.filter : EMPTY_FILTER,
     text =>
       rowWidth === null ||
       countFont === null ||
@@ -608,12 +624,14 @@ function FieldOverlayImpl({
     // many tags, or the one, and the name gets room to be read.
     held === null ? 'names' : 'brief',
   );
+  const doorPhrase =
+    tagsDoor && phrase.text.length === 0 ? TAGS_PHRASE : phrase;
   const room =
     rowWidth === null || countFont === null
       ? null
       : rowWidth -
-        (phrase.text.length > 0
-          ? phraseLeft + lineWidth(countFont, tracking, phrase.text)
+        (doorPhrase.text.length > 0
+          ? phraseLeft + lineWidth(countFont, tracking, doorPhrase.text)
           : lineWidth(countFont, tracking, countLine)) -
         NOW_PLAYING_KNOBS.COUNT_GAP_PX;
   const legendShown = showLegend && h.level === 'field' && h.finding === null;
@@ -690,14 +708,19 @@ function FieldOverlayImpl({
     };
   });
   const queryStyle = useFontScaledStyle(CHROME_STYLES.title);
+  // The tags page opens over find with the keyboard down, or it would hide
+  // the page's foot as it hid this door.
+  const openTagsHere = useCallback(() => {
+    if (inFind) {
+      query.current?.blur();
+      Keyboard.dismiss();
+    }
+    onOpenTags?.();
+  }, [inFind, onOpenTags]);
   // The field's dials and hint leave in find mode; once the keyboard is down
   // on a query, the hint is the shelf's.
-  // Find with nothing typed offers the tags in this seat (decision 10).
-  const tagsDoor = h.finding !== null && !hasQuery(h.finding);
   const hint = legendShown
     ? ''
-    : tagsDoor
-    ? 'TAGS'
     : h.finding !== null
     ? !typing && h.finding.songCount > 0
       ? HINTS.shelf
@@ -868,10 +891,11 @@ function FieldOverlayImpl({
               tracking={tracking}
               left={phraseLeft}
               width={rowWidth}
-              phrase={phrase}
+              phrase={doorPhrase}
+              filtering={h.filter.tags.length > 0}
               mode={h.filter.mode}
               onFlip={onFlipFilter}
-              onOpenTags={onOpenTags}
+              onOpenTags={openTagsHere}
               ink={pal.ink}
               visible={!away}
             />
@@ -1035,16 +1059,7 @@ function FieldOverlayImpl({
             field cannot say for itself. The hint writes itself back in when
             the key leaves.
           */}
-        <Pressable
-          accessibilityElementsHidden={!tagsDoor}
-          accessibilityLabel={tagsDoor ? 'Show only some tags' : undefined}
-          accessibilityRole={tagsDoor ? 'button' : undefined}
-          hitSlop={space.md}
-          importantForAccessibility={tagsDoor ? 'yes' : 'no-hide-descendants'}
-          onPress={tagsDoor ? onOpenTags : undefined}
-          pointerEvents={tagsDoor ? 'auto' : 'none'}
-          style={styles.hintSeat}
-        >
+        <View style={styles.hintSeat}>
           <WriteText
             text={hint}
             charStyle={CHROME_STYLES.hint}
@@ -1067,7 +1082,7 @@ function FieldOverlayImpl({
               <FieldLegend lens={lens} palette={pal} />
             </Animated.View>
           ) : null}
-        </Pressable>
+        </View>
       </Animated.View>
       <EdgeTab
         accessibilityLabel="Open nodes"
@@ -1117,6 +1132,7 @@ function FilterPhraseSeat({
   left,
   width,
   phrase,
+  filtering,
   mode,
   onFlip,
   onOpenTags,
@@ -1129,6 +1145,8 @@ function FilterPhraseSeat({
   left: number;
   width: number;
   phrase: ReturnType<typeof filterPhrase>;
+  /** Whether the phrase says a filter, or is only the door to one. */
+  filtering: boolean;
   mode: TagFilter['mode'];
   onFlip?: () => void;
   onOpenTags?: () => void;
@@ -1168,6 +1186,7 @@ function FilterPhraseSeat({
               tracking={tracking}
               text={phrase.text}
               segment={segment}
+              filtering={filtering}
               mode={mode}
               onPress={segment.kind === 'join' ? onFlip : onOpenTags}
             />
@@ -1187,6 +1206,7 @@ function PhraseTarget({
   tracking,
   text,
   segment,
+  filtering,
   mode,
   onPress,
 }: {
@@ -1194,6 +1214,7 @@ function PhraseTarget({
   tracking: number;
   text: string;
   segment: PhraseSegment;
+  filtering: boolean;
   mode: TagFilter['mode'];
   onPress?: () => void;
 }) {
@@ -1209,7 +1230,9 @@ function PhraseTarget({
           ? mode === 'all'
             ? 'Songs with every tag. Show songs with any of them'
             : 'Songs with any of the tags. Show songs with all of them'
-          : `Filtered by ${text.toLocaleLowerCase()}. Choose tags`
+          : filtering
+          ? `Filtered by ${text.toLocaleLowerCase()}. Choose tags`
+          : 'Show only some tags'
       }
       accessibilityRole="button"
       hitSlop={OVERLAY_KNOBS.PHRASE_HIT_SLOP}
