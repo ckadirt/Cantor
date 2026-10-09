@@ -13,6 +13,7 @@ import {
   sealSound,
   type SealSound,
 } from './seal';
+import { sweepAt, sweepFront } from './sweep';
 
 /*
  * The seal as the player: the one song the camera is in, drawn a dot at a
@@ -107,6 +108,10 @@ export function sealPlayerOf(
  * nothing is swapped for anything else. `lineAlpha` is the face's own ink,
  * which the line carries until the seal's thread takes it over.
  *
+ * `leaving` is the seal giving way to the cover (`lenses/pairs.ts`), along
+ * its own thread: each dot shrinks to nothing on its moment's window of the
+ * change (`sweepAt`), and the thread rewinds from its start behind them.
+ *
  * A dot is a fill: a ring is its outer circle wound one way and its inner
  * circle the other, so the fill's winding cuts the hole, and a solid dot has no
  * inner circle. One primitive for every state, so none of these transitions has
@@ -130,6 +135,7 @@ export function drawSealPlayer(
   hairlinePx: number,
   formed = 1,
   lineAlpha = 0,
+  leaving = 0,
 ): void {
   'worklet';
   const knobs = SEAL_KNOBS;
@@ -146,6 +152,11 @@ export function drawSealPlayer(
   const cell = side / 3 ** knobs.SONG_DEPTH;
   const count = seal.order.length;
   const head = heard < 0 ? -1 : Math.min(Math.max(heard, 0), 1) * count;
+  /** How much of the `k`-th dot is left as the seal gives way. */
+  const stayAt = (k: number): number =>
+    leaving <= 0 ? 1 : 1 - sweepAt(leaving, (k + 0.5) / count);
+  // The thread starts at the first dot not yet gone.
+  const first = leaving <= 0 ? 0 : Math.ceil(sweepFront(leaving) * count);
   /*
    * How kept each dot is. The whole song's `fill`, unless a download is
    * landing: then a dot is kept once its mark parent's moment has landed —
@@ -187,13 +198,13 @@ export function drawSealPlayer(
     const ahead = Skia.PathBuilder.Make();
     const behind = Skia.PathBuilder.Make();
     const last = Math.floor(head);
-    for (let k = 0; k < count; k++) {
+    for (let k = first; k < count; k++) {
       const x = at(k, 0);
       const y = at(k, 1);
-      if (k === 0) ahead.moveTo(x, y);
+      if (k === first) ahead.moveTo(x, y);
       else ahead.lineTo(x, y);
       if (k <= last) {
-        if (k === 0) behind.moveTo(x, y);
+        if (k === first) behind.moveTo(x, y);
         else behind.lineTo(x, y);
       }
     }
@@ -207,7 +218,7 @@ export function drawSealPlayer(
         firstY + (at(count - 1, 1) - firstY) * formed,
       );
     }
-    if (last >= 0 && last < count - 1) {
+    if (last >= first && last < count - 1) {
       const f = head - last;
       behind.lineTo(
         at(last, 0) + (at(last + 1, 0) - at(last, 0)) * f,
@@ -221,7 +232,7 @@ export function drawSealPlayer(
       opacity * (lineInk + threadInk * player.THREAD_AHEAD_ALPHA),
     );
     canvas.drawPath(ahead.detach(), paints.stroke);
-    if (last >= 0 && threadInk > 0) {
+    if (last >= first && threadInk > 0) {
       paints.stroke.setAlphaf(opacity * threadInk);
       canvas.drawPath(behind.detach(), paints.stroke);
     }
@@ -242,7 +253,9 @@ export function drawSealPlayer(
     const rest = Skia.PathBuilder.Make();
     for (let k = 0; k < count; k++) {
       const keep = keptAt(k);
-      const outer = grownAt(keep);
+      const stay = stayAt(k);
+      if (stay <= 0) continue;
+      const outer = grownAt(keep) * stay;
       const stroke = hairlinePx + (outer - hairlinePx) * solidityAt(keep);
       const inner = outer - stroke;
       const target = landed >= 0 && keep >= 1 ? kept : rest;
@@ -265,6 +278,8 @@ export function drawSealPlayer(
   const heardDots = Skia.PathBuilder.Make();
   const aheadDots = Skia.PathBuilder.Make();
   for (let k = 0; k < count; k++) {
+    const stay = stayAt(k);
+    if (stay <= 0) continue;
     const x = at(k, 0);
     const y = at(k, 1);
     const keep = keptAt(k);
@@ -290,8 +305,9 @@ export function drawSealPlayer(
       hairlinePx + (radius - hairlinePx) * solidityAt(keep);
     const soundStroke = radius * (1 - knobs.PUNCH_HOLLOW * punch);
     const stroke = identityStroke + (soundStroke - identityStroke) * s;
-    const outer = Math.max(0.01, radius * (1 - knobs.WIDTH_SHRINK * width));
-    const inner = outer - stroke;
+    const outer =
+      Math.max(0.01, radius * (1 - knobs.WIDTH_SHRINK * width)) * stay;
+    const inner = outer - stroke * stay;
     const target = head < 0 || k < head ? heardDots : aheadDots;
     const addDot = (cx: number) => {
       target.addCircle(cx, y, outer);
@@ -319,9 +335,10 @@ export function drawSealPlayer(
     const f = head - k;
     const bx = at(k, 0) + (at(next, 0) - at(k, 0)) * f;
     const by = at(k, 1) + (at(next, 1) - at(k, 1)) * f;
-    paints.paper.setAlphaf(opacity * threadInk);
+    const beadInk = threadInk * stayAt(k);
+    paints.paper.setAlphaf(opacity * beadInk);
     canvas.drawCircle(bx, by, player.BEAD_RADIUS_PX, paints.paper);
-    paints.stroke.setAlphaf(opacity * threadInk);
+    paints.stroke.setAlphaf(opacity * beadInk);
     paints.stroke.setStrokeWidth(player.BEAD_STROKE_PX);
     canvas.drawCircle(bx, by, player.BEAD_RADIUS_PX, paints.stroke);
   }

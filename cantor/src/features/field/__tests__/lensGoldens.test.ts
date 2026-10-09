@@ -479,7 +479,45 @@ describe('golden pixels: the cover', () => {
     expect(frames['ratio 18 sound 1']).not.toBe(frames['no cover']);
     expect(frames).toMatchSnapshot();
   });
+
+  // The cover's morphs (`lenses/pairs.ts`) write the picture in along the
+  // clock; at either end they must be the lens they stand at, or the change
+  // would jump as it starts or lands.
+  const morphFrame = (from: number, to: number, t: number) =>
+    raster(canvas =>
+      drawFieldFaces(
+        canvas,
+        withCover,
+        paints(),
+        1,
+        recut,
+        { value: heldSeat(LEVEL_SCALE_RATIOS.song) } as never,
+        { value: fit } as never,
+        viewport,
+        from,
+        to,
+        t,
+        false,
+        1,
+      ),
+    );
+
+  it('morphs to and from the circle and the seal without a jump', () => {
+    const cover = morphFrame(COVER, COVER, 1);
+    for (const other of [CIRCLE, SEAL]) {
+      const own = morphFrame(other, other, 1);
+      expect(morphFrame(other, COVER, 0)).toBe(own);
+      expect(morphFrame(COVER, other, 1)).toBe(own);
+      expect(inkOf(morphFrame(other, COVER, 1))).toBeCloseTo(inkOf(cover), -3);
+      // Halfway is neither: both drawings are in the air.
+      const half = morphFrame(other, COVER, 0.5);
+      expect(half).not.toBe(own);
+      expect(half).not.toBe(cover);
+    }
+  });
 });
+
+const inkOf = (frame: string) => Number(frame.split(' ')[0]);
 
 /**
  * Downloads landing (R7): every lens shows one in its own form — the circle an
