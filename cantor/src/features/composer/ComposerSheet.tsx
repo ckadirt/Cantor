@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
+import { runOnJS, useAnimatedReaction } from 'react-native-reanimated';
 import { TransformText, WriteSymbol } from '../../motion';
 import { haptic } from '../../haptics';
 import { nameLens } from '../../lenses/nameLens';
@@ -26,6 +27,8 @@ import {
   Stave,
   StationMark,
   Underway,
+  ARRIVAL_KNOBS,
+  useArrivalClock,
   useReach,
   LEDGER_DIAL_ITEM,
   LEDGER_KNOBS,
@@ -92,6 +95,8 @@ type Props = {
   lens?: Lens;
   /** The phone has no connection at all: the draft is kept until it has. */
   noConnection?: boolean;
+  /** A made song's recipe, as the draft and seed this opening begins with. */
+  recipe?: Readonly<{ draft: ComposerDraft; seed: number }> | null;
   onClose: () => void;
   onSubmit: (
     nodePublicKey: string,
@@ -129,17 +134,24 @@ function ComposerSheetImpl({
   errorWord = null,
   lens = nameLens,
   noConnection = false,
+  recipe = null,
   onClose,
   onSubmit,
 }: Props) {
   const pal = usePalette();
-  const [draft, setDraft] = useState<ComposerDraft>(EMPTY_DRAFT);
+  // The blind takes the composer out of the tree whenever it is closed, so a
+  // recipe is read here, once, as the draft this opening begins with.
+  const [draft, setDraft] = useState<ComposerDraft>(
+    () => recipe?.draft ?? EMPTY_DRAFT,
+  );
   /**
    * The seed this draft will be sent with, picked when it is begun: the
    * clef draws that recipe's face, and the song lands wearing it. A new one
-   * after each send, so two presses of `Make it` are two songs.
+   * after each send, so two presses of `Make it` are two songs. A recipe
+   * brings its own: the clef draws the face the song already wears, and an
+   * unchanged draft asks for the same song.
    */
-  const [seed, setSeed] = useState(draftSeed);
+  const [seed, setSeed] = useState(() => recipe?.seed ?? draftSeed());
 
   // Default to the only sensible choice rather than making someone pick it.
   const nodePublicKey =
@@ -192,6 +204,27 @@ function ComposerSheetImpl({
     if (wasSubmitting.current && !submitting && error !== null) setFailed(true);
     wasSubmitting.current = submitting;
   }, [error, submitting]);
+
+  /**
+   * `Make it`, drawn again once the blind is nearly down.
+   *
+   * The act's canvas is created by the commit that brings the blind into the
+   * tree, when the blind has drawn a pixel and the foot is clipped out of it.
+   * On Android the first frame onto that new surface is dropped
+   * (`updateAndRelease() failed`), and a settled word never asks for a
+   * second: the foot opened blank, every time, until something changed its
+   * ink. Remounted as the act's own arrival begins, its word is recorded onto
+   * a canvas that is on screen.
+   */
+  const arrival = useArrivalClock();
+  const [drawn, setDrawn] = useState(0);
+  const redraw = () => setDrawn(count => count + 1);
+  useAnimatedReaction(
+    () => arrival.value >= ARRIVAL_KNOBS.ACT_FROM,
+    (arrived, was) => {
+      if (arrived && was !== true) runOnJS(redraw)();
+    },
+  );
 
   const update = (patch: Partial<ComposerDraft>) => {
     if (submitting) return;
@@ -539,6 +572,7 @@ function ComposerSheetImpl({
         }
       >
         <MakeIt
+          key={drawn}
           failed={failed}
           failedWord={errorWord}
           onPress={() => {

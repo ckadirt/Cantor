@@ -3,6 +3,7 @@ export {
   EMPTY_DRAFT,
   canSubmit,
   describeProblem,
+  draftFromRecipe,
   modelsFor,
   problemsWith,
   targetOf,

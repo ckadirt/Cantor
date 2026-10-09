@@ -16,15 +16,19 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from 'react-native';
+import Clipboard from '@react-native-clipboard/clipboard';
 import type { SongDetail, SongHeader } from '../../core/protocol';
 import type { SongPatch } from '../../../../protocol/SongPatch';
 import type { LocalAudioState } from '../../audio/native';
 import { formatBytes } from '../../lenses';
 import type { Lens } from '../../lenses/types';
 import Animated, {
+  interpolateColor,
   useAnimatedStyle,
   useDerivedValue,
   useReducedMotion,
+  useSharedValue,
+  withTiming,
   type SharedValue,
 } from 'react-native-reanimated';
 import { TransformText, WriteText } from '../../motion';
@@ -155,6 +159,16 @@ export const SONG_SHEET_KNOBS = {
    */
   STATE_SLOT_PX: 22,
   STATE_NOTE_SLOT_PX: 16,
+  /**
+   * How long the copy mark stays copied before it parts again: long enough to
+   * be seen, short enough that a second copy is offered by the time it is
+   * wanted.
+   */
+  COPIED_HOLD_MS: 1600,
+  /** One sheet of the copy mark: a word's height, not a button's. */
+  COPY_SHEET_PX: 12,
+  /** How far the back sheet stands out from under the front one. */
+  COPY_OFFSET_PX: 4,
 } as const;
 
 /** Between the offline state and its weight: every ledger note's own offset. */
@@ -258,6 +272,16 @@ type Props = {
   onRemoveDownload: () => void;
   /** Ending the song, on this phone and on the node, with no undo. */
   onDelete: () => void;
+  /**
+   * Open the composer on this song's recipe. Absent, the record offers no
+   * way back to the composer.
+   */
+  onRecompose?: (detail: SongDetail) => void;
+  /**
+   * What the song's model sends as words for an instrumental (`[Instrumental]`
+   * on ACE-Step): drawn as no words, and not offered to copy.
+   */
+  instrumentalLyrics?: string;
   /** An imported song's facts; absent for a song a node holds. */
   imported?: ImportedFacts | null;
   /** The lens the person has chosen: the clef is drawn in it. */
@@ -316,6 +340,8 @@ function SongSheetImpl({
   onUnpin,
   onRemoveDownload,
   onDelete,
+  onRecompose,
+  instrumentalLyrics,
   imported = null,
   lens,
   node = null,
@@ -577,7 +603,9 @@ function SongSheetImpl({
             nodeLabel={nodeLabel}
             downloaded={downloaded}
             imported={imported}
+            instrumentalLyrics={instrumentalLyrics}
             onDelete={onDelete}
+            onRecompose={onRecompose}
             placementCount={placementCount}
             song={song}
           />
@@ -997,6 +1025,8 @@ function Back({
   node,
   nodeLabel,
   onDelete,
+  instrumentalLyrics,
+  onRecompose,
   placementCount,
   song,
 }: {
@@ -1014,15 +1044,28 @@ function Back({
   }> | null;
   nodeLabel: string;
   onDelete: () => void;
+  instrumentalLyrics?: string;
+  onRecompose?: (detail: SongDetail) => void;
   placementCount: number;
   song: SongHeader;
 }) {
   const pal = usePalette();
   if (imported !== null) return <ImportedRecord facts={imported} song={song} />;
+  /** The words sung, or null: the model's instrumental marker is not words. */
+  const lyrics = detail?.generation.lyrics?.trim();
+  const words =
+    lyrics === undefined || lyrics === '' || lyrics === instrumentalLyrics
+      ? null
+      : lyrics;
   return (
     <View style={styles.page}>
       <Stave>
         <Measure>
+          <Row label="Name">
+            <Copy what="name" value={song.title}>
+              <Text style={[type.body, { color: pal.ink }]}>{song.title}</Text>
+            </Copy>
+          </Row>
           <Row label="Length">
             <Text style={[type.body, { color: pal.ink }]}>
               {duration(song.duration_ms)}
@@ -1050,22 +1093,32 @@ function Back({
           <>
             <Measure>
               <Row label="Prompt">
-                <Text style={[type.body, { color: pal.ink }]}>
-                  {detail.generation.caption}
-                </Text>
+                <Copy what="prompt" value={detail.generation.caption}>
+                  <Text style={[type.body, { color: pal.ink }]}>
+                    {detail.generation.caption}
+                  </Text>
+                </Copy>
               </Row>
               <Row label="Words">
-                <Text
-                  style={[
-                    type.body,
-                    {
-                      color: detail.generation.lyrics ? pal.ink : pal.faint,
-                    },
-                  ]}
-                >
-                  {detail.generation.lyrics ?? 'instrumental'}
-                </Text>
+                {words ? (
+                  <Copy what="words" value={words}>
+                    <Text style={[type.body, { color: pal.ink }]}>{words}</Text>
+                  </Copy>
+                ) : (
+                  <Text style={[type.body, { color: pal.faint }]}>
+                    instrumental
+                  </Text>
+                )}
               </Row>
+              {onRecompose === undefined ? null : (
+                <Row control label="Again" note="SAME RECIPE · SAME SEED">
+                  <Act
+                    disabled={acting !== null}
+                    label="Open in composer"
+                    onPress={() => onRecompose(detail)}
+                  />
+                </Row>
+              )}
             </Measure>
             <Rest />
             <Measure>
@@ -1189,6 +1242,11 @@ function ImportedRecord({
     <View style={styles.page}>
       <Stave>
         <Measure>
+          <Row label="Name">
+            <Copy what="name" value={song.title}>
+              <Text style={[type.body, { color: pal.ink }]}>{song.title}</Text>
+            </Copy>
+          </Row>
           <Row label="Length">
             <Text style={[type.body, { color: pal.ink }]}>
               {duration(song.duration_ms)}
@@ -1280,6 +1338,70 @@ function Act({
         <Underway charStyle={charStyle} label={label} working={working} />
       </View>
     </Pressable>
+  );
+}
+
+/**
+ * A fact with its copy mark beside it, level with its first line.
+ *
+ * The mark is two hairline sheets, one laid over the other — the same stroke
+ * the caret and the dial's tick are drawn with, so it reads as part of the
+ * chrome rather than as a button dropped on the page. Copying is the two
+ * sheets becoming one: the back sheet slides up under the front and the ink
+ * darkens, then they part again. One mark changing state, never a second
+ * mark taking its place.
+ */
+function Copy({
+  children,
+  value,
+  what,
+}: {
+  children: React.ReactNode;
+  value: string;
+  what: string;
+}) {
+  const pal = usePalette();
+  const reducedMotion = useReducedMotion();
+  const [copied, setCopied] = useState(false);
+  const taken = useSharedValue(0);
+  useEffect(() => {
+    const to = copied ? 1 : 0;
+    taken.value = reducedMotion
+      ? to
+      : withTiming(to, { duration: SONG_SHEET_KNOBS.STATE_MS });
+    if (!copied) return;
+    const back = setTimeout(
+      () => setCopied(false),
+      SONG_SHEET_KNOBS.COPIED_HOLD_MS,
+    );
+    return () => clearTimeout(back);
+  }, [copied, reducedMotion, taken]);
+  const ink = useAnimatedStyle(() => ({
+    borderColor: interpolateColor(taken.value, [0, 1], [pal.faint, pal.ink]),
+  }));
+  const behind = useAnimatedStyle(() => {
+    const offset = SONG_SHEET_KNOBS.COPY_OFFSET_PX * (1 - taken.value);
+    return { transform: [{ translateX: -offset }, { translateY: -offset }] };
+  });
+  return (
+    <View style={styles.copyRow}>
+      <View style={styles.copied}>{children}</View>
+      <Pressable
+        accessibilityLabel={copied ? `Copied the ${what}` : `Copy the ${what}`}
+        accessibilityRole="button"
+        hitSlop={space.sm}
+        onPress={() => {
+          Clipboard.setString(value);
+          setCopied(true);
+        }}
+        style={styles.copy}
+      >
+        <Animated.View style={[styles.sheetMark, ink, behind]} />
+        <Animated.View
+          style={[styles.sheetMark, { backgroundColor: pal.bg }, ink]}
+        />
+      </Pressable>
+    </View>
   );
 }
 
@@ -1448,6 +1570,28 @@ const styles = StyleSheet.create({
   stateNoteSlot: {
     height: SONG_SHEET_KNOBS.STATE_NOTE_SLOT_PX,
     marginTop: STATE_NOTE_GAP_PX,
+  },
+  copyRow: { alignItems: 'flex-start', flexDirection: 'row', gap: space.md },
+  copied: { flex: 1 },
+  /**
+   * With its `hitSlop`, the 48 dp target, centred on the fact's first line
+   * (`type.body`'s 22 px) so the mark sits level with the words it copies.
+   */
+  copy: {
+    alignItems: 'center',
+    height: touch.min - 2 * space.sm,
+    justifyContent: 'center',
+    marginTop: (type.body.lineHeight - (touch.min - 2 * space.sm)) / 2,
+    width: touch.min - 2 * space.sm,
+  },
+  /** Both sheets share a seat; the back one is pushed out by `behind`. */
+  sheetMark: {
+    borderWidth: StyleSheet.hairlineWidth * 2,
+    height: SONG_SHEET_KNOBS.COPY_SHEET_PX,
+    left: (touch.min - 2 * space.sm - SONG_SHEET_KNOBS.COPY_SHEET_PX) / 2 + 2,
+    position: 'absolute',
+    top: (touch.min - 2 * space.sm - SONG_SHEET_KNOBS.COPY_SHEET_PX) / 2 + 2,
+    width: SONG_SHEET_KNOBS.COPY_SHEET_PX,
   },
   footNoteSlot: {
     height: SONG_SHEET_KNOBS.NOTE_SLOT_PX,

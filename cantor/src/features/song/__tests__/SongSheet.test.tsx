@@ -1,4 +1,5 @@
 import React from 'react';
+import Clipboard from '@react-native-clipboard/clipboard';
 import * as ReactTestRenderer from 'react-test-renderer';
 import { nameLens } from '../../../lenses/nameLens';
 import { STRIKE_KNOBS } from '../../controls';
@@ -282,6 +283,55 @@ describe('SongSheet', () => {
     const { words } = render();
     expect(words()).toContain('8');
     expect(words()).toContain('a slow harbour at dusk');
+  });
+
+  it('copies the name, the prompt and the words, and says so', () => {
+    const lyrics = 'lanterns on the water';
+    const { labels, press } = render({
+      detail: {
+        ...detail(),
+        generation: { ...detail().generation, lyrics },
+      },
+    });
+    press('Copy the name');
+    expect(Clipboard.setString).toHaveBeenLastCalledWith('Lanterns');
+    expect(labels()).toContain('Copied the name');
+    press('Copy the prompt');
+    expect(Clipboard.setString).toHaveBeenLastCalledWith(
+      'a slow harbour at dusk',
+    );
+    press('Copy the words');
+    expect(Clipboard.setString).toHaveBeenLastCalledWith(lyrics);
+  });
+
+  it('offers nothing to copy for an instrumental', () => {
+    const { labels } = render();
+    expect(labels()).not.toContain('Copy the words');
+  });
+
+  it('reads the model instrumental marker as no words', () => {
+    const { labels, words } = render({
+      detail: {
+        ...detail(),
+        generation: { ...detail().generation, lyrics: '[Instrumental]' },
+      },
+      instrumentalLyrics: '[Instrumental]',
+    });
+    expect(words()).toContain('instrumental');
+    expect(words()).not.toContain('[Instrumental]');
+    expect(labels()).not.toContain('Copy the words');
+  });
+
+  it('hands the recipe to the composer', () => {
+    const onRecompose = jest.fn();
+    const { press } = render({ onRecompose });
+    press('Open in composer');
+    expect(onRecompose).toHaveBeenCalledWith(detail());
+  });
+
+  it('offers no way back to the composer without one', () => {
+    const { labels } = render();
+    expect(labels()).not.toContain('Open in composer');
   });
 
   it('says a refused act where the acts are, not on the other page', () => {

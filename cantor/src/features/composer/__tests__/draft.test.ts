@@ -3,6 +3,7 @@ import {
   EMPTY_DRAFT,
   canSubmit,
   describeProblem,
+  draftFromRecipe,
   modelsFor,
   writeWordsFor,
   problemsWith,
@@ -319,5 +320,48 @@ describe('advertised lyrics capabilities', () => {
     expect(
       writeWordsFor([target({ models: [disabled] })], selected),
     ).toBeNull();
+  });
+
+  it('opens a made song as the draft that asks for it again', () => {
+    const ace = target().models[0];
+    const loaded = draftFromRecipe(
+      {
+        caption: 'a slow harbour at dusk',
+        lyrics: 'lanterns on the water',
+        duration: 90,
+        steps: 8,
+        extensions: { shift: 3 },
+      },
+      'node-a',
+      ace.selector,
+      ace,
+    );
+    expect(loaded).toEqual({
+      caption: 'a slow harbour at dusk',
+      lyrics: 'lanterns on the water',
+      wordsMode: 'mine',
+      durationSeconds: 90,
+      nodePublicKey: 'node-a',
+      modelSelector: ace.selector,
+      parameters: { steps: 8, shift: 3 },
+    });
+    expect(toGenerationRequest(loaded, [], ace)).toEqual({
+      caption: 'a slow harbour at dusk',
+      lyrics: 'lanterns on the water',
+      duration: 90,
+    });
+  });
+  it('reads the instrumental marker as no words', () => {
+    const ace = target().models[0];
+    const loaded = draftFromRecipe(
+      { caption: 'rain', lyrics: '[Instrumental]' },
+      'node-a',
+      ace.selector,
+      ace,
+    );
+    expect(loaded.wordsMode).toBe('none');
+    expect(loaded.lyrics).toBe('');
+    expect(loaded.durationSeconds).toBeNull();
+    expect(toGenerationRequest(loaded, [], ace).lyrics).toBe('[Instrumental]');
   });
 });
