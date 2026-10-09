@@ -50,6 +50,11 @@ export type NativeCut = Readonly<{
   recede: Recede | null;
   /** The gather's two cameras; null in any other re-cut. */
   gather: GatherCameras | null;
+  /**
+   * The camera follows the song it stands in, and lands with this cut on the
+   * canvas, in the same step; see `FieldRecutModel.follows`.
+   */
+  follows?: boolean;
   /** Every flight, songs and jobs alike. */
   flights: readonly PlacementFlight[];
   /**
