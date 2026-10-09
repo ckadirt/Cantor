@@ -61,7 +61,13 @@ import {
 } from './nativeRows';
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import { lensWeight, useLensClock, type LensClock } from './lensClock';
-import React, { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import React, {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+} from 'react';
 import { PixelRatio, StyleSheet } from 'react-native';
 import {
   Canvas,
@@ -280,6 +286,13 @@ const FIELD_CANVAS_KNOBS = {
  * disagree with the face the picture draws at the same distance.
  */
 /** KNOBS — how a mark's name is drawn on, where `bands.ts` says when. */
+/**
+ * The longest a cut waits for its focus layer to be running before it goes on
+ * the canvas without it; see `sendCut`. A new layer took up to ~600 ms to start
+ * on the Xiaomi (debug build).
+ */
+const FOCUS_WAIT_MAX_MS = 900;
+
 const ROW_ARRIVAL_KNOBS = {
   /**
    * The pen's width for a row's title, in pixels.
@@ -608,6 +621,8 @@ function FieldCanvasImpl({
     inkClock: useSharedValue(1),
     openAt: useSharedValue<Readonly<Record<string, number>>>({}),
     soundClock: useSharedValue(1),
+    focusLive: useSharedValue(-1),
+    parked: useSharedValue<NativeCut | null>(null),
   };
   const scene = useRef(sceneCandidate).current;
   /**
@@ -875,6 +890,60 @@ function FieldCanvasImpl({
    * than the one on the canvas is never sent: a render still carrying it
    * would take the canvas back to it.
    */
+  const sceneCut = scene.cut;
+  const sceneClock = scene.clock;
+  /** Put a cut on the canvas and start (or land) its clock. */
+  const applyCut = (cutData: NativeCut, restart: boolean) => {
+    'worklet';
+    sceneCut.value = cutData;
+    if (!restart) return;
+    // A camera that follows its song has nowhere to travel: it is where the
+    // cut puts the song, from the cut's first frame. Set with the cut, so no
+    // frame draws one without the other — the camera hook sets the same
+    // value when it hears the cut was drawn, which is a frame or more later.
+    if (cutData.follows === true) cameraShared.value = cutData.recut.toCamera;
+    cancelAnimation(sceneClock);
+    // A re-cut that does not animate lands at once, so reduced motion
+    // shows the new cut instead of one stale frame.
+    if (!cutData.animate) {
+      sceneClock.value = 1;
+      return;
+    }
+    sceneClock.value = 0;
+    sceneClock.value = withTiming(1, {
+      duration: cutData.durationMs,
+      easing: nativeSmootherstep,
+    });
+  };
+  const applyCutRef = useRef(applyCut);
+  applyCutRef.current = applyCut;
+  /*
+   * A focus layer is on the canvas: the cut built for it may go down.
+   *
+   * Called from the layer's passive effect, which runs after every layout
+   * effect of its commit — Skia's own re-recording of this canvas among them —
+   * so what it queues on the UI thread runs after the new tree is there. Told
+   * from the layer's first UI-thread reaction instead, the cut went down while
+   * the canvas was still drawing the old layer, for up to a third of a second.
+   */
+  const focusReady = useCallback(
+    (generation: number) => {
+      const apply = applyCutRef.current;
+      const live = scene.focusLive;
+      const parked = scene.parked;
+      runOnUI(() => {
+        'worklet';
+        if (live.value < generation) live.value = generation;
+        const held = parked.value;
+        if (held === null || generation < held.generation) return;
+        parked.value = null;
+        apply(held, true);
+      })();
+    },
+    [scene],
+  );
+  /** The cut the focus layer being drawn was built for; see `sendCut`. */
+  const focusGeneration = useRef<number | null>(null);
   const sendCut = (
     next: FieldRecutModel,
     places: ReadonlyMap<string, string> | null,
@@ -905,6 +974,7 @@ function FieldCanvasImpl({
       },
       recede: next.recede ?? null,
       gather: next.gather ?? null,
+      follows: next.follows === true,
       flights: next.flights,
       places: fitted,
       // A find cut keeps the map's groups as they were, so the names on the
@@ -923,26 +993,55 @@ function FieldCanvasImpl({
       seenGeneration.current = next.generation;
     }
     installed.current = next.generation;
-    const cut = scene.cut;
-    const clock = scene.clock;
-    const install = () => {
+    /*
+     * A cut with a focus layer waits for that layer to be running.
+     *
+     * The layer is keyed by its cut, so the cut's arrival mounts a new one,
+     * and on the Xiaomi a new layer took most of a second to start drawing.
+     * Installed at once, the cut and its camera moved on while the old layer
+     * — the player as the old cut placed it — went on drawing through the new
+     * camera: a re-cut under the song you stand in dropped the player a row
+     * off its dial for that long (the Flicker Law's fourth rule). Held until
+     * the new layer says it is live, the old cut, layer and camera stay
+     * together, and the new three take over in one frame.
+     */
+    const waits = restart && focusGeneration.current === next.generation;
+    const parked = scene.parked;
+    const focusLive = scene.focusLive;
+    const send = () => {
       'worklet';
-      cut.value = cutData;
-      if (!restart) return;
-      cancelAnimation(clock);
-      // A re-cut that does not animate lands at once, so reduced motion
-      // shows the new cut instead of one stale frame.
-      if (!cutData.animate) {
-        clock.value = 1;
+      const held = parked.value;
+      if (!restart && held !== null && held.generation === cutData.generation) {
+        // A resend of the cut still waiting: it waits with the new data.
+        parked.value = cutData;
         return;
       }
-      clock.value = 0;
-      clock.value = withTiming(1, {
-        duration: cutData.durationMs,
-        easing: nativeSmootherstep,
-      });
+      // Only once a layer has ever said so: a canvas whose layers have never
+      // reported (the very first, or a test renderer) has nothing to wait on.
+      if (
+        waits &&
+        focusLive.value >= 0 &&
+        focusLive.value < cutData.generation
+      ) {
+        parked.value = cutData;
+        return;
+      }
+      parked.value = null;
+      applyCut(cutData, restart);
     };
-    runOnUI(install)();
+    runOnUI(send)();
+    if (waits) {
+      const generation = next.generation;
+      setTimeout(() => {
+        runOnUI(() => {
+          'worklet';
+          const held = parked.value;
+          if (held === null || held.generation !== generation) return;
+          parked.value = null;
+          applyCut(held, true);
+        })();
+      }, FOCUS_WAIT_MAX_MS);
+    }
   };
   const sendCutRef = useRef(sendCut);
   sendCutRef.current = sendCut;
@@ -1093,6 +1192,7 @@ function FieldCanvasImpl({
     songTitleFont,
     viewport,
   ]);
+  focusGeneration.current = focusLayer?.generation ?? null;
 
   /**
    * The scene element, held by identity.
@@ -1132,6 +1232,7 @@ function FieldCanvasImpl({
         <NativeFieldContent
           scene={scene}
           focus={focusLayer}
+          focusReady={focusReady}
           openingClock={openingClock}
           lensClock={lensClock}
           reducedMotion={reducedMotion}
@@ -1161,6 +1262,7 @@ function FieldCanvasImpl({
     drawnClockShared,
     fitScaleShared,
     focusLayer,
+    focusReady,
     grainValue,
     hubPaths,
     jobMarks,
@@ -1414,6 +1516,10 @@ type LivingScene = Readonly<{
   openAt: SharedValue<Readonly<Record<string, number>>>;
   /** The focused player's sound rising; 1 is risen. */
   soundClock: SharedValue<number>;
+  /** The newest cut whose focus layer is running on the UI thread. */
+  focusLive: SharedValue<number>;
+  /** A cut waiting for its focus layer; see `sendCut`. */
+  parked: SharedValue<NativeCut | null>;
 }>;
 
 /**
@@ -1435,6 +1541,8 @@ type FocusLayer = Readonly<{
 type NativeFieldContentProps = Readonly<{
   scene: LivingScene;
   focus: FocusLayer | null;
+  /** A focus layer is drawn; its cut may go down. See `sendCut`. */
+  focusReady: (generation: number) => void;
   openingClock: SharedValue<number>;
   lensClock: LensClock;
   reducedMotion: boolean;
@@ -2540,6 +2648,8 @@ function NativeSongDetail({
   lensClock,
   model,
   clock,
+  ink,
+  songKey,
   recut,
   cameraShared,
   fitScaleShared,
@@ -2551,6 +2661,9 @@ function NativeSongDetail({
   lensClock: LensClock;
   model: SongDetailModel | null;
   clock: SharedValue<number>;
+  /** Which song's measurement is fully drawn, across this layer's remounts. */
+  ink: SharedValue<DetailInk>;
+  songKey: string;
   recut: NativeRecut;
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
@@ -2570,18 +2683,42 @@ function NativeSongDetail({
         : 0;
     return songDetailPhase(ratio);
   });
-  const drawn = useSharedValue(0);
+  /*
+   * The layer is keyed by the cut, so a re-cut under a song you are already
+   * in — a song just made landing in the same shelf — mounts it again with
+   * the camera already there. Drawn in from nothing, the ticks wiped and
+   * traced back in under a player that had not moved. A layer that takes
+   * over a song whose measurement is already in starts it in — from its
+   * first frame, not from the reaction below, which runs after it.
+   */
+  const drawn = useSharedValue(
+    ink.value.key === songKey && ink.value.drawn ? 1 : 0,
+  );
   useAnimatedReaction(
     () => phase.value,
     (next, before) => {
       if (next === before) return;
       cancelAnimation(drawn);
-      if (next === 'hidden') drawn.value = 0;
-      else if (next === 'reveal') {
-        drawn.value = withTiming(1, {
-          duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
-          easing: easeSmoother,
-        });
+      if (next === 'hidden') {
+        drawn.value = 0;
+        ink.value = { key: songKey, drawn: false };
+        return;
+      }
+      if (before === null && ink.value.key === songKey && ink.value.drawn) {
+        drawn.value = 1;
+        return;
+      }
+      if (next === 'reveal') {
+        drawn.value = withTiming(
+          1,
+          {
+            duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
+            easing: easeSmoother,
+          },
+          finished => {
+            if (finished) ink.value = { key: songKey, drawn: true };
+          },
+        );
       }
     },
   );
@@ -2686,6 +2823,7 @@ function songDetailOf(
 const NativeFieldContent = React.memo(function NativeFieldContent({
   scene,
   focus,
+  focusReady,
   openingClock,
   lensClock,
   reducedMotion,
@@ -2726,6 +2864,11 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     fitScaleShared,
     viewport,
   );
+  /**
+   * Which song's measurement has been drawn in, held across the focus
+   * layer's remounts; see `NativeSongDetail`.
+   */
+  const detailInk = useSharedValue<DetailInk>({ key: null, drawn: false });
   /*
    * The whole field's faces, as one node and one mapper. See `drawFieldFaces`.
    *
@@ -2914,7 +3057,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * camera, and for those frames the same name was drawn twice, a few pixels
    * apart (seen on the phone at the start of a descent).
    */
-  const playerRow = useSharedValue<string | null>(null);
+  const playerRow = useSharedValue<PlayerRow | null>(null);
   // Every row, the focused one included: who draws it is decided per frame,
   // by `motion.owned`, not by which rows this list holds.
   const rows = useDerivedValue(() =>
@@ -3051,7 +3194,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         motion.fieldFade.value,
         rowFonts,
         rowPaints,
-        motion.owned.value > 0 ? playerRow.value : null,
+        motion.owned.value > 0 ? playerRow.value?.key ?? null : null,
         inkClock.value,
         openingClock.value,
         recede,
@@ -3170,6 +3313,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       {focus === null ? null : (
         <FocusDetail
           key={`detail:${focus.key}`}
+          detailInk={detailInk}
           focus={focus}
           scene={scene}
           lensClock={lensClock}
@@ -3186,6 +3330,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         <FocusFlight
           key={`flight:${focus.key}`}
           focus={focus}
+          focusReady={focusReady}
           scene={scene}
           lensClock={lensClock}
           playerRow={playerRow}
@@ -3218,15 +3363,31 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
 function useFocusClock(scene: LivingScene, generation: number) {
   const cut = scene.cut;
   const clock = scene.clock;
+  // And held at its start until its own cut is on the canvas. React mounts a
+  // layer before the UI thread installs the cut it was built for; read as
+  // landed, a re-cut under the song you stand in drew the player at its new
+  // seat while the camera, rightly, still waited at the old one.
   return useDerivedValue(() =>
-    cut.value !== null && cut.value.generation === generation
+    cut.value === null
+      ? 1
+      : cut.value.generation === generation
       ? clock.value
+      : cut.value.generation < generation
+      ? 0
       : 1,
   );
 }
 
+/** The row the player's flight has taken over, and which flight holds it. */
+type PlayerRow = Readonly<{ key: string; owner: number }>;
+let nextRowOwner = 1;
+
+/** Whose measurement the focus layer has drawn in; see `NativeSongDetail`. */
+type DetailInk = Readonly<{ key: string | null; drawn: boolean }>;
+
 /** The focused song's detail loop, under the rows; see `NativeSongDetail`. */
 function FocusDetail({
+  detailInk,
   focus,
   scene,
   lensClock,
@@ -3237,6 +3398,7 @@ function FocusDetail({
   positionSeconds,
   viewport,
 }: {
+  detailInk: SharedValue<DetailInk>;
   focus: FocusLayer;
   scene: LivingScene;
   lensClock: LensClock;
@@ -3253,6 +3415,8 @@ function FocusDetail({
       lensClock={lensClock}
       cameraShared={cameraShared}
       clock={clock}
+      ink={detailInk}
+      songKey={focus.flight.entityKey}
       fitScaleShared={fitScaleShared}
       grainShared={grainShared}
       model={focus.detail}
@@ -3267,6 +3431,7 @@ function FocusDetail({
 /** The focused song's flight and player, over the rows. */
 function FocusFlight({
   focus,
+  focusReady,
   scene,
   lensClock,
   playerRow,
@@ -3285,9 +3450,10 @@ function FocusFlight({
   palette,
 }: {
   focus: FocusLayer;
+  focusReady: (generation: number) => void;
   scene: LivingScene;
   lensClock: LensClock;
-  playerRow: SharedValue<string | null>;
+  playerRow: SharedValue<PlayerRow | null>;
   motion: NativeCameraMotion;
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
@@ -3303,6 +3469,11 @@ function FocusFlight({
   palette: Palette;
 }) {
   const clock = useFocusClock(scene, focus.generation);
+  // On the canvas: its cut may go down now (see `focusReady`).
+  const generation = focus.generation;
+  useEffect(() => {
+    focusReady(generation);
+  }, [focusReady, generation]);
   return (
     <NativePlacementFlight
       lensClock={lensClock}
@@ -3528,7 +3699,7 @@ function NativePlacementFlight({
 }: {
   motion: NativeCameraMotion;
   /** Where this flight says it has taken its row over; see `playerRow`. */
-  playerRow: SharedValue<string | null>;
+  playerRow: SharedValue<PlayerRow | null>;
   lensClock: LensClock;
   flight: PlacementFlight;
   clock: SharedValue<number>;
@@ -3743,25 +3914,44 @@ function NativePlacementFlight({
    * drawing anything the other is not.
    */
   const rowKey = flight.targetPlacementKey;
+  /*
+   * Released only by the flight that holds it. A re-cut under the song you
+   * stand in mounts the next cut's flight for the same row, and it takes the
+   * row over before this one unmounts: released by key, the outgoing flight
+   * took the row back from it — the player gone and the row drawn in its
+   * place, for a frame, or for good when nothing took it over again.
+   *
+   * And not while it still owns the row at all. React unmounts this flight
+   * as it mounts the next, which then takes some frames to start: released
+   * here, the row went back to the batch for those frames and the player
+   * showed as a row. A claim left behind is read only while a player owns
+   * the row (`motion.owned`), and the next flight writes over it.
+   */
+  const holder = useRef(nextRowOwner++).current;
   useAnimatedReaction(
     () => rowKey,
     key => {
-      playerRow.value = key;
+      playerRow.value = key === null ? null : { key, owner: holder };
     },
     [rowKey],
   );
   useEffect(
     () => () => {
-      if (playerRow.value === rowKey) playerRow.value = null;
+      runOnUI(() => {
+        'worklet';
+        if (playerRow.value?.owner === holder && motion.owned.value <= 0) {
+          playerRow.value = null;
+        }
+      })();
     },
-    [playerRow, rowKey],
+    [holder, motion, playerRow],
   );
   /**
    * Drawn only while it owns the row, and only once live. At row distance the
    * batch draws it, as it draws every other row; see `owned` and `playerRow`.
    */
   const flightOpacity = useDerivedValue(() =>
-    isPlayer && playerRow.value !== rowKey
+    isPlayer && playerRow.value?.key !== rowKey
       ? 0
       : motion.fieldFade.value * (isPlayer ? motion.owned.value : 1),
   );

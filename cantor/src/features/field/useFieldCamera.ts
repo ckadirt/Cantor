@@ -95,6 +95,14 @@ export const FIELD_CAMERA_KNOBS = {
    * 130 ms (release) to 450 ms (debug).
    */
   PENDING_CUT_MAX_MS: 600,
+  /**
+   * The same wait for a cut whose camera follows its song. The canvas holds
+   * such a cut until the song's new player layer is running, up to its own
+   * `FOCUS_WAIT_MAX_MS` (900), and sets the camera as it puts the cut down;
+   * this only lands it. Shorter, the camera moved on ahead of a cut still
+   * waiting, and the player was drawn a row off its dial until it went down.
+   */
+  FOLLOW_CUT_MAX_MS: 1200,
   TAP_SLOP_PX: 8,
   /**
    * Hold acts. Long enough that a slow tap is still a tap and a pan that
@@ -381,6 +389,11 @@ export type FieldRecutModel = Readonly<{
    * cameras; see `GatherCameras`. Null for every other cut.
    */
   gather?: GatherCameras | null;
+  /**
+   * The camera follows the song it stands in, by exactly as far as the song
+   * moves; see the re-cut's planning. Started with the canvas, as a gather is.
+   */
+  follows?: boolean;
 }>;
 
 /** A map camera kept for an axis, with its scale relative to that map's FIT. */
@@ -1384,6 +1397,7 @@ export function useFieldCamera({
      * far as the song moved, which keeps whatever pose it was standing in.
      * Its own shelf's seat when the song is in several.
      */
+    let follows = false;
     if (
       toCamera === fitCorrected &&
       held !== null &&
@@ -1404,6 +1418,7 @@ export function useFieldCamera({
           x: fitCorrected.x + (moved.x - held.x),
           y: fitCorrected.y + (moved.y - held.y),
         };
+        follows = toCamera.x !== heading.x || toCamera.y !== heading.y;
       }
     }
     /*
@@ -1534,7 +1549,30 @@ export function useFieldCamera({
             recedeEnds,
             capturedHeld.current,
           );
-    const flights = gatherCut?.flights ?? planned;
+    /*
+     * A camera following its song lands with the cut rather than flying, and
+     * the song does not fly either: both start where they end. Flown, the two
+     * were never on one clock — the camera ran ahead of the canvas, and the
+     * player hangs off the song's seat by a camera of its own — so the player
+     * slid a row off its dial and snapped back. Pinned, every term that places
+     * the song is the same at every frame, whichever clock reads it. The rows
+     * around it still fly; at this distance they are off the screen.
+     */
+    const flights =
+      follows && held !== null
+        ? (gatherCut?.flights ?? planned).map(flight =>
+            flight.entityKey === held.entityKey
+              ? {
+                  ...flight,
+                  fromX: flight.targetX,
+                  fromY: flight.targetY,
+                  fromBloomX: flight.targetBloomX,
+                  fromBloomY: flight.targetBloomY,
+                }
+              : flight,
+          )
+        : gatherCut?.flights ?? planned;
+    if (follows) recutFrom = toCamera;
     const fromGroups = previous?.layout.groups ?? [];
     const animate =
       !firstLayout &&
@@ -1567,6 +1605,7 @@ export function useFieldCamera({
               end: gatherCut.recedeEnd,
             },
       gather,
+      follows,
     };
     if (stranded) strandedFocus.current = generation;
   };
@@ -1756,7 +1795,13 @@ export function useFieldCamera({
         fromFitScale: model.fromFitScale,
         toFitScale: model.toFitScale,
       };
-      if (model.gather != null) {
+      /*
+       * A camera that follows its song starts with the canvas too. Started
+       * here, its clock ran a few hundred milliseconds ahead of the song's —
+       * the canvas only begins a cut once it has built it — and the player
+       * slid off its dial and back as the camera arrived before the song did.
+       */
+      if (model.gather != null || model.follows === true) {
         // A cut that moves the camera without a flight — find's gather,
         // opening and leaving — is where the camera already is, for React
         // too: the header names the place you are going, not the seats left
@@ -1779,10 +1824,15 @@ export function useFieldCamera({
           durationMs: model.durationMs ?? FIELD_CAMERA_KNOBS.RELAYOUT_MS,
         };
         // Should the canvas never say (it is not drawing), start anyway.
-        pendingFallback.current = setTimeout(() => {
-          pendingFallback.current = null;
-          runOnUI(startPendingCut)(Number.MAX_SAFE_INTEGER);
-        }, FIELD_CAMERA_KNOBS.PENDING_CUT_MAX_MS);
+        pendingFallback.current = setTimeout(
+          () => {
+            pendingFallback.current = null;
+            runOnUI(startPendingCut)(Number.MAX_SAFE_INTEGER);
+          },
+          model.follows === true
+            ? FIELD_CAMERA_KNOBS.FOLLOW_CUT_MAX_MS
+            : FIELD_CAMERA_KNOBS.PENDING_CUT_MAX_MS,
+        );
         return;
       }
       recutProgress.value = 0;
