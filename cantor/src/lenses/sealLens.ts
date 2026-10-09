@@ -4,6 +4,7 @@ import {
   type SkCanvas,
   type SkPath,
 } from '@shopify/react-native-skia';
+import { smootherstep } from '../field/bands';
 import { NAME_LENS_KNOBS } from './nameLens';
 import { ringTurnAt } from './ring';
 import {
@@ -296,9 +297,10 @@ function drawSealMark(
 /**
  * The seal as the player: its dust at the deepest level, the mark's dots
  * splitting into their children as it arrives, and the sound rising into it
- * once measured — see `drawSealPlayer`.
+ * once measured — see `drawSealPlayer`. `leaving` is the seal giving way to
+ * the cover along its thread, which takes the spindle with it.
  */
-function drawSealAsPlayer(
+export function drawSealAsPlayer(
   canvas: SkCanvas,
   player: LensPlayer | null,
   identity: LensIdentity,
@@ -312,6 +314,7 @@ function drawSealAsPlayer(
   heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  leaving = 0,
 ): void {
   'worklet';
   if (player === null) return;
@@ -330,10 +333,13 @@ function drawSealAsPlayer(
     soundIn,
     heard,
     hairlinePx,
+    1,
+    0,
+    leaving,
   );
   // The spindle leaves as the player arrives, its clearing filling back in
   // with the dust: at `arrived` 0 this is the mark exactly.
-  const away = 1 - arrived;
+  const away = (1 - arrived) * (1 - smootherstep(leaving));
   if (mark.spindle > 0 && away > 0) {
     canvas.save();
     canvas.scale(size, size);
