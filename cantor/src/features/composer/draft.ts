@@ -1,6 +1,7 @@
 import type { ModelParameter } from '../../../../protocol/ModelParameter';
 import type { ModelView } from '../../../../protocol/ModelView';
 import type { ParameterValue } from '../../../../protocol/ParameterValue';
+import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import {
   extensionsFor,
   parameterProblem,
@@ -286,4 +287,35 @@ export function describeProblem(problem: ComposerProblem): string {
     case 'parameter':
       return problem.message;
   }
+}
+
+/**
+ * A made song's recipe, as a draft the composer can open on.
+ *
+ * Words equal to the model's instrumental marker are not words: they load as
+ * `none`, so sending the draft unchanged sends the same request. The legacy
+ * top-level `steps` and `cfg` are folded in by key; a model that does not
+ * declare them never sends them, because only declared keys are sent.
+ */
+export function draftFromRecipe(
+  generation: GenerationRequest,
+  nodePublicKey: string,
+  modelSelector: string,
+  model?: ModelView,
+): ComposerDraft {
+  const words = generation.lyrics?.trim() ?? '';
+  const instrumental = lyricsContractFor(model).instrumentalLyrics;
+  const mine = words.length > 0 && words !== instrumental;
+  const parameters: Record<string, ParameterValue> = {};
+  if (generation.steps !== undefined) parameters.steps = generation.steps;
+  if (generation.cfg !== undefined) parameters.cfg = generation.cfg;
+  return {
+    caption: generation.caption,
+    lyrics: mine ? words : '',
+    wordsMode: mine ? 'mine' : 'none',
+    durationSeconds: generation.duration ?? null,
+    nodePublicKey,
+    modelSelector,
+    parameters: { ...parameters, ...(generation.extensions ?? {}) },
+  };
 }

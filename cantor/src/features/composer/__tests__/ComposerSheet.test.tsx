@@ -3,7 +3,7 @@ import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
 import { ComposerSheet } from '../ComposerSheet';
 import type { NodeLimits } from '../../../../../protocol/NodeLimits';
-import type { ComposerTarget } from '../draft';
+import { draftFromRecipe, type ComposerTarget } from '../draft';
 
 const limits: NodeLimits = {
   max_concurrent_jobs: 1,
@@ -37,7 +37,10 @@ const phone: ComposerTarget = {
   limits,
 };
 
-function render(targets: readonly ComposerTarget[]) {
+function render(
+  targets: readonly ComposerTarget[],
+  recipe: React.ComponentProps<typeof ComposerSheet>['recipe'] = null,
+) {
   const onSubmit = jest.fn();
   let tree!: ReactTestRenderer.ReactTestRenderer;
   ReactTestRenderer.act(() => {
@@ -48,6 +51,7 @@ function render(targets: readonly ComposerTarget[]) {
           error={null}
           onClose={jest.fn()}
           onSubmit={onSubmit}
+          recipe={recipe}
           submitting={false}
           targets={targets}
         />
@@ -79,6 +83,28 @@ function render(targets: readonly ComposerTarget[]) {
 }
 
 describe('the composer Ledger', () => {
+  it('opens on a made song and sends it again with its own seed', () => {
+    const draft = draftFromRecipe(
+      {
+        caption: 'a slow harbour at dusk',
+        lyrics: 'the tide goes out',
+        duration: 90,
+      },
+      'a',
+      'levo2:1.0',
+    );
+    const { onSubmit, press } = render([agentbox, phone], {
+      draft,
+      seed: 41822,
+    });
+    press('Make it');
+    expect(onSubmit).toHaveBeenCalledWith('a', 'levo2:1.0', {
+      caption: 'a slow harbour at dusk',
+      lyrics: 'the tide goes out',
+      duration: 90,
+      seed: 41822,
+    });
+  });
   it('shows the resolved machine without opening a drawer', () => {
     const { words } = render([
       { ...agentbox, models: [model('acestep:1.5-fast')] },

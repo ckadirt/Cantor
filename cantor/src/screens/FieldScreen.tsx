@@ -49,7 +49,14 @@ import {
   createFieldControllerStore,
   type FieldControllerStore,
 } from '../features/field/fieldControllerStore';
-import { ComposerSheet, type ComposerTarget } from '../features/composer';
+import { draftSeed } from '../features/controls';
+import { lyricsContractFor } from '../core/protocol/lyrics';
+import {
+  ComposerSheet,
+  draftFromRecipe,
+  type ComposerDraft,
+  type ComposerTarget,
+} from '../features/composer';
 import { Curtain, useKeyboardInset } from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
@@ -880,6 +887,18 @@ export function FieldScreen({ identity }: Props) {
     setSubmitError(null);
     setComposerOpen(true);
   }, []);
+  /**
+   * A made song's recipe for the composer's next opening. Dropped when the
+   * composer closes, the same as any draft: an opening from `NEW SONG` after
+   * it is a new song, not the last one again.
+   */
+  const [composerRecipe, setComposerRecipe] = useState<Readonly<{
+    draft: ComposerDraft;
+    seed: number;
+  }> | null>(null);
+  useEffect(() => {
+    if (!composerOpen) setComposerRecipe(null);
+  }, [composerOpen]);
 
   /** What each paired node advertises, which is what the composer validates against. */
   const composerTargets = useMemo<readonly ComposerTarget[]>(
@@ -1369,6 +1388,13 @@ export function FieldScreen({ identity }: Props) {
         : controller.presentations.get(sheetTarget.entityKey) ?? null,
     [controller.presentations, sheetTarget],
   );
+  /** The model that made the sheet's song, as its node last described it. */
+  const sheetModel = useMemo(() => {
+    if (sheetSong?.source !== 'node') return undefined;
+    return composerTargets
+      .find(target => target.nodePublicKey === sheetSong.entity.nodePublicKey)
+      ?.models.find(model => model.selector === sheetSong.song.model);
+  }, [composerTargets, sheetSong]);
   /** Which node a failure in the song sheet is about, by name. */
   const sheetNodeName = sheetSong?.label ?? 'the node';
 
@@ -2852,6 +2878,7 @@ export function FieldScreen({ identity }: Props) {
             lens={activeLens}
             onClose={closeComposer}
             onSubmit={onComposerSubmit}
+            recipe={composerRecipe}
             submitting={submitting}
             targets={composerTargets}
           />
@@ -3015,6 +3042,30 @@ export function FieldScreen({ identity }: Props) {
               })
             }
             onPatch={commitSheetPatch}
+            instrumentalLyrics={
+              lyricsContractFor(sheetModel).instrumentalLyrics
+            }
+            onRecompose={
+              sheetSong.source === 'node'
+                ? detail => {
+                    setComposerRecipe({
+                      draft: draftFromRecipe(
+                        detail.generation,
+                        sheetSong.entity.nodePublicKey,
+                        sheetHeader.model,
+                        sheetModel,
+                      ),
+                      // A song made before seeds were kept gets a new one.
+                      seed:
+                        detail.generation.seed ??
+                        sheetHeader.seed ??
+                        draftSeed(),
+                    });
+                    setSheetOpen(false);
+                    openComposer();
+                  }
+                : undefined
+            }
             onPin={() => runAudioAction('pin')}
             onRemoveDownload={() => runAudioAction('remove')}
             onUnpin={() => runAudioAction('unpin')}
