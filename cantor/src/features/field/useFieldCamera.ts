@@ -1375,6 +1375,38 @@ export function useFieldCamera({
       ? newHome ?? fitCorrected
       : fitCorrected;
     /*
+     * The song you stand in can move under you without leaving: a song just
+     * made lands in the shelf you are listening in, and every row after it
+     * steps down one. Keeping the camera where it was drew the song a row
+     * away from its own player — the ring fell below its dial, and the title
+     * and controls, seated by where the camera is, faded off a song that was
+     * no longer under them. So the camera moves with the song, by exactly as
+     * far as the song moved, which keeps whatever pose it was standing in.
+     * Its own shelf's seat when the song is in several.
+     */
+    if (
+      toCamera === fitCorrected &&
+      held !== null &&
+      isSongDistance(heading.scale, fromFitScale)
+    ) {
+      const moved =
+        layout.placements.find(
+          placement =>
+            placement.entityKey === held.entityKey &&
+            placement.groupKey === held.groupKey,
+        ) ??
+        layout.placements.find(
+          placement => placement.entityKey === held.entityKey,
+        );
+      if (moved !== undefined) {
+        toCamera = {
+          ...fitCorrected,
+          x: fitCorrected.x + (moved.x - held.x),
+          y: fitCorrected.y + (moved.y - held.y),
+        };
+      }
+    }
+    /*
      * The shelf you stand in can leave the field as well: a tag filter that
      * keeps none of its songs, a forgotten node that took all of them. At
      * shelf distance over where it stood, the page was empty under a header

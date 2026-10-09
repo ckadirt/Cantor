@@ -1761,6 +1761,80 @@ describe('useFieldCamera', () => {
   });
 
   /** Re-arranging re-keys every placement without one song leaving the field. */
+  it('moves with the song it stands in when a new song lands in its shelf', async () => {
+    mockReducedMotion = true;
+    const week = Date.UTC(2026, 7, 8);
+    const pair: FieldEntity[] = [
+      { ...entities[0], createdAtMs: week },
+      {
+        ...entities[0],
+        key: 'node-a:song-b',
+        entityId: 'song-b',
+        createdAtMs: week + 3600 * 1000,
+      },
+    ];
+    const before = layoutField({
+      entities: pair,
+      arrangement: byDate('week'),
+      viewport,
+    });
+    // A song just made: the newest in the same week, so it takes a row ahead
+    // of the one being listened to.
+    const after = layoutField({
+      entities: [
+        ...pair,
+        {
+          ...entities[0],
+          key: 'node-a:song-new',
+          entityId: 'song-new',
+          createdAtMs: week + 2 * 3600 * 1000,
+        },
+      ],
+      arrangement: byDate('week'),
+      viewport,
+    });
+
+    function TransitionProbe({ field }: { field: FieldLayout }) {
+      latest = useFieldCamera({
+        layout: field,
+        viewport,
+        onOpenComposer: jest.fn(),
+        onOpenEngines: jest.fn(),
+      });
+      return null;
+    }
+
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = ReactTestRenderer.create(<TransitionProbe field={before} />);
+    });
+    const inside = before.placements.find(
+      placement => placement.entityKey === 'node-a:song-a',
+    )!;
+    await ReactTestRenderer.act(async () => {
+      latest.descend(inside);
+    });
+    await ReactTestRenderer.act(async () => {
+      latest.descend(inside);
+    });
+    expect(latest.level).toBe('song');
+    const standing = latest.camera;
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(<TransitionProbe field={after} />);
+    });
+    const moved = after.placements.find(
+      placement => placement.entityKey === 'node-a:song-a',
+    )!;
+    // The premise: the song really did move.
+    expect(Math.hypot(moved.x - inside.x, moved.y - inside.y)).toBeGreaterThan(
+      1e-6,
+    );
+    expect(latest.level).toBe('song');
+    expect(latest.camera.x - standing.x).toBeCloseTo(moved.x - inside.x, 6);
+    expect(latest.camera.y - standing.y).toBeCloseTo(moved.y - inside.y, 6);
+  });
+
   it('does not throw the camera out of a song the field merely re-arranged', async () => {
     mockReducedMotion = true;
     const tagged: FieldEntity[] = [
