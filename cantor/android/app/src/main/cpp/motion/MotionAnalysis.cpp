@@ -22,10 +22,6 @@ constexpr double kPi = 3.14159265358979323846;
 inline long jsRound(double x) { return static_cast<long>(std::floor(x + 0.5)); }
 
 inline double clamp01(double x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
-inline double smootherstep(double x) {
-  x = clamp01(x);
-  return x * x * x * (x * (6 * x - 15) + 10);
-}
 
 /**
  * The magnitude spectrum of n real samples (n a power of two, at least 32).
@@ -38,8 +34,7 @@ inline double smootherstep(double x) {
 class RealFft {
  public:
   explicit RealFft(int n)
-      : n_(n),
-        setup_(pffftd_new_setup(n, PFFFT_REAL)),
+      : setup_(pffftd_new_setup(n, PFFFT_REAL)),
         in_(static_cast<double *>(pffftd_aligned_malloc(sizeof(double) * n))),
         out_(static_cast<double *>(pffftd_aligned_malloc(sizeof(double) * n))),
         work_(static_cast<double *>(pffftd_aligned_malloc(sizeof(double) * n))) {}
@@ -66,7 +61,6 @@ class RealFft {
   }
 
  private:
-  int n_;
   PFFFTD_Setup *setup_;
   double *in_, *out_, *work_;
 };

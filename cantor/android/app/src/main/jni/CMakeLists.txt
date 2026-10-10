@@ -18,16 +18,16 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         ${CANTOR_CPP}/AudioDecode.cpp
         ${CANTOR_CPP}/AudioReduction.cpp
         ${CANTOR_CPP}/motion/MotionAnalysis.cpp
-        ${CANTOR_CPP}/motion/MotionTrackJni.cpp
-        ${CANTOR_CPP}/motion/pffft/pffft_double.c)
-# The motion analysis's FFT (cpp/motion/pffft/README.md). Hidden, because
-# audio-api's library exports the same pffftd_* symbols; NEON wherever the
-# CPU has 64-bit lanes (arm64), scalar on armeabi-v7a, SSE2 on x86.
-set_source_files_properties(${CANTOR_CPP}/motion/pffft/pffft_double.c PROPERTIES
-        COMPILE_OPTIONS "-fvisibility=hidden;-O3"
-        COMPILE_DEFINITIONS "PFFFT_ENABLE_NEON")
-set_source_files_properties(${CANTOR_CPP}/motion/MotionAnalysis.cpp PROPERTIES
-        COMPILE_OPTIONS "-O3")
+        ${CANTOR_CPP}/motion/MotionTrackJni.cpp)
+set_source_files_properties(${CANTOR_CPP}/motion/MotionAnalysis.cpp PROPERTIES COMPILE_OPTIONS "-O3")
+# The motion analysis's FFT (cpp/motion/pffft/README.md): C, so a library of
+# its own, out of reach of the app target's C++ flags. Hidden, because
+# audio-api's library exports the same pffftd_* symbols; NEON on arm64,
+# scalar on armeabi-v7a, SSE2 on x86.
+add_library(cantor_pffft STATIC ${CANTOR_CPP}/motion/pffft/pffft_double.c)
+target_compile_options(cantor_pffft PRIVATE -O3 -fvisibility=hidden -fPIC)
+target_compile_definitions(cantor_pffft PRIVATE PFFFT_ENABLE_NEON)
+target_link_libraries(${CMAKE_PROJECT_NAME} cantor_pffft)
 # miniaudio's header for its declarations only; the implementation is
 # audio-api's, looked up at run time (see AudioDecode.cpp).
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
