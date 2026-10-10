@@ -1,5 +1,6 @@
 import type { AudioRef } from '../audio/localAudioStore';
 import { outputLatencySeconds, type OutputRoute } from './outputLatency';
+import { noteRoute, syncOffsetSeconds } from './syncOffsets';
 import type {
   PlayerPort,
   PlayerSnapshot,
@@ -361,9 +362,12 @@ export class AudioApiPlayer implements PlayerPort {
       : this.positionSeconds;
   }
 
-  /** How far the sound in the air runs behind `renderedPosition`. */
+  /**
+   * How far the sound in the air runs behind `renderedPosition`: the route's
+   * own delay and this phone's correction for it (`syncOffsets.ts`).
+   */
   outputLatencySeconds(): number {
-    return outputLatencySeconds(this.route);
+    return Math.max(0, outputLatencySeconds(this.route) + syncOffsetSeconds(this.route));
   }
 
   // ---- internals --------------------------------------------------------
@@ -448,6 +452,7 @@ export class AudioApiPlayer implements PlayerPort {
     this.deps.outputRoute().then(
       route => {
         this.route = route;
+        noteRoute(route);
       },
       () => undefined,
     );

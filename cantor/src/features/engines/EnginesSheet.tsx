@@ -36,6 +36,7 @@ import {
   type LibraryReport,
   type StorageReport,
 } from './SettingsSheet';
+import type { SyncSong } from './SyncRow';
 import { touch, type, usePalette } from '../../theme/tokens';
 
 /** What one node's songs weigh on this phone, and how many there are. */
@@ -68,6 +69,8 @@ type Props = {
   storage: StorageReport;
   budgetBytes: number;
   onChangeBudget: (bytes: number) => void;
+  /** The song playing, for the sync row; see `SyncRow`. */
+  sync?: SyncSong | null;
   /** The phone's own music: the roster's first entry and its page. */
   device: DeviceLibraryState;
   phoneActions: PhoneActions;
@@ -103,6 +106,7 @@ function EnginesSheetImpl({
   storage,
   budgetBytes,
   onChangeBudget,
+  sync = null,
   device,
   phoneActions,
   startOn = null,
@@ -287,6 +291,7 @@ function EnginesSheetImpl({
               budgetBytes={budgetBytes}
               library={library}
               onChangeBudget={onChangeBudget}
+              sync={sync}
               failures={failures.length}
               onOpenDiagnostics={() => setPage({ kind: 'diagnostics' })}
               storage={storage}
@@ -349,7 +354,7 @@ function EnginesSheetImpl({
                 </Measure>
                 <Rest />
                 <Measure>
-                  <Row note="Your key · storage · about">
+                  <Row note="Your key · storage · sync · about">
                     <Door
                       label="Settings"
                       onPress={() => setPage({ kind: 'settings' })}

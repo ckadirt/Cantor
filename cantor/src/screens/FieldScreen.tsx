@@ -180,6 +180,10 @@ import {
 } from '../lenses';
 import { AnalysisStore, type AnalysisRef } from '../lenses/analysisStore';
 import { MotionStore } from '../lenses/motion/motionStore';
+import { loadSyncOffsets } from '../player/syncOffsets';
+import type { SyncSong } from '../features/engines/SyncRow';
+import { beatSureOf } from '../lenses/motion/motionFrame';
+
 import { unpackMotionTrack } from '../lenses/motion/motionTrack';
 import { measureNativeMotion } from '../audio/native';
 import { createAsyncStorage } from '@react-native-async-storage/async-storage';
@@ -206,6 +210,9 @@ import {
 import { useRuntime } from '../runtime';
 import { readError } from '../core/errors';
 import { space, usePalette } from '../theme/tokens';
+
+/** How sure a song's beat must be to set the sync by. */
+const SYNC_SURE = 0.9;
 
 type Props = {
   identity: AppIdentity;
@@ -1546,6 +1553,23 @@ export function FieldScreen({ identity }: Props) {
       transport.positionSeconds,
     ],
   );
+  /*
+   * The song playing, for setting the picture's time by its beat (settings'
+   * `SyncRow`): only a beat the analysis is sure of, since a wrong grid would
+   * teach the wrong correction.
+   */
+  const syncSong = useMemo<SyncSong | null>(
+    () =>
+      heldKey === null
+        ? null
+        : {
+            positionSeconds: transport.positionSeconds,
+            beats:
+              heldMotion !== null && beatSureOf(heldMotion) >= SYNC_SURE ? heldMotion.beats : null,
+            playing: heldSounding,
+          },
+    [heldKey, heldMotion, heldSounding, transport.positionSeconds],
+  );
   const goToNowPlaying = useCallback(() => {
     if (heldPlacement !== null) fieldCamera.visit(heldPlacement);
   }, [fieldCamera, heldPlacement]);
@@ -1739,6 +1763,10 @@ export function FieldScreen({ identity }: Props) {
 
   /** What happens when a song runs off its end; read once, written on change. */
   const [afterSong, setAfterSong] = useState<AfterSong>(DEFAULT_AFTER_SONG);
+  // This phone's sync correction, per route; see `syncOffsets.ts`.
+  useEffect(() => {
+    loadSyncOffsets().catch(() => {});
+  }, []);
   useEffect(() => {
     let active = true;
     loadAfterSong().then(mode => {
@@ -2947,6 +2975,7 @@ export function FieldScreen({ identity }: Props) {
             footprints={footprints}
             library={libraryReport}
             onChangeBudget={changeBudget}
+            sync={syncSong}
             publicKey={identity.publicKey}
             storage={storageReport}
             onForget={nodePublicKey => {

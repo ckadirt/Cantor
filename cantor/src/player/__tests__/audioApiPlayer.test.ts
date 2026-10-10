@@ -143,6 +143,8 @@ describePlayerContract('AudioApiPlayer', () => {
   };
 });
 
+import { SYNC_KNOBS, setSyncOffset, syncStore } from '../syncOffsets';
+
 describe('AudioApiPlayer source discipline', () => {
   it('swaps the element source once per real track change', async () => {
     const { player, element } = createPlayer();
@@ -323,5 +325,19 @@ describe('AudioApiPlayer and the visual clock', () => {
     await Promise.resolve();
     expect(reads).toBe(2);
     expect(player.outputLatencySeconds()).toBeGreaterThan(before);
+  });
+
+  it('adds this phone’s correction for the route, and never runs ahead of the sound', async () => {
+    const { player } = createPlayer({ outputRoute: async () => 'bluetooth' });
+    await player.load(FIRST, '/audio/first.opus');
+    await player.play();
+    await Promise.resolve();
+    const table = player.outputLatencySeconds();
+    setSyncOffset('bluetooth', 50);
+    expect(player.outputLatencySeconds()).toBeCloseTo(table + 0.05, 9);
+    setSyncOffset('bluetooth', -SYNC_KNOBS.RANGE_MS);
+    expect(player.outputLatencySeconds()).toBeGreaterThanOrEqual(0);
+    expect(syncStore.get().route).toBe('bluetooth');
+    setSyncOffset('bluetooth', 0);
   });
 });
