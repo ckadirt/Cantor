@@ -409,6 +409,30 @@ describe('golden pixels: the imported mark', () => {
     }
     expect(frames).toMatchSnapshot();
   });
+
+  it('a change that has landed draws the lens it landed on, as at rest', () => {
+    // The clock keeps naming the lens it left until the next change.
+    const at = (from: number, to: number, ratio: number) =>
+      raster(canvas =>
+        drawFieldFaces(
+          canvas,
+          importedFaces(held.key),
+          paints(),
+          1,
+          recut,
+          { value: heldSeat(ratio) } as never,
+          { value: fit } as never,
+          viewport,
+          from,
+          to,
+          1,
+        ),
+      );
+    for (const ratio of [12.5, LEVEL_SCALE_RATIOS.song]) {
+      expect(at(CIRCLE, SEAL, ratio)).toBe(at(SEAL, SEAL, ratio));
+      expect(at(SEAL, CIRCLE, ratio)).toBe(at(CIRCLE, CIRCLE, ratio));
+    }
+  });
 });
 
 /**
