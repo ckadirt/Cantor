@@ -40,6 +40,7 @@ type CantorAudioNative = {
     endSeconds: number,
     buckets: number,
   ): Promise<unknown>;
+  motionTrack(path: string): Promise<unknown>;
 };
 
 function module(): CantorAudioNative {
@@ -133,4 +134,13 @@ export function reduceNativeAudio(
   buckets: number,
 ): Promise<unknown> {
   return module().reduce(path, startSeconds, endSeconds, buckets);
+}
+
+/**
+ * Measure a local file's motion track natively: beats, onsets, sections and
+ * drops. Resolves with the packed track, unchecked — `lenses/motion/` reads
+ * and validates it. A plain path, never a `file://` URI.
+ */
+export function measureNativeMotion(path: string): Promise<unknown> {
+  return module().motionTrack(path);
 }

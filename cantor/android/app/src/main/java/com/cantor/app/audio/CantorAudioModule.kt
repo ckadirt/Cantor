@@ -149,6 +149,12 @@ class CantorAudioModule(
     }
   }
 
+  /** A song's motion track, packed; see `MotionTrack`. */
+  @ReactMethod
+  fun motionTrack(path: String, promise: Promise) {
+    reducer.execute { runPromise(promise) { MotionTrack.measure(path) } }
+  }
+
   private fun floats(values: FloatArray): WritableNativeArray =
       WritableNativeArray().apply { values.forEach { pushDouble(it.toDouble()) } }
 
