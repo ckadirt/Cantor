@@ -287,3 +287,41 @@ describe('AudioApiPlayer and FakePlayer agree', () => {
     );
   });
 });
+
+describe('AudioApiPlayer and the visual clock', () => {
+  it('reads the rendered position from the source, and the snapshot without one', async () => {
+    const { player, element } = createPlayer();
+    await player.load(FIRST, '/audio/first.opus');
+    await player.play();
+    element.advance(1000, 120);
+    // The stub element has no file source: the snapshot is the answer.
+    expect(player.renderedPosition()).toBe(1);
+
+    element.handle.getFileSourceNode = () => ({ currentTime: 1.237 });
+    expect(player.renderedPosition()).toBe(1.237);
+    element.handle.getFileSourceNode = () => ({ currentTime: Number.NaN });
+    expect(player.renderedPosition()).toBe(1);
+    element.handle.getFileSourceNode = () => ({ currentTime: 500 });
+    expect(player.renderedPosition()).toBe(120);
+  });
+
+  it('reads the route on play, and its delay follows the route', async () => {
+    const routes = ['speaker', 'bluetooth'] as const;
+    let reads = 0;
+    const { player } = createPlayer({
+      outputRoute: async () => routes[Math.min(reads++, routes.length - 1)],
+    });
+    await player.load(FIRST, '/audio/first.opus');
+    const before = player.outputLatencySeconds();
+    await player.play();
+    await Promise.resolve();
+    expect(reads).toBe(1);
+    expect(player.outputLatencySeconds()).toBe(before);
+
+    await player.pause();
+    await player.play();
+    await Promise.resolve();
+    expect(reads).toBe(2);
+    expect(player.outputLatencySeconds()).toBeGreaterThan(before);
+  });
+});

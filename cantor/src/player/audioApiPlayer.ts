@@ -1,4 +1,5 @@
 import type { AudioRef } from '../audio/localAudioStore';
+import { outputLatencySeconds, type OutputRoute } from './outputLatency';
 import type {
   PlayerPort,
   PlayerSnapshot,
@@ -10,6 +11,7 @@ import type {
 // knobs
 const POSITION_PUBLISH_MS = 250; // floor between position-only snapshots; discrete transitions always publish
 const END_OF_TRACK_EPSILON = 0.05; // seconds from the end that still counts as "parked at EOF"
+const ROUTE_REFRESH_MS = 5000; // how often a playing song re-reads its output route (Android sends no route events)
 
 /**
  * The element this adapter drives.
@@ -22,6 +24,11 @@ export type AudioElementHandle = {
   play(): void;
   pause(): void;
   seekToTime(seconds: number): void;
+  /**
+   * The element's file source, whose `currentTime` is the position the audio
+   * thread has rendered — read synchronously, so it is as fresh as the call.
+   */
+  getFileSourceNode?(): { readonly currentTime: number } | null;
 };
 
 /** Everything the adapter needs from the outside world, so it can be faked. */
@@ -36,6 +43,8 @@ export type AudioApiPlayerDeps = {
   hideNowPlaying?(): Promise<void>;
   /** Retain the Android playback surface only while a session exists. */
   setSessionActive?(active: boolean): Promise<void>;
+  /** Where the sound goes now, for its delay (`outputLatency.ts`). */
+  outputRoute?(): Promise<OutputRoute>;
 };
 
 export type NowPlaying = {
@@ -112,6 +121,10 @@ export class AudioApiPlayer implements PlayerPort {
 
   /** Display metadata for the lock screen. The adapter never invents it. */
   private nowPlaying: { title: string; artist: string } | null = null;
+
+  /** The output route as last read; null until the first play reads it. */
+  private route: OutputRoute | null = null;
+  private routeReadMs = 0;
 
   /** The seam `PlayerHost` renders. Stable for the life of the player. */
   readonly binding: ElementBinding;
@@ -210,6 +223,7 @@ export class AudioApiPlayer implements PlayerPort {
       this.positionSeconds = 0;
       this.handle?.seekToTime(0);
     }
+    this.refreshRoute();
     this.handle?.play();
     this.publish('playing');
   }
@@ -329,6 +343,29 @@ export class AudioApiPlayer implements PlayerPort {
     return this.interrupted;
   }
 
+  // ---- the visual clock's sources ---------------------------------------
+
+  /**
+   * The position the audio thread has rendered, read now.
+   *
+   * The published snapshot's position is the same quantity as it was when the
+   * library's event left the audio thread — stale by however long the JS thread
+   * took to get to it, which during a camera flight is tens of milliseconds.
+   * This reads the source directly, so the visual clock compares like with
+   * like. Falls back to the snapshot when the element has no source yet.
+   */
+  renderedPosition(): number {
+    const seconds = this.handle?.getFileSourceNode?.()?.currentTime;
+    return typeof seconds === 'number' && Number.isFinite(seconds)
+      ? clamp(seconds, 0, this.durationSeconds)
+      : this.positionSeconds;
+  }
+
+  /** How far the sound in the air runs behind `renderedPosition`. */
+  outputLatencySeconds(): number {
+    return outputLatencySeconds(this.route);
+  }
+
   // ---- internals --------------------------------------------------------
 
   private atEndOfTrack(): boolean {
@@ -400,7 +437,20 @@ export class AudioApiPlayer implements PlayerPort {
     const now = Date.now();
     if (now - this.lastPositionPublishMs < POSITION_PUBLISH_MS) return;
     this.lastPositionPublishMs = now;
+    if (now - this.routeReadMs >= ROUTE_REFRESH_MS) this.refreshRoute();
     this.emit();
+  }
+
+  /** Read the output route again; the clock picks it up at its next sample. */
+  private refreshRoute(): void {
+    if (this.deps.outputRoute === undefined) return;
+    this.routeReadMs = Date.now();
+    this.deps.outputRoute().then(
+      route => {
+        this.route = route;
+      },
+      () => undefined,
+    );
   }
 
   private emit(): void {

@@ -8,6 +8,7 @@ import { NativeModules } from 'react-native';
 import { reduceNativeAudio } from '../audio/native';
 import { AudioApiPlayer, toFileUri } from './audioApiPlayer';
 import { nativeFirst } from './nativeSamples';
+import { toOutputRoute } from './outputLatency';
 import type { ChannelWindow, SampleRequest, SampleWindow } from './types';
 
 /**
@@ -180,5 +181,7 @@ export function createAudioApiPlayer(): AudioApiPlayer {
       }
       await NativeModules.CantorPlayback.setSessionActive(active);
     },
+    outputRoute: async () =>
+      toOutputRoute(await NativeModules.CantorPlayback.outputRoute()),
   });
 }
