@@ -96,6 +96,7 @@ import {
   useAnimatedReaction,
   useDerivedValue,
   useSharedValue,
+  withDelay,
   withTiming,
   type DerivedValue,
   type SharedValue,
@@ -226,11 +227,52 @@ export type PlayerDraw = Readonly<{
   heard: number;
 }>;
 
+/** What the ring of ticks was last drawn with, for the layer to draw it the same way. */
+export type DetailDraw = Readonly<{
+  model: SongDetailModel;
+  recut: NativeRecut;
+  progress: number;
+  grain: GrainBars | null;
+  resolved: number;
+  drawn: number;
+  lensProgress: number;
+}>;
+
 export type PlayerLayer = Readonly<{
   draw: SharedValue<PlayerDraw | null>;
-  /** True once the layer has drawn the player: the field leaves its face out. */
+  /** True while the layer is drawing the player. */
   showing: SharedValue<boolean>;
+  /**
+   * How much of the player (and its ticks) each canvas draws, 0..1. A
+   * hand-over is a short crossfade, either way, with the field's half running
+   * `LAYER_LAG_MS` behind the layer's: the layer's canvas reaches the glass a
+   * frame or two after the field's, so fades that start together dip. A switch
+   * showed a frame of neither (a white flicker at every lens change) or of
+   * both (the ticks doubled dark).
+   */
+  layerInk: SharedValue<number>;
+  fieldInk: SharedValue<number>;
+  /** The player as the field last handed it over, for the layer to fade out with. */
+  last: SharedValue<PlayerDraw | null>;
+  /** The ring of ticks, as the field last drew it; see `DetailDraw`. */
+  detail: SharedValue<DetailDraw | null>;
 }>;
+
+/** A hand-over's crossfade, and how far the field's half runs behind the layer's. */
+const LAYER_FADE_MS = 100;
+const LAYER_LAG_MS = 33;
+
+/** How much of the player the field draws, 0..1. */
+function fieldShare(layer: PlayerLayer): number {
+  'worklet';
+  return layer.fieldInk.value;
+}
+
+/** Whether the layer has the player outright, and the field leaves it out. */
+function layerOwns(layer: PlayerLayer): boolean {
+  'worklet';
+  return layer.fieldInk.value <= 0;
+}
 
 /** How far the player must have arrived for the motion layer to draw it: all the way. */
 const LAYER_ARRIVED = 0.999;
@@ -1300,11 +1342,14 @@ function FieldCanvasImpl({
   const playerLayerCandidate: PlayerLayer = {
     draw: useSharedValue<PlayerDraw | null>(null),
     showing: useSharedValue(false),
+    layerInk: useSharedValue(0),
+    fieldInk: useSharedValue(1),
+    last: useSharedValue<PlayerDraw | null>(null),
+    detail: useSharedValue<DetailDraw | null>(null),
   };
   const playerLayer = useRef(playerLayerCandidate).current;
   const fieldMotionCandidate = useDerivedValue((): MotionFrame | null => {
-    const drawn = playerLayer.draw.value;
-    if (playerLayer.showing.value && drawn !== null && drawn.owned) return null;
+    if (layerOwns(playerLayer)) return null;
     return motionFrame.value;
   });
   const fieldMotion = useRef(fieldMotionCandidate).current;
@@ -1403,6 +1448,9 @@ function FieldCanvasImpl({
         <PlayerMotionLayer
           layer={playerLayer}
           motion={motionFrame}
+          positionSeconds={motionClock}
+          cameraShared={cameraShared}
+          fitScaleShared={fitScaleShared}
           palette={palette}
           viewport={viewport}
         />
@@ -1417,26 +1465,82 @@ function FieldCanvasImpl({
  * lens's own `drawPlayer`, where the field last drew the player — and says
  * when it has, so the field can leave its face out.
  */
-function PlayerMotionLayer({
+function PlayerMotionLayerImpl({
   layer,
   motion,
+  positionSeconds,
+  cameraShared,
+  fitScaleShared,
   palette,
   viewport,
 }: {
   layer: PlayerLayer;
   motion: DerivedValue<MotionFrame | null>;
+  /** The unstepped playhead the motion reads, for the ticks' bulge. */
+  positionSeconds: SharedValue<number> | null;
+  cameraShared: SharedValue<Camera>;
+  fitScaleShared: SharedValue<number>;
   palette: Palette;
   viewport: Viewport;
 }) {
   const paints = useMemo(() => createFacePaints(palette), [palette]);
+  const fadePaint = useMemo(() => Skia.Paint(), []);
+  /*
+   * The hand-over, on a clock rather than on a recording (a recording is not
+   * a presented frame): the layer's ink runs at once, the field's
+   * `LAYER_LAG_MS` behind it, so on the glass the two add up to one player.
+   */
+  useAnimatedReaction(
+    () => {
+      const drawn = layer.draw.value;
+      return drawn !== null && drawn.owned && motion.value !== null;
+    },
+    (owns, before) => {
+      if (owns === before || (before === null && !owns)) return;
+      const fade = { duration: LAYER_FADE_MS, easing: Easing.linear };
+      cancelAnimation(layer.layerInk);
+      cancelAnimation(layer.fieldInk);
+      layer.layerInk.value = withTiming(owns ? 1 : 0, fade);
+      layer.fieldInk.value = withDelay(LAYER_LAG_MS, withTiming(owns ? 0 : 1, fade));
+    },
+  );
   const picture = useDerivedValue(() =>
     createPicture(
       canvas => {
-        const drawn = layer.draw.value;
+        const now = layer.draw.value;
         const frame = motion.value;
-        const show = drawn !== null && drawn.owned && frame !== null;
-        if (layer.showing.value !== show) layer.showing.value = show;
-        if (!show) return;
+        const owns = now !== null && now.owned && frame !== null;
+        if (layer.showing.value !== owns) layer.showing.value = owns;
+        if (owns && layer.last.value !== now) layer.last.value = now;
+        // Fading out with no player handed (a pair morph took it): the last one.
+        const drawn = now ?? layer.last.value;
+        const share = layer.layerInk.value;
+        if (drawn === null || frame === null || share <= 0) return;
+        // The ring of ticks, as the field drew it, with the music in it.
+        const detail = layer.detail.value;
+        if (detail !== null) {
+          if (share < 1) {
+            fadePaint.setAlphaf(share);
+            canvas.saveLayer(fadePaint);
+          }
+          drawSongDetail(
+            canvas,
+            detail.model,
+            paints,
+            detail.progress,
+            detail.recut,
+            cameraShared,
+            fitScaleShared,
+            positionSeconds,
+            detail.grain,
+            detail.resolved,
+            detail.drawn,
+            viewport,
+            detail.lensProgress,
+            frame,
+          );
+          if (share < 1) canvas.restore();
+        }
         canvas.save();
         canvas.translate(drawn.x, drawn.y);
         LENS_UI[drawn.lens].drawPlayer(
@@ -1444,13 +1548,15 @@ function PlayerMotionLayer({
           drawn.player,
           drawn.identity,
           drawn.size,
-          drawn.alpha,
+          drawn.alpha * share,
           drawn.weight,
           drawn.fill,
           drawn.arrived,
           drawn.arriving,
           drawn.soundIn,
-          drawn.heard,
+          // The playhead the music is read at, not the field's stepped one:
+          // the seal's bead and heard thread ride it (`heard` −1 means none).
+          drawn.heard < 0 ? drawn.heard : frame.head,
           FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
           paints,
           frame,
@@ -1460,16 +1566,25 @@ function PlayerMotionLayer({
       { width: viewport.width, height: viewport.height },
     ),
   );
+  /*
+   * The child held by identity: a Skia canvas handed a fresh element stops
+   * its mapper until the JS thread records again, so a re-render of the field
+   * (a lens tap, Back) froze this canvas on its last frame (found by the
+   * byline marquee's strip, which did the same).
+   */
+  const child = useMemo(() => <Picture picture={picture} />, [picture]);
   return (
     <Canvas
       importantForAccessibility="no-hide-descendants"
       pointerEvents="none"
       style={StyleSheet.absoluteFill}
     >
-      <Picture picture={picture} />
+      {child}
     </Canvas>
   );
 }
+
+const PlayerMotionLayer = React.memo(PlayerMotionLayerImpl);
 
 /** The measured loudness as plain numbers; a worklet cannot hold a typed array. */
 function levelsOf(analysis: SongAnalysis | undefined): readonly number[] {
@@ -2355,6 +2470,9 @@ export function drawFieldFaces(
     flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
     canvas.save();
     canvas.translate(x + pose.x, y + pose.y);
+    // The field's share of the player while the motion layer fades it in or out.
+    const fieldInk =
+      motionLayer === null || players === undefined ? 1 : fieldShare(motionLayer);
     const pair =
       players === undefined || reducedMotion || leftLens === lensTo
         ? null
@@ -2362,6 +2480,12 @@ export function drawFieldFaces(
     // How far the pair's morph stands toward its `b`, whichever way it runs.
     const towardB = pair === null ? 0 : lensTo === pair.b ? lensAt : 1 - lensAt;
     if (pair !== null && players !== undefined && towardB > 0) {
+      // The player is the field's again: the layer fades the one it had.
+      if (motionLayer !== null) {
+        playerSeen = true;
+        const had = motionLayer.draw.value;
+        if (had !== null && had.owned) motionLayer.draw.value = { ...had, owned: false };
+      }
       // The player morphs rather than trading places: see `lenses/pairs.ts`.
       // At 0 it is `a` drawn by itself, below — the morph at 0 is `a` only
       // as nearly as its line approximates `a`'s contour.
@@ -2373,7 +2497,7 @@ export function drawFieldFaces(
         players[pair.b],
         towardB,
         pose.scale * openScale,
-        opacity,
+        opacity * fieldInk,
         weight,
         fill,
         shapeArrived,
@@ -2445,7 +2569,7 @@ export function drawFieldFaces(
           };
         }
       }
-      const handedOver = owned && motionLayer !== null && motionLayer.showing.value;
+      const handedOver = owned && motionLayer !== null && layerOwns(motionLayer);
       for (let pass = 0; pass < passes; pass++) {
         if (handedOver) break;
         const lens = pass === 0 ? firstLens : lastLens;
@@ -2460,7 +2584,7 @@ export function drawFieldFaces(
             players[lens],
             face.identities[lens],
             size,
-            opacity * ink,
+            opacity * ink * fieldInk,
             weight,
             fill,
             shapeArrived,
@@ -2939,6 +3063,7 @@ function NativeSongDetail({
   palette,
   viewport,
   motionFrame = null,
+  layer = null,
 }: {
   lensClock: LensClock;
   model: SongDetailModel | null;
@@ -2955,8 +3080,11 @@ function NativeSongDetail({
   viewport: Viewport;
   /** The music at this moment, for the bulge at the playhead; see `drawSongDetail`. */
   motionFrame?: SharedValue<MotionFrame | null> | null;
+  /** The motion layer, which draws the ticks while it has the player. */
+  layer?: PlayerLayer | null;
 }) {
   const paints = useMemo(() => createFacePaints(palette), [palette]);
+  const fadePaint = useMemo(() => Skia.Paint(), []);
   // The entry window has three states: reset only when hidden, reveal
   // when settled, and preserve the ink while the camera carries it out.
   const phase = useDerivedValue(() => {
@@ -3045,7 +3173,55 @@ function NativeSongDetail({
   const picture = useDerivedValue(() =>
     createPicture(
       canvas => {
-        if (model === null) return;
+        if (model === null) {
+          if (layer !== null && layer.detail.value !== null) layer.detail.value = null;
+          return;
+        }
+        // The tick ring is the sound of the lenses that show it (the
+        // circle's); it leaves as they do.
+        const lensProgress =
+          1 -
+          lensesShowing(
+            'ringTicks',
+            lensClock.from.value,
+            lensClock.to.value,
+            lensClock.t.value,
+          );
+        if (layer !== null) {
+          // Written only when it changed: `detail` is one of this picture's
+          // own inputs, and a fresh object every time re-recorded the field
+          // on every frame.
+          const was = layer.detail.value;
+          const progress = clock.value;
+          const grain = grainShared.value;
+          if (
+            was === null ||
+            was.model !== model ||
+            was.recut !== recut ||
+            was.progress !== progress ||
+            was.grain !== grain ||
+            was.resolved !== resolved.value ||
+            was.drawn !== drawn.value ||
+            was.lensProgress !== lensProgress
+          ) {
+            layer.detail.value = {
+              model,
+              recut,
+              progress,
+              grain,
+              resolved: resolved.value,
+              drawn: drawn.value,
+              lensProgress,
+            };
+          }
+          // The layer has the player, and the ticks with it, music and all.
+          if (layerOwns(layer)) return;
+        }
+        const share = layer === null ? 1 : fieldShare(layer);
+        if (share < 1) {
+          fadePaint.setAlphaf(share);
+          canvas.saveLayer(fadePaint);
+        }
         drawSongDetail(
           canvas,
           model,
@@ -3059,17 +3235,10 @@ function NativeSongDetail({
           resolved.value,
           drawn.value,
           viewport,
-          // The tick ring is the sound of the lenses that show it (the
-          // circle's); it leaves as they do.
-          1 -
-            lensesShowing(
-              'ringTicks',
-              lensClock.from.value,
-              lensClock.to.value,
-              lensClock.t.value,
-            ),
+          lensProgress,
           motionFrame === null ? null : motionFrame.value,
         );
+        if (share < 1) canvas.restore();
       },
       { width: viewport.width, height: viewport.height },
     ),
@@ -3650,6 +3819,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           positionSeconds={positionSeconds}
           viewport={viewport}
           motionFrame={motionFrame}
+          layer={layer}
         />
       )}
       <Picture picture={rowsPicture} />
@@ -3725,6 +3895,7 @@ function FocusDetail({
   positionSeconds,
   viewport,
   motionFrame,
+  layer,
 }: {
   detailInk: SharedValue<DetailInk>;
   focus: FocusLayer;
@@ -3737,10 +3908,12 @@ function FocusDetail({
   positionSeconds: SharedValue<number> | null;
   viewport: Viewport;
   motionFrame: SharedValue<MotionFrame | null>;
+  layer: PlayerLayer;
 }) {
   const clock = useFocusClock(scene, focus.generation);
   return (
     <NativeSongDetail
+      layer={layer}
       lensClock={lensClock}
       cameraShared={cameraShared}
       clock={clock}

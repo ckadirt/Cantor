@@ -774,7 +774,15 @@ function ClockDrawing({
   const handWidth = useDerivedValue(() => shape.value.handWidth);
   const rimAlpha = useDerivedValue(() => shape.value.rimAlpha);
   const rimWidth = useDerivedValue(() => shape.value.rimWidth);
-  const tickAlpha = useDerivedValue(() => shape.value.tickAlpha);
+  /*
+   * Twelve, three, six and nine make the rim a dial; once the song's own form
+   * is on it they only compete with its cuts, so they give way as it inks in.
+   */
+  const tickAlpha = useDerivedValue(() => {
+    const form = formCuts === null ? NO_CUTS : formCuts.value;
+    const ink = formInk === null || form.sections.length === 0 ? 0 : formInk.value;
+    return shape.value.tickAlpha * (1 - ink);
+  });
   /** Twelve, three, six and nine, pointing in from the ring. */
   const ticks = useDerivedValue(() => {
     const { r, tickPx } = shape.value;
