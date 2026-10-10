@@ -37,7 +37,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
 | `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens — read only) |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
-| `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them |
+| `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them; `motion/` (the motion track, its store and the per-frame `MotionFrame`) and each lens's motion (`circleMotion.ts`, `sealMotion.ts`) |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
 
 ## The rules that are not obvious
@@ -101,7 +101,11 @@ keepalive, deliver messages, report closure, or schedule a retry.
    player is its mark grown), `touch` (JS: `reachRatio`, `landAt`, `seekAt`, in
    coordinates about the player's centre), and `ui` — worklets and numbers only
    (`drawMark`, `drawPlayer`, `ringTicks`, `hearsPlayhead`, `clock`), because it
-   is captured onto the UI thread.
+   is captured onto the UI thread. `drawPlayer`'s last argument is the
+   `MotionFrame` (or null): a lens that moves reads only that, scales every
+   gesture by `frame.presence × arrived`, and draws the still player exactly
+   when either is 0. Define a worklet helper above its caller — a worklet
+   captures the functions it calls when it is created.
 2. Add it to `LENSES` in `registry.ts`. The picker lists it, the renderer draws
    it, and a change to or from it takes the generic two beats.
 3. For a hand-written player morph with another lens, add a `LensPairMorph` to
@@ -276,6 +280,22 @@ angle; the seal scrubs by rim angle and treats a touch that starts on the dust
 as a tap that jumps to the dot under it.
 `analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
 (side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
+**The motion track and the frame** (docs/interfacealpha/reactive-player-plan.md).
+`CantorAudio.motionTrack(path)` runs the analysis in C++
+(`android/app/src/main/cpp/motion/`, a port of the reference page held exact by
+`scripts/motion-check.mjs`) on the reduction's decoder; `MotionStore`
+(`lenses/motion/motionStore.ts`, keys `motion.v1:…`) measures the focused song
+once and keeps it, beside the `AnalysisStore` on the same `MeasurementStore`.
+`playerMotionFrame` (`features/field/playerMotion.ts`) makes the frame from the
+track, the unstepped playhead, the scene's `motionIn` and the transport's
+play/pause morph — null under reduced motion, before the track, or before it has
+risen. The field canvas stays on its stepped playhead; once the player has
+landed and its lens is at rest it is drawn on `PlayerMotionLayer`, a canvas of
+its own. The clock carries the song's form (`ClockCuts`: section cuts, drop
+dots, letters outside the ring). The visual clock's latency is the route's
+(`player/outputLatency.ts`) plus this phone's correction for it
+(`player/syncOffsets.ts`, set in settings' `SyncRow` by eye against the song
+playing).
 `features/field/songDetailPhase.ts` separates reveal, hold, and hidden states:
 the outgoing waveform keeps its ink while camera opacity fades it, and resets
 only after it is hidden. Playhead mappers must include the position shared
@@ -359,6 +379,17 @@ cable is replugged.
   it until the app restarted. There is one renderer now, which draws such a
   flight as nothing, but it is still a flight planned for ever. `stillDrawn` is
   the shed; keep any new ownership that ends at alpha zero behind it.
+
+**A lens change that has landed still names the lens it left.** `useLensClock`
+keeps `from` until the next change; at `t = 1` read it as `to` alone
+(`drawFieldFaces`' `leftLens`). Read as two lenses, the player stayed in a pair
+morph after every change and never went back to the motion layer.
+
+**A per-frame anti-aliased path costs a CPU raster and an upload.** Ganesh draws
+a non-convex AA path through `SoftwarePathRenderer` and caches the mask per path
+object, so a path built anew each frame is rasterised and uploaded each frame
+(37% of the UI thread for the moving seal before it was drawn as circles and
+segments). Profile with the recipe in the reactive player's log before guessing.
 
 ## Review checklist
 

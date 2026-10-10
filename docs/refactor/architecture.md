@@ -51,6 +51,7 @@ strips only the session id.
 | how the app persists something | the owning repository under `cantor/src/{backends,library,jobs,audio}` | `hacking-app.md` |
 | how the app talks to a node | `cantor/src/backends/connection.ts` and its state machines | `hacking-app.md` |
 | motion, symbols, or Skia | `cantor/src/motion/` and `cantor/AGENTS.md` | `cantor/src/motion/README.md` |
+| how the player moves to its music | the analysis in `cantor/android/app/src/main/cpp/motion/`, the track and frame in `cantor/src/lenses/motion/`, each lens's own `*Motion.ts`, the frame's making in `cantor/src/features/field/playerMotion.ts` | `hacking-app.md`, `cantor/AGENTS.md` |
 | Android native audio or Noise | `cantor/android/app/src/main/java/com/cantor/app/` | `hacking-app.md` |
 | a new application message | `cantor-proto`, then node `application/`, then app decoders | [`hacking-protocol.md`](hacking-protocol.md) |
 | a transport bound, version, or label | `protocol/transport/v1/spec.json` | `hacking-protocol.md` |
