@@ -1,0 +1,13 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`the seal in time with its song draws the build 1`] = `"212983 b9edf22a"`;
+
+exports[`the seal in time with its song draws the downbeat 1`] = `"245096 549c60bd"`;
+
+exports[`the seal in time with its song draws the drop 1`] = `"282972 1c1c0555"`;
+
+exports[`the seal in time with its song draws the returning-section 1`] = `"359941 490ab6d6"`;
+
+exports[`the seal in time with its song draws the section-written-on 1`] = `"335331 1b1ed8cc"`;
+
+exports[`the seal in time with its song draws the verse 1`] = `"168912 1561ca73"`;

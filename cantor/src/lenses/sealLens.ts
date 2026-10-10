@@ -298,8 +298,9 @@ function drawSealMark(
 /**
  * The seal as the player: its dust at the deepest level, the mark's dots
  * splitting into their children as it arrives, and the sound rising into it
- * once measured — see `drawSealPlayer`. `leaving` is the seal giving way to
- * the cover along its thread, which takes the spindle with it.
+ * once measured — see `drawSealPlayer` — moving to the music (`motion`, see
+ * `sealMotion.ts`). `leaving` is the seal giving way to the cover along its
+ * thread, which takes the spindle with it.
  */
 export function drawSealAsPlayer(
   canvas: SkCanvas,
@@ -315,7 +316,7 @@ export function drawSealAsPlayer(
   heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
-  _motion: MotionFrame | null = null,
+  motion: MotionFrame | null = null,
   leaving = 0,
 ): void {
   'worklet';
@@ -338,6 +339,7 @@ export function drawSealAsPlayer(
     1,
     0,
     leaving,
+    motion,
   );
   // The spindle leaves as the player arrives, its clearing filling back in
   // with the dust: at `arrived` 0 this is the mark exactly.
