@@ -2074,10 +2074,17 @@ export function drawFieldFaces(
     ? 1
     : smootherstep(Math.min(Math.max(lensAt * 2 - 1, 0), 1));
   const comingInk = reducedMotion ? smootherstep(lensAt) : 1;
+  /*
+   * A change that has landed still names the lens it left (`from` stays until
+   * the next change): at rest the clock is its `to` alone. Read as two lenses,
+   * the player stayed in the pair's morph or in two passes after every change,
+   * and was never handed to the motion layer again.
+   */
+  const leftLens = lensAt >= 1 ? lensTo : lensFrom;
   // Both lenses in play, in `LENSES` order so the draw order never depends
   // on the direction of the change; one when the clock is at rest.
-  const firstLens = lensFrom < lensTo ? lensFrom : lensTo;
-  const lastLens = lensFrom < lensTo ? lensTo : lensFrom;
+  const firstLens = leftLens < lensTo ? leftLens : lensTo;
+  const lastLens = leftLens < lensTo ? lensTo : leftLens;
   const p = Math.min(Math.max(progress, 0), 1);
   // A gather's faces each keep a window of the clock: the linear time it is
   // cut from, recovered once for the whole field.
@@ -2360,9 +2367,9 @@ export function drawFieldFaces(
     canvas.save();
     canvas.translate(x + pose.x, y + pose.y);
     const pair =
-      players === undefined || reducedMotion || lensFrom === lensTo
+      players === undefined || reducedMotion || leftLens === lensTo
         ? null
-        : pairMorphFor(lensFrom, lensTo);
+        : pairMorphFor(leftLens, lensTo);
     // How far the pair's morph stands toward its `b`, whichever way it runs.
     const towardB = pair === null ? 0 : lensTo === pair.b ? lensAt : 1 - lensAt;
     if (pair !== null && players !== undefined && towardB > 0) {
