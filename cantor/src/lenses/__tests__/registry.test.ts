@@ -134,6 +134,7 @@ describe('every lens draws', () => {
                 0.4,
                 1,
                 shared,
+                null,
               );
             }
           }).not.toThrow();

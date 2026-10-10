@@ -1,3 +1,4 @@
+import type { MotionFrame } from './motion/motionFrame';
 import {
   PathOp,
   Skia,
@@ -314,6 +315,7 @@ export function drawSealAsPlayer(
   heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  _motion: MotionFrame | null = null,
   leaving = 0,
 ): void {
   'worklet';

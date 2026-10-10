@@ -179,6 +179,9 @@ import {
   type AvailabilityAction,
 } from '../lenses';
 import { AnalysisStore, type AnalysisRef } from '../lenses/analysisStore';
+import { MotionStore } from '../lenses/motion/motionStore';
+import { unpackMotionTrack } from '../lenses/motion/motionTrack';
+import { measureNativeMotion } from '../audio/native';
 import { createAsyncStorage } from '@react-native-async-storage/async-storage';
 import type { ArtifactView } from '../../../protocol/ArtifactView';
 import { shallowEqual, useStore } from '../core/useStore';
@@ -242,6 +245,8 @@ const FOUND_FOOT_HIT_PX = { HALF_HEIGHT: 40, BEHIND: 110, AHEAD: 260 } as const;
 
 /** Where song measurements are kept, apart from every other stored key. */
 const ANALYSIS_DATABASE = 'cantor-analysis';
+/** The motion tracks' own database; their keys carry a version (`motionKey`). */
+const MOTION_DATABASE = 'cantor-motion';
 
 type AnalysisSource =
   | Readonly<{ kind: 'node'; song: SongHeader; artifact: ArtifactView }>
@@ -287,14 +292,17 @@ function analysisRefOf(
 function LiveFieldCanvas({
   controllerStore,
   analysisStore,
+  motionStore,
   ...props
-}: Omit<React.ComponentProps<typeof FieldCanvas>, 'jobs' | 'analyses'> & {
+}: Omit<React.ComponentProps<typeof FieldCanvas>, 'jobs' | 'analyses' | 'motions'> & {
   controllerStore: FieldControllerStore;
   analysisStore: AnalysisStore<AnalysisSource>;
+  motionStore: MotionStore<AnalysisSource>;
 }) {
   const jobs = useStore(controllerStore.store, jobsOf);
   const analyses = useStore(analysisStore.store, everything);
-  return <FieldCanvas {...props} jobs={jobs} analyses={analyses} />;
+  const motions = useStore(motionStore.store, everything);
+  return <FieldCanvas {...props} jobs={jobs} analyses={analyses} motions={motions} />;
 }
 
 function jobsOf(controller: FieldController) {
@@ -602,20 +610,23 @@ export function FieldScreen({ identity }: Props) {
    * Every song's measurement: read back from disk, or decoded one at a time.
    * See `AnalysisStore`.
    */
+  /**
+   * Where a measured song's audio is on the phone. A device song is its own
+   * file; a node song's path is asked of native storage, which answers only
+   * for a whole, verified artifact.
+   */
+  const localPathOf = useCallback(
+    (ref: AnalysisRef<AnalysisSource>) =>
+      ref.source.kind === 'device'
+        ? Promise.resolve(ref.source.path)
+        : commands.audioPath(ref.nodePublicKey, ref.source.song, ref.source.artifact),
+    [commands],
+  );
   const analysisStore = useMemo(
     () =>
       new AnalysisStore<AnalysisSource>(async ref => {
         const source = ref.source;
-        // A device song is its own file; a node song's path is asked of native
-        // storage, which answers only for a whole, verified artifact.
-        const localPath =
-          source.kind === 'device'
-            ? source.path
-            : await commands.audioPath(
-                ref.nodePublicKey,
-                source.song,
-                source.artifact,
-              );
+        const localPath = await localPathOf(ref);
         const durationMs =
           source.kind === 'device'
             ? source.durationMs
@@ -633,9 +644,25 @@ export function FieldScreen({ identity }: Props) {
         });
         return analyseWindow(window);
       }, createAsyncStorage(ANALYSIS_DATABASE)),
-    [commands, player],
+    [localPathOf, player],
   );
   useEffect(() => () => analysisStore.dispose(), [analysisStore]);
+  /**
+   * Every opened song's motion track: what moves the player in time with it
+   * (`lenses/motion/`). Measured natively, about a second for a four-minute
+   * song; a song the native decoders cannot read (ALAC, AIFF) has none, and
+   * its player is still.
+   */
+  const motionStore = useMemo(
+    () =>
+      new MotionStore<AnalysisSource>(
+        async ref =>
+          unpackMotionTrack(String(await measureNativeMotion(await localPathOf(ref)))).track,
+        createAsyncStorage(MOTION_DATABASE),
+      ),
+    [localPathOf],
+  );
+  useEffect(() => () => motionStore.dispose(), [motionStore]);
   /*
    * The field's projection of the runtime: songs and entities here, which a
    * job's progress leaves as the same objects; the jobs where they are drawn.
@@ -2143,8 +2170,10 @@ export function FieldScreen({ identity }: Props) {
    */
   useEffect(() => {
     const ref = focused === null ? null : analysisRefOf(focused);
-    if (ref !== null) analysisStore.request(ref);
-  }, [analysisStore, focused]);
+    if (ref === null) return;
+    analysisStore.request(ref);
+    motionStore.request(ref);
+  }, [analysisStore, focused, motionStore]);
 
   /**
    * Resolve the visible slice of audio while the camera is inside a song.
@@ -2628,6 +2657,7 @@ export function FieldScreen({ identity }: Props) {
                 palette={pal}
                 activeLensKey={lensKey}
                 analysisStore={analysisStore}
+                motionStore={motionStore}
                 covers={covers}
                 opening={opening}
                 grainShared={grainShared}

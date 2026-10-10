@@ -1,5 +1,6 @@
 import type { SkCanvas, SkPaint } from '@shopify/react-native-skia';
 import type { FaceRecipe } from './face';
+import type { MotionFrame } from './motion/motionFrame';
 
 /**
  * The lens contract: what the field's renderer may ask of a lens.
@@ -211,7 +212,9 @@ export type LensUi = Readonly<{
    * `arrived`, `arriving` and `hairlinePx` are `drawMark`'s. `soundIn` is how far the
    * song's sound has risen into the drawing (0 until it is measured and the
    * camera has arrived); `heard` is the playhead, 0..1, or -1 when nothing
-   * this lens draws needs it (see `hearsPlayhead`).
+   * this lens draws needs it (see `hearsPlayhead`). `motion` is the music at
+   * this moment (`lenses/motion/motionFrame.ts`), or null — no track yet,
+   * reduced motion, or not the song playing — and then the player is still.
    */
   drawPlayer: (
     canvas: SkCanvas,
@@ -227,6 +230,7 @@ export type LensUi = Readonly<{
     heard: number,
     hairlinePx: number,
     paints: PlayerPaints,
+    motion: MotionFrame | null,
   ) => void;
   /**
    * 1 if this lens shows the song's measurement as the ring of ticks the
@@ -321,4 +325,5 @@ type PairDraw = (
   heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  motion: MotionFrame | null,
 ) => void;

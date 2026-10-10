@@ -280,6 +280,9 @@ function drawSealCoverMorph(
     heard,
     hairlinePx,
     paints,
+    // The motion of a lens being left (reactive-player-plan.md, "Circle ↔
+    // seal mid-song") is the seal's, in M5.
+    null,
     t,
   );
   const shown = soundIn * arrived;
