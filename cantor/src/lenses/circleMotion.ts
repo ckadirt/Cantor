@@ -118,20 +118,18 @@ export function wrapAngle(a: number): number {
   return r <= -Math.PI ? r + Math.PI * 2 : r;
 }
 
-/**
- * The moving contour as its samples, `x, y` pairs: what `circleMotionPath`
- * closes into a path, and what the player strokes segment by segment
- * (`strokeCircleMotion`).
- */
-export function circleMotionPoints(
-  player: CirclePlayer,
-  frame: MotionFrame,
-  amount: number,
-  radius: number,
-): number[] {
+/** The face's numbers under the music, `amount` of the way from the identity. */
+type CircleShape = {
+  primary: number;
+  secondary: number;
+  eccentricity: number;
+  scale: number;
+  turn: number;
+};
+
+function circleMotionShape(player: CirclePlayer, frame: MotionFrame, m: number): CircleShape {
   'worklet';
   const K = CIRCLE_MOTION_KNOBS;
-  const m = Math.min(Math.max(amount, 0), 1);
   const g = frame.g;
   let primary = player.primary * (1 + g * K.LOW_PRIMARY * frame.low);
   let secondary = player.secondary * (1 + g * K.HIGH_SECONDARY * frame.high);
@@ -150,11 +148,58 @@ export function circleMotionPoints(
   secondary *= 1 - K.TENSION_SECONDARY * tension;
   // Everything from the identity, `m` of the way: the pose wrapped first, so a
   // long section's several whole turns unwind at most half a turn.
-  primary = player.primary + (primary - player.primary) * m;
-  secondary = player.secondary + (secondary - player.secondary) * m;
-  const eccentricity = player.eccentricity + (width - player.eccentricity) * m;
-  scale = 1 + (scale - 1) * m;
-  const turn = wrapAngle(circlePose(frame, player.lobes)) * m;
+  return {
+    primary: player.primary + (primary - player.primary) * m,
+    secondary: player.secondary + (secondary - player.secondary) * m,
+    eccentricity: player.eccentricity + (width - player.eccentricity) * m,
+    scale: 1 + (scale - 1) * m,
+    turn: wrapAngle(circlePose(frame, player.lobes)) * m,
+  };
+}
+
+/**
+ * The moving contour at `count` points round the circle's clock — the `k`-th
+ * where the hand stands at the `k`-th of `count` moments, as `faceClockPoints`
+ * places the identity's — at unit radius, `x, y` pairs. Without the ripples,
+ * which travel from the hand and are no part of the face's shape. The
+ * circle↔seal morph starts each dot here (`pairs.ts`).
+ */
+export function circleMotionClockPoints(
+  player: CirclePlayer,
+  frame: MotionFrame,
+  amount: number,
+  count: number,
+): number[] {
+  'worklet';
+  const shape = circleMotionShape(player, frame, Math.min(Math.max(amount, 0), 1));
+  const points: number[] = [];
+  for (let k = 0; k < count; k++) {
+    const a = ((k + 0.5) / count) * Math.PI * 2 - Math.PI / 2;
+    const ph = a - shape.turn;
+    const r =
+      shape.scale *
+      (1 + shape.primary * Math.sin(player.lobes * ph) + shape.secondary * Math.sin(player.detail * ph + 1.1));
+    points.push(Math.cos(a) * r * shape.eccentricity, (Math.sin(a) * r) / shape.eccentricity);
+  }
+  return points;
+}
+
+/**
+ * The moving contour as its samples, `x, y` pairs: what `circleMotionPath`
+ * closes into a path, and what the player strokes segment by segment
+ * (`strokeCircleMotion`).
+ */
+export function circleMotionPoints(
+  player: CirclePlayer,
+  frame: MotionFrame,
+  amount: number,
+  radius: number,
+): number[] {
+  'worklet';
+  const K = CIRCLE_MOTION_KNOBS;
+  const m = Math.min(Math.max(amount, 0), 1);
+  const g = frame.g;
+  const { primary, secondary, eccentricity, scale, turn } = circleMotionShape(player, frame, m);
 
   // The ripples: each hit, at the hand, travelling both ways a quarter turn a
   // beat. Each bump is a Gaussian that is nothing past three widths, so only

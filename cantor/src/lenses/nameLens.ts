@@ -338,7 +338,7 @@ export const circleSprites: MarkSprites = {
  * as much as the player has arrived and its motion has risen — so at the
  * hand-off to the row it is the mark again, point for point.
  */
-function drawCirclePlayer(
+export function drawCirclePlayer(
   canvas: SkCanvas,
   player: LensPlayer | null,
   identity: LensIdentity,

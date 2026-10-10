@@ -12,13 +12,39 @@ import type {
   PlayerPaints,
 } from './contract';
 import type { CoverPlayer, CoverSweep } from './coverLens';
-import { NAME_LENS_KNOBS, drawCircleMark } from './nameLens';
+import { NAME_LENS_KNOBS, drawCircleMark, drawCirclePlayer } from './nameLens';
+import { SEAL_KNOBS } from './seal';
 import { drawSealAsPlayer, sealSidePx } from './sealLens';
+import { circleMotionClockPoints, isCirclePlayer } from './circleMotion';
+import type { MotionFrame } from './motion/motionFrame';
 import { drawSealPlayer, type SealPlayer } from './sealPlayer';
 import { sweepAt, sweepBandRank, sweepFront } from './sweep';
 
 /** The seal at the mark's size, as `sealLens` draws it. */
 const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
+
+/*
+ * The music through a lens change (reactive-player-plan.md, "Circle ↔ seal
+ * mid-song"): the lens being left lets its motion go over the first half of
+ * the change and the arriving lens takes its own up over the second, so the
+ * morph runs between still endpoints. Both read the same frame.
+ */
+/** How much of the leaving lens's motion is left at `t`. */
+function leavingMotion(t: number): number {
+  'worklet';
+  return 1 - smootherstep(Math.min(1, t * 2));
+}
+/** How much of the arriving lens's motion has come at `t`. */
+function arrivingMotion(t: number): number {
+  'worklet';
+  return smootherstep(Math.max(0, t * 2 - 1));
+}
+/** The frame with its presence scaled by `share`, or null where nothing is left. */
+function motionShare(motion: MotionFrame | null, share: number): MotionFrame | null {
+  'worklet';
+  if (motion === null || share <= 0) return null;
+  return share >= 1 ? motion : { ...motion, presence: motion.presence * share };
+}
 
 /**
  * The circle becoming the seal, at the player.
@@ -34,7 +60,7 @@ const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
 function drawCircleSealMorph(
   canvas: SkCanvas,
   circle: LensIdentity,
-  _circlePlayer: LensPlayer | null,
+  circlePlayer: LensPlayer | null,
   _seal: LensIdentity,
   sealPlayer: LensPlayer | null,
   t: number,
@@ -48,10 +74,28 @@ function drawCircleSealMorph(
   heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  motion: MotionFrame | null = null,
 ): void {
   'worklet';
   if (sealPlayer === null) return;
   const formed = smootherstep(t);
+  /*
+   * The dots leave a moving circle: while its motion is still going, each
+   * starts on the singing contour at its moment rather than on the identity's,
+   * so the change begins from the face as it stood.
+   */
+  let seal = sealPlayer as SealPlayer;
+  const singing = motion === null ? 0 : motion.presence * arrived * leavingMotion(t);
+  if (motion !== null && singing > 0 && isCirclePlayer(circlePlayer)) {
+    const points = circleMotionClockPoints(circlePlayer, motion, singing, seal.order.length);
+    const contourX: number[] = [];
+    const contourY: number[] = [];
+    for (let k = 0; k < points.length; k += 2) {
+      contourX.push(points[k] / SEAL_KNOBS.SIDE_RATIO);
+      contourY.push(points[k + 1] / SEAL_KNOBS.SIDE_RATIO);
+    }
+    seal = { ...seal, contourX, contourY };
+  }
   if (fill > 0 && arrived < 1) {
     canvas.save();
     canvas.scale(size, size);
@@ -65,7 +109,7 @@ function drawCircleSealMorph(
     weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived;
   drawSealPlayer(
     canvas,
-    sealPlayer as SealPlayer,
+    seal,
     paints,
     SEAL_MARK_SIDE_PX * size,
     alpha,
@@ -78,6 +122,8 @@ function drawCircleSealMorph(
     hairlinePx,
     formed,
     faceLine,
+    0,
+    motionShare(motion, arrivingMotion(t)),
   );
 }
 
@@ -144,7 +190,7 @@ function dialSlice(from: number, to: number, radius: number): SkPath {
 function drawCircleCoverMorph(
   canvas: SkCanvas,
   circle: LensIdentity,
-  _circlePlayer: LensPlayer | null,
+  circlePlayer: LensPlayer | null,
   _cover: LensIdentity,
   coverPlayer: LensPlayer | null,
   t: number,
@@ -155,14 +201,20 @@ function drawCircleCoverMorph(
   arrived: number,
   arriving: number,
   soundIn: number,
-  _heard: number,
+  heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  motion: MotionFrame | null = null,
 ): void {
   'worklet';
+  // The circle as its player draws it, its motion going over the first half
+  // — unless there is no picture, and the cover lens is the circle throughout.
+  const cover = coverPlayer as CoverPlayer | null;
+  const singing = cover === null ? motion : motionShare(motion, leavingMotion(t));
   const drawCircle = (ink: number) =>
-    drawCircleMark(
+    drawCirclePlayer(
       canvas,
+      circlePlayer,
       circle,
       size,
       ink,
@@ -170,10 +222,12 @@ function drawCircleCoverMorph(
       fill,
       arrived,
       arriving,
+      soundIn,
+      heard,
       hairlinePx,
       paints,
+      singing,
     );
-  const cover = coverPlayer as CoverPlayer | null;
   if (cover === null) {
     drawCircle(alpha);
     return;
@@ -241,6 +295,7 @@ function drawSealCoverMorph(
   heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  motion: MotionFrame | null = null,
 ): void {
   'worklet';
   const picture = coverPlayer as CoverPlayer | null;
@@ -263,6 +318,7 @@ function drawSealCoverMorph(
       heard,
       hairlinePx,
       paints,
+      motion,
     );
     return;
   }
@@ -280,9 +336,7 @@ function drawSealCoverMorph(
     heard,
     hairlinePx,
     paints,
-    // The motion of a lens being left (reactive-player-plan.md, "Circle ↔
-    // seal mid-song") is the seal's, in M5.
-    null,
+    motionShare(motion, leavingMotion(t)),
     t,
   );
   const shown = soundIn * arrived;

@@ -21,8 +21,9 @@ export type MotionFrame = {
    * arrived, so at the hand-off to the row the drawing is the identity.
    */
   presence: number;
-  /** The playhead, seconds. */
+  /** The playhead, and the song's length, seconds. */
   t: number;
+  duration: number;
   /** Overall gain: the knob times the section's intensity (~0.25..1). */
   g: number;
   /** Envelopes, 0..1: low (kick, bass), mid (snare, voice), high (hats, air), each beat, each downbeat. */
@@ -364,6 +365,7 @@ export function motionFrameAt(track: MotionTrack, t: number, transient = 1): Mot
   return {
     presence: 1,
     t,
+    duration: track.duration,
     g,
     low,
     mid,
