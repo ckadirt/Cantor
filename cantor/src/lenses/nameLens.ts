@@ -1,4 +1,12 @@
 import {
+  circleMotionPath,
+  circleMotionPoints,
+  circlePlayerOf,
+  isCirclePlayer,
+  strokeCircleMotion,
+} from './circleMotion';
+import type { MotionFrame } from './motion/motionFrame';
+import {
   FillType,
   Skia,
   type SkCanvas,
@@ -184,41 +192,16 @@ export function nameLensRingRadius(radius: number): number {
   return radius * FACE_MAX_EXTENT + NAME_LENS_KNOBS.RING_GAP_PX;
 }
 
-/**
- * The circle as a mark or a row's face: its contour, filled as far as the
- * song is on the phone, outlined at its weight.
- *
- * The one song growing into the player is still this drawing, larger: its
- * fill gives way (`arrived`) and its line settles to `SONG_FACE_ALPHA`, the
- * quiet contour the player's clock is drawn inside.
- */
-export function drawCircleMark(
+/** A download landing, round the face; see the comment inside. */
+function drawArrivingArc(
   canvas: SkCanvas,
-  identity: LensIdentity,
   size: number,
   alpha: number,
-  weight: number,
-  fill: number,
   arrived: number,
   arriving: number,
-  hairlinePx: number,
   paints: MarkPaints,
 ): void {
   'worklet';
-  const path = identity as SkPath;
-  canvas.save();
-  canvas.scale(size, size);
-  if (fill > 0) {
-    paints.fill.setAlphaf(alpha * weight * fill * (1 - arrived));
-    canvas.drawPath(path, paints.fill);
-  }
-  const line = weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived;
-  paints.stroke.setAlphaf(alpha * line);
-  // A hairline is a hairline at any size, so it is drawn back out of the
-  // scale the face is standing at.
-  paints.stroke.setStrokeWidth(hairlinePx / size);
-  canvas.drawPath(path, paints.stroke);
-  canvas.restore();
   if (arriving !== ARRIVING_NONE && arrived < 1) {
     /*
      * A download landing: an arc round the face, from twelve o'clock as far as
@@ -242,6 +225,60 @@ export function drawCircleMark(
       paints.stroke,
     );
   }
+}
+
+/** A face's contour as the mark draws it, whichever path it is: still, or singing. */
+function drawCircleFace(
+  canvas: SkCanvas,
+  path: SkPath,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  hairlinePx: number,
+  paints: MarkPaints,
+): void {
+  'worklet';
+  canvas.save();
+  canvas.scale(size, size);
+  if (fill > 0) {
+    paints.fill.setAlphaf(alpha * weight * fill * (1 - arrived));
+    canvas.drawPath(path, paints.fill);
+  }
+  const line = weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived;
+  paints.stroke.setAlphaf(alpha * line);
+  // A hairline is a hairline at any size, so it is drawn back out of the
+  // scale the face is standing at.
+  paints.stroke.setStrokeWidth(hairlinePx / size);
+  canvas.drawPath(path, paints.stroke);
+  canvas.restore();
+  drawArrivingArc(canvas, size, alpha, arrived, arriving, paints);
+}
+
+/**
+ * The circle as a mark or a row's face: its contour, filled as far as the
+ * song is on the phone, outlined at its weight.
+ *
+ * The one song growing into the player is still this drawing, larger: its
+ * fill gives way (`arrived`) and its line settles to `SONG_FACE_ALPHA`, the
+ * quiet contour the player's clock is drawn inside.
+ */
+export function drawCircleMark(
+  canvas: SkCanvas,
+  identity: LensIdentity,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  hairlinePx: number,
+  paints: MarkPaints,
+): void {
+  'worklet';
+  drawCircleFace(canvas, identity as SkPath, size, alpha, weight, fill, arrived, arriving, hairlinePx, paints);
 }
 
 /**
@@ -297,11 +334,13 @@ export const circleSprites: MarkSprites = {
  * The circle as the player is its mark, grown: one contour at every distance
  * (`cantor/AGENTS.md`, "one drawing, three poses"). Its sound is the ring of
  * ticks round it (`ringTicks`) and its clock the arc and hand, which the
- * renderer draws.
+ * renderer draws. While its song plays, the contour sings (`circleMotion.ts`),
+ * as much as the player has arrived and its motion has risen — so at the
+ * hand-off to the row it is the mark again, point for point.
  */
 function drawCirclePlayer(
   canvas: SkCanvas,
-  _player: LensPlayer | null,
+  player: LensPlayer | null,
   identity: LensIdentity,
   size: number,
   alpha: number,
@@ -313,8 +352,28 @@ function drawCirclePlayer(
   _heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  motion: MotionFrame | null = null,
 ): void {
   'worklet';
+  const amount = motion === null ? 0 : motion.presence * arrived;
+  if (motion !== null && amount > 0 && isCirclePlayer(player)) {
+    const R = NAME_LENS_KNOBS.MARK_RADIUS_PX;
+    const points = circleMotionPoints(player, motion, amount, R);
+    canvas.save();
+    canvas.scale(size, size);
+    // The fill, while the mark's ink is still giving way, as `drawCircleFace`.
+    if (fill > 0 && arrived < 1) {
+      paints.fill.setAlphaf(alpha * weight * fill * (1 - arrived));
+      canvas.drawPath(circleMotionPath(player, motion, amount, R), paints.fill);
+    }
+    const line = weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived;
+    paints.stroke.setAlphaf(alpha * line);
+    paints.stroke.setStrokeWidth(hairlinePx / size);
+    strokeCircleMotion(canvas, points, player.spindle, R, paints.stroke);
+    canvas.restore();
+    drawArrivingArc(canvas, size, alpha, arrived, arriving, paints);
+    return;
+  }
   drawCircleMark(
     canvas,
     identity,
@@ -344,7 +403,7 @@ export const nameLens: Lens = {
   // The contour at the mark's radius. Every other size is this path scaled:
   // `nameLensFacePath` is exactly linear in its radius.
   identity: recipe => nameLensFacePath(recipe, NAME_LENS_KNOBS.MARK_RADIUS_PX),
-  player: () => null,
+  player: recipe => circlePlayerOf(recipe, NAME_LENS_KNOBS.SPINDLE_RATIO),
   // Anywhere on the ring is a moment, and a drag around it is the scrub.
   touch: {
     reachRatio: NAME_LENS_KNOBS.CLOCK_SEEK_REACH_RATIO,

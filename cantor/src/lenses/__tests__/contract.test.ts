@@ -62,10 +62,13 @@ describe('the lens contract', () => {
       const quiet = lens.player(recipe, undefined, null);
       if (quiet === null) continue; // its player is its mark, grown
       expect(quiet.sound).toBeNull();
+      // The circle's sound is the renderer's ring of ticks: its player is
+      // only its face's numbers, for the motion (`circleMotion.ts`).
+      if (lens.key === 'name') continue;
       expect(lens.player(recipe, measured, null)?.sound).not.toBeNull();
     }
     expect(LENSES[lensIndex('seal')].player(recipe, undefined, null)).not.toBeNull();
-    expect(LENSES[lensIndex('name')].player(recipe, undefined, null)).toBeNull();
+    expect(LENSES[lensIndex('name')].player(recipe, measured, null)?.sound).toBeNull();
   });
 
   it('gives every lens a clock the player can draw', () => {

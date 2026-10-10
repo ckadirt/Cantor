@@ -97,6 +97,7 @@ import {
   useDerivedValue,
   useSharedValue,
   withTiming,
+  type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
 import {
@@ -168,6 +169,7 @@ import { compoundPolygonPath } from '../../motion/geometry';
 import { resolveSilhouette } from '../../motion/silhouette';
 import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
 import { motionFrameAt, type MotionFrame } from '../../lenses/motion/motionFrame';
+import { RING_MOTION_KNOBS, ringMotionLevel } from '../../lenses/circleMotion';
 import type { MotionTrack } from '../../lenses/motion/motionTrack';
 import {
   labelFlightAlpha,
@@ -180,6 +182,8 @@ import {
   NativePlayerParts,
   PLAYER_RING_KNOBS,
   PLAYER_VERB_POSE,
+  clockCutsOf,
+  type ClockCuts,
   nativeSongModel,
   type NativeSongModel,
 } from './NativePlayer';
@@ -199,6 +203,37 @@ import {
   type DrawnClock,
   type FieldRecutModel,
 } from './useFieldCamera';
+
+/**
+ * Where the field last drew the player, and whether the motion layer is to
+ * draw it: what `drawFieldFaces` hands `PlayerMotionLayer`, the arguments of
+ * one `drawPlayer`.
+ */
+export type PlayerDraw = Readonly<{
+  owned: boolean;
+  lens: number;
+  identity: LensIdentity;
+  player: LensPlayer | null;
+  x: number;
+  y: number;
+  size: number;
+  alpha: number;
+  weight: number;
+  fill: number;
+  arrived: number;
+  arriving: number;
+  soundIn: number;
+  heard: number;
+}>;
+
+export type PlayerLayer = Readonly<{
+  draw: SharedValue<PlayerDraw | null>;
+  /** True once the layer has drawn the player: the field leaves its face out. */
+  showing: SharedValue<boolean>;
+}>;
+
+/** How far the player must have arrived for the motion layer to draw it: all the way. */
+const LAYER_ARRIVED = 0.999;
 
 /** KNOBS — screen-space culling and row dimensions from the HTML prototype. */
 const FIELD_CANVAS_KNOBS = {
@@ -360,6 +395,13 @@ type Props = {
    * six times a second.
    */
   positionSeconds?: SharedValue<number> | null;
+  /**
+   * The playhead unstepped, for the music's motion only (`MotionFrame`): a
+   * kick lasts a few frames, and `positionSeconds` holds still between pixel
+   * steps of the hand. Null except while the canvas owns the player of the
+   * song being heard; read only while its motion is drawn.
+   */
+  motionPositionSeconds?: SharedValue<number> | null;
   playingKey?: string | null;
   /**
    * The placement the camera has arrived at.
@@ -539,6 +581,7 @@ function FieldCanvasImpl({
   jobs,
   palette,
   positionSeconds = null,
+  motionPositionSeconds = null,
   playingKey = null,
   focusKey = null,
   transportPlaying = null,
@@ -627,6 +670,7 @@ function FieldCanvasImpl({
     inkClock: useSharedValue(1),
     openAt: useSharedValue<Readonly<Record<string, number>>>({}),
     soundClock: useSharedValue(1),
+    motionIn: useSharedValue(0),
     focusLive: useSharedValue(-1),
     parked: useSharedValue<NativeCut | null>(null),
   };
@@ -1225,6 +1269,56 @@ function FieldCanvasImpl({
    * focus, the fonts and the palette — not with a re-cut.
    */
   const hasCut = recut !== null;
+  /*
+   * The music at this moment, for the player — and null, which wakes nothing,
+   * whenever there is no motion to draw. Reduced motion has none at all: the
+   * player is today's. What sounds (`transient`) settles with the transport's
+   * own pause morph, so a pause or a scrub does not freeze a kick mid-swell;
+   * the form stays where the song is.
+   */
+  const motionClock = motionPositionSeconds ?? positionSeconds;
+  // Held by ref, as the scene is: native derived values are stable, the Jest
+  // mock's are not, and the scene element must not be rebuilt by a render.
+  const motionFrameCandidate = useDerivedValue((): MotionFrame | null => {
+    const focused = scene.focus.value;
+    const track = focused === null ? null : focused.motion;
+    const presence = scene.motionIn.value;
+    if (track === null || presence <= 0 || reducedMotion || motionClock === null) {
+      return null;
+    }
+    const transient =
+      transportPlaying === null
+        ? 1
+        : Math.min(Math.max(transportPlaying.value - PLAYER_VERB_POSE.play, 0), 1);
+    const frame = motionFrameAt(track, motionClock.value, transient);
+    frame.presence = presence;
+    return frame;
+  });
+  const motionFrame = useRef(motionFrameCandidate).current;
+  const motionOnCandidate = useDerivedValue(() => motionFrame.value !== null);
+  const motionOn = useRef(motionOnCandidate).current;
+  /*
+   * The player on its own canvas while it moves (`PlayerMotionLayer`).
+   *
+   * Re-rendering the field canvas costs most of a frame at L2 whatever moves
+   * in it — its pictures' anti-aliased paths are rasterised on the CPU and
+   * uploaded again on every render (reactive-player-log.md, M4) — which is
+   * why its playhead is stepped. So the field hands the player to a small
+   * canvas above it once the camera has landed, and the field itself is told
+   * there is no motion (`fieldMotion`): it re-renders on its stepped clock, as
+   * it did before the player moved.
+   */
+  const playerLayerCandidate: PlayerLayer = {
+    draw: useSharedValue<PlayerDraw | null>(null),
+    showing: useSharedValue(false),
+  };
+  const playerLayer = useRef(playerLayerCandidate).current;
+  const fieldMotionCandidate = useDerivedValue((): MotionFrame | null => {
+    const drawn = playerLayer.draw.value;
+    if (playerLayer.showing.value && drawn !== null && drawn.owned) return null;
+    return motionFrame.value;
+  });
+  const fieldMotion = useRef(fieldMotionCandidate).current;
   const nativeScene = useMemo(() => {
     if (
       !hasCut ||
@@ -1258,6 +1352,9 @@ function FieldCanvasImpl({
           transportArriving={transportArriving}
           transportLights={transportLights}
           positionSeconds={positionSeconds}
+          motionFrame={fieldMotion}
+          motionOn={motionOn}
+          layer={playerLayer}
           hubPaths={hubPaths}
           displayFont={displayFont}
           songTitleFont={songTitleFont}
@@ -1283,6 +1380,9 @@ function FieldCanvasImpl({
     openingClock,
     palette,
     positionSeconds,
+    fieldMotion,
+    motionOn,
+    playerLayer,
     // Only whether there is a cut, not which: a re-cut reaches the scene as
     // a shared value.
     hasCut,
@@ -1301,13 +1401,83 @@ function FieldCanvasImpl({
   // two at launch. There is no second way to draw the field.
   const paper = useMemo(() => <Fill color={palette.bg} />, [palette.bg]);
   return (
+    <>
+      <Canvas
+        importantForAccessibility="no-hide-descendants"
+        opaque
+        pointerEvents="none"
+        style={StyleSheet.absoluteFill}
+      >
+        {nativeScene ?? paper}
+      </Canvas>
+      {viewport === null ? null : (
+        <PlayerMotionLayer
+          layer={playerLayer}
+          motion={motionFrame}
+          palette={palette}
+          viewport={viewport}
+        />
+      )}
+    </>
+  );
+}
+
+/**
+ * The player while it moves to the music, on a canvas of its own above the
+ * field's: see `PlayerLayer`. Draws only what the field has handed it — the
+ * lens's own `drawPlayer`, where the field last drew the player — and says
+ * when it has, so the field can leave its face out.
+ */
+function PlayerMotionLayer({
+  layer,
+  motion,
+  palette,
+  viewport,
+}: {
+  layer: PlayerLayer;
+  motion: DerivedValue<MotionFrame | null>;
+  palette: Palette;
+  viewport: Viewport;
+}) {
+  const paints = useMemo(() => createFacePaints(palette), [palette]);
+  const picture = useDerivedValue(() =>
+    createPicture(
+      canvas => {
+        const drawn = layer.draw.value;
+        const frame = motion.value;
+        const show = drawn !== null && drawn.owned && frame !== null;
+        if (layer.showing.value !== show) layer.showing.value = show;
+        if (!show) return;
+        canvas.save();
+        canvas.translate(drawn.x, drawn.y);
+        LENS_UI[drawn.lens].drawPlayer(
+          canvas,
+          drawn.player,
+          drawn.identity,
+          drawn.size,
+          drawn.alpha,
+          drawn.weight,
+          drawn.fill,
+          drawn.arrived,
+          drawn.arriving,
+          drawn.soundIn,
+          drawn.heard,
+          FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+          paints,
+          frame,
+        );
+        canvas.restore();
+      },
+      { width: viewport.width, height: viewport.height },
+    ),
+  );
+  return (
     <Canvas
       importantForAccessibility="no-hide-descendants"
-      opaque
       pointerEvents="none"
       style={StyleSheet.absoluteFill}
     >
-      {nativeScene ?? paper}
+      <Picture picture={picture} />
     </Canvas>
   );
 }
@@ -1528,6 +1698,8 @@ type LivingScene = Readonly<{
   openAt: SharedValue<Readonly<Record<string, number>>>;
   /** The focused player's sound rising; 1 is risen. */
   soundClock: SharedValue<number>;
+  /** The playing player's motion rising (`MotionFrame.presence`); 1 is risen. */
+  motionIn: SharedValue<number>;
   /** The newest cut whose focus layer is running on the UI thread. */
   focusLive: SharedValue<number>;
   /** A cut waiting for its focus layer; see `sendCut`. */
@@ -1568,6 +1740,15 @@ type NativeFieldContentProps = Readonly<{
   transportArriving: SharedValue<number> | null;
   transportLights: SharedValue<number[]> | null;
   positionSeconds: SharedValue<number> | null;
+  /**
+   * The music at this moment for what the field draws: the frame, or null —
+   * also while the motion layer is drawing the player (`PlayerMotionLayer`),
+   * so the field is not re-rendered for it.
+   */
+  motionFrame: DerivedValue<MotionFrame | null>;
+  /** Whether there is a frame at all; changes only as motion rises and goes. */
+  motionOn: DerivedValue<boolean>;
+  layer: PlayerLayer;
   /**
    * The decoded window L3 draws, as a shared value rather than a prop.
    *
@@ -1871,6 +2052,10 @@ export function drawFieldFaces(
   stamping: FaceStamping | null = null,
   /** The music at this moment, for the player; see `MotionFrame`. */
   motion: MotionFrame | null = null,
+  /** Whether the player has motion at all, even while `motion` is withheld. */
+  motionOn = false,
+  /** The motion layer the player is handed to once landed; see `PlayerMotionLayer`. */
+  motionLayer: PlayerLayer | null = null,
 ): void {
   'worklet';
   /*
@@ -2010,6 +2195,14 @@ export function drawFieldFaces(
   const shelfWalked = faceArrival(shelfScale, fitted);
   const shelfShrink = overviewShrink(shelfScale, fitted);
 
+  // Whether this pass met the player; if not, the motion layer has none. In
+  // find's gather the player is on the found shelf (side 2): the map's side
+  // never holds it, and must not take it from the layer.
+  let playerSeen = false;
+  const releaseLayer = () => {
+    if (side === 1) return;
+    if (motionLayer !== null && !playerSeen && motionLayer.draw.value !== null) motionLayer.draw.value = null;
+  };
   const drawOne = (face: FaceFlight) => {
     const timing = face.timing;
     const u = timing === null ? p : flightProgressAt(timing, linear);
@@ -2197,7 +2390,68 @@ export function drawFieldFaces(
       );
     } else {
       const passes = firstLens === lastLens ? 1 : 2;
+      /*
+       * The player with its lens at rest, fully arrived, while its song
+       * moves: the motion layer's to draw. The field says where it is, and
+       * leaves it out once the layer has drawn it — a frame of both rather
+       * than a frame of neither, since two surfaces cannot promise one vsync.
+       */
+      // Landed is the player fully arrived, not the cut's clock: an ascent
+      // moves the camera live with the clock already at 1, and the player
+      // must follow it from the first frame.
+      const owned =
+        motionLayer !== null &&
+        players !== undefined &&
+        passes === 1 &&
+        motionOn &&
+        progress >= 1 &&
+        shapeArrived >= LAYER_ARRIVED;
+      if (motionLayer !== null && players !== undefined) {
+        playerSeen = true;
+        const lens = firstLens;
+        const before = motionLayer.draw.value;
+        const drawX = x + pose.x;
+        const drawY = y + pose.y;
+        const drawSize = pose.scale * openScale * (lens === lensTo ? comingScale : leavingScale);
+        const drawAlpha = opacity * (lens === lensTo ? comingInk : leavingInk);
+        if (
+          before === null ||
+          before.owned !== owned ||
+          before.lens !== lens ||
+          before.x !== drawX ||
+          before.y !== drawY ||
+          before.size !== drawSize ||
+          before.alpha !== drawAlpha ||
+          before.weight !== weight ||
+          before.fill !== fill ||
+          before.arrived !== shapeArrived ||
+          before.arriving !== face.arriving ||
+          before.soundIn !== soundProgress ||
+          before.heard !== heard ||
+          before.player !== players[lens] ||
+          before.identity !== face.identities[lens]
+        ) {
+          motionLayer.draw.value = {
+            owned,
+            lens,
+            identity: face.identities[lens],
+            player: players[lens],
+            x: drawX,
+            y: drawY,
+            size: drawSize,
+            alpha: drawAlpha,
+            weight,
+            fill,
+            arrived: shapeArrived,
+            arriving: face.arriving,
+            soundIn: soundProgress,
+            heard,
+          };
+        }
+      }
+      const handedOver = owned && motionLayer !== null && motionLayer.showing.value;
       for (let pass = 0; pass < passes; pass++) {
+        if (handedOver) break;
         const lens = pass === 0 ? firstLens : lastLens;
         const coming = lens === lensTo;
         const size =
@@ -2260,6 +2514,7 @@ export function drawFieldFaces(
   if (mapCam === null) {
     for (let index = 0; index < faces.length; index++) drawOne(faces[index]);
     flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+    releaseLayer();
     return;
   }
   // The map first, then the shelf.
@@ -2273,6 +2528,7 @@ export function drawFieldFaces(
   }
   if (side === 1) {
     flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+    releaseLayer();
     return;
   }
   for (let index = 0; index < faces.length; index++) {
@@ -2282,6 +2538,7 @@ export function drawFieldFaces(
     }
   }
   flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+  releaseLayer();
 }
 
 /**
@@ -2397,6 +2654,8 @@ export function drawSongDetail(
   drawn: number,
   viewport: Viewport,
   lensProgress = 0,
+  /** The music at this moment; see `MotionFrame`. */
+  motion: MotionFrame | null = null,
 ): void {
   'worklet';
   if (drawn <= 0) return;
@@ -2528,7 +2787,17 @@ export function drawSongDetail(
     const t = at - lower;
     return (levels[lower] ?? 0) * (1 - t) + (levels[upper] ?? 0) * t;
   };
-  const now = levelAt(head);
+  /*
+   * The bulge at the playhead: the coarse level over half a turn, or — while
+   * the song's motion has risen — the music at this moment over a tenth
+   * (`ringMotionLevel`), so it lifts with each hit and lets go between them.
+   * The motion leaves as the ring unrolls: on the axis the playhead stands
+   * still in the middle, and a bulge riding it would only pulse in place.
+   */
+  const moving = motion === null ? 0 : motion.presence * (1 - unrolled);
+  const now = levelAt(head) * (1 - moving) + (motion === null ? 0 : ringMotionLevel(motion)) * moving;
+  const pulseWindow =
+    knobs.SONG_PULSE_WINDOW + (RING_MOTION_KNOBS.WINDOW - knobs.SONG_PULSE_WINDOW) * moving;
 
   /*
    * How many ticks the measurement is drawn with, which grows as it opens.
@@ -2582,7 +2851,7 @@ export function drawSongDetail(
       // on the ring without a seam.
       const toHead = Math.abs(turn - head);
       const gap = toHead > 0.5 ? 1 - toHead : toHead;
-      const near = 1 - gap / knobs.SONG_PULSE_WINDOW;
+      const near = 1 - gap / pulseWindow;
       const lift = near > 0 ? near * near * now * knobs.SONG_PULSE_GAIN : 0;
       const amp = Math.min(1, level * knobs.SONG_WAVE_GAIN + lift) * drew;
 
@@ -2673,6 +2942,7 @@ function NativeSongDetail({
   grainShared,
   palette,
   viewport,
+  motionFrame = null,
 }: {
   lensClock: LensClock;
   model: SongDetailModel | null;
@@ -2687,6 +2957,8 @@ function NativeSongDetail({
   grainShared: SharedValue<GrainBars | null>;
   palette: Palette;
   viewport: Viewport;
+  /** The music at this moment, for the bulge at the playhead; see `drawSongDetail`. */
+  motionFrame?: SharedValue<MotionFrame | null> | null;
 }) {
   const paints = useMemo(() => createFacePaints(palette), [palette]);
   // The entry window has three states: reset only when hidden, reveal
@@ -2800,6 +3072,7 @@ function NativeSongDetail({
               lensClock.to.value,
               lensClock.t.value,
             ),
+          motionFrame === null ? null : motionFrame.value,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -2851,6 +3124,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   transportArriving,
   transportLights,
   positionSeconds,
+  motionFrame,
+  motionOn,
+  layer,
   grainShared,
   jobMarks,
   hubPaths,
@@ -2960,7 +3236,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * than riding it, and a track that lands after the camera rises the same
    * way rather than appearing at full strength.
    */
-  const motionDrawn = useSharedValue(0);
+  const motionDrawn = scene.motionIn;
   useAnimatedReaction(
     () => {
       const focus = focusDraw.value;
@@ -2985,29 +3261,6 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       });
     },
   );
-  /*
-   * The music at this moment, for the player — and null, which wakes nothing,
-   * whenever there is no motion to draw: the faces' picture is re-recorded
-   * every frame only while a player is actually moving. Reduced motion has
-   * none at all: the player is today's. What sounds (`transient`) settles
-   * with the transport's own pause morph, so a pause or a scrub does not
-   * freeze a kick mid-swell; the form stays where the song is.
-   */
-  const motionFrame = useDerivedValue((): MotionFrame | null => {
-    const focus = focusDraw.value;
-    const track = focus === null ? null : focus.motion;
-    const presence = motionDrawn.value;
-    if (track === null || presence <= 0 || reducedMotion || positionSeconds === null) {
-      return null;
-    }
-    const transient =
-      transportPlaying === null
-        ? 1
-        : Math.min(Math.max(transportPlaying.value - PLAYER_VERB_POSE.play, 0), 1);
-    const frame = motionFrameAt(track, positionSeconds.value, transient);
-    frame.presence = presence;
-    return frame;
-  });
   /*
    * How far the player's song has been heard, for the seal's dots — and a
    * constant whenever no seal is showing.
@@ -3112,6 +3365,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             hairlinePx: FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
           },
           motionFrame.value,
+          motionOn.value,
+          layer,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -3254,6 +3509,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             hairlinePx: FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
           },
           motionFrame.value,
+          motionOn.value,
+          layer,
         );
       }
       drawNativeRows(
@@ -3396,6 +3653,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           palette={palette}
           positionSeconds={positionSeconds}
           viewport={viewport}
+          motionFrame={motionFrame}
         />
       )}
       <Picture picture={rowsPicture} />
@@ -3470,6 +3728,7 @@ function FocusDetail({
   palette,
   positionSeconds,
   viewport,
+  motionFrame,
 }: {
   detailInk: SharedValue<DetailInk>;
   focus: FocusLayer;
@@ -3481,6 +3740,7 @@ function FocusDetail({
   palette: Palette;
   positionSeconds: SharedValue<number> | null;
   viewport: Viewport;
+  motionFrame: SharedValue<MotionFrame | null>;
 }) {
   const clock = useFocusClock(scene, focus.generation);
   return (
@@ -3497,6 +3757,7 @@ function FocusDetail({
       positionSeconds={positionSeconds}
       recut={focus.recut}
       viewport={viewport}
+      motionFrame={motionFrame}
     />
   );
 }
@@ -3542,6 +3803,11 @@ function FocusFlight({
   palette: Palette;
 }) {
   const clock = useFocusClock(scene, focus.generation);
+  // The song's form on its clock: its sections and drops, once per track.
+  const formCuts = useDerivedValue(() => {
+    const focused = scene.focus.value;
+    return clockCutsOf(focused === null ? null : focused.motion);
+  });
   // On the canvas: its cut may go down now (see `focusReady`).
   const generation = focus.generation;
   useEffect(() => {
@@ -3561,6 +3827,8 @@ function FocusFlight({
       row={focus.row}
       titleFrom={focus.titleFrom}
       inkClock={scene.inkClock}
+      formCuts={formCuts}
+      formInk={scene.motionIn}
       song={focus.song}
       songTitleFont={songTitleFont}
       songMetaFont={songMetaFont}
@@ -3745,6 +4013,8 @@ function TracedTitle({
  * this renderer exists to end.
  */
 function NativePlacementFlight({
+  formCuts = null,
+  formInk = null,
   motion,
   playerRow,
   lensClock,
@@ -3770,6 +4040,9 @@ function NativePlacementFlight({
   color,
   mutedColor,
 }: {
+  /** The song's form on its clock; see `ClockCuts`. */
+  formCuts?: DerivedValue<ClockCuts> | null;
+  formInk?: SharedValue<number> | null;
   motion: NativeCameraMotion;
   /** Where this flight says it has taken its row over; see `playerRow`. */
   playerRow: SharedValue<PlayerRow | null>;
@@ -4079,6 +4352,8 @@ function NativePlacementFlight({
       {song === null ? null : (
         <NativePlayerParts
           lensClock={lensClock}
+          formCuts={formCuts}
+          formInk={formInk}
           arrived={arrived}
           named={nameArrived}
           colour={color}
