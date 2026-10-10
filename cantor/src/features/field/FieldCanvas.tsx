@@ -168,7 +168,8 @@ import { jobStateLabel } from '../../jobs/policy';
 import { compoundPolygonPath } from '../../motion/geometry';
 import { resolveSilhouette } from '../../motion/silhouette';
 import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
-import { motionFrameAt, type MotionFrame } from '../../lenses/motion/motionFrame';
+import type { MotionFrame } from '../../lenses/motion/motionFrame';
+import { playerMotionFrame } from './playerMotion';
 import { RING_MOTION_KNOBS, ringMotionLevel } from '../../lenses/circleMotion';
 import type { MotionTrack } from '../../lenses/motion/motionTrack';
 import {
@@ -181,7 +182,6 @@ import {
 import {
   NativePlayerParts,
   PLAYER_RING_KNOBS,
-  PLAYER_VERB_POSE,
   clockCutsOf,
   type ClockCuts,
   nativeSongModel,
@@ -1269,30 +1269,19 @@ function FieldCanvasImpl({
    * focus, the fonts and the palette — not with a re-cut.
    */
   const hasCut = recut !== null;
-  /*
-   * The music at this moment, for the player — and null, which wakes nothing,
-   * whenever there is no motion to draw. Reduced motion has none at all: the
-   * player is today's. What sounds (`transient`) settles with the transport's
-   * own pause morph, so a pause or a scrub does not freeze a kick mid-swell;
-   * the form stays where the song is.
-   */
+  // The music at this moment, for the player; see `playerMotionFrame`.
   const motionClock = motionPositionSeconds ?? positionSeconds;
   // Held by ref, as the scene is: native derived values are stable, the Jest
   // mock's are not, and the scene element must not be rebuilt by a render.
   const motionFrameCandidate = useDerivedValue((): MotionFrame | null => {
     const focused = scene.focus.value;
-    const track = focused === null ? null : focused.motion;
-    const presence = scene.motionIn.value;
-    if (track === null || presence <= 0 || reducedMotion || motionClock === null) {
-      return null;
-    }
-    const transient =
-      transportPlaying === null
-        ? 1
-        : Math.min(Math.max(transportPlaying.value - PLAYER_VERB_POSE.play, 0), 1);
-    const frame = motionFrameAt(track, motionClock.value, transient);
-    frame.presence = presence;
-    return frame;
+    return playerMotionFrame(
+      focused === null ? null : focused.motion,
+      motionClock === null ? null : motionClock.value,
+      scene.motionIn.value,
+      reducedMotion,
+      transportPlaying === null ? null : transportPlaying.value,
+    );
   });
   const motionFrame = useRef(motionFrameCandidate).current;
   const motionOnCandidate = useDerivedValue(() => motionFrame.value !== null);
