@@ -13,9 +13,23 @@ include(${REACT_ANDROID_DIR}/cmake-utils/ReactNative-application.cmake)
 set(AUDIO_API_DIR ${PROJECT_ROOT_DIR}/../node_modules/react-native-audio-api)
 set(FFMPEG_LIBS ${AUDIO_API_DIR}/android/src/main/jniLibs/${ANDROID_ABI})
 
-target_sources(${CMAKE_PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../cpp/AudioReduction.cpp)
+set(CANTOR_CPP ${CMAKE_CURRENT_SOURCE_DIR}/../cpp)
+target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        ${CANTOR_CPP}/AudioDecode.cpp
+        ${CANTOR_CPP}/AudioReduction.cpp
+        ${CANTOR_CPP}/motion/MotionAnalysis.cpp
+        ${CANTOR_CPP}/motion/MotionTrackJni.cpp
+        ${CANTOR_CPP}/motion/pffft/pffft_double.c)
+# The motion analysis's FFT (cpp/motion/pffft/README.md). Hidden, because
+# audio-api's library exports the same pffftd_* symbols; NEON wherever the
+# CPU has 64-bit lanes (arm64), scalar on armeabi-v7a, SSE2 on x86.
+set_source_files_properties(${CANTOR_CPP}/motion/pffft/pffft_double.c PROPERTIES
+        COMPILE_OPTIONS "-fvisibility=hidden;-O3"
+        COMPILE_DEFINITIONS "PFFFT_ENABLE_NEON")
+set_source_files_properties(${CANTOR_CPP}/motion/MotionAnalysis.cpp PROPERTIES
+        COMPILE_OPTIONS "-O3")
 # miniaudio's header for its declarations only; the implementation is
-# audio-api's, looked up at run time (see AudioReduction.cpp).
+# audio-api's, looked up at run time (see AudioDecode.cpp).
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         ${AUDIO_API_DIR}/common/cpp/audioapi/external/include_ffmpeg
         ${AUDIO_API_DIR}/common/cpp/audioapi/libs/miniaudio)

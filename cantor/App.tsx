@@ -16,6 +16,8 @@ import { Onboarding } from './src/onboarding/Onboarding';
 import { FieldGroupLab } from './src/dev/FieldGroupLab';
 import { MotionLab } from './src/dev/MotionLab';
 import { PerfHud, PerfProfiler } from './src/dev/PerfHud';
+import { MotionBench } from './src/dev/MotionBench';
+import { SyncCheck } from './src/dev/SyncCheck';
 import { getIdentityPhrase } from './src/identity/mnemonic';
 import {
   createAndStoreIdentity,
@@ -32,6 +34,11 @@ const FIELD_GROUP_LAB = false;
 // Frame and commit readout over the field (src/dev/PerfHud). Not gated on
 // __DEV__, so it can be read on a production-mode bundle; never ship it on.
 const PERF_HUD = false;
+// The picture-against-sound check (src/dev/SyncCheck): a click track and a
+// flash on every beat, for measuring output latency. Never ship it on.
+const SYNC_CHECK = false;
+// The native motion analysis timed on the phone (src/dev/MotionBench). Never ship it on.
+const MOTION_BENCH = false;
 
 type IdentityBoot =
   | { state: 'loading' }
@@ -102,6 +109,10 @@ export default function App() {
           </PerfProfiler>
         ) : MOTION_LAB ? (
           <MotionLab />
+        ) : SYNC_CHECK ? (
+          <SyncCheck />
+        ) : MOTION_BENCH ? (
+          <MotionBench />
         ) : boot.state === 'loading' ? (
           <View style={[styles.loading, { backgroundColor: pal.bg }]}>
             <Text style={[type.eyebrow, { color: pal.muted }]}>
