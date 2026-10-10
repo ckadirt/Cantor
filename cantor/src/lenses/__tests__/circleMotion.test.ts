@@ -103,10 +103,10 @@ describe('the singing circle', () => {
     const still = width(nameLensFacePath(RECIPE, R));
     // The tension's own path against the same frame with the drop taken out.
     const tense = width(circleMotionPath(player, before, 1, R));
-    const loose = width(circleMotionPath(player, { ...before, tension: 0, release: 0 }, 1, R));
+    const loose = width(circleMotionPath(player, { ...before, tension: 0, release: 0, lift: 0, lifted: 0 }, 1, R));
     expect(tense).toBeLessThan(loose);
     const bloom = width(circleMotionPath(player, after, 1, R));
-    const plain = width(circleMotionPath(player, { ...after, tension: 0, release: 0 }, 1, R));
+    const plain = width(circleMotionPath(player, { ...after, tension: 0, release: 0, lift: 0, lifted: 0 }, 1, R));
     expect(bloom).toBeGreaterThan(plain);
     expect(still).toBeGreaterThan(0);
   });

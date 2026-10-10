@@ -27,6 +27,9 @@ import {
   type Lens,
 } from '../../lenses';
 import type { FaceRecipe } from '../../lenses/face';
+import { CIRCLE_MOTION_KNOBS } from '../../lenses/circleMotion';
+import { beatSureOf, steppedBeatsAt } from '../../lenses/motion/motionFrame';
+import type { MotionTrack } from '../../lenses/motion/motionTrack';
 import { space, type Palette } from '../../theme/tokens';
 
 /**
@@ -36,10 +39,12 @@ import { space, type Palette } from '../../theme/tokens';
  * `docs/interfacealpha/now-playing-variants.html` § I, "The song, in
  * miniature". The face is the lens's identity — the same mark you tapped on
  * the map — turning slowly while the song sounds; the ring is the clock, its
- * ink arc how far into the song you are. Paused, the turn eases to a stop, the
- * face keeps its last angle, and the ink settles to muted. Nothing snaps:
- * speed and ink ease over `STATE_MS`, and the turn is a phase that only ever
- * advances at that speed.
+ * ink arc how far into the song you are. Once the song's motion track is
+ * measured the turn steps on its beats, as the player's circle does, so the
+ * header keeps the music's time rather than a clock of its own
+ * (reactive-player-plan.md, decision 3). Paused, the turn comes to a stop, the
+ * face keeps its last angle, and the ink settles to muted. Nothing snaps: the
+ * turn is a phase that only ever advances, and the ink eases over `STATE_MS`.
  */
 export type NowPlaying = Readonly<{
   title: string;
@@ -49,6 +54,8 @@ export type NowPlaying = Readonly<{
   /** The transport's moving clock, and the length it runs against. */
   positionSeconds: SharedValue<number>;
   durationSeconds: number;
+  /** The song's beats, once measured; until then the turn is even. */
+  motion: MotionTrack | null;
 }>;
 
 /** KNOBS — the now-playing mark and its name. */
@@ -62,8 +69,15 @@ export const NOW_PLAYING_KNOBS = {
   MARK_GAP_PX: 8,
   /** Kept clear between the count line's last letter and the mark. */
   COUNT_GAP_PX: 14,
-  /** One whole turn of the face, in seconds of the song sounding. */
+  /** One whole turn of the face, in seconds of the song sounding, where it turns evenly. */
   TURN_S: 12,
+  /**
+   * Stepping on the beat, a beat's share of a turn: a turn in twelve seconds
+   * at 120 BPM, the even turn's speed. A beat further than this in one frame
+   * is a seek, and the face does not spin to catch it up.
+   */
+  BEAT_TURN: 1 / 24,
+  MAX_BEATS_PER_FRAME: 2,
   /**
    * How far the face's rim and the arc's head may travel, in physical pixels,
    * before the mark is redrawn. The turn moves about six pixels a second, so
@@ -299,6 +313,7 @@ function NowPlayingImpl({
                 palette={palette}
                 playAt={playAt}
                 positionSeconds={held.positionSeconds}
+                motion={held.motion}
                 recipe={held.recipe}
                 turning={visible && shown && !reducedMotion}
               />
@@ -332,6 +347,27 @@ function NowPlayingImpl({
 export const NowPlayingSeat = React.memo(NowPlayingImpl);
 
 /**
+ * How far the mark turns in one frame, in turns: evenly at `on` of its speed
+ * over `seconds`, and by the stepped beats counted since the last frame
+ * (`were` → `now`, −1 for none), weighed by how `sure` the grid is. A count
+ * that went back, or forward by more than a frame can hold, is a seek: no turn.
+ */
+export function markTurnAdvance(
+  were: number,
+  now: number,
+  sure: number,
+  seconds: number,
+  on: number,
+): number {
+  'worklet';
+  const K = NOW_PLAYING_KNOBS;
+  const moved = were < 0 || now < 0 ? 0 : now - were;
+  const stepped = moved > 0 && moved <= K.MAX_BEATS_PER_FRAME ? moved * K.BEAT_TURN : 0;
+  const even = on <= 0 ? 0 : (seconds * on) / K.TURN_S;
+  return even * (1 - sure) + stepped * sure;
+}
+
+/**
  * The mark itself: the held song's face, turning, inside its clock.
  *
  * One small canvas, recorded on the UI thread from three numbers — the turn,
@@ -345,6 +381,7 @@ function NowPlayingMark({
   playAt,
   positionSeconds,
   durationSeconds,
+  motion,
   turning,
 }: {
   lens: Lens;
@@ -353,6 +390,7 @@ function NowPlayingMark({
   playAt: SharedValue<number>;
   positionSeconds: SharedValue<number>;
   durationSeconds: number;
+  motion: MotionTrack | null;
   turning: boolean;
 }) {
   const identity = useMemo(() => lens.identity(recipe), [lens, recipe]);
@@ -377,16 +415,39 @@ function NowPlayingMark({
   const muted = useMemo(() => Array.from(Skia.Color(palette.muted)), [palette.muted]);
   const ink = useMemo(() => Array.from(Skia.Color(palette.ink)), [palette.ink]);
 
-  // Seconds the face has spent turning. Speed eases, never position.
+  /*
+   * Turns the face has made. Evenly, it advances with the eased speed; on the
+   * beat, with the playhead's stepped beat count — blended by how sure the grid
+   * is, so a song with no beat still turns. Only ever forward: a seek moves the
+   * count by many beats in a frame, or backwards, and the face lets it go.
+   * The track sits in one shared value, handed over once per song rather than
+   * captured by the frame's closure.
+   */
+  const track = useSharedValue<MotionTrack | null>(motion);
+  useEffect(() => {
+    track.value = motion;
+  }, [motion, track]);
   const phase = useSharedValue(0);
+  const beatsWere = useSharedValue(-1);
   const frame = useFrameCallback(info => {
-    const on = playAt.value;
-    if (on <= 0) return;
-    phase.value += ((info.timeSincePreviousFrame ?? 0) / 1000) * on;
+    const song = track.value;
+    const beats =
+      song === null
+        ? -1
+        : steppedBeatsAt(song, positionSeconds.value, CIRCLE_MOTION_KNOBS.STEP_SHARE);
+    phase.value += markTurnAdvance(
+      beatsWere.value,
+      beats,
+      song === null ? 0 : beatSureOf(song),
+      (info.timeSincePreviousFrame ?? 0) / 1000,
+      playAt.value,
+    );
+    beatsWere.value = beats;
   }, false);
   useEffect(() => {
     frame.setActive(turning);
-  }, [frame, turning]);
+    if (!turning) beatsWere.value = -1;
+  }, [beatsWere, frame, turning]);
 
   const ratio = PixelRatio.get();
   const faceReach =
@@ -397,7 +458,7 @@ function NowPlayingMark({
   const turn = useSharedValue(0);
   useAnimatedReaction(
     () => {
-      const t = phase.value / NOW_PLAYING_KNOBS.TURN_S;
+      const t = phase.value;
       return Math.round((t - Math.floor(t)) / turnStep) * turnStep;
     },
     (next, previous) => {
