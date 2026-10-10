@@ -55,6 +55,14 @@ export type MotionFrame = {
   tension: number;
   release: number;
   /**
+   * The same for a lift: a section that rises but does not drop (louder, not
+   * enough or not lower), at a fraction of a drop's size. Not the page's — a
+   * departure (reactive-player-plan.md, decision 4); `tension` and `release`
+   * stay the page's own.
+   */
+  lift: number;
+  lifted: number;
+  /**
    * Where this moment first played, in seconds, for every earlier section
    * with this one's letter that is still as long as we are into this one.
    */
@@ -87,6 +95,12 @@ export const MOTION_KNOBS = {
   /** Below this confidence the grid is a guess; beat-locked motion is off by its floor. */
   SURE_FROM: 0.2,
   SURE_TO: 0.6,
+  /** A lift: a section this much louder than the one before that is not a drop. */
+  LIFT_RISE: 1.1,
+  /** Its strength: this share of a drop's with the same rise, so it is always the smaller gesture. */
+  LIFT_GAIN: 0.5,
+  /** Its build, in beats: half a drop's. */
+  LIFT_BUILD_BEATS: 8,
 } as const;
 
 function clamp01(x: number): number {
@@ -195,6 +209,32 @@ function beatTime(track: MotionTrack, x: number): number {
   return t0 + (t1 - t0) * (x - i);
 }
 
+/** How sure a track's beat grid is, 0..1: the frame's `beatSure`. */
+export function beatSureOf(track: MotionTrack): number {
+  'worklet';
+  return smoothstep((track.confidence - MOTION_KNOBS.SURE_FROM) / (MOTION_KNOBS.SURE_TO - MOTION_KNOBS.SURE_FROM));
+}
+
+/**
+ * Beats counted at playhead `t`, each one stepped: the count moves over the
+ * first `share` of a beat (smootherstep) and stands still for the rest, as the
+ * circle's pose steps. 0 before the first beat.
+ */
+export function steppedBeatsAt(track: MotionTrack, t: number, share: number): number {
+  'worklet';
+  const beats = track.beats;
+  if (beats.length === 0 || t < beats[0]) return 0;
+  let lo = 0;
+  let hi = beats.length - 1;
+  while (lo < hi) {
+    const m = (lo + hi + 1) >> 1;
+    if (beats[m] <= t) lo = m;
+    else hi = m - 1;
+  }
+  const period = lo + 1 < beats.length ? beats[lo + 1] - beats[lo] : 60 / track.bpm;
+  return lo + smootherstep((t - beats[lo]) / period / share);
+}
+
 /**
  * The frame at playhead `t`. `transient` (0..1) scales what sounds — the
  * envelopes, ripples, hats — and leaves the form alone: it is how a pause or a
@@ -209,7 +249,7 @@ export function motionFrameAt(track: MotionTrack, t: number, transient = 1): Mot
   const g = K.GAIN * (1 - K.SECTIONS + K.SECTIONS * (0.25 + 0.75 * intensity));
   // The last analysis hop: the page's arrays end there.
   const last = Math.floor(track.duration * fps + 1e-6) - 1;
-  const beatSure = smoothstep((track.confidence - K.SURE_FROM) / (K.SURE_TO - K.SURE_FROM));
+  const beatSure = beatSureOf(track);
 
   // The beat we are in.
   let beatIndex = 0;
@@ -254,6 +294,27 @@ export function motionFrameAt(track: MotionTrack, t: number, transient = 1): Mot
         release,
         Math.min(smoothstep(u / 0.12), 1 - smootherstep((u - 0.12) / d.bar)) * d.strength,
       );
+    }
+  }
+
+  // A lift's build and release: the drop's rule, the drop's shapes, smaller.
+  let lift = 0;
+  let lifted = 0;
+  const bar = (4 * 60) / track.bpm;
+  for (let i = 1; i < track.sections.length; i++) {
+    const p = track.sections[i - 1];
+    const s = track.sections[i];
+    const u = t - s.t0;
+    if (u < -60 || u > bar + 0.12) continue;
+    const rise = s.loud / Math.max(0.02, p.loud);
+    if (rise <= K.LIFT_RISE || (rise > 1.2 && s.low > p.low)) continue;
+    const strength = K.LIFT_GAIN * clamp01((rise - 1.1) / 0.6);
+    const from = beats[Math.max(p.a, s.a - K.LIFT_BUILD_BEATS)] ?? s.t0;
+    if (u < 0 && t >= from) {
+      lift = Math.max(lift, smootherstep((t - from) / Math.max(0.1, s.t0 - from)) * strength);
+    } else if (u >= 0) {
+      lift = Math.max(lift, (1 - smootherstep(u / 0.12)) * strength);
+      lifted = Math.max(lifted, Math.min(smoothstep(u / 0.12), 1 - smootherstep((u - 0.12) / bar)) * strength);
     }
   }
 
@@ -322,6 +383,8 @@ export function motionFrameAt(track: MotionTrack, t: number, transient = 1): Mot
     prevLength,
     tension,
     release,
+    lift,
+    lifted,
     echoes,
     ripples,
     hats,

@@ -4354,6 +4354,7 @@ function NativePlacementFlight({
           lensClock={lensClock}
           formCuts={formCuts}
           formInk={formInk}
+          letterFont={monoFont}
           arrived={arrived}
           named={nameArrived}
           colour={color}

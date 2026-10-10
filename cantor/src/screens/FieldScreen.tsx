@@ -1521,6 +1521,9 @@ export function FieldScreen({ identity }: Props) {
     heldKey === null ? null : controller.presentations.get(heldKey) ?? null;
   const heldSounding = transport.snapshot.state === 'playing';
   const heldDuration = transport.snapshot.durationSeconds;
+  const heldMotion = useStore(motionStore.store, tracks =>
+    heldKey === null ? null : tracks.get(heldKey) ?? null,
+  );
   const nowPlaying = useMemo<NowPlaying | null>(
     () =>
       heldKey === null || heldPlacement === null || heldPresentation === null
@@ -1531,10 +1534,12 @@ export function FieldScreen({ identity }: Props) {
             playing: heldSounding,
             positionSeconds: transport.positionSeconds,
             durationSeconds: heldDuration,
+            motion: heldMotion,
           },
     [
       heldDuration,
       heldKey,
+      heldMotion,
       heldPlacement,
       heldPresentation,
       heldSounding,

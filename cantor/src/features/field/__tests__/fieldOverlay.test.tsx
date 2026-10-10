@@ -39,6 +39,7 @@ const BLOODFLOW: NowPlaying = {
   playing: true,
   positionSeconds: shared(30),
   durationSeconds: 120,
+  motion: null,
 };
 
 /** The header's and foot's drawn opacity with the camera at `ratio`·FIT. */

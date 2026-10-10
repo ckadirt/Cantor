@@ -74,6 +74,26 @@ describe('what the frame adds to the page', () => {
     expect([off.section, off.label, off.into, off.tension]).toEqual([on.section, on.label, on.into, on.tension]);
   });
 
+  it('builds into a lift and lets it go, at half a drop of the same rise', () => {
+    // Red Lights at 67.5 s: 1.24 times as loud as the section before, no lower.
+    const at = track.sections.findIndex(s => Math.abs(s.t0 - 67.5) < 0.1);
+    expect(at).toBeGreaterThan(0);
+    const t0 = track.sections[at].t0;
+    const strength = 0.5 * ((track.sections[at].loud / track.sections[at - 1].loud - 1.1) / 0.6);
+    const before = motionFrameAt(track, t0 - 0.05);
+    const after = motionFrameAt(track, t0 + 0.4);
+    expect(before.tension).toBe(0);
+    expect(before.lift).toBeGreaterThan(0.8 * strength);
+    expect(before.lift).toBeLessThanOrEqual(strength + 1e-9);
+    expect(after.lifted).toBeGreaterThan(0.5 * strength);
+    expect(after.release).toBe(0);
+    // Never on a drop: the page's own gesture is the whole of it there.
+    for (const d of track.drops) {
+      expect(motionFrameAt(track, d.t - 0.05).lift).toBe(0);
+    }
+    expect(motionFrameAt(track, t0 - 30).lift).toBe(0);
+  });
+
   it('turns beat-locked motion off for a grid it is not sure of, and keeps the onsets', () => {
     const sure = motionFrameAt(track, t);
     const unsure = motionFrameAt({ ...track, confidence: 0.1 }, t);

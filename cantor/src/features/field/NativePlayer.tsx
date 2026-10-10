@@ -3,8 +3,10 @@ import React, { useMemo } from 'react';
 import {
   Group as SkiaGroup,
   Path,
+  Picture,
   Skia,
   Text,
+  createPicture,
   interpolatePaths,
   notifyChange,
   type SkFont,
@@ -635,6 +637,7 @@ export function PlayerRing({
   lensClock,
   formCuts = null,
   formInk = null,
+  letterFont = null,
   durationSeconds,
   positionSeconds,
   colour,
@@ -643,6 +646,8 @@ export function PlayerRing({
   lensClock?: LensClock;
   formCuts?: DerivedValue<ClockCuts> | null;
   formInk?: SharedValue<number> | null;
+  /** The face the form's letters are written in; none, no letters. */
+  letterFont?: SkFont | null;
   durationSeconds: number;
   positionSeconds: SharedValue<number>;
   colour: string;
@@ -688,6 +693,7 @@ export function PlayerRing({
         radius={radius}
         formCuts={formCuts}
         formInk={formInk}
+        letterFont={letterFont}
       />
     );
   }
@@ -703,6 +709,7 @@ export function PlayerRing({
         radius={radius}
         formCuts={formCuts}
         formInk={formInk}
+        letterFont={letterFont}
       />
       <ClockDrawing
         colour={colour}
@@ -713,6 +720,7 @@ export function PlayerRing({
         radius={radius}
         formCuts={formCuts}
         formInk={formInk}
+        letterFont={letterFont}
       />
     </>
   );
@@ -728,6 +736,7 @@ function ClockDrawing({
   colour,
   formCuts,
   formInk,
+  letterFont,
 }: {
   radius: number;
   lenses: SharedValue<number[]>;
@@ -737,6 +746,7 @@ function ClockDrawing({
   colour: string;
   formCuts: DerivedValue<ClockCuts> | null;
   formInk: SharedValue<number> | null;
+  letterFont: SkFont | null;
 }) {
   /*
    * The shape in pixels. Radii are scaled by the player's before they are
@@ -823,11 +833,22 @@ function ClockDrawing({
     return builder.detach();
   });
   const cutsAlpha = useDerivedValue(() => CUT_ALPHA * (formInk === null ? 0 : formInk.value));
+  const clockRing = useDerivedValue(() => shape.value.r);
 
   return (
     <SkiaGroup opacity={opacity}>
       <Path color={colour} opacity={cutsAlpha} path={cuts} strokeWidth={1} style="stroke" />
       <Path color={colour} opacity={cutsAlpha} path={drops} />
+      {formCuts === null || formInk === null || letterFont === null ? null : (
+        <FormLetters
+          colour={colour}
+          font={letterFont}
+          formCuts={formCuts}
+          formInk={formInk}
+          radius={radius}
+          ring={clockRing}
+        />
+      )}
       <Path
         color={colour}
         opacity={rimAlpha}
@@ -1474,13 +1495,19 @@ const VERB_POSE_STOPS = [
  */
 /**
  * The song's form on its clock: where each section starts and where each drop
- * lands, as fractions of the song. A section's start is a cut across the
- * ring, a drop a dot just inside it (reactive-player-plan.md, M4; the page's
- * `drawCircle` 'structure'). Cuts, not letters: whether the letters go round
- * the clock too is decision 1, still open.
+ * lands, as fractions of the song, and each section's letter at its middle.
+ * A section's start is a cut across the ring, a drop a dot just inside it, the
+ * letters outside the whole player (reactive-player-plan.md, M4 and decision
+ * 1; the page's `drawCircle` 'structure').
  */
-export type ClockCuts = Readonly<{ sections: readonly number[]; drops: readonly number[] }>;
-export const NO_CUTS: ClockCuts = { sections: [], drops: [] };
+export type ClockCuts = Readonly<{
+  sections: readonly number[];
+  drops: readonly number[];
+  /** Each section's middle, and its letter (0 is A); none for a song of one section. */
+  middles: readonly number[];
+  labels: readonly number[];
+}>;
+export const NO_CUTS: ClockCuts = { sections: [], drops: [], middles: [], labels: [] };
 
 export function clockCutsOf(track: MotionTrack | null): ClockCuts {
   'worklet';
@@ -1490,7 +1517,17 @@ export function clockCutsOf(track: MotionTrack | null): ClockCuts {
   for (let i = 1; i < track.sections.length; i++) sections.push(track.sections[i].t0 / track.duration);
   const drops: number[] = [];
   for (let i = 0; i < track.drops.length; i++) drops.push(track.drops[i].t / track.duration);
-  return { sections, drops };
+  // One letter says nothing: a form needs two sections to be one.
+  const middles: number[] = [];
+  const labels: number[] = [];
+  if (track.sections.length > 1) {
+    for (let i = 0; i < track.sections.length; i++) {
+      const s = track.sections[i];
+      middles.push((s.t0 + s.t1) / 2 / track.duration);
+      labels.push(s.label);
+    }
+  }
+  return { sections, drops, middles, labels };
 }
 
 // knobs — the page's: a cut ±5 px across the ring, a drop's dot 9 px inside it
@@ -1498,12 +1535,110 @@ const CUT_REACH_PX = 5;
 const CUT_ALPHA = 0.6;
 const DROP_INSET_PX = 9;
 const DROP_RADIUS_PX = 2.2;
+/**
+ * The letters: this far outside the clock's ring or the circle's tallest tick
+ * (`SONG_WAVE_REACH_RATIO` over the arc), whichever is further out — so past
+ * the ticks on the circle and the rim on the seal, travelling between the two
+ * with the clock — at the page's ink, and never closer along the ring than this
+ * to the last one drawn (a short section's letter gives way to its neighbour's).
+ */
+const LETTER_OUT_PX = 9;
+const TICK_REACH_RATIO = PLAYER_POSE_KNOBS.SONG_ARC_RATIO + NAME_LENS_KNOBS.SONG_WAVE_REACH_RATIO;
+const LETTER_ALPHA = 0.55;
+const LETTER_GAP_PX = 3;
+
+/** The letters' ring: their centres, from the player's centre, for a clock ring at `ring`. */
+export function formLetterRadius(radius: number, ring: number, letterWidth: number): number {
+  'worklet';
+  return Math.max(ring, radius * TICK_REACH_RATIO) + LETTER_OUT_PX + letterWidth / 2;
+}
+
+/**
+ * Where each letter goes, as `[x, y, label]` triples from the player's centre,
+ * the text's left and baseline, their centres on a ring of radius `r`. Letters
+ * that would crowd the one before them on the ring are left out, as is a
+ * letter past Z.
+ */
+export function formLetterSeats(
+  cuts: ClockCuts,
+  r: number,
+  letterWidth: number,
+  letterHeight: number,
+): number[] {
+  'worklet';
+  const out: number[] = [];
+  const room = (letterWidth + LETTER_GAP_PX) / r;
+  let first = -1;
+  let last = -Infinity;
+  for (let i = 0; i < cuts.middles.length; i++) {
+    const label = cuts.labels[i];
+    if (label < 0 || label > 25) continue;
+    const angle = cuts.middles[i] * Math.PI * 2;
+    if (angle - last < room) continue;
+    // Round the twelve, against the first letter drawn.
+    if (first >= 0 && first + Math.PI * 2 - angle < room) continue;
+    if (first < 0) first = angle;
+    last = angle;
+    const a = angle - Math.PI / 2;
+    out.push(Math.cos(a) * r - letterWidth / 2, Math.sin(a) * r + letterHeight / 2, label);
+  }
+  return out;
+}
+
+/** The form's letters round the clock; see `formLetterSeats`. */
+function FormLetters({
+  formCuts,
+  formInk,
+  font,
+  radius,
+  ring,
+  colour,
+}: {
+  formCuts: DerivedValue<ClockCuts>;
+  formInk: SharedValue<number>;
+  font: SkFont;
+  radius: number;
+  /** The clock's ring this frame, mixed between the lenses' (`ClockDrawing`). */
+  ring: SharedValue<number>;
+  colour: string;
+}) {
+  const ink = useMemo(() => {
+    const paint = Skia.Paint();
+    paint.setAntiAlias(true);
+    paint.setColor(Skia.Color(colour));
+    return paint;
+  }, [colour]);
+  // Monospaced capitals: one advance, and a capital's height above its baseline.
+  const letter = useMemo(() => {
+    const ink = font.measureText('M');
+    return {
+      width: font.getTextWidth('M'),
+      height: ink.y < 0 ? -ink.y : font.getSize() * 0.7,
+    };
+  }, [font]);
+  const picture = useDerivedValue(() =>
+    createPicture(canvas => {
+      const r = formLetterRadius(radius, ring.value, letter.width);
+      const seats = formLetterSeats(formCuts.value, r, letter.width, letter.height);
+      for (let i = 0; i < seats.length; i += 3) {
+        canvas.drawText(String.fromCharCode(65 + seats[i + 2]), seats[i], seats[i + 1], ink, font);
+      }
+    }),
+  );
+  const alpha = useDerivedValue(() => LETTER_ALPHA * formInk.value);
+  return (
+    <SkiaGroup opacity={alpha}>
+      <Picture picture={picture} />
+    </SkiaGroup>
+  );
+}
 
 export function NativePlayerParts({
   model,
   lensClock,
   formCuts = null,
   formInk = null,
+  letterFont = null,
   arrived,
   named,
   anchor,
@@ -1523,6 +1658,8 @@ export function NativePlayerParts({
   /** The song's form on its clock, and how far it has inked in; see `ClockCuts`. */
   formCuts?: DerivedValue<ClockCuts> | null;
   formInk?: SharedValue<number> | null;
+  /** The face the form's letters are written in; none, no letters. */
+  letterFont?: SkFont | null;
   /**
    * How present the player is: the crossfade band. Opacity, and nothing else —
    * where a thing *is* comes from the two arrivals, which move on the camera's
@@ -1592,6 +1729,7 @@ export function NativePlayerParts({
             lensClock={lensClock}
             formCuts={formCuts}
             formInk={formInk}
+            letterFont={letterFont}
             colour={colour}
             durationSeconds={durationSeconds}
             positionSeconds={positionSeconds}

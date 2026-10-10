@@ -138,13 +138,16 @@ export function circleMotionPoints(
   const width =
     1 + (player.eccentricity - 1) * (1 + g * K.MID_WIDEN * frame.mid) + g * K.MID_WIDTH * frame.mid;
   let scale = 1 + g * K.LOUD_SCALE * frame.loud;
-  // Tighten and round as a drop approaches; bloom when it lands.
+  // Tighten and round as a drop approaches; bloom when it lands. A lift is
+  // the same gesture, smaller (it is weighed that way in the frame).
+  const tension = Math.max(frame.tension, frame.lift);
+  const release = Math.max(frame.release, frame.lifted);
   scale *=
     1 -
-    Math.min(K.TENSION_SCALE_CAP, g * K.TENSION_SCALE * frame.tension) +
-    Math.min(K.RELEASE_SCALE_CAP, g * K.RELEASE_SCALE * frame.release);
-  primary *= (1 - K.TENSION_PRIMARY * frame.tension) * (1 + K.RELEASE_PRIMARY * frame.release);
-  secondary *= 1 - K.TENSION_SECONDARY * frame.tension;
+    Math.min(K.TENSION_SCALE_CAP, g * K.TENSION_SCALE * tension) +
+    Math.min(K.RELEASE_SCALE_CAP, g * K.RELEASE_SCALE * release);
+  primary *= (1 - K.TENSION_PRIMARY * tension) * (1 + K.RELEASE_PRIMARY * release);
+  secondary *= 1 - K.TENSION_SECONDARY * tension;
   // Everything from the identity, `m` of the way: the pose wrapped first, so a
   // long section's several whole turns unwind at most half a turn.
   primary = player.primary + (primary - player.primary) * m;
