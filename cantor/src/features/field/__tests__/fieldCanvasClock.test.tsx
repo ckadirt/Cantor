@@ -159,7 +159,7 @@ describe('field canvas re-cut clock', () => {
 
   /** The living scene's shared values, as the canvas hands them to it. */
   const sceneOf = (renderer: ReactTestRenderer.ReactTestRenderer) =>
-    renderer.root.findByType(Canvas).props.children.props.children[0].props
+    renderer.root.findAllByType(Canvas)[0].props.children.props.children[0].props
       .scene as {
       cut: { value: { generation: number; labels: readonly unknown[] } | null };
       clock: { value: number };
@@ -193,7 +193,7 @@ describe('field canvas re-cut clock', () => {
         canvas(recutBetween(1, month, month, false), month),
       );
     });
-    const element = renderer.root.findByType(Canvas).props.children;
+    const element = renderer.root.findAllByType(Canvas)[0].props.children;
     const scene = sceneOf(renderer);
     // A cut that does not animate lands at once, so reduced motion shows the
     // new arrangement rather than one stale frame of the old one.
@@ -207,7 +207,7 @@ describe('field canvas re-cut clock', () => {
     expect(scene.cut.value?.generation).toBe(2);
     expect(scene.clock.value).toBe(0);
     // On the scene the canvas already had: a re-cut builds nothing.
-    expect(renderer.root.findByType(Canvas).props.children).toBe(element);
+    expect(renderer.root.findAllByType(Canvas)[0].props.children).toBe(element);
     expect(sceneOf(renderer)).toBe(scene);
 
     // A render that is not a new cut leaves the clock where it is.
@@ -332,7 +332,7 @@ describe('field canvas re-cut clock', () => {
       await ReactTestRenderer.act(async () => {
         renderer = ReactTestRenderer.create(canvas(cameraFor(year)));
       });
-      const scene = renderer.root.findByType(Canvas).props.children;
+      const scene = renderer.root.findAllByType(Canvas)[0].props.children;
       // The native path is what this is about; a picture would legitimately be
       // rebuilt on every camera frame.
       expect(scene).not.toBeNull();
@@ -341,11 +341,11 @@ describe('field canvas re-cut clock', () => {
       await ReactTestRenderer.act(async () => {
         renderer.update(canvas(panned));
       });
-      expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
+      expect(renderer.root.findAllByType(Canvas)[0].props.children).toBe(scene);
       await ReactTestRenderer.act(async () => {
         renderer.update(canvas(panned, lens === 'name' ? 'seal' : 'name'));
       });
-      expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
+      expect(renderer.root.findAllByType(Canvas)[0].props.children).toBe(scene);
     },
   );
   it('keeps songs on the same native scene across live job progress updates', async () => {
@@ -416,9 +416,10 @@ describe('field canvas re-cut clock', () => {
     await ReactTestRenderer.act(async () => {
       renderer = ReactTestRenderer.create(render(1));
     });
-    // One canvas: jobs are a layer of the song scene, not a surface over it.
+    // Jobs are a layer of the song scene, not a surface over it: the only
+    // other canvas is the moving player's (`PlayerMotionLayer`).
     const canvases = renderer.root.findAllByType(Canvas);
-    expect(canvases).toHaveLength(1);
+    expect(canvases).toHaveLength(2);
     const scene = canvases[0].props.children;
     const jobMarks = scene.props.children[0].props.jobMarks;
     const first = jobMarks.value[entity.key];
@@ -428,7 +429,7 @@ describe('field canvas re-cut clock', () => {
     });
     // Progress reaches the drawing through the shared value, and the canvas is
     // handed the element it already had — nothing repaints from React.
-    expect(renderer.root.findByType(Canvas).props.children).toBe(scene);
+    expect(renderer.root.findAllByType(Canvas)[0].props.children).toBe(scene);
     expect(jobMarks.value[entity.key]).toBeDefined();
     expect(jobMarks.value[entity.key] === first).toBe(false);
     // A render with nothing new records nothing new.

@@ -2665,6 +2665,9 @@ export function FieldScreen({ identity }: Props) {
                 // not re-record this canvas. See `commitFocus`.
                 focusKey={fieldCamera.playerFocus?.key ?? null}
                 positionSeconds={canvasPosition}
+                motionPositionSeconds={
+                  canvasPosition === steppedPosition ? transport.positionSeconds : null
+                }
                 playingKey={playingKey}
                 transportPlaying={transportPlaying}
                 transportArriving={

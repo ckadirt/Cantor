@@ -43,6 +43,7 @@ import type {
   FieldPresentation,
 } from './useFieldController';
 import { lensWeight, type LensClock } from './lensClock';
+import type { MotionTrack } from '../../lenses/motion/motionTrack';
 
 /** Where a clock with nothing to say rests: the circle's position in `LENSES`. */
 const CIRCLE_LENS = lensIndex('name');
@@ -632,12 +633,16 @@ function handPath(inner: number, outer: number, fraction: number): SkPath {
 export function PlayerRing({
   radius,
   lensClock,
+  formCuts = null,
+  formInk = null,
   durationSeconds,
   positionSeconds,
   colour,
 }: {
   radius: number;
   lensClock?: LensClock;
+  formCuts?: DerivedValue<ClockCuts> | null;
+  formInk?: SharedValue<number> | null;
   durationSeconds: number;
   positionSeconds: SharedValue<number>;
   colour: string;
@@ -681,6 +686,8 @@ export function PlayerRing({
         mix={formed}
         opacity={whole}
         radius={radius}
+        formCuts={formCuts}
+        formInk={formInk}
       />
     );
   }
@@ -694,6 +701,8 @@ export function PlayerRing({
         mix={0}
         opacity={leaving}
         radius={radius}
+        formCuts={formCuts}
+        formInk={formInk}
       />
       <ClockDrawing
         colour={colour}
@@ -702,6 +711,8 @@ export function PlayerRing({
         mix={1}
         opacity={formed}
         radius={radius}
+        formCuts={formCuts}
+        formInk={formInk}
       />
     </>
   );
@@ -715,6 +726,8 @@ function ClockDrawing({
   opacity,
   fraction,
   colour,
+  formCuts,
+  formInk,
 }: {
   radius: number;
   lenses: SharedValue<number[]>;
@@ -722,6 +735,8 @@ function ClockDrawing({
   opacity: SharedValue<number>;
   fraction: SharedValue<number>;
   colour: string;
+  formCuts: DerivedValue<ClockCuts> | null;
+  formInk: SharedValue<number> | null;
 }) {
   /*
    * The shape in pixels. Radii are scaled by the player's before they are
@@ -778,8 +793,41 @@ function ClockDrawing({
     return builder.detach();
   });
 
+  /*
+   * The form, on whichever ring the clock is now: a cut across it at each
+   * section's start, a dot inside it at each drop. On the mixed radius, so
+   * they travel with the clock through a lens change rather than appearing
+   * and vanishing (reactive-player-plan.md, "The clocks").
+   */
+  const cuts = useDerivedValue(() => {
+    const builder = Skia.PathBuilder.Make();
+    const form = formCuts === null ? NO_CUTS : formCuts.value;
+    const r = shape.value.r;
+    for (let i = 0; i < form.sections.length; i++) {
+      const angle = form.sections[i] * Math.PI * 2 - Math.PI / 2;
+      const x = Math.cos(angle);
+      const y = Math.sin(angle);
+      builder.moveTo(x * (r - CUT_REACH_PX), y * (r - CUT_REACH_PX));
+      builder.lineTo(x * (r + CUT_REACH_PX), y * (r + CUT_REACH_PX));
+    }
+    return builder.detach();
+  });
+  const drops = useDerivedValue(() => {
+    const builder = Skia.PathBuilder.Make();
+    const form = formCuts === null ? NO_CUTS : formCuts.value;
+    const r = shape.value.r - DROP_INSET_PX;
+    for (let i = 0; i < form.drops.length; i++) {
+      const angle = form.drops[i] * Math.PI * 2 - Math.PI / 2;
+      builder.addCircle(Math.cos(angle) * r, Math.sin(angle) * r, DROP_RADIUS_PX);
+    }
+    return builder.detach();
+  });
+  const cutsAlpha = useDerivedValue(() => CUT_ALPHA * (formInk === null ? 0 : formInk.value));
+
   return (
     <SkiaGroup opacity={opacity}>
+      <Path color={colour} opacity={cutsAlpha} path={cuts} strokeWidth={1} style="stroke" />
+      <Path color={colour} opacity={cutsAlpha} path={drops} />
       <Path
         color={colour}
         opacity={rimAlpha}
@@ -1424,9 +1472,38 @@ const VERB_POSE_STOPS = [
  * chrome answered to React's copy of it, and the two cannot agree because the
  * copy lands a commit late by design.
  */
+/**
+ * The song's form on its clock: where each section starts and where each drop
+ * lands, as fractions of the song. A section's start is a cut across the
+ * ring, a drop a dot just inside it (reactive-player-plan.md, M4; the page's
+ * `drawCircle` 'structure'). Cuts, not letters: whether the letters go round
+ * the clock too is decision 1, still open.
+ */
+export type ClockCuts = Readonly<{ sections: readonly number[]; drops: readonly number[] }>;
+export const NO_CUTS: ClockCuts = { sections: [], drops: [] };
+
+export function clockCutsOf(track: MotionTrack | null): ClockCuts {
+  'worklet';
+  if (track === null || track.duration <= 0) return NO_CUTS;
+  const sections: number[] = [];
+  // The first section starts the song: the clock's own twelve says that.
+  for (let i = 1; i < track.sections.length; i++) sections.push(track.sections[i].t0 / track.duration);
+  const drops: number[] = [];
+  for (let i = 0; i < track.drops.length; i++) drops.push(track.drops[i].t / track.duration);
+  return { sections, drops };
+}
+
+// knobs — the page's: a cut ±5 px across the ring, a drop's dot 9 px inside it
+const CUT_REACH_PX = 5;
+const CUT_ALPHA = 0.6;
+const DROP_INSET_PX = 9;
+const DROP_RADIUS_PX = 2.2;
+
 export function NativePlayerParts({
   model,
   lensClock,
+  formCuts = null,
+  formInk = null,
   arrived,
   named,
   anchor,
@@ -1443,6 +1520,9 @@ export function NativePlayerParts({
 }: {
   model: NativeSongModel;
   lensClock?: LensClock;
+  /** The song's form on its clock, and how far it has inked in; see `ClockCuts`. */
+  formCuts?: DerivedValue<ClockCuts> | null;
+  formInk?: SharedValue<number> | null;
   /**
    * How present the player is: the crossfade band. Opacity, and nothing else —
    * where a thing *is* comes from the two arrivals, which move on the camera's
@@ -1510,6 +1590,8 @@ export function NativePlayerParts({
         {positionSeconds === null ? null : (
           <PlayerRing
             lensClock={lensClock}
+            formCuts={formCuts}
+            formInk={formInk}
             colour={colour}
             durationSeconds={durationSeconds}
             positionSeconds={positionSeconds}

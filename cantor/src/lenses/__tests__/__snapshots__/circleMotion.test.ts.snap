@@ -1,0 +1,11 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`the singing circle draws a returning section, a bar in 1`] = `"2939 5edb0e52"`;
+
+exports[`the singing circle draws a verse, between hits 1`] = `"3149 cee1fe80"`;
+
+exports[`the singing circle draws on a downbeat 1`] = `"2996 32d51a7"`;
+
+exports[`the singing circle draws the bloom 1`] = `"3325 8603247c"`;
+
+exports[`the singing circle draws the build into the second drop 1`] = `"2663 a629aa20"`;

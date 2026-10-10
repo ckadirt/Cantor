@@ -1,5 +1,6 @@
 import { FIXTURES, load, trackOf } from '../__fixtures__/referenceTrack';
-import { motionFrameAt, smootherstep } from '../motionFrame';
+import { circlePose } from '../../circleMotion';
+import { motionFrameAt } from '../motionFrame';
 
 /**
  * The frame against the reference page's own numbers.
@@ -10,24 +11,6 @@ import { motionFrameAt, smootherstep } from '../motionFrame';
  * frame — the port of the page's per-moment evaluation — not the analysis,
  * which `scripts/motion-check.mjs` holds against the page natively.
  */
-/**
- * The circle's section pose from the frame: the page's `structureAt().turn`,
- * which the circle lens will compute from these numbers and its face's lobes.
- */
-function poseOf(frame: ReturnType<typeof motionFrameAt>, lobes: number): number {
-  const step = (Math.PI * 2) / (lobes * 8);
-  const eased = (x: number) => Math.floor(x) + smootherstep((x - Math.floor(x)) / 0.35);
-  const turnOf = (label: number, x: number) => label * ((Math.PI * 2) / (lobes * 3)) + (eased(x) / 4) * step * 2;
-  let turn = turnOf(frame.label, frame.into);
-  if (frame.prevLabel >= 0 && frame.into < 4) {
-    const a = smootherstep(frame.into / 4);
-    const from = turnOf(frame.prevLabel, frame.prevLength);
-    const whole = Math.round((turnOf(frame.label, 0) - from) / (Math.PI * 2)) * Math.PI * 2;
-    turn = from + (turn - whole - from) * a;
-  }
-  return turn;
-}
-
 describe.each(FIXTURES)('the frame of %s', name => {
   const ref = load(name);
   const track = trackOf(ref);
@@ -58,7 +41,7 @@ describe.each(FIXTURES)('the frame of %s', name => {
       // the frame carries every earlier run (the shipping seal, 'weave',
       // sounds them all), which is the same when the page has one.
       if (s.echo !== null) expect([at, f.echoes[0]]).toEqual([at, expect.closeTo(s.echo, 4)]);
-      expect([at, poseOf(f, ref.face.lobes)]).toEqual([at, expect.closeTo(s.turn, 4)]);
+      expect([at, circlePose(f, ref.face.lobes)]).toEqual([at, expect.closeTo(s.turn, 4)]);
     }
   });
 
