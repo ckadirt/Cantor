@@ -11,6 +11,8 @@ extern "C" {
 #include <cmath>
 #include <limits>
 #include <numeric>
+#include <thread>
+#include <atomic>
 
 namespace cantor::motion {
 
@@ -109,14 +111,9 @@ struct Analyser::Impl {
         fps(static_cast<double>(rate) / hop),
         N(onsetFftSize(rate)),
         NC(4 * onsetFftSize(rate)),
-        onsetFft(N),
-        chromaFft(NC),
+        threads(static_cast<int>(std::clamp(std::thread::hardware_concurrency(), 1u, 4u))),
         win(N),
-        chromaWin(NC),
-        spectrum(N / 2, 0.0),
-        chromaSpectrum(NC / 2, 0.0),
-        cur(N / 2, 0.0),
-        prev(N / 2, 0.0) {
+        chromaWin(NC) {
     for (int i = 0; i < N; ++i) win[i] = 0.5 - 0.5 * std::cos(2 * kPi * i / N);
     for (int i = 0; i < NC; ++i) chromaWin[i] = 0.5 - 0.5 * std::cos(2 * kPi * i / NC);
     auto binOf = [&](double hz) {
@@ -140,12 +137,35 @@ struct Analyser::Impl {
       pcWeight[k] = static_cast<float>(std::min(1.0, df / (0.0595 * hz)));
       chromaLast = k + 1;
     }
-    // The mono history must reach back half the chroma window before a hop's
-    // centre; it is trimmed as hops are done.
-    historyStart = 0;
+    for (int i = 0; i < threads; ++i) spaces.push_back(std::make_unique<Workspace>(N, NC));
   }
 
+  ~Impl() { join(); }
+
   // ---- streaming: per-hop features as samples arrive -----------------------
+  //
+  // Departs: the page computes hop after hop. Here hops are cut into blocks of
+  // `kBlock`, each block is computed by up to four threads while the decoder
+  // fills the next, and every number is the same: a thread starting mid-block
+  // recomputes the one spectrum before its first hop, and blocks and their
+  // chunks start on multiples of 4, where chroma is computed.
+
+  static constexpr int kBlock = 512;  // hops: ~5 s
+  static constexpr int kChunk = 32;   // hops a thread takes at a time; a multiple of 4
+
+  /** One thread's FFTs and spectra. */
+  struct Workspace {
+    Workspace(int n, int nc) : onsetFft(n), chromaFft(nc), spectrum(n / 2, 0.0), chromaSpectrum(nc / 2, 0.0), cur(n / 2, 0.0), prev(n / 2, 0.0) {}
+    RealFft onsetFft, chromaFft;
+    std::vector<double> spectrum, chromaSpectrum, cur, prev;
+  };
+
+  /** Hops [h0, h1) and every sample their windows read, zero outside the song. */
+  struct Block {
+    int h0 = 0, h1 = 0;
+    int64_t base = 0;
+    std::vector<float> samples;
+  };
 
   void push(const float *data, int frames) {
     for (int i = 0; i < frames; ++i) {
@@ -169,63 +189,105 @@ struct Analyser::Impl {
     }
     received += frames;
     // A hop's spectra need samples up to its centre plus half the chroma
-    // window; every hop that has them is done now.
-    while (true) {
-      const int64_t centre = static_cast<int64_t>(done) * hop + (hop >> 1);
-      if (centre + NC / 2 > received) break;
-      frame(done++, false);
-    }
-    trimHistory();
+    // window; blocks of hops that have them go to the threads.
+    const int64_t reach = received - (hop >> 1) - NC / 2;
+    const int ready = reach < 0 ? 0 : static_cast<int>(reach / hop) + 1;
+    while (ready - dispatched >= kBlock) dispatch(dispatched + kBlock, false);
     peakMono = std::max(peakMono, static_cast<double>(mono.capacity()) * 4);
   }
 
   /** Mono sample `s` of the song, zero outside it. */
-  inline double sample(int64_t s, int64_t length) const {
-    if (s < 0 || s >= length || s < historyStart) return 0.0;
+  inline float sample(int64_t s, int64_t length) const {
+    if (s < 0 || s >= length || s < historyStart) return 0.f;
     return mono[static_cast<size_t>(s - historyStart)];
   }
 
-  void frame(int f, bool atEnd) {
+  /** Hand hops [dispatched, h1) to the threads; returns while they work. */
+  void dispatch(int h1, bool atEnd) {
+    join();
+    const int h0 = dispatched;
+    for (auto &f : flux) f.resize(h1);
+    chroma.resize(static_cast<size_t>(h1) * 12);
+    timbre.resize(static_cast<size_t>(h1) * 12);
+    auto block = std::make_shared<Block>();
+    block->h0 = h0;
+    block->h1 = h1;
+    block->base = static_cast<int64_t>(h0) * hop + (hop >> 1) - NC / 2;
+    const int64_t end = static_cast<int64_t>(h1 - 1) * hop + (hop >> 1) + NC / 2;
     const int64_t length = atEnd ? received : std::numeric_limits<int64_t>::max();
-    const int64_t centre = static_cast<int64_t>(f) * hop + (hop >> 1);
-    const int64_t start = centre - N / 2;
-    double *frameBuf = onsetFft.input();
-    for (int i = 0; i < N; ++i) frameBuf[i] = sample(start + i, length) * win[i];
-    onsetFft.magnitudes(lastBin, spectrum.data());
-    for (int k = 1; k < lastBin; ++k) cur[k] = std::log1p(1000 * spectrum[k] / (N / 4.0));
-    for (int b = 0; b < 3; ++b) {
-      double s = 0;
-      for (int k = bands[b][0]; k < bands[b][1]; ++k) {
-        const double d = cur[k] - prev[k];
-        if (d > 0) s += d;
+    block->samples.resize(static_cast<size_t>(end - block->base));
+    for (int64_t s = block->base; s < end; ++s) block->samples[static_cast<size_t>(s - block->base)] = sample(s, length);
+    peakBlock = std::max(peakBlock, static_cast<double>(block->samples.capacity()) * 4);
+    dispatched = h1;
+    trimHistory();
+    // Chunks of `kChunk` hops, taken by whichever thread is free: a phone's
+    // cores are not alike (two fast and six slow on the Xiaomi), and equal
+    // parts left every block waiting for a slow one.
+    auto next = std::make_shared<std::atomic<int>>(h0);
+    for (int i = 0; i < threads; ++i) {
+      Workspace *ws = spaces[i].get();
+      running.emplace_back([this, block, next, h1, ws] {
+        for (int a = next->fetch_add(kChunk); a < h1; a = next->fetch_add(kChunk)) {
+          hops(*block, a, std::min(h1, a + kChunk), *ws);
+        }
+      });
+    }
+  }
+
+  void join() {
+    for (auto &t : running) t.join();
+    running.clear();
+  }
+
+  /** The onset spectrum of hop f, as log magnitudes, into `out`. */
+  void onsetSpectrum(const Block &block, int f, Workspace &ws, std::vector<double> &out) const {
+    const float *at = block.samples.data() + (static_cast<int64_t>(f) * hop + (hop >> 1) - N / 2 - block.base);
+    double *frameBuf = ws.onsetFft.input();
+    for (int i = 0; i < N; ++i) frameBuf[i] = at[i] * win[i];
+    ws.onsetFft.magnitudes(lastBin, ws.spectrum.data());
+    for (int k = 1; k < lastBin; ++k) out[k] = std::log1p(1000 * ws.spectrum[k] / (N / 4.0));
+  }
+
+  /** Hops [a, b) of a block: the page's per-hop loop. */
+  void hops(const Block &block, int a, int b, Workspace &ws) {
+    if (a > 0) onsetSpectrum(block, a - 1, ws, ws.prev);
+    else std::fill(ws.prev.begin(), ws.prev.end(), 0.0);
+    for (int f = a; f < b; ++f) {
+      onsetSpectrum(block, f, ws, ws.cur);
+      const auto &cur = ws.cur, &prev = ws.prev;
+      for (int band = 0; band < 3; ++band) {
+        double s = 0;
+        for (int k = bands[band][0]; k < bands[band][1]; ++k) {
+          const double d = cur[k] - prev[k];
+          if (d > 0) s += d;
+        }
+        flux[band][f] = static_cast<float>(s / (bands[band][1] - bands[band][0]));
       }
-      flux[b].push_back(static_cast<float>(s / (bands[b][1] - bands[b][0])));
-    }
-    if (f % 4 == 0) {
-      const int64_t from = centre - NC / 2;
-      double *chromaBuf = chromaFft.input();
-      for (int i = 0; i < NC; ++i) chromaBuf[i] = sample(from + i, length) * chromaWin[i];
-      chromaFft.magnitudes(chromaLast, chromaSpectrum.data());
-      std::array<float, 12> v{};
-      for (int k = 1; k < chromaLast; ++k) {
-        if (pcOf[k] < 0) continue;
-        v[pcOf[k]] += static_cast<float>(std::log1p(1000 * chromaSpectrum[k] / (NC / 4.0)) * pcWeight[k]);
+      if (f % 4 == 0) {
+        const float *at = block.samples.data() + (static_cast<int64_t>(f) * hop + (hop >> 1) - NC / 2 - block.base);
+        double *chromaBuf = ws.chromaFft.input();
+        for (int i = 0; i < NC; ++i) chromaBuf[i] = at[i] * chromaWin[i];
+        ws.chromaFft.magnitudes(chromaLast, ws.chromaSpectrum.data());
+        std::array<float, 12> v{};
+        for (int k = 1; k < chromaLast; ++k) {
+          if (pcOf[k] < 0) continue;
+          v[pcOf[k]] += static_cast<float>(std::log1p(1000 * ws.chromaSpectrum[k] / (NC / 4.0)) * pcWeight[k]);
+        }
+        for (int j = f; j < std::min(b, f + 4); ++j) std::copy(v.begin(), v.end(), chroma.begin() + static_cast<long>(j) * 12);
       }
-      chromaRow = v;
+      for (int t = 0; t < 12; ++t) {
+        const int k0 = timbreEdges[t], k1 = std::max(k0 + 1, timbreEdges[t + 1]);
+        double s = 0;
+        for (int k = k0; k < k1; ++k) s += cur[k];
+        timbre[static_cast<size_t>(f) * 12 + t] = static_cast<float>(s / (k1 - k0));
+      }
+      std::swap(ws.prev, ws.cur);
     }
-    chroma.insert(chroma.end(), chromaRow.begin(), chromaRow.end());
-    for (int b = 0; b < 12; ++b) {
-      const int k0 = timbreEdges[b], k1 = std::max(k0 + 1, timbreEdges[b + 1]);
-      double s = 0;
-      for (int k = k0; k < k1; ++k) s += cur[k];
-      timbre.push_back(static_cast<float>(s / (k1 - k0)));
-    }
-    std::swap(prev, cur);
   }
 
   void trimHistory() {
-    // Keep from the next hop's chroma window start.
-    const int64_t keep = static_cast<int64_t>(done) * hop + (hop >> 1) - NC / 2;
+    // Keep from the next block's first window.
+    const int64_t keep = static_cast<int64_t>(dispatched) * hop + (hop >> 1) - NC / 2;
     const int64_t drop = keep - historyStart;
     if (drop > 1 << 16) {
       mono.erase(mono.begin(), mono.begin() + drop);
@@ -238,7 +300,8 @@ struct Analyser::Impl {
   Track finish() {
     const int F = std::max(1, static_cast<int>(received / hop));
     // The last hops' windows reach past the end, which reads as silence.
-    while (done < F) frame(done++, true);
+    if (dispatched < F) dispatch(F, true);
+    join();
     flux[0].resize(F);
     flux[1].resize(F);
     flux[2].resize(F);
@@ -248,7 +311,7 @@ struct Analyser::Impl {
     peak.resize(F);
     const double featureBytes =
         4.0 * (flux[0].capacity() * 3 + chroma.capacity() + timbre.capacity() + rms.capacity() * 4) +
-        8.0 * (N + NC) * 4;
+        8.0 * (N + NC) * 4 * threads + peakBlock * 2;
     peakMono = std::max(peakMono, static_cast<double>(mono.capacity()) * 4);
     mono.clear();
     mono.shrink_to_fit();
@@ -655,8 +718,12 @@ struct Analyser::Impl {
   const int hop;
   const double fps;
   const int N, NC;
-  RealFft onsetFft, chromaFft;
-  std::vector<double> win, chromaWin, spectrum, chromaSpectrum, cur, prev;
+  const int threads;
+  std::vector<double> win, chromaWin;
+  std::vector<std::unique_ptr<Workspace>> spaces;
+  std::vector<std::thread> running;
+  int dispatched = 0;
+  double peakBlock = 0;
   std::array<std::array<int, 2>, 3> bands{};
   std::array<int, 13> timbreEdges{};
   int lastBin = 0, chromaLast = 0;
@@ -667,13 +734,11 @@ struct Analyser::Impl {
   int64_t historyStart = 0;
   double peakMono = 0;
   int64_t received = 0;
-  int done = 0;
   int inHop = 0;
   double hopE = 0, hopEm = 0, hopEs = 0, hopPeak = 0;
 
   std::array<std::vector<float>, 3> flux;
   std::vector<float> chroma, timbre, rms, peak, mid, side;
-  std::array<float, 12> chromaRow{};
 };
 
 Analyser::Analyser(int sampleRate, int channels, Options options)
