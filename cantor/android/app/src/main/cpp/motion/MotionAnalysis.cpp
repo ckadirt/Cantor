@@ -19,6 +19,8 @@ namespace cantor::motion {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+/** The most beats a song may have and still be given a form; see `structureOf`. */
+constexpr int kMaxFormBeats = 3000;
 
 /** JavaScript's Math.round: half up, also for negatives. */
 inline long jsRound(double x) { return static_cast<long>(std::floor(x + 0.5)); }
@@ -497,7 +499,8 @@ struct Analyser::Impl {
     structureOf(track, loudRaw);
     // Beat-synchronous features and the matrix's upper triangle, as structureOf holds them.
     const double n = static_cast<double>(track.beats.size());
-    track.peakBytes = featureBytes + peakMono + 4.0 * F * 4 + 4.0 * (n * 26 + n * (n + 1) / 2);
+    const double form = n >= 24 && n <= kMaxFormBeats ? n * 26 + n * (n + 1) / 2 : 0;
+    track.peakBytes = featureBytes + peakMono + 4.0 * F * 4 + 4.0 * form;
     return track;
   }
 
@@ -520,7 +523,14 @@ struct Analyser::Impl {
     const int F = track.frames;
     const auto &beats = track.beats;
     const int n = static_cast<int>(beats.size());
-    if (n < 24) return;
+    /*
+     * Too short for a form, or — departs: the page has no bound — too long to
+     * afford one. The matrix is n²/2 floats and n² cosines: 18 MB at 3,000
+     * beats (25 minutes at 120 BPM), 118 MB for an hour's mix. Past the bound
+     * the song has beats, onsets and loudness, and no sections, as a short one
+     * has (reactive-player-plan.md, "Very long songs").
+     */
+    if (n < 24 || n > kMaxFormBeats) return;
     // beatSync: per beat, chroma (peak 1), timbre (z-scored), loudness, low.
     std::vector<float> bc(static_cast<size_t>(n) * 12, 0.f), bt(static_cast<size_t>(n) * 12, 0.f);
     std::vector<float> bl(n, 0.f), blow(n, 0.f);
