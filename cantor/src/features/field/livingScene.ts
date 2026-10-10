@@ -1,3 +1,4 @@
+import type { MotionTrack } from '../../lenses/motion/motionTrack';
 import {
   isFoundGroup,
   type Camera,
@@ -96,6 +97,11 @@ export type FocusDraw = Readonly<{
   players: readonly (LensPlayer | null)[];
   /** The song's length, for the seal's playhead. */
   seconds: number;
+  /**
+   * The song's motion track, while it is the song playing and has one: handed
+   * to the UI thread here, once per song, rather than captured by a worklet.
+   */
+  motion: MotionTrack | null;
 }>;
 
 /**

@@ -41,20 +41,31 @@ type Priority = 'now' | 'soon';
 
 type Pending<Source> = { ref: AnalysisRef<Source>; priority: Priority };
 
+/** How one kind of measurement is keyed and kept: its storage key and its stored form. */
+export type MeasurementCodec<Value> = Readonly<{
+  /** The persisted key for an artifact: versioned, so a new measure re-measures rather than misreads. */
+  key: (ref: AnalysisRef) => string;
+  encode: (value: Value) => string;
+  /** Null for anything it does not recognise, which is then measured again. */
+  decode: (raw: string) => Value | null;
+  /** Said when a song cannot be measured. */
+  failure: string;
+}>;
+
 /**
  * Every song's measurement, once, for good.
  *
  * A measurement is read from disk when one was ever taken for that artifact,
  * and decoded otherwise — one song at a time, the one being opened first, the
  * rest of its shelf behind it with a rest between each. What it publishes is a
- * map from the field's song key to its analysis, which only ever changes when
+ * map from the field's song key to its value, which only ever changes when
  * a measurement lands.
  */
-export class AnalysisStore<Source = unknown> {
-  readonly store: Store<ReadonlyMap<string, SongAnalysis>> = createStore<
-    ReadonlyMap<string, SongAnalysis>
+export class MeasurementStore<Value, Source = unknown> {
+  readonly store: Store<ReadonlyMap<string, Value>> = createStore<
+    ReadonlyMap<string, Value>
   >(new Map());
-  /** Keyed by `analysisCacheKey`: the artifact, not the placement. */
+  /** Keyed by the codec's key: the artifact, not the placement. */
   private readonly pending = new Map<string, Pending<Source>>();
   private readonly reading = new Set<string>();
   private readonly failed = new Set<string>();
@@ -65,10 +76,9 @@ export class AnalysisStore<Source = unknown> {
   private rest: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
-    private readonly measure: (
-      ref: AnalysisRef<Source>,
-    ) => Promise<SongAnalysis>,
+    private readonly measure: (ref: AnalysisRef<Source>) => Promise<Value>,
     private readonly persistence: AnalysisPersistence,
+    private readonly codec: MeasurementCodec<Value>,
     private readonly timers: Pick<
       typeof globalThis,
       'setTimeout' | 'clearTimeout'
@@ -101,7 +111,7 @@ export class AnalysisStore<Source = unknown> {
 
   private enqueue(ref: AnalysisRef<Source>, priority: Priority): void {
     if (this.disposed) return;
-    const key = analysisCacheKey(storeKeyOf(ref));
+    const key = this.codec.key(ref);
     if (this.publishedFrom.get(ref.entityKey) === key) return;
     if (this.failed.has(key)) return;
     const queued = this.pending.get(key);
@@ -123,7 +133,7 @@ export class AnalysisStore<Source = unknown> {
       .then(stored => {
         this.reading.delete(key);
         if (this.disposed) return;
-        const analysis = stored === null ? null : decodeAnalysis(stored);
+        const analysis = stored === null ? null : this.codec.decode(stored);
         if (analysis !== null) {
           this.publish(ref.entityKey, key, analysis);
           return;
@@ -167,7 +177,7 @@ export class AnalysisStore<Source = unknown> {
       .then(analysis => {
         if (this.disposed) return;
         this.publish(ref.entityKey, key, analysis);
-        this.persistence.setItem(key, encodeAnalysis(analysis)).catch(() => {
+        this.persistence.setItem(key, this.codec.encode(analysis)).catch(() => {
           // Losing the copy on disk costs a decode next launch, nothing more.
         });
       })
@@ -176,7 +186,7 @@ export class AnalysisStore<Source = unknown> {
         // session: a broken decoder would otherwise spin on it. Still worth
         // saying why, since a silent fallback and a broken decoder look alike.
         this.failed.add(key);
-        console.warn('lens analysis failed', String(error));
+        console.warn(this.codec.failure, String(error));
       })
       .finally(() => {
         this.working = false;
@@ -196,11 +206,7 @@ export class AnalysisStore<Source = unknown> {
       });
   }
 
-  private publish(
-    entityKey: string,
-    key: string,
-    analysis: SongAnalysis,
-  ): void {
+  private publish(entityKey: string, key: string, analysis: Value): void {
     this.publishedFrom.set(entityKey, key);
     this.store.set(current => {
       const next = new Map(current);
@@ -215,6 +221,27 @@ export class AnalysisStore<Source = unknown> {
       }
       return next;
     });
+  }
+}
+
+/** Every song's lens analysis: the measurement lenses draw a song's sound from. */
+export class AnalysisStore<Source = unknown> extends MeasurementStore<SongAnalysis, Source> {
+  constructor(
+    measure: (ref: AnalysisRef<Source>) => Promise<SongAnalysis>,
+    persistence: AnalysisPersistence,
+    timers?: Pick<typeof globalThis, 'setTimeout' | 'clearTimeout'>,
+  ) {
+    super(
+      measure,
+      persistence,
+      {
+        key: ref => analysisCacheKey(storeKeyOf(ref)),
+        encode: encodeAnalysis,
+        decode: decodeAnalysis,
+        failure: 'lens analysis failed',
+      },
+      timers,
+    );
   }
 }
 

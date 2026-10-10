@@ -14,6 +14,13 @@ import type { MotionSection, MotionTrack } from './motionTrack';
  * looks like, and the renderer stays where and when.
  */
 export type MotionFrame = {
+  /**
+   * How much of the motion to draw, 0..1: the renderer's `motionIn`, which
+   * waits for the camera to land and then rises (1 from `motionFrameAt`). A
+   * lens multiplies every gesture by this and by how far the player has
+   * arrived, so at the hand-off to the row the drawing is the identity.
+   */
+  presence: number;
   /** The playhead, seconds. */
   t: number;
   /** Overall gain: the knob times the section's intensity (~0.25..1). */
@@ -294,6 +301,7 @@ export function motionFrameAt(track: MotionTrack, t: number, transient = 1): Mot
   }
 
   return {
+    presence: 1,
     t,
     g,
     low,

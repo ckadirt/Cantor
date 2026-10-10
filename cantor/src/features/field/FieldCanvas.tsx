@@ -167,6 +167,8 @@ import { jobStateLabel } from '../../jobs/policy';
 import { compoundPolygonPath } from '../../motion/geometry';
 import { resolveSilhouette } from '../../motion/silhouette';
 import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
+import { motionFrameAt, type MotionFrame } from '../../lenses/motion/motionFrame';
+import type { MotionTrack } from '../../lenses/motion/motionTrack';
 import {
   labelFlightAlpha,
   planShelfLabels,
@@ -177,6 +179,7 @@ import {
 import {
   NativePlayerParts,
   PLAYER_RING_KNOBS,
+  PLAYER_VERB_POSE,
   nativeSongModel,
   type NativeSongModel,
 } from './NativePlayer';
@@ -382,6 +385,8 @@ type Props = {
   transportLights?: SharedValue<number[]> | null;
   /** Analysis by entity key. Anything absent draws the neutral skeleton. */
   analyses?: ReadonlyMap<string, SongAnalysis>;
+  /** Motion tracks by entity key; the playing song's moves its player. */
+  motions?: ReadonlyMap<string, MotionTrack>;
   /**
    * Album covers as glyph levels, by entity key — only for the song the
    * player holds, which is the only one a cover is drawn for.
@@ -540,6 +545,7 @@ function FieldCanvasImpl({
   transportArriving = null,
   transportLights = null,
   analyses,
+  motions,
   covers,
   opening = null,
   grainShared = undefined,
@@ -1086,6 +1092,11 @@ function FieldCanvasImpl({
     focusEntity === null ? undefined : analyses?.get(focusEntity);
   const focusCover =
     focusEntity === null ? null : covers?.get(focusEntity) ?? null;
+  // The playhead is the playing song's, so only that song's player moves.
+  const focusMotion =
+    focusEntity === null || focusEntity !== playingKey
+      ? null
+      : motions?.get(focusEntity) ?? null;
   const focusDraw = useMemo<FocusDraw | null>(
     () =>
       focusKey === null || focusPresentation === undefined
@@ -1096,8 +1107,9 @@ function FieldCanvasImpl({
               lens.player(focusPresentation.recipe, focusAnalysis, focusCover),
             ),
             seconds: focusPresentation.durationMs / 1000,
+            motion: focusMotion,
           },
-    [focusAnalysis, focusCover, focusKey, focusPresentation],
+    [focusAnalysis, focusCover, focusKey, focusMotion, focusPresentation],
   );
   /**
    * The songs whose sound has already been shown, so a measurement that lands
@@ -1857,6 +1869,8 @@ export function drawFieldFaces(
   side = 0,
   /** Plain marks as stamps rather than paths; see `faceAtlas.ts`. */
   stamping: FaceStamping | null = null,
+  /** The music at this moment, for the player; see `MotionFrame`. */
+  motion: MotionFrame | null = null,
 ): void {
   'worklet';
   /*
@@ -2179,6 +2193,7 @@ export function drawFieldFaces(
         heard,
         FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
         paints,
+        motion,
       );
     } else {
       const passes = firstLens === lastLens ? 1 : 2;
@@ -2204,6 +2219,7 @@ export function drawFieldFaces(
             heard,
             FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
             paints,
+            motion,
           );
         } else {
           LENS_UI[lens].drawMark(
@@ -2938,6 +2954,61 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     },
   );
   /*
+   * The motion's own arrival (`MotionFrame.presence`): 0 until the playing
+   * song's track exists and the camera has landed, then written on over the
+   * ring's draw time. Like the ring of ticks it waits for the descent rather
+   * than riding it, and a track that lands after the camera rises the same
+   * way rather than appearing at full strength.
+   */
+  const motionDrawn = useSharedValue(0);
+  useAnimatedReaction(
+    () => {
+      const focus = focusDraw.value;
+      if (focus === null || focus.motion === null) return 'hidden';
+      return `${soundPhase.value}:${focus.placementKey}`;
+    },
+    (next, before) => {
+      if (next === before) return;
+      cancelAnimation(motionDrawn);
+      if (next === 'hidden' || next.startsWith('hidden:')) {
+        motionDrawn.value = 0;
+        return;
+      }
+      if (!next.startsWith('reveal:')) return;
+      // Another song: its motion starts from nothing, not from the last one's.
+      if (before === null || before.slice(before.indexOf(':')) !== next.slice(next.indexOf(':'))) {
+        motionDrawn.value = 0;
+      }
+      motionDrawn.value = withTiming(1, {
+        duration: reducedMotion ? 0 : PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
+        easing: easeSmoother,
+      });
+    },
+  );
+  /*
+   * The music at this moment, for the player — and null, which wakes nothing,
+   * whenever there is no motion to draw: the faces' picture is re-recorded
+   * every frame only while a player is actually moving. Reduced motion has
+   * none at all: the player is today's. What sounds (`transient`) settles
+   * with the transport's own pause morph, so a pause or a scrub does not
+   * freeze a kick mid-swell; the form stays where the song is.
+   */
+  const motionFrame = useDerivedValue((): MotionFrame | null => {
+    const focus = focusDraw.value;
+    const track = focus === null ? null : focus.motion;
+    const presence = motionDrawn.value;
+    if (track === null || presence <= 0 || reducedMotion || positionSeconds === null) {
+      return null;
+    }
+    const transient =
+      transportPlaying === null
+        ? 1
+        : Math.min(Math.max(transportPlaying.value - PLAYER_VERB_POSE.play, 0), 1);
+    const frame = motionFrameAt(track, positionSeconds.value, transient);
+    frame.presence = presence;
+    return frame;
+  });
+  /*
    * How far the player's song has been heard, for the seal's dots — and a
    * constant whenever no seal is showing.
    *
@@ -3040,6 +3111,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             pixelRatio: PIXEL_RATIO,
             hairlinePx: FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
           },
+          motionFrame.value,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -3181,6 +3253,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             pixelRatio: PIXEL_RATIO,
             hairlinePx: FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
           },
+          motionFrame.value,
         );
       }
       drawNativeRows(

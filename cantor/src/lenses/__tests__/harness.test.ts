@@ -105,6 +105,7 @@ describe('lens harness', () => {
                   -1,
                   1,
                   paints,
+                  null,
                 );
               }
               canvas.restore();
