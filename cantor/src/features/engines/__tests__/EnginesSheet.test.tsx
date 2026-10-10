@@ -236,11 +236,13 @@ describe('Ledger engine pages', () => {
     expect(words()).toEqual(
       expect.arrayContaining(['DOWNLOADED', 'CACHED', 'PLACEMENTS']),
     );
-    // The budget is a ruler: one step up from 1 GB is 2 GB.
+    // The budget is a ruler: one step up from 1 GB is 2 GB. (The other
+    // ruler in settings is the sync's.)
     const ruler = tree.root.find(
       n =>
         n.props.accessibilityRole === 'adjustable' &&
-        typeof n.type !== 'string',
+        typeof n.type !== 'string' &&
+        String(n.props.accessibilityLabel).startsWith('Budget'),
     );
     expect(ruler.props.accessibilityLabel).toBe('Budget 1 GB');
     Renderer.act(() =>

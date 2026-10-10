@@ -25,6 +25,7 @@ import { formatBytes } from '../../lenses';
 import { authenticateRecovery, protectRecoveryScreen } from '../../identity/recoveryAccess';
 import { loadStoredPhrase } from '../../identity/secureIdentity';
 import { space, touch, type, usePalette } from '../../theme/tokens';
+import { SyncRow, type SyncSong } from './SyncRow';
 
 /** KNOBS */
 const SETTINGS_KNOBS = {
@@ -63,6 +64,8 @@ type Props = {
   /** How many failures Diagnostics holds, and the door to them. */
   failures?: number;
   onOpenDiagnostics?: () => void;
+  /** The song playing, for setting the picture's time against; see `SyncRow`. */
+  sync?: SyncSong | null;
 };
 
 /**
@@ -83,6 +86,7 @@ export function SettingsSheet({
   onChangeBudget,
   failures = 0,
   onOpenDiagnostics = () => {},
+  sync = null,
 }: Props) {
   const pal = usePalette();
   if (!visible) return null;
@@ -158,6 +162,10 @@ export function SettingsSheet({
               Downloads count against this budget but are never reclaimed.
             </Text>
           </Row>
+        </Measure>
+        <Rest />
+        <Measure>
+          <SyncRow song={sync} />
         </Measure>
         <Rest />
         <Measure>
