@@ -23,7 +23,7 @@ if (!dir) {
 const binary = '/tmp/motion-host';
 const motion = resolve(here, '../android/app/src/main/cpp/motion');
 execFileSync('gcc', ['-O2', '-march=native', '-c', '-o', '/tmp/motion-pffft.o', join(motion, 'pffft/pffft_double.c')], { stdio: 'inherit' });
-execFileSync('g++', ['-std=c++17', '-O2', '-o', binary, join(here, 'motion-host.cpp'),
+execFileSync('g++', ['-std=c++20', '-O2', '-Wall', '-Wextra', '-Werror', '-o', binary, join(here, 'motion-host.cpp'),
   join(motion, 'MotionAnalysis.cpp'), '/tmp/motion-pffft.o'], { stdio: 'inherit' });
 
 function audioFor(name) {
