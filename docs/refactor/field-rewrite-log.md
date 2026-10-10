@@ -1087,6 +1087,24 @@ the edge veils came back, then the year cut flew from there.
 - Tests: `useFieldCamera.test.tsx` "starts an interrupting re-cut from the
   frame the canvas drew, held there"; `nativeLabels.test.ts`, 3.
 
+## The player moves to its music (2026-10-09 → 10)
+
+The reactive player (its plan and log are in `docs/interfacealpha/`, on disk
+only). What it changed in the field's renderer:
+
+- The canvas's playhead stays stepped; the motion reads the unstepped
+  `transport.positionSeconds` (`motionPositionSeconds`), and once the player has
+  landed it is drawn on `PlayerMotionLayer`, a canvas of its own above the
+  field, with a frame of overlap at each hand-over. Re-rendering the field at
+  L2 costs most of a frame whatever moves (its AA paths are rasterised and
+  uploaded on every render), so the field never re-renders for the music.
+- A landed lens change is its `to` alone (`leftLens`): before, the player
+  stayed in the pair morph after any change and never reached the layer, and
+  the field re-rendered every frame (126 presents in 3 s against 16).
+- `PlayerRing` carries the song's form (`ClockCuts`): cuts and drop dots on the
+  mixed ring, letters outside it.
+- The scene's `motionIn` rises after the landing, like the sound.
+
 ## Open questions (for Cesar)
 
 - **Does an interrupted regroup glide now?** (`671af18`.) Tap MONTH then
@@ -1185,6 +1203,8 @@ the edge veils came back, then the year cut flew from there.
   in the same commit, or its mapper paints one frame with the old clock value.
 
 ## Commits
+
+- `3b95d68`, `1c73f9f`, `9f05e18`, `b94ed30`, `bfc5889`: the player moves to its music
 
 - `5623119` field: a canvas scene change draws once, on its mapper
 - `1476f14` field: faces by count, engines as artists, album covers, the lattice and a legend
