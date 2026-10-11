@@ -105,7 +105,11 @@ keepalive, deliver messages, report closure, or schedule a retry.
    `MotionFrame` (or null): a lens that moves reads only that, scales every
    gesture by `frame.presence × arrived`, and draws the still player exactly
    when either is 0. Define a worklet helper above its caller — a worklet
-   captures the functions it calls when it is created.
+   captures the functions it calls when it is created. Draw solid ink whole
+   wherever `paints.share` is above 0 (the field and the motion layer
+   crossfade a landed player; two half-inked moving shapes read as a ghost),
+   and say in `clock.lettersOutside` which side of its ring the form's letters
+   stand.
 2. Add it to `LENSES` in `registry.ts`. The picker lists it, the renderer draws
    it, and a change to or from it takes the generic two beats.
 3. For a hand-written player morph with another lens, add a `LensPairMorph` to
