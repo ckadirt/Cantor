@@ -1528,8 +1528,12 @@ function PlayerMotionLayerImpl({
   const fadePaint = useMemo(() => Skia.Paint(), []);
   /*
    * The hand-over, on a clock rather than on a recording (a recording is not
-   * a presented frame): the layer's ink runs at once, the field's
-   * `LAYER_LAG_MS` behind it, so on the glass the two add up to one player.
+   * a presented frame). Taking the player, the layer inks in at once and the
+   * field gives it up `LAYER_LAG_MS` behind, so on the glass the two add up
+   * to one player. Giving it back, the field takes it at once and the layer
+   * fades behind: the layer cannot draw a player whose music has gone (a
+   * zoom out drops the motion frame as it leaves), so the same order the
+   * other way round left a frame with no face at all, mid zoom-out.
    */
   useAnimatedReaction(
     () => {
@@ -1541,8 +1545,13 @@ function PlayerMotionLayerImpl({
       const fade = { duration: LAYER_FADE_MS, easing: Easing.linear };
       cancelAnimation(layer.layerInk);
       cancelAnimation(layer.fieldInk);
-      layer.layerInk.value = withTiming(owns ? 1 : 0, fade);
-      layer.fieldInk.value = withDelay(LAYER_LAG_MS, withTiming(owns ? 0 : 1, fade));
+      if (owns) {
+        layer.layerInk.value = withTiming(1, fade);
+        layer.fieldInk.value = withDelay(LAYER_LAG_MS, withTiming(0, fade));
+      } else {
+        layer.fieldInk.value = 1;
+        layer.layerInk.value = withDelay(LAYER_LAG_MS, withTiming(0, fade));
+      }
     },
   );
   const picture = useDerivedValue(() =>
