@@ -254,8 +254,9 @@ export type DetailDraw = Readonly<{
   resolved: number;
   drawn: number;
   lensProgress: number;
-  /** The song's form, for the orbit. */
+  /** The song's form, for the orbit, and how much of it is written; see `drawFormOrbit`. */
   form: ClockCuts | null;
+  formWritten: number;
 }>;
 
 export type PlayerLayer = Readonly<{
@@ -1590,6 +1591,7 @@ function PlayerMotionLayerImpl({
             frame,
             detail.form,
             letterFont,
+            detail.formWritten,
           );
           if (share < 1) canvas.restore();
         }
@@ -2833,6 +2835,12 @@ const ORBIT_KNOBS = {
   /** How finely an arc is drawn: one segment per this many radians. */
   ARC_STEP: 0.03,
   /**
+   * Written on, not faded in: a pen goes round from twelve on the motion's
+   * arrival, the line behind it, and a letter, notch or drop inks in over
+   * this much of a turn once the pen has passed it.
+   */
+  WRITE_INK_TURN: 0.04,
+  /**
    * The camera's distance (scale over fit) across which the orbit inks in,
    * ending at the player's seat. Much later than the ticks' window
    * (`songDetailOpacity`, from 12): the orbit stands at the player's full
@@ -2893,6 +2901,8 @@ function strokeOrbitArc(
  * too short); a notch marks every boundary, inside a run too; the drops are
  * dots on it. The run the playhead is in is heavier, the other runs of its
  * letter next, the rest quiet. No progress: the clock in the well has that.
+ *
+ * `written` is how far round it has been written, 0..1 from twelve.
  */
 function drawFormOrbit(
   canvas: SkCanvas,
@@ -2904,11 +2914,20 @@ function drawFormOrbit(
   alpha: number,
   paints: FacePaints,
   font: SkFont,
+  written = 1,
 ): void {
   'worklet';
   const K = ORBIT_KNOBS;
   const count = form.starts.length;
   const turnAt = (f: number) => f * Math.PI * 2 - Math.PI / 2;
+  const pen = written >= 1 ? 1 : written <= 0 ? 0 : written;
+  const penAngle = turnAt(pen);
+  // How much of a mark at `turn` the pen has written.
+  const inked = (turn: number): number => {
+    if (pen >= 1) return 1;
+    const t = (pen - turn) / K.WRITE_INK_TURN;
+    return t <= 0 ? 0 : t >= 1 ? 1 : t;
+  };
   let here = 0;
   while (here + 1 < count && form.starts[here + 1] <= head) here++;
   const gap = K.LETTER_GAP_PX / r;
@@ -2929,16 +2948,20 @@ function drawFormOrbit(
     const fits = a1 - a0 > gap * 2.4;
     stroke.setAlphaf(alpha * (isHere ? K.HERE_INK : isEcho ? K.ECHO_INK : K.QUIET_INK));
     stroke.setStrokeWidth(isHere ? K.HERE_WIDTH_PX : K.WIDTH_PX);
+    // The line as far as the pen has gone.
     if (fits) {
-      strokeOrbitArc(canvas, cx, cy, r, a0, am - gap, stroke);
-      strokeOrbitArc(canvas, cx, cy, r, am + gap, a1, stroke);
+      strokeOrbitArc(canvas, cx, cy, r, a0, Math.min(am - gap, penAngle), stroke);
+      strokeOrbitArc(canvas, cx, cy, r, am + gap, Math.min(a1, penAngle), stroke);
     } else {
-      strokeOrbitArc(canvas, cx, cy, r, a0, a1, stroke);
+      strokeOrbitArc(canvas, cx, cy, r, a0, Math.min(a1, penAngle), stroke);
     }
     const label = form.labels[i];
-    if (label >= 0 && label <= 25) {
+    const letterInk = inked((from + to) / 2);
+    if (label >= 0 && label <= 25 && letterInk > 0) {
       const lr = fits ? r : r + K.LETTER_OUT_PX;
-      paints.fill.setAlphaf(alpha * (isHere ? K.HERE_LETTER : isEcho ? K.ECHO_LETTER : K.QUIET_LETTER));
+      paints.fill.setAlphaf(
+        alpha * letterInk * (isHere ? K.HERE_LETTER : isEcho ? K.ECHO_LETTER : K.QUIET_LETTER),
+      );
       canvas.drawText(
         String.fromCharCode(65 + label),
         cx + Math.cos(am) * lr - width / 2,
@@ -2950,9 +2973,11 @@ function drawFormOrbit(
     i = j + 1;
   }
   // Every boundary, inside a run too.
-  stroke.setAlphaf(alpha * K.NOTCH_INK);
   stroke.setStrokeWidth(1);
   for (let b = 1; b < count; b++) {
+    const notchInk = inked(form.starts[b]);
+    if (notchInk <= 0) continue;
+    stroke.setAlphaf(alpha * K.NOTCH_INK * notchInk);
     const a = turnAt(form.starts[b]);
     canvas.drawLine(
       cx + Math.cos(a) * (r - K.NOTCH_PX),
@@ -2962,8 +2987,10 @@ function drawFormOrbit(
       stroke,
     );
   }
-  paints.fill.setAlphaf(alpha * K.DROP_INK);
   for (let d = 0; d < form.drops.length; d++) {
+    const dropInk = inked(form.drops[d]);
+    if (dropInk <= 0) continue;
+    paints.fill.setAlphaf(alpha * K.DROP_INK * dropInk);
     const a = turnAt(form.drops[d]);
     canvas.drawCircle(cx + Math.cos(a) * (r - K.DROP_INSET_PX), cy + Math.sin(a) * (r - K.DROP_INSET_PX), K.DROP_RADIUS_PX, paints.fill);
   }
@@ -3009,6 +3036,8 @@ export function drawSongDetail(
   form: ClockCuts | null = null,
   /** The face the orbit's letters are written in. */
   letterFont: SkFont | null = null,
+  /** How much of the orbit is written, 0..1, clockwise from twelve. */
+  formWritten = 1,
 ): void {
   'worklet';
   if (drawn <= 0) return;
@@ -3209,8 +3238,9 @@ export function drawSongDetail(
       if (drew <= 0) continue;
       const turn = index / ticks;
       // A section boundary takes the tick nearest it out of the hair, under
-      // the orbit's notch: the hair falls into the song's sections.
-      if (hasForm && form !== null && nearBoundary(form, turn, 0.5 / ticks)) continue;
+      // the orbit's notch, once the orbit's pen has written it: the hair
+      // falls into the song's sections.
+      if (hasForm && form !== null && turn <= formWritten && nearBoundary(form, turn, 0.5 / ticks)) continue;
       // Wrapped to the shortest way round, so the ticks behind the playhead
       // open to the left rather than racing the long way across the screen.
       const offset = turn - axis;
@@ -3255,7 +3285,9 @@ export function drawSongDetail(
     // The form leaves with the player: as the camera pulls away, as the lens
     // changes, and as the ring unrolls.
     const ink = orbitArrival(ratio) * drawn * (1 - smootherstep(lensProgress)) * (1 - unrolled);
-    if (ink > 0) drawFormOrbit(canvas, form, head, cx, cy, orbit, ink, paints, letterFont);
+    if (ink > 0 && formWritten > 0) {
+      drawFormOrbit(canvas, form, head, cx, cy, orbit, ink, paints, letterFont, formWritten);
+    }
   }
 
   if (grain === null || detail <= 0 || duration <= 0) return;
@@ -3333,6 +3365,7 @@ function NativeSongDetail({
   motionFrame = null,
   layer = null,
   form = null,
+  formWritten = null,
   letterFont = null,
 }: {
   lensClock: LensClock;
@@ -3354,6 +3387,8 @@ function NativeSongDetail({
   layer?: PlayerLayer | null;
   /** The song's form, written on the orbit round the hair; and the face it is written in. */
   form?: DerivedValue<ClockCuts> | null;
+  /** How much of the form is written on the orbit: the motion's own arrival. */
+  formWritten?: SharedValue<number> | null;
   letterFont?: SkFont | null;
 }) {
   const paints = useMemo(() => createFacePaints(palette), [palette]);
@@ -3468,9 +3503,11 @@ function NativeSongDetail({
           const progress = clock.value;
           const grain = grainShared.value;
           const formNow = form === null ? null : form.value;
+          const writtenNow = formWritten === null ? 1 : formWritten.value;
           if (
             was === null ||
             was.form !== formNow ||
+            was.formWritten !== writtenNow ||
             was.model !== model ||
             was.recut !== recut ||
             was.progress !== progress ||
@@ -3488,6 +3525,7 @@ function NativeSongDetail({
               drawn: drawn.value,
               lensProgress,
               form: formNow,
+              formWritten: writtenNow,
             };
           }
           // The layer has the player, and the ticks with it, music and all.
@@ -3515,6 +3553,7 @@ function NativeSongDetail({
           motionFrame === null ? null : motionFrame.value,
           form === null ? null : form.value,
           letterFont,
+          formWritten === null ? 1 : formWritten.value,
         );
         if (share < 1) canvas.restore();
       },
@@ -4204,6 +4243,7 @@ function FocusDetail({
     <NativeSongDetail
       layer={layer}
       form={form}
+      formWritten={scene.motionIn}
       letterFont={letterFont}
       lensClock={lensClock}
       cameraShared={cameraShared}
