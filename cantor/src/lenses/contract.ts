@@ -92,8 +92,15 @@ export function arrivedShare(arriving: number): number {
  */
 export type MarkPaints = Readonly<{ fill: SkPaint; stroke: SkPaint }>;
 
-/** A player's paints: a mark's, and the ground, for anything cut out of ink. */
-export type PlayerPaints = MarkPaints & Readonly<{ paper: SkPaint }>;
+/**
+ * A player's paints: a mark's, and the ground, for anything cut out of ink —
+ * and `share`, how much of the player this canvas draws while the field and
+ * the motion layer crossfade it (1 otherwise; `alpha` already carries it). A
+ * solid body is not faded with it: two half-inked bodies of a moving shape,
+ * a frame apart, read as a ghost, where two whole ones are their union. So a
+ * lens draws its solid ink whole wherever `share` is above 0.
+ */
+export type PlayerPaints = MarkPaints & Readonly<{ paper: SkPaint }> & { share?: number };
 
 /**
  * What a lens's player draws from, prepared on the JS thread for the one song
@@ -127,6 +134,8 @@ export type ClockShape = Readonly<{
   tickPx: number;
   /** The knob at the playhead, on the ring; 0 is none. */
   knobRadiusPx: number;
+  /** Where the form's letters stand: 1 outside the ring, 0 inside it (mixed through a change). */
+  lettersOutside: number;
 }>;
 
 /**

@@ -12,10 +12,21 @@ import type {
   PlayerPaints,
 } from './contract';
 import type { CoverPlayer, CoverSweep } from './coverLens';
-import { NAME_LENS_KNOBS, drawCircleMark, drawCirclePlayer } from './nameLens';
+import {
+  NAME_LENS_KNOBS,
+  circleLineInk,
+  drawCircleBodyAt,
+  drawCircleMark,
+  drawCirclePlayer,
+} from './nameLens';
 import { SEAL_KNOBS } from './seal';
 import { drawSealAsPlayer, sealSidePx } from './sealLens';
-import { circleMotionClockPoints, isCirclePlayer } from './circleMotion';
+import {
+  circleMotionClockPoints,
+  circleMotionPoints,
+  circleStillPoints,
+  isCirclePlayer,
+} from './circleMotion';
 import type { MotionFrame } from './motion/motionFrame';
 import { drawSealPlayer, type SealPlayer } from './sealPlayer';
 import { sweepAt, sweepBandRank, sweepFront } from './sweep';
@@ -29,6 +40,9 @@ const SEAL_MARK_SIDE_PX = sealSidePx(NAME_LENS_KNOBS.MARK_RADIUS_PX);
  * the change and the arriving lens takes its own up over the second, so the
  * morph runs between still endpoints. Both read the same frame.
  */
+/** How much of a change the circle's body keeps its ink for, before it fades. */
+const BODY_HOLD = 0.3;
+
 /** How much of the leaving lens's motion is left at `t`. */
 function leavingMotion(t: number): number {
   'worklet';
@@ -85,7 +99,8 @@ function drawCircleSealMorph(
    * so the change begins from the face as it stood.
    */
   let seal = sealPlayer as SealPlayer;
-  const singing = motion === null ? 0 : motion.presence * arrived * leavingMotion(t);
+  // At full: the body, its line and the dots' starts are one shape (see the body below).
+  const singing = motion === null ? 0 : motion.presence * arrived;
   if (motion !== null && singing > 0 && isCirclePlayer(circlePlayer)) {
     const points = circleMotionClockPoints(circlePlayer, motion, singing, seal.order.length);
     const contourX: number[] = [];
@@ -96,17 +111,41 @@ function drawCircleSealMorph(
     }
     seal = { ...seal, contourX, contourY };
   }
-  if (fill > 0 && arrived < 1) {
+  if (isCirclePlayer(circlePlayer) && arrived > 0) {
+    /*
+     * The circle's body gives way as the dots leave it — still singing, at
+     * full: unwinding its pose under the dots twisted a solid shape, and two
+     * poses showed at once where the motion layer still held it. It keeps its
+     * ink through the hand-over (`BODY_HOLD` of the change) and fades over the
+     * rest, so the layer's whole body hands it over without a step.
+     */
+    const R = NAME_LENS_KNOBS.MARK_RADIUS_PX;
+    const points =
+      motion !== null && singing > 0
+        ? circleMotionPoints(circlePlayer, motion, singing, R)
+        : circleStillPoints(circlePlayer, R);
+    drawCircleBodyAt(
+      canvas,
+      circlePlayer,
+      points,
+      size,
+      alpha * (1 - smootherstep((t - BODY_HOLD) / (1 - BODY_HOLD))),
+      weight,
+      fill,
+      arrived,
+      hairlinePx,
+      paints,
+    );
+  } else if (fill > 0 && arrived < 1) {
     canvas.save();
     canvas.scale(size, size);
     paints.fill.setAlphaf(alpha * weight * fill * (1 - arrived) * (1 - formed));
     canvas.drawPath(circle as SkPath, paints.fill);
     canvas.restore();
   }
-  // The circle's own line at the player (`drawCircleMark`), which the thread
+  // The circle's own line at the player (`drawCirclePlayer`), which the thread
   // carries until the seal's takes it over.
-  const faceLine =
-    weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived;
+  const faceLine = circleLineInk(weight, arrived);
   drawSealPlayer(
     canvas,
     seal,

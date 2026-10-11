@@ -1,4 +1,13 @@
-import { Skia, FillType, type SkCanvas, type SkPaint, type SkPath } from '@shopify/react-native-skia';
+import {
+  BlendMode,
+  FillType,
+  Skia,
+  VertexMode,
+  type SkCanvas,
+  type SkPaint,
+  type SkPath,
+  type SkPoint,
+} from '@shopify/react-native-skia';
 import { FACE_KNOBS, faceParams, type FaceRecipe } from './face';
 import type { LensPlayer } from './contract';
 import { MOTION_KNOBS, smoothstep, smootherstep, type MotionFrame } from './motion/motionFrame';
@@ -59,6 +68,26 @@ export const CIRCLE_MOTION_KNOBS = {
   RELEASE_SCALE: 0.1,
   RELEASE_SCALE_CAP: 0.15,
   RELEASE_PRIMARY: 1.1,
+} as const;
+
+/**
+ * The player's body (reactive-player-log.md, layout F): the face filled in ink
+ * with a well of paper at its middle that the clock lives in, and the ring of
+ * ticks grown out of its contour. Ratios are of the face's own radius.
+ */
+export const CIRCLE_BODY_KNOBS = {
+  /** The well. The identity's deepest valley is ~0.71, so the body is never thinner than ~0.07. */
+  WELL_RATIO: 0.64,
+  /**
+   * However the music swells the lobes, the moving contour stays this far
+   * outside the well, met softly: within `FLOOR_SOFT` of the floor it eases
+   * toward it rather than stopping on it. Applied with the motion's amount, so
+   * the still face is the mark's.
+   */
+  FLOOR_GAP: 0.05,
+  FLOOR_SOFT: 0.06,
+  /** The clock's arc, inside the well. */
+  CLOCK_RATIO: 0.56,
 } as const;
 
 export function circlePlayerOf(recipe: FaceRecipe, spindleRatio: number): CirclePlayer {
@@ -235,17 +264,89 @@ export function circleMotionPoints(
     }
   }
 
+  const B = CIRCLE_BODY_KNOBS;
+  const floor = B.WELL_RATIO + B.FLOOR_GAP;
+  const soft = floor + B.FLOOR_SOFT;
   const points: number[] = [];
   for (let k = 0; k < samples; k++) {
     const a = (k / samples) * Math.PI * 2 + player.rotation;
     const ph = a - turn;
     const bump = Math.min(K.RIPPLE_CAP, bumps[k] * K.RIPPLE_GAIN * g) * m;
-    const r =
+    let r =
       scale * (1 + primary * Math.sin(player.lobes * ph) + secondary * Math.sin(player.detail * ph + 1.1)) +
       bump;
-    points.push(Math.cos(a) * r * eccentricity * radius, ((Math.sin(a) * r) / eccentricity) * radius);
+    const cos = Math.cos(a);
+    const sin = Math.sin(a);
+    if (m > 0) {
+      // The floor is on the distance from the centre, after the stretch.
+      const stretch = Math.sqrt(cos * cos * eccentricity * eccentricity + (sin * sin) / (eccentricity * eccentricity));
+      const reach = r * stretch;
+      if (reach < soft) {
+        const held = floor + B.FLOOR_SOFT * Math.exp((reach - soft) / B.FLOOR_SOFT);
+        r += (held / stretch - r) * m;
+      }
+    }
+    points.push(cos * r * eccentricity * radius, ((sin * r) / eccentricity) * radius);
   }
   return points;
+}
+
+/**
+ * The still contour as samples, exactly the identity's (`facePoints`): what
+ * the body is filled from and the ticks rooted on when nothing moves.
+ */
+export function circleStillPoints(player: CirclePlayer, radius: number): number[] {
+  'worklet';
+  const samples = FACE_KNOBS.SAMPLES;
+  const points: number[] = [];
+  for (let k = 0; k < samples; k++) {
+    const a = (k / samples) * Math.PI * 2 + player.rotation;
+    const r = 1 + player.primary * Math.sin(player.lobes * a) + player.secondary * Math.sin(player.detail * a + 1.1);
+    points.push(Math.cos(a) * r * player.eccentricity * radius, ((Math.sin(a) * r) / player.eccentricity) * radius);
+  }
+  return points;
+}
+
+/**
+ * The body: the ring between a well of radius `well` and the contour, as one
+ * triangle strip — drawn by the GPU, where a filled path that changes every
+ * frame is rasterised on the CPU and uploaded every frame. A strip has no
+ * anti-aliasing: the caller strokes the contour and the well's edge over it.
+ */
+export function drawCircleBody(
+  canvas: SkCanvas,
+  points: readonly number[],
+  well: number,
+  rotation: number,
+  paint: SkPaint,
+): void {
+  'worklet';
+  const samples = points.length / 2;
+  if (samples < 3) return;
+  const strip: SkPoint[] = [];
+  for (let i = 0; i <= samples; i++) {
+    const k = i % samples;
+    const a = (k / samples) * Math.PI * 2 + rotation;
+    strip.push({ x: Math.cos(a) * well, y: Math.sin(a) * well } as SkPoint);
+    strip.push({ x: points[2 * k], y: points[2 * k + 1] } as SkPoint);
+  }
+  canvas.drawVertices(Skia.MakeVertices(VertexMode.TriangleStrip, strip), BlendMode.Dst, paint);
+}
+
+/**
+ * The contour's distance from the centre at the tick standing at `turn` of
+ * the clock (0 at twelve, clockwise), from the samples `circleMotionPoints` or
+ * `circleStillPoints` drew: the nearest sample's, so a tick grows out of the
+ * line as it is drawn, ripples and all.
+ */
+export function circleReachAt(points: readonly number[], rotation: number, turn: number): number {
+  'worklet';
+  const samples = points.length / 2;
+  if (samples === 0) return 0;
+  const a = turn * Math.PI * 2 - Math.PI / 2;
+  const step = (Math.PI * 2) / samples;
+  const k = ((Math.round((a - rotation) / step) % samples) + samples) % samples;
+  return Math.hypot(points[2 * k], points[2 * k + 1]);
 }
 
 /**

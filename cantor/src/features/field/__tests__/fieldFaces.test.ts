@@ -91,6 +91,13 @@ function recordingCanvas() {
       alphas.push(paint.getAlphaf());
     },
     drawCircle: (x: number, _y: number, r: number) => circles.push({ x, r }),
+    // The circle player's line, as segments.
+    drawLine: () => {},
+    // The circle player's body: ink like a path.
+    drawVertices: (_vertices: unknown, _mode: unknown, paint: { getAlphaf: () => number }) => {
+      paths += 1;
+      alphas.push(paint.getAlphaf());
+    },
   };
   return {
     canvas: canvas as unknown as SkCanvas,
@@ -369,8 +376,9 @@ describe('the field drawn as one pass', () => {
     const circle = drawAt(faces, atSong, 0);
     for (const lens of [0.1, 0.5, 0.9]) {
       const between = drawAt(faces, atSong, lens);
-      // The line and the dots, and no shrinking scale on the way.
-      expect(between.paths()).toBe(2);
+      // The circle's body giving way, the line and the dots, and no
+      // shrinking scale on the way.
+      expect(between.paths()).toBe(3);
       expect(Math.max(...between.scales, 0)).toBeLessThanOrEqual(
         Math.max(...circle.scales, 0),
       );
