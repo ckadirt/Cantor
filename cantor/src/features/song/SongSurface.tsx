@@ -70,8 +70,17 @@ const SONG_SURFACE_KNOBS = {
   /** A drag that strays this far past the orbit turns fine: the song moves at `FINE_GAIN` of the finger. */
   FINE_FROM_PX: 12,
   FINE_GAIN: 0.25,
-  /** A boundary catches the playhead within this much arc of the finger, with a tick. */
-  SNAP_PX: 9,
+  /**
+   * A boundary is a detent this much arc either side of it: the playhead slows
+   * as the finger nears it and catches up as it leaves, with no jump either
+   * way. A hard hold over the whole width stood the hand still for a quarter
+   * of a second per boundary on the Xiaomi, then jumped it four degrees.
+   */
+  SNAP_PX: 7,
+  /** How much of the finger's travel the detent takes away at its centre. */
+  SNAP_HOLD: 0.85,
+  /** Within this share of the detent the boundary has the playhead: a tick, and a lift lands on it. */
+  SNAP_CATCH: 0.5,
   /** A finger this near a letter on the orbit is a tap on it: the section's start. */
   LETTER_TAP_PX: 22,
   ELAPSED_SAMPLE_MS: 500, // how often the clock label reads the visual clock
@@ -489,6 +498,16 @@ function turnOf(dx: number, dy: number): number {
   return turn - Math.floor(turn);
 }
 
+/**
+ * A boundary's detent: the finger's offset `d` from it, `u` of the way out,
+ * as the playhead's. Slow at the boundary, and equal to the finger at the
+ * detent's edge, so the playhead never jumps going in or coming out.
+ */
+function detent(d: number, u: number): number {
+  const hold = SONG_SURFACE_KNOBS.SNAP_HOLD;
+  return d * (1 - hold + hold * u * u);
+}
+
 /** The shortest signed difference of two turns, −0.5..0.5. */
 function turnDelta(to: number, from: number): number {
   const d = to - from;
@@ -592,11 +611,14 @@ export function seekGesture(
       // Near a boundary, the playhead catches its section's start.
       let snapped = -1;
       if (orbit !== null) {
-        const arc = Math.max(reach, 1) * Math.PI * 2;
+        const width = K.SNAP_PX / (Math.max(reach, 1) * Math.PI * 2);
         for (let b = 1; b < orbit.form.starts.length; b++) {
-          if (Math.abs(turnDelta(fraction, orbit.form.starts[b])) * arc <= K.SNAP_PX) {
-            snapped = b;
-            fraction = orbit.form.starts[b];
+          const start = orbit.form.starts[b];
+          const d = turnDelta(fraction, start);
+          const u = Math.abs(d) / width;
+          if (u < 1) {
+            fraction = start + detent(d, u);
+            if (u <= K.SNAP_CATCH) snapped = b;
             break;
           }
         }
@@ -604,7 +626,7 @@ export function seekGesture(
       if (snapped >= 0 && snapped !== caught) haptic('tick');
       caught = snapped;
       current = fraction;
-      seekFraction(fraction, snapped >= 0);
+      seekFraction(fraction, true);
     } else if (
       held?.kind === 'tap' &&
       Math.hypot(x - held.startX, y - held.startY) >
@@ -617,6 +639,9 @@ export function seekGesture(
     if (held?.kind === 'tap' && held.fraction !== null) {
       // A letter's section starts where it starts, not on the nearest second.
       seekFraction(held.fraction, onLetter);
+    } else if (held?.kind === 'seek' && !fine && caught >= 0 && orbit !== null) {
+      // Let go in a detent's catch: the section's own start, not a hair off it.
+      seekFraction(orbit.form.starts[caught], true);
     }
     held = null;
     onSeekEnd();
