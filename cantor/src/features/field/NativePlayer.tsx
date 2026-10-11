@@ -1554,14 +1554,15 @@ export function clockCutsOf(track: MotionTrack | null): ClockCuts {
  */
 const LETTER_HERE = 1.45;
 const LETTER_ECHO = 1;
+const LETTER_QUIET = 0.45;
 
 /**
  * How much of each section's letter to write at `head` (0..1 through the
- * song). Not every letter: a long song's form round a small clock was a ring
- * of type. The cuts mark every section; the letters name the one you are in
- * (`LETTER_HERE`) and every other run of that letter (`LETTER_ECHO`) — where
- * this part comes back, or where it was before — and nothing else. Entering
- * a section they cross over its first bar, from the last section's to this one's.
+ * song). The whole form is written, in three inks so it reads as a map of
+ * where you are rather than a ring of type: the section you are in
+ * (`LETTER_HERE`), every other run of its letter (`LETTER_ECHO`) — where this
+ * part comes back, or where it was — and the rest (`LETTER_QUIET`). Entering a
+ * section they cross over its first bar, from the last section's inks.
  */
 export function formLetterInks(cuts: ClockCuts, head: number): number[] {
   'worklet';
@@ -1571,7 +1572,7 @@ export function formLetterInks(cuts: ClockCuts, head: number): number[] {
   let here = 0;
   while (here + 1 < count && cuts.starts[here + 1] <= head) here++;
   const inkFor = (i: number, at: number): number =>
-    at < 0 ? 0 : i === at ? LETTER_HERE : cuts.labels[i] === cuts.labels[at] ? LETTER_ECHO : 0;
+    at < 0 ? LETTER_QUIET : i === at ? LETTER_HERE : cuts.labels[i] === cuts.labels[at] ? LETTER_ECHO : LETTER_QUIET;
   const into = cuts.bar > 0 ? (head - cuts.starts[here]) / cuts.bar : 1;
   const crossed = here === 0 ? 1 : smootherstep(into < 0 ? 0 : into > 1 ? 1 : into);
   for (let i = 0; i < count; i++) {
@@ -1598,6 +1599,8 @@ const LETTER_IN_PX = 14;
 const LETTER_OUT_PX = 9;
 const LETTER_ALPHA = 0.55;
 const LETTER_GAP_PX = 3;
+/** Between the letters' two rings, past a capital's height. */
+const LETTER_RING_GAP_PX = 4;
 
 /** The letters' ring, their centres from the player's centre, for a clock ring at `ring`. */
 export function formLetterRadius(ring: number, outside: number, letterWidth: number): number {
@@ -1617,25 +1620,31 @@ export function formLetterSeats(
   letterWidth: number,
   letterHeight: number,
   inks: readonly number[] | null = null,
+  /** A second ring, this far from the first (signed), for a letter the first has no room for. */
+  step = 0,
 ): number[] {
   'worklet';
   const out: number[] = [];
-  const room = (letterWidth + LETTER_GAP_PX) / r;
-  let first = -1;
-  let last = -Infinity;
+  const radii = step === 0 ? [r] : [r, r + step];
+  const firsts = [-1, -1];
+  const lasts = [-Infinity, -Infinity];
   for (let i = 0; i < cuts.middles.length; i++) {
     const label = cuts.labels[i];
     if (label < 0 || label > 25) continue;
     const ink = inks === null ? 1 : inks[i];
     if (ink <= 0.01) continue;
     const angle = cuts.middles[i] * Math.PI * 2;
-    if (angle - last < room) continue;
-    // Round the twelve, against the first letter drawn.
-    if (first >= 0 && first + Math.PI * 2 - angle < room) continue;
-    if (first < 0) first = angle;
-    last = angle;
-    const a = angle - Math.PI / 2;
-    out.push(Math.cos(a) * r - letterWidth / 2, Math.sin(a) * r + letterHeight / 2, label, ink);
+    for (let k = 0; k < radii.length; k++) {
+      const room = (letterWidth + LETTER_GAP_PX) / radii[k];
+      if (angle - lasts[k] < room) continue;
+      // Round the twelve, against the first letter on this ring.
+      if (firsts[k] >= 0 && firsts[k] + Math.PI * 2 - angle < room) continue;
+      if (firsts[k] < 0) firsts[k] = angle;
+      lasts[k] = angle;
+      const a = angle - Math.PI / 2;
+      out.push(Math.cos(a) * radii[k] - letterWidth / 2, Math.sin(a) * radii[k] + letterHeight / 2, label, ink);
+      break;
+    }
   }
   return out;
 }
@@ -1679,7 +1688,9 @@ function FormLetters({
       const cuts = formCuts.value;
       const r = formLetterRadius(ring.value, outside.value, letter.width);
       const inks = formLetterInks(cuts, head.value);
-      const seats = formLetterSeats(cuts, r, letter.width, letter.height, inks);
+      // A crowded form steps a letter onto a second ring, away from the clock's.
+      const away = (outside.value < 0.5 ? -1 : 1) * (letter.height + LETTER_RING_GAP_PX);
+      const seats = formLetterSeats(cuts, r, letter.width, letter.height, inks, away);
       for (let i = 0; i < seats.length; i += 4) {
         ink.setAlphaf(Math.min(1, LETTER_ALPHA * seats[i + 3]));
         canvas.drawText(String.fromCharCode(65 + seats[i + 2]), seats[i], seats[i + 1], ink, font);
