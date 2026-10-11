@@ -1923,8 +1923,16 @@ function FormLetters({
       height: ink.y < 0 ? -ink.y : font.getSize() * 0.7,
     };
   }, [font]);
+  /*
+   * The ink is applied here, not by a group round the picture: Skia draws a
+   * recorded picture without its group's opacity. On the circle (`onClock` 0)
+   * the letters were drawn all along, hidden only by the body over them, and
+   * a zoom out showed them as the face shrank faster than its clock.
+   */
   const picture = useDerivedValue(() =>
     createPicture(canvas => {
+      const alpha = formInk.value * onClock.value;
+      if (alpha <= 0) return;
       const cuts = formCuts.value;
       const r = formLetterRadius(ring.value, 1, letter.width);
       const inks = formLetterInks(cuts, head.value);
@@ -1932,17 +1940,12 @@ function FormLetters({
       const away = letter.height + LETTER_RING_GAP_PX;
       const seats = formLetterSeats(cuts, r, letter.width, letter.height, inks, away);
       for (let i = 0; i < seats.length; i += 4) {
-        ink.setAlphaf(Math.min(1, LETTER_ALPHA * seats[i + 3]));
+        ink.setAlphaf(Math.min(1, LETTER_ALPHA * seats[i + 3]) * alpha);
         canvas.drawText(String.fromCharCode(65 + seats[i + 2]), seats[i], seats[i + 1], ink, font);
       }
     }),
   );
-  const alpha = useDerivedValue(() => formInk.value * onClock.value);
-  return (
-    <SkiaGroup opacity={alpha}>
-      <Picture picture={picture} />
-    </SkiaGroup>
-  );
+  return <Picture picture={picture} />;
 }
 
 export function NativePlayerParts({
