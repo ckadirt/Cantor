@@ -2,10 +2,15 @@ import { smootherstep } from '../../field/bands';
 import React, { useMemo } from 'react';
 import {
   Group as SkiaGroup,
+  LinearGradient,
+  Mask,
   Path,
   Picture,
+  Rect,
   Skia,
   Text,
+  vec,
+  FillType,
   createPicture,
   interpolatePaths,
   notifyChange,
@@ -25,7 +30,17 @@ import {
 import { LENS_UI, NAME_LENS_KNOBS, fitText, lensIndex } from '../../lenses';
 import { buildGlyphMorphPaths } from '../../motion/glyphs';
 import { useSeededPathInterpolation } from '../../motion/MorphText';
-import { layoutText } from '../../motion/text';
+import { layoutText, type CharBox } from '../../motion/text';
+import {
+  BYLINE_GAP_MARK,
+  BYLINE_MARQUEE_KNOBS,
+  bylineEdgeStops,
+  bylineTailInk,
+  bylineLayout,
+  useFieldByline,
+  type BylineClock,
+  type BylineScroll,
+} from './BylineMarquee';
 import {
   PLAYER_POSE_KNOBS,
   lineOwnedByPlayer,
@@ -930,6 +945,16 @@ export type NativeSongModel = Readonly<{
   metaMorph: readonly GlyphMorph[] | null;
   songMeta: string;
   metaSeat: Readonly<{ x: number; y: number }>;
+  /**
+   * The byline as a marquee, when it is longer than its column and motion is
+   * allowed; null when it fits, which is a centred line as before.
+   *
+   * Scrolling, the line is seated at the column's left edge rather than on
+   * the axis — so it lands reading from its first letter — and the morph lands
+   * on the whole loop (`bylineLayout`), so the strip canvas can take it over
+   * on the frame it first moves without a pixel changing.
+   */
+  metaScroll: BylineScroll | null;
   /** What is left in the foot as words: where each sits and what it says. */
   words: readonly PlayerWord[];
   /**
@@ -1095,10 +1120,13 @@ function buildLineMorph(
   toFont: SkFont,
   fromOrigin: Readonly<{ x: number; y: number }>,
   toOrigin: Readonly<{ x: number; y: number }>,
+  // The destination already laid out, for a line that is not one run of
+  // text: the byline's marquee loop.
+  toLayout: CharBox[] | null = null,
 ): readonly GlyphMorph[] | null {
   if (fromText.length === 0 && toText.length === 0) return null;
   const fromBoxes = layoutText(fromText, fromFont, 0, Infinity, 0);
-  const toBoxes = layoutText(toText, toFont, 0, Infinity, 0);
+  const toBoxes = toLayout ?? layoutText(toText, toFont, 0, Infinity, 0);
   const count = Math.max(fromBoxes.length, toBoxes.length);
   if (count === 0) return null;
   const morphs: GlyphMorph[] = [];
@@ -1136,7 +1164,13 @@ function playerSeats(
   presentation: FieldPresentation,
   viewport: PoseViewport,
   fonts: Readonly<{ songTitle: SkFont; songMeta: SkFont }>,
-): Omit<NativeSongModel, 'titleMorph' | 'metaMorph'> {
+  scrolls: boolean,
+): Omit<NativeSongModel, 'titleMorph' | 'metaMorph' | 'metaScroll'> & {
+  metaLoop: Readonly<{
+    boxes: CharBox[];
+    scroll: Omit<BylineScroll, 'path'>;
+  }> | null;
+} {
   const songTitle = fitText(
     presentation.title,
     fonts.songTitle,
@@ -1144,10 +1178,18 @@ function playerSeats(
   );
   // A generated song's line is its recipe; an imported one has none, and says
   // who made it and on which album.
-  const songMeta =
+  const fullMeta =
     presentation.source === 'node'
       ? recipeLine(presentation.song.model, presentation.song.seed)
       : deviceLine(presentation);
+  // Too long for the column: a marquee, or — with motion reduced — cut like
+  // the name, since a line that cannot move cannot show its end either.
+  const layout = bylineLayout(fullMeta, fonts.songMeta, viewport);
+  const metaLoop = !layout.fits && scrolls ? layout : null;
+  const songMeta =
+    layout.fits || scrolls
+      ? fullMeta
+      : fitText(fullMeta, fonts.songMeta, songTitleColumnPx(viewport.width));
   return {
     songTitle,
     titleSeat: centredOnAxis(
@@ -1156,11 +1198,11 @@ function playerSeats(
       songTitleOriginPx(viewport),
     ),
     songMeta,
-    metaSeat: centredOnAxis(
-      songMeta,
-      fonts.songMeta,
-      songMetaOriginPx(viewport),
-    ),
+    metaSeat:
+      metaLoop === null
+        ? centredOnAxis(songMeta, fonts.songMeta, songMetaOriginPx(viewport))
+        : { x: metaLoop.scroll.left, y: songMetaOriginPx(viewport).y },
+    metaLoop,
     words: playerWords(
       fonts.songMeta,
       describeAudio(
@@ -1186,6 +1228,8 @@ export function nativeSongModel(
     rowMeta: SkFont;
     songMeta: SkFont;
   }>,
+  /** Whether a byline too long for its column may scroll; false under reduced motion. */
+  scrolls = true,
 ): NativeSongModel {
   /*
    * Both lines arrive centred, so both morphs *end* centred.
@@ -1202,9 +1246,28 @@ export function nativeSongModel(
    * Flicker Law is about — and it is the reason the seats are on the model in
    * the first place.
    */
-  const seats = playerSeats(presentation, viewport, fonts);
+  const { metaLoop, ...seats } = playerSeats(
+    presentation,
+    viewport,
+    fonts,
+    scrolls,
+  );
+  const metaMorph = buildLineMorph(
+    rowMeta,
+    seats.songMeta,
+    fonts.rowMeta,
+    fonts.songMeta,
+    { x: rowTitleOriginPx().x, y: NAME_LENS_KNOBS.ROW_META_BASELINE_PX },
+    seats.metaSeat,
+    metaLoop?.boxes ?? null,
+  );
   return {
     ...seats,
+    metaMorph,
+    metaScroll:
+      metaLoop === null
+        ? null
+        : { ...metaLoop.scroll, path: restingPath(metaMorph) },
     titleMorph: buildLineMorph(
       rowTitle,
       seats.songTitle,
@@ -1213,15 +1276,17 @@ export function nativeSongModel(
       rowTitleOriginPx(),
       seats.titleSeat,
     ),
-    metaMorph: buildLineMorph(
-      rowMeta,
-      seats.songMeta,
-      fonts.rowMeta,
-      fonts.songMeta,
-      { x: rowTitleOriginPx().x, y: NAME_LENS_KNOBS.ROW_META_BASELINE_PX },
-      seats.metaSeat,
-    ),
   };
+}
+
+/** A morph's last frame as one outline: what the marquee scrolls. */
+function restingPath(morphs: readonly GlyphMorph[] | null): SkPath | null {
+  if (morphs === null) return null;
+  const path = Skia.Path.Make();
+  for (const morph of morphs) path.addPath(morph.to);
+  // The fill rule `MorphGlyph` draws each letter with, so counters stay open.
+  path.setFillType(FillType.EvenOdd);
+  return path;
 }
 
 /**
@@ -1272,6 +1337,162 @@ function centredOnAxis(
   const measured = font.measureText(text)?.width;
   const width = Number.isFinite(measured) ? measured : 0;
   return { x: origin.x - width / 2, y: origin.y };
+}
+
+/**
+ * A byline longer than its column: the loop, seen through the column.
+ *
+ * The field draws it while it is still and while it travels with the camera;
+ * once it starts to scroll the strip canvas has it (`BylineMarqueeLayer`) and
+ * this draws nothing. Handed back — the player being left mid-scroll — it
+ * morphs to the row from where the marquee stopped: the scroll is carried on
+ * `named`, the same arrival the letters travel on, so it is gone by the row.
+ *
+ * The column's edges are a mask, eased in on `named` too, so letters crossing
+ * the screen on their way down are not cut at a column they have not reached.
+ */
+function ScrollingByline({
+  clock,
+  colour,
+  font,
+  model,
+  named,
+  owned,
+  scroll,
+  viewport,
+}: {
+  clock: BylineClock | null;
+  colour: string;
+  font: SkFont;
+  model: NativeSongModel;
+  named: DerivedValue<number>;
+  owned: DerivedValue<number>;
+  scroll: BylineScroll;
+  viewport: PoseViewport;
+}) {
+  const { shift, drawn } = useFieldByline(clock, scroll, named);
+  const own = useDerivedValue(() => owned.value * drawn.value);
+  // Without outlines the line fades in on `named`, as the centred one does.
+  const faded = useDerivedValue(() => named.value * drawn.value);
+  // The letters past the column at rest — the end of the first copy, the dot,
+  // the second copy — grow out of the row's last letter. With the mask open
+  // mid-flight they raced out to the right of the line, small; they ink in
+  // only as it lands.
+  const tail = useDerivedValue(() => bylineTailInk(named.value));
+  const ownTail = useDerivedValue(() => own.value * tail.value);
+  const morphs = model.metaMorph;
+  const seen = useMemo(
+    () => (morphs === null ? null : morphs.slice(0, scroll.shown)),
+    [morphs, scroll.shown],
+  );
+  const unseen = useMemo(
+    () => (morphs === null ? null : morphs.slice(scroll.shown)),
+    [morphs, scroll.shown],
+  );
+  const stops = useMemo(() => bylineEdgeStops(scroll), [scroll]);
+  // Outside the column the mask is `1 - named`: open while the line travels,
+  // shut once it has landed.
+  const colours = useDerivedValue(() => {
+    const edge = `rgba(0,0,0,${1 - Math.min(Math.max(named.value, 0), 1)})`;
+    return [edge, 'black', 'black', edge];
+  });
+  const baseline = baselineOf(model.metaSeat, font);
+  /*
+   * What the mask may cover. A mask is a layer, and a layer with no bounds is
+   * as big as the clip: unclipped, every redraw of the field painted one three
+   * viewports wide — about 35 ms a frame on the Xiaomi, so a scrub, which
+   * redraws the field on every frame, ran at twenty. Landed, the line lives in
+   * a strip round its seat; only on the way does it need the room.
+   */
+  const room = useMemo(() => {
+    const metrics = font.getMetrics();
+    const pad = BYLINE_MARQUEE_KNOBS.STRIP_PAD_PX;
+    return {
+      strip: Skia.XYWHRect(
+        stops.from,
+        baseline + metrics.ascent - pad,
+        stops.to - stops.from,
+        metrics.descent - metrics.ascent + 2 * pad,
+      ),
+      open: Skia.XYWHRect(
+        stops.from - viewport.width,
+        -viewport.height,
+        stops.to - stops.from + 2 * viewport.width,
+        2 * viewport.height,
+      ),
+    };
+  }, [baseline, font, stops, viewport]);
+  const clip = useDerivedValue(() =>
+    named.value >= 1 ? room.strip : room.open,
+  );
+  return (
+    <SkiaGroup clip={clip}>
+      <Mask
+        mode="alpha"
+        mask={
+          <Rect
+            x={stops.from - viewport.width}
+            y={-viewport.height}
+            width={stops.to - stops.from + 2 * viewport.width}
+            height={2 * viewport.height}
+          >
+            <LinearGradient
+              colors={colours}
+              end={vec(stops.to, 0)}
+              positions={stops.positions}
+              start={vec(stops.from, 0)}
+            />
+          </Rect>
+        }
+      >
+        <SkiaGroup transform={shift}>
+          {model.metaMorph === null ? (
+            <SkiaGroup opacity={faded}>
+              {/* No outlines: the loop as glyphs, where the morph would land. */}
+              <Text
+                color={colour}
+                font={font}
+                text={scroll.text}
+                x={model.metaSeat.x}
+                y={baseline}
+              />
+              <SkiaGroup opacity={tail}>
+                <Text
+                  color={colour}
+                  font={font}
+                  text={BYLINE_GAP_MARK}
+                  x={model.metaSeat.x + scroll.markPx}
+                  y={baseline}
+                />
+                <Text
+                  color={colour}
+                  font={font}
+                  text={scroll.text}
+                  x={model.metaSeat.x + scroll.periodPx}
+                  y={baseline}
+                />
+              </SkiaGroup>
+            </SkiaGroup>
+          ) : (
+            <>
+              <MorphLine
+                colour={colour}
+                morphs={seen ?? []}
+                own={own}
+                progress={named}
+              />
+              <MorphLine
+                colour={colour}
+                morphs={unseen ?? []}
+                own={ownTail}
+                progress={named}
+              />
+            </>
+          )}
+        </SkiaGroup>
+      </Mask>
+    </SkiaGroup>
+  );
 }
 
 /** One morphing line, as paths the UI thread interpolates and nothing else. */
@@ -1728,8 +1949,11 @@ export function NativePlayerParts({
   mutedColour,
   songTitleFont,
   songMetaFont,
+  byline = null,
 }: {
   model: NativeSongModel;
+  /** The byline's marquee, when the field has one; see `BylineMarqueeLayer`. */
+  byline?: BylineClock | null;
   lensClock?: LensClock;
   /** The song's form on its clock, and how far it has inked in; see `ClockCuts`. */
   formCuts?: DerivedValue<ClockCuts> | null;
@@ -1839,7 +2063,18 @@ export function NativePlayerParts({
           progress={named}
         />
       )}
-      {model.metaMorph === null ? (
+      {model.metaScroll !== null ? (
+        <ScrollingByline
+          clock={byline}
+          colour={mutedColour}
+          font={songMetaFont}
+          model={model}
+          named={named}
+          owned={owned}
+          scroll={model.metaScroll}
+          viewport={viewport}
+        />
+      ) : model.metaMorph === null ? (
         <SkiaGroup opacity={named}>
           <Text
             color={mutedColour}

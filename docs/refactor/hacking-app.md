@@ -295,7 +295,15 @@ track, the unstepped playhead, the scene's `motionIn` and the transport's
 play/pause morph — null under reduced motion, before the track, or before it has
 risen. The field canvas stays on its stepped playhead; once the player has
 landed and its lens is at rest it is drawn on `PlayerMotionLayer`, a canvas of
-its own. The clock carries the song's form (`ClockCuts`: section cuts, drop
+its own. A byline longer than its column is seated at the column's left edge,
+morphs onto a two-copy loop, and scrolls on `BylineMarqueeLayer`
+(`features/field/BylineMarquee.tsx`), a strip canvas the line is handed to on
+the frame it first moves and handed back from when the player is left; the
+`BylineClock`'s `owner` says which canvas draws it. Under reduced motion it is
+cut with an ellipsis instead. Keep the strip's child element held by identity:
+a canvas handed a fresh child stops its mapper until the JS thread has
+re-recorded it, and the strip froze over the field's take-back on every Back.
+The clock carries the song's form (`ClockCuts`: section cuts, drop
 dots, letters outside the ring). The visual clock's latency is the route's
 (`player/outputLatency.ts`) plus this phone's correction for it
 (`player/syncOffsets.ts`, set in settings' `SyncRow` by eye against the song
