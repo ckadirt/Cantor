@@ -182,6 +182,7 @@ import { AnalysisStore, type AnalysisRef } from '../lenses/analysisStore';
 import { MotionStore } from '../lenses/motion/motionStore';
 import { loadSyncOffsets } from '../player/syncOffsets';
 import type { SyncSong } from '../features/engines/SyncRow';
+import { clockCutsOf } from '../features/field/NativePlayer';
 import { beatSureOf } from '../lenses/motion/motionFrame';
 
 import { unpackMotionTrack } from '../lenses/motion/motionTrack';
@@ -1528,6 +1529,14 @@ export function FieldScreen({ identity }: Props) {
     heldKey === null ? null : controller.presentations.get(heldKey) ?? null;
   const heldSounding = transport.snapshot.state === 'playing';
   const heldDuration = transport.snapshot.durationSeconds;
+  // The focused song's form, for seeking on the circle's orbit.
+  const focusedMotion = useStore(motionStore.store, tracks =>
+    focused === null ? null : tracks.get(focused.entity.key) ?? null,
+  );
+  const focusedForm = useMemo(() => {
+    const cuts = clockCutsOf(focusedMotion);
+    return cuts.starts.length < 2 ? null : { starts: cuts.starts, labels: cuts.labels };
+  }, [focusedMotion]);
   const heldMotion = useStore(motionStore.store, tracks =>
     heldKey === null ? null : tracks.get(heldKey) ?? null,
   );
@@ -2839,6 +2848,7 @@ export function FieldScreen({ identity }: Props) {
               }}
               onSeek={focusedIsCurrent ? transport.scrub : () => {}}
               onSeekEnd={transport.finishScrub}
+              form={focusedForm}
               onToggle={() => void playFocused()}
               steps={focusedSteps}
               onStep={stepFocused}

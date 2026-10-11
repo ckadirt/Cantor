@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -25,10 +25,14 @@ import {
 import { REPRESENTATION_WINDOWS, bandAlphaAt, type Camera } from '../../field';
 import {
   DEFAULT_LENS_KEY,
+  NAME_LENS_KNOBS,
+  circleOrbitPx,
   lensByKey,
   type Lens,
   type LensTouch,
 } from '../../lenses';
+import { circlePlayerOf } from '../../lenses/circleMotion';
+import { haptic } from '../../haptics';
 import type { FaceRecipe } from '../../lenses/face';
 import { useMorphFont } from '../../motion/fonts';
 import {
@@ -58,6 +62,18 @@ const SONG_SURFACE_KNOBS = {
   SEEK_STEP_SECONDS: 1,
   /** How far a tap on the player may wander before it is not a tap. */
   TAP_SLOP_PX: 10,
+  /*
+   * Seeking on the circle's orbit (reactive-player-log.md, layout M). The
+   * orbit is the timeline: a drag near it is the scrub, and three times finer
+   * than one on the clock in the well, for the same turn.
+   */
+  /** A drag that strays this far past the orbit turns fine: the song moves at `FINE_GAIN` of the finger. */
+  FINE_FROM_PX: 12,
+  FINE_GAIN: 0.25,
+  /** A boundary catches the playhead within this much arc of the finger, with a tick. */
+  SNAP_PX: 9,
+  /** A finger this near a letter on the orbit is a tap on it: the section's start. */
+  LETTER_TAP_PX: 22,
   ELAPSED_SAMPLE_MS: 500, // how often the clock label reads the visual clock
   /** Where the clock sits: above the ring, which is centred on the view. */
   ELAPSED_TOP_RATIO_PCT: '13%',
@@ -122,6 +138,8 @@ type Props = {
   onStep?: (direction: 1 | -1) => void;
   onSeek: (seconds: number) => void;
   onSeekEnd?: () => void;
+  /** The song's form, for seeking on the circle's orbit; null until measured. */
+  form?: SeekForm | null;
   onOpenDetail: () => void;
   width: number;
   height: number;
@@ -188,6 +206,7 @@ function SongSurfaceImpl({
   onStep,
   onSeek,
   onSeekEnd,
+  form = null,
   onOpenDetail,
   width,
   height,
@@ -259,17 +278,51 @@ function SongSurfaceImpl({
     () => seekBoxPx({ width, height }, drawnLens),
     [height, width, drawnLens],
   );
+  /*
+   * The readout follows the finger: a scrub pauses the song, and the clock
+   * above the player read the playhead only while it played, so it stood
+   * still under the drag. Whole seconds, so a drag re-renders at most once a
+   * second of song.
+   */
+  const [scrubbed, setScrubbed] = useState<number | null>(null);
+  const seekShown = useCallback(
+    (seconds: number) => {
+      const shown = Math.floor(seconds);
+      setScrubbed(previous => (previous === shown ? previous : shown));
+      onSeek(seconds);
+    },
+    [onSeek],
+  );
+  const seekEnded = useCallback(() => {
+    setScrubbed(null);
+    onSeekEnd?.();
+  }, [onSeekEnd]);
+  // The circle seeks on its orbit, once the song's form is measured.
+  const orbit = useMemo(
+    () =>
+      form === null || form.starts.length < 2 || drawnLens.ui.ringTicks <= 0
+        ? null
+        : {
+            form,
+            radius: circleOrbitPx(
+              circlePlayerOf(recipe, NAME_LENS_KNOBS.SPINDLE_RATIO),
+              playerRadiusPx(width),
+            ),
+          },
+    [drawnLens, form, recipe, width],
+  );
   const scrub = useMemo(
     () =>
       seekGesture(
         { width, height },
         durationSeconds,
-        onSeek,
-        onSeekEnd,
+        seekShown,
+        seekEnded,
         drawnLens,
         recipe,
+        orbit,
       ),
-    [durationSeconds, height, onSeek, onSeekEnd, width, drawnLens, recipe],
+    [durationSeconds, height, seekShown, seekEnded, width, drawnLens, recipe, orbit],
   );
 
   useEffect(() => () => onSeekEnd?.(), [onSeekEnd]);
@@ -305,7 +358,7 @@ function SongSurfaceImpl({
         style={[type.eyebrow, styles.elapsed, { color: pal.ink }, readout]}>
         {song.away
           ? song.away
-          : `${formatClock(isCurrent ? elapsed : 0)}  ·  ${formatClock(
+          : `${formatClock(scrubbed ?? (isCurrent ? elapsed : 0))}  ·  ${formatClock(
               durationSeconds,
             )}`}
       </Animated.Text>
@@ -401,6 +454,48 @@ export function seekBoxPx(
 }
 
 /**
+ * The song's form as a seek reads it: each section's start (0..1, the first
+ * at the song's start) and letter — the orbit's notches and labels.
+ */
+export type SeekForm = Readonly<{ starts: readonly number[]; labels: readonly number[] }>;
+
+/** One label on the orbit: where a finger taps it, and the start of its run. */
+type OrbitLetter = Readonly<{ x: number; y: number; start: number }>;
+
+/** Where the orbit's labels stand, as `drawFormOrbit` sets them, about the player's centre. */
+function orbitLetters(form: SeekForm, orbit: number): OrbitLetter[] {
+  const out: OrbitLetter[] = [];
+  const count = form.starts.length;
+  const gap = 6.5 / orbit;
+  let i = 0;
+  while (i < count) {
+    let j = i;
+    while (j + 1 < count && form.labels[j + 1] === form.labels[i]) j++;
+    const from = form.starts[i];
+    const to = j + 1 < count ? form.starts[j + 1] : 1;
+    const turn = (from + to) / 2;
+    const a = turn * Math.PI * 2 - Math.PI / 2;
+    const fits = (to - from) * Math.PI * 2 > gap * 2.4;
+    const r = fits ? orbit : orbit + 9;
+    out.push({ x: Math.cos(a) * r, y: Math.sin(a) * r, start: from });
+    i = j + 1;
+  }
+  return out;
+}
+
+/** The finger's turn about the centre, 0..1 from twelve, clockwise. */
+function turnOf(dx: number, dy: number): number {
+  const turn = (Math.atan2(dy, dx) + Math.PI / 2) / (Math.PI * 2);
+  return turn - Math.floor(turn);
+}
+
+/** The shortest signed difference of two turns, −0.5..0.5. */
+function turnDelta(to: number, from: number): number {
+  const d = to - from;
+  return d - Math.round(d);
+}
+
+/**
  * Seeking, by whatever the lens drawn at the player says a finger means.
  *
  * The ring is the timeline, so on the circle a drag around it is the scrub —
@@ -423,13 +518,20 @@ export function seekGesture(
   onSeekEnd: () => void = () => {},
   lens: Lens = DEFAULT_LENS,
   recipe: FaceRecipe = NO_RECIPE,
+  /**
+   * The song's form and the orbit's radius, when the circle is drawn and the
+   * song is measured: a drag near the orbit snaps to its boundaries, one past
+   * it turns fine, and a tap on a letter goes to its section.
+   */
+  orbit: Readonly<{ form: SeekForm; radius: number }> | null = null,
 ) {
   const box = seekBoxPx(viewport, lens);
   const ring = playerSeekScreenPx(viewport);
   const radius = playerRadiusPx(viewport.width);
   const step = SONG_SURFACE_KNOBS.SEEK_STEP_SECONDS;
-  const seekFraction = (fraction: number) =>
-    onSeek(Math.round((fraction * durationSeconds) / step) * step);
+  const K = SONG_SURFACE_KNOBS;
+  const seekFraction = (fraction: number, exact = false) =>
+    onSeek(exact ? fraction * durationSeconds : Math.round((fraction * durationSeconds) / step) * step);
   /*
    * The gesture's coordinates are the box's; a lens reads them about the
    * player's centre. Laying the box out at the ring's own bounds instead would
@@ -437,19 +539,72 @@ export function seekGesture(
    */
   const dxOf = (x: number) => box.left + x - ring.cx;
   const dyOf = (y: number) => box.top + y - ring.cy;
+  const letters = orbit === null || orbit.form.starts.length < 2 ? [] : orbitLetters(orbit.form, orbit.radius);
   /** What the current touch is doing, decided where it landed. */
   let held: (LensTouch & { startX: number; startY: number }) | null = null;
+  // A drag's own state: where the song is, whether it has turned fine, and the boundary it caught.
+  let current = 0;
+  let fine = false;
+  let lastTurn = 0;
+  let caught = -1;
+  let onLetter = false;
   const begin = (x: number, y: number) => {
-    const landed = lens.touch.landAt(recipe, dxOf(x), dyOf(y), radius);
+    fine = false;
+    caught = -1;
+    onLetter = false;
+    const dx = dxOf(x);
+    const dy = dyOf(y);
+    // A letter on the orbit: its section, on release.
+    for (const at of letters) {
+      if (Math.hypot(dx - at.x, dy - at.y) <= K.LETTER_TAP_PX) {
+        held = { kind: 'tap', fraction: at.start, startX: x, startY: y };
+        onLetter = true;
+        return;
+      }
+    }
+    const landed = lens.touch.landAt(recipe, dx, dy, radius);
     held = landed === null ? null : { ...landed, startX: x, startY: y };
     if (landed?.kind === 'seek' && landed.fraction !== null) {
+      current = landed.fraction;
       seekFraction(landed.fraction);
     }
   };
   const update = (x: number, y: number) => {
     if (held?.kind === 'seek') {
-      const fraction = lens.touch.seekAt(dxOf(x), dyOf(y), radius);
-      if (fraction !== null) seekFraction(fraction);
+      const dx = dxOf(x);
+      const dy = dyOf(y);
+      const reach = Math.hypot(dx, dy);
+      const turn = turnOf(dx, dy);
+      // Past the orbit the drag turns fine, and stays fine until the finger lifts.
+      if (orbit !== null && (fine || reach > orbit.radius + K.FINE_FROM_PX)) {
+        if (!fine) {
+          fine = true;
+          lastTurn = turn;
+          return;
+        }
+        current = Math.min(1, Math.max(0, current + turnDelta(turn, lastTurn) * K.FINE_GAIN));
+        lastTurn = turn;
+        seekFraction(current, true);
+        return;
+      }
+      let fraction = lens.touch.seekAt(dx, dy, radius);
+      if (fraction === null) return;
+      // Near a boundary, the playhead catches its section's start.
+      let snapped = -1;
+      if (orbit !== null) {
+        const arc = Math.max(reach, 1) * Math.PI * 2;
+        for (let b = 1; b < orbit.form.starts.length; b++) {
+          if (Math.abs(turnDelta(fraction, orbit.form.starts[b])) * arc <= K.SNAP_PX) {
+            snapped = b;
+            fraction = orbit.form.starts[b];
+            break;
+          }
+        }
+      }
+      if (snapped >= 0 && snapped !== caught) haptic('tick');
+      caught = snapped;
+      current = fraction;
+      seekFraction(fraction, snapped >= 0);
     } else if (
       held?.kind === 'tap' &&
       Math.hypot(x - held.startX, y - held.startY) >
@@ -460,7 +615,8 @@ export function seekGesture(
   };
   const finish = () => {
     if (held?.kind === 'tap' && held.fraction !== null) {
-      seekFraction(held.fraction);
+      // A letter's section starts where it starts, not on the nearest second.
+      seekFraction(held.fraction, onLetter);
     }
     held = null;
     onSeekEnd();
