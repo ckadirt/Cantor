@@ -144,11 +144,10 @@ describe('seeking on a seal', () => {
     };
   }
 
-  it('listens over the rim, which reaches past the circle\'s own ring', () => {
+  it('listens over the rim, and past it', () => {
     const box = seekBoxPx(viewport, sealLens);
     const placed = playerSealScreenPx(viewport);
     expect(box.size).toBeCloseTo(placed.outer * 2);
-    expect(placed.outer).toBeGreaterThan(playerSeekScreenPx(viewport).outer);
     const rim = playerRadiusPx(viewport.width) * SEAL_PLAYER_KNOBS.RIM_RATIO;
     // The rim clears the seal's corners, and the reach clears the rim.
     expect(rim).toBeGreaterThan((placed.side / 2) * Math.SQRT2);
@@ -246,3 +245,64 @@ describe('seeking on a lens the gesture has never seen', () => {
   });
 });
 
+
+describe('seeking on the circle\'s orbit', () => {
+  // A A B C: four sections; the two As share a label on the orbit.
+  const form = { starts: [0, 0.2, 0.4, 0.7], labels: [0, 0, 1, 2] };
+  const ORBIT = 150;
+  function orbitGesture(onSeek: (seconds: number) => void, onEnd: () => void = jest.fn()) {
+    return seekGesture(viewport, DURATION_SECONDS, onSeek, onEnd, nameLens, undefined, {
+      form,
+      radius: ORBIT,
+    }) as unknown as { handlers: Record<string, (event: { x: number; y: number }) => void> };
+  }
+  /** A point `reach` px from the player's centre, at `fraction` of a turn. */
+  function at(fraction: number, reach: number) {
+    const ring = playerSeekScreenPx(viewport);
+    const box = seekBoxPx(viewport, nameLens);
+    const radians = fraction * Math.PI * 2 - Math.PI / 2;
+    return { x: ring.cx - box.left + Math.cos(radians) * reach, y: ring.cy - box.top + Math.sin(radians) * reach };
+  }
+
+  it('catches a section’s start when the drag passes near it', () => {
+    const onSeek = jest.fn();
+    const g = orbitGesture(onSeek);
+    g.handlers.onBegin(at(0.3, ORBIT));
+    // A degree past the boundary at 0.4: well within the catch at this radius.
+    g.handlers.onUpdate(at(0.4 + 1 / 360, ORBIT));
+    expect(onSeek).toHaveBeenLastCalledWith(0.4 * DURATION_SECONDS);
+    // Far from any boundary it is the finger's own second.
+    g.handlers.onUpdate(at(0.55, ORBIT));
+    expect(onSeek).toHaveBeenLastCalledWith(Math.round(0.55 * DURATION_SECONDS));
+  });
+
+  it('turns fine past the orbit: a quarter of the song for the same turn', () => {
+    const onSeek = jest.fn();
+    const g = orbitGesture(onSeek);
+    g.handlers.onBegin(at(0.5, ORBIT));
+    g.handlers.onUpdate(at(0.5, ORBIT + 30)); // into the fine zone: where it is now is where it starts
+    g.handlers.onUpdate(at(0.6, ORBIT + 30));
+    const seconds = onSeek.mock.calls[onSeek.mock.calls.length - 1][0] as number;
+    expect(seconds).toBeCloseTo((0.5 + 0.1 * 0.25) * DURATION_SECONDS, 6);
+    // Fine until the finger lifts, even back inside.
+    g.handlers.onUpdate(at(0.65, ORBIT - 20));
+    expect(onSeek.mock.calls[onSeek.mock.calls.length - 1][0]).toBeCloseTo((0.525 + 0.05 * 0.25) * DURATION_SECONDS, 6);
+  });
+
+  it('goes to a section’s start on a tap of its letter, on release', () => {
+    const onSeek = jest.fn();
+    const g = orbitGesture(onSeek);
+    // The A run spans 0..0.4: its label stands at 0.2.
+    const point = at(0.2, ORBIT);
+    g.handlers.onBegin(point);
+    expect(onSeek).not.toHaveBeenCalled();
+    g.handlers.onFinalize(point);
+    expect(onSeek).toHaveBeenCalledWith(0);
+    // C's run is 0.7..1.
+    const c = jest.fn();
+    const g2 = orbitGesture(c);
+    g2.handlers.onBegin(at(0.85, ORBIT));
+    g2.handlers.onFinalize(at(0.85, ORBIT));
+    expect(c).toHaveBeenCalledWith(0.7 * DURATION_SECONDS);
+  });
+});

@@ -127,7 +127,8 @@ export const NAME_LENS_KNOBS = {
    * target that stopped short of the ticks would leave the loudest part of the
    * circle unpressable, and one much past them is a control in blank space.
    */
-  CLOCK_SEEK_REACH_RATIO: 1.06,
+  // Out past the orbit, where the form is and the drag is finest (layout M).
+  CLOCK_SEEK_REACH_RATIO: 1.3,
   /**
    * How far a full-amplitude tick reaches past its root, as a fraction of the
    * player's radius: 0.3 of the face's. A tick is rooted `SONG_WAVE_ROOT_PX`
