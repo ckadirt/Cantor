@@ -201,6 +201,12 @@ import {
   type NativeSongModel,
 } from './NativePlayer';
 import {
+  BylineMarqueeLayer,
+  useBylineClock,
+  usePublishByline,
+  type BylineClock,
+} from './BylineMarquee';
+import {
   PLAYER_POSE_KNOBS,
   facePoseAt,
   lineOwnedByPlayer,
@@ -1282,6 +1288,7 @@ function FieldCanvasImpl({
           rowMeta: monoFont,
           songMeta: songMetaFont,
         },
+        !reducedMotion,
       ),
       detail: songDetailOf(
         recut.flights,
@@ -1300,6 +1307,7 @@ function FieldCanvasImpl({
     monoFont,
     presentations,
     recut,
+    reducedMotion,
     songMetaFont,
     songTitleFont,
     viewport,
@@ -1362,6 +1370,10 @@ function FieldCanvasImpl({
     detail: useSharedValue<DetailDraw | null>(null),
   };
   const playerLayer = useRef(playerLayerCandidate).current;
+  // The byline's marquee, which scrolls on a strip above the field for the
+  // same reason; see `BylineMarqueeLayer`.
+  const bylineClockCandidate = useBylineClock();
+  const bylineClock = useRef(bylineClockCandidate).current;
   const fieldMotionCandidate = useDerivedValue((): MotionFrame | null => {
     if (layerOwns(playerLayer)) return null;
     return motionFrame.value;
@@ -1403,6 +1415,7 @@ function FieldCanvasImpl({
           motionFrame={fieldMotion}
           motionOn={motionOn}
           layer={playerLayer}
+          byline={bylineClock}
           hubPaths={hubPaths}
           displayFont={displayFont}
           songTitleFont={songTitleFont}
@@ -1431,6 +1444,7 @@ function FieldCanvasImpl({
     fieldMotion,
     motionOn,
     playerLayer,
+    bylineClock,
     // Only whether there is a cut, not which: a re-cut reaches the scene as
     // a shared value.
     hasCut,
@@ -1468,6 +1482,15 @@ function FieldCanvasImpl({
           palette={palette}
           viewport={viewport}
           letterFont={monoFont}
+        />
+      )}
+      {viewport === null || songMetaFont === null ? null : (
+        <BylineMarqueeLayer
+          clock={bylineClock}
+          colour={palette.muted}
+          font={songMetaFont}
+          playing={transportPlaying}
+          viewport={viewport}
         />
       )}
     </>
@@ -1875,6 +1898,8 @@ type NativeFieldContentProps = Readonly<{
   /** Whether there is a frame at all; changes only as motion rises and goes. */
   motionOn: DerivedValue<boolean>;
   layer: PlayerLayer;
+  /** The byline's marquee; see `BylineMarqueeLayer`. */
+  byline: BylineClock;
   /**
    * The decoded window L3 draws, as a shared value rather than a prop.
    *
@@ -3515,6 +3540,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   motionFrame,
   motionOn,
   layer,
+  byline,
   grainShared,
   jobMarks,
   hubPaths,
@@ -4055,6 +4081,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           scene={scene}
           lensClock={lensClock}
           playerRow={playerRow}
+          byline={byline}
           motion={motion}
           cameraShared={cameraShared}
           fitScaleShared={fitScaleShared}
@@ -4171,6 +4198,7 @@ function FocusFlight({
   scene,
   lensClock,
   playerRow,
+  byline,
   motion,
   cameraShared,
   fitScaleShared,
@@ -4190,6 +4218,7 @@ function FocusFlight({
   scene: LivingScene;
   lensClock: LensClock;
   playerRow: SharedValue<PlayerRow | null>;
+  byline: BylineClock;
   motion: NativeCameraMotion;
   cameraShared: SharedValue<Camera>;
   fitScaleShared: SharedValue<number>;
@@ -4219,6 +4248,7 @@ function FocusFlight({
     <NativePlacementFlight
       lensClock={lensClock}
       playerRow={playerRow}
+      byline={byline}
       motion={motion}
       flight={focus.flight}
       clock={clock}
@@ -4419,6 +4449,7 @@ function NativePlacementFlight({
   formInk = null,
   motion,
   playerRow,
+  byline = null,
   lensClock,
   flight,
   clock,
@@ -4448,6 +4479,8 @@ function NativePlacementFlight({
   motion: NativeCameraMotion;
   /** Where this flight says it has taken its row over; see `playerRow`. */
   playerRow: SharedValue<PlayerRow | null>;
+  /** The byline's marquee, told where the player is; see `usePublishByline`. */
+  byline?: BylineClock | null;
   lensClock: LensClock;
   flight: PlacementFlight;
   clock: SharedValue<number>;
@@ -4703,6 +4736,17 @@ function NativePlacementFlight({
       ? 0
       : motion.fieldFade.value * (isPlayer ? motion.owned.value : 1),
   );
+  const holdsPlayer = useDerivedValue(
+    () => isPlayer && playerRow.value?.owner === holder,
+  );
+  usePublishByline(
+    isPlayer ? byline : null,
+    song?.metaScroll ?? null,
+    holdsPlayer,
+    transform,
+    flightOpacity,
+    nameArrived,
+  );
   return (
     <SkiaGroup opacity={flightOpacity} transform={transform}>
       {/*
@@ -4771,6 +4815,7 @@ function NativePlacementFlight({
           songMetaFont={songMetaFont}
           songTitleFont={songTitleFont}
           viewport={viewport}
+          byline={byline}
         />
       )}
     </SkiaGroup>

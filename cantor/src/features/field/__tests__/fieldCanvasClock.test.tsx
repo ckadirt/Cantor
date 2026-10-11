@@ -417,9 +417,10 @@ describe('field canvas re-cut clock', () => {
       renderer = ReactTestRenderer.create(render(1));
     });
     // Jobs are a layer of the song scene, not a surface over it: the only
-    // other canvas is the moving player's (`PlayerMotionLayer`).
+    // other canvases are the moving player's (`PlayerMotionLayer`) and its
+    // scrolling byline's (`BylineMarqueeLayer`).
     const canvases = renderer.root.findAllByType(Canvas);
-    expect(canvases).toHaveLength(2);
+    expect(canvases).toHaveLength(3);
     const scene = canvases[0].props.children;
     const jobMarks = scene.props.children[0].props.jobMarks;
     const first = jobMarks.value[entity.key];
