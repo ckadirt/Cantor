@@ -44,6 +44,14 @@ describe('the form, lettered round the clock', () => {
     }
   });
 
+  it('steps a crowded letter onto a second ring, rather than leaving it out', () => {
+    const crowded = { ...NO_CUTS, middles: [0.1, 0.101, 0.102], labels: [0, 1, 2] };
+    const seats = formLetterSeats(crowded, 151, 6, 7, null, -11);
+    // A on the first ring, B on the second, C crowds both and gives way.
+    expect(seats.filter((_, i) => i % 4 === 2)).toEqual([0, 1]);
+    expect(Math.hypot(seats[4] + 3, seats[5] - 3.5)).toBeCloseTo(140, 6);
+  });
+
   it('leaves out a letter that would crowd the one before it, and one past Z', () => {
     const crowded = {
       ...NO_CUTS,
@@ -60,15 +68,14 @@ describe('the form, lettered round the clock', () => {
     const at = (i: number, into = 0.5) => cuts.starts[i] + (cuts.starts[i + 1] - cuts.starts[i]) * into;
     const written = (inks: number[]) => inks.map((ink, i) => (ink > 0.01 ? i : -1)).filter(i => i >= 0);
 
-    it('names the section you are in and every other run of its letter, and nothing else', () => {
+    it('writes the whole form: the section you are in firmest, its repeats next, the rest quiet', () => {
       const c = cuts.labels.indexOf(3); // the first C
       const inks = formLetterInks(cuts, at(c));
+      expect(written(inks)).toEqual(cuts.labels.map((_, i) => i));
       const runs = cuts.labels.map((label, i) => (label === cuts.labels[c] ? i : -1)).filter(i => i >= 0);
-      expect(written(inks)).toEqual(runs);
-      // The one you are in, more firmly than its echoes.
+      const others = cuts.labels.map((_, i) => i).filter(i => !runs.includes(i));
       for (const i of runs) if (i !== c) expect(inks[c]).toBeGreaterThan(inks[i]);
-      // A long song writes a handful, not its whole form.
-      expect(written(inks).length).toBeLessThan(cuts.labels.length / 2);
+      for (const i of others) expect(inks[runs.find(j => j !== c)!]).toBeGreaterThan(inks[i]);
     });
 
     it('crosses over the first bar of a section, from the last one’s letters', () => {
@@ -77,8 +84,7 @@ describe('the form, lettered round the clock', () => {
       const leaving = formLetterInks(cuts, enter);
       const half = formLetterInks(cuts, enter + cuts.bar / 2);
       const settled = formLetterInks(cuts, enter + cuts.bar * 1.01);
-      // On the cut, the last section still has its letter; after a bar, this one has.
-      expect(leaving[i - 1]).toBeGreaterThan(0);
+      // On the cut, the last section is still the firm one; after a bar, this one is.
       expect(settled[i - 1]).toBeLessThan(leaving[i - 1]);
       expect(settled[i]).toBeGreaterThan(leaving[i]);
       expect(half[i]).toBeGreaterThan(leaving[i]);
