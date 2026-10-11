@@ -1,5 +1,5 @@
 import { load, trackOf } from '../../../lenses/motion/__fixtures__/referenceTrack';
-import { clockCutsOf, formLetterRadius, formLetterSeats, NO_CUTS } from '../NativePlayer';
+import { clockCutsOf, formLetterInks, formLetterRadius, formLetterSeats, NO_CUTS } from '../NativePlayer';
 
 describe('the form, lettered round the clock', () => {
   const track = trackOf(load('edm-drop'));
@@ -33,14 +33,14 @@ describe('the form, lettered round the clock', () => {
   it('seats each letter on its ring, centred on its section', () => {
     const r = 150;
     const seats = formLetterSeats(cuts, r, 6, 7);
-    expect(seats.length / 3).toBe(track.sections.length);
-    for (let i = 0; i < seats.length; i += 3) {
+    expect(seats.length / 4).toBe(track.sections.length);
+    for (let i = 0; i < seats.length; i += 4) {
       const cx = seats[i] + 3;
       const cy = seats[i + 1] - 3.5;
       expect(Math.hypot(cx, cy)).toBeCloseTo(r, 6);
       // Clockwise from twelve, like the clock.
       const turn = (Math.atan2(cx, -cy) / (2 * Math.PI) + 1) % 1;
-      expect(turn).toBeCloseTo(cuts.middles[i / 3], 6);
+      expect(turn).toBeCloseTo(cuts.middles[i / 4], 6);
     }
   });
 
@@ -52,6 +52,42 @@ describe('the form, lettered round the clock', () => {
     };
     const seats = formLetterSeats(crowded, 151, 6, 7);
     // 0.003 crowds 0.002; 0.999 crowds 0.002 across twelve; Z+1 has no letter.
-    expect(seats.filter((_, i) => i % 3 === 2)).toEqual([0, 2]);
+    expect(seats.filter((_, i) => i % 4 === 2)).toEqual([0, 2]);
+  });
+
+  describe('which letters are written', () => {
+    // Red Lights: A B A C D E F G C D E H E.
+    const at = (i: number, into = 0.5) => cuts.starts[i] + (cuts.starts[i + 1] - cuts.starts[i]) * into;
+    const written = (inks: number[]) => inks.map((ink, i) => (ink > 0.01 ? i : -1)).filter(i => i >= 0);
+
+    it('names the section you are in and every other run of its letter, and nothing else', () => {
+      const c = cuts.labels.indexOf(3); // the first C
+      const inks = formLetterInks(cuts, at(c));
+      const runs = cuts.labels.map((label, i) => (label === cuts.labels[c] ? i : -1)).filter(i => i >= 0);
+      expect(written(inks)).toEqual(runs);
+      // The one you are in, more firmly than its echoes.
+      for (const i of runs) if (i !== c) expect(inks[c]).toBeGreaterThan(inks[i]);
+      // A long song writes a handful, not its whole form.
+      expect(written(inks).length).toBeLessThan(cuts.labels.length / 2);
+    });
+
+    it('crosses over the first bar of a section, from the last one’s letters', () => {
+      const i = 3;
+      const enter = cuts.starts[i];
+      const leaving = formLetterInks(cuts, enter);
+      const half = formLetterInks(cuts, enter + cuts.bar / 2);
+      const settled = formLetterInks(cuts, enter + cuts.bar * 1.01);
+      // On the cut, the last section still has its letter; after a bar, this one has.
+      expect(leaving[i - 1]).toBeGreaterThan(0);
+      expect(settled[i - 1]).toBeLessThan(leaving[i - 1]);
+      expect(settled[i]).toBeGreaterThan(leaving[i]);
+      expect(half[i]).toBeGreaterThan(leaving[i]);
+      expect(half[i]).toBeLessThan(settled[i]);
+    });
+
+    it('names the first section from the start, before anything has played', () => {
+      expect(written(formLetterInks(cuts, 0))).toContain(0);
+      expect(formLetterInks(NO_CUTS, 0)).toEqual([]);
+    });
   });
 });

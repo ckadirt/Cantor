@@ -857,6 +857,7 @@ function ClockDrawing({
           formInk={formInk}
           ring={clockRing}
           outside={lettersOutside}
+          head={fraction}
         />
       )}
       <Path
@@ -1513,11 +1514,14 @@ const VERB_POSE_STOPS = [
 export type ClockCuts = Readonly<{
   sections: readonly number[];
   drops: readonly number[];
-  /** Each section's middle, and its letter (0 is A); none for a song of one section. */
+  /** Each section's start, middle and letter (0 is A); none for a song of one section. */
+  starts: readonly number[];
   middles: readonly number[];
   labels: readonly number[];
+  /** One bar, as a fraction of the song: how long the letters take to change. */
+  bar: number;
 }>;
-export const NO_CUTS: ClockCuts = { sections: [], drops: [], middles: [], labels: [] };
+export const NO_CUTS: ClockCuts = { sections: [], drops: [], starts: [], middles: [], labels: [], bar: 0 };
 
 export function clockCutsOf(track: MotionTrack | null): ClockCuts {
   'worklet';
@@ -1528,16 +1532,53 @@ export function clockCutsOf(track: MotionTrack | null): ClockCuts {
   const drops: number[] = [];
   for (let i = 0; i < track.drops.length; i++) drops.push(track.drops[i].t / track.duration);
   // One letter says nothing: a form needs two sections to be one.
+  const starts: number[] = [];
   const middles: number[] = [];
   const labels: number[] = [];
   if (track.sections.length > 1) {
     for (let i = 0; i < track.sections.length; i++) {
       const s = track.sections[i];
+      starts.push(s.t0 / track.duration);
       middles.push((s.t0 + s.t1) / 2 / track.duration);
       labels.push(s.label);
     }
   }
-  return { sections, drops, middles, labels };
+  const bar = track.bpm > 0 ? (4 * 60) / track.bpm / track.duration : 0;
+  return { sections, drops, starts, middles, labels, bar };
+}
+
+/**
+ * The section you are in, and the other runs of its letter, as shares of
+ * `LETTER_ALPHA`. Above the worklet that reads them: the worklets plugin
+ * captures what a worklet reads when it is defined.
+ */
+const LETTER_HERE = 1.45;
+const LETTER_ECHO = 1;
+
+/**
+ * How much of each section's letter to write at `head` (0..1 through the
+ * song). Not every letter: a long song's form round a small clock was a ring
+ * of type. The cuts mark every section; the letters name the one you are in
+ * (`LETTER_HERE`) and every other run of that letter (`LETTER_ECHO`) — where
+ * this part comes back, or where it was before — and nothing else. Entering
+ * a section they cross over its first bar, from the last section's to this one's.
+ */
+export function formLetterInks(cuts: ClockCuts, head: number): number[] {
+  'worklet';
+  const count = cuts.labels.length;
+  const inks: number[] = [];
+  if (count === 0) return inks;
+  let here = 0;
+  while (here + 1 < count && cuts.starts[here + 1] <= head) here++;
+  const inkFor = (i: number, at: number): number =>
+    at < 0 ? 0 : i === at ? LETTER_HERE : cuts.labels[i] === cuts.labels[at] ? LETTER_ECHO : 0;
+  const into = cuts.bar > 0 ? (head - cuts.starts[here]) / cuts.bar : 1;
+  const crossed = here === 0 ? 1 : smootherstep(into < 0 ? 0 : into > 1 ? 1 : into);
+  for (let i = 0; i < count; i++) {
+    const before = inkFor(i, here - 1);
+    inks.push(before + (inkFor(i, here) - before) * crossed);
+  }
+  return inks;
 }
 
 // knobs — the page's: a cut ±5 px across the ring, a drop's dot 9 px inside it
@@ -1575,6 +1616,7 @@ export function formLetterSeats(
   r: number,
   letterWidth: number,
   letterHeight: number,
+  inks: readonly number[] | null = null,
 ): number[] {
   'worklet';
   const out: number[] = [];
@@ -1584,6 +1626,8 @@ export function formLetterSeats(
   for (let i = 0; i < cuts.middles.length; i++) {
     const label = cuts.labels[i];
     if (label < 0 || label > 25) continue;
+    const ink = inks === null ? 1 : inks[i];
+    if (ink <= 0.01) continue;
     const angle = cuts.middles[i] * Math.PI * 2;
     if (angle - last < room) continue;
     // Round the twelve, against the first letter drawn.
@@ -1591,7 +1635,7 @@ export function formLetterSeats(
     if (first < 0) first = angle;
     last = angle;
     const a = angle - Math.PI / 2;
-    out.push(Math.cos(a) * r - letterWidth / 2, Math.sin(a) * r + letterHeight / 2, label);
+    out.push(Math.cos(a) * r - letterWidth / 2, Math.sin(a) * r + letterHeight / 2, label, ink);
   }
   return out;
 }
@@ -1603,8 +1647,11 @@ function FormLetters({
   font,
   ring,
   outside,
+  head,
   colour,
 }: {
+  /** How far through the song the playhead is: which letters are written. */
+  head: SharedValue<number>;
   formCuts: DerivedValue<ClockCuts>;
   formInk: SharedValue<number>;
   font: SkFont;
@@ -1629,14 +1676,17 @@ function FormLetters({
   }, [font]);
   const picture = useDerivedValue(() =>
     createPicture(canvas => {
+      const cuts = formCuts.value;
       const r = formLetterRadius(ring.value, outside.value, letter.width);
-      const seats = formLetterSeats(formCuts.value, r, letter.width, letter.height);
-      for (let i = 0; i < seats.length; i += 3) {
+      const inks = formLetterInks(cuts, head.value);
+      const seats = formLetterSeats(cuts, r, letter.width, letter.height, inks);
+      for (let i = 0; i < seats.length; i += 4) {
+        ink.setAlphaf(Math.min(1, LETTER_ALPHA * seats[i + 3]));
         canvas.drawText(String.fromCharCode(65 + seats[i + 2]), seats[i], seats[i + 1], ink, font);
       }
     }),
   );
-  const alpha = useDerivedValue(() => LETTER_ALPHA * formInk.value);
+  const alpha = useDerivedValue(() => formInk.value);
   return (
     <SkiaGroup opacity={alpha}>
       <Picture picture={picture} />
