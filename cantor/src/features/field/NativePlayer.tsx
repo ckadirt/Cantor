@@ -652,6 +652,7 @@ export function PlayerRing({
   lensClock,
   formCuts = null,
   formInk = null,
+  present = null,
   letterFont = null,
   durationSeconds,
   positionSeconds,
@@ -661,6 +662,12 @@ export function PlayerRing({
   lensClock?: LensClock;
   formCuts?: DerivedValue<ClockCuts> | null;
   formInk?: SharedValue<number> | null;
+  /**
+   * How far the player has arrived, for its form: the letters and cuts leave
+   * with it rather than on the motion's own fade, which outlasted the flight
+   * and left them ringing the row on the list.
+   */
+  present?: DerivedValue<number> | null;
   /** The face the form's letters are written in; none, no letters. */
   letterFont?: SkFont | null;
   durationSeconds: number;
@@ -708,6 +715,7 @@ export function PlayerRing({
         radius={radius}
         formCuts={formCuts}
         formInk={formInk}
+        present={present}
         letterFont={letterFont}
       />
     );
@@ -724,6 +732,7 @@ export function PlayerRing({
         radius={radius}
         formCuts={formCuts}
         formInk={formInk}
+        present={present}
         letterFont={letterFont}
       />
       <ClockDrawing
@@ -735,6 +744,7 @@ export function PlayerRing({
         radius={radius}
         formCuts={formCuts}
         formInk={formInk}
+        present={present}
         letterFont={letterFont}
       />
     </>
@@ -751,6 +761,7 @@ function ClockDrawing({
   colour,
   formCuts,
   formInk,
+  present,
   letterFont,
 }: {
   radius: number;
@@ -761,6 +772,7 @@ function ClockDrawing({
   colour: string;
   formCuts: DerivedValue<ClockCuts> | null;
   formInk: SharedValue<number> | null;
+  present: DerivedValue<number> | null;
   letterFont: SkFont | null;
 }) {
   /*
@@ -858,7 +870,10 @@ function ClockDrawing({
     }
     return builder.detach();
   });
-  const onClock = useDerivedValue(() => shape.value.formOnClock);
+  // How much of the form the clock carries: the lens's share, while the player is here.
+  const onClock = useDerivedValue(
+    () => shape.value.formOnClock * (present === null ? 1 : present.value),
+  );
   const cutsAlpha = useDerivedValue(
     () => CUT_ALPHA * (formInk === null ? 0 : formInk.value) * onClock.value,
   );
@@ -2029,6 +2044,7 @@ export function NativePlayerParts({
             lensClock={lensClock}
             formCuts={formCuts}
             formInk={formInk}
+            present={named}
             letterFont={letterFont}
             colour={colour}
             durationSeconds={durationSeconds}

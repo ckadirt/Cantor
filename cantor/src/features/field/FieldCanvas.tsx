@@ -2823,7 +2823,28 @@ const ORBIT_KNOBS = {
   CLEAR_PX: 3,
   /** How finely an arc is drawn: one segment per this many radians. */
   ARC_STEP: 0.03,
+  /**
+   * The camera's distance (scale over fit) across which the orbit inks in,
+   * ending at the player's seat. Much later than the ticks' window
+   * (`songDetailOpacity`, from 12): the orbit stands at the player's full
+   * radius whatever the face's size, so on the ticks' window its letters were
+   * still on the list, spread round the row, after a pinch out let go short
+   * of the shelf.
+   */
+  ARRIVE_FROM_RATIO: 20,
+  ARRIVE_TO_RATIO: LEVEL_SCALE_RATIOS.song,
 } as const;
+
+/** How far the orbit has inked in at this distance, 0..1, measured in log scale as the camera moves. */
+function orbitArrival(ratio: number): number {
+  'worklet';
+  const K = ORBIT_KNOBS;
+  if (!(ratio > 0)) return 0;
+  const walked =
+    (Math.log(ratio) - Math.log(K.ARRIVE_FROM_RATIO)) /
+    (Math.log(K.ARRIVE_TO_RATIO) - Math.log(K.ARRIVE_FROM_RATIO));
+  return smootherstep(walked < 0 ? 0 : walked > 1 ? 1 : walked);
+}
 
 /** Whether `turn` (0..1 from twelve) is within `within` of a section boundary. */
 function nearBoundary(form: ClockCuts, turn: number, within: number): boolean {
@@ -3222,8 +3243,9 @@ export function drawSongDetail(
   }
 
   if (hasForm && form !== null && letterFont !== null) {
-    // The form leaves with the ring: as the lens changes, and as it unrolls.
-    const ink = opacity * drawn * (1 - smootherstep(lensProgress)) * (1 - unrolled);
+    // The form leaves with the player: as the camera pulls away, as the lens
+    // changes, and as the ring unrolls.
+    const ink = orbitArrival(ratio) * drawn * (1 - smootherstep(lensProgress)) * (1 - unrolled);
     if (ink > 0) drawFormOrbit(canvas, form, head, cx, cy, orbit, ink, paints, letterFont);
   }
 
