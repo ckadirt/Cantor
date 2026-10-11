@@ -767,6 +767,7 @@ function ClockDrawing({
       tickAlpha: mixed(a.tickAlpha, b.tickAlpha, t),
       tickPx: mixed(a.tickPx, b.tickPx, t),
       knob: mixed(a.knobRadiusPx, b.knobRadiusPx, t),
+      lettersOutside: mixed(a.lettersOutside, b.lettersOutside, t),
     };
   });
   const ring = useDerivedValue(() => ringPath(shape.value.r));
@@ -842,6 +843,7 @@ function ClockDrawing({
   });
   const cutsAlpha = useDerivedValue(() => CUT_ALPHA * (formInk === null ? 0 : formInk.value));
   const clockRing = useDerivedValue(() => shape.value.r);
+  const lettersOutside = useDerivedValue(() => shape.value.lettersOutside);
 
   return (
     <SkiaGroup opacity={opacity}>
@@ -853,8 +855,8 @@ function ClockDrawing({
           font={letterFont}
           formCuts={formCuts}
           formInk={formInk}
-          radius={radius}
           ring={clockRing}
+          outside={lettersOutside}
         />
       )}
       <Path
@@ -1544,21 +1546,22 @@ const CUT_ALPHA = 0.6;
 const DROP_INSET_PX = 9;
 const DROP_RADIUS_PX = 2.2;
 /**
- * The letters: this far outside the clock's ring or the circle's tallest tick
- * (`SONG_WAVE_REACH_RATIO` over the arc), whichever is further out — so past
- * the ticks on the circle and the rim on the seal, travelling between the two
- * with the clock — at the page's ink, and never closer along the ring than this
- * to the last one drawn (a short section's letter gives way to its neighbour's).
+ * The letters, beside the cuts they name: inside the circle's arc, in the
+ * body's well (their centres `LETTER_IN_PX` in), or outside the seal's rim
+ * (their inner edge `LETTER_OUT_PX` out) — each lens says which
+ * (`ClockShape.lettersOutside`), mixed through a change so they travel with
+ * the clock. At the page's ink, and never closer along the ring than this to
+ * the last one drawn (a short section's letter gives way to its neighbour's).
  */
+const LETTER_IN_PX = 14;
 const LETTER_OUT_PX = 9;
-const TICK_REACH_RATIO = PLAYER_POSE_KNOBS.SONG_ARC_RATIO + NAME_LENS_KNOBS.SONG_WAVE_REACH_RATIO;
 const LETTER_ALPHA = 0.55;
 const LETTER_GAP_PX = 3;
 
-/** The letters' ring: their centres, from the player's centre, for a clock ring at `ring`. */
-export function formLetterRadius(radius: number, ring: number, letterWidth: number): number {
+/** The letters' ring, their centres from the player's centre, for a clock ring at `ring`. */
+export function formLetterRadius(ring: number, outside: number, letterWidth: number): number {
   'worklet';
-  return Math.max(ring, radius * TICK_REACH_RATIO) + LETTER_OUT_PX + letterWidth / 2;
+  return ring + outside * (LETTER_OUT_PX + letterWidth / 2) - (1 - outside) * LETTER_IN_PX;
 }
 
 /**
@@ -1598,16 +1601,16 @@ function FormLetters({
   formCuts,
   formInk,
   font,
-  radius,
   ring,
+  outside,
   colour,
 }: {
   formCuts: DerivedValue<ClockCuts>;
   formInk: SharedValue<number>;
   font: SkFont;
-  radius: number;
-  /** The clock's ring this frame, mixed between the lenses' (`ClockDrawing`). */
+  /** The clock's ring this frame, and which side of it the letters stand, mixed between the lenses' (`ClockDrawing`). */
   ring: SharedValue<number>;
+  outside: SharedValue<number>;
   colour: string;
 }) {
   const ink = useMemo(() => {
@@ -1626,7 +1629,7 @@ function FormLetters({
   }, [font]);
   const picture = useDerivedValue(() =>
     createPicture(canvas => {
-      const r = formLetterRadius(radius, ring.value, letter.width);
+      const r = formLetterRadius(ring.value, outside.value, letter.width);
       const seats = formLetterSeats(formCuts.value, r, letter.width, letter.height);
       for (let i = 0; i < seats.length; i += 3) {
         canvas.drawText(String.fromCharCode(65 + seats[i + 2]), seats[i], seats[i + 1], ink, font);

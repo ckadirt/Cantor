@@ -171,7 +171,15 @@ import { resolveSilhouette } from '../../motion/silhouette';
 import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
 import type { MotionFrame } from '../../lenses/motion/motionFrame';
 import { playerMotionFrame } from './playerMotion';
-import { RING_MOTION_KNOBS, ringMotionLevel } from '../../lenses/circleMotion';
+import {
+  RING_MOTION_KNOBS,
+  circleMotionPoints,
+  circlePlayerOf,
+  circleReachAt,
+  circleStillPoints,
+  ringMotionLevel,
+  type CirclePlayer,
+} from '../../lenses/circleMotion';
 import type { MotionTrack } from '../../lenses/motion/motionTrack';
 import {
   labelFlightAlpha,
@@ -339,7 +347,7 @@ const FIELD_CANVAS_KNOBS = {
    * thirty-two numbers, paid for on every frame.
    */
   SONG_WAVE_MAX_TICKS: 1200,
-  SONG_WAVE_REACH_RATIO: 0.36,
+  SONG_WAVE_REACH_RATIO: NAME_LENS_KNOBS.SONG_WAVE_REACH_RATIO,
   SONG_WAVE_WIDTH_PX: 1.5,
   SONG_WAVE_ALPHA: 0.55,
   /** Music sits at 0.1–0.3 RMS, so a fixed gain spends the reach. */
@@ -1543,6 +1551,7 @@ function PlayerMotionLayerImpl({
         }
         canvas.save();
         canvas.translate(drawn.x, drawn.y);
+        paints.share = share;
         LENS_UI[drawn.lens].drawPlayer(
           canvas,
           drawn.player,
@@ -2091,7 +2100,10 @@ type FacePaints = Readonly<{
   paper: SkPaint;
   /** What stamps are drawn with; their ink is in the image. */
   stamp?: SkPaint;
-}>;
+}> & {
+  /** This canvas's share of the player in a hand-over; see `PlayerPaints.share`. */
+  share?: number;
+};
 
 function createFacePaints(palette: Palette): FacePaints {
   const stroke = paint(palette.ink);
@@ -2107,6 +2119,7 @@ function createFacePaints(palette: Palette): FacePaints {
     ring,
     paper: paint(palette.bg),
     stamp,
+    share: 1,
   };
 }
 
@@ -2473,6 +2486,7 @@ export function drawFieldFaces(
     // The field's share of the player while the motion layer fades it in or out.
     const fieldInk =
       motionLayer === null || players === undefined ? 1 : fieldShare(motionLayer);
+    paints.share = fieldInk;
     const pair =
       players === undefined || reducedMotion || leftLens === lensTo
         ? null
@@ -2738,6 +2752,8 @@ export type SongDetailModel = Readonly<{
   targetBloomY: number;
   levels: readonly number[];
   durationSeconds: number;
+  /** The circle's face, which the ticks grow out of; null draws them on the arc. */
+  face: CirclePlayer | null;
 }>;
 
 /**
@@ -2810,9 +2826,10 @@ export function drawSongDetail(
   const seatY = model.fromY + (model.targetY - model.fromY) * p;
   const bloomX = model.fromBloomX + (model.targetBloomX - model.fromBloomX) * p;
   const bloomY = model.fromBloomY + (model.targetBloomY - model.fromBloomY) * p;
+  const shapeArrived = songShapeArrival(cameraScale, fitted);
   const pose = facePoseAt(
     faceArrival(cameraScale, fitted),
-    songShapeArrival(cameraScale, fitted),
+    shapeArrived,
     viewport,
     FACE_GROWTH,
   );
@@ -2828,6 +2845,24 @@ export function drawSongDetail(
   const knobs = PLAYER_RING_KNOBS;
   const radius = playerRadiusPx(viewport.width);
   const inner = radius * PLAYER_POSE_KNOBS.SONG_ARC_RATIO;
+  /*
+   * The ticks grow out of the body: each is rooted just outside the face's
+   * contour at its own angle, as the face is drawn this frame — singing or
+   * still — so the ring is the body's hair and moves with it.
+   */
+  const face = model.face;
+  const faceAmount = motion === null ? 0 : motion.presence * shapeArrived;
+  const contour =
+    face === null
+      ? null
+      : motion !== null && faceAmount > 0
+      ? circleMotionPoints(face, motion, faceAmount, 1)
+      : circleStillPoints(face, 1);
+  const faceRadius = pose.scale * NAME_LENS_KNOBS.MARK_RADIUS_PX;
+  const rootAt = (turn: number): number =>
+    contour === null || face === null
+      ? inner
+      : circleReachAt(contour, face.rotation, turn) * faceRadius + NAME_LENS_KNOBS.SONG_WAVE_ROOT_PX;
   const midY = viewport.height / 2;
   const half = viewport.height * FIELD_CANVAS_KNOBS.GRAIN_HEIGHT_RATIO;
   const duration = model.durationSeconds;
@@ -2978,11 +3013,12 @@ export function drawSongDetail(
       const angle = turn * Math.PI * 2 - Math.PI / 2;
       const cos = Math.cos(angle);
       const sin = Math.sin(angle);
-      const outer = inner + amp * radius * knobs.SONG_WAVE_REACH_RATIO;
+      const root = rootAt(turn);
+      const outer = root + amp * radius * knobs.SONG_WAVE_REACH_RATIO;
       const lineX = viewport.width / 2 + shortest * perTurn;
-      const x0 = cx + cos * inner + (lineX - (cx + cos * inner)) * unrolled;
+      const x0 = cx + cos * root + (lineX - (cx + cos * root)) * unrolled;
       const y0 =
-        cy + sin * inner + (midY - amp * half - (cy + sin * inner)) * unrolled;
+        cy + sin * root + (midY - amp * half - (cy + sin * root)) * unrolled;
       const x1 = cx + cos * outer + (lineX - (cx + cos * outer)) * unrolled;
       const y1 =
         cy + sin * outer + (midY + amp * half - (cy + sin * outer)) * unrolled;
@@ -3271,6 +3307,7 @@ function songDetailOf(
     targetBloomY: flight.targetBloomY,
     levels: levelsOf(analyses?.get(flight.entityKey)),
     durationSeconds: presentation.durationMs / 1000,
+    face: circlePlayerOf(presentation.recipe, NAME_LENS_KNOBS.SPINDLE_RATIO),
   };
 }
 

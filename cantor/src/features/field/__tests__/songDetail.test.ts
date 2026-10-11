@@ -36,6 +36,8 @@ const model: SongDetailModel = {
   targetBloomY: 0,
   levels: Array.from({ length: 64 }, (_, index) => 0.3 + 0.2 * Math.sin(index)),
   durationSeconds: 120,
+  // On the arc: the geometry here is the ring's and the axis's, not the body's.
+  face: null,
 };
 
 /** The camera standing still, centred on the song, at a given closeness. */

@@ -1,11 +1,14 @@
 import {
-  circleMotionPath,
+  CIRCLE_BODY_KNOBS,
   circleMotionPoints,
   circlePlayerOf,
+  circleStillPoints,
+  type CirclePlayer,
+  drawCircleBody,
   isCirclePlayer,
   strokeCircleMotion,
 } from './circleMotion';
-import type { MotionFrame } from './motion/motionFrame';
+import { smootherstep, type MotionFrame } from './motion/motionFrame';
 import {
   FillType,
   Skia,
@@ -82,6 +85,8 @@ export const NAME_LENS_KNOBS = {
    * `CLOCK_HAND_INNER_RATIO / SONG_FACE_RATIO` is 0.19.
    */
   SPINDLE_RATIO: 0.2,
+  /** The spindle's ink at the player, in the body's well: a hub, not a line. */
+  SPINDLE_PLAYER_ALPHA: 0.35,
 
   /*
    * L2 — the player. One song filling the view, and the same lens that drew it
@@ -94,16 +99,17 @@ export const NAME_LENS_KNOBS = {
   /** How much of the recipe's contour is left once the measurement arrives. */
   SONG_FACE_ALPHA: 0.16,
   /*
-   * The circle's clock at the player: an arc that fills inside the face and a
-   * hand that sweeps across it. The measurement's tick ring stands on the same
-   * radius (`PLAYER_POSE_KNOBS.SONG_ARC_RATIO` is this).
+   * The circle's clock at the player: an arc in the body's well
+   * (`CIRCLE_BODY_KNOBS`), a faint rim under it for the form's cuts to stand
+   * on, and a hand that sweeps across the well.
    */
   /** Where the arc runs, as a fraction of the player's radius. */
-  CLOCK_ARC_RATIO: 0.5,
+  CLOCK_ARC_RATIO: CIRCLE_BODY_KNOBS.CLOCK_RATIO * 0.62,
   CLOCK_ARC_WIDTH_PX: 1.5,
+  CLOCK_RIM_ALPHA: 0.16,
   /** The hand, from near the centre out to the arc. */
   CLOCK_HAND_INNER_RATIO: 0.12,
-  CLOCK_HAND_OUTER_RATIO: 0.5,
+  CLOCK_HAND_OUTER_RATIO: CIRCLE_BODY_KNOBS.CLOCK_RATIO * 0.62,
   CLOCK_HAND_WIDTH_PX: 1,
   /*
    * Seeking, which happens on the ring. There is no rule under the recipe:
@@ -121,11 +127,15 @@ export const NAME_LENS_KNOBS = {
    * target that stopped short of the ticks would leave the loudest part of the
    * circle unpressable, and one much past them is a control in blank space.
    */
-  CLOCK_SEEK_REACH_RATIO: 1,
-  /** Where the waveform's baseline sits, as a fraction of the radius. */
-  SONG_WAVE_INNER_RATIO: 0.5,
-  /** How far a full-amplitude sample reaches past that baseline. */
-  SONG_WAVE_REACH_RATIO: 0.36,
+  CLOCK_SEEK_REACH_RATIO: 1.06,
+  /**
+   * How far a full-amplitude tick reaches past its root, as a fraction of the
+   * player's radius: 0.3 of the face's. A tick is rooted `SONG_WAVE_ROOT_PX`
+   * outside the body's contour at its own angle, so the ring is the body's
+   * hair and moves with it.
+   */
+  SONG_WAVE_REACH_RATIO: 0.3 * 0.62,
+  SONG_WAVE_ROOT_PX: 4,
   /** Ticks around the ring. The design draws 96; the analysis has its own count. */
   SONG_WAVE_TICKS: 96,
   /**
@@ -338,6 +348,71 @@ export const circleSprites: MarkSprites = {
  * as much as the player has arrived and its motion has risen — so at the
  * hand-off to the row it is the mark again, point for point.
  */
+/** The circle's line as the player arrives: the mark's weight, to full ink — the body's own edge. */
+export function circleLineInk(weight: number, arrived: number): number {
+  'worklet';
+  return weight + (1 - weight) * smootherstep(arrived);
+}
+
+/** `drawCircleBodyAt` on a canvas already scaled by `size`. */
+function drawCircleBodyScaled(
+  canvas: SkCanvas,
+  player: CirclePlayer,
+  points: readonly number[],
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  const grown = smootherstep(arrived);
+  // Whole wherever this canvas has any of the player; see `PlayerPaints.share`.
+  const share = paints.share ?? 1;
+  if (share <= 0) return;
+  const ink = (alpha / share) * (weight * fill + (1 - weight * fill) * grown);
+  if (ink <= 0) return;
+  const well =
+    NAME_LENS_KNOBS.MARK_RADIUS_PX * Math.max(player.spindle * fill, CIRCLE_BODY_KNOBS.WELL_RATIO * grown);
+  paints.fill.setAlphaf(ink);
+  drawCircleBody(canvas, points, well, player.rotation, paints.fill);
+  if (well * size > 0.5) {
+    paints.stroke.setAlphaf(ink);
+    paints.stroke.setStrokeWidth(hairlinePx / size);
+    canvas.drawCircle(0, 0, well, paints.stroke);
+  }
+}
+
+/**
+ * The player's body at `points` (the contour as drawn this frame, at the
+ * mark's radius): filled in ink as far as the player has arrived, from
+ * whatever the mark's fill was, its well opening from the centre — or from
+ * the spindle an imported song's mark already has a hole for — and the well's
+ * edge stroked in the body's ink, since the strip under it has none. Not the
+ * contour's line: the caller draws that (the player), or carries it (the seal
+ * morph's thread).
+ */
+export function drawCircleBodyAt(
+  canvas: SkCanvas,
+  player: CirclePlayer,
+  points: readonly number[],
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  canvas.save();
+  canvas.scale(size, size);
+  drawCircleBodyScaled(canvas, player, points, size, alpha, weight, fill, arrived, hairlinePx, paints);
+  canvas.restore();
+}
+
 export function drawCirclePlayer(
   canvas: SkCanvas,
   player: LensPlayer | null,
@@ -355,37 +430,28 @@ export function drawCirclePlayer(
   motion: MotionFrame | null = null,
 ): void {
   'worklet';
-  const amount = motion === null ? 0 : motion.presence * arrived;
-  if (motion !== null && amount > 0 && isCirclePlayer(player)) {
-    const R = NAME_LENS_KNOBS.MARK_RADIUS_PX;
-    const points = circleMotionPoints(player, motion, amount, R);
-    canvas.save();
-    canvas.scale(size, size);
-    // The fill, while the mark's ink is still giving way, as `drawCircleFace`.
-    if (fill > 0 && arrived < 1) {
-      paints.fill.setAlphaf(alpha * weight * fill * (1 - arrived));
-      canvas.drawPath(circleMotionPath(player, motion, amount, R), paints.fill);
-    }
-    const line = weight + (NAME_LENS_KNOBS.SONG_FACE_ALPHA - weight) * arrived;
-    paints.stroke.setAlphaf(alpha * line);
-    paints.stroke.setStrokeWidth(hairlinePx / size);
-    strokeCircleMotion(canvas, points, player.spindle, R, paints.stroke);
-    canvas.restore();
-    drawArrivingArc(canvas, size, alpha, arrived, arriving, paints);
+  // At the row it is the mark, to the pixel.
+  if (arrived <= 0 || !isCirclePlayer(player)) {
+    drawCircleMark(canvas, identity, size, alpha, weight, fill, arrived, arriving, hairlinePx, paints);
     return;
   }
-  drawCircleMark(
-    canvas,
-    identity,
-    size,
-    alpha,
-    weight,
-    fill,
-    arrived,
-    arriving,
-    hairlinePx,
-    paints,
-  );
+  const R = NAME_LENS_KNOBS.MARK_RADIUS_PX;
+  const amount = motion === null ? 0 : motion.presence * arrived;
+  const moving = motion !== null && amount > 0;
+  const points = moving ? circleMotionPoints(player, motion, amount, R) : circleStillPoints(player, R);
+  canvas.save();
+  canvas.scale(size, size);
+  drawCircleBodyScaled(canvas, player, points, size, alpha, weight, fill, arrived, hairlinePx, paints);
+  paints.stroke.setAlphaf(alpha * circleLineInk(weight, arrived));
+  paints.stroke.setStrokeWidth(hairlinePx / size);
+  strokeCircleMotion(canvas, points, 0, R, paints.stroke);
+  // An imported song's spindle, quiet in the well: the hub the hand turns on.
+  if (player.spindle > 0) {
+    paints.stroke.setAlphaf(alpha * (weight + (NAME_LENS_KNOBS.SPINDLE_PLAYER_ALPHA - weight) * smootherstep(arrived)));
+    canvas.drawCircle(0, 0, R * player.spindle, paints.stroke);
+  }
+  canvas.restore();
+  drawArrivingArc(canvas, size, alpha, arrived, arriving, paints);
 }
 
 /** The circle's ring under a finger: see `ringTurnAt`. */
@@ -425,12 +491,14 @@ export const nameLens: Lens = {
       handInnerRatio: NAME_LENS_KNOBS.CLOCK_HAND_INNER_RATIO,
       handOuterRatio: NAME_LENS_KNOBS.CLOCK_HAND_OUTER_RATIO,
       handWidthPx: NAME_LENS_KNOBS.CLOCK_HAND_WIDTH_PX,
-      // No rim, ticks or knob: the face's own contour is the ring.
-      rimAlpha: 0,
+      // A faint rim in the well for the form's cuts; no ticks or knob.
+      rimAlpha: NAME_LENS_KNOBS.CLOCK_RIM_ALPHA,
       rimWidthPx: SEAL_PLAYER_KNOBS.RIM_WIDTH_PX,
       tickAlpha: 0,
       tickPx: SEAL_PLAYER_KNOBS.RIM_TICK_PX,
       knobRadiusPx: 0,
+      // The letters inside the arc, in the well beside their cuts.
+      lettersOutside: 0,
     },
   },
   /*

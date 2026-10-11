@@ -1,3 +1,4 @@
+import { circlePlayerOf } from '../../../lenses/circleMotion';
 /**
  * Golden pixels for everything a lens draws — the guard for R6.
  *
@@ -649,6 +650,8 @@ describe('golden pixels: the measurement', () => {
     targetBloomY: 0,
     levels: Array.from({ length: 64 }, (_, i) => 0.3 + 0.2 * Math.sin(i)),
     durationSeconds: 120,
+    // The ticks grow out of the circle's body.
+    face: circlePlayerOf({ seed: 7, id: 'measured', model: 'test', durationMs: 120_000 }, 0),
   };
   const still = {
     fromCamera: { x: 0, y: 0, scale: fit },

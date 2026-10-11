@@ -418,6 +418,8 @@ export const sealLens: Lens = {
       tickAlpha: SEAL_PLAYER_KNOBS.RIM_TICK_ALPHA,
       tickPx: SEAL_PLAYER_KNOBS.RIM_TICK_PX,
       knobRadiusPx: SEAL_PLAYER_KNOBS.KNOB_RADIUS_PX,
+      // The letters outside the rim, clear of the dust.
+      lettersOutside: 1,
     },
   },
 };

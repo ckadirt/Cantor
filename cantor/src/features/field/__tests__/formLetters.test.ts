@@ -19,12 +19,15 @@ describe('the form, lettered round the clock', () => {
     expect(clockCutsOf(null)).toBe(NO_CUTS);
   });
 
-  it('stands past the circle’s tallest tick, and past the seal’s rim', () => {
-    const radius = 144;
-    // The circle's clock is its arc, at half the radius; its ticks reach 0.86.
-    expect(formLetterRadius(radius, radius * 0.5, 6)).toBeGreaterThan(radius * 0.86 + 3);
-    // The seal's clock is its rim, further out than the ticks.
-    expect(formLetterRadius(radius, radius * 0.93, 6)).toBeGreaterThan(radius * 0.93 + 3);
+  it('stands inside the circle’s arc and outside the seal’s rim, and between them in a change', () => {
+    const ring = 60;
+    // The circle's letters stand in the well, beside their cuts.
+    expect(formLetterRadius(ring, 0, 6)).toBeLessThan(ring - 9);
+    // The seal's stand clear of the rim.
+    expect(formLetterRadius(ring, 1, 6)).toBeGreaterThan(ring + 9);
+    const half = formLetterRadius(ring, 0.5, 6);
+    expect(half).toBeGreaterThan(formLetterRadius(ring, 0, 6));
+    expect(half).toBeLessThan(formLetterRadius(ring, 1, 6));
   });
 
   it('seats each letter on its ring, centred on its section', () => {
