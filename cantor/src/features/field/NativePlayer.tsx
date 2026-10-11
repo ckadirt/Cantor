@@ -767,7 +767,7 @@ function ClockDrawing({
       tickAlpha: mixed(a.tickAlpha, b.tickAlpha, t),
       tickPx: mixed(a.tickPx, b.tickPx, t),
       knob: mixed(a.knobRadiusPx, b.knobRadiusPx, t),
-      lettersOutside: mixed(a.lettersOutside, b.lettersOutside, t),
+      formOnClock: mixed(a.formOnClock, b.formOnClock, t),
     };
   });
   const ring = useDerivedValue(() => ringPath(shape.value.r));
@@ -814,9 +814,11 @@ function ClockDrawing({
 
   /*
    * The form, on whichever ring the clock is now: a cut across it at each
-   * section's start, a dot inside it at each drop. On the mixed radius, so
-   * they travel with the clock through a lens change rather than appearing
-   * and vanishing (reactive-player-plan.md, "The clocks").
+   * section's start, a dot inside it at each drop, the letters outside. On the
+   * mixed radius, so they travel with the clock through a lens change rather
+   * than appearing and vanishing (reactive-player-plan.md, "The clocks") — and
+   * only as far as the lens keeps its form on its clock (`formOnClock`): the
+   * circle's is its orbit, and its clock tells time alone.
    */
   const cuts = useDerivedValue(() => {
     const builder = Skia.PathBuilder.Make();
@@ -841,9 +843,11 @@ function ClockDrawing({
     }
     return builder.detach();
   });
-  const cutsAlpha = useDerivedValue(() => CUT_ALPHA * (formInk === null ? 0 : formInk.value));
+  const onClock = useDerivedValue(() => shape.value.formOnClock);
+  const cutsAlpha = useDerivedValue(
+    () => CUT_ALPHA * (formInk === null ? 0 : formInk.value) * onClock.value,
+  );
   const clockRing = useDerivedValue(() => shape.value.r);
-  const lettersOutside = useDerivedValue(() => shape.value.lettersOutside);
 
   return (
     <SkiaGroup opacity={opacity}>
@@ -856,7 +860,7 @@ function ClockDrawing({
           formCuts={formCuts}
           formInk={formInk}
           ring={clockRing}
-          outside={lettersOutside}
+          onClock={onClock}
           head={fraction}
         />
       )}
@@ -1591,7 +1595,7 @@ const DROP_RADIUS_PX = 2.2;
  * The letters, beside the cuts they name: inside the circle's arc, in the
  * body's well (their centres `LETTER_IN_PX` in), or outside the seal's rim
  * (their inner edge `LETTER_OUT_PX` out) — each lens says which
- * (`ClockShape.lettersOutside`), mixed through a change so they travel with
+ * (`ClockShape.formOnClock`), mixed through a change so they travel with
  * the clock. At the page's ink, and never closer along the ring than this to
  * the last one drawn (a short section's letter gives way to its neighbour's).
  */
@@ -1655,7 +1659,7 @@ function FormLetters({
   formInk,
   font,
   ring,
-  outside,
+  onClock,
   head,
   colour,
 }: {
@@ -1664,9 +1668,9 @@ function FormLetters({
   formCuts: DerivedValue<ClockCuts>;
   formInk: SharedValue<number>;
   font: SkFont;
-  /** The clock's ring this frame, and which side of it the letters stand, mixed between the lenses' (`ClockDrawing`). */
+  /** The clock's ring this frame, and how much of the form it carries, mixed between the lenses' (`ClockDrawing`). */
   ring: SharedValue<number>;
-  outside: SharedValue<number>;
+  onClock: SharedValue<number>;
   colour: string;
 }) {
   const ink = useMemo(() => {
@@ -1686,10 +1690,10 @@ function FormLetters({
   const picture = useDerivedValue(() =>
     createPicture(canvas => {
       const cuts = formCuts.value;
-      const r = formLetterRadius(ring.value, outside.value, letter.width);
+      const r = formLetterRadius(ring.value, 1, letter.width);
       const inks = formLetterInks(cuts, head.value);
       // A crowded form steps a letter onto a second ring, away from the clock's.
-      const away = (outside.value < 0.5 ? -1 : 1) * (letter.height + LETTER_RING_GAP_PX);
+      const away = letter.height + LETTER_RING_GAP_PX;
       const seats = formLetterSeats(cuts, r, letter.width, letter.height, inks, away);
       for (let i = 0; i < seats.length; i += 4) {
         ink.setAlphaf(Math.min(1, LETTER_ALPHA * seats[i + 3]));
@@ -1697,7 +1701,7 @@ function FormLetters({
       }
     }),
   );
-  const alpha = useDerivedValue(() => formInk.value);
+  const alpha = useDerivedValue(() => formInk.value * onClock.value);
   return (
     <SkiaGroup opacity={alpha}>
       <Picture picture={picture} />
