@@ -264,16 +264,37 @@ describe('seeking on the circle\'s orbit', () => {
     return { x: ring.cx - box.left + Math.cos(radians) * reach, y: ring.cy - box.top + Math.sin(radians) * reach };
   }
 
-  it('catches a section’s start when the drag passes near it', () => {
+  it('slows into a section’s start as the drag passes it, without a jump', () => {
     const onSeek = jest.fn();
     const g = orbitGesture(onSeek);
     g.handlers.onBegin(at(0.3, ORBIT));
-    // A degree past the boundary at 0.4: well within the catch at this radius.
-    g.handlers.onUpdate(at(0.4 + 1 / 360, ORBIT));
-    expect(onSeek).toHaveBeenLastCalledWith(0.4 * DURATION_SECONDS);
-    // Far from any boundary it is the finger's own second.
+    const last = () => onSeek.mock.calls[onSeek.mock.calls.length - 1][0] as number;
+    // Across the boundary at 0.4 in tenths of a degree: the playhead always
+    // moves forward, never further in one step than the finger past the
+    // detent's catch-up, and is held close to the start near it.
+    const seen: number[] = [];
+    for (let k = -40; k <= 40; k++) {
+      g.handlers.onUpdate(at(0.4 + k / 3600, ORBIT));
+      seen.push(last() / DURATION_SECONDS);
+    }
+    for (let k = 1; k < seen.length; k++) {
+      expect(seen[k]).toBeGreaterThanOrEqual(seen[k - 1]);
+      expect(seen[k] - seen[k - 1]).toBeLessThan(3 / 3600);
+    }
+    expect(Math.abs(seen[40] - 0.4)).toBeLessThan(1e-9);
+    expect(Math.abs(seen[42] - 0.4)).toBeLessThan(0.3 * (2 / 3600));
+    // Far from any boundary it is the finger's own moment, not rounded.
     g.handlers.onUpdate(at(0.55, ORBIT));
-    expect(onSeek).toHaveBeenLastCalledWith(Math.round(0.55 * DURATION_SECONDS));
+    expect(last()).toBeCloseTo(0.55 * DURATION_SECONDS, 6);
+  });
+
+  it('lands on a section’s start when let go in its catch', () => {
+    const onSeek = jest.fn();
+    const g = orbitGesture(onSeek);
+    g.handlers.onBegin(at(0.3, ORBIT));
+    g.handlers.onUpdate(at(0.4 + 0.5 / 360, ORBIT));
+    g.handlers.onFinalize(at(0.4 + 0.5 / 360, ORBIT));
+    expect(onSeek).toHaveBeenLastCalledWith(0.4 * DURATION_SECONDS);
   });
 
   it('turns fine past the orbit: a quarter of the song for the same turn', () => {
