@@ -136,6 +136,11 @@ export const NAME_LENS_KNOBS = {
    */
   SONG_WAVE_REACH_RATIO: 0.3 * 0.62,
   SONG_WAVE_ROOT_PX: 4,
+  /**
+   * The orbit: the song's form as a ring round the player, past the longest
+   * the hair can grow on this face, by this much air.
+   */
+  ORBIT_GAP_PX: 11,
   /** Ticks around the ring. The design draws 96; the analysis has its own count. */
   SONG_WAVE_TICKS: 96,
   /**
@@ -348,6 +353,31 @@ export const circleSprites: MarkSprites = {
  * as much as the player has arrived and its motion has risen — so at the
  * hand-off to the row it is the mark again, point for point.
  */
+/**
+ * The orbit's radius for this face, from the player's centre: past the furthest
+ * the still contour reaches, its hair's root and a full tick, by
+ * `ORBIT_GAP_PX`. One number per song, so the ring the form is written on
+ * stands still while the body moves; the drawing and the touch both read it.
+ */
+export function circleOrbitPx(
+  player: CirclePlayer,
+  playerRadiusPx: number,
+  /** The face's radius as drawn now, when it is still growing into the player. */
+  faceRadiusPx: number = playerRadiusPx * NAME_LENS_KNOBS.SONG_FACE_RATIO,
+): number {
+  'worklet';
+  const points = circleStillPoints(player, 1);
+  let reach = 0;
+  for (let k = 0; k < points.length; k += 2) reach = Math.max(reach, Math.hypot(points[k], points[k + 1]));
+  const K = NAME_LENS_KNOBS;
+  return (
+    reach * faceRadiusPx +
+    K.SONG_WAVE_ROOT_PX +
+    playerRadiusPx * K.SONG_WAVE_REACH_RATIO +
+    K.ORBIT_GAP_PX
+  );
+}
+
 /** The circle's line as the player arrives: the mark's weight, to full ink — the body's own edge. */
 export function circleLineInk(weight: number, arrived: number): number {
   'worklet';
@@ -497,8 +527,8 @@ export const nameLens: Lens = {
       tickAlpha: 0,
       tickPx: SEAL_PLAYER_KNOBS.RIM_TICK_PX,
       knobRadiusPx: 0,
-      // The letters inside the arc, in the well beside their cuts.
-      lettersOutside: 0,
+      // The form is not on this clock: it is the orbit's (`drawSongDetail`).
+      formOnClock: 0,
     },
   },
   /*

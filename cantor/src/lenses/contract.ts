@@ -144,8 +144,12 @@ export type ClockShape = Readonly<{
   tickPx: number;
   /** The knob at the playhead, on the ring; 0 is none. */
   knobRadiusPx: number;
-  /** Where the form's letters stand: 1 outside the ring, 0 inside it (mixed through a change). */
-  lettersOutside: number;
+  /**
+   * Whether the song's form — cuts, drops, letters outside the ring — is drawn
+   * on this clock (1), or the lens has a place of its own for it (0: the
+   * circle's orbit). Mixed through a change.
+   */
+  formOnClock: number;
 }>;
 
 /**
