@@ -100,7 +100,17 @@ export type MarkPaints = Readonly<{ fill: SkPaint; stroke: SkPaint }>;
  * a frame apart, read as a ghost, where two whole ones are their union. So a
  * lens draws its solid ink whole wherever `share` is above 0.
  */
-export type PlayerPaints = MarkPaints & Readonly<{ paper: SkPaint }> & { share?: number };
+export type PlayerPaints = MarkPaints &
+  Readonly<{ paper: SkPaint }> & {
+    share?: number;
+    /**
+     * Whether the hand-over is the layer taking a landed player (both canvases
+     * draw the same thing) rather than the field taking it back, often into a
+     * lens change (they do not). Ink that is only the same when nothing has
+     * changed — a picture that does not move — is drawn whole only then.
+     */
+    handIn?: boolean;
+  };
 
 /**
  * What a lens's player draws from, prepared on the JS thread for the one song

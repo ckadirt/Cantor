@@ -301,9 +301,19 @@ function drawCoverPlayer(
     );
   }
   if (cover === null || shown <= 0) return;
+  /*
+   * The picture does not move with the music, so when the layer takes it both
+   * canvases draw the same strokes: whole on each (`PlayerPaints.share`,
+   * `handIn`), their overlap is invisible, where two half-inked copies a frame
+   * apart dipped.
+   */
+  const share = paints.share ?? 1;
+  if (share <= 0) return;
+  // Taken back into a change, the field's picture is already another one: crossfade.
+  const whole = paints.handIn === true ? share : 1;
   canvas.save();
   canvas.scale(size, size);
-  paints.stroke.setAlphaf(alpha * shown);
+  paints.stroke.setAlphaf(Math.min(1, (alpha / whole) * shown));
   paints.stroke.setStrokeWidth(hairlinePx / size);
   canvas.drawPath(cover, paints.stroke);
   canvas.restore();

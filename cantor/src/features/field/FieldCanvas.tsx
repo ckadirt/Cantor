@@ -1552,6 +1552,7 @@ function PlayerMotionLayerImpl({
         canvas.save();
         canvas.translate(drawn.x, drawn.y);
         paints.share = share;
+        paints.handIn = owns;
         LENS_UI[drawn.lens].drawPlayer(
           canvas,
           drawn.player,
@@ -2101,8 +2102,9 @@ type FacePaints = Readonly<{
   /** What stamps are drawn with; their ink is in the image. */
   stamp?: SkPaint;
 }> & {
-  /** This canvas's share of the player in a hand-over; see `PlayerPaints.share`. */
+  /** This canvas's share of the player in a hand-over; see `PlayerPaints.share`, `handIn`. */
   share?: number;
+  handIn?: boolean;
 };
 
 function createFacePaints(palette: Palette): FacePaints {
@@ -2487,6 +2489,7 @@ export function drawFieldFaces(
     const fieldInk =
       motionLayer === null || players === undefined ? 1 : fieldShare(motionLayer);
     paints.share = fieldInk;
+    paints.handIn = motionLayer !== null && motionLayer.draw.value !== null && motionLayer.draw.value.owned;
     const pair =
       players === undefined || reducedMotion || leftLens === lensTo
         ? null
