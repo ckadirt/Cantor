@@ -163,6 +163,25 @@ See `features/field/stepMorph.ts`. The rules it was built on:
   and once a step has given the player to the layer it keeps it
   (`PlayerDraw.hold`) until the player is left, so music rising or pausing
   does not cross canvases. Every crossfade between the two showed as a frame.
+- *The held music is the leaving song's only until the step lands.* Once the
+  arriving song is the focus at clock 1 the layer draws it on its own music
+  (none, until it rises); held a frame longer, the circle sang the song
+  before last's shape for that frame.
+- *A step has the whole clock, not just its hand.* The field's step clock
+  waits at 0 while the layer has the step (`fieldStepClock`), so anything
+  of a step left on the field holds the leaving song until the landing and
+  snaps there. The seal's form is on its rim, so the field hands the rim,
+  ticks, cuts and letters over with the hand (`handInk`) and the layer draws
+  them on its own form clock (`drawClockFace`), which it keeps using while
+  it holds the player after a step: the field's copy of the form in
+  `DetailDraw` is only rewritten when the field re-records.
+- *Every lens morphs its own player.* The seal's (`drawSealStep`) works on
+  the deepest grid both seals share: a cell both fill keeps its dot and
+  changes it, the rest flow into or grow out of their nearest neighbour, each
+  thread rides its own dots, and one bead travels between the two playheads.
+  Its ends are `drawSealPlayer` itself: a still seal draws its quiet dots at
+  an alpha over the thread and a moving one draws them opaque, and the morph
+  walks between the two looks rather than snapping at either end.
 
 A step asked mid-morph waits for it to land.
 

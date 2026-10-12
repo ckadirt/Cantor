@@ -555,3 +555,426 @@ export function drawSealPlayer(
     canvas.drawCircle(bx, by, player.BEAD_RADIUS_PX, paints.stroke);
   }
 }
+
+/**
+ * One seal's dots as the player draws them, worked out for a step's morph
+ * (`drawSealStep`): `drawSealPlayer`'s numbers at `formed` 1 and `leaving` 0,
+ * per dot in time order — its centre, its outer and inner radius (0 is
+ * solid), how far a wide slice's pair stands apart, its ink against the
+ * paper — and the thread's.
+ */
+type SealStepDots = {
+  x: number[];
+  y: number[];
+  outer: number[];
+  inner: number[];
+  offset: number[];
+  ink: number[];
+  /** Each dot's cell on the deepest grid, `gy * 27 + gx`. */
+  cell: number[];
+  head: number;
+  threadInk: number;
+  moved: ReturnType<typeof sealMotionOf> | null;
+};
+
+function sealStepDots(
+  seal: SealPlayer,
+  side: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  /** How far the sound is in (`drawSealPlayer`'s `s`): 0 for an unmeasured song. */
+  s: number,
+  heard: number,
+  hairlinePx: number,
+  motion: MotionFrame | null,
+): SealStepDots {
+  'worklet';
+  const knobs = SEAL_KNOBS;
+  const sound = seal.sound;
+  const markRadius = sealDotRadius(knobs.MARK_DEPTH) * side;
+  const deepRadius = sealDotRadius(knobs.SONG_DEPTH) * side;
+  const identityRadius = markRadius + (deepRadius - markRadius) * arrived;
+  const n = 3 ** knobs.SONG_DEPTH;
+  const cell = side / n;
+  const count = seal.order.length;
+  const head = heard < 0 ? -1 : Math.min(Math.max(heard, 0), 1) * count;
+  const moved =
+    motion === null || s <= 0 || motion.presence <= 0
+      ? null
+      : sealMotionOf(motion, motion.presence * s, seal.cluster, seal.ninth, head);
+  const pull = moved === null ? 0 : moved.pull;
+  const landed =
+    arriving === ARRIVING_NONE ? -1 : arrivedShare(arriving) * seal.markRank.length;
+  const heardInk = weight + (1 - weight) * s;
+  const aheadInk = weight + (SEAL_PLAYER_KNOBS.UNHEARD_ALPHA - weight) * s;
+  const out: SealStepDots = {
+    x: [],
+    y: [],
+    outer: [],
+    inner: [],
+    offset: [],
+    ink: [],
+    cell: [],
+    head,
+    threadInk: s,
+    moved,
+  };
+  for (let k = 0; k < count; k++) {
+    const dot = seal.order[k];
+    const parent = seal.parent[dot];
+    let px = seal.markX[parent] + (seal.x[dot] - seal.markX[parent]) * arrived;
+    let py = seal.markY[parent] + (seal.y[dot] - seal.markY[parent]) * arrived;
+    if (pull > 0) {
+      const ninth = seal.ninth[k];
+      px += (seal.ninthX[ninth] - px) * pull;
+      py += (seal.ninthY[ninth] - py) * pull;
+    }
+    out.x.push(px * side);
+    out.y.push(py * side);
+    out.cell.push(
+      Math.round((seal.y[dot] + 0.5) * n - 0.5) * n + Math.round((seal.x[dot] + 0.5) * n - 0.5),
+    );
+    const keep =
+      landed < 0 ? fill : seal.markRank[parent] < landed ? 1 : 0;
+    const grown = identityRadius * (1 + (SEAL_FILLED_GROW - 1) * keep * (1 - arrived));
+    const solidity = 1 - arrived * (1 - keep);
+    if (s <= 0 || sound === null) {
+      const stroke = hairlinePx + (grown - hairlinePx) * solidity;
+      out.outer.push(grown);
+      out.inner.push(Math.max(0, grown - stroke));
+      out.offset.push(0);
+      out.ink.push(landed >= 0 && keep >= 1 ? 1 : weight);
+      continue;
+    }
+    const loud = seal.knee === undefined ? sealLoudness(sound.loudness[k] ?? 0) : seal.knee[k] ?? 0;
+    const measured = sealMotionRadius(
+      (cell / 2) * (knobs.SOUND_MIN_FILL + knobs.SOUND_SPAN_FILL * loud),
+      moved === null ? 1 : moved.mul[k],
+      cell,
+    );
+    const radius = grown + (measured - grown) * s;
+    const punch = Math.min(1, (sound.punch[k] ?? 0) + (moved === null ? 0 : moved.hollow[k])) * s;
+    const width = Math.min(1, (sound.width[k] ?? 0) + (moved === null ? 0 : moved.split[k])) * s;
+    const identityStroke = hairlinePx + (radius - hairlinePx) * solidity;
+    const soundStroke = radius * (1 - knobs.PUNCH_HOLLOW * punch);
+    const stroke = identityStroke + (soundStroke - identityStroke) * s;
+    const outer = Math.max(0.01, radius * (1 - knobs.WIDTH_SHRINK * width));
+    out.outer.push(outer);
+    out.inner.push(Math.max(0, outer - stroke));
+    out.offset.push(width > 0.02 ? width * radius * knobs.WIDTH_SPLIT : 0);
+    out.ink.push(head < 0 || k < head ? heardInk : aheadInk);
+  }
+  return out;
+}
+
+/**
+ * Which of `b`'s dots each of `a`'s goes to through a step, and which of
+ * `a`'s each of `b`'s comes from: the dot in the same cell of the deepest
+ * grid where there is one — that dot stays and only changes — and the
+ * nearest otherwise, which the dot flows into or grows out of. Worked out
+ * once per pair of songs, on the runtime that draws them.
+ */
+type SealStepPairing = {
+  a: SealPlayer | null;
+  b: SealPlayer | null;
+  aTo: number[];
+  bFrom: number[];
+  /** Whether `b`'s `j`-th dot stands in a cell `a` had a dot in. */
+  bShared: boolean[];
+  aShared: boolean[];
+};
+
+function nearestInCells(cells: number[], at: number, n: number): number {
+  'worklet';
+  const gx = at % n;
+  const gy = Math.floor(at / n);
+  for (let r = 1; r < n; r++) {
+    let best = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    for (let y = gy - r; y <= gy + r; y++) {
+      if (y < 0 || y >= n) continue;
+      const edge = y === gy - r || y === gy + r;
+      for (let x = gx - r; x <= gx + r; x += edge ? 1 : 2 * r) {
+        if (x < 0 || x >= n) continue;
+        const index = cells[y * n + x];
+        if (index < 0) continue;
+        const distance = (x - gx) * (x - gx) + (y - gy) * (y - gy);
+        if (distance < bestDistance) {
+          bestDistance = distance;
+          best = index;
+        }
+      }
+    }
+    if (best >= 0) return best;
+  }
+  return 0;
+}
+
+function sealStepPairing(
+  a: SealPlayer,
+  b: SealPlayer,
+  aCells: number[],
+  bCells: number[],
+): SealStepPairing {
+  'worklet';
+  const g = globalThis as unknown as { __cantorSealStep?: SealStepPairing };
+  const cached = g.__cantorSealStep;
+  if (cached !== undefined && cached.a === a && cached.b === b) return cached;
+  const n = 3 ** SEAL_KNOBS.SONG_DEPTH;
+  const byCellA: number[] = [];
+  const byCellB: number[] = [];
+  for (let i = 0; i < n * n; i++) {
+    byCellA.push(-1);
+    byCellB.push(-1);
+  }
+  for (let k = 0; k < aCells.length; k++) byCellA[aCells[k]] = k;
+  for (let j = 0; j < bCells.length; j++) byCellB[bCells[j]] = j;
+  const pairing: SealStepPairing = { a, b, aTo: [], bFrom: [], aShared: [], bShared: [] };
+  for (let k = 0; k < aCells.length; k++) {
+    const same = byCellB[aCells[k]];
+    pairing.aShared.push(same >= 0);
+    pairing.aTo.push(same >= 0 ? same : nearestInCells(byCellB, aCells[k], n));
+  }
+  for (let j = 0; j < bCells.length; j++) {
+    const same = byCellA[bCells[j]];
+    pairing.bShared.push(same >= 0);
+    pairing.bFrom.push(same >= 0 ? same : nearestInCells(byCellA, bCells[j], n));
+  }
+  g.__cantorSealStep = pairing;
+  return pairing;
+}
+
+/**
+ * One song's seal becoming the next's, `t` of the way: the queue stepping at
+ * L2 (`LensUi.morphPlayer`). The two seals sit on the same deepest grid, so a
+ * cell both of them fill keeps its dot, which changes size, hollowness, ink
+ * and pair into the arriving song's; a dot only the leaving seal has flows
+ * into its nearest arriving neighbour as it shrinks away, and a dot only the
+ * arriving one has grows out of its nearest leaving neighbour. Each thread
+ * rides its own dots — the leaving one inks out, the arriving one in, on
+ * shared vertices wherever the dots are shared — and one bead travels from
+ * the leaving song's playhead to the arriving song's.
+ *
+ * At 0 this is `a`'s player as it was last drawn — on `motion`, its music
+ * held, and at `aHeard`, where its playhead stood — and at 1 `b`'s, still:
+ * each end is drawn by `drawSealPlayer` itself.
+ */
+export function drawSealStep(
+  canvas: SkCanvas,
+  a: SealPlayer,
+  b: SealPlayer,
+  t: number,
+  paints: PlayerPaints,
+  side: number,
+  opacity: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  soundProgress: number,
+  heard: number,
+  aHeard: number,
+  hairlinePx: number,
+  motion: MotionFrame | null,
+): void {
+  'worklet';
+  const u = t < 0 ? 0 : t > 1 ? 1 : t;
+  // Each end is that seal's own player, exactly.
+  if (u <= 0) {
+    drawSealPlayer(canvas, a, paints, side, opacity, weight, fill, arrived, ARRIVING_NONE, 1, aHeard, hairlinePx, 1, 0, 0, motion);
+    return;
+  }
+  if (u >= 1) {
+    drawSealPlayer(canvas, b, paints, side, opacity, weight, fill, arrived, arriving, soundProgress, heard, hairlinePx);
+    return;
+  }
+  // The leaving song's sound was in all the way; the arriving one's rises on
+  // its own clock, which may still be running as the morph lands.
+  const A = sealStepDots(
+    a, side, weight, fill, arrived, ARRIVING_NONE, a.sound === null ? 0 : arrived,
+    aHeard, hairlinePx, motion,
+  );
+  const B = sealStepDots(
+    b, side, weight, fill, arrived, arriving, b.sound === null ? 0 : arrived * soundProgress,
+    heard, hairlinePx, null,
+  );
+  const pairing = sealStepPairing(a, b, A.cell, B.cell);
+  const na = A.x.length;
+  const nb = B.x.length;
+  // Each thread's vertices, riding their dots.
+  const ax: number[] = [];
+  const ay: number[] = [];
+  for (let k = 0; k < na; k++) {
+    const j = pairing.aTo[k];
+    ax.push(A.x[k] + (B.x[j] - A.x[k]) * u);
+    ay.push(A.y[k] + (B.y[j] - A.y[k]) * u);
+  }
+  const bx: number[] = [];
+  const by: number[] = [];
+  for (let j = 0; j < nb; j++) {
+    const k = pairing.bFrom[j];
+    bx.push(A.x[k] + (B.x[j] - A.x[k]) * u);
+    by.push(A.y[k] + (B.y[j] - A.y[k]) * u);
+  }
+  const line = (xs: number[], ys: number[], from: number, to: number, end: number) => {
+    const points: SkPoint[] = [];
+    for (let k = from; k <= to; k++) points.push({ x: xs[k], y: ys[k] } as SkPoint);
+    if (end > 0 && to + 1 < xs.length) {
+      points.push({
+        x: xs[to] + (xs[to + 1] - xs[to]) * end,
+        y: ys[to] + (ys[to + 1] - ys[to]) * end,
+      } as SkPoint);
+    }
+    if (points.length < 2) return;
+    canvas.drawPoints(PointMode.Polygon, points, paints.stroke);
+  };
+  /*
+   * The threads, as runs of segments in the ink mixed with the paper: at an
+   * alpha, each joint is two segments' ends and inks twice, where the still
+   * seal's one path does not — and where the two threads share a stretch,
+   * the arriving one covers the leaving one rather than adding to it.
+   */
+  const inkColour = paints.fill.getColor();
+  const strokeColour = paints.stroke.getColor();
+  const paperColour = paints.paper.getColor();
+  const threadInk = (ink: number) => {
+    paints.stroke.setColor(
+      Float32Array.of(
+        paperColour[0] + (strokeColour[0] - paperColour[0]) * ink,
+        paperColour[1] + (strokeColour[1] - paperColour[1]) * ink,
+        paperColour[2] + (strokeColour[2] - paperColour[2]) * ink,
+        opacity,
+      ),
+    );
+  };
+  const thread = (xs: number[], ys: number[], head: number, ink: number) => {
+    if (ink <= 0) return;
+    paints.stroke.setStrokeWidth(SEAL_PLAYER_KNOBS.THREAD_WIDTH_PX);
+    threadInk(ink * SEAL_PLAYER_KNOBS.THREAD_AHEAD_ALPHA);
+    line(xs, ys, 0, xs.length - 1, 0);
+    if (head < 0) return;
+    const last = Math.floor(head);
+    if (last < 0) return;
+    threadInk(ink);
+    line(xs, ys, 0, Math.min(last, xs.length - 1), last < xs.length - 1 ? head - last : 0);
+  };
+  const aThread = A.threadInk * (1 - u);
+  const bThread = B.threadInk * u;
+  thread(ax, ay, A.head, aThread);
+  thread(bx, by, B.head, bThread);
+  paints.stroke.setColor(strokeColour);
+  if (A.moved !== null && motion !== null && aThread > 0) {
+    drawSealWeave(canvas, motion, A.moved.amount, na, A.head, ax, ay, paints.stroke, paints.paper, opacity * aThread);
+  }
+
+  /*
+   * The dots. A moving seal draws each one opaque, its grey the ink mixed
+   * with the paper, and a still one at an alpha, so the thread shows through
+   * its quiet dots (`drawSealPlayer`). Both read the same on paper; over the
+   * thread they do not. So a dot is drawn at an alpha between the two —
+   * opaque as far as the leaving seal was moving and the morph has not
+   * walked away from it, its colour darkened to match — and each end lands
+   * on its own player's look.
+   */
+  const opaque = A.moved === null ? 0 : 1 - u;
+  let inked = -1;
+  const dot = (x: number, y: number, outer: number, inner: number, offset: number, ink: number) => {
+    if (outer <= 0.01) return;
+    const a2 = ink < 0 ? 0 : ink > 1 ? 1 : ink;
+    const cover = a2 + (1 - a2) * opaque;
+    if (cover <= 0) return;
+    if (Math.abs(a2 - inked) > 1 / 512) {
+      inked = a2;
+      const mix = a2 / cover;
+      const colour = Float32Array.of(
+        paperColour[0] + (inkColour[0] - paperColour[0]) * mix,
+        paperColour[1] + (inkColour[1] - paperColour[1]) * mix,
+        paperColour[2] + (inkColour[2] - paperColour[2]) * mix,
+        opacity * cover,
+      );
+      paints.fill.setColor(colour);
+      paints.stroke.setColor(colour);
+    }
+    const one = (cx: number) => {
+      if (inner > 0.05) {
+        paints.stroke.setStrokeWidth(outer - inner);
+        canvas.drawCircle(cx, y, (outer + inner) / 2, paints.stroke);
+      } else {
+        canvas.drawCircle(cx, y, outer, paints.fill);
+      }
+    };
+    if (offset <= 0.01) {
+      one(x);
+    } else if (cover >= 1) {
+      one(x - offset);
+      one(x + offset);
+    } else {
+      // At an alpha, a wide slice's pair is one fill, or its overlap darkens.
+      const pair = Skia.PathBuilder.Make();
+      pair.addCircle(x - offset, y, outer);
+      pair.addCircle(x + offset, y, outer);
+      if (inner > 0.05) {
+        pair.addCircle(x - offset, y, inner, true);
+        pair.addCircle(x + offset, y, inner, true);
+      }
+      canvas.drawPath(pair.detach(), paints.fill);
+    }
+  };
+  const v = 1 - u;
+  // The leaving seal's own dots, flowing into their neighbours.
+  for (let k = 0; k < na; k++) {
+    if (pairing.aShared[k]) continue;
+    dot(ax[k], ay[k], A.outer[k] * v, A.inner[k] * v, A.offset[k] * v, A.ink[k]);
+  }
+  // The arriving seal's: kept from the cell it shares, or grown.
+  for (let j = 0; j < nb; j++) {
+    const k = pairing.bFrom[j];
+    if (pairing.bShared[j]) {
+      dot(
+        bx[j],
+        by[j],
+        A.outer[k] + (B.outer[j] - A.outer[k]) * u,
+        A.inner[k] + (B.inner[j] - A.inner[k]) * u,
+        A.offset[k] + (B.offset[j] - A.offset[k]) * u,
+        A.ink[k] + (B.ink[j] - A.ink[k]) * u,
+      );
+    } else {
+      dot(bx[j], by[j], B.outer[j] * u, B.inner[j] * u, B.offset[j] * u, B.ink[j]);
+    }
+  }
+  paints.fill.setColor(inkColour);
+  paints.stroke.setColor(strokeColour);
+
+  // The bead, from where the leaving song stood to where the arriving one is.
+  const beadAt = (xs: number[], ys: number[], head: number): [number, number] => {
+    const k = Math.min(xs.length - 1, Math.floor(head));
+    const next = Math.min(xs.length - 1, k + 1);
+    const f = head - k;
+    return [xs[k] + (xs[next] - xs[k]) * f, ys[k] + (ys[next] - ys[k]) * f];
+  };
+  const aBead = A.threadInk > 0 && A.head >= 0;
+  const bBead = B.threadInk > 0 && B.head >= 0;
+  if (!aBead && !bBead) return;
+  const [fx, fy] = aBead ? beadAt(ax, ay, A.head) : beadAt(bx, by, B.head);
+  const [tx, ty] = bBead ? beadAt(bx, by, B.head) : [fx, fy];
+  const beadInk = (aBead ? A.threadInk : 0) * v + (bBead ? B.threadInk : 0) * u;
+  if (beadInk <= 0) return;
+  const beadX = fx + (tx - fx) * u;
+  const beadY = fy + (ty - fy) * u;
+  const ghosts = A.moved === null ? [] : A.moved.ghosts;
+  if (ghosts.length > 0 && aThread > 0) {
+    paints.stroke.setAlphaf(opacity * aThread * A.moved!.amount * SEAL_MOTION_KNOBS.GHOST_ALPHA);
+    paints.stroke.setStrokeWidth(SEAL_MOTION_KNOBS.GHOST_STROKE_PX);
+    for (let i = 0; i < ghosts.length; i++) {
+      const [gx, gy] = beadAt(ax, ay, ghosts[i]);
+      canvas.drawCircle(gx, gy, SEAL_PLAYER_KNOBS.BEAD_RADIUS_PX, paints.stroke);
+    }
+  }
+  paints.paper.setAlphaf(opacity * beadInk);
+  canvas.drawCircle(beadX, beadY, SEAL_PLAYER_KNOBS.BEAD_RADIUS_PX, paints.paper);
+  paints.stroke.setAlphaf(opacity * beadInk);
+  paints.stroke.setStrokeWidth(SEAL_PLAYER_KNOBS.BEAD_STROKE_PX);
+  canvas.drawCircle(beadX, beadY, SEAL_PLAYER_KNOBS.BEAD_RADIUS_PX, paints.stroke);
+}
