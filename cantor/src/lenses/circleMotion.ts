@@ -39,6 +39,12 @@ export type CirclePlayer = Readonly<{
   rotation: number;
   /** An imported song's spindle, as a share of the radius; 0 for none. */
   spindle: number;
+  /**
+   * The contour this player was last drawn as, at radius 1, when it is held
+   * still mid-song: a step's morph leaves from it (`circleMorphPoints`) and
+   * computes it once rather than on every frame.
+   */
+  points?: readonly number[];
 }>;
 
 // knobs — the page's shipping values (reactive-player-plan.md, "The shipping numbers")
@@ -322,19 +328,33 @@ function circleMorphTurn(a: CirclePlayer, b: CirclePlayer, samples: number): [nu
   return [offset, turn - offset * step];
 }
 
+/** `player`'s contour at `radius`: as it was held (`CirclePlayer.points`), or still. */
+function heldOrStillPoints(player: CirclePlayer, radius: number): number[] {
+  'worklet';
+  const held = player.points;
+  if (held === undefined) return circleStillPoints(player, radius);
+  const points: number[] = [];
+  for (let k = 0; k < held.length; k++) points.push(held[k] * radius);
+  return points;
+}
+
 /**
- * One song's still contour becoming another's (`circleStillPoints` at both
- * ends), `t` of the way: the circle's queue step at L2. At 0 it is `a`'s
- * samples exactly, at 1 `b`'s, renumbered.
+ * One song's contour becoming another's still one (`circleStillPoints`), `t`
+ * of the way: the circle's queue step at L2. At 0 it is `a`'s samples
+ * exactly — `from` when given, the shape `a` was last drawn singing, else its
+ * still contour — and at 1 `b`'s, renumbered.
  */
 export function circleMorphPoints(
   a: CirclePlayer,
   b: CirclePlayer,
   t: number,
   radius: number,
+  given: readonly number[] | null = null,
 ): number[] {
   'worklet';
-  const from = circleStillPoints(a, radius);
+  // Not a default parameter: the worklets plugin does not capture what one
+  // calls, and on the UI thread it is not there.
+  const from = given ?? heldOrStillPoints(a, radius);
   const to = circleStillPoints(b, radius);
   const samples = from.length / 2;
   const [offset] = circleMorphTurn(a, b, samples);

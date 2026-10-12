@@ -731,29 +731,13 @@ describe('useFieldCamera', () => {
 
     /*
      * The cut waits for the canvas to say the arriving player is on it, and
-     * there is no canvas here: its fallback stands in for it.
+     * the morph's clock is the motion layer's to run; there is no canvas
+     * here, so the fallback stands in for both, and the step lands at once.
      */
     async function cutWithoutCanvas() {
       await ReactTestRenderer.act(async () => {
         jest.advanceTimersByTime(FIELD_CAMERA_KNOBS.STEP_CUT_WAIT_MS);
       });
-    }
-
-    function holdMorph(): () => void {
-      const reanimated = require('react-native-reanimated');
-      const actual = reanimated.withTiming;
-      let land: ((finished: boolean) => void) | undefined;
-      jest
-        .spyOn(reanimated, 'withTiming')
-        .mockImplementation((...args: unknown[]) => {
-          const config = args[1] as { duration?: number } | undefined;
-          if (config?.duration !== FIELD_CAMERA_KNOBS.STEP_MORPH_MS) {
-            return actual(...args);
-          }
-          land = args[2] as (finished: boolean) => void;
-          return 0.5;
-        });
-      return () => land?.(true);
     }
 
     /*
@@ -763,9 +747,6 @@ describe('useFieldCamera', () => {
      */
     it('morphs in place: the next song is the player, and the camera never climbs', async () => {
       mockReducedMotion = false;
-      // Before the first render: the cut is a worklet, which keeps the
-      // `withTiming` it was made with.
-      const land = holdMorph();
       const { layout, first, second } = await inFirstSong();
       jest.useFakeTimers();
 
@@ -776,42 +757,34 @@ describe('useFieldCamera', () => {
       expect(latest.playerFocus?.key).toBe(second.key);
       expect(latest.stepFrom?.key).toBe(first.key);
       expect(latest.level).toBe('song');
-      // Not cut yet: the arriving player is drawn through the step's camera.
+      // Not cut yet: the arriving player is drawn through the step's camera,
+      // and the morph's clock stands at its start.
       const seat = levelCameraTarget('song', layout, second)!;
       expect(latest.stepMorphShared.value).toEqual({
         from: first.key,
         to: second.key,
         camera: seat,
+        fromCamera: expect.objectContaining({ scale: seat.scale }),
         ready: false,
       });
+      expect(latest.stepClockShared.value).toBe(0);
 
       await cutWithoutCanvas();
       expect(camera().x).toBeCloseTo(seat.x, 6);
       expect(camera().y).toBeCloseTo(seat.y, 6);
       expect(camera().scale).toBeCloseTo(seat.scale, 6);
-      // Cut: the arriving player is drawn through the real camera now.
-      expect(latest.stepMorphShared.value).toEqual({
-        from: first.key,
-        to: second.key,
-        camera: null,
-        ready: true,
-      });
-
-      await ReactTestRenderer.act(async () => {
-        land();
-      });
+      expect(latest.stepClockShared.value).toBe(1);
       expect(latest.stepMorphShared.value).toBeNull();
+      expect(latest.level).toBe('song');
     });
 
     it('holds a step asked mid-morph until the morph lands, and says where it is going', async () => {
       mockReducedMotion = false;
-      const land = holdMorph();
       const { first, second } = await inFirstSong();
       jest.useFakeTimers();
       await ReactTestRenderer.act(async () => {
         latest.step(second);
       });
-      await cutWithoutCanvas();
       // Back again before the first has landed: it waits.
       await ReactTestRenderer.act(async () => {
         latest.step(first);
@@ -819,13 +792,12 @@ describe('useFieldCamera', () => {
       expect(latest.focus?.key).toBe(second.key);
       expect(latest.stepping()?.key).toBe(first.key);
 
-      await ReactTestRenderer.act(async () => {
-        land();
-      });
+      await cutWithoutCanvas();
       expect(latest.focus?.key).toBe(first.key);
       expect(latest.stepFrom?.key).toBe(second.key);
       expect(latest.level).toBe('song');
       await cutWithoutCanvas();
+      expect(latest.stepMorphShared.value).toBeNull();
     });
 
     it('still folds back into the row and opens the next, when told to', async () => {
