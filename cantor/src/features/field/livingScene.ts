@@ -102,6 +102,19 @@ export type FocusDraw = Readonly<{
    * to the UI thread here, once per song, rather than captured by a worklet.
    */
   motion: MotionTrack | null;
+  /**
+   * The song the player is morphing from, when the queue stepped at L2
+   * (`stepMorph.ts`): its own players and identities, and its motion track
+   * for the orbit it erases. Null otherwise.
+   */
+  from: StepFrom | null;
+}>;
+
+/** The leaving side of a step's morph; see `FocusDraw.from`. */
+export type StepFrom = Readonly<{
+  identities: readonly LensIdentity[];
+  players: readonly (LensPlayer | null)[];
+  motion: MotionTrack | null;
 }>;
 
 /**
@@ -113,6 +126,8 @@ export type JoinedFace = Readonly<{
   entityKey: string;
   identities: readonly LensIdentity[];
   players?: readonly (LensPlayer | null)[];
+  /** The player's morph's far side; see `FocusDraw.from`. */
+  morphFrom?: StepFrom | null;
   fromX: number;
   fromY: number;
   targetX: number;
@@ -166,6 +181,7 @@ export function joinFaces(
       entityKey: flight.entityKey,
       identities: song.identities,
       players: isPlayer ? focus.players : undefined,
+      morphFrom: isPlayer ? focus.from : null,
       fromX: flight.fromX,
       fromY: flight.fromY,
       targetX: flight.targetX,

@@ -166,6 +166,11 @@ export type BylineClock = Readonly<{
   owner: SharedValue<number>;
   /** Where the field last drew the player, as the flight that holds it says. */
   at: SharedValue<BylineAt | null>;
+  /**
+   * The loop this clock last let go of, and how far it had scrolled: where a
+   * step's morph takes the leaving byline from (`StepLines.metaFrom`).
+   */
+  left: SharedValue<Readonly<{ key: string; travelled: number }> | null>;
 }>;
 
 export type BylineAt = Readonly<{
@@ -185,9 +190,12 @@ export function useBylineClock(): BylineClock {
   const waited = useSharedValue(0);
   const owner = useSharedValue(0);
   const at = useSharedValue<BylineAt | null>(null);
+  const left = useSharedValue<Readonly<{ key: string; travelled: number }> | null>(
+    null,
+  );
   return useMemo(
-    () => ({ key, travelled, waited, owner, at }),
-    [key, travelled, waited, owner, at],
+    () => ({ key, travelled, waited, owner, at, left }),
+    [key, travelled, waited, owner, at, left],
   );
 }
 
@@ -201,6 +209,17 @@ export function bylineTailInk(named: number): number {
   const from = BYLINE_MARQUEE_KNOBS.TAIL_FROM;
   const u = (named - from) / (1 - from);
   return u <= 0 ? 0 : u >= 1 ? 1 : u * u * (3 - 2 * u);
+}
+
+/**
+ * How far the loop `key` has scrolled on this clock — still scrolling, or
+ * where it was let go — or 0 for a loop the clock is not counting.
+ */
+export function bylineScrolled(clock: BylineClock, key: string): number {
+  'worklet';
+  if (clock.key.value === key) return clock.travelled.value;
+  const left = clock.left.value;
+  return left !== null && left.key === key ? left.travelled : 0;
 }
 
 /** How far into its loop the line is: the scroll the canvas draws. */
@@ -242,6 +261,9 @@ export function stepByline(
 /** Back to the first letter: a new byline, or a player left behind. */
 function resetByline(clock: BylineClock, key: string): void {
   'worklet';
+  if (clock.key.value !== key) {
+    clock.left.value = { key: clock.key.value, travelled: clock.travelled.value };
+  }
   clock.key.value = key;
   clock.travelled.value = 0;
   clock.waited.value = 0;

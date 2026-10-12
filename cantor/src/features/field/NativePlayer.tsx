@@ -35,6 +35,8 @@ import {
   BYLINE_GAP_MARK,
   BYLINE_MARQUEE_KNOBS,
   bylineEdgeStops,
+  bylineOffset,
+  bylineScrolled,
   bylineTailInk,
   bylineLayout,
   useFieldByline,
@@ -60,6 +62,7 @@ import type {
   FieldPresentation,
 } from './useFieldController';
 import { lensWeight, type LensClock } from './lensClock';
+import { isStepMorphing, stepMorphAt } from './stepMorph';
 import type { MotionTrack } from '../../lenses/motion/motionTrack';
 
 /** Where a clock with nothing to say rests: the circle's position in `LENSES`. */
@@ -656,6 +659,8 @@ export function PlayerRing({
   letterFont = null,
   durationSeconds,
   positionSeconds,
+  heardFrom = null,
+  step = null,
   colour,
 }: {
   radius: number;
@@ -672,15 +677,23 @@ export function PlayerRing({
   letterFont?: SkFont | null;
   durationSeconds: number;
   positionSeconds: SharedValue<number>;
+  /**
+   * Where the song before stood, 0..1, when the queue stepped at L2: the
+   * hand winds from there to this song's own playhead on `step`, the step's
+   * eased morph (1 at rest). Null, the clock is this song's alone.
+   */
+  heardFrom?: number | null;
+  step?: DerivedValue<number> | null;
   colour: string;
 }) {
   const reducedMotion = useReducedMotion();
 
   const fraction = useDerivedValue(() => {
-    if (durationSeconds <= 0) return 0;
-    const value = positionSeconds.value / durationSeconds;
-    return value < 0 ? 0 : value > 1 ? 1 : value;
-  }, [durationSeconds, positionSeconds]);
+    const raw = durationSeconds <= 0 ? 0 : positionSeconds.value / durationSeconds;
+    const value = raw < 0 ? 0 : raw > 1 ? 1 : raw;
+    if (heardFrom === null || step === null || step.value >= 1) return value;
+    return heardFrom + (value - heardFrom) * step.value;
+  }, [durationSeconds, positionSeconds, heardFrom, step]);
 
   /** The two lenses in play, lower position first; one twice at rest. */
   const lenses = useDerivedValue(() => {
@@ -983,6 +996,30 @@ export type NativeSongModel = Readonly<{
    * them.
    */
   onPhone: boolean;
+  /** The queue's step at L2, from the song before: see `stepLineMorphs`. */
+  step?: StepLines | null;
+}>;
+
+/**
+ * A step's morph between two songs' lines at the player (`stepMorph.ts`):
+ * the name and the byline, each from where the leaving song's stood to where
+ * the arriving song's stands.
+ */
+export type StepLines = Readonly<{
+  title: readonly GlyphMorph[] | null;
+  meta: readonly GlyphMorph[] | null;
+  /**
+   * The column a byline is seen through when either end is a marquee — a loop
+   * runs past it — or null when both lines fit.
+   */
+  metaColumn: Readonly<{ left: number; width: number }> | null;
+  /**
+   * The leaving byline's loop, when it was one: its key on the marquee's
+   * clock, its period, and the offset its letters were chosen at. The morph
+   * leaves from the offset the clock actually let it go at, which the JS
+   * thread only knows roughly.
+   */
+  metaFrom: Readonly<{ key: string; periodPx: number; chosenAt: number }> | null;
 }>;
 
 /**
@@ -1138,9 +1175,11 @@ function buildLineMorph(
   // The destination already laid out, for a line that is not one run of
   // text: the byline's marquee loop.
   toLayout: CharBox[] | null = null,
+  // And the source, for the same reason.
+  fromLayout: CharBox[] | null = null,
 ): readonly GlyphMorph[] | null {
   if (fromText.length === 0 && toText.length === 0) return null;
-  const fromBoxes = layoutText(fromText, fromFont, 0, Infinity, 0);
+  const fromBoxes = fromLayout ?? layoutText(fromText, fromFont, 0, Infinity, 0);
   const toBoxes = toLayout ?? layoutText(toText, toFont, 0, Infinity, 0);
   const count = Math.max(fromBoxes.length, toBoxes.length);
   if (count === 0) return null;
@@ -1291,6 +1330,89 @@ export function nativeSongModel(
       rowTitleOriginPx(),
       seats.titleSeat,
     ),
+  };
+}
+
+/**
+ * How far past the column a step keeps the leaving loop's letters: the clock
+ * scrolls on between the JS thread's look at it and the morph's first frame.
+ */
+const STEP_LOOP_SLACK_PX = 48;
+
+/**
+ * The leaving song's lines becoming the arriving song's, both at the player's
+ * pose: the same `transform` variant the descent uses, between two songs
+ * rather than between a row and a player. Each end is where that song's
+ * player draws its line (`playerSeats`), and a marquee ends on its whole
+ * loop, as `nativeSongModel`'s morph does — so the song's own line takes over
+ * on the morph's last frame without a pixel changing.
+ */
+export function stepLineMorphs(
+  from: FieldPresentation,
+  to: FieldPresentation,
+  viewport: PoseViewport,
+  fonts: Readonly<{ songTitle: SkFont; songMeta: SkFont }>,
+  scrolls = true,
+  /** How far the leaving byline's marquee had scrolled, and which loop it was. */
+  scrolled: Readonly<{ key: string; travelled: number }> | null = null,
+): StepLines {
+  const leaving = playerSeats(from, viewport, fonts, scrolls);
+  const arriving = playerSeats(to, viewport, fonts, scrolls);
+  const loop = arriving.metaLoop ?? leaving.metaLoop;
+  // A loop only as far as its column shows it, and one letter past for the
+  // edge's fade: the rest is masked out the whole way, and every letter is a
+  // mapper mounted on the step's commit.
+  const shown = (seats: typeof leaving) =>
+    seats.metaLoop === null
+      ? null
+      : seats.metaLoop.boxes.slice(0, seats.metaLoop.scroll.shown + 1);
+  // The leaving loop where its marquee stood: the letters in the column
+  // then, from wherever they had scrolled to.
+  const leavingLoop = leaving.metaLoop;
+  const offset =
+    leavingLoop !== null && scrolled !== null && scrolled.key === leavingLoop.scroll.key
+      ? bylineOffset(scrolled.travelled, leavingLoop.scroll.periodPx)
+      : 0;
+  const fade = BYLINE_MARQUEE_KNOBS.EDGE_FADE_PX;
+  const leavingShown =
+    leavingLoop === null
+      ? null
+      : leavingLoop.boxes
+          .map(box => ({ ...box, x: box.x - offset }))
+          .filter(
+            box =>
+              box.x + box.w >= -fade - STEP_LOOP_SLACK_PX &&
+              box.x <= leavingLoop.scroll.width + fade + STEP_LOOP_SLACK_PX,
+          );
+  return {
+    title: buildLineMorph(
+      leaving.songTitle,
+      arriving.songTitle,
+      fonts.songTitle,
+      fonts.songTitle,
+      leaving.titleSeat,
+      arriving.titleSeat,
+    ),
+    meta: buildLineMorph(
+      leaving.songMeta,
+      arriving.songMeta,
+      fonts.songMeta,
+      fonts.songMeta,
+      leaving.metaSeat,
+      arriving.metaSeat,
+      shown(arriving),
+      leavingShown,
+    ),
+    metaColumn:
+      loop === null ? null : { left: loop.scroll.left, width: loop.scroll.width },
+    metaFrom:
+      leavingLoop === null
+        ? null
+        : {
+            key: leavingLoop.scroll.key,
+            periodPx: leavingLoop.scroll.periodPx,
+            chosenAt: offset,
+          },
   };
 }
 
@@ -1505,6 +1627,60 @@ function ScrollingByline({
             </>
           )}
         </SkiaGroup>
+      </Mask>
+    </SkiaGroup>
+  );
+}
+
+/**
+ * A step's byline seen through the marquee's column, faded at its edges as
+ * the marquee's own line is at rest — so a loop that runs past the column
+ * stays inside it on the way. Its mask is a layer, so it is clipped to
+ * nothing once the step has landed: an unbounded one cost a whole frame.
+ */
+function StepColumn({
+  column,
+  font,
+  seat,
+  stepping,
+  children,
+}: {
+  column: Readonly<{ left: number; width: number }>;
+  font: SkFont;
+  seat: Readonly<{ x: number; y: number }>;
+  stepping: DerivedValue<number>;
+  children: React.ReactNode;
+}) {
+  const stops = useMemo(() => bylineEdgeStops(column), [column]);
+  const strip = useMemo(() => {
+    const metrics = font.getMetrics();
+    const pad = BYLINE_MARQUEE_KNOBS.STRIP_PAD_PX;
+    const baseline = baselineOf(seat, font);
+    return Skia.XYWHRect(
+      stops.from,
+      baseline + metrics.ascent - pad,
+      stops.to - stops.from,
+      metrics.descent - metrics.ascent + 2 * pad,
+    );
+  }, [font, seat, stops]);
+  const shut = useMemo(() => Skia.XYWHRect(0, 0, 0, 0), []);
+  const clip = useDerivedValue(() => (stepping.value > 0 ? strip : shut));
+  return (
+    <SkiaGroup clip={clip}>
+      <Mask
+        mode="alpha"
+        mask={
+          <Rect x={strip.x} y={strip.y} width={strip.width} height={strip.height}>
+            <LinearGradient
+              colors={['rgba(0,0,0,0)', 'black', 'black', 'rgba(0,0,0,0)']}
+              end={vec(stops.to, 0)}
+              positions={stops.positions}
+              start={vec(stops.from, 0)}
+            />
+          </Rect>
+        }
+      >
+        {children}
       </Mask>
     </SkiaGroup>
   );
@@ -1968,8 +2144,14 @@ export function NativePlayerParts({
   songTitleFont,
   songMetaFont,
   byline = null,
+  stepClock = null,
+  heardFrom = null,
 }: {
   model: NativeSongModel;
+  /** The queue's step at L2, linear, 1 at rest; see `stepMorph.ts`. */
+  stepClock?: SharedValue<number> | null;
+  /** Where the song before's clock stood when the step began; see `PlayerRing`. */
+  heardFrom?: number | null;
   /** The byline's marquee, when the field has one; see `BylineMarqueeLayer`. */
   byline?: BylineClock | null;
   lensClock?: LensClock;
@@ -2029,6 +2211,41 @@ export function NativePlayerParts({
   /** The step the row's own ink is the complement of; see `MorphLine`. */
   const owned = useDerivedValue<number>(() => lineOwnedByPlayer(named.value));
   /*
+   * A step's morph owns the name and the byline while it runs, as a step:
+   * its last frame is this song's own lines, from the same faces at the same
+   * seats, so they change hands on identical pixels — the rule `MorphLine`
+   * keeps between the row and the player.
+   */
+  const step = model.step ?? null;
+  const stepping = useDerivedValue<number>(() =>
+    step !== null && stepClock !== null && isStepMorphing(stepClock.value)
+      ? 1
+      : 0,
+  );
+  const stepAt = useDerivedValue(() =>
+    stepClock === null ? 1 : stepMorphAt(stepClock.value),
+  );
+  const ownedHere = useDerivedValue(() => owned.value * (1 - stepping.value));
+  const namedHere = useDerivedValue(() => named.value * (1 - stepping.value));
+  const stepOwned = useDerivedValue(() => owned.value * stepping.value);
+  /*
+   * The leaving byline, if it was scrolling, leaves from exactly where the
+   * marquee has it: the letters were chosen at the JS thread's look at the
+   * clock, and the rest of the way is a shift that is gone by the morph's
+   * end. Followed live, so a strip still drawing it for a frame draws the
+   * same pixels.
+   */
+  const metaFrom = step?.metaFrom ?? null;
+  const stepMetaShift = useDerivedValue<Transforms3d>(() => {
+    if (metaFrom === null || byline === null) return [{ translateX: 0 }];
+    const at = bylineOffset(bylineScrolled(byline, metaFrom.key), metaFrom.periodPx);
+    let residual = at - metaFrom.chosenAt;
+    // The short way round the loop.
+    if (residual > metaFrom.periodPx / 2) residual -= metaFrom.periodPx;
+    if (residual < -metaFrom.periodPx / 2) residual += metaFrom.periodPx;
+    return [{ translateX: -residual * (1 - stepAt.value) }];
+  });
+  /*
    * The quiet line's own left edge: the axis, less half the width of the whole
    * run. `playerWords` lays the words out from zero, so the run is as wide as
    * its last word's right edge — measured once here rather than by every word.
@@ -2052,6 +2269,8 @@ export function NativePlayerParts({
             colour={colour}
             durationSeconds={durationSeconds}
             positionSeconds={positionSeconds}
+            heardFrom={heardFrom}
+            step={stepAt}
             radius={radius}
           />
         )}
@@ -2065,7 +2284,7 @@ export function NativePlayerParts({
         )}
       </SkiaGroup>
       {model.titleMorph === null ? (
-        <SkiaGroup opacity={named}>
+        <SkiaGroup opacity={namedHere}>
           <Text
             color={colour}
             font={songTitleFont}
@@ -2078,7 +2297,7 @@ export function NativePlayerParts({
         <MorphLine
           colour={colour}
           morphs={model.titleMorph}
-          own={owned}
+          own={ownedHere}
           progress={named}
         />
       )}
@@ -2089,12 +2308,12 @@ export function NativePlayerParts({
           font={songMetaFont}
           model={model}
           named={named}
-          owned={owned}
+          owned={ownedHere}
           scroll={model.metaScroll}
           viewport={viewport}
         />
       ) : model.metaMorph === null ? (
-        <SkiaGroup opacity={named}>
+        <SkiaGroup opacity={namedHere}>
           <Text
             color={mutedColour}
             font={songMetaFont}
@@ -2107,9 +2326,41 @@ export function NativePlayerParts({
         <MorphLine
           colour={mutedColour}
           morphs={model.metaMorph}
-          own={owned}
+          own={ownedHere}
           progress={named}
         />
+      )}
+      {step === null || step.title === null ? null : (
+        <MorphLine
+          colour={colour}
+          morphs={step.title}
+          own={stepOwned}
+          progress={stepAt}
+        />
+      )}
+      {step === null || step.meta === null ? null : step.metaColumn === null ? (
+        <MorphLine
+          colour={mutedColour}
+          morphs={step.meta}
+          own={stepOwned}
+          progress={stepAt}
+        />
+      ) : (
+        <StepColumn
+          column={step.metaColumn}
+          font={songMetaFont}
+          seat={model.metaSeat}
+          stepping={stepping}
+        >
+          <SkiaGroup transform={stepMetaShift}>
+            <MorphLine
+              colour={mutedColour}
+              morphs={step.meta}
+              own={stepOwned}
+              progress={stepAt}
+            />
+          </SkiaGroup>
+        </StepColumn>
       )}
       {/*
         No rule under the recipe.
