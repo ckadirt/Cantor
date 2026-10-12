@@ -115,6 +115,8 @@ export type StepFrom = Readonly<{
   identities: readonly LensIdentity[];
   players: readonly (LensPlayer | null)[];
   motion: MotionTrack | null;
+  /** Where its playhead stood when the step began, 0..1. */
+  heard: number;
 }>;
 
 /**

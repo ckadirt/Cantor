@@ -971,34 +971,40 @@ function ClockDrawing({
 
   return (
     <SkiaGroup opacity={opacity}>
-      <Path color={colour} opacity={cutsAlpha} path={cuts} strokeWidth={1} style="stroke" />
-      <Path color={colour} opacity={cutsAlpha} path={drops} />
-      {formCuts === null || formInk === null || letterFont === null ? null : (
-        <FormLetters
-          colour={colour}
-          font={letterFont}
-          formCuts={formCuts}
-          formInk={formInk}
-          ring={clockRing}
-          onClock={onClock}
-          head={fraction}
-        />
-      )}
-      <Path
-        color={colour}
-        opacity={rimAlpha}
-        path={ring}
-        strokeWidth={rimWidth}
-        style="stroke"
-      />
-      <Path
-        color={colour}
-        opacity={tickAlpha}
-        path={ticks}
-        strokeWidth={rimWidth}
-        style="stroke"
-      />
+      {/*
+       * The whole clock is the motion layer's while a step has it
+       * (`handInk`): its form morphs with the step there, while the field,
+       * whose step clock waits at 0, holds still (`drawClockFace`).
+       */}
       <SkiaGroup opacity={handInk ?? 1}>
+        <Path color={colour} opacity={cutsAlpha} path={cuts} strokeWidth={1} style="stroke" />
+        <Path color={colour} opacity={cutsAlpha} path={drops} />
+        {formCuts === null || formInk === null || letterFont === null ? null : (
+          <FormLetters
+            colour={colour}
+            font={letterFont}
+            formCuts={formCuts}
+            formInk={formInk}
+            ring={clockRing}
+            onClock={onClock}
+            head={fraction}
+            handInk={handInk}
+          />
+        )}
+        <Path
+          color={colour}
+          opacity={rimAlpha}
+          path={ring}
+          strokeWidth={rimWidth}
+          style="stroke"
+        />
+        <Path
+          color={colour}
+          opacity={tickAlpha}
+          path={ticks}
+          strokeWidth={rimWidth}
+          style="stroke"
+        />
         <Path
           color={colour}
           end={fraction}
@@ -2109,6 +2115,21 @@ const LETTER_GAP_PX = 3;
 /** Between the letters' two rings, past a capital's height. */
 const LETTER_RING_GAP_PX = 4;
 
+/** A form letter's advance and its height above the baseline. */
+export type FormLetterSize = Readonly<{ width: number; height: number }>;
+
+/**
+ * Monospaced capitals: one advance, and a capital's height above its
+ * baseline. On the JS thread: `measureText` is not there on the UI runtime.
+ */
+export function formLetterSize(font: SkFont): FormLetterSize {
+  const ink = font.measureText('M');
+  return {
+    width: font.getTextWidth('M'),
+    height: ink.y < 0 ? -ink.y : font.getSize() * 0.7,
+  };
+}
+
 /** The letters' ring, their centres from the player's centre, for a clock ring at `ring`. */
 export function formLetterRadius(ring: number, outside: number, letterWidth: number): number {
   'worklet';
@@ -2156,6 +2177,83 @@ export function formLetterSeats(
   return out;
 }
 
+/**
+ * The rest of the clock, in one lens's shape: the rim, its four ticks, and
+ * the song's form on it — the cuts, the drops, the letters — at `formInk`,
+ * with the letters weighted by `head`. What `ClockDrawing` draws under the
+ * hand, for the motion layer to draw beside `drawClockHand` while a step
+ * has the clock: the form morphs with the step, and the field holds still.
+ */
+// Declared below everything it reads: a worklet captures what it names where
+// it is declared, and in a release build a name declared later is undefined.
+export function drawClockFace(
+  canvas: SkCanvas,
+  lens: number,
+  radius: number,
+  cuts: ClockCuts,
+  formInk: number,
+  head: number,
+  font: SkFont | null,
+  /** A capital's advance and height in `font`, measured on the JS thread (`formLetterSize`). */
+  letter: FormLetterSize | null,
+  paint: SkPaint,
+  alpha: number,
+): void {
+  'worklet';
+  const shape = LENS_UI[lens].clock;
+  const r = radius * shape.ratio;
+  const onClock = shape.formOnClock;
+  paint.setStyle(PaintStyle.Stroke);
+  const cutsAlpha = CUT_ALPHA * formInk * onClock;
+  if (cutsAlpha > 0) {
+    paint.setAlphaf(alpha * cutsAlpha);
+    paint.setStrokeWidth(1);
+    for (let i = 0; i < cuts.sections.length; i++) {
+      const angle = cuts.sections[i] * Math.PI * 2 - Math.PI / 2;
+      const x = Math.cos(angle);
+      const y = Math.sin(angle);
+      canvas.drawLine(x * (r - CUT_REACH_PX), y * (r - CUT_REACH_PX), x * (r + CUT_REACH_PX), y * (r + CUT_REACH_PX), paint);
+    }
+    paint.setStyle(PaintStyle.Fill);
+    const inset = r - DROP_INSET_PX;
+    for (let i = 0; i < cuts.drops.length; i++) {
+      const angle = cuts.drops[i] * Math.PI * 2 - Math.PI / 2;
+      canvas.drawCircle(Math.cos(angle) * inset, Math.sin(angle) * inset, DROP_RADIUS_PX, paint);
+    }
+  }
+  const lettersAlpha = formInk * onClock;
+  if (lettersAlpha > 0 && font !== null && letter !== null) {
+    const { width, height } = letter;
+    const seats = formLetterSeats(
+      cuts,
+      formLetterRadius(r, 1, width),
+      width,
+      height,
+      formLetterInks(cuts, head),
+      height + LETTER_RING_GAP_PX,
+    );
+    paint.setStyle(PaintStyle.Fill);
+    for (let i = 0; i < seats.length; i += 4) {
+      paint.setAlphaf(alpha * Math.min(1, LETTER_ALPHA * seats[i + 3]) * lettersAlpha);
+      canvas.drawText(String.fromCharCode(65 + seats[i + 2]), seats[i], seats[i + 1], paint, font);
+    }
+  }
+  paint.setStyle(PaintStyle.Stroke);
+  paint.setStrokeWidth(shape.rimWidthPx);
+  paint.setAlphaf(alpha * shape.rimAlpha);
+  canvas.drawPath(ringPath(r), paint);
+  const ticks = shape.tickAlpha * (1 - (cuts.sections.length === 0 ? 0 : formInk));
+  if (ticks > 0) {
+    paint.setAlphaf(alpha * ticks);
+    for (let quarter = 0; quarter < 4; quarter += 1) {
+      const angle = (quarter * Math.PI) / 2;
+      const x = Math.sin(angle);
+      const y = -Math.cos(angle);
+      canvas.drawLine(x * r, y * r, x * (r - shape.tickPx), y * (r - shape.tickPx), paint);
+    }
+  }
+}
+
 /** The form's letters round the clock; see `formLetterSeats`. */
 function FormLetters({
   formCuts,
@@ -2165,9 +2263,12 @@ function FormLetters({
   onClock,
   head,
   colour,
+  handInk = null,
 }: {
   /** How far through the song the playhead is: which letters are written. */
   head: SharedValue<number>;
+  /** This canvas's share of the clock (`ClockDrawing`); a picture ignores its group's opacity. */
+  handInk?: DerivedValue<number> | SharedValue<number> | null;
   formCuts: DerivedValue<ClockCuts>;
   formInk: SharedValue<number>;
   font: SkFont;
@@ -2182,14 +2283,7 @@ function FormLetters({
     paint.setColor(Skia.Color(colour));
     return paint;
   }, [colour]);
-  // Monospaced capitals: one advance, and a capital's height above its baseline.
-  const letter = useMemo(() => {
-    const ink = font.measureText('M');
-    return {
-      width: font.getTextWidth('M'),
-      height: ink.y < 0 ? -ink.y : font.getSize() * 0.7,
-    };
-  }, [font]);
+  const letter = useMemo(() => formLetterSize(font), [font]);
   /*
    * The ink is applied here, not by a group round the picture: Skia draws a
    * recorded picture without its group's opacity. On the circle (`onClock` 0)
@@ -2198,7 +2292,7 @@ function FormLetters({
    */
   const picture = useDerivedValue(() =>
     createPicture(canvas => {
-      const alpha = formInk.value * onClock.value;
+      const alpha = formInk.value * onClock.value * (handInk === null ? 1 : handInk.value);
       if (alpha <= 0) return;
       const cuts = formCuts.value;
       const r = formLetterRadius(ring.value, 1, letter.width);

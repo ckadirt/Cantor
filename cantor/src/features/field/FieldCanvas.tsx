@@ -207,7 +207,9 @@ import {
   PLAYER_RING_KNOBS,
   clockCutsOf,
   type ClockCuts,
+  drawClockFace,
   drawClockHand,
+  formLetterSize,
   drawMorphLine,
   nativeSongModel,
   stepMetaStrip,
@@ -1392,19 +1394,6 @@ function FieldCanvasImpl({
     stepFromKey === null ? null : covers?.get(stepFromKey) ?? null;
   const stepMotion =
     stepFromKey === null ? null : motions?.get(stepFromKey) ?? null;
-  const stepFrom = useMemo<StepFrom | null>(() => {
-    if (stepFromKey === null || stepPresentation === undefined) return null;
-    const recipe = stepPresentation.recipe;
-    return {
-      identities:
-        songCache.current.get(stepFromKey)?.draw.identities ??
-        LENSES.map(lens => lens.identity(recipe)),
-      players: LENSES.map(lens =>
-        lens.player(recipe, stepAnalysis, stepCover),
-      ),
-      motion: stepMotion,
-    };
-  }, [stepAnalysis, stepCover, stepFromKey, stepMotion, stepPresentation]);
   /*
    * Where the leaving song's clock stood when the step began. Read once per
    * step, from the playhead the canvas held on the render before it: on the
@@ -1435,6 +1424,22 @@ function FieldCanvasImpl({
         : { key: bylineClock.key.value, travelled: bylineClock.travelled.value };
   }
   lastPosition.current = positionSeconds;
+  const stepFrom = useMemo<StepFrom | null>(() => {
+    if (stepFromKey === null || stepPresentation === undefined) return null;
+    const recipe = stepPresentation.recipe;
+    return {
+      identities:
+        songCache.current.get(stepFromKey)?.draw.identities ??
+        LENSES.map(lens => lens.identity(recipe)),
+      players: LENSES.map(lens =>
+        lens.player(recipe, stepAnalysis, stepCover),
+      ),
+      motion: stepMotion,
+      heard: stepHeard.current ?? 0,
+    };
+    // `stepId`: the playhead is read once per step, just above.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stepAnalysis, stepCover, stepFromKey, stepId, stepMotion, stepPresentation]);
   const focusDraw = useMemo<FocusDraw | null>(
     () =>
       focusKey === null || focusPresentation === undefined
@@ -2082,6 +2087,7 @@ function drawStepFace(
       hairline,
       paints,
       frame,
+      from.heard,
     );
     return;
   }
@@ -2223,6 +2229,10 @@ function PlayerMotionLayerImpl({
   const fadePaint = useMemo(() => Skia.Paint(), []);
   // A step's lines: the name and the hand in ink, the byline muted, and the
   // byline's column faded at its edges as the marquee's is.
+  const letterSize = useMemo(
+    () => (letterFont === null ? null : formLetterSize(letterFont)),
+    [letterFont],
+  );
   const linePaints = useMemo(() => {
     const fill = (colour: string) => {
       const made = Skia.Paint();
@@ -2446,7 +2456,17 @@ function PlayerMotionLayerImpl({
         // Through a step the music is the leaving song's, held: from the
         // moment it is asked for, so the song stopping changes nothing here
         // — and the live music is not read, so it redraws nothing either.
-        const held = stepMorph.value !== null ? layer.frozen.value : null;
+        // Landed, the arriving song is drawn on its own music (still, until
+        // it rises), not the leaving one's: held a frame past the landing,
+        // the circle sang the song before last's shape for that frame.
+        const morphNow = stepMorph.value;
+        const focusNow = focus.value;
+        const landed =
+          morphNow !== null &&
+          focusNow !== null &&
+          focusNow.placementKey === morphNow.to &&
+          stepClock.value >= 1;
+        const held = morphNow !== null && !landed ? layer.frozen.value : null;
         const frame = held !== null ? held : morphing ? null : motion.value;
         const holding = now !== null && now.hold === true;
         const owns =
@@ -2494,6 +2514,15 @@ function PlayerMotionLayerImpl({
         ) {
           // The ring of ticks, as the field drew it, with the music in it.
           const detail = layer.detail.value;
+          /*
+           * A step's form is this layer's own to write, and stays so while it
+           * holds the player after one: landed, `stepForm` is what the field
+           * works out for the focus too, but the field's copy in `detail` is
+           * only rewritten when it re-records — it had the song fully written
+           * through the whole morph, and the frame the morph landed flashed
+           * the orbit whole.
+           */
+          const ownForm = stepping || drawn.hold === true;
           if (detail !== null) {
             if (share < 1) {
               fadePaint.setAlphaf(share);
@@ -2514,9 +2543,9 @@ function PlayerMotionLayerImpl({
               viewport,
               detail.lensProgress,
               frame,
-              stepping ? stepForm.cuts.value : detail.form,
+              ownForm ? stepForm.cuts.value : detail.form,
               letterFont,
-              stepping ? stepForm.written.value : detail.formWritten,
+              ownForm ? stepForm.written.value : detail.formWritten,
               stepping ? clockNow : 1,
               stepping
                 ? arrivingCamera(stepMorph.value, detail.placementKey)
@@ -2605,14 +2634,23 @@ function PlayerMotionLayerImpl({
               : 0;
           canvas.save();
           canvas.translate(lines.ringX, lines.ringY);
-          drawClockHand(
+          const clockLens = drawn === null ? CIRCLE_LENS : drawn.lens;
+          const handAt = lines.heardFrom + (own - lines.heardFrom) * t;
+          // The rest of the clock with it: on the seal its form is on the rim,
+          // and leaves and arrives with the step's own clock.
+          drawClockFace(
             canvas,
-            drawn === null ? CIRCLE_LENS : drawn.lens,
+            clockLens,
             radius,
-            lines.heardFrom + (own - lines.heardFrom) * t,
+            stepForm.cuts.value,
+            stepForm.written.value,
+            handAt,
+            letterFont,
+            letterSize,
             linePaints.hand,
             lineInk,
           );
+          drawClockHand(canvas, clockLens, radius, handAt, linePaints.hand, lineInk);
           canvas.restore();
           if (lines.title !== null) {
             linePaints.title.setAlphaf(lineInk);
@@ -3672,6 +3710,7 @@ export function drawFieldFaces(
           FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
           paints,
           motionLayer === null ? null : motionLayer.frozen.value,
+          stepFrom.heard,
         );
       } else {
         // The generic two beats, as a lens change takes them: the leaving
@@ -3763,7 +3802,6 @@ export function drawFieldFaces(
         motionLayer !== null &&
         players !== undefined &&
         passes === 1 &&
-        motionOn &&
         progress >= 1 &&
         shapeArrived >= LAYER_ARRIVED &&
         (motionOn || holdLayer);

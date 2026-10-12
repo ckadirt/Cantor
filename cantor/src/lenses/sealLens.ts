@@ -29,7 +29,12 @@ import {
   type PlayerPaints,
 } from './contract';
 import type { FaceRecipe } from './face';
-import { drawSealPlayer, sealPlayerOf, type SealPlayer } from './sealPlayer';
+import {
+  drawSealPlayer,
+  drawSealStep,
+  sealPlayerOf,
+  type SealPlayer,
+} from './sealPlayer';
 import type { Lens, LensSong } from './types';
 
 /**
@@ -354,6 +359,57 @@ export function drawSealAsPlayer(
   }
 }
 
+/**
+ * The queue stepping at L2 in the seal: one song's dust becoming the next's,
+ * cell by cell (`drawSealStep`). The leaving seal leaves from the music it
+ * was last drawn to (`motion`, held) and where its playhead stood
+ * (`fromHeard`); the arriving one is still.
+ */
+export function drawSealMorph(
+  canvas: SkCanvas,
+  _aIdentity: LensIdentity,
+  aPlayer: LensPlayer | null,
+  bIdentity: LensIdentity,
+  bPlayer: LensPlayer | null,
+  t: number,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  soundIn: number,
+  heard: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+  motion: MotionFrame | null = null,
+  fromHeard = -1,
+): void {
+  'worklet';
+  if (arrived <= 0 || aPlayer === null || bPlayer === null) {
+    drawSealAsPlayer(canvas, bPlayer, bIdentity, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints);
+    return;
+  }
+  drawSealStep(
+    canvas,
+    aPlayer as SealPlayer,
+    bPlayer as SealPlayer,
+    t,
+    paints,
+    SEAL_MARK_SIDE_PX * size,
+    alpha,
+    weight + (1 - weight) * fill,
+    fill,
+    arrived,
+    arriving,
+    soundIn,
+    heard,
+    motion === null ? fromHeard : motion.head,
+    hairlinePx,
+    motion,
+  );
+}
+
 /** The seal's rim under a finger: the circle's dead centre, a longer reach. */
 export function sealRimAt(
   dx: number,
@@ -404,6 +460,7 @@ export const sealLens: Lens = {
     drawMark: drawSealMark,
     sprites: sealSprites,
     drawPlayer: drawSealAsPlayer,
+    morphPlayer: drawSealMorph,
     ringTicks: 0,
     hearsPlayhead: 1,
     clock: {

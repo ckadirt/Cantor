@@ -360,4 +360,9 @@ export type PlayerMorphDraw = (
   hairlinePx: number,
   paints: PlayerPaints,
   motion: MotionFrame | null,
+  /**
+   * Where `a`'s playhead stood, 0..1, when `motion` is null; a step's only.
+   * `heard` is `b`'s.
+   */
+  fromHeard?: number,
 ) => void;
