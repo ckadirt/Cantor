@@ -846,9 +846,24 @@ function FieldCanvasImpl({
    */
   const stepClockShared = stepClockProp ?? ownStepClock;
   const layerLines = playerLayer.lines;
+  const focusCandidate = useSharedValue<FocusDraw | null>(null);
+  const focusShared = useRef(focusCandidate).current;
+  const stepMorphShared = stepMorphProp ?? ownStepMorph;
+  /*
+   * And a step is only the field's business once the song it arrives at is
+   * the focus. The clock is wound back to 0 on the press, a commit before
+   * the focus moves; read then, the song still in focus — which keeps the
+   * song it was itself morphed from — drew that one, and the song before
+   * last flashed up before the morph began.
+   */
   const fieldStepClockCandidate = useDerivedValue(() => {
     const at = stepClockShared.value;
     if (at >= 1) return 1;
+    const morph = stepMorphShared.value;
+    const focused = focusShared.value;
+    if (morph === null || focused === null || focused.placementKey !== morph.to) {
+      return 1;
+    }
     return layerLines.value !== null ? 0 : at;
   });
   const fieldStepClock = useRef(fieldStepClockCandidate).current;
@@ -856,7 +871,7 @@ function FieldCanvasImpl({
     cut: useSharedValue<NativeCut | null>(null),
     clock: cutClockShared ?? ownClock,
     songs: useSharedValue<Readonly<Record<string, SongDraw>>>({}),
-    focus: useSharedValue<FocusDraw | null>(null),
+    focus: focusShared,
     playing: useSharedValue<string | null>(null),
     inkFrom: useSharedValue<Readonly<Record<string, SongInk>>>({}),
     inkClock: useSharedValue(1),
@@ -865,7 +880,7 @@ function FieldCanvasImpl({
     motionIn: useSharedValue(0),
     focusLive: useSharedValue(-1),
     parked: useSharedValue<NativeCut | null>(null),
-    stepMorph: stepMorphProp ?? ownStepMorph,
+    stepMorph: stepMorphShared,
     stepClock: fieldStepClock,
   };
   const scene = useRef(sceneCandidate).current;
@@ -2268,7 +2283,22 @@ function PlayerMotionLayerImpl({
     },
   );
   // The form the orbit carries through a step, on the real clock.
-  const stepForm = useStepForm(focus, stepClock, motionIn);
+  /*
+   * The clock as this layer draws a morph on: the step's, while the song it
+   * arrives at is the focus, and landed otherwise. The next step winds the
+   * clock back on the press, a commit before the focus moves — read raw, a
+   * morph the layer still held from the step before was drawn again from its
+   * start, and the song before last flashed up.
+   */
+  const layerClock = useDerivedValue(() => {
+    const morph = stepMorph.value;
+    const focused = focus.value;
+    if (morph === null || focused === null || focused.placementKey !== morph.to) {
+      return 1;
+    }
+    return stepClock.value;
+  });
+  const stepForm = useStepForm(focus, layerClock, motionIn);
   const radius = playerRadiusPx(viewport.width);
   const picture = useDerivedValue(() =>
     createPicture(
@@ -2284,10 +2314,17 @@ function PlayerMotionLayerImpl({
         if (layer.showing.value !== owns) layer.showing.value = owns;
         if (owns && layer.last.value !== now) layer.last.value = now;
         // Fading out with no player handed (a pair morph took it): the last one.
-        const drawn = now ?? layer.last.value;
+        // And fading out of a step's morph, its last frame — the arriving
+        // song, still — whatever the field has handed over since: that
+        // player's music has not risen yet, and drawing it would draw nothing
+        // for the frame before the field took it back.
+        const last = layer.last.value;
+        const drawn =
+          !owns && last !== null && last.morphFrom != null ? last : now ?? last;
         const share = layer.layerInk.value;
         const stepping = drawn !== null && drawn.morphFrom != null;
-        const at = stepping ? stepMorphAt(stepClock.value) : 1;
+        const clockNow = layerClock.value;
+        const at = stepping ? stepMorphAt(clockNow) : 1;
         /*
          * The leaving circle as it was held — its singing contour — worked
          * out once per step rather than on every frame of the morph: the
@@ -2336,7 +2373,7 @@ function PlayerMotionLayerImpl({
               stepping ? stepForm.cuts.value : detail.form,
               letterFont,
               stepping ? stepForm.written.value : detail.formWritten,
-              stepping ? stepClock.value : 1,
+              stepping ? clockNow : 1,
               stepping
                 ? arrivingCamera(stepMorph.value, detail.placementKey)
                 : null,
@@ -2356,7 +2393,7 @@ function PlayerMotionLayerImpl({
               from,
               leaving,
               at,
-              stepClock.value,
+              clockNow,
               share,
               paints,
               frame,
@@ -2388,7 +2425,7 @@ function PlayerMotionLayerImpl({
         const lines = layer.lines.value ?? layer.lastLines.value;
         const lineInk = layer.layerLineInk.value;
         if (lines !== null && lineInk > 0) {
-          const t = stepMorphAt(stepClock.value);
+          const t = stepMorphAt(clockNow);
           canvas.save();
           canvas.translate(lines.x, lines.y);
           // The hand winds from where the last song stood to this one's.
@@ -4778,10 +4815,16 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * way rather than appearing at full strength.
    */
   const motionDrawn = scene.motionIn;
+  const stepMorphing = scene.stepMorph;
   useAnimatedReaction(
     () => {
       const focus = focusDraw.value;
       if (focus === null || focus.motion === null) return 'hidden';
+      // A step's arriving song stays still until the morph has landed on
+      // it, then its music rises: risen under the morph, the shape jumped
+      // from the morph's still end to half-singing on the frame it landed.
+      const morph = stepMorphing.value;
+      if (morph !== null && morph.to === focus.placementKey) return 'hidden';
       return `${soundPhase.value}:${focus.placementKey}`;
     },
     (next, before) => {
