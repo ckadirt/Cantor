@@ -2706,6 +2706,9 @@ export function FieldScreen({ identity }: Props) {
                 // The player's focus, not the tap's: entering a shelf must
                 // not re-record this canvas. See `commitFocus`.
                 focusKey={fieldCamera.playerFocus?.key ?? null}
+                stepMorph={fieldCamera.stepMorphShared}
+                stepClock={fieldCamera.stepClockShared}
+                stepFromKey={fieldCamera.stepFrom?.entityKey ?? null}
                 positionSeconds={canvasPosition}
                 motionPositionSeconds={
                   canvasPosition === steppedPosition ? transport.positionSeconds : null

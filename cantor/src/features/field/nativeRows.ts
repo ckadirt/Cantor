@@ -34,6 +34,7 @@ import {
 import { NAME_LENS_KNOBS } from '../../lenses/nameLens';
 import { writePhase, writeSubAlpha } from '../../motion/text';
 import { traceTitlePath } from './titleTrace';
+import type { StepMorph } from './stepMorph';
 
 /** KNOBS — keep descenders and metadata just outside the viewport available. */
 export const ROW_TEXT_OVERSCAN_PX = 64;
@@ -119,6 +120,11 @@ export function drawNativeRows(
   mapWritten = 0,
   /** And at the shelf camera's, which a leave has already cut away from. */
   shelfWritten = written,
+  /**
+   * A step's morph while it runs: both of its rows are the player's, the one
+   * it leaves and the one it arrives at, whoever holds them; see `stepMorph.ts`.
+   */
+  step: StepMorph | null = null,
 ) {
   'worklet';
   if (
@@ -133,6 +139,13 @@ export function drawNativeRows(
     gather === null ? null : mapCameraAt(gather.map, recede, linear);
   for (const { flight, row: shelfRow, homeRow, titleFrom, openAt } of rows) {
     if (yieldKey !== null && flight.targetPlacementKey === yieldKey) continue;
+    if (
+      step !== null &&
+      (flight.targetPlacementKey === step.from ||
+        flight.targetPlacementKey === step.to)
+    ) {
+      continue;
+    }
     // In a gather a name has its face's window: it writes on at the seat
     // its face is landing in, erases where it stood, or rides along.
     const timing = flight.timing;

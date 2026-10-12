@@ -14,6 +14,7 @@ import {
 import { runOnUISync } from 'react-native-worklets';
 import { easeSmoother } from '../../motion';
 import { cameraSummary, type OriginFrame } from './cameraSummary';
+import type { StepMorph } from './stepMorph';
 import {
   flightOnScreen,
   gatherFaceInk,
@@ -130,6 +131,21 @@ export const FIELD_CAMERA_KNOBS = {
    * the two rows are one seat apart — and two full flights read as a detour.
    */
   STEP_LEG_MS: 520,
+  /**
+   * How the player moves on to the next song on its shelf when the queue
+   * does: `morph` stays at L2 and the player becomes the next song's
+   * (`stepMorph.ts`); `fold` is the two legs above, back into the row and
+   * down into the neighbour. Fold is kept whole so it can be had back by
+   * changing this word.
+   */
+  STEP_STYLE: 'morph' as 'morph' | 'fold',
+  /** The morph's length: one object changing, so shorter than the fold's two legs. */
+  STEP_MORPH_MS: 640,
+  /**
+   * The longest a morph waits for the canvas to say the arriving player is
+   * on it (`StepMorph.ready`) before it cuts the camera anyway.
+   */
+  STEP_CUT_WAIT_MS: 1200,
   /**
    * The camera's floor at the map's own scale; below it is the overview, whose
    * floor depends on the map (`overviewMinRatio`, `OVERVIEW_KNOBS.MIN_RATIO`).
@@ -314,6 +330,17 @@ type CameraState = {
   step: (placement: Placement) => void;
   /** The song a step in its first leg is headed for, or null. */
   stepping: () => Placement | null;
+  /**
+   * The step's morph, when `STEP_STYLE` is `morph`: what it leaves and where
+   * it arrives (`StepMorph`), and its clock, linear, resting at 1.
+   */
+  stepMorphShared: SharedValue<StepMorph | null>;
+  stepClockShared: SharedValue<number>;
+  /**
+   * The placement the player is morphing from, for the canvas to build its
+   * side of the morph; set on the commit that makes the next song the focus.
+   */
+  stepFrom: Placement | null;
   /** Fly to a song from anywhere and open it: the now-playing jump. */
   visit: (placement: Placement) => void;
   ascend: () => boolean;
@@ -452,6 +479,31 @@ export function useFieldCamera({
    * refuses at once is stepped over), and the second move has to land.
    */
   const stepTarget = useRef<Placement | null>(null);
+  /** A step's morph; see `stepMorph.ts`. Held by ref, as below. */
+  const stepMorphCandidate = useSharedValue<StepMorph | null>(null);
+  const stepMorphShared = useRef(stepMorphCandidate).current;
+  const stepClockCandidate = useSharedValue(1);
+  const stepClockShared = useRef(stepClockCandidate).current;
+  const [stepFrom, setStepFrom] = useState<Placement | null>(null);
+  /** The camera a morph cuts to, waiting for the commit that mounts its player. */
+  const pendingMorphCut = useRef<Camera | null>(null);
+  /** Where a morph is going, until its cut: the camera is there in intent. */
+  const morphTarget = useRef<Placement | null>(null);
+  /** Whether a morph is running, and the step asked for meanwhile. */
+  const morphing = useRef(false);
+  const queuedMorph = useRef<Placement | null>(null);
+  const morphFallback = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** `step`, for a morph's landing, which is declared before it. */
+  const stepRef = useRef<(placement: Placement) => void>(() => {});
+  const landMorph = useCallback(() => {
+    morphing.current = false;
+    if (morphFallback.current !== null) clearTimeout(morphFallback.current);
+    morphFallback.current = null;
+    stepMorphShared.value = null;
+    const next = queuedMorph.current;
+    queuedMorph.current = null;
+    if (next !== null) stepRef.current(next);
+  }, [stepMorphShared]);
   const [descentTicket, setDescentTicket] = useState(0);
   const [recutClock, setRecutClock] = useState<RecutClock>({
     generation: 0,
@@ -941,6 +993,9 @@ export function useFieldCamera({
       // Logical focus leaves immediately; the outgoing drawing keeps its
       // owner until the camera has returned it to the row pose.
       const fit = renderedFit(layoutRef.current?.fitScale ?? 1);
+      // A new player is no longer the one a morph came from; a morph that
+      // made it says so after this.
+      if (next !== null && drawsPlayer) setStepFrom(null);
       if (next !== null && drawsPlayer) setPlayerKey(next);
       else if (cameraShared.value.scale <= fit * LEVEL_SCALE_RATIOS.shelf) {
         setPlayerKey(null);
@@ -2053,11 +2108,74 @@ export function useFieldCamera({
     [renderedFit, cameraShared, commitFocus, flyTo, shelfAround],
   );
   /*
+   * A step's cut, on the UI thread, in one worklet: the camera and the
+   * arriving player's own camera change on the same frame, so nothing on the
+   * screen moves (`stepMorph.ts`). Then the morph's clock runs.
+   *
+   * Not on the commit that makes the next song the focus: Skia mounts what a
+   * commit hands it in a render of its own, which on the phone landed most
+   * of a second later. Cut before that, the leaving player — still the one
+   * on the canvas — was drawn a seat off. So it waits for the arriving
+   * flight to say it is live (`ready`).
+   */
+  const morphMs = reducedMotion ? 0 : FIELD_CAMERA_KNOBS.STEP_MORPH_MS;
+  const dropMorphFallback = useCallback(() => {
+    if (morphFallback.current !== null) clearTimeout(morphFallback.current);
+    morphFallback.current = null;
+  }, []);
+  const cutMorph = useCallback(() => {
+    'worklet';
+    const morph = stepMorphShared.value;
+    if (morph === null || morph.camera === null) return;
+    const cut = morph.camera;
+    runOnJS(dropMorphFallback)();
+    cameraShared.value = cut;
+    mirrorNow(cut);
+    stepMorphShared.value = { ...morph, camera: null, ready: true };
+    stepClockShared.value = withTiming(
+      1,
+      { duration: morphMs, easing: Easing.linear },
+      finished => {
+        if (finished === true) runOnJS(landMorph)();
+      },
+    );
+  }, [
+    cameraShared,
+    dropMorphFallback,
+    landMorph,
+    mirrorNow,
+    morphMs,
+    stepClockShared,
+    stepMorphShared,
+  ]);
+  useAnimatedReaction(
+    () => {
+      const morph = stepMorphShared.value;
+      return morph !== null && morph.ready && morph.camera !== null;
+    },
+    due => {
+      if (due) cutMorph();
+    },
+    [cutMorph],
+  );
+  /*
    * Ticket rather than the focus itself: descending from a song into its grain
    * keeps the same placement, so a key would not change and the flight would
    * never leave. A counter always does.
    */
   useEffect(() => {
+    if (pendingMorphCut.current !== null) {
+      pendingMorphCut.current = null;
+      morphTarget.current = null;
+      // The canvas says when the arriving player is on it (`cutWhenReady`);
+      // a canvas that never does still gets its camera.
+      if (morphFallback.current !== null) clearTimeout(morphFallback.current);
+      morphFallback.current = setTimeout(() => {
+        morphFallback.current = null;
+        runOnUI(cutMorph)();
+      }, FIELD_CAMERA_KNOBS.STEP_CUT_WAIT_MS);
+      return;
+    }
     const leg = pendingStepLeg.current;
     if (leg !== null) {
       pendingStepLeg.current = null;
@@ -2068,7 +2186,13 @@ export function useFieldCamera({
     if (target === null) return;
     pendingDescent.current = null;
     flyTo(target);
-  }, [descentTicket, flyTo]);
+  }, [descentTicket, flyTo, cutMorph]);
+  useEffect(
+    () => () => {
+      if (morphFallback.current !== null) clearTimeout(morphFallback.current);
+    },
+    [],
+  );
   /*
    * Drop the focus the re-cut just climbed out of.
    *
@@ -2142,7 +2266,62 @@ export function useFieldCamera({
     shelfAround,
     viewport,
   ]);
-  const step = useCallback(
+  /**
+   * The queue's step as a morph: the camera stays at L2 and the player
+   * becomes the next song's (`stepMorph.ts`). False when it cannot be one —
+   * not standing in a song — and the step folds instead.
+   *
+   * A step asked while one is morphing waits for it to land, as a third lens
+   * asked for mid-change does: the morph's far side is a whole song's player,
+   * and a second one started from halfway would have no song to start from.
+   */
+  const morphStep = useCallback(
+    (placement: Placement): boolean => {
+      // A clock at rest is a morph that landed, whatever its callback said.
+      if (morphing.current && stepClockShared.value < 1) {
+        queuedMorph.current = placement;
+        return true;
+      }
+      morphing.current = false;
+      const field = layoutRef.current;
+      const from = focusRef.current;
+      if (field === null || from === null) return false;
+      if (from.key === placement.key) return true;
+      const current = levelOf(
+        cameraShared.value.scale,
+        renderedFit(field.fitScale),
+      );
+      if (current !== 'song') return false;
+      const target = levelCameraTarget('song', field, placement);
+      if (!target) return false;
+      cancelCameraFlight();
+      // Written from here, before the commit, so the frame the commit
+      // re-records already draws the arriving player as the leaving one.
+      stepClockShared.value = 0;
+      stepMorphShared.value = {
+        from: from.key,
+        to: placement.key,
+        camera: target,
+        ready: false,
+      };
+      morphing.current = true;
+      morphTarget.current = placement;
+      commitFocus(placement.key, true);
+      setStepFrom(from);
+      pendingMorphCut.current = target;
+      setDescentTicket(ticket => ticket + 1);
+      return true;
+    },
+    [
+      renderedFit,
+      cameraShared,
+      cancelCameraFlight,
+      commitFocus,
+      stepClockShared,
+      stepMorphShared,
+    ],
+  );
+  const foldStep = useCallback(
     (placement: Placement) => {
       // Still folding back into the row: retarget where it goes down again.
       if (stepTarget.current !== null) {
@@ -2180,7 +2359,24 @@ export function useFieldCamera({
     },
     [renderedFit, cameraShared, commitFocus, flyTo, shelfAround],
   );
-  const stepping = useCallback(() => stepTarget.current, []);
+  const step = useCallback(
+    (placement: Placement) => {
+      if (
+        FIELD_CAMERA_KNOBS.STEP_STYLE === 'morph' &&
+        stepTarget.current === null &&
+        morphStep(placement)
+      ) {
+        return;
+      }
+      foldStep(placement);
+    },
+    [foldStep, morphStep],
+  );
+  stepRef.current = step;
+  const stepping = useCallback(
+    () => queuedMorph.current ?? morphTarget.current ?? stepTarget.current,
+    [],
+  );
   /**
    * Go to a song from wherever the camera is: the now-playing jump.
    *
@@ -2992,6 +3188,9 @@ export function useFieldCamera({
     descend,
     step,
     stepping,
+    stepMorphShared,
+    stepClockShared,
+    stepFrom,
     visit,
     ascend,
     home,

@@ -273,6 +273,14 @@ export type LensUi = Readonly<{
   hearsPlayhead: number;
   /** The player's clock; see `ClockShape`. */
   clock: ClockShape;
+  /**
+   * The player becoming another song's in this same lens: the queue moving
+   * on while the camera stays at L2 (`FIELD_CAMERA_KNOBS.STEP_STYLE`). `t`
+   * runs 0 → 1 from `a`'s song to `b`'s, already eased, and at 0 it must look
+   * like `a`'s own player. Optional: a lens without one takes the generic two
+   * beats, `a` in to a point and `b` out of it, as a lens change does.
+   */
+  morphPlayer?: PlayerMorphDraw;
 }>;
 
 /**
@@ -322,16 +330,17 @@ export type LensTouchUi = Readonly<{
 export type LensPairMorph = Readonly<{
   a: string;
   b: string;
-  drawPlayer: PairDraw;
+  drawPlayer: PlayerMorphDraw;
 }>;
 
 export type LensPairUi = Readonly<{
   a: number;
   b: number;
-  drawPlayer: PairDraw;
+  drawPlayer: PlayerMorphDraw;
 }>;
 
-type PairDraw = (
+/** One player becoming another, `t` of the way: two lenses, or two songs. */
+export type PlayerMorphDraw = (
   canvas: SkCanvas,
   aIdentity: LensIdentity,
   aPlayer: LensPlayer | null,

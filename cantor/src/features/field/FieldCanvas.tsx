@@ -35,6 +35,7 @@ import {
   type NativeCut,
   type NativeRecut,
   type SongDraw,
+  type StepFrom,
 } from './livingScene';
 import { useHubCovers } from './useCover';
 import {
@@ -177,6 +178,8 @@ import type { MotionFrame } from '../../lenses/motion/motionFrame';
 import { playerMotionFrame } from './playerMotion';
 import {
   RING_MOTION_KNOBS,
+  circleMorphPlayer,
+  circleMorphPoints,
   circleMotionPoints,
   circlePlayerOf,
   circleReachAt,
@@ -198,8 +201,16 @@ import {
   clockCutsOf,
   type ClockCuts,
   nativeSongModel,
+  stepLineMorphs,
   type NativeSongModel,
 } from './NativePlayer';
+import {
+  arrivingCamera,
+  isStepMorphing,
+  stepCameraFor,
+  stepMorphAt,
+  type StepMorph,
+} from './stepMorph';
 import {
   BylineMarqueeLayer,
   useBylineClock,
@@ -476,6 +487,14 @@ type Props = {
    */
   focusKey?: string | null;
   /**
+   * The queue's step as a morph at L2: what it leaves and where it arrives,
+   * its clock, and the song it leaves (entity key) — see `stepMorph.ts`.
+   * Absent, nothing morphs.
+   */
+  stepMorph?: SharedValue<StepMorph | null>;
+  stepClock?: SharedValue<number>;
+  stepFromKey?: string | null;
+  /**
    * The play-to-pause morph, 0..1, for the song the player holds.
    *
    * A shared value rather than the player's state, because the canvas draws a
@@ -647,6 +666,9 @@ function FieldCanvasImpl({
   motionPositionSeconds = null,
   playingKey = null,
   focusKey = null,
+  stepMorph: stepMorphProp,
+  stepClock: stepClockProp,
+  stepFromKey = null,
   transportPlaying = null,
   transportArriving = null,
   transportLights = null,
@@ -723,6 +745,8 @@ function FieldCanvasImpl({
    * each is held by ref, as `useFieldCamera` holds its own.
    */
   const ownClock = useSharedValue(1);
+  const ownStepMorph = useSharedValue<StepMorph | null>(null);
+  const ownStepClock = useSharedValue(1);
   const sceneCandidate: LivingScene = {
     cut: useSharedValue<NativeCut | null>(null),
     clock: cutClockShared ?? ownClock,
@@ -736,6 +760,8 @@ function FieldCanvasImpl({
     motionIn: useSharedValue(0),
     focusLive: useSharedValue(-1),
     parked: useSharedValue<NativeCut | null>(null),
+    stepMorph: stepMorphProp ?? ownStepMorph,
+    stepClock: stepClockProp ?? ownStepClock,
   };
   const scene = useRef(sceneCandidate).current;
   /**
@@ -1204,6 +1230,65 @@ function FieldCanvasImpl({
     focusEntity === null || focusEntity !== playingKey
       ? null
       : motions?.get(focusEntity) ?? null;
+  /*
+   * The song the player is morphing from, when the queue stepped at L2: its
+   * own drawing, for the morph's far side (`stepMorph.ts`). Its motion is
+   * the orbit it erases; it was the song playing, or the queue would not
+   * have moved the camera.
+   */
+  const stepPresentation =
+    stepFromKey === null || stepFromKey === focusEntity
+      ? undefined
+      : presentations.get(stepFromKey);
+  const stepAnalysis =
+    stepFromKey === null ? undefined : analyses?.get(stepFromKey);
+  const stepCover =
+    stepFromKey === null ? null : covers?.get(stepFromKey) ?? null;
+  const stepMotion =
+    stepFromKey === null ? null : motions?.get(stepFromKey) ?? null;
+  const stepFrom = useMemo<StepFrom | null>(() => {
+    if (stepFromKey === null || stepPresentation === undefined) return null;
+    const recipe = stepPresentation.recipe;
+    return {
+      identities:
+        songCache.current.get(stepFromKey)?.draw.identities ??
+        LENSES.map(lens => lens.identity(recipe)),
+      players: LENSES.map(lens =>
+        lens.player(recipe, stepAnalysis, stepCover),
+      ),
+      motion: stepMotion,
+    };
+  }, [stepAnalysis, stepCover, stepFromKey, stepMotion, stepPresentation]);
+  /*
+   * Where the leaving song's clock stood when the step began. Read once per
+   * step, from the playhead the canvas held on the render before it: on the
+   * step's own render that is already the arriving song's.
+   */
+  const bylineClockCandidate = useBylineClock();
+  const bylineClock = useRef(bylineClockCandidate).current;
+  const lastPosition = useRef(positionSeconds);
+  const stepHeard = useRef<number | null>(null);
+  /*
+   * And about where its byline had scrolled to, to choose the letters the
+   * morph leaves from; the exact offset is the UI thread's (`bylineScrolled`).
+   */
+  const stepByline = useRef<Readonly<{ key: string; travelled: number }> | null>(
+    null,
+  );
+  const stepHeardFor = useRef<string | null>(null);
+  const stepId = stepFromKey === null ? null : `${stepFromKey}>${focusKey}`;
+  if (stepId !== stepHeardFor.current) {
+    stepHeardFor.current = stepId;
+    const seconds =
+      stepPresentation === undefined ? 0 : stepPresentation.durationMs / 1000;
+    const at = seconds > 0 ? (lastPosition.current?.value ?? 0) / seconds : 0;
+    stepHeard.current = at < 0 ? 0 : at > 1 ? 1 : at;
+    stepByline.current =
+      stepId === null
+        ? null
+        : { key: bylineClock.key.value, travelled: bylineClock.travelled.value };
+  }
+  lastPosition.current = positionSeconds;
   const focusDraw = useMemo<FocusDraw | null>(
     () =>
       focusKey === null || focusPresentation === undefined
@@ -1215,8 +1300,16 @@ function FieldCanvasImpl({
             ),
             seconds: focusPresentation.durationMs / 1000,
             motion: focusMotion,
+            from: stepFrom,
           },
-    [focusAnalysis, focusCover, focusKey, focusMotion, focusPresentation],
+    [
+      focusAnalysis,
+      focusCover,
+      focusKey,
+      focusMotion,
+      focusPresentation,
+      stepFrom,
+    ],
   );
   /**
    * The songs whose sound has already been shown, so a measurement that lands
@@ -1245,6 +1338,90 @@ function FieldCanvasImpl({
       soundClock.value = withTiming(1, { duration, easing: Easing.linear });
     })();
   }, [focusDraw, focusPresentation, reducedMotion, scene]);
+  /*
+   * The player's models, kept by song.
+   *
+   * Building one walks every letter's outline at both of its poses
+   * (`buildGlyphMorphPaths`) — about 200 ms on the Xiaomi — and a step's
+   * morph cannot begin until the arriving song's is built and mounted. So a
+   * song keeps its model while nothing it was built from changes, and while
+   * the player rests the songs either side of it on its shelf, where a step
+   * goes, are built ahead (below).
+   */
+  const modelInputs = useMemo(
+    () => ({}),
+    // A fresh token whenever anything a model is built from changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [displayFont, monoFont, songTitleFont, songMetaFont, viewport, reducedMotion],
+  );
+  const playerModels = useRef(
+    new Map<
+      string,
+      Readonly<{
+        inputs: object;
+        presentation: FieldPresentation;
+        row: NativeRowModel;
+        song: NativeSongModel;
+      }>
+    >(),
+  );
+  const playerModelOf = useCallback(
+    (presentation: FieldPresentation) => {
+      if (
+        displayFont === null ||
+        monoFont === null ||
+        songTitleFont === null ||
+        songMetaFont === null
+      ) {
+        return null;
+      }
+      const key = presentation.entity.key;
+      const kept = playerModels.current.get(key);
+      if (kept?.inputs === modelInputs && kept.presentation === presentation) {
+        return kept;
+      }
+      const row = nativeRowModel(
+        presentation,
+        presentation.recipe,
+        displayFont,
+        monoFont,
+      );
+      const song = nativeSongModel(
+        presentation,
+        viewport,
+        row.title,
+        row.meta,
+        row.action === null ? 0 : textWidth(row.action, monoFont),
+        {
+          rowTitle: displayFont,
+          songTitle: songTitleFont,
+          rowMeta: monoFont,
+          songMeta: songMetaFont,
+        },
+        !reducedMotion,
+      );
+      const made = { inputs: modelInputs, presentation, row, song };
+      const models = playerModels.current;
+      models.delete(key);
+      models.set(key, made);
+      // A few songs' worth: the one playing and its neighbours.
+      while (models.size > PLAYER_MODELS_KEPT) {
+        const oldest = models.keys().next().value;
+        if (oldest === undefined) break;
+        models.delete(oldest);
+      }
+      return made;
+    },
+    [
+      displayFont,
+      modelInputs,
+      monoFont,
+      reducedMotion,
+      songMetaFont,
+      songTitleFont,
+      viewport,
+    ],
+  );
   const focusLayer = useMemo<FocusLayer | null>(() => {
     if (
       recut === null ||
@@ -1257,11 +1434,14 @@ function FieldCanvasImpl({
     ) {
       return null;
     }
-    const row = nativeRowModel(
-      focusPresentation,
-      focusPresentation.recipe,
-      displayFont,
-      monoFont,
+    const models = playerModelOf(focusPresentation);
+    if (models === null) return null;
+    const { row, song } = models;
+    const detail = songDetailOf(
+      recut.flights,
+      presentations,
+      analyses,
+      focusKey,
     );
     return {
       key: `${recut.generation}:${focusFlight.key}`,
@@ -1277,27 +1457,37 @@ function FieldCanvasImpl({
       titleFrom:
         lastInk.current?.from.get(focusFlight.entityKey)?.title ??
         row.titleAlpha,
-      song: nativeSongModel(
-        focusPresentation,
-        viewport,
-        row.title,
-        row.meta,
-        row.action === null ? 0 : textWidth(row.action, monoFont),
-        {
-          rowTitle: displayFont,
-          songTitle: songTitleFont,
-          rowMeta: monoFont,
-          songMeta: songMetaFont,
-        },
-        !reducedMotion,
-      ),
-      detail: songDetailOf(
-        recut.flights,
-        presentations,
-        analyses,
-        focusKey,
-      ),
+      // A step's morph: the leaving song's lines, and its measurement.
+      song:
+        stepPresentation === undefined
+          ? song
+          : {
+              ...song,
+              step: stepLineMorphs(
+                stepPresentation,
+                focusPresentation,
+                viewport,
+                { songTitle: songTitleFont, songMeta: songMetaFont },
+                !reducedMotion,
+                stepByline.current,
+              ),
+            },
+      detail:
+        detail === null || stepPresentation === undefined || stepFromKey === null
+          ? detail
+          : {
+              ...detail,
+              from: {
+                entityKey: stepFromKey,
+                face: circlePlayerOf(
+                  stepPresentation.recipe,
+                  NAME_LENS_KNOBS.SPINDLE_RATIO,
+                ),
+                levels: levelsOf(stepAnalysis),
+              },
+            },
       durationSeconds: focusPresentation.durationMs / 1000,
+      heardFrom: stepPresentation === undefined ? null : stepHeard.current,
     };
   }, [
     analyses,
@@ -1306,13 +1496,53 @@ function FieldCanvasImpl({
     focusKey,
     focusPresentation,
     monoFont,
+    playerModelOf,
     presentations,
     recut,
     reducedMotion,
     songMetaFont,
     songTitleFont,
+    stepAnalysis,
+    stepFromKey,
+    stepPresentation,
     viewport,
   ]);
+  /*
+   * The shelf neighbours' models, built ahead while the player rests: one at
+   * a time, each after a pause, so the JS thread is never held for more than
+   * one song's worth while you might be touching the screen.
+   */
+  const focusGroup = focusFlight?.groupKey ?? null;
+  const focusY = focusFlight?.targetY ?? null;
+  useEffect(() => {
+    if (recut === null || focusGroup === null || focusY === null) return;
+    const shelf = recut.flights
+      .filter(
+        flight => flight.groupKey === focusGroup && flight.targetPlacementKey !== null,
+      )
+      .sort((a, b) => a.targetY - b.targetY);
+    const at = shelf.findIndex(flight => flight.targetY === focusY);
+    if (at < 0) return;
+    const ahead = [shelf[at + 1], shelf[at - 1]]
+      .filter(flight => flight !== undefined)
+      .map(flight => presentations.get(flight.entityKey))
+      .filter(
+        (presentation): presentation is FieldPresentation =>
+          presentation !== undefined,
+      );
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const next = (index: number) => {
+      if (index >= ahead.length) return;
+      timer = setTimeout(() => {
+        playerModelOf(ahead[index]);
+        next(index + 1);
+      }, PLAYER_MODELS_AHEAD_MS);
+    };
+    next(0);
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+    };
+  }, [focusGroup, focusY, playerModelOf, presentations, recut]);
   focusGeneration.current = focusLayer?.generation ?? null;
 
   /**
@@ -1372,9 +1602,7 @@ function FieldCanvasImpl({
   };
   const playerLayer = useRef(playerLayerCandidate).current;
   // The byline's marquee, which scrolls on a strip above the field for the
-  // same reason; see `BylineMarqueeLayer`.
-  const bylineClockCandidate = useBylineClock();
-  const bylineClock = useRef(bylineClockCandidate).current;
+  // same reason; see `BylineMarqueeLayer`. (Made above, where a step reads it.)
   const fieldMotionCandidate = useDerivedValue((): MotionFrame | null => {
     if (layerOwns(playerLayer)) return null;
     return motionFrame.value;
@@ -1864,6 +2092,9 @@ type LivingScene = Readonly<{
   focusLive: SharedValue<number>;
   /** A cut waiting for its focus layer; see `sendCut`. */
   parked: SharedValue<NativeCut | null>;
+  /** The queue's step at L2, and its clock (1 at rest); see `stepMorph.ts`. */
+  stepMorph: SharedValue<StepMorph | null>;
+  stepClock: SharedValue<number>;
 }>;
 
 /**
@@ -1880,6 +2111,11 @@ type FocusLayer = Readonly<{
   song: NativeSongModel | null;
   detail: SongDetailModel | null;
   durationSeconds: number;
+  /**
+   * Where the leaving song's clock stood when a step's morph began, 0..1,
+   * for the hand to wind back from; null when this focus is no morph.
+   */
+  heardFrom: number | null;
 }>;
 
 type NativeFieldContentProps = Readonly<{
@@ -1987,6 +2223,8 @@ export type FaceFlight = Readonly<{
    * face that is the player, whose model is built for one song, not the field.
    */
   players?: readonly (LensPlayer | null)[];
+  /** The song the player is morphing from; see `FocusDraw.from`. */
+  morphFrom?: StepFrom | null;
   fromX: number;
   fromY: number;
   targetX: number;
@@ -2223,6 +2461,10 @@ export function drawFieldFaces(
   motionOn = false,
   /** The motion layer the player is handed to once landed; see `PlayerMotionLayer`. */
   motionLayer: PlayerLayer | null = null,
+  /** The queue's step at L2: its linear clock, 1 at rest; see `stepMorph.ts`. */
+  stepClock = 1,
+  /** The camera the player is drawn through until the real one is cut to it. */
+  stepCamera: Camera | null = null,
 ): void {
   'worklet';
   /*
@@ -2449,12 +2691,19 @@ export function drawFieldFaces(
               timing.bowPx,
               u,
             );
+      // A step's arriving player, drawn where the leaving one stood.
+      const seen =
+        face.isPlayer && stepCamera !== null && live !== null
+          ? stepCamera
+          : null;
       x =
-        (seatX + bloomX * bloom - cameraX) * cameraScale +
+        (seatX + bloomX * bloom - (seen === null ? cameraX : seen.x)) *
+          cameraScale +
         viewport.width / 2 +
         (bow?.x ?? 0);
       y =
-        (seatY + bloomY * bloom - cameraY) * cameraScale +
+        (seatY + bloomY * bloom - (seen === null ? cameraY : seen.y)) *
+          cameraScale +
         viewport.height / 2 +
         (bow?.y ?? 0);
     }
@@ -2544,7 +2793,93 @@ export function drawFieldFaces(
         : pairMorphFor(leftLens, lensTo);
     // How far the pair's morph stands toward its `b`, whichever way it runs.
     const towardB = pair === null ? 0 : lensTo === pair.b ? lensAt : 1 - lensAt;
-    if (pair !== null && players !== undefined && towardB > 0) {
+    // A step's morph, with the lens at rest: one song's player becoming the
+    // next's (`stepMorph.ts`).
+    const stepFrom = face.morphFrom;
+    const stepping =
+      players !== undefined &&
+      stepFrom !== undefined &&
+      stepFrom !== null &&
+      isStepMorphing(stepClock) &&
+      leftLens === lensTo;
+    if (stepping && players !== undefined && stepFrom !== undefined && stepFrom !== null) {
+      // The field draws the morph; the layer lets go of the one it had.
+      if (motionLayer !== null) {
+        playerSeen = true;
+        const had = motionLayer.draw.value;
+        if (had !== null && had.owned) motionLayer.draw.value = { ...had, owned: false };
+      }
+      const lens = lensTo;
+      const ui = LENS_UI[lens];
+      const size = pose.scale * openScale;
+      const alpha = opacity * fieldInk;
+      if (ui.morphPlayer !== undefined && !reducedMotion) {
+        ui.morphPlayer(
+          canvas,
+          stepFrom.identities[lens],
+          stepFrom.players[lens],
+          face.identities[lens],
+          players[lens],
+          stepMorphAt(stepClock),
+          size,
+          alpha,
+          weight,
+          fill,
+          shapeArrived,
+          face.arriving,
+          soundProgress,
+          heard,
+          FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+          paints,
+          null,
+        );
+      } else {
+        // The generic two beats, as a lens change takes them: the leaving
+        // song in to a point, the arriving one out of it. Reduced motion
+        // crossfades.
+        const at = Math.min(Math.max(stepClock, 0), 1);
+        const outScale = reducedMotion ? 1 : 1 - smootherstep(Math.min(at * 2, 1));
+        const inScale = reducedMotion ? 1 : smootherstep(Math.max(at * 2 - 1, 0));
+        const outInk = reducedMotion ? 1 - smootherstep(at) : 1;
+        const inInk = reducedMotion ? smootherstep(at) : 1;
+        if (outScale > 0.001 && outInk > 0) {
+          ui.drawPlayer(
+            canvas,
+            stepFrom.players[lens],
+            stepFrom.identities[lens],
+            size * outScale,
+            alpha * outInk,
+            weight,
+            fill,
+            shapeArrived,
+            ARRIVING_NONE,
+            soundProgress,
+            -1,
+            FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+            paints,
+            null,
+          );
+        }
+        if (inScale > 0.001 && inInk > 0) {
+          ui.drawPlayer(
+            canvas,
+            players[lens],
+            face.identities[lens],
+            size * inScale,
+            alpha * inInk,
+            weight,
+            fill,
+            shapeArrived,
+            face.arriving,
+            soundProgress,
+            heard,
+            FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+            paints,
+            null,
+          );
+        }
+      }
+    } else if (pair !== null && players !== undefined && towardB > 0) {
       // The player is the field's again: the layer fades the one it had.
       if (motionLayer !== null) {
         playerSeen = true;
@@ -2590,7 +2925,8 @@ export function drawFieldFaces(
         passes === 1 &&
         motionOn &&
         progress >= 1 &&
-        shapeArrived >= LAYER_ARRIVED;
+        shapeArrived >= LAYER_ARRIVED &&
+        !isStepMorphing(stepClock);
       if (motionLayer !== null && players !== undefined) {
         playerSeen = true;
         const lens = firstLens;
@@ -2805,6 +3141,15 @@ export type SongDetailModel = Readonly<{
   durationSeconds: number;
   /** The circle's face, which the ticks grow out of; null draws them on the arc. */
   face: CirclePlayer | null;
+  /**
+   * The song a step's morph leaves (`stepMorph.ts`): its face and its levels,
+   * which the ring walks from. Absent otherwise.
+   */
+  from?: Readonly<{
+    entityKey: string;
+    face: CirclePlayer | null;
+    levels: readonly number[];
+  }> | null;
 }>;
 
 // knobs — the orbit (reactive-player-log.md, layout M: the well tells time, the orbit tells form)
@@ -3038,6 +3383,10 @@ export function drawSongDetail(
   letterFont: SkFont | null = null,
   /** How much of the orbit is written, 0..1, clockwise from twelve. */
   formWritten = 1,
+  /** A step's morph clock, linear, 1 at rest; see `stepMorph.ts`. */
+  stepClock = 1,
+  /** The camera the ring is drawn through until the real one is cut to it. */
+  stepCamera: Camera | null = null,
 ): void {
   'worklet';
   if (drawn <= 0) return;
@@ -3058,7 +3407,8 @@ export function drawSongDetail(
   // The ring's own centre: the face's seat under this frame's camera, plus the
   // pose the face is standing at. Computed rather than assumed, so a re-cut or
   // a flight still in the air keeps the spokes on the contour they grew from.
-  const live = p >= 1 ? cameraShared.value : null;
+  const live =
+    p >= 1 ? (stepCamera === null ? cameraShared.value : stepCamera) : null;
   const cameraX =
     live === null
       ? recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p
@@ -3096,11 +3446,26 @@ export function drawSongDetail(
    * contour at its own angle, as the face is drawn this frame — singing or
    * still — so the ring is the body's hair and moves with it.
    */
-  const face = model.face;
-  const faceAmount = motion === null ? 0 : motion.presence * shapeArrived;
+  // Through a step's morph the hair grows out of the contour the face is
+  // walking (`circleMorphPoints`), still, as the face is drawn then.
+  const leaving = model.from ?? null;
+  const stepping = leaving !== null && isStepMorphing(stepClock);
+  const stepAt = stepMorphAt(stepClock);
+  const morphFace =
+    stepping && leaving !== null && leaving.face !== null && model.face !== null
+      ? leaving.face
+      : null;
+  const face =
+    morphFace !== null && model.face !== null
+      ? circleMorphPlayer(morphFace, model.face, stepAt)
+      : model.face;
+  const faceAmount =
+    stepping || motion === null ? 0 : motion.presence * shapeArrived;
   const contour =
     face === null
       ? null
+      : morphFace !== null && model.face !== null
+      ? circleMorphPoints(morphFace, model.face, stepAt, 1)
       : motion !== null && faceAmount > 0
       ? circleMotionPoints(face, motion, faceAmount, 1)
       : circleStillPoints(face, 1);
@@ -3173,6 +3538,7 @@ export function drawSongDetail(
 
   const levels = model.levels;
   const levelCount = levels.length;
+  const leavingLevels = stepping && leaving !== null ? leaving.levels : null;
   /*
    * The coarse measurement between its own samples.
    *
@@ -3182,14 +3548,23 @@ export function drawSongDetail(
    * read between them it is an envelope, which is the honest drawing of a
    * measurement this coarse and the only one that survives the zoom.
    */
-  const levelAt = (turn: number): number => {
-    if (levelCount === 0) return 0;
-    if (levelCount === 1) return levels[0] ?? 0;
-    const at = Math.min(Math.max(turn, 0), 1) * (levelCount - 1);
+  const envelopeAt = (values: readonly number[], turn: number): number => {
+    const count = values.length;
+    if (count === 0) return 0;
+    if (count === 1) return values[0] ?? 0;
+    const at = Math.min(Math.max(turn, 0), 1) * (count - 1);
     const lower = Math.floor(at);
-    const upper = Math.min(levelCount - 1, lower + 1);
+    const upper = Math.min(count - 1, lower + 1);
     const t = at - lower;
-    return (levels[lower] ?? 0) * (1 - t) + (levels[upper] ?? 0) * t;
+    return (values[lower] ?? 0) * (1 - t) + (values[upper] ?? 0) * t;
+  };
+  // Through a step, each tick walks from the leaving song's level to this
+  // one's; a song not yet measured is a ring of no height at its end.
+  const levelAt = (turn: number): number => {
+    const here = levelCount === 0 ? 0 : envelopeAt(levels, turn);
+    if (leavingLevels === null) return here;
+    const there = envelopeAt(leavingLevels, turn);
+    return there + (here - there) * stepAt;
   };
   /*
    * The bulge at the playhead: the coarse level over half a turn, or — while
@@ -3367,7 +3742,15 @@ function NativeSongDetail({
   form = null,
   formWritten = null,
   letterFont = null,
+  stepMorph = null,
+  stepClock = null,
+  placementKey = '',
 }: {
+  /** The queue's step at L2; see `stepMorph.ts`. */
+  stepMorph?: SharedValue<StepMorph | null> | null;
+  stepClock?: SharedValue<number> | null;
+  /** The placement this ring is the player of, for the step's camera. */
+  placementKey?: string;
   lensClock: LensClock;
   model: SongDetailModel | null;
   clock: SharedValue<number>;
@@ -3411,9 +3794,17 @@ function NativeSongDetail({
    * over a song whose measurement is already in starts it in — from its
    * first frame, not from the reaction below, which runs after it.
    */
-  const drawn = useSharedValue(
-    ink.value.key === songKey && ink.value.drawn ? 1 : 0,
-  );
+  /*
+   * A step's morph carries the ring over from the song it leaves: drawn
+   * there, it is drawn here, and walks from one to the other instead of
+   * being traced in again.
+   */
+  const carried = model?.from?.entityKey ?? null;
+  const inked =
+    ink.value.drawn &&
+    (ink.value.key === songKey ||
+      (carried !== null && ink.value.key === carried));
+  const drawn = useSharedValue(inked ? 1 : 0);
   useAnimatedReaction(
     () => phase.value,
     (next, before) => {
@@ -3424,8 +3815,14 @@ function NativeSongDetail({
         ink.value = { key: songKey, drawn: false };
         return;
       }
-      if (before === null && ink.value.key === songKey && ink.value.drawn) {
+      if (
+        before === null &&
+        ink.value.drawn &&
+        (ink.value.key === songKey ||
+          (carried !== null && ink.value.key === carried))
+      ) {
         drawn.value = 1;
+        ink.value = { key: songKey, drawn: true };
         return;
       }
       if (next === 'reveal') {
@@ -3554,6 +3951,10 @@ function NativeSongDetail({
           form === null ? null : form.value,
           letterFont,
           formWritten === null ? 1 : formWritten.value,
+          stepClock === null ? 1 : stepClock.value,
+          stepMorph === null
+            ? null
+            : arrivingCamera(stepMorph.value, placementKey),
         );
         if (share < 1) canvas.restore();
       },
@@ -3668,6 +4069,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   const openAt = scene.openAt;
   const inkClock = scene.inkClock;
   const soundClock = scene.soundClock;
+  const stepMorph = scene.stepMorph;
+  const stepClock = scene.stepClock;
   const faceFlights = useDerivedValue(() =>
     joinFaces(
       cutShared.value,
@@ -3851,6 +4254,11 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           motionFrame.value,
           motionOn.value,
           layer,
+          stepClock.value,
+          arrivingCamera(
+            stepMorph.value,
+            focusDraw.value === null ? null : focusDraw.value.placementKey,
+          ),
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -4031,6 +4439,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
               ).scale,
               fit,
             ),
+        // A step's two rows are the player's while it morphs.
+        stepMorph.value,
       );
       // The found shelf's last row, in the meta's face at the title's
       // column, present as much as the gather is.
@@ -4196,6 +4606,52 @@ function useFocusClock(scene: LivingScene, generation: number) {
   );
 }
 
+/**
+ * The form the player carries — the orbit's, and the clock's in a lens that
+ * keeps it there — and how much of it is written.
+ *
+ * The focused song's, on the motion's own arrival; but through a step's morph
+ * the song it leaves erased first, on the first half of the morph, the pen
+ * going back round to twelve, and the arriving song's written on over the
+ * second. Two clocks: the morph's carries the hand-over, `motionIn` this
+ * song's own track, which may land later.
+ */
+function useStepForm(scene: LivingScene): Readonly<{
+  cuts: DerivedValue<ClockCuts>;
+  written: DerivedValue<number>;
+}> {
+  const own = useDerivedValue(() => {
+    const focused = scene.focus.value;
+    return clockCutsOf(focused === null ? null : focused.motion);
+  });
+  const leaving = useDerivedValue(() => {
+    const focused = scene.focus.value;
+    return focused === null || focused.from === null || focused.from.motion === null
+      ? null
+      : clockCutsOf(focused.from.motion);
+  });
+  const stepClock = scene.stepClock;
+  const motionIn = scene.motionIn;
+  // Held by reference, so a frame of the morph that changes nothing here
+  // re-records nothing that reads it.
+  const cuts = useDerivedValue(() =>
+    leaving.value !== null && stepClock.value < 0.5 ? leaving.value : own.value,
+  );
+  const written = useDerivedValue(() => {
+    const clock = stepClock.value;
+    if (leaving.value === null || !isStepMorphing(clock)) return motionIn.value;
+    return clock < 0.5
+      ? 1 - smootherstep(clock * 2)
+      : motionIn.value * smootherstep(clock * 2 - 1);
+  });
+  return { cuts, written };
+}
+
+/** How many songs' player models the canvas keeps; see `playerModelOf`. */
+const PLAYER_MODELS_KEPT = 6;
+/** How long the player rests before its neighbours' models are built. */
+const PLAYER_MODELS_AHEAD_MS = 700;
+
 /** The row the player's flight has taken over, and which flight holds it. */
 type PlayerRow = Readonly<{ key: string; owner: number }>;
 let nextRowOwner = 1;
@@ -4235,15 +4691,15 @@ function FocusDetail({
 }) {
   const clock = useFocusClock(scene, focus.generation);
   // The focused song's form, for the orbit: once per track.
-  const form = useDerivedValue(() => {
-    const focused = scene.focus.value;
-    return clockCutsOf(focused === null ? null : focused.motion);
-  });
+  const form = useStepForm(scene);
   return (
     <NativeSongDetail
       layer={layer}
-      form={form}
-      formWritten={scene.motionIn}
+      form={form.cuts}
+      formWritten={form.written}
+      stepMorph={scene.stepMorph}
+      stepClock={scene.stepClock}
+      placementKey={focus.flight.targetPlacementKey ?? ''}
       letterFont={letterFont}
       lensClock={lensClock}
       cameraShared={cameraShared}
@@ -4306,10 +4762,7 @@ function FocusFlight({
 }) {
   const clock = useFocusClock(scene, focus.generation);
   // The song's form on its clock: its sections and drops, once per track.
-  const formCuts = useDerivedValue(() => {
-    const focused = scene.focus.value;
-    return clockCutsOf(focused === null ? null : focused.motion);
-  });
+  const form = useStepForm(scene);
   // On the canvas: its cut may go down now (see `focusReady`).
   const generation = focus.generation;
   useEffect(() => {
@@ -4330,8 +4783,8 @@ function FocusFlight({
       row={focus.row}
       titleFrom={focus.titleFrom}
       inkClock={scene.inkClock}
-      formCuts={formCuts}
-      formInk={scene.motionIn}
+      formCuts={form.cuts}
+      formInk={form.written}
       song={focus.song}
       songTitleFont={songTitleFont}
       songMetaFont={songMetaFont}
@@ -4344,6 +4797,9 @@ function FocusFlight({
       monoFont={monoFont}
       color={palette.ink}
       mutedColor={palette.muted}
+      stepMorph={scene.stepMorph}
+      stepClock={scene.stepClock}
+      heardFrom={focus.heardFrom}
     />
   );
 }
@@ -4543,7 +4999,14 @@ function NativePlacementFlight({
   monoFont,
   color,
   mutedColor,
+  stepMorph = null,
+  stepClock = null,
+  heardFrom = null,
 }: {
+  /** The queue's step at L2, for the player alone; see `stepMorph.ts`. */
+  stepMorph?: SharedValue<StepMorph | null> | null;
+  stepClock?: SharedValue<number> | null;
+  heardFrom?: number | null;
   /** The song's form on its clock; see `ClockCuts`. */
   formCuts?: DerivedValue<ClockCuts> | null;
   formInk?: SharedValue<number> | null;
@@ -4602,7 +5065,17 @@ function NativePlacementFlight({
    */
   const transform = useDerivedValue(() => {
     const p = Math.min(Math.max(clock.value, 0), 1);
-    const liveCamera = p >= 1 ? cameraShared.value : null;
+    // A step's arriving player is drawn where the leaving one stood.
+    const liveCamera =
+      p < 1
+        ? null
+        : song !== null && stepMorph !== null
+        ? stepCameraFor(
+            stepMorph.value,
+            flight.targetPlacementKey ?? '',
+            cameraShared.value,
+          )
+        : cameraShared.value;
     const cameraX =
       liveCamera?.x ??
       recut.fromCamera.x + (recut.toCamera.x - recut.fromCamera.x) * p;
@@ -4612,6 +5085,22 @@ function NativePlacementFlight({
     const cameraScale = nativeCameraScale(p, recut, cameraShared);
     const bloom =
       1 - gatherFraction(cameraScale, nativeFitScale(p, recut, fitScaleShared));
+    /*
+     * A step's arriving player is being drawn: its camera may be cut now.
+     * Said from here, the first frame it is drawn on, rather than from the
+     * row's claim below, whose first run came most of a second later.
+     */
+    if (song !== null && stepMorph !== null && p >= 1) {
+      const morph = stepMorph.value;
+      if (
+        morph !== null &&
+        morph.to === flight.targetPlacementKey &&
+        morph.camera !== null &&
+        !morph.ready
+      ) {
+        stepMorph.value = { ...morph, ready: true };
+      }
+    }
     const seatX = flight.fromX + (flight.targetX - flight.fromX) * p;
     const seatY = flight.fromY + (flight.targetY - flight.fromY) * p;
     const bloomX =
@@ -4803,7 +5292,12 @@ function NativePlacementFlight({
    * batch draws it, as it draws every other row; see `owned` and `playerRow`.
    */
   const flightOpacity = useDerivedValue(() =>
-    isPlayer && playerRow.value?.key !== rowKey
+    isPlayer &&
+    playerRow.value?.key !== rowKey &&
+    // A step's arriving player draws from the frame it is mounted: the row
+    // batch leaves both of the step's rows out, and the leaving player has
+    // just gone. Waiting for the claim left the screen without a name.
+    !(stepMorph !== null && stepMorph.value?.to === rowKey)
       ? 0
       : motion.fieldFade.value * (isPlayer ? motion.owned.value : 1),
   );
@@ -4887,6 +5381,8 @@ function NativePlacementFlight({
           songTitleFont={songTitleFont}
           viewport={viewport}
           byline={byline}
+          stepClock={stepClock}
+          heardFrom={heardFrom}
         />
       )}
     </SkiaGroup>

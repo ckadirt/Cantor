@@ -127,6 +127,20 @@ releases it. A new descent replaces that owner before starting its flight.
 Never clear the visible player at the start of an ascent: that removes its
 geometry at full size and produces a flash.
 
+**The queue steps at L2 by morphing, not by leaving.** When the next song on
+the shelf starts while you watch the player, the player stays where it is and
+becomes the next song's (`FIELD_CAMERA_KNOBS.STEP_STYLE: 'morph'`; the old
+fold — back into the row, down into the neighbour — is `'fold'`, kept whole).
+See `features/field/stepMorph.ts`: the arriving player is drawn through the
+camera that will stand in it until it is live on the canvas, then the camera is
+cut on the UI thread in one worklet, so nothing on the screen moves; then one
+linear clock (`STEP_MORPH_MS`) walks the face (`LensUi.morphPlayer`, or two
+beats through a point for a lens without one), the name and byline (glyph
+morphs between the two songs' player poses), the hand, the ring of ticks and
+the orbit. The cut waits for the arriving flight's first drawn frame, not the
+commit: Skia mounts what a commit hands it most of a second later on the
+phone. A step asked mid-morph waits for it to land.
+
 **Lenses share the renderer, through one contract.** A lens decides only what a
 song looks like; the renderer decides where it is and how present
 (`src/lenses/contract.ts`). Each lens gives an `identity` (JS, from the recipe

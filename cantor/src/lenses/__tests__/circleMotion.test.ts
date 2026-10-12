@@ -1,7 +1,10 @@
 import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
 import {
+  circleMorphPlayer,
+  circleMorphPoints,
   circleMotionPath,
   circlePlayerOf,
+  circleStillPoints,
   circlePose,
   ringMotionLevel,
   wrapAngle,
@@ -9,7 +12,12 @@ import {
 import type { FaceRecipe } from '../face';
 import { load, trackOf } from '../motion/__fixtures__/referenceTrack';
 import { motionFrameAt, type MotionFrame } from '../motion/motionFrame';
-import { NAME_LENS_KNOBS, nameLens, nameLensFacePath } from '../nameLens';
+import {
+  NAME_LENS_KNOBS,
+  drawCircleMorph,
+  nameLens,
+  nameLensFacePath,
+} from '../nameLens';
 
 const RECIPE: FaceRecipe = { seed: 4242, id: 'song-a', model: 'light', durationMs: 262_000 };
 const IMPORTED: FaceRecipe = { ...RECIPE, imported: true };
@@ -134,5 +142,66 @@ describe('the singing circle', () => {
         nameLens.ui.drawPlayer(canvas, player, identity, 1.6, 1, 0.9, 0, 1, -1, 1, -1, 1, paints(), frameAt(t)),
       ),
     ).toMatchSnapshot();
+  });
+});
+
+describe('one song becoming the next (the queue stepping at L2)', () => {
+  const NEXT: FaceRecipe = { seed: 977, id: 'song-b', model: 'light', durationMs: 131_000 };
+  const a = circlePlayerOf(RECIPE, 0);
+  const b = circlePlayerOf(NEXT, 0);
+
+  function pairs(points: readonly number[]): [number, number][] {
+    const out: [number, number][] = [];
+    for (let k = 0; k < points.length; k += 2) out.push([points[k], points[k + 1]]);
+    return out;
+  }
+
+  it('starts on the leaving face, sample for sample', () => {
+    expect(circleMorphPoints(a, b, 0, R)).toEqual(circleStillPoints(a, R));
+    expect(circleMorphPlayer(a, b, 0).rotation).toBe(a.rotation);
+  });
+
+  it('ends on the arriving face, its samples renumbered from where the leaving face starts', () => {
+    const end = pairs(circleMorphPoints(a, b, 1, R));
+    const own = pairs(circleStillPoints(b, R));
+    const shift = own.findIndex(([x, y]) => Math.hypot(x - end[0][0], y - end[0][1]) < 1e-9);
+    expect(shift).toBeGreaterThanOrEqual(0);
+    end.forEach(([x, y], k) => {
+      const [ox, oy] = own[(k + shift) % own.length];
+      expect(x).toBeCloseTo(ox, 9);
+      expect(y).toBeCloseTo(oy, 9);
+    });
+    // Its samples start where the arriving face's own sample `shift` does.
+    const step = (Math.PI * 2) / own.length;
+    expect(wrapAngle(circleMorphPlayer(a, b, 1).rotation - (b.rotation + shift * step))).toBeCloseTo(0, 9);
+  });
+
+  it('moves every point in or out, never across the face', () => {
+    // Paired by number, a point would cut through the middle to its namesake
+    // on the other face; paired by angle it stays out in the body.
+    for (const t of [0.25, 0.5, 0.75]) {
+      for (const [x, y] of pairs(circleMorphPoints(a, b, t, R))) {
+        expect(Math.hypot(x, y)).toBeGreaterThan(R * 0.5);
+      }
+    }
+  });
+
+  it('draws the leaving player at 0, and something between the two halfway', () => {
+    const identityA = nameLens.identity(RECIPE);
+    const identityB = nameLens.identity(NEXT);
+    const playerA = nameLens.player(RECIPE, undefined, null);
+    const playerB = nameLens.player(NEXT, undefined, null);
+    const morph = (t: number) =>
+      raster(canvas =>
+        drawCircleMorph(canvas, identityA, playerA, identityB, playerB, t, 1.6, 1, 0.9, 0, 1, -1, 1, -1, 1, paints()),
+      );
+    const own = (player: typeof playerA, identity: typeof identityA) =>
+      raster(canvas =>
+        nameLens.ui.drawPlayer(canvas, player, identity, 1.6, 1, 0.9, 0, 1, -1, 1, -1, 1, paints(), null),
+      );
+    expect(morph(0)).toBe(own(playerA, identityA));
+    expect(morph(0.5)).not.toBe(own(playerA, identityA));
+    expect(morph(0.5)).not.toBe(own(playerB, identityB));
+    expect(nameLens.ui.morphPlayer).toBe(drawCircleMorph);
   });
 });

@@ -308,6 +308,59 @@ export function circleStillPoints(player: CirclePlayer, radius: number): number[
 }
 
 /**
+ * How many samples song `b`'s contour is turned against `a`'s, and what is
+ * left over: `b`'s samples start at its own rotation, so pairing sample k
+ * with sample k would send every point across the face to its namesake. Paired
+ * with the sample nearest its own angle instead, each point only travels in
+ * or out, and the residual turn is less than half a sample.
+ */
+function circleMorphTurn(a: CirclePlayer, b: CirclePlayer, samples: number): [number, number] {
+  'worklet';
+  const step = (Math.PI * 2) / samples;
+  const turn = wrapAngle(b.rotation - a.rotation);
+  const offset = Math.round(turn / step);
+  return [offset, turn - offset * step];
+}
+
+/**
+ * One song's still contour becoming another's (`circleStillPoints` at both
+ * ends), `t` of the way: the circle's queue step at L2. At 0 it is `a`'s
+ * samples exactly, at 1 `b`'s, renumbered.
+ */
+export function circleMorphPoints(
+  a: CirclePlayer,
+  b: CirclePlayer,
+  t: number,
+  radius: number,
+): number[] {
+  'worklet';
+  const from = circleStillPoints(a, radius);
+  const to = circleStillPoints(b, radius);
+  const samples = from.length / 2;
+  const [offset] = circleMorphTurn(a, b, samples);
+  const points: number[] = [];
+  for (let k = 0; k < samples; k++) {
+    const j = (((k - offset) % samples) + samples) % samples;
+    points.push(
+      from[2 * k] + (to[2 * j] - from[2 * k]) * t,
+      from[2 * k + 1] + (to[2 * j + 1] - from[2 * k + 1]) * t,
+    );
+  }
+  return points;
+}
+
+/** The player `circleMorphPoints` draws: where its samples start, and its spindle. */
+export function circleMorphPlayer(a: CirclePlayer, b: CirclePlayer, t: number): CirclePlayer {
+  'worklet';
+  const [, residual] = circleMorphTurn(a, b, FACE_KNOBS.SAMPLES);
+  return {
+    ...b,
+    rotation: a.rotation + residual * t,
+    spindle: a.spindle + (b.spindle - a.spindle) * t,
+  };
+}
+
+/**
  * The body: the ring between a well of radius `well` and the contour, as one
  * triangle strip — drawn by the GPU, where a filled path that changes every
  * frame is rasterised on the CPU and uploaded every frame. A strip has no

@@ -1,5 +1,7 @@
 import {
   CIRCLE_BODY_KNOBS,
+  circleMorphPlayer,
+  circleMorphPoints,
   circleMotionPoints,
   circlePlayerOf,
   circleStillPoints,
@@ -485,6 +487,53 @@ export function drawCirclePlayer(
   drawArrivingArc(canvas, size, alpha, arrived, arriving, paints);
 }
 
+/**
+ * One song's player becoming the next's, at L2: the contour walks from one
+ * face to the other, sample by sample (`circleMorphPoints`), and the body and
+ * its well follow it. Still at both ends — the music is the song's that is
+ * sounding, and neither of these is yet, for certain. Not at the player, it is
+ * the next song's own drawing.
+ */
+export function drawCircleMorph(
+  canvas: SkCanvas,
+  _aIdentity: LensIdentity,
+  aPlayer: LensPlayer | null,
+  bIdentity: LensIdentity,
+  bPlayer: LensPlayer | null,
+  t: number,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  soundIn: number,
+  heard: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  if (arrived <= 0 || !isCirclePlayer(aPlayer) || !isCirclePlayer(bPlayer)) {
+    drawCirclePlayer(canvas, bPlayer, bIdentity, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints);
+    return;
+  }
+  const R = NAME_LENS_KNOBS.MARK_RADIUS_PX;
+  const points = circleMorphPoints(aPlayer, bPlayer, t, R);
+  const player = circleMorphPlayer(aPlayer, bPlayer, t);
+  canvas.save();
+  canvas.scale(size, size);
+  drawCircleBodyScaled(canvas, player, points, size, alpha, weight, fill, arrived, hairlinePx, paints);
+  paints.stroke.setAlphaf(alpha * circleLineInk(weight, arrived));
+  paints.stroke.setStrokeWidth(hairlinePx / size);
+  strokeCircleMotion(canvas, points, 0, R, paints.stroke);
+  if (player.spindle > 0) {
+    paints.stroke.setAlphaf(alpha * (weight + (NAME_LENS_KNOBS.SPINDLE_PLAYER_ALPHA - weight) * smootherstep(arrived)));
+    canvas.drawCircle(0, 0, R * player.spindle, paints.stroke);
+  }
+  canvas.restore();
+  drawArrivingArc(canvas, size, alpha, arrived, arriving, paints);
+}
+
 /** The circle's ring under a finger: see `ringTurnAt`. */
 function circleSeekAt(dx: number, dy: number, radius: number): number | null {
   return ringTurnAt(
@@ -514,6 +563,7 @@ export const nameLens: Lens = {
     drawMark: drawCircleMark,
     sprites: circleSprites,
     drawPlayer: drawCirclePlayer,
+    morphPlayer: drawCircleMorph,
     ringTicks: 1,
     hearsPlayhead: 0,
     clock: {
