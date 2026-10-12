@@ -1648,8 +1648,13 @@ export function FieldScreen({ identity }: Props) {
    * owner's lifetime is `playerFocus`, which changes on the same commit as the
    * canvas's own focus, so this switch adds no hand-off of its own.
    */
+  // And through a step, the song it leaves while that is still the one
+  // sounding: its player is still on the canvas, under the step's morph, and
+  // its hand snapped to twelve on the commit that moved the focus.
   const canvasPosition =
-    heldKey !== null && fieldCamera.playerFocus?.entityKey === heldKey
+    heldKey !== null &&
+    (fieldCamera.playerFocus?.entityKey === heldKey ||
+      fieldCamera.stepFrom?.entityKey === heldKey)
       ? steppedPosition
       : idlePosition;
   const transportPlaying = useSharedValue<number>(PLAYER_VERB_POSE.play);
