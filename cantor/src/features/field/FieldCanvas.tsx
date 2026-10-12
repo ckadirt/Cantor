@@ -275,6 +275,13 @@ export type PlayerDraw = Readonly<{
    * the morph rather than the player (`stepMorph.ts`).
    */
   morphFrom?: StepFrom | null;
+  /**
+   * A step has handed this player to the layer, which keeps it — singing
+   * when it has music, still when it has none — for as long as it stays.
+   * Handed back to the field until its music rose and taken again, it
+   * crossed canvases twice, and the ring dimmed for a frame.
+   */
+  hold?: boolean;
 }>;
 
 /**
@@ -291,6 +298,12 @@ export type StepLinesDraw = Readonly<{
   metaFrom: StepLines['metaFrom'];
   /** The byline's strip, in the player's space, for its column's mask. */
   metaStrip: Readonly<{ x: number; y: number; width: number; height: number }>;
+  /**
+   * The band the name and the byline cover at either end and between, in
+   * the player's space: the layer lays paper over it under its own lines, so
+   * the field's copy beneath can come and go unseen; see `PlayerMotionLayer`.
+   */
+  band: Readonly<{ top: number; bottom: number }>;
   /** The flight's translation: the player's space, in the view. */
   x: number;
   y: number;
@@ -346,6 +359,16 @@ export type PlayerLayer = Readonly<{
   lastLines: SharedValue<StepLinesDraw | null>;
   lineInk: SharedValue<number>;
   layerLineInk: SharedValue<number>;
+  /** Raised once a step's paper covers the marquee's strip; see `PlayerMotionLayer`. */
+  releaseStrip: SharedValue<number>;
+  /** The step whose lines the layer has recorded, paper and all. */
+  linesDrawn: SharedValue<string | null>;
+  /**
+   * The field's share of the clock's hand through a step. Its own, and
+   * short: the hand is not under the paper, and the leaving song's moves on
+   * while it plays, so two of them drawn a while showed as two hands.
+   */
+  handInk: SharedValue<number>;
   /**
    * The music the leaving player was last drawn singing to, held for the
    * morph to leave from: the song stops as the step begins, and the shape
@@ -831,6 +854,9 @@ function FieldCanvasImpl({
     lineInk: useSharedValue(1),
     layerLineInk: useSharedValue(0),
     frozen: useSharedValue<MotionFrame | null>(null),
+    releaseStrip: useSharedValue(0),
+    linesDrawn: useSharedValue<string | null>(null),
+    handInk: useSharedValue(1),
   };
   const playerLayer = useRef(playerLayerCandidate).current;
   const ownClock = useSharedValue(1);
@@ -1675,6 +1701,9 @@ function FieldCanvasImpl({
   const stepLines = focusLayer?.song?.step ?? null;
   const stepSeat = focusLayer?.flight ?? null;
   const stepHeardFrom = focusLayer?.heardFrom ?? 0;
+  const stepFromSeconds =
+    stepPresentation === undefined ? 0 : stepPresentation.durationMs / 1000;
+  const stepPlayhead = positionSeconds;
   const stepDuration = focusLayer?.durationSeconds ?? 0;
   const stepMetaSeat = focusLayer?.song?.metaSeat ?? null;
   useEffect(() => {
@@ -1694,6 +1723,7 @@ function FieldCanvasImpl({
       stepLines.metaColumn === null || stepMetaSeat === null
         ? { x: 0, y: 0, width: 0, height: 0 }
         : stepMetaStrip(stepLines.metaColumn, stepMetaSeat, songMetaFont);
+    const band = lineBand([stepLines.title, stepLines.meta], metaStrip);
     const seat = {
       x: stepSeat.targetX,
       y: stepSeat.targetY,
@@ -1715,6 +1745,12 @@ function FieldCanvasImpl({
         view,
         FACE_GROWTH,
       );
+      // Where the leaving song's hand stands now, read from the playhead
+      // the field's own hand reads, so the two are one hand when they cross.
+      const heard =
+        stepPlayhead !== null && stepFromSeconds > 0
+          ? Math.min(Math.max(stepPlayhead.value / stepFromSeconds, 0), 1)
+          : stepHeardFrom;
       lines.value = {
         key,
         title: stepLines.title,
@@ -1722,11 +1758,12 @@ function FieldCanvasImpl({
         metaColumn: stepLines.metaColumn,
         metaFrom: stepLines.metaFrom,
         metaStrip,
+        band,
         x: (seat.x + seat.bloomX * bloom - camera.x) * camera.scale + view.width / 2,
         y: (seat.y + seat.bloomY * bloom - camera.y) * camera.scale + view.height / 2,
         ringX: pose.x,
         ringY: pose.y,
-        heardFrom: stepHeardFrom,
+        heardFrom: heard,
         durationTo: stepDuration,
       };
     })();
@@ -1743,8 +1780,10 @@ function FieldCanvasImpl({
     scene,
     songMetaFont,
     stepDuration,
+    stepFromSeconds,
     stepHeardFrom,
     stepLines,
+    stepPlayhead,
     stepMetaSeat,
     stepSeat,
     viewport,
@@ -1886,6 +1925,20 @@ function FieldCanvasImpl({
       >
         {nativeScene ?? paper}
       </Canvas>
+      {viewport === null || songMetaFont === null ? null : (
+        <BylineMarqueeLayer
+          clock={bylineClock}
+          colour={palette.muted}
+          font={songMetaFont}
+          playing={transportPlaying}
+          viewport={viewport}
+        />
+      )}
+      {/*
+        Above the marquee's strip: a step's paper (`StepLinesDraw.band`) has
+        to cover the strip's copy of the leaving byline as well as the
+        field's, so the strip can let it go unseen.
+      */}
       {viewport === null ? null : (
         <PlayerMotionLayer
           layer={playerLayer}
@@ -1904,15 +1957,6 @@ function FieldCanvasImpl({
           reducedMotion={reducedMotion}
         />
       )}
-      {viewport === null || songMetaFont === null ? null : (
-        <BylineMarqueeLayer
-          clock={bylineClock}
-          colour={palette.muted}
-          font={songMetaFont}
-          playing={transportPlaying}
-          viewport={viewport}
-        />
-      )}
     </>
   );
 }
@@ -1923,6 +1967,65 @@ function FieldCanvasImpl({
  * lens's own `drawPlayer`, where the field last drew the player — and says
  * when it has, so the field can leave its face out.
  */
+/**
+ * How far above and below its letters a step's paper reaches, and how long
+ * one canvas keeps a step's lines after the other has them: long enough for
+ * both canvases to have drawn the hand-over whichever reaches the glass
+ * first. Generous, since under the paper the longer copy is unseen: 80 ms
+ * left the name off the glass for two frames while a mount held the UI.
+ */
+const STEP_LINE_KNOBS = { BAND_PAD_PX: 6, HANDOFF_MS: 250 } as const;
+
+/** The band a step's lines cover at either end of their morph; see `StepLinesDraw.band`. */
+function lineBand(
+  lines: readonly (readonly GlyphMorph[] | null)[],
+  strip: Readonly<{ y: number; height: number }>,
+): Readonly<{ top: number; bottom: number }> {
+  let top = Infinity;
+  let bottom = -Infinity;
+  for (const morphs of lines) {
+    if (morphs === null) continue;
+    for (const morph of morphs) {
+      for (const path of [morph.from, morph.to]) {
+        const bounds = path.computeTightBounds();
+        top = Math.min(top, bounds.y);
+        bottom = Math.max(bottom, bounds.y + bounds.height);
+      }
+    }
+  }
+  if (strip.height > 0) {
+    top = Math.min(top, strip.y);
+    bottom = Math.max(bottom, strip.y + strip.height);
+  }
+  if (!Number.isFinite(top)) return { top: 0, bottom: 0 };
+  const pad = STEP_LINE_KNOBS.BAND_PAD_PX;
+  return { top: top - pad, bottom: bottom + pad };
+}
+
+/**
+ * Whether a step keeps the player on the motion layer whatever its music is
+ * doing: from the press, on the leaving song's held music, and after the
+ * landing for as long as the player stays — singing once its music rises,
+ * still if it has none — rather than handing it to the field and back. A
+ * hand-over is a crossfade between two canvases, and the ring dimmed for a
+ * frame at every one.
+ */
+function stepHolds(
+  morph: StepMorph | null,
+  layer: PlayerLayer,
+  focus: FocusDraw | null,
+): boolean {
+  'worklet';
+  if (morph !== null && layer.frozen.value !== null) return true;
+  const drawn = layer.draw.value;
+  return (
+    drawn !== null &&
+    drawn.owned &&
+    (drawn.morphFrom != null || drawn.hold === true) &&
+    focus !== null
+  );
+}
+
 /** KNOBS — the step's morph clock, as the motion layer runs it. */
 const STEP_CLOCK_KNOBS = {
   /** Frames after the arriving player is on the canvas before the morph moves. */
@@ -2133,6 +2236,7 @@ function PlayerMotionLayerImpl({
       title: fill(palette.ink),
       meta: fill(palette.muted),
       hand: fill(palette.ink),
+      paper: fill(palette.bg),
       mask,
       layer: Skia.Paint(),
     };
@@ -2158,6 +2262,7 @@ function PlayerMotionLayerImpl({
         drawn.owned &&
         (motion.value !== null ||
           drawn.morphFrom != null ||
+          drawn.hold === true ||
           (stepMorph.value !== null && layer.frozen.value !== null))
       );
     },
@@ -2176,24 +2281,36 @@ function PlayerMotionLayerImpl({
     },
   );
   /*
-   * A step's lines change hands the same way, but as a switch rather than a
-   * fade: the two canvases draw the same letters at the same place, and two
-   * half inks of one glyph are a bolder glyph, not the same one.
+   * A step's lines change hands under paper. The two canvases do not reach
+   * the glass on the same frame, so a switch drew the name twice (bolder at
+   * its edges) or not at all for a frame, and a fade dimmed it. The layer
+   * lays paper under its own lines instead (`StepLinesDraw.band`): taking
+   * them, it covers the field's identical copy and the field lets go some
+   * frames later, unseen; giving them back, the field draws them again under
+   * the paper first and the layer lifts it some frames later. Whichever
+   * canvas is late, the glass shows one copy.
    */
   useAnimatedReaction(
     () => layer.lines.value !== null,
     (has, before) => {
       if (has === before || (before === null && !has)) return;
-      const lag = { duration: 0 };
+      const later = (to: number) =>
+        withDelay(STEP_LINE_KNOBS.HANDOFF_MS, withTiming(to, { duration: 0 }));
       cancelAnimation(layer.layerLineInk);
       cancelAnimation(layer.lineInk);
       if (has) {
         layer.lastLines.value = layer.lines.value;
         layer.layerLineInk.value = 1;
-        layer.lineInk.value = withDelay(LAYER_LAG_MS, withTiming(0, lag));
+        // The field lets go once the layer has drawn them (below).
+        // The marquee's strip lets the leaving byline go under the same
+        // paper, stopping it where it stood: the step morphs it from there
+        // (`bylineScrolled`).
+        layer.releaseStrip.value = later(1);
       } else {
         layer.lineInk.value = 1;
-        layer.layerLineInk.value = withDelay(LAYER_LAG_MS, withTiming(0, lag));
+        cancelAnimation(layer.handInk);
+        layer.handInk.value = 1;
+        layer.layerLineInk.value = later(0);
       }
     },
   );
@@ -2201,6 +2318,33 @@ function PlayerMotionLayerImpl({
     () => layer.lines.value,
     lines => {
       if (lines !== null) layer.lastLines.value = lines;
+    },
+  );
+  /*
+   * The field's copy goes once the layer has recorded the lines and a
+   * hand-over's time has passed — recorded, since a UI thread busy with a
+   * mount can hold the layer's first frame of them past any fixed delay.
+   */
+  useAnimatedReaction(
+    () => layer.linesDrawn.value !== null && layer.linesDrawn.value === layer.lines.value?.key,
+    (drawn, before) => {
+      if (!drawn || before === true) return;
+      cancelAnimation(layer.lineInk);
+      cancelAnimation(layer.handInk);
+      layer.lineInk.value = withDelay(
+        STEP_LINE_KNOBS.HANDOFF_MS,
+        withTiming(0, { duration: 0 }),
+      );
+      layer.handInk.value = withDelay(LAYER_LAG_MS, withTiming(0, { duration: 0 }));
+    },
+  );
+  useAnimatedReaction(
+    () => layer.releaseStrip.value >= 1,
+    (release, before) => {
+      if (!release || before === true) return;
+      byline.at.value = null;
+      if (byline.owner.value !== 0) byline.owner.value = 0;
+      layer.releaseStrip.value = 0;
     },
   );
   /*
@@ -2214,18 +2358,12 @@ function PlayerMotionLayerImpl({
       return morph === null ? 0 : morph.camera !== null ? 1 : 2;
     },
     (phase, before) => {
-      if (phase === 1 && before !== 1) {
-        layer.frozen.value = motion.value;
-        // The leaving byline stops where it is and is the field's again,
-        // as a player being left hands it back: the step morphs it from
-        // there, and the strip drawing it on would draw it twice.
-        byline.at.value = null;
-        if (byline.owner.value !== 0) byline.owner.value = 0;
-      }
+      if (phase === 1 && before !== 1) layer.frozen.value = motion.value;
       else if (phase === 0) {
         if (layer.frozen.value !== null) layer.frozen.value = null;
         // Landed: the lines go back to the field.
         if (layer.lines.value !== null) layer.lines.value = null;
+        if (layer.linesDrawn.value !== null) layer.linesDrawn.value = null;
       }
     },
   );
@@ -2310,7 +2448,9 @@ function PlayerMotionLayerImpl({
         // — and the live music is not read, so it redraws nothing either.
         const held = stepMorph.value !== null ? layer.frozen.value : null;
         const frame = held !== null ? held : morphing ? null : motion.value;
-        const owns = now !== null && now.owned && (frame !== null || morphing);
+        const holding = now !== null && now.hold === true;
+        const owns =
+          now !== null && now.owned && (frame !== null || morphing || holding);
         if (layer.showing.value !== owns) layer.showing.value = owns;
         if (owns && layer.last.value !== now) layer.last.value = now;
         // Fading out with no player handed (a pair morph took it): the last one.
@@ -2347,7 +2487,11 @@ function PlayerMotionLayerImpl({
             }
           }
         }
-        if (drawn !== null && (frame !== null || stepping) && share > 0) {
+        if (
+          drawn !== null &&
+          (frame !== null || stepping || drawn.hold === true) &&
+          share > 0
+        ) {
           // The ring of ticks, as the field drew it, with the music in it.
           const detail = layer.detail.value;
           if (detail !== null) {
@@ -2399,7 +2543,8 @@ function PlayerMotionLayerImpl({
               frame,
               reducedMotion,
             );
-          } else if (frame !== null) {
+          } else if (frame !== null || drawn.hold === true) {
+            // Held (`PlayerDraw.hold`): still, until its music rises.
             LENS_UI[drawn.lens].drawPlayer(
               canvas,
               drawn.player,
@@ -2413,7 +2558,7 @@ function PlayerMotionLayerImpl({
               drawn.soundIn,
               // The playhead the music is read at, not the field's stepped one:
               // the seal's bead and heard thread ride it (`heard` −1 means none).
-              drawn.heard < 0 ? drawn.heard : frame.head,
+              drawn.heard < 0 || frame === null ? drawn.heard : frame.head,
               FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
               paints,
               frame,
@@ -2425,9 +2570,33 @@ function PlayerMotionLayerImpl({
         const lines = layer.lines.value ?? layer.lastLines.value;
         const lineInk = layer.layerLineInk.value;
         if (lines !== null && lineInk > 0) {
-          const t = stepMorphAt(clockNow);
+          // The step's own clock for its own lines, from the frame they are
+          // here — they arrive before the focus has moved — and landed for
+          // any a finished step left behind.
+          const lineMorph = stepMorph.value;
+          const t =
+            lineMorph !== null && lineMorph.to === lines.key
+              ? stepMorphAt(stepClock.value)
+              : 1;
+          if (layer.lines.value !== null && layer.linesDrawn.value !== lines.key) {
+            layer.linesDrawn.value = lines.key;
+          }
           canvas.save();
           canvas.translate(lines.x, lines.y);
+          // Paper under the lines, the width of the view: the field's copy
+          // beneath comes and goes unseen.
+          if (lines.band.bottom > lines.band.top) {
+            linePaints.paper.setAlphaf(lineInk);
+            canvas.drawRect(
+              Skia.XYWHRect(
+                -lines.x,
+                lines.band.top,
+                viewport.width,
+                lines.band.bottom - lines.band.top,
+              ),
+              linePaints.paper,
+            );
+          }
           // The hand winds from where the last song stood to this one's.
           const seconds = positionSeconds === null ? 0 : positionSeconds.value;
           const own =
@@ -3598,6 +3767,11 @@ export function drawFieldFaces(
         progress >= 1 &&
         shapeArrived >= LAYER_ARRIVED &&
         (motionOn || holdLayer);
+      // Held by a step, the player stays the layer's while it stays at all
+      // — its music rising or pausing does not move it between canvases:
+      // the two read that music a frame apart, and a frame of disagreement
+      // handed it over and back and dimmed the ring.
+      const holding = owned && holdLayer;
       if (motionLayer !== null && players !== undefined) {
         playerSeen = true;
         const lens = firstLens;
@@ -3609,6 +3783,7 @@ export function drawFieldFaces(
         if (
           before === null ||
           before.morphFrom != null ||
+          (before.hold === true) !== holding ||
           before.owned !== owned ||
           before.lens !== lens ||
           before.x !== drawX ||
@@ -3639,6 +3814,7 @@ export function drawFieldFaces(
             arriving: face.arriving,
             soundIn: soundProgress,
             heard,
+            hold: holding,
           };
         }
       }
@@ -4541,13 +4717,16 @@ function NativeSongDetail({
     const arrived = hasLevels && !hadLevels.current;
     hadLevels.current = hasLevels;
     if (!arrived || phase.value === 'hidden') return;
+    // Through a step's morph the ticks are already walking to this song's
+    // levels; drawing them in again from nothing fought it for a frame.
+    if (stepMorph !== null && stepMorph.value?.to === placementKey) return;
     cancelAnimation(drawn);
     drawn.value = 0;
     drawn.value = withTiming(1, {
       duration: PLAYER_RING_KNOBS.SONG_WAVE_DRAW_MS,
       easing: easeSmoother,
     });
-  }, [drawn, hasLevels, phase]);
+  }, [drawn, hasLevels, phase, placementKey, stepMorph]);
   /** How much of the decoded detail has resolved into the coarse ticks. */
   const resolved = useSharedValue(0);
   useAnimatedReaction(
@@ -4956,7 +5135,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             stepMorph.value,
             focusDraw.value === null ? null : focusDraw.value.placementKey,
           ),
-          stepMorph.value !== null && layer.frozen.value !== null,
+          stepHolds(stepMorph.value, layer, focusDraw.value),
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -5353,6 +5532,25 @@ const PLAYER_MODELS_KEPT = 6;
 /** How long the player rests before its neighbours' models are built. */
 const PLAYER_MODELS_AHEAD_MS = 700;
 
+/**
+ * A step's clock as one focus layer reads it: the field's, if this layer is
+ * the song the step arrives at, and landed otherwise. The leaving layer is
+ * still mounted for a while after the focus has moved, and still carries the
+ * step it arrived by: read raw, it drew that step's start — the song before
+ * last — for a frame or two.
+ */
+function useOwnStepClock(
+  scene: LivingScene,
+  placementKey: string | null,
+): DerivedValue<number> {
+  const stepMorph = scene.stepMorph;
+  const stepClock = scene.stepClock;
+  return useDerivedValue(() => {
+    const morph = stepMorph.value;
+    return morph !== null && morph.to === placementKey ? stepClock.value : 1;
+  });
+}
+
 /** The row the player's flight has taken over, and which flight holds it. */
 type PlayerRow = Readonly<{ key: string; owner: number }>;
 let nextRowOwner = 1;
@@ -5392,14 +5590,15 @@ function FocusDetail({
 }) {
   const clock = useFocusClock(scene, focus.generation);
   // The focused song's form, for the orbit: once per track.
-  const form = useStepForm(scene.focus, scene.stepClock, scene.motionIn);
+  const ownStep = useOwnStepClock(scene, focus.flight.targetPlacementKey);
+  const form = useStepForm(scene.focus, ownStep, scene.motionIn);
   return (
     <NativeSongDetail
       layer={layer}
       form={form.cuts}
       formWritten={form.written}
       stepMorph={scene.stepMorph}
-      stepClock={scene.stepClock}
+      stepClock={ownStep}
       placementKey={focus.flight.targetPlacementKey ?? ''}
       letterFont={letterFont}
       lensClock={lensClock}
@@ -5465,7 +5664,8 @@ function FocusFlight({
 }) {
   const clock = useFocusClock(scene, focus.generation);
   // The song's form on its clock: its sections and drops, once per track.
-  const form = useStepForm(scene.focus, scene.stepClock, scene.motionIn);
+  const ownStep = useOwnStepClock(scene, focus.flight.targetPlacementKey);
+  const form = useStepForm(scene.focus, ownStep, scene.motionIn);
   // On the canvas: its cut may go down now (see `focusReady`).
   const generation = focus.generation;
   useEffect(() => {
@@ -5501,7 +5701,7 @@ function FocusFlight({
       color={palette.ink}
       mutedColor={palette.muted}
       stepMorph={scene.stepMorph}
-      stepClock={scene.stepClock}
+      stepClock={ownStep}
       heardFrom={focus.heardFrom}
       layer={layer}
     />
@@ -6090,6 +6290,7 @@ function NativePlacementFlight({
           stepClock={stepClock}
           heardFrom={heardFrom}
           lineInk={layer === null ? null : layer.lineInk}
+          handInk={layer === null ? null : layer.handInk}
         />
       )}
     </SkiaGroup>

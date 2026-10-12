@@ -152,6 +152,17 @@ See `features/field/stepMorph.ts`. The rules it was built on:
   its first run is on the JS thread, mid-render.
 - *A morphing line is one picture* (`MorphLine`), not a node per letter: a
   byline loop is ninety letters, and mounting them held both threads.
+- *A step is only running for the song it arrives at.* The press winds the
+  clock back a commit before the focus moves, and every reader — the field
+  (`fieldStepClock`), each focus layer (`useOwnStepClock`), the layer
+  (`layerClock`) — treats anything else as landed; read raw, the song before
+  last flashed up.
+- *Two canvases never hand over in plain sight.* The lines change hands
+  under paper the layer lays behind its own (`StepLinesDraw.band`), the
+  marquee's strip is released under it too (the layer sits above the strip),
+  and once a step has given the player to the layer it keeps it
+  (`PlayerDraw.hold`) until the player is left, so music rising or pausing
+  does not cross canvases. Every crossfade between the two showed as a frame.
 
 A step asked mid-morph waits for it to land.
 

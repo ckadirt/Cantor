@@ -2238,8 +2238,11 @@ export function NativePlayerParts({
   stepClock = null,
   heardFrom = null,
   lineInk = null,
+  handInk = null,
 }: {
   model: NativeSongModel;
+  /** How much of the clock's hand this canvas draws; see `lineInk`. Null is all of it. */
+  handInk?: SharedValue<number> | null;
   /**
    * How much of the name, the byline and the clock's hand this canvas draws:
    * less than all while a step's morph has them on the motion layer. Null is
@@ -2324,6 +2327,7 @@ export function NativePlayerParts({
     stepClock === null ? 1 : stepMorphAt(stepClock.value),
   );
   const here = useDerivedValue(() => (lineInk === null ? 1 : lineInk.value));
+  const handHere = useDerivedValue(() => (handInk === null ? 1 : handInk.value));
   const ownedHere = useDerivedValue(
     () => owned.value * (1 - stepping.value) * here.value,
   );
@@ -2376,7 +2380,7 @@ export function NativePlayerParts({
             positionSeconds={positionSeconds}
             heardFrom={heardFrom}
             step={stepAt}
-            handInk={here}
+            handInk={handHere}
             radius={radius}
           />
         )}
