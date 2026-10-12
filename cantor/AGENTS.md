@@ -131,15 +131,29 @@ geometry at full size and produces a flash.
 the shelf starts while you watch the player, the player stays where it is and
 becomes the next song's (`FIELD_CAMERA_KNOBS.STEP_STYLE: 'morph'`; the old
 fold — back into the row, down into the neighbour — is `'fold'`, kept whole).
-See `features/field/stepMorph.ts`: the arriving player is drawn through the
-camera that will stand in it until it is live on the canvas, then the camera is
-cut on the UI thread in one worklet, so nothing on the screen moves; then one
-linear clock (`STEP_MORPH_MS`) walks the face (`LensUi.morphPlayer`, or two
-beats through a point for a lens without one), the name and byline (glyph
-morphs between the two songs' player poses), the hand, the ring of ticks and
-the orbit. The cut waits for the arriving flight's first drawn frame, not the
-commit: Skia mounts what a commit hands it most of a second later on the
-phone. A step asked mid-morph waits for it to land.
+See `features/field/stepMorph.ts`. The rules it was built on:
+
+- *The morph is the motion layer's.* `PlayerMotionLayer` draws everything
+  that changes — face (`LensUi.morphPlayer`, or two beats through a point),
+  ring of ticks, orbit, name, byline, the hand — and the field holds still
+  under it (`fieldStepClock` only moves 0 → 1). Redrawing the field costs
+  most of a frame at L2; the layer is a handful of paths.
+- *Nothing waits on Skia's mount to look right.* The next song's player is
+  mounted most of a second after the commit. Until then the layer holds the
+  leaving player on the music it was last drawn to (`PlayerLayer.frozen`), the
+  lines are handed to it from `FieldCanvas`'s own commit effect, and the
+  camera is cut only once the arriving flight's mount effect says it is on
+  the canvas (`StepMorph.ready`); anything of the leaving song's still drawn
+  after the cut uses `fromCamera`.
+- *The clock cannot jump.* The layer advances it a frame at a time, capped,
+  starting a few frames after the mount: a timing reads timestamps, and the
+  frame after a mount comes late enough to land the morph at once.
+- *Side effects from a derived value only on the UI thread* (`onUIThread`):
+  its first run is on the JS thread, mid-render.
+- *A morphing line is one picture* (`MorphLine`), not a node per letter: a
+  byline loop is ninety letters, and mounting them held both threads.
+
+A step asked mid-morph waits for it to land.
 
 **Lenses share the renderer, through one contract.** A lens decides only what a
 song looks like; the renderer decides where it is and how present

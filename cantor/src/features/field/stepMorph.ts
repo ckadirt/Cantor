@@ -31,6 +31,12 @@ export type StepMorph = Readonly<{
   /** The camera `to` is drawn through until the real one is cut to it. */
   camera: Camera | null;
   /**
+   * The camera the step began at, which anything of `from`'s still on a
+   * canvas after the cut is drawn through: its ring can outlive the cut by a
+   * frame or two, and drawn a seat off it went missing.
+   */
+  fromCamera: Camera;
+  /**
    * Whether `to`'s player is live on the canvas: Skia mounts it in a render
    * of its own, after the commit, and the cut waits for it.
    */
@@ -48,22 +54,26 @@ export function stepCameraFor(
   live: Camera | null,
 ): Camera | null {
   'worklet';
-  if (live === null || morph === null || morph.camera === null) return live;
-  return morph.to === placementKey ? morph.camera : live;
+  if (live === null || morph === null) return live;
+  if (morph.camera !== null) {
+    return morph.to === placementKey ? morph.camera : live;
+  }
+  return morph.from === placementKey ? morph.fromCamera : live;
 }
 
 /**
- * The camera the focused player is drawn through while a step waits for its
- * cut, or null: `stepCameraFor` for a renderer that holds the focus's key
- * rather than its own.
+ * The camera a step draws one placement's player through instead of the live
+ * one, or null for the live one: `stepCameraFor` for a renderer that holds
+ * the key rather than the camera.
  */
 export function arrivingCamera(
   morph: StepMorph | null,
   focusKey: string | null,
 ): Camera | null {
   'worklet';
-  if (morph === null || morph.camera === null || focusKey === null) return null;
-  return morph.to === focusKey ? morph.camera : null;
+  if (morph === null || focusKey === null) return null;
+  if (morph.camera !== null) return morph.to === focusKey ? morph.camera : null;
+  return morph.from === focusKey ? morph.fromCamera : null;
 }
 
 /** How far the morph has walked, eased once here: the clock itself is linear. */
@@ -76,4 +86,15 @@ export function stepMorphAt(clock: number): number {
 export function isStepMorphing(clock: number): boolean {
   'worklet';
   return clock < 1;
+}
+
+/**
+ * Whether this is the UI thread: a derived value runs once on the JS thread
+ * when it is made, mid-render, where what it hands the motion layer must not
+ * be written. `react-native-worklets`' `isUIRuntime`, which its Jest mock does
+ * not have.
+ */
+export function onUIThread(): boolean {
+  'worklet';
+  return (globalThis as { __RUNTIME_KIND?: number }).__RUNTIME_KIND === 2;
 }

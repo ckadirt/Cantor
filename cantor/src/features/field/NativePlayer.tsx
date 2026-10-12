@@ -14,7 +14,10 @@ import {
   createPicture,
   interpolatePaths,
   notifyChange,
+  PaintStyle,
+  type SkCanvas,
   type SkFont,
+  type SkPaint,
   type SkPath,
   type Transforms3d,
 } from '@shopify/react-native-skia';
@@ -29,7 +32,6 @@ import {
 } from 'react-native-reanimated';
 import { LENS_UI, NAME_LENS_KNOBS, fitText, lensIndex } from '../../lenses';
 import { buildGlyphMorphPaths } from '../../motion/glyphs';
-import { useSeededPathInterpolation } from '../../motion/MorphText';
 import { layoutText, type CharBox } from '../../motion/text';
 import {
   BYLINE_GAP_MARK,
@@ -631,6 +633,69 @@ function handPath(inner: number, outer: number, fraction: number): SkPath {
 }
 
 /**
+ * The clock's moving parts at `fraction` — the heard arc, the hand, the knob —
+ * from the ring's centre, in one lens's shape: what `ClockDrawing` draws of
+ * them, on a canvas that is not the field's. A step's morph winds the hand on
+ * the motion layer (`stepMorph.ts`), and the field's own must be the same
+ * pixels when the two hand it over.
+ */
+export function drawClockHand(
+  canvas: SkCanvas,
+  lens: number,
+  radius: number,
+  fraction: number,
+  paint: SkPaint,
+  alpha: number,
+): void {
+  'worklet';
+  const shape = LENS_UI[lens].clock;
+  const r = radius * shape.ratio;
+  paint.setAlphaf(alpha);
+  paint.setStyle(PaintStyle.Stroke);
+  if (fraction > 0) {
+    const heard = ringPath(r);
+    heard.trim(0, Math.min(fraction, 1), false);
+    paint.setStrokeWidth(shape.heardWidthPx);
+    canvas.drawPath(heard, paint);
+  }
+  const inner = radius * shape.handInnerRatio;
+  const outer = radius * shape.handOuterRatio;
+  if (outer !== inner) {
+    paint.setStrokeWidth(shape.handWidthPx);
+    canvas.drawPath(handPath(inner, outer, fraction), paint);
+  }
+  if (shape.knobRadiusPx > 0) {
+    const angle = fraction * Math.PI * 2 - Math.PI / 2;
+    paint.setStyle(PaintStyle.Fill);
+    canvas.drawCircle(Math.cos(angle) * r, Math.sin(angle) * r, shape.knobRadiusPx, paint);
+  }
+}
+
+/**
+ * One morphing line, `t` of the way, as a worklet draws it: every letter's
+ * two outlines interpolated, on one canvas call each.
+ */
+export function drawMorphLine(
+  canvas: SkCanvas,
+  morphs: readonly GlyphMorph[],
+  t: number,
+  paint: SkPaint,
+): void {
+  'worklet';
+  const at = t < 0 ? 0 : t > 1 ? 1 : t;
+  for (let index = 0; index < morphs.length; index++) {
+    const morph = morphs[index];
+    // Skia's own interpolation, without `interpolatePaths`' range handling
+    // per letter: `to` at weight 1, `from` at 0.
+    const path =
+      at <= 0 ? morph.from : at >= 1 ? morph.to : morph.to.interpolate(morph.from, at);
+    if (path === null) continue;
+    path.setFillType(FillType.EvenOdd);
+    canvas.drawPath(path, paint);
+  }
+}
+
+/**
  * The player's clock, in whichever form the lens draws it.
  *
  * The circle's is an arc that fills inside the face and a hand that sweeps
@@ -661,10 +726,17 @@ export function PlayerRing({
   positionSeconds,
   heardFrom = null,
   step = null,
+  handInk = null,
   colour,
 }: {
   radius: number;
   lensClock?: LensClock;
+  /**
+   * How much of the clock's moving parts — heard arc, hand, knob — this
+   * canvas draws: less than all while a step's morph has them on the motion
+   * layer (`drawClockHand`). Null is all of them.
+   */
+  handInk?: DerivedValue<number> | SharedValue<number> | null;
   formCuts?: DerivedValue<ClockCuts> | null;
   formInk?: SharedValue<number> | null;
   /**
@@ -730,6 +802,7 @@ export function PlayerRing({
         formInk={formInk}
         present={present}
         letterFont={letterFont}
+        handInk={handInk}
       />
     );
   }
@@ -747,6 +820,7 @@ export function PlayerRing({
         formInk={formInk}
         present={present}
         letterFont={letterFont}
+        handInk={handInk}
       />
       <ClockDrawing
         colour={colour}
@@ -759,6 +833,7 @@ export function PlayerRing({
         formInk={formInk}
         present={present}
         letterFont={letterFont}
+        handInk={handInk}
       />
     </>
   );
@@ -776,7 +851,9 @@ function ClockDrawing({
   formInk,
   present,
   letterFont,
+  handInk,
 }: {
+  handInk: DerivedValue<number> | SharedValue<number> | null;
   radius: number;
   lenses: SharedValue<number[]>;
   mix: SharedValue<number> | number;
@@ -921,16 +998,18 @@ function ClockDrawing({
         strokeWidth={rimWidth}
         style="stroke"
       />
-      <Path
-        color={colour}
-        end={fraction}
-        path={ring}
-        start={0}
-        strokeWidth={heardWidth}
-        style="stroke"
-      />
-      <Path color={colour} path={hand} strokeWidth={handWidth} style="stroke" />
-      <Path color={colour} path={knob} />
+      <SkiaGroup opacity={handInk ?? 1}>
+        <Path
+          color={colour}
+          end={fraction}
+          path={ring}
+          start={0}
+          strokeWidth={heardWidth}
+          style="stroke"
+        />
+        <Path color={colour} path={hand} strokeWidth={handWidth} style="stroke" />
+        <Path color={colour} path={knob} />
+      </SkiaGroup>
     </SkiaGroup>
   );
 }
@@ -1421,7 +1500,7 @@ function restingPath(morphs: readonly GlyphMorph[] | null): SkPath | null {
   if (morphs === null) return null;
   const path = Skia.Path.Make();
   for (const morph of morphs) path.addPath(morph.to);
-  // The fill rule `MorphGlyph` draws each letter with, so counters stay open.
+  // The fill rule `drawMorphLine` draws each letter with, so counters stay open.
   path.setFillType(FillType.EvenOdd);
   return path;
 }
@@ -1633,6 +1712,26 @@ function ScrollingByline({
 }
 
 /**
+ * The strip a step's byline is seen through, in the player's space: the
+ * column and its faded edges, as tall as the line and its pad.
+ */
+export function stepMetaStrip(
+  column: Readonly<{ left: number; width: number }>,
+  seat: Readonly<{ x: number; y: number }>,
+  font: SkFont,
+): Readonly<{ x: number; y: number; width: number; height: number }> {
+  const stops = bylineEdgeStops(column);
+  const metrics = font.getMetrics();
+  const pad = BYLINE_MARQUEE_KNOBS.STRIP_PAD_PX;
+  return {
+    x: stops.from,
+    y: baselineOf(seat, font) + metrics.ascent - pad,
+    width: stops.to - stops.from,
+    height: metrics.descent - metrics.ascent + 2 * pad,
+  };
+}
+
+/**
  * A step's byline seen through the marquee's column, faded at its edges as
  * the marquee's own line is at rest — so a loop that runs past the column
  * stays inside it on the way. Its mask is a layer, so it is clipped to
@@ -1653,16 +1752,9 @@ function StepColumn({
 }) {
   const stops = useMemo(() => bylineEdgeStops(column), [column]);
   const strip = useMemo(() => {
-    const metrics = font.getMetrics();
-    const pad = BYLINE_MARQUEE_KNOBS.STRIP_PAD_PX;
-    const baseline = baselineOf(seat, font);
-    return Skia.XYWHRect(
-      stops.from,
-      baseline + metrics.ascent - pad,
-      stops.to - stops.from,
-      metrics.descent - metrics.ascent + 2 * pad,
-    );
-  }, [font, seat, stops]);
+    const rect = stepMetaStrip(column, seat, font);
+    return Skia.XYWHRect(rect.x, rect.y, rect.width, rect.height);
+  }, [column, font, seat]);
   const shut = useMemo(() => Skia.XYWHRect(0, 0, 0, 0), []);
   const clip = useDerivedValue(() => (stepping.value > 0 ? strip : shut));
   return (
@@ -1686,7 +1778,18 @@ function StepColumn({
   );
 }
 
-/** One morphing line, as paths the UI thread interpolates and nothing else. */
+/** Where a line's picture may draw, in the player's space: anywhere near the view. */
+const MORPH_LINE_BOUNDS = { x: -4000, y: -4000, width: 8000, height: 8000 };
+
+/**
+ * One morphing line, as one picture the UI thread records and nothing else.
+ *
+ * A picture rather than a node per letter: a byline's loop is ninety letters,
+ * and a player mounted with a node, a mapper and a path for each of them —
+ * on every descent and every step — held the JS thread for most of a second
+ * and the UI thread for half of one installing them. One mapper per line
+ * interpolates the same paths (`drawMorphLine`).
+ */
 function MorphLine({
   morphs,
   progress,
@@ -1709,35 +1812,23 @@ function MorphLine({
   own: DerivedValue<number>;
   colour: string;
 }) {
-  return (
-    <SkiaGroup opacity={own}>
-      {morphs.map((morph, index) => (
-        <MorphGlyph
-          key={index}
-          morph={morph}
-          progress={progress}
-          colour={colour}
-        />
-      ))}
-    </SkiaGroup>
+  const paint = useMemo(() => {
+    const made = Skia.Paint();
+    made.setAntiAlias(true);
+    made.setColor(Skia.Color(colour));
+    return made;
+  }, [colour]);
+  const base = useMemo(() => Skia.Color(colour)[3] ?? 1, [colour]);
+  // The ink inside the picture: a group's opacity does not reach a picture.
+  const picture = useDerivedValue(() =>
+    createPicture(canvas => {
+      const ink = own.value;
+      if (ink <= 0) return;
+      paint.setAlphaf(base * ink);
+      drawMorphLine(canvas, morphs, progress.value, paint);
+    }, MORPH_LINE_BOUNDS),
   );
-}
-
-function MorphGlyph({
-  morph,
-  progress,
-  colour,
-}: {
-  morph: GlyphMorph;
-  progress: DerivedValue<number>;
-  colour: string;
-}) {
-  // The engine's own hook, not a plain derived value: an interpolated path has
-  // to `notifyChange` or the canvas is never told the geometry moved, and the
-  // seeding is what stops a freshly mounted generation painting nothing for a
-  // frame. See its note in `MorphText`.
-  const path = useSeededPathInterpolation(progress, morph.from, morph.to);
-  return <Path path={path} color={colour} style="fill" fillType="evenOdd" />;
+  return <Picture picture={picture} />;
 }
 
 /**
@@ -2146,8 +2237,15 @@ export function NativePlayerParts({
   byline = null,
   stepClock = null,
   heardFrom = null,
+  lineInk = null,
 }: {
   model: NativeSongModel;
+  /**
+   * How much of the name, the byline and the clock's hand this canvas draws:
+   * less than all while a step's morph has them on the motion layer. Null is
+   * all of them.
+   */
+  lineInk?: SharedValue<number> | null;
   /** The queue's step at L2, linear, 1 at rest; see `stepMorph.ts`. */
   stepClock?: SharedValue<number> | null;
   /** Where the song before's clock stood when the step began; see `PlayerRing`. */
@@ -2225,9 +2323,16 @@ export function NativePlayerParts({
   const stepAt = useDerivedValue(() =>
     stepClock === null ? 1 : stepMorphAt(stepClock.value),
   );
-  const ownedHere = useDerivedValue(() => owned.value * (1 - stepping.value));
-  const namedHere = useDerivedValue(() => named.value * (1 - stepping.value));
-  const stepOwned = useDerivedValue(() => owned.value * stepping.value);
+  const here = useDerivedValue(() => (lineInk === null ? 1 : lineInk.value));
+  const ownedHere = useDerivedValue(
+    () => owned.value * (1 - stepping.value) * here.value,
+  );
+  const namedHere = useDerivedValue(
+    () => named.value * (1 - stepping.value) * here.value,
+  );
+  const stepOwned = useDerivedValue(
+    () => owned.value * stepping.value * here.value,
+  );
   /*
    * The leaving byline, if it was scrolling, leaves from exactly where the
    * marquee has it: the letters were chosen at the JS thread's look at the
@@ -2271,6 +2376,7 @@ export function NativePlayerParts({
             positionSeconds={positionSeconds}
             heardFrom={heardFrom}
             step={stepAt}
+            handInk={here}
             radius={radius}
           />
         )}

@@ -496,6 +496,7 @@ export function useFieldCamera({
   /** `step`, for a morph's landing, which is declared before it. */
   const stepRef = useRef<(placement: Placement) => void>(() => {});
   const landMorph = useCallback(() => {
+    if (!morphing.current) return;
     morphing.current = false;
     if (morphFallback.current !== null) clearTimeout(morphFallback.current);
     morphFallback.current = null;
@@ -2117,37 +2118,41 @@ export function useFieldCamera({
    * of a second later. Cut before that, the leaving player — still the one
    * on the canvas — was drawn a seat off. So it waits for the arriving
    * flight to say it is live (`ready`).
+   *
+   * The morph's clock is not started here: the motion layer runs it, a frame
+   * at a time, once the arriving player is drawn (`PlayerMotionLayer`), and
+   * the morph lands when it reaches 1.
    */
-  const morphMs = reducedMotion ? 0 : FIELD_CAMERA_KNOBS.STEP_MORPH_MS;
-  const dropMorphFallback = useCallback(() => {
+  /*
+   * Cut: the camera's fallback is spent, and the clock's is armed — a morph
+   * whose clock never lands would hold every later step behind it.
+   */
+  const armLandFallback = useCallback(() => {
     if (morphFallback.current !== null) clearTimeout(morphFallback.current);
-    morphFallback.current = null;
-  }, []);
+    morphFallback.current = setTimeout(() => {
+      morphFallback.current = null;
+      if (!morphing.current) return;
+      stepClockShared.value = 1;
+      landMorph();
+    }, FIELD_CAMERA_KNOBS.STEP_MORPH_MS + FIELD_CAMERA_KNOBS.STEP_CUT_WAIT_MS);
+  }, [landMorph, stepClockShared]);
   const cutMorph = useCallback(() => {
     'worklet';
     const morph = stepMorphShared.value;
     if (morph === null || morph.camera === null) return;
     const cut = morph.camera;
-    runOnJS(dropMorphFallback)();
+    runOnJS(armLandFallback)();
     cameraShared.value = cut;
     mirrorNow(cut);
     stepMorphShared.value = { ...morph, camera: null, ready: true };
-    stepClockShared.value = withTiming(
-      1,
-      { duration: morphMs, easing: Easing.linear },
-      finished => {
-        if (finished === true) runOnJS(landMorph)();
-      },
-    );
-  }, [
-    cameraShared,
-    dropMorphFallback,
-    landMorph,
-    mirrorNow,
-    morphMs,
-    stepClockShared,
-    stepMorphShared,
-  ]);
+  }, [armLandFallback, cameraShared, mirrorNow, stepMorphShared]);
+  useAnimatedReaction(
+    () => stepClockShared.value >= 1,
+    (landed, before) => {
+      if (landed && before === false) runOnJS(landMorph)();
+    },
+    [landMorph],
+  );
   useAnimatedReaction(
     () => {
       const morph = stepMorphShared.value;
@@ -2170,9 +2175,12 @@ export function useFieldCamera({
       // The canvas says when the arriving player is on it (`cutWhenReady`);
       // a canvas that never does still gets its camera.
       if (morphFallback.current !== null) clearTimeout(morphFallback.current);
+      // Nor one that never runs the clock: then the step lands at once.
       morphFallback.current = setTimeout(() => {
         morphFallback.current = null;
         runOnUI(cutMorph)();
+        stepClockShared.value = 1;
+        landMorph();
       }, FIELD_CAMERA_KNOBS.STEP_CUT_WAIT_MS);
       return;
     }
@@ -2186,7 +2194,7 @@ export function useFieldCamera({
     if (target === null) return;
     pendingDescent.current = null;
     flyTo(target);
-  }, [descentTicket, flyTo, cutMorph]);
+  }, [descentTicket, flyTo, cutMorph, landMorph, stepClockShared]);
   useEffect(
     () => () => {
       if (morphFallback.current !== null) clearTimeout(morphFallback.current);
@@ -2302,6 +2310,7 @@ export function useFieldCamera({
         from: from.key,
         to: placement.key,
         camera: target,
+        fromCamera: cameraShared.value,
         ready: false,
       };
       morphing.current = true;

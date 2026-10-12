@@ -68,11 +68,15 @@ import React, {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from 'react';
 import { PixelRatio, StyleSheet } from 'react-native';
 import {
+  BlendMode,
   Canvas,
+  ClipOp,
   Fill,
+  TileMode,
   createPicture,
   Group as SkiaGroup,
   LinearGradient,
@@ -97,8 +101,10 @@ import {
   Easing,
   useReducedMotion,
   runOnUI,
+  runOnJS,
   useAnimatedReaction,
   useDerivedValue,
+  useFrameCallback,
   useSharedValue,
   withDelay,
   withTiming,
@@ -183,6 +189,7 @@ import {
   circleMotionPoints,
   circlePlayerOf,
   circleReachAt,
+  isCirclePlayer,
   circleStillPoints,
   ringMotionLevel,
   type CirclePlayer,
@@ -200,19 +207,28 @@ import {
   PLAYER_RING_KNOBS,
   clockCutsOf,
   type ClockCuts,
+  drawClockHand,
+  drawMorphLine,
   nativeSongModel,
+  stepMetaStrip,
   stepLineMorphs,
+  type GlyphMorph,
   type NativeSongModel,
+  type StepLines,
 } from './NativePlayer';
 import {
   arrivingCamera,
   isStepMorphing,
+  onUIThread,
   stepCameraFor,
   stepMorphAt,
   type StepMorph,
 } from './stepMorph';
 import {
+  BYLINE_MARQUEE_KNOBS,
   BylineMarqueeLayer,
+  bylineOffset,
+  bylineScrolled,
   useBylineClock,
   usePublishByline,
   type BylineClock,
@@ -254,6 +270,37 @@ export type PlayerDraw = Readonly<{
   arriving: number;
   soundIn: number;
   heard: number;
+  /**
+   * The song a step's morph leaves, when this player is one: the layer draws
+   * the morph rather than the player (`stepMorph.ts`).
+   */
+  morphFrom?: StepFrom | null;
+}>;
+
+/**
+ * A step's name, byline and clock hand, as the motion layer draws them while
+ * the player morphs: the arriving flight hands them over, with where its
+ * player stands in the view, so the field need not redraw for any of them.
+ */
+export type StepLinesDraw = Readonly<{
+  /** The placement that handed them over. */
+  key: string;
+  title: readonly GlyphMorph[] | null;
+  meta: readonly GlyphMorph[] | null;
+  metaColumn: StepLines['metaColumn'];
+  metaFrom: StepLines['metaFrom'];
+  /** The byline's strip, in the player's space, for its column's mask. */
+  metaStrip: Readonly<{ x: number; y: number; width: number; height: number }>;
+  /** The flight's translation: the player's space, in the view. */
+  x: number;
+  y: number;
+  /** The clock's centre, in the player's space: the face's pose. */
+  ringX: number;
+  ringY: number;
+  /** Where the leaving song's hand stood, 0..1. */
+  heardFrom: number;
+  /** The arriving song's length, for where its own hand is. */
+  durationTo: number;
 }>;
 
 /** What the ring of ticks was last drawn with, for the layer to draw it the same way. */
@@ -268,6 +315,8 @@ export type DetailDraw = Readonly<{
   /** The song's form, for the orbit, and how much of it is written; see `drawFormOrbit`. */
   form: ClockCuts | null;
   formWritten: number;
+  /** The placement it is the player of, for a step's camera. */
+  placementKey: string;
 }>;
 
 export type PlayerLayer = Readonly<{
@@ -288,6 +337,21 @@ export type PlayerLayer = Readonly<{
   last: SharedValue<PlayerDraw | null>;
   /** The ring of ticks, as the field last drew it; see `DetailDraw`. */
   detail: SharedValue<DetailDraw | null>;
+  /**
+   * A step's lines while it morphs (`StepLinesDraw`), and each canvas's share
+   * of them: the layer takes them at once and the field lets go behind, as
+   * the face is handed over; the other way round at the end.
+   */
+  lines: SharedValue<StepLinesDraw | null>;
+  lastLines: SharedValue<StepLinesDraw | null>;
+  lineInk: SharedValue<number>;
+  layerLineInk: SharedValue<number>;
+  /**
+   * The music the leaving player was last drawn singing to, held for the
+   * morph to leave from: the song stops as the step begins, and the shape
+   * must not snap still under it.
+   */
+  frozen: SharedValue<MotionFrame | null>;
 }>;
 
 /** A hand-over's crossfade, and how far the field's half runs behind the layer's. */
@@ -744,9 +808,50 @@ function FieldCanvasImpl({
    * canvas's life. Native shared values are stable; the Jest mock is not, so
    * each is held by ref, as `useFieldCamera` holds its own.
    */
+  /*
+   * The player on its own canvas while it moves (`PlayerMotionLayer`).
+   *
+   * Re-rendering the field canvas costs most of a frame at L2 whatever moves
+   * in it — its pictures' anti-aliased paths are rasterised on the CPU and
+   * uploaded again on every render (reactive-player-log.md, M4) — which is
+   * why its playhead is stepped. So the field hands the player to a small
+   * canvas above it once the camera has landed, and the field itself is told
+   * there is no motion (`fieldMotion`): it re-renders on its stepped clock, as
+   * it did before the player moved.
+   */
+  const playerLayerCandidate: PlayerLayer = {
+    draw: useSharedValue<PlayerDraw | null>(null),
+    showing: useSharedValue(false),
+    layerInk: useSharedValue(0),
+    fieldInk: useSharedValue(1),
+    last: useSharedValue<PlayerDraw | null>(null),
+    detail: useSharedValue<DetailDraw | null>(null),
+    lines: useSharedValue<StepLinesDraw | null>(null),
+    lastLines: useSharedValue<StepLinesDraw | null>(null),
+    lineInk: useSharedValue(1),
+    layerLineInk: useSharedValue(0),
+    frozen: useSharedValue<MotionFrame | null>(null),
+  };
+  const playerLayer = useRef(playerLayerCandidate).current;
   const ownClock = useSharedValue(1);
   const ownStepMorph = useSharedValue<StepMorph | null>(null);
-  const ownStepClock = useSharedValue(1);
+  const ownStepClockCandidate = useSharedValue(1);
+  const ownStepClock = useRef(ownStepClockCandidate).current;
+  /*
+   * A step's clock, twice. The motion layer draws the morph on the clock
+   * itself; the field, which is the expensive canvas to redraw, is handed a
+   * clock that only moves from 0 to 1 while the layer has the morph — so it
+   * holds still under the layer rather than re-recording on every frame.
+   * Without the layer's lines (`StepLinesDraw`) the field morphs on its own.
+   */
+  const stepClockShared = stepClockProp ?? ownStepClock;
+  const layerLines = playerLayer.lines;
+  const fieldStepClockCandidate = useDerivedValue(() => {
+    const at = stepClockShared.value;
+    if (at >= 1) return 1;
+    return layerLines.value !== null ? 0 : at;
+  });
+  const fieldStepClock = useRef(fieldStepClockCandidate).current;
   const sceneCandidate: LivingScene = {
     cut: useSharedValue<NativeCut | null>(null),
     clock: cutClockShared ?? ownClock,
@@ -761,7 +866,7 @@ function FieldCanvasImpl({
     focusLive: useSharedValue(-1),
     parked: useSharedValue<NativeCut | null>(null),
     stepMorph: stepMorphProp ?? ownStepMorph,
-    stepClock: stepClockProp ?? ownStepClock,
+    stepClock: fieldStepClock,
   };
   const scene = useRef(sceneCandidate).current;
   /**
@@ -1544,6 +1649,91 @@ function FieldCanvasImpl({
     };
   }, [focusGroup, focusY, playerModelOf, presentations, recut]);
   focusGeneration.current = focusLayer?.generation ?? null;
+  /*
+   * A step's lines go to the motion layer on the commit that makes the next
+   * song the focus (`StepLinesDraw`): they are built in this render, and
+   * where the player stands is arithmetic on the step's camera and the seat.
+   * Not from the arriving flight, which Skia mounts most of a second later:
+   * until it did the field drew them, through a mask of its own, and the
+   * layer took them over mid-way.
+   */
+  const stepLines = focusLayer?.song?.step ?? null;
+  const stepSeat = focusLayer?.flight ?? null;
+  const stepHeardFrom = focusLayer?.heardFrom ?? 0;
+  const stepDuration = focusLayer?.durationSeconds ?? 0;
+  const stepMetaSeat = focusLayer?.song?.metaSeat ?? null;
+  useEffect(() => {
+    if (
+      stepLines === null ||
+      stepSeat === null ||
+      stepSeat.targetPlacementKey === null ||
+      viewport === null ||
+      songMetaFont === null
+    ) {
+      return undefined;
+    }
+    const key = stepSeat.targetPlacementKey;
+    const lines = playerLayer.lines;
+    const morphs = scene.stepMorph;
+    const metaStrip =
+      stepLines.metaColumn === null || stepMetaSeat === null
+        ? { x: 0, y: 0, width: 0, height: 0 }
+        : stepMetaStrip(stepLines.metaColumn, stepMetaSeat, songMetaFont);
+    const seat = {
+      x: stepSeat.targetX,
+      y: stepSeat.targetY,
+      bloomX: stepSeat.targetBloomX,
+      bloomY: stepSeat.targetBloomY,
+    };
+    const view = viewport;
+    runOnUI(() => {
+      'worklet';
+      const morph = morphs.value;
+      if (morph === null || morph.to !== key) return;
+      const camera = stepCameraFor(morph, key, cameraShared.value);
+      if (camera === null) return;
+      const fit = fitScaleShared.value;
+      const bloom = 1 - gatherFraction(camera.scale, fit);
+      const pose = facePoseAt(
+        faceArrival(camera.scale, fit),
+        songShapeArrival(camera.scale, fit),
+        view,
+        FACE_GROWTH,
+      );
+      lines.value = {
+        key,
+        title: stepLines.title,
+        meta: stepLines.meta,
+        metaColumn: stepLines.metaColumn,
+        metaFrom: stepLines.metaFrom,
+        metaStrip,
+        x: (seat.x + seat.bloomX * bloom - camera.x) * camera.scale + view.width / 2,
+        y: (seat.y + seat.bloomY * bloom - camera.y) * camera.scale + view.height / 2,
+        ringX: pose.x,
+        ringY: pose.y,
+        heardFrom: stepHeardFrom,
+        durationTo: stepDuration,
+      };
+    })();
+    return () => {
+      runOnUI(() => {
+        'worklet';
+        if (lines.value !== null && lines.value.key === key) lines.value = null;
+      })();
+    };
+  }, [
+    cameraShared,
+    fitScaleShared,
+    playerLayer,
+    scene,
+    songMetaFont,
+    stepDuration,
+    stepHeardFrom,
+    stepLines,
+    stepMetaSeat,
+    stepSeat,
+    viewport,
+  ]);
 
   /**
    * The scene element, held by identity.
@@ -1581,26 +1771,6 @@ function FieldCanvasImpl({
   const motionFrame = useRef(motionFrameCandidate).current;
   const motionOnCandidate = useDerivedValue(() => motionFrame.value !== null);
   const motionOn = useRef(motionOnCandidate).current;
-  /*
-   * The player on its own canvas while it moves (`PlayerMotionLayer`).
-   *
-   * Re-rendering the field canvas costs most of a frame at L2 whatever moves
-   * in it — its pictures' anti-aliased paths are rasterised on the CPU and
-   * uploaded again on every render (reactive-player-log.md, M4) — which is
-   * why its playhead is stepped. So the field hands the player to a small
-   * canvas above it once the camera has landed, and the field itself is told
-   * there is no motion (`fieldMotion`): it re-renders on its stepped clock, as
-   * it did before the player moved.
-   */
-  const playerLayerCandidate: PlayerLayer = {
-    draw: useSharedValue<PlayerDraw | null>(null),
-    showing: useSharedValue(false),
-    layerInk: useSharedValue(0),
-    fieldInk: useSharedValue(1),
-    last: useSharedValue<PlayerDraw | null>(null),
-    detail: useSharedValue<DetailDraw | null>(null),
-  };
-  const playerLayer = useRef(playerLayerCandidate).current;
   // The byline's marquee, which scrolls on a strip above the field for the
   // same reason; see `BylineMarqueeLayer`. (Made above, where a step reads it.)
   const fieldMotionCandidate = useDerivedValue((): MotionFrame | null => {
@@ -1711,6 +1881,12 @@ function FieldCanvasImpl({
           palette={palette}
           viewport={viewport}
           letterFont={monoFont}
+          stepMorph={scene.stepMorph}
+          stepClock={stepClockShared}
+          focus={scene.focus}
+          motionIn={scene.motionIn}
+          byline={bylineClock}
+          reducedMotion={reducedMotion}
         />
       )}
       {viewport === null || songMetaFont === null ? null : (
@@ -1732,6 +1908,162 @@ function FieldCanvasImpl({
  * lens's own `drawPlayer`, where the field last drew the player — and says
  * when it has, so the field can leave its face out.
  */
+/** KNOBS — the step's morph clock, as the motion layer runs it. */
+const STEP_CLOCK_KNOBS = {
+  /** Frames after the arriving player is on the canvas before the morph moves. */
+  SETTLE_FRAMES: 2,
+  /** How long it waits for the arriving flight's lines, then morphs without. */
+  LINES_WAIT_FRAMES: 20,
+  /**
+   * The most of the morph one frame may take, however late it came: two
+   * frames' worth, so a field drawn at thirty a second keeps the morph's
+   * length and only a stall is held.
+   */
+  FRAME_CAP_MS: 1000 / 30,
+} as const;
+
+/**
+ * A step's face on the motion layer: the lens's own morph between the two
+ * songs (`LensUi.morphPlayer`), from the shape the leaving one was last drawn
+ * singing (`frame`, held), or the two beats a lens change takes.
+ */
+function drawStepFace(
+  canvas: SkCanvas,
+  drawn: PlayerDraw,
+  from: StepFrom,
+  /** The leaving player as it was held, when worked out already; see `CirclePlayer.points`. */
+  leaving: LensPlayer | null,
+  at: number,
+  linear: number,
+  share: number,
+  paints: FacePaints,
+  frame: MotionFrame | null,
+  reducedMotion: boolean,
+): void {
+  'worklet';
+  const lens = drawn.lens;
+  const ui = LENS_UI[lens];
+  const alpha = drawn.alpha * share;
+  const hairline = FIELD_CANVAS_KNOBS.FACE_STROKE_PX;
+  if (ui.morphPlayer !== undefined && !reducedMotion) {
+    ui.morphPlayer(
+      canvas,
+      from.identities[lens],
+      leaving ?? from.players[lens],
+      drawn.identity,
+      drawn.player,
+      at,
+      drawn.size,
+      alpha,
+      drawn.weight,
+      drawn.fill,
+      drawn.arrived,
+      drawn.arriving,
+      drawn.soundIn,
+      drawn.heard,
+      hairline,
+      paints,
+      frame,
+    );
+    return;
+  }
+  const u = Math.min(Math.max(linear, 0), 1);
+  const outScale = reducedMotion ? 1 : 1 - smootherstep(Math.min(u * 2, 1));
+  const inScale = reducedMotion ? 1 : smootherstep(Math.max(u * 2 - 1, 0));
+  const outInk = reducedMotion ? 1 - smootherstep(u) : 1;
+  const inInk = reducedMotion ? smootherstep(u) : 1;
+  if (outScale > 0.001 && outInk > 0) {
+    ui.drawPlayer(
+      canvas,
+      from.players[lens],
+      from.identities[lens],
+      drawn.size * outScale,
+      alpha * outInk,
+      drawn.weight,
+      drawn.fill,
+      drawn.arrived,
+      ARRIVING_NONE,
+      drawn.soundIn,
+      -1,
+      hairline,
+      paints,
+      frame,
+    );
+  }
+  if (inScale > 0.001 && inInk > 0) {
+    ui.drawPlayer(
+      canvas,
+      drawn.player,
+      drawn.identity,
+      drawn.size * inScale,
+      alpha * inInk,
+      drawn.weight,
+      drawn.fill,
+      drawn.arrived,
+      drawn.arriving,
+      drawn.soundIn,
+      drawn.heard,
+      hairline,
+      paints,
+      null,
+    );
+  }
+}
+
+/**
+ * A step's byline on the motion layer, seen through the marquee's column
+ * with its edges faded, as `StepColumn` draws it on the field; the leaving
+ * loop leaves from where the marquee let it go (`bylineScrolled`).
+ */
+function drawStepByline(
+  canvas: SkCanvas,
+  lines: StepLinesDraw,
+  t: number,
+  byline: BylineClock,
+  ink: SkPaint,
+  mask: SkPaint,
+  layerPaint: SkPaint,
+): void {
+  'worklet';
+  if (lines.meta === null) return;
+  const strip = lines.metaStrip;
+  const rect = Skia.XYWHRect(strip.x, strip.y, strip.width, strip.height);
+  canvas.save();
+  canvas.clipRect(rect, ClipOp.Intersect, true);
+  canvas.saveLayer(layerPaint, rect);
+  let residual = 0;
+  const from = lines.metaFrom;
+  if (from !== null) {
+    const at = bylineOffset(bylineScrolled(byline, from.key), from.periodPx);
+    residual = at - from.chosenAt;
+    // The short way round the loop.
+    if (residual > from.periodPx / 2) residual -= from.periodPx;
+    if (residual < -from.periodPx / 2) residual += from.periodPx;
+  }
+  canvas.save();
+  canvas.translate(-residual * (1 - t), 0);
+  drawMorphLine(canvas, lines.meta, t, ink);
+  canvas.restore();
+  const fade = strip.width > 0 ? BYLINE_MARQUEE_KNOBS.EDGE_FADE_PX / strip.width : 0;
+  mask.setShader(
+    Skia.Shader.MakeLinearGradient(
+      { x: strip.x, y: 0 },
+      { x: strip.x + strip.width, y: 0 },
+      [
+        Skia.Color('rgba(0,0,0,0)'),
+        Skia.Color('black'),
+        Skia.Color('black'),
+        Skia.Color('rgba(0,0,0,0)'),
+      ],
+      [0, fade, 1 - fade, 1],
+      TileMode.Clamp,
+    ),
+  );
+  canvas.drawRect(rect, mask);
+  canvas.restore();
+  canvas.restore();
+}
+
 function PlayerMotionLayerImpl({
   layer,
   motion,
@@ -1741,6 +2073,12 @@ function PlayerMotionLayerImpl({
   palette,
   viewport,
   letterFont,
+  stepMorph,
+  stepClock,
+  focus,
+  motionIn,
+  byline,
+  reducedMotion,
 }: {
   /** The face the orbit's letters are written in. */
   letterFont: SkFont | null;
@@ -1752,9 +2090,38 @@ function PlayerMotionLayerImpl({
   fitScaleShared: SharedValue<number>;
   palette: Palette;
   viewport: Viewport;
+  /**
+   * The queue's step at L2, and its clock — the real one, which this layer
+   * runs: see `stepMorph.ts` and `fieldStepClock`.
+   */
+  stepMorph: SharedValue<StepMorph | null>;
+  stepClock: SharedValue<number>;
+  focus: SharedValue<FocusDraw | null>;
+  motionIn: SharedValue<number>;
+  byline: BylineClock;
+  reducedMotion: boolean;
 }) {
   const paints = useMemo(() => createFacePaints(palette), [palette]);
   const fadePaint = useMemo(() => Skia.Paint(), []);
+  // A step's lines: the name and the hand in ink, the byline muted, and the
+  // byline's column faded at its edges as the marquee's is.
+  const linePaints = useMemo(() => {
+    const fill = (colour: string) => {
+      const made = Skia.Paint();
+      made.setAntiAlias(true);
+      made.setColor(Skia.Color(colour));
+      return made;
+    };
+    const mask = Skia.Paint();
+    mask.setBlendMode(BlendMode.DstIn);
+    return {
+      title: fill(palette.ink),
+      meta: fill(palette.muted),
+      hand: fill(palette.ink),
+      mask,
+      layer: Skia.Paint(),
+    };
+  }, [palette]);
   /*
    * The hand-over, on a clock rather than on a recording (a recording is not
    * a presented frame). Taking the player, the layer inks in at once and the
@@ -1763,11 +2130,21 @@ function PlayerMotionLayerImpl({
    * fades behind: the layer cannot draw a player whose music has gone (a
    * zoom out drops the motion frame as it leaves), so the same order the
    * other way round left a frame with no face at all, mid zoom-out.
+   *
+   * A step's morph is the layer's whether or not anything sings: it is the
+   * one thing on the screen that moves, and the field is the canvas that
+   * costs a frame to redraw.
    */
   useAnimatedReaction(
     () => {
       const drawn = layer.draw.value;
-      return drawn !== null && drawn.owned && motion.value !== null;
+      return (
+        drawn !== null &&
+        drawn.owned &&
+        (motion.value !== null ||
+          drawn.morphFrom != null ||
+          (stepMorph.value !== null && layer.frozen.value !== null))
+      );
     },
     (owns, before) => {
       if (owns === before || (before === null && !owns)) return;
@@ -1783,69 +2160,276 @@ function PlayerMotionLayerImpl({
       }
     },
   );
+  /*
+   * A step's lines change hands the same way, but as a switch rather than a
+   * fade: the two canvases draw the same letters at the same place, and two
+   * half inks of one glyph are a bolder glyph, not the same one.
+   */
+  useAnimatedReaction(
+    () => layer.lines.value !== null,
+    (has, before) => {
+      if (has === before || (before === null && !has)) return;
+      const lag = { duration: 0 };
+      cancelAnimation(layer.layerLineInk);
+      cancelAnimation(layer.lineInk);
+      if (has) {
+        layer.lastLines.value = layer.lines.value;
+        layer.layerLineInk.value = 1;
+        layer.lineInk.value = withDelay(LAYER_LAG_MS, withTiming(0, lag));
+      } else {
+        layer.lineInk.value = 1;
+        layer.layerLineInk.value = withDelay(LAYER_LAG_MS, withTiming(0, lag));
+      }
+    },
+  );
+  useAnimatedReaction(
+    () => layer.lines.value,
+    lines => {
+      if (lines !== null) layer.lastLines.value = lines;
+    },
+  );
+  /*
+   * The leaving song's music, held where it was when the step was asked for:
+   * the queue stops it there, and the morph leaves from that shape rather
+   * than from a still face it snapped to first.
+   */
+  useAnimatedReaction(
+    () => {
+      const morph = stepMorph.value;
+      return morph === null ? 0 : morph.camera !== null ? 1 : 2;
+    },
+    (phase, before) => {
+      if (phase === 1 && before !== 1) {
+        layer.frozen.value = motion.value;
+        // The leaving byline stops where it is and is the field's again,
+        // as a player being left hands it back: the step morphs it from
+        // there, and the strip drawing it on would draw it twice.
+        byline.at.value = null;
+        if (byline.owner.value !== 0) byline.owner.value = 0;
+      }
+      else if (phase === 0) {
+        if (layer.frozen.value !== null) layer.frozen.value = null;
+        // Landed: the lines go back to the field.
+        if (layer.lines.value !== null) layer.lines.value = null;
+      }
+    },
+  );
+  /*
+   * The morph's clock, run here, a frame at a time.
+   *
+   * Not a timing: a timing reads the frame's timestamp, so a frame that comes
+   * late — and the one after a player is mounted can come a third of a second
+   * late — lands most of the morph at once, and the next song is on the
+   * screen before it has been morphed to. Advanced by at most a frame's worth
+   * per frame, a stall holds the morph where it was. It starts once the
+   * arriving player is on the canvas and its lines are here, and a few
+   * frames after, so the mount's own long frames are behind it.
+   */
+  const settled = useSharedValue(0);
+  const heldFace = useSharedValue<Readonly<{
+    source: CirclePlayer;
+    frame: MotionFrame;
+    player: CirclePlayer;
+  }> | null>(null);
+  const morphMs = reducedMotion ? 0 : FIELD_CAMERA_KNOBS.STEP_MORPH_MS;
+  const tick = useFrameCallback(info => {
+    const morph = stepMorph.value;
+    if (morph === null || stepClock.value >= 1) return;
+    if (morph.camera !== null || !morph.ready) {
+      settled.value = 0;
+      return;
+    }
+    const waited = settled.value;
+    if (
+      waited < STEP_CLOCK_KNOBS.SETTLE_FRAMES ||
+      (layer.lines.value === null && waited < STEP_CLOCK_KNOBS.LINES_WAIT_FRAMES)
+    ) {
+      settled.value = waited + 1;
+      return;
+    }
+    if (morphMs <= 0) {
+      stepClock.value = 1;
+      return;
+    }
+    const dt = Math.min(
+      info.timeSincePreviousFrame ?? STEP_CLOCK_KNOBS.FRAME_CAP_MS,
+      STEP_CLOCK_KNOBS.FRAME_CAP_MS,
+    );
+    stepClock.value = Math.min(1, stepClock.value + dt / morphMs);
+  }, false);
+  const [ticking, setTicking] = useState(false);
+  useEffect(() => {
+    tick.setActive(ticking);
+  }, [tick, ticking]);
+  useAnimatedReaction(
+    () => stepMorph.value !== null && stepClock.value < 1,
+    (on, was) => {
+      if (on !== was) runOnJS(setTicking)(on);
+    },
+  );
+  // The form the orbit carries through a step, on the real clock.
+  const stepForm = useStepForm(focus, stepClock, motionIn);
+  const radius = playerRadiusPx(viewport.width);
   const picture = useDerivedValue(() =>
     createPicture(
       canvas => {
         const now = layer.draw.value;
-        const frame = motion.value;
-        const owns = now !== null && now.owned && frame !== null;
+        const morphing = now !== null && now.morphFrom != null;
+        // Through a step the music is the leaving song's, held: from the
+        // moment it is asked for, so the song stopping changes nothing here
+        // — and the live music is not read, so it redraws nothing either.
+        const held = stepMorph.value !== null ? layer.frozen.value : null;
+        const frame = held !== null ? held : morphing ? null : motion.value;
+        const owns = now !== null && now.owned && (frame !== null || morphing);
         if (layer.showing.value !== owns) layer.showing.value = owns;
         if (owns && layer.last.value !== now) layer.last.value = now;
         // Fading out with no player handed (a pair morph took it): the last one.
         const drawn = now ?? layer.last.value;
         const share = layer.layerInk.value;
-        if (drawn === null || frame === null || share <= 0) return;
-        // The ring of ticks, as the field drew it, with the music in it.
-        const detail = layer.detail.value;
-        if (detail !== null) {
-          if (share < 1) {
-            fadePaint.setAlphaf(share);
-            canvas.saveLayer(fadePaint);
+        const stepping = drawn !== null && drawn.morphFrom != null;
+        const at = stepping ? stepMorphAt(stepClock.value) : 1;
+        /*
+         * The leaving circle as it was held — its singing contour — worked
+         * out once per step rather than on every frame of the morph: the
+         * music's shape is most of what a frame of it costs.
+         */
+        let leaving: CirclePlayer | null = null;
+        if (stepping && drawn !== null && drawn.morphFrom != null && frame !== null) {
+          const source = drawn.morphFrom.players[drawn.lens];
+          if (isCirclePlayer(source)) {
+            const cache = heldFace.value;
+            if (cache !== null && cache.source === source && cache.frame === frame) {
+              leaving = cache.player;
+            } else {
+              const amount = frame.presence * drawn.arrived;
+              leaving =
+                amount > 0
+                  ? { ...source, points: circleMotionPoints(source, frame, amount, 1) }
+                  : source;
+              heldFace.value = { source, frame, player: leaving };
+            }
           }
-          drawSongDetail(
-            canvas,
-            detail.model,
-            paints,
-            detail.progress,
-            detail.recut,
-            cameraShared,
-            fitScaleShared,
-            positionSeconds,
-            detail.grain,
-            detail.resolved,
-            detail.drawn,
-            viewport,
-            detail.lensProgress,
-            frame,
-            detail.form,
-            letterFont,
-            detail.formWritten,
-          );
-          if (share < 1) canvas.restore();
         }
-        canvas.save();
-        canvas.translate(drawn.x, drawn.y);
-        paints.share = share;
-        paints.handIn = owns;
-        LENS_UI[drawn.lens].drawPlayer(
-          canvas,
-          drawn.player,
-          drawn.identity,
-          drawn.size,
-          drawn.alpha * share,
-          drawn.weight,
-          drawn.fill,
-          drawn.arrived,
-          drawn.arriving,
-          drawn.soundIn,
-          // The playhead the music is read at, not the field's stepped one:
-          // the seal's bead and heard thread ride it (`heard` −1 means none).
-          drawn.heard < 0 ? drawn.heard : frame.head,
-          FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
-          paints,
-          frame,
-        );
-        canvas.restore();
+        if (drawn !== null && (frame !== null || stepping) && share > 0) {
+          // The ring of ticks, as the field drew it, with the music in it.
+          const detail = layer.detail.value;
+          if (detail !== null) {
+            if (share < 1) {
+              fadePaint.setAlphaf(share);
+              canvas.saveLayer(fadePaint);
+            }
+            drawSongDetail(
+              canvas,
+              detail.model,
+              paints,
+              detail.progress,
+              detail.recut,
+              cameraShared,
+              fitScaleShared,
+              positionSeconds,
+              detail.grain,
+              detail.resolved,
+              detail.drawn,
+              viewport,
+              detail.lensProgress,
+              frame,
+              stepping ? stepForm.cuts.value : detail.form,
+              letterFont,
+              stepping ? stepForm.written.value : detail.formWritten,
+              stepping ? stepClock.value : 1,
+              stepping
+                ? arrivingCamera(stepMorph.value, detail.placementKey)
+                : null,
+              leaving,
+            );
+            if (share < 1) canvas.restore();
+          }
+          canvas.save();
+          canvas.translate(drawn.x, drawn.y);
+          paints.share = share;
+          paints.handIn = owns;
+          const from = drawn.morphFrom;
+          if (stepping && from != null) {
+            drawStepFace(
+              canvas,
+              drawn,
+              from,
+              leaving,
+              at,
+              stepClock.value,
+              share,
+              paints,
+              frame,
+              reducedMotion,
+            );
+          } else if (frame !== null) {
+            LENS_UI[drawn.lens].drawPlayer(
+              canvas,
+              drawn.player,
+              drawn.identity,
+              drawn.size,
+              drawn.alpha * share,
+              drawn.weight,
+              drawn.fill,
+              drawn.arrived,
+              drawn.arriving,
+              drawn.soundIn,
+              // The playhead the music is read at, not the field's stepped one:
+              // the seal's bead and heard thread ride it (`heard` −1 means none).
+              drawn.heard < 0 ? drawn.heard : frame.head,
+              FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
+              paints,
+              frame,
+            );
+          }
+          canvas.restore();
+        }
+        // A step's name, byline and hand.
+        const lines = layer.lines.value ?? layer.lastLines.value;
+        const lineInk = layer.layerLineInk.value;
+        if (lines !== null && lineInk > 0) {
+          const t = stepMorphAt(stepClock.value);
+          canvas.save();
+          canvas.translate(lines.x, lines.y);
+          // The hand winds from where the last song stood to this one's.
+          const seconds = positionSeconds === null ? 0 : positionSeconds.value;
+          const own =
+            lines.durationTo > 0
+              ? Math.min(Math.max(seconds / lines.durationTo, 0), 1)
+              : 0;
+          canvas.save();
+          canvas.translate(lines.ringX, lines.ringY);
+          drawClockHand(
+            canvas,
+            drawn === null ? CIRCLE_LENS : drawn.lens,
+            radius,
+            lines.heardFrom + (own - lines.heardFrom) * t,
+            linePaints.hand,
+            lineInk,
+          );
+          canvas.restore();
+          if (lines.title !== null) {
+            linePaints.title.setAlphaf(lineInk);
+            drawMorphLine(canvas, lines.title, t, linePaints.title);
+          }
+          if (lines.meta !== null) {
+            linePaints.meta.setAlphaf(lineInk);
+            if (lines.metaColumn === null) {
+              drawMorphLine(canvas, lines.meta, t, linePaints.meta);
+            } else {
+              drawStepByline(
+                canvas,
+                lines,
+                t,
+                byline,
+                linePaints.meta,
+                linePaints.mask,
+                linePaints.layer,
+              );
+            }
+          }
+          canvas.restore();
+        }
       },
       { width: viewport.width, height: viewport.height },
     ),
@@ -2092,9 +2676,12 @@ type LivingScene = Readonly<{
   focusLive: SharedValue<number>;
   /** A cut waiting for its focus layer; see `sendCut`. */
   parked: SharedValue<NativeCut | null>;
-  /** The queue's step at L2, and its clock (1 at rest); see `stepMorph.ts`. */
+  /**
+   * The queue's step at L2, and its clock as the field reads it (1 at rest;
+   * see `fieldStepClock`); see `stepMorph.ts`.
+   */
   stepMorph: SharedValue<StepMorph | null>;
-  stepClock: SharedValue<number>;
+  stepClock: DerivedValue<number> | SharedValue<number>;
 }>;
 
 /**
@@ -2465,6 +3052,12 @@ export function drawFieldFaces(
   stepClock = 1,
   /** The camera the player is drawn through until the real one is cut to it. */
   stepCamera: Camera | null = null,
+  /**
+   * Whether a step holds the player on the motion layer whatever its music
+   * is doing: the leaving song stops as the step begins, and the layer
+   * draws it held (`PlayerLayer.frozen`) until the morph takes it.
+   */
+  holdLayer = false,
 ): void {
   'worklet';
   /*
@@ -2803,17 +3396,58 @@ export function drawFieldFaces(
       isStepMorphing(stepClock) &&
       leftLens === lensTo;
     if (stepping && players !== undefined && stepFrom !== undefined && stepFrom !== null) {
-      // The field draws the morph; the layer lets go of the one it had.
-      if (motionLayer !== null) {
-        playerSeen = true;
-        const had = motionLayer.draw.value;
-        if (had !== null && had.owned) motionLayer.draw.value = { ...had, owned: false };
-      }
       const lens = lensTo;
       const ui = LENS_UI[lens];
       const size = pose.scale * openScale;
       const alpha = opacity * fieldInk;
-      if (ui.morphPlayer !== undefined && !reducedMotion) {
+      /*
+       * The morph is the motion layer's: one small canvas redrawn each frame
+       * rather than the field. Handed over as the player is when it sings —
+       * a frozen song's last shape is what the layer was drawing already —
+       * and drawn here only for the share the field still has.
+       */
+      if (motionLayer !== null) {
+        playerSeen = true;
+        const before = motionLayer.draw.value;
+        const drawX = x + pose.x;
+        const drawY = y + pose.y;
+        if (
+          before === null ||
+          !before.owned ||
+          before.morphFrom !== stepFrom ||
+          before.lens !== lens ||
+          before.x !== drawX ||
+          before.y !== drawY ||
+          before.size !== size ||
+          before.alpha !== opacity ||
+          before.arrived !== shapeArrived ||
+          before.arriving !== face.arriving ||
+          before.soundIn !== soundProgress ||
+          before.player !== players[lens] ||
+          before.identity !== face.identities[lens]
+        ) {
+          motionLayer.draw.value = {
+            owned: true,
+            lens,
+            identity: face.identities[lens],
+            player: players[lens],
+            x: drawX,
+            y: drawY,
+            size,
+            alpha: opacity,
+            weight,
+            fill,
+            arrived: shapeArrived,
+            arriving: face.arriving,
+            soundIn: soundProgress,
+            heard,
+            morphFrom: stepFrom,
+          };
+        }
+      }
+      if (motionLayer !== null && layerOwns(motionLayer)) {
+        // The layer has it.
+      } else if (ui.morphPlayer !== undefined && !reducedMotion) {
         ui.morphPlayer(
           canvas,
           stepFrom.identities[lens],
@@ -2831,7 +3465,7 @@ export function drawFieldFaces(
           heard,
           FIELD_CANVAS_KNOBS.FACE_STROKE_PX,
           paints,
-          null,
+          motionLayer === null ? null : motionLayer.frozen.value,
         );
       } else {
         // The generic two beats, as a lens change takes them: the leaving
@@ -2926,7 +3560,7 @@ export function drawFieldFaces(
         motionOn &&
         progress >= 1 &&
         shapeArrived >= LAYER_ARRIVED &&
-        !isStepMorphing(stepClock);
+        (motionOn || holdLayer);
       if (motionLayer !== null && players !== undefined) {
         playerSeen = true;
         const lens = firstLens;
@@ -2937,6 +3571,7 @@ export function drawFieldFaces(
         const drawAlpha = opacity * (lens === lensTo ? comingInk : leavingInk);
         if (
           before === null ||
+          before.morphFrom != null ||
           before.owned !== owned ||
           before.lens !== lens ||
           before.x !== drawX ||
@@ -3387,6 +4022,8 @@ export function drawSongDetail(
   stepClock = 1,
   /** The camera the ring is drawn through until the real one is cut to it. */
   stepCamera: Camera | null = null,
+  /** The leaving face as it was held, when worked out already; see `CirclePlayer.points`. */
+  heldFace: CirclePlayer | null = null,
 ): void {
   'worklet';
   if (drawn <= 0) return;
@@ -3453,19 +4090,28 @@ export function drawSongDetail(
   const stepAt = stepMorphAt(stepClock);
   const morphFace =
     stepping && leaving !== null && leaving.face !== null && model.face !== null
-      ? leaving.face
+      ? heldFace ?? leaving.face
       : null;
   const face =
     morphFace !== null && model.face !== null
       ? circleMorphPlayer(morphFace, model.face, stepAt)
       : model.face;
-  const faceAmount =
-    stepping || motion === null ? 0 : motion.presence * shapeArrived;
+  // Through a step, `motion` is the music the leaving face was last drawn
+  // singing to, held: the shape it leaves from.
+  const faceAmount = motion === null ? 0 : motion.presence * shapeArrived;
   const contour =
     face === null
       ? null
       : morphFace !== null && model.face !== null
-      ? circleMorphPoints(morphFace, model.face, stepAt, 1)
+      ? morphFace.points === undefined && motion !== null && faceAmount > 0
+        ? circleMorphPoints(
+            morphFace,
+            model.face,
+            stepAt,
+            1,
+            circleMotionPoints(morphFace, motion, faceAmount, 1),
+          )
+        : circleMorphPoints(morphFace, model.face, stepAt, 1)
       : motion !== null && faceAmount > 0
       ? circleMotionPoints(face, motion, faceAmount, 1)
       : circleStillPoints(face, 1);
@@ -3573,7 +4219,10 @@ export function drawSongDetail(
    * The motion leaves as the ring unrolls: on the axis the playhead stands
    * still in the middle, and a bulge riding it would only pulse in place.
    */
-  const moving = motion === null ? 0 : motion.presence * (1 - unrolled);
+  const moving =
+    motion === null
+      ? 0
+      : motion.presence * (1 - unrolled) * (stepping ? 1 - stepAt : 1);
   const now = levelAt(head) * (1 - moving) + (motion === null ? 0 : ringMotionLevel(motion)) * moving;
   const pulseWindow =
     knobs.SONG_PULSE_WINDOW + (RING_MOTION_KNOBS.WINDOW - knobs.SONG_PULSE_WINDOW) * moving;
@@ -3892,10 +4541,13 @@ function NativeSongDetail({
             lensClock.to.value,
             lensClock.t.value,
           );
-        if (layer !== null) {
+        if (layer !== null && onUIThread()) {
           // Written only when it changed: `detail` is one of this picture's
           // own inputs, and a fresh object every time re-recorded the field
-          // on every frame.
+          // on every frame. And only from the UI thread: this picture's first
+          // run is on the JS thread, mid-render, before Skia has the layer
+          // it belongs to — written then, a step's arriving ring was handed
+          // over and the leaving one took it back.
           const was = layer.detail.value;
           const progress = clock.value;
           const grain = grainShared.value;
@@ -3911,7 +4563,8 @@ function NativeSongDetail({
             was.grain !== grain ||
             was.resolved !== resolved.value ||
             was.drawn !== drawn.value ||
-            was.lensProgress !== lensProgress
+            was.lensProgress !== lensProgress ||
+            was.placementKey !== placementKey
           ) {
             layer.detail.value = {
               model,
@@ -3923,6 +4576,7 @@ function NativeSongDetail({
               lensProgress,
               form: formNow,
               formWritten: writtenNow,
+              placementKey,
             };
           }
           // The layer has the player, and the ticks with it, music and all.
@@ -4259,6 +4913,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             stepMorph.value,
             focusDraw.value === null ? null : focusDraw.value.placementKey,
           ),
+          stepMorph.value !== null && layer.frozen.value !== null,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -4575,6 +5230,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           displayFont={displayFont}
           monoFont={monoFont}
           palette={palette}
+          layer={layer}
         />
       )}
       <Picture picture={jobsPicture} />
@@ -4616,22 +5272,24 @@ function useFocusClock(scene: LivingScene, generation: number) {
  * second. Two clocks: the morph's carries the hand-over, `motionIn` this
  * song's own track, which may land later.
  */
-function useStepForm(scene: LivingScene): Readonly<{
+function useStepForm(
+  focus: SharedValue<FocusDraw | null>,
+  stepClock: DerivedValue<number> | SharedValue<number>,
+  motionIn: SharedValue<number>,
+): Readonly<{
   cuts: DerivedValue<ClockCuts>;
   written: DerivedValue<number>;
 }> {
   const own = useDerivedValue(() => {
-    const focused = scene.focus.value;
+    const focused = focus.value;
     return clockCutsOf(focused === null ? null : focused.motion);
   });
   const leaving = useDerivedValue(() => {
-    const focused = scene.focus.value;
+    const focused = focus.value;
     return focused === null || focused.from === null || focused.from.motion === null
       ? null
       : clockCutsOf(focused.from.motion);
   });
-  const stepClock = scene.stepClock;
-  const motionIn = scene.motionIn;
   // Held by reference, so a frame of the morph that changes nothing here
   // re-records nothing that reads it.
   const cuts = useDerivedValue(() =>
@@ -4691,7 +5349,7 @@ function FocusDetail({
 }) {
   const clock = useFocusClock(scene, focus.generation);
   // The focused song's form, for the orbit: once per track.
-  const form = useStepForm(scene);
+  const form = useStepForm(scene.focus, scene.stepClock, scene.motionIn);
   return (
     <NativeSongDetail
       layer={layer}
@@ -4739,7 +5397,9 @@ function FocusFlight({
   displayFont,
   monoFont,
   palette,
+  layer,
 }: {
+  layer: PlayerLayer;
   focus: FocusLayer;
   focusReady: (generation: number) => void;
   scene: LivingScene;
@@ -4762,7 +5422,7 @@ function FocusFlight({
 }) {
   const clock = useFocusClock(scene, focus.generation);
   // The song's form on its clock: its sections and drops, once per track.
-  const form = useStepForm(scene);
+  const form = useStepForm(scene.focus, scene.stepClock, scene.motionIn);
   // On the canvas: its cut may go down now (see `focusReady`).
   const generation = focus.generation;
   useEffect(() => {
@@ -4800,6 +5460,7 @@ function FocusFlight({
       stepMorph={scene.stepMorph}
       stepClock={scene.stepClock}
       heardFrom={focus.heardFrom}
+      layer={layer}
     />
   );
 }
@@ -5002,11 +5663,14 @@ function NativePlacementFlight({
   stepMorph = null,
   stepClock = null,
   heardFrom = null,
+  layer = null,
 }: {
   /** The queue's step at L2, for the player alone; see `stepMorph.ts`. */
   stepMorph?: SharedValue<StepMorph | null> | null;
-  stepClock?: SharedValue<number> | null;
+  stepClock?: DerivedValue<number> | SharedValue<number> | null;
   heardFrom?: number | null;
+  /** The motion layer, which draws a step's morph; see `StepLinesDraw`. */
+  layer?: PlayerLayer | null;
   /** The song's form on its clock; see `ClockCuts`. */
   formCuts?: DerivedValue<ClockCuts> | null;
   formInk?: SharedValue<number> | null;
@@ -5085,39 +5749,17 @@ function NativePlacementFlight({
     const cameraScale = nativeCameraScale(p, recut, cameraShared);
     const bloom =
       1 - gatherFraction(cameraScale, nativeFitScale(p, recut, fitScaleShared));
-    /*
-     * A step's arriving player is being drawn: its camera may be cut now.
-     * Said from here, the first frame it is drawn on, rather than from the
-     * row's claim below, whose first run came most of a second later.
-     */
-    if (song !== null && stepMorph !== null && p >= 1) {
-      const morph = stepMorph.value;
-      if (
-        morph !== null &&
-        morph.to === flight.targetPlacementKey &&
-        morph.camera !== null &&
-        !morph.ready
-      ) {
-        stepMorph.value = { ...morph, ready: true };
-      }
-    }
     const seatX = flight.fromX + (flight.targetX - flight.fromX) * p;
     const seatY = flight.fromY + (flight.targetY - flight.fromY) * p;
     const bloomX =
       flight.fromBloomX + (flight.targetBloomX - flight.fromBloomX) * p;
     const bloomY =
       flight.fromBloomY + (flight.targetBloomY - flight.fromBloomY) * p;
-    return [
-      {
-        translateX:
-          (seatX + bloomX * bloom - cameraX) * cameraScale + viewport.width / 2,
-      },
-      {
-        translateY:
-          (seatY + bloomY * bloom - cameraY) * cameraScale +
-          viewport.height / 2,
-      },
-    ];
+    const translateX =
+      (seatX + bloomX * bloom - cameraX) * cameraScale + viewport.width / 2;
+    const translateY =
+      (seatY + bloomY * bloom - cameraY) * cameraScale + viewport.height / 2;
+    return [{ translateX }, { translateY }];
   });
   /** How much of this mark the re-cut has handed over, before any band. */
   const owner = useDerivedValue(() =>
@@ -5269,6 +5911,27 @@ function NativePlacementFlight({
    * the row (`motion.owned`), and the next flight writes over it.
    */
   const holder = useRef(nextRowOwner++).current;
+  /*
+   * A step's arriving player is on the canvas: its camera may be cut now
+   * (`StepMorph.ready`).
+   *
+   * From an effect, which runs once Skia has committed the tree this flight
+   * is in — the leaving flight is out of it by then. Not from a worklet of
+   * this flight's: its first run is on the JS thread, before the commit, and
+   * after that it runs only when something it reads moves — and nothing
+   * does until the cut it would be waiting for.
+   */
+  useEffect(() => {
+    if (song === null || stepMorph === null || rowKey === null) return;
+    runOnUI(() => {
+      'worklet';
+      const morph = stepMorph.value;
+      if (morph === null || morph.to !== rowKey) return;
+      if (morph.camera !== null && !morph.ready) {
+        stepMorph.value = { ...morph, ready: true };
+      }
+    })();
+  }, [rowKey, song, stepMorph]);
   useAnimatedReaction(
     () => rowKey,
     key => {
@@ -5383,6 +6046,7 @@ function NativePlacementFlight({
           byline={byline}
           stepClock={stepClock}
           heardFrom={heardFrom}
+          lineInk={layer === null ? null : layer.lineInk}
         />
       )}
     </SkiaGroup>

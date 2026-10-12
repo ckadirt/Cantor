@@ -490,9 +490,8 @@ export function drawCirclePlayer(
 /**
  * One song's player becoming the next's, at L2: the contour walks from one
  * face to the other, sample by sample (`circleMorphPoints`), and the body and
- * its well follow it. Still at both ends — the music is the song's that is
- * sounding, and neither of these is yet, for certain. Not at the player, it is
- * the next song's own drawing.
+ * its well follow it. `a` leaves from the shape it was last drawn singing
+ * (`motion`, held still), `b` arrives still: its own music rises after.
  */
 export function drawCircleMorph(
   canvas: SkCanvas,
@@ -511,6 +510,8 @@ export function drawCircleMorph(
   heard: number,
   hairlinePx: number,
   paints: PlayerPaints,
+  /** The music `a` was last drawn singing to: the shape it leaves from. */
+  motion: MotionFrame | null = null,
 ): void {
   'worklet';
   if (arrived <= 0 || !isCirclePlayer(aPlayer) || !isCirclePlayer(bPlayer)) {
@@ -518,7 +519,12 @@ export function drawCircleMorph(
     return;
   }
   const R = NAME_LENS_KNOBS.MARK_RADIUS_PX;
-  const points = circleMorphPoints(aPlayer, bPlayer, t, R);
+  // Held as a contour already (`CirclePlayer.points`), or as the music.
+  const amount = motion === null ? 0 : motion.presence * arrived;
+  const points =
+    aPlayer.points === undefined && motion !== null && amount > 0
+      ? circleMorphPoints(aPlayer, bPlayer, t, R, circleMotionPoints(aPlayer, motion, amount, R))
+      : circleMorphPoints(aPlayer, bPlayer, t, R);
   const player = circleMorphPlayer(aPlayer, bPlayer, t);
   canvas.save();
   canvas.scale(size, size);

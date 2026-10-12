@@ -277,8 +277,10 @@ export type LensUi = Readonly<{
    * The player becoming another song's in this same lens: the queue moving
    * on while the camera stays at L2 (`FIELD_CAMERA_KNOBS.STEP_STYLE`). `t`
    * runs 0 → 1 from `a`'s song to `b`'s, already eased, and at 0 it must look
-   * like `a`'s own player. Optional: a lens without one takes the generic two
-   * beats, `a` in to a point and `b` out of it, as a lens change does.
+   * like `a`'s own player as it was last drawn: `motion` is the music it was
+   * singing to then, held still, or null. Optional: a lens without one takes
+   * the generic two beats, `a` in to a point and `b` out of it, as a lens
+   * change does.
    */
   morphPlayer?: PlayerMorphDraw;
 }>;
