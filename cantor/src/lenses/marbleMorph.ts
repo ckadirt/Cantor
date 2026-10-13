@@ -1,18 +1,26 @@
 /* eslint-disable no-bitwise -- a ring is pairs of numbers; halving a length is a shift. */
 
-import { FillType, Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
+import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
 import type { PlayerPaints } from './contract';
 
 /**
  * Marbling's morphs: one drawing becoming another, ring by ring.
  *
  * The motion engine's silhouette morph (`motion/silhouette.ts`), on the UI
- * thread: both drawings as compound even-odd rings, paired, resampled to one
- * count per pair, aligned by the rotation and direction that travel least,
- * and built once into two paths with identical verbs that Skia interpolates
- * natively every frame. A ring with no partner grows from a point, or shrinks
- * to one, where it stands. Nothing is faded over anything: the ink itself
- * moves from one shape to the other.
+ * thread: both drawings as compound rings, paired, resampled to one count per
+ * pair, aligned by the rotation that travels least, built once, and lerped
+ * per frame — each ring through a window of its own, so a ring with no partner
+ * is gone before the end rather than lingering as a speck. A ring with no
+ * partner grows from a point, or shrinks to one, where it stands. Nothing is
+ * faded over anything: the ink itself moves from one shape to the other.
+ *
+ * **Winding, not even-odd.** Both drawings are even-odd at rest, but mid-morph
+ * rings cross, and under even-odd two inks crossing make paper — the morph
+ * churned in ink and paper patches. So every ring is wound by its depth (an
+ * ink ring one way, a hole inside it the other), which at rest fills exactly
+ * as even-odd does, and the morph is filled nonzero: ink over ink stays ink.
+ * Pairs prefer a partner of the same role, ink with ink, hole with hole, so a
+ * ring is never turned inside out on the way.
  *
  * Its ends are not quite either lens's own drawing — marbling's live ink, the
  * seal's sound-sized dots, the circle's hand — so each end hands over to the
@@ -28,22 +36,46 @@ export const MARBLE_MORPH_KNOBS = {
   HAND_OVER: 0.16,
   /** About how far apart a ring's points stand, px. */
   SEG_PX: 5,
-  /** Points per ring, at least and at most. */
+  /** Points per ring, at least and at most; a stroke (the cover's) needs fewer. */
   MIN_POINTS: 8,
+  MIN_LINE_POINTS: 4,
   MAX_POINTS: 192,
   /** The most points a morph holds, all rings together: its cost per frame. */
   BUDGET: 4000,
-  /** Rings smaller than this, px², shrink to a point rather than pair. */
+  /** Rings smaller than this, px², shrink to a point rather than pair (strokes always pair). */
   MIN_AREA_PX2: 2,
   /** How much of the clock a ring with no partner takes to go, or to come. */
   ALONE_WINDOW: 0.65,
+  /** What pairing an ink ring with a hole costs, against size and distance. */
+  ROLE_COST: 3,
+  /** How many of the rings left each ring looks at for a partner. */
+  LOOK: 24,
+  /** Points along a curve when a path is read as rings. */
+  CURVE_STEPS: 4,
 } as const;
 
-/** A drawing as rings in px about the player's centre, interleaved x, y, each with its ink. */
+/** A drawing as rings in px about the player's centre, interleaved x, y. */
 export type MorphSide = Readonly<{
   rings: readonly (readonly number[])[];
   /** Each ring's alpha (the seal's dots still to come are grey), or one for all. */
   alpha: readonly number[] | number;
+  /**
+   * How deep each ring is nested among the others: an even ring is ink, an
+   * odd one a hole in it. All 0 when absent (the seal's dots, the cover's
+   * strokes).
+   */
+  depth?: readonly number[];
+  /**
+   * Whether this side is strokes, not filled shapes (the cover): drawn as
+   * hairlines at its own end of the morph, and filled toward the other.
+   */
+  lines?: boolean;
+  /**
+   * Each ring's place in time (the seal's dots, in their thread's order), so
+   * its alpha follows the playhead when the morph is drawn rather than when it
+   * was built: heard in ink, still to come grey. −1 or absent: `alpha` holds.
+   */
+  order?: readonly number[];
   /**
    * A ring kept as it is, never resampled — its partner is resampled to it —
    * so the drawing can hand the morph that ring's points live each frame (the
@@ -55,10 +87,7 @@ export type MorphSide = Readonly<{
 /**
  * A built morph: every ring's points at both ends, interleaved x, y, in one
  * pair of arrays, with where each ring starts, its window of the clock and its
- * alpha at both ends. Lerped per frame on the UI thread (a few thousand
- * points), so each ring can keep a window of its own — a ring with no partner
- * is gone before the end, rather than lingering as a speck until the last
- * frame — and rings of one alpha share one even-odd path, so holes stay holes.
+ * alpha at both ends.
  */
 export type MarbleMorph = Readonly<{
   from: number[];
@@ -71,16 +100,21 @@ export type MarbleMorph = Readonly<{
   aTo: number[];
   /** Where in `from.rings` each ring came from, or -1 for one grown from a point. */
   fromRing: number[];
+  /** Each ring's place in time on the `from` side (`MorphSide.order`), or −1. */
+  fromOrder: number[];
+  /** Each side's ink as fill (1) or as hairlines (0). */
+  fillFrom: number;
+  fillTo: number;
 }>;
 
-function ringArea(r: readonly number[]): number {
+function signedArea(r: readonly number[]): number {
   'worklet';
   let twice = 0;
   const n = r.length >> 1;
   for (let i = 0, j = n - 1; i < n; j = i++) {
     twice += r[2 * j] * r[2 * i + 1] - r[2 * i] * r[2 * j + 1];
   }
-  return Math.abs(twice) / 2;
+  return twice / 2;
 }
 
 function ringLength(r: readonly number[]): number {
@@ -103,6 +137,14 @@ function ringCentre(r: readonly number[]): [number, number] {
     y += r[2 * i + 1];
   }
   return [x / Math.max(1, n), y / Math.max(1, n)];
+}
+
+/** The ring the other way round. */
+function reversed(r: readonly number[]): number[] {
+  'worklet';
+  const out: number[] = [];
+  for (let i = (r.length >> 1) - 1; i >= 0; i--) out.push(r[2 * i], r[2 * i + 1]);
+  return out;
 }
 
 /** A closed ring resampled to `n` points evenly along its length. */
@@ -146,18 +188,19 @@ export function resampleRing(r: readonly number[], n: number): number[] {
 }
 
 /**
- * `b` reordered to correspond with `a` (both `n` points) with the least total
- * travel: every rotation, both directions — the engine's `alignSampled`. Long
- * rings try every fourth rotation, then the three either side of the best.
+ * `b` turned to correspond with `a` (both `n` points) with the least total
+ * travel — the engine's `alignSampled`, rotations only: both rings are already
+ * wound the way their role asks, and reversing one would turn it inside out.
+ * Long rings try every fourth rotation, then the three either side of the best.
  */
 export function alignRing(a: readonly number[], b: readonly number[]): number[] {
   'worklet';
   const n = a.length >> 1;
   if (n === 0) return b.slice();
-  const score = (k: number, rev: boolean): number => {
+  const score = (k: number): number => {
     let s = 0;
     for (let i = 0; i < n; i++) {
-      const j = rev ? (n + k - i) % n : (k + i) % n;
+      const j = (k + i) % n;
       const dx = a[2 * i] - b[2 * j];
       const dy = a[2 * i + 1] - b[2 * j + 1];
       s += dx * dx + dy * dy;
@@ -167,22 +210,18 @@ export function alignRing(a: readonly number[], b: readonly number[]): number[] 
   const stride = n > 64 ? 4 : 1;
   let best = Infinity;
   let bestK = 0;
-  let bestRev = false;
   for (let k = 0; k < n; k += stride) {
-    for (const rev of [false, true]) {
-      const s = score(k, rev);
-      if (s < best) {
-        best = s;
-        bestK = k;
-        bestRev = rev;
-      }
+    const s = score(k);
+    if (s < best) {
+      best = s;
+      bestK = k;
     }
   }
   if (stride > 1) {
     const around = bestK;
     for (let d = -stride + 1; d < stride; d++) {
       const k = (around + d + n) % n;
-      const s = score(k, bestRev);
+      const s = score(k);
       if (s < best) {
         best = s;
         bestK = k;
@@ -191,7 +230,7 @@ export function alignRing(a: readonly number[], b: readonly number[]): number[] 
   }
   const out: number[] = [];
   for (let i = 0; i < n; i++) {
-    const j = bestRev ? (n + bestK - i) % n : (bestK + i) % n;
+    const j = (bestK + i) % n;
     out.push(b[2 * j], b[2 * j + 1]);
   }
   return out;
@@ -203,38 +242,47 @@ function alphaOf(side: MorphSide, index: number): number {
 }
 
 /**
- * Pair two drawings' rings and build the paths between them, once.
+ * Pair two drawings' rings and build the points between them, once.
  *
  * Largest first; among the rings left, each takes the partner nearest it in
- * size and place, so ink flows to the shape beside it rather than across the
- * disc. A ring with no partner, or too small to bother, grows from (or
- * shrinks to) its own centre.
+ * size and place and of its own role, so ink flows to the shape beside it
+ * rather than across the disc. A ring with no partner, or too small to bother,
+ * grows from (or shrinks to) its own centre.
  */
 export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number): MarbleMorph {
   'worklet';
   const K = MARBLE_MORPH_KNOBS;
   const order = (side: MorphSide) =>
     side.rings
-      .map((ring, index) => ({ ring, index, area: ringArea(ring), centre: ringCentre(ring) }))
-      .filter(entry => entry.ring.length >= 6)
+      .map((ring, index) => {
+        const role = (side.depth === undefined ? 0 : side.depth[index] ?? 0) & 1;
+        // Wound by role: ink anticlockwise in the drawing's own sense, holes the other way.
+        const area = signedArea(ring);
+        const wound = (area >= 0) === (role === 0) ? ring.slice() : reversed(ring);
+        return { ring: wound, index, role, area: Math.abs(area), centre: ringCentre(ring) };
+      })
+      .filter(entry => entry.ring.length >= 4)
       .sort((x, y) => y.area - x.area);
   const a = order(from);
   const b = order(to);
+  const small = (entry: { area: number }, side: MorphSide) =>
+    side.lines !== true && entry.area < K.MIN_AREA_PX2;
   const taken = new Array<boolean>(b.length).fill(false);
-  type Pair = { a: number[] | null; b: number[] | null; aAlpha: number; bAlpha: number; centre: [number, number]; want: number; fromRing: number };
+  type Pair = { a: number[] | null; b: number[] | null; aAlpha: number; bAlpha: number; want: number; fromRing: number; order: number };
   const pairs: Pair[] = [];
+  let next = 0;
   for (const entry of a) {
     let pick = -1;
-    if (entry.area >= K.MIN_AREA_PX2) {
+    if (!small(entry, from)) {
       let best = Infinity;
-      // The largest few left, by how alike they are in size and how near.
       let looked = 0;
-      for (let j = 0; j < b.length && looked < 24; j++) {
-        if (taken[j] || b[j].area < K.MIN_AREA_PX2) continue;
+      while (next < b.length && taken[next]) next += 1;
+      for (let j = next; j < b.length && looked < K.LOOK; j++) {
+        if (taken[j] || small(b[j], to)) continue;
         looked += 1;
         const size = Math.abs(Math.log((b[j].area + 1) / (entry.area + 1)));
         const far = Math.hypot(b[j].centre[0] - entry.centre[0], b[j].centre[1] - entry.centre[1]) / reach;
-        const cost = size + 2 * far;
+        const cost = size + 2 * far + (b[j].role === entry.role ? 0 : K.ROLE_COST);
         if (cost < best) {
           best = cost;
           pick = j;
@@ -244,54 +292,55 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
     const length = Math.max(ringLength(entry.ring), pick >= 0 ? ringLength(b[pick].ring) : 0);
     if (pick >= 0) taken[pick] = true;
     pairs.push({
-      a: entry.ring.slice(),
-      b: pick >= 0 ? b[pick].ring.slice() : null,
+      a: entry.ring,
+      b: pick >= 0 ? b[pick].ring : null,
       aAlpha: alphaOf(from, entry.index),
       bAlpha: pick >= 0 ? alphaOf(to, b[pick].index) : alphaOf(from, entry.index),
-      centre: entry.centre,
       want: length / K.SEG_PX,
       fromRing: entry.index,
+      order: from.order === undefined ? -1 : from.order[entry.index] ?? -1,
     });
   }
   for (let j = 0; j < b.length; j++) {
     if (taken[j]) continue;
     pairs.push({
       a: null,
-      b: b[j].ring.slice(),
+      b: b[j].ring,
       aAlpha: alphaOf(to, b[j].index),
       bAlpha: alphaOf(to, b[j].index),
-      centre: b[j].centre,
       want: ringLength(b[j].ring) / K.SEG_PX,
       fromRing: -1,
+      order: -1,
     });
   }
   // Points per pair, by length, within the budget.
+  const least = from.lines === true || to.lines === true ? K.MIN_LINE_POINTS : K.MIN_POINTS;
   let wanted = 0;
-  for (const pair of pairs) wanted += Math.max(K.MIN_POINTS, Math.min(K.MAX_POINTS, pair.want));
+  for (const pair of pairs) wanted += Math.max(least, Math.min(K.MAX_POINTS, pair.want));
   const squeeze = wanted > K.BUDGET ? K.BUDGET / wanted : 1;
   const point = (x: number, y: number, n: number): number[] => {
     const out: number[] = [];
     for (let i = 0; i < n; i++) out.push(x, y);
     return out;
   };
-  const morph: { from: number[]; to: number[]; starts: number[]; w0: number[]; w1: number[]; aFrom: number[]; aTo: number[]; fromRing: number[] } = {
-    from: [],
-    to: [],
-    starts: [],
-    w0: [],
-    w1: [],
-    aFrom: [],
-    aTo: [],
-    fromRing: [],
+  const morph = {
+    from: [] as number[],
+    to: [] as number[],
+    starts: [] as number[],
+    w0: [] as number[],
+    w1: [] as number[],
+    aFrom: [] as number[],
+    aTo: [] as number[],
+    fromRing: [] as number[],
+    fromOrder: [] as number[],
+    fillFrom: from.lines === true ? 0 : 1,
+    fillTo: to.lines === true ? 0 : 1,
   };
   for (const pair of pairs) {
     const fixed = pair.a !== null && from.fixed !== undefined && pair.fromRing === from.fixed;
     const n = fixed
       ? pair.a!.length >> 1
-      : Math.max(
-          K.MIN_POINTS,
-          Math.round(Math.max(K.MIN_POINTS, Math.min(K.MAX_POINTS, pair.want)) * squeeze),
-        );
+      : Math.max(least, Math.round(Math.max(least, Math.min(K.MAX_POINTS, pair.want)) * squeeze));
     const centreA = pair.a !== null ? ringCentre(pair.a) : null;
     const centreB = pair.b !== null ? ringCentre(pair.b) : null;
     const ra = fixed ? pair.a! : pair.a !== null ? resampleRing(pair.a, n) : point(centreB![0], centreB![1], n);
@@ -308,6 +357,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
     morph.aFrom.push(pair.aAlpha);
     morph.aTo.push(pair.bAlpha);
     morph.fromRing.push(pair.fromRing);
+    morph.fromOrder.push(pair.order);
   }
   morph.starts.push(morph.from.length);
   return morph;
@@ -332,8 +382,10 @@ export function morphShares(t: number): { from: number; to: number; morph: numbe
 }
 
 /**
- * The morph at `t` (0..1, linear), filled in the ink at `alpha`: each ring
- * eased through its own window, one even-odd path per alpha it stands at.
+ * The morph at `t` (0..1, linear), in the ink at `alpha`: each ring eased
+ * through its own window, one nonzero path per alpha it stands at — filled,
+ * or stroked at a hairline where a side is strokes (the cover), the one
+ * becoming the other on the same moving rings.
  */
 export function drawMarbleMorphPaths(
   canvas: SkCanvas,
@@ -341,9 +393,18 @@ export function drawMarbleMorphPaths(
   t: number,
   alpha: number,
   paints: PlayerPaints,
-  /** The `from` side's fixed ring as drawn this frame (`MorphSide.fixed`), or null. */
+  /** The `from` side's fixed ring as drawn this frame (`MorphSide.fixed`), in px, or null. */
   live: readonly number[] | null = null,
   liveRing = -1,
+  hairlinePx = 1,
+  /** px per the morph's own unit: 1 for one built in px, the bath's reach for one built by the bath runtime. */
+  scale = 1,
+  /**
+   * The `from` side's rings with a place in time (`fromOrder`) heard before
+   * this one are ink, the rest `quiet`; −1 leaves the built alphas.
+   */
+  head = -1,
+  quiet = 1,
 ): void {
   'worklet';
   if (alpha <= 0) return;
@@ -354,33 +415,44 @@ export function drawMarbleMorphPaths(
     const x = span > 0 ? (t - morph.w0[r]) / span : 1;
     const c = x < 0 ? 0 : x > 1 ? 1 : x;
     const e = c * c * c * (c * (6 * c - 15) + 10);
-    const a = morph.aFrom[r] + (morph.aTo[r] - morph.aFrom[r]) * e;
     // A ring gone to a point draws nothing.
     if ((morph.w1[r] < 1 && e >= 1) || (morph.w0[r] > 0 && e <= 0)) continue;
-    const key = Math.round(a * 100) / 100;
+    const order = morph.fromOrder[r];
+    const aFrom = head < 0 || order < 0 ? morph.aFrom[r] : order < head ? 1 : quiet;
+    const a = aFrom + (morph.aTo[r] - aFrom) * e;
+    const key = Math.round(a * 50) / 50;
     let builder = null;
     for (const b of builders) if (b.a === key) builder = b.path;
     if (builder === null) {
       builder = Skia.PathBuilder.Make();
-      builder.setFillType(FillType.EvenOdd);
       builders.push({ a: key, path: builder });
     }
     const start = morph.starts[r];
     const end = morph.starts[r + 1];
     const own = live !== null && liveRing >= 0 && morph.fromRing[r] === liveRing && live.length === end - start;
     for (let i = start; i < end; i += 2) {
-      const fx = own ? live![i - start] : morph.from[i];
-      const fy = own ? live![i - start + 1] : morph.from[i + 1];
-      const px = fx + (morph.to[i] - fx) * e;
-      const py = fy + (morph.to[i + 1] - fy) * e;
+      const fx = own ? live![i - start] / scale : morph.from[i];
+      const fy = own ? live![i - start + 1] / scale : morph.from[i + 1];
+      const px = (fx + (morph.to[i] - fx) * e) * scale;
+      const py = (fy + (morph.to[i + 1] - fy) * e) * scale;
       if (i === start) builder.moveTo(px, py);
       else builder.lineTo(px, py);
     }
     builder.close();
   }
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  const fill = morph.fillFrom + (morph.fillTo - morph.fillFrom) * (c * c * (3 - 2 * c));
+  if (fill < 1) paints.stroke.setStrokeWidth(hairlinePx);
   for (const b of builders) {
-    paints.fill.setAlphaf(alpha * b.a);
-    canvas.drawPath(b.path.detach(), paints.fill);
+    const path = b.path.detach();
+    if (fill > 0) {
+      paints.fill.setAlphaf(alpha * b.a * fill);
+      canvas.drawPath(path, paints.fill);
+    }
+    if (fill < 1) {
+      paints.stroke.setAlphaf(alpha * b.a * (1 - fill));
+      canvas.drawPath(path, paints.stroke);
+    }
   }
 }
 
@@ -397,27 +469,56 @@ export function cachedMarbleMorph(key: string, build: () => MarbleMorph): Marble
   return morph;
 }
 
-/** A path's contours as rings, interleaved x, y, scaled. */
+/**
+ * A path's contours as rings, interleaved x, y, scaled: curves flattened in
+ * `CURVE_STEPS`, and an open stroke kept as a ring of its own points (read
+ * there and back, as a hairline is).
+ */
 export function pathRings(path: SkPath, scale: number): number[][] {
   'worklet';
+  const steps = MARBLE_MORPH_KNOBS.CURVE_STEPS;
   const rings: number[][] = [];
   let ring: number[] = [];
+  let x = 0;
+  let y = 0;
   const cmds = path.toCmds();
   for (const cmd of cmds) {
     const verb = cmd[0];
     if (verb === 0) {
-      if (ring.length >= 6) rings.push(ring);
-      ring = [cmd[1] * scale, cmd[2] * scale];
+      if (ring.length >= 4) rings.push(ring);
+      x = cmd[1];
+      y = cmd[2];
+      ring = [x * scale, y * scale];
     } else if (verb === 1) {
-      ring.push(cmd[1] * scale, cmd[2] * scale);
+      x = cmd[1];
+      y = cmd[2];
+      ring.push(x * scale, y * scale);
     } else if (verb === 2 || verb === 3) {
-      // A quad's or a conic's end point (a conic carries its weight after it).
-      ring.push(cmd[3] * scale, cmd[4] * scale);
+      // A quad, or a conic read as its quad: near enough at a few steps.
+      for (let s = 1; s <= steps; s++) {
+        const u = s / steps;
+        const v = 1 - u;
+        ring.push(
+          (v * v * x + 2 * v * u * cmd[1] + u * u * cmd[3]) * scale,
+          (v * v * y + 2 * v * u * cmd[2] + u * u * cmd[4]) * scale,
+        );
+      }
+      x = cmd[3];
+      y = cmd[4];
     } else if (verb === 4) {
-      ring.push(cmd[5] * scale, cmd[6] * scale);
+      for (let s = 1; s <= steps; s++) {
+        const u = s / steps;
+        const v = 1 - u;
+        ring.push(
+          (v * v * v * x + 3 * v * v * u * cmd[1] + 3 * v * u * u * cmd[3] + u * u * u * cmd[5]) * scale,
+          (v * v * v * y + 3 * v * v * u * cmd[2] + 3 * v * u * u * cmd[4] + u * u * u * cmd[6]) * scale,
+        );
+      }
+      x = cmd[5];
+      y = cmd[6];
     }
   }
-  if (ring.length >= 6) rings.push(ring);
+  if (ring.length >= 4) rings.push(ring);
   return rings;
 }
 
@@ -430,4 +531,34 @@ export function circleRing(x: number, y: number, r: number, n: number): number[]
     out.push(x + Math.cos(a) * r, y + Math.sin(a) * r);
   }
   return out;
+}
+
+/**
+ * How deep each ring nests among the others: how many contain its first
+ * point (outlines never cross, so any point of it says the same).
+ */
+export function ringDepths(rings: readonly (readonly number[])[]): number[] {
+  'worklet';
+  const depths: number[] = [];
+  for (let i = 0; i < rings.length; i++) {
+    const px = rings[i][0];
+    const py = rings[i][1];
+    let depth = 0;
+    for (let j = 0; j < rings.length; j++) {
+      if (j === i) continue;
+      const r = rings[j];
+      const n = r.length >> 1;
+      let inside = false;
+      for (let p = 0, q = n - 1; p < n; q = p++) {
+        const xi = r[2 * p];
+        const yi = r[2 * p + 1];
+        const xj = r[2 * q];
+        const yj = r[2 * q + 1];
+        if (yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / (yj - yi) + xi) inside = !inside;
+      }
+      if (inside) depth += 1;
+    }
+    depths.push(depth);
+  }
+  return depths;
 }

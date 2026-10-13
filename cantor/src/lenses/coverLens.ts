@@ -241,7 +241,7 @@ const coverPlayerCache = new Map<string, CoverPlayer>();
  * player is asked for every time the field's flights are planned, and the
  * sweeps are a few thousand strokes each.
  */
-function coverPlayerOf(recipe: FaceRecipe, art: CoverArt): CoverPlayer {
+export function coverPlayerOf(recipe: FaceRecipe, art: CoverArt): CoverPlayer {
   const key = `${recipe.seed ?? ''}\u001f${recipe.id}\u001f${
     recipe.model
   }\u001f${recipe.durationMs}`;

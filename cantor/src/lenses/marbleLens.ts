@@ -14,6 +14,7 @@ import {
   marbleClipPx,
   marblePlayerOf,
   marbleSide,
+  marbleUnitPx,
   type MarblePlayer,
 } from './marblePlayer';
 import { buildMarbleMorph, cachedMarbleMorph, morphShares } from './marbleMorph';
@@ -134,12 +135,17 @@ export function drawMarbleMorph(
     const clipR = marbleClipPx(size, arrived);
     const aBath = a.sound === null ? null : a.baked.value;
     const bBath = b.sound === null || soundIn <= 0 ? null : b.baked.value;
-    const morph = cachedMarbleMorph(
-      `step:${a.id}:${aBath === null ? -1 : aBath.key}:${b.id}:${Math.round(size * 100)}`,
-      () => buildMarbleMorph(marbleSide(a, size, arrived, aBath), marbleSide(b, size, arrived, bBath), clipR),
-    );
+    // Built with the arriving song's first bake on the bath's runtime, or here.
+    const step = bBath === null || bBath.morphs === null ? null : bBath.morphs.step;
+    const built = step !== null && aBath !== null && step.fromId === a.id && step.fromKey === aBath.key ? step.morph : null;
+    const morph =
+      built ??
+      cachedMarbleMorph(
+        `step:${a.id}:${aBath === null ? -1 : aBath.key}:${b.id}:${Math.round(size * 100)}`,
+        () => buildMarbleMorph(marbleSide(a, size, arrived, aBath), marbleSide(b, size, arrived, bBath), clipR),
+      );
     const ink = alpha * (fill + (1 - fill) * arrived);
-    drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR);
+    drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR, null, -1, 0, hairlinePx, built === null ? 1 : marbleUnitPx(size, arrived));
   }
 }
 

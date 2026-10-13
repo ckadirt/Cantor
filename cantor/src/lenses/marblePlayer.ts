@@ -28,6 +28,7 @@ import {
   bathStateOf,
   bathWarmOn,
   plainRings,
+  type BakeAsk,
   type BathInit,
   type BathState,
   type MarbleBake,
@@ -46,10 +47,14 @@ import {
   cachedMarbleMorph,
   drawMarbleMorphPaths,
   morphShares,
+  ringDepths,
   type MarbleMorph,
   type MorphSide,
 } from './marbleMorph';
 import type { MotionFrame } from './motion/motionFrame';
+import type { SongAnalysis } from './analysis';
+import type { CoverArt } from './cover';
+import { marbleSidesOf } from './marbleSides';
 import type { MotionTrack } from './motion/motionTrack';
 import { NAME_LENS_KNOBS } from './nameLens';
 import { SEAL_PLAYER_KNOBS } from './seal';
@@ -110,6 +115,18 @@ export const MARBLE_PLAYER_KNOBS = {
   NIB_EDGE_PX: 1.2,
   NIB_LINE_ALPHA: 0.45,
   NIB_LINE_PX: 0.7,
+  /*
+   * A seek while the song plays — the back button restarting it, a drag on
+   * the rim — morphs the bath from where it was to where it lands.
+   */
+  /** A jump of the playhead between two frames longer than this is a seek, seconds. */
+  SEEK_JUMP_S: 1,
+  /** How long the bath it was is held, waiting for the new one's bake, at most. */
+  SEEK_WAIT_MS: 900,
+  /** How long the morph takes once the new bath is here. */
+  SEEK_MORPH_MS: 560,
+  /** A player not drawn for this long has no "last frame" to jump from. */
+  SEEK_STALE_MS: 250,
   /** How far past the bath's edge a morph opens its fade toward another lens. */
   EDGE_OPEN: 0.8,
   /** The most screen px per dp another lens is drawn at to be pushed. */
@@ -135,8 +152,9 @@ export type MarblePlayer = Readonly<{
   /** The identity at the player's resolution, at mark px. */
   outline: SkPath;
   ink: SkPath;
-  /** The identity's ink as rings, in bath units, for morphs. */
+  /** The identity's ink as rings, in bath units, and how deep each nests, for morphs. */
   identityRings: readonly (readonly number[])[];
+  identityDepths: readonly number[];
   baked: SharedValue<MarbleBake | null>;
   /**
    * The identity as the shader reads it (the bath before any op), baked once:
@@ -166,6 +184,8 @@ type BathFeed = {
 };
 
 const feeds = new WeakMap<object, BathFeed>();
+/** The bath fed last: where the queue stepped from, when the next song's first bake is asked for. */
+let lastFed: BathFeed | null = null;
 let nextModelId = 1;
 let nextBathId = 1;
 
@@ -196,13 +216,16 @@ function slot<T>(value: T): SharedValue<T> {
 /** The model for a recipe and its track; the same object while neither changes. */
 export function marblePlayerOf(
   recipe: FaceRecipe,
-  _analysis?: unknown,
-  _cover?: unknown,
+  analysis?: SongAnalysis,
+  cover?: CoverArt | null,
   track: MotionTrack | null = null,
 ): MarblePlayer {
+  // The analysis and the cover only shape the other lenses' sides of a morph.
   const key = `${recipe.seed ?? ''}\u001f${recipe.id}\u001f${recipe.model}\u001f${
     recipe.durationMs
-  }\u001f${recipe.imported === true ? 'i' : ''}\u001f${trackId(track)}`;
+  }\u001f${recipe.imported === true ? 'i' : ''}\u001f${trackId(track)}\u001f${
+    analysis?.measured === true ? 'm' : ''
+  }\u001f${cover == null ? '' : 'c'}`;
   const cached = playerCache.get(key);
   if (cached !== undefined) return cached;
   const identity = marbleIdentity(
@@ -211,6 +234,7 @@ export function marblePlayerOf(
     MARBLE_BATH_KNOBS.SEG_MAX,
   );
   const markScale = MARBLE_MARK_REACH_PX / identity.reach;
+  const identityRings = identity.surface.rings.filter(ring => ring.toggle).map(ring => Array.from(ring.pts));
   const timeline = track === null ? null : marbleTimeline(recipe, track, identity.reach);
   const player: MarblePlayer = {
     id: nextModelId++,
@@ -219,14 +243,20 @@ export function marblePlayerOf(
     markScale,
     outline: marbleRingsPath(identity.surface, markScale, false),
     ink: marbleRingsPath(identity.surface, markScale, true),
-    identityRings: identity.surface.rings.filter(ring => ring.toggle).map(ring => Array.from(ring.pts)),
+    identityRings,
+    identityDepths: ringDepths(identityRings),
     baked: slot<MarbleBake | null>(null),
     still: slot<MarbleBake | null>(null),
   };
   if (timeline !== null) {
     feeds.set(player, {
       id: nextBathId++,
-      init: { rings: plainRings(identity.surface), ops: timeline.ops, extEnd: timeline.extEnd },
+      init: {
+        rings: plainRings(identity.surface),
+        ops: timeline.ops,
+        extEnd: timeline.extEnd,
+        sides: marbleSidesOf(recipe, analysis, cover ?? null, MARBLE_PLAYER_KNOBS.GROW),
+      },
       sent: false,
       wanted: -1,
       landed: -1,
@@ -342,7 +372,23 @@ function pump(player: MarblePlayer, feed: BathFeed): void {
   if (feed.wanted >= 0 && feed.wanted !== feed.landed) {
     const k = feed.wanted;
     feed.busy = true;
-    onBathRuntime(bathBakeOn, feed.id, feed.sent ? null : feed.init, k).then(
+    // The morphs into this bake: the rise on its first, a seek's when the
+    // key is not the next one along, a step's when another song's bath came
+    // before it. Built on the bath's runtime with it.
+    const first = feed.landed < 0;
+    const before = lastFed;
+    const ask: BakeAsk = {
+      pairs: true,
+      rise: first,
+      seekFrom:
+        !first && k !== feed.landed + MARBLE_PLAYER_KNOBS.BAKE_EVERY ? feed.landed : -1,
+      stepFrom:
+        first && before !== null && before !== feed && before.landed >= 0
+          ? { id: before.id, key: before.landed }
+          : null,
+    };
+    lastFed = feed;
+    onBathRuntime(bathBakeOn, feed.id, feed.sent ? null : feed.init, k, ask).then(
       bake => {
         feed.busy = false;
         if (bake === null) {
@@ -548,6 +594,15 @@ function pushDrop(u: number[], count: number, radius: number): number {
 function marbleScale(size: number, arrived: number): number {
   'worklet';
   return size * (1 + (MARBLE_PLAYER_KNOBS.GROW - 1) * arrived);
+}
+
+/**
+ * px per the bath's own unit (a bath's rings over its extent) at the player:
+ * what a morph the bath runtime built is drawn at.
+ */
+export function marbleUnitPx(size: number, arrived: number): number {
+  'worklet';
+  return MARBLE_MARK_REACH_PX * marbleScale(size, arrived);
 }
 
 /** Where the bath ends at the player, px from its centre: its edge fades to here. */
@@ -765,12 +820,16 @@ export function marbleSide(
   const sound = player.sound;
   if (bath === null || sound === null) {
     const s0 = player.markScale * k;
-    return { rings: player.identityRings.map(ring => ring.map(v => v * s0)), alpha: 1 };
+    return {
+      rings: player.identityRings.map(ring => ring.map(v => v * s0)),
+      alpha: 1,
+      depth: player.identityDepths,
+    };
   }
   const reach = MARBLE_MARK_REACH_PX / player.markScale;
   const ext = bath.key < sound.ops.length ? sound.ops[bath.key].ext : sound.extEnd;
   const s = player.markScale * k * (reach / ext);
-  return { rings: bath.rings.map(ring => ring.map(v => v * s)), alpha: 1 };
+  return { rings: bath.rings.map(ring => ring.map(v => v * s)), alpha: 1, depth: bath.depths };
 }
 
 /** A morph's ink, faded at the bath's edge as the bath itself is. */
@@ -789,13 +848,19 @@ export function drawMarbleMorphFaded(
    * lens does not, so a morph with one opens the fade toward that lens's end.
    */
   open = 0,
+  hairlinePx = 1,
+  /** px per the morph's own unit (`marbleUnitPx` for one the bath runtime built). */
+  scale = 1,
+  /** The `from` side's place in time to read alphas by, and the grey of what is still to come. */
+  head = -1,
+  quiet = 1,
 ): void {
   'worklet';
   if (alpha <= 0) return;
   const edgeR = clipR * (1 + MARBLE_PLAYER_KNOBS.EDGE_OPEN * open);
   const bounds = Skia.XYWHRect(-edgeR - 2, -edgeR - 2, edgeR * 2 + 4, edgeR * 2 + 4);
   canvas.saveLayer(undefined, bounds);
-  drawMarbleMorphPaths(canvas, morph, t, alpha, paints, live, liveRing);
+  drawMarbleMorphPaths(canvas, morph, t, alpha, paints, live, liveRing, hairlinePx, scale, head, quiet);
   const mask = Skia.Paint();
   mask.setBlendMode(BlendMode.DstIn);
   mask.setShader(EDGE_EFFECT.makeShader([edgeR]));
@@ -861,6 +926,127 @@ function drawNib(
   canvas.drawCircle(nibX, nibY, r, paints.fill);
 }
 
+/** What a player drew last frame, and a seek in flight: kept on the UI thread. */
+type SeekState = {
+  lastT: number;
+  lastAt: number;
+  lastBake: MarbleBake | null;
+  /** The bath it was when the playhead jumped, and where; null when no seek is in flight. */
+  from: MarbleBake | null;
+  fromT: number;
+  asked: number;
+  /** When the morph began (the new bath here), or -1 while it waits for it. */
+  start: number;
+};
+
+function seekState(id: number): SeekState {
+  'worklet';
+  const g = globalThis as unknown as { __marbleSeek?: Map<number, SeekState> };
+  if (g.__marbleSeek === undefined) g.__marbleSeek = new Map();
+  let state = g.__marbleSeek.get(id);
+  if (state === undefined) {
+    state = { lastT: -1, lastAt: 0, lastBake: null, from: null, fromT: 0, asked: 0, start: -1 };
+    g.__marbleSeek.set(id, state);
+    if (g.__marbleSeek.size > 4) {
+      const oldest = g.__marbleSeek.keys().next().value;
+      if (oldest !== undefined && oldest !== id) g.__marbleSeek.delete(oldest);
+    }
+  }
+  return state;
+}
+
+/**
+ * A seek while the song plays: the bath it was, held still until the bake
+ * for where the playhead landed is here, then morphed into it ring by ring
+ * on the clock (the playhead itself just jumped, so it cannot time it).
+ * Returns whether it drew the bath this frame. Paused or reduced (no
+ * `motion`), a seek is a cut: there are no frames to animate it on, and a
+ * paused seek is a finger on the rim.
+ */
+function drawMarbleSeek(
+  canvas: SkCanvas,
+  player: MarblePlayer,
+  bake: MarbleBake,
+  sound: MarbleTimeline,
+  t: number,
+  motion: MotionFrame | null,
+  size: number,
+  arrived: number,
+  k: number,
+  clipR: number,
+  inkAlpha: number,
+  lineAlpha: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+): boolean {
+  'worklet';
+  const K = MARBLE_PLAYER_KNOBS;
+  const now = Date.now();
+  const st = seekState(player.id);
+  const fresh = now - st.lastAt < K.SEEK_STALE_MS;
+  if (motion === null || !fresh) {
+    st.from = null;
+  } else if (st.from === null && st.lastBake !== null && Math.abs(t - st.lastT) > K.SEEK_JUMP_S) {
+    st.from = st.lastBake;
+    st.fromT = st.lastT;
+    st.asked = now;
+    st.start = -1;
+  }
+  st.lastT = t;
+  st.lastAt = now;
+  const from = st.from;
+  if (from === null) {
+    st.lastBake = bake;
+    return false;
+  }
+  if (st.start < 0) {
+    // A seek within the bake it was drawn from has no other bath to become.
+    if (marbleBakeKey(player, t) === from.key) {
+      st.from = null;
+      st.lastBake = bake;
+      return false;
+    }
+    // Here once the bake is the one for where the playhead landed.
+    const settled = marbleSettledAt(sound, t);
+    const here = bake !== from && bake.key <= settled && settled - bake.key < K.LIVE_MAX;
+    if (!here) {
+      if (now - st.asked > K.SEEK_WAIT_MS) {
+        st.from = null;
+        st.lastBake = bake;
+        return false;
+      }
+      // Held exactly as it was last drawn until the new bath is here.
+      drawBath(canvas, player, from, sound, st.fromT, true, k, inkAlpha, lineAlpha, 0, paints);
+      return true;
+    }
+    st.start = now;
+  }
+  const p = (now - st.start) / K.SEEK_MORPH_MS;
+  if (p >= 1) {
+    st.from = null;
+    st.lastBake = bake;
+    return false;
+  }
+  const shares = morphShares(p);
+  if (shares.from > 0) {
+    drawBath(canvas, player, from, sound, st.fromT, true, k, inkAlpha * shares.from, lineAlpha * shares.from, 0, paints);
+  }
+  if (shares.to > 0) {
+    drawBath(canvas, player, bake, sound, t, true, k, inkAlpha * shares.to, lineAlpha * shares.to, 0, paints);
+  }
+  if (shares.morph > 0) {
+    // Built with the bake on the bath's runtime, or here if it came without.
+    const built = bake.morphs !== null && bake.morphs.seek !== null && bake.morphs.seek.fromKey === from.key ? bake.morphs.seek.morph : null;
+    const morph =
+      built ??
+      cachedMarbleMorph(`seek:${player.id}:${from.key}:${bake.key}:${Math.round(size * 100)}`, () =>
+        buildMarbleMorph(marbleSide(player, size, arrived, from), marbleSide(player, size, arrived, bake), clipR),
+      );
+    drawMarbleMorphFaded(canvas, morph, p, inkAlpha * shares.morph, paints, clipR, null, -1, 0, hairlinePx, built === null ? 1 : marbleUnitPx(size, arrived));
+  }
+  return true;
+}
+
 /**
  * The player: the identity until its sound has risen, then the bath at the
  * playhead; and the nib (the rim and its heard arc are the renderer's clock,
@@ -918,6 +1104,14 @@ export function drawMarblePlayer(
     drawIdentity(canvas, player, k, lineAlpha, inkAlpha, hairlinePx, paints);
     return;
   }
+  if (
+    rising >= 1 &&
+    sound !== null &&
+    drawMarbleSeek(canvas, player, bake, sound, t, motion, size, arrived, k, clipR, inkAlpha, lineAlpha, hairlinePx, paints)
+  ) {
+    drawNib(canvas, player, size, k, t, nib, motion, paints);
+    return;
+  }
   if (rising < 1 && bake.key > 0) {
     // The identity becoming the song so far: the engine's silhouette morph,
     // ring by ring, each end handing over to the real drawing under it.
@@ -929,10 +1123,13 @@ export function drawMarblePlayer(
       drawBath(canvas, player, bake, sound, t, landing, k, inkAlpha * shares.to, lineAlpha * shares.to, 0, paints);
     }
     if (shares.morph > 0) {
-      const morph = cachedMarbleMorph(`rise:${player.id}:${bake.key}:${Math.round(size * 100)}`, () =>
-        buildMarbleMorph(marbleSide(player, size, arrived, null), marbleSide(player, size, arrived, bake), clipR),
-      );
-      drawMarbleMorphFaded(canvas, morph, rising, inkAlpha * shares.morph, paints, clipR);
+      const built = bake.morphs === null ? null : bake.morphs.rise;
+      const morph =
+        built ??
+        cachedMarbleMorph(`rise:${player.id}:${bake.key}:${Math.round(size * 100)}`, () =>
+          buildMarbleMorph(marbleSide(player, size, arrived, null), marbleSide(player, size, arrived, bake), clipR),
+        );
+      drawMarbleMorphFaded(canvas, morph, rising, inkAlpha * shares.morph, paints, clipR, null, -1, 0, hairlinePx, built === null ? 1 : marbleUnitPx(size, arrived));
     }
   } else {
     // Nothing settled yet: the bath is the identity, and what lands, lands.

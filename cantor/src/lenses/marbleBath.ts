@@ -13,6 +13,7 @@ import {
   type MarbleSurface,
 } from './marble';
 import { marbleRingsPath } from './marbleMark';
+import { buildMarbleMorph, ringDepths, type MarbleMorph, type MorphSide } from './marbleMorph';
 import type { MarbleTimedOp } from './marbleTimeline';
 
 /**
@@ -61,6 +62,10 @@ export type MarbleBake = Readonly<{
    * from. What a morph to or from this bath flows (`marbleMorph.ts`).
    */
   rings: readonly (readonly number[])[];
+  /** How deep each of `rings` nests: even is ink, odd a hole (`ringDepths`). */
+  depths: readonly number[];
+  /** Morphs into this bath, built with it; null for a bake asked for none. */
+  morphs: BakeMorphs | null;
 }>;
 
 /** A ring as plain numbers, to cross into the runtime. */
@@ -71,9 +76,35 @@ export type BathInit = Readonly<{
   rings: readonly PlainRing[];
   ops: readonly MarbleTimedOp[];
   extEnd: number;
+  /** The other lenses as morph sides, in the bath's unit (`marbleSides.ts`). */
+  sides?: Readonly<Record<string, MorphSide>>;
+}>;
+
+/** Which morphs into a bake to build with it, beside the other lenses'. */
+export type BakeAsk = Readonly<{
+  /** Into it from another lens: only for a bake the player will draw, not the still one. */
+  pairs: boolean;
+  /** From the identity: the sound's rise. */
+  rise: boolean;
+  /** From the bath at this key: the playhead jumped (a seek); −1 for none. */
+  seekFrom: number;
+  /** From another player's bath: the queue stepped to this song; null for none. */
+  stepFrom: Readonly<{ id: number; key: number }> | null;
+}>;
+
+/**
+ * Morphs into a bake, built by the bath runtime in the bath's unit (a bath's
+ * rings over its extent) so the UI thread only lerps them.
+ */
+export type BakeMorphs = Readonly<{
+  pairs: Readonly<Record<string, MarbleMorph>>;
+  rise: MarbleMorph | null;
+  seek: Readonly<{ fromKey: number; morph: MarbleMorph }> | null;
+  step: Readonly<{ fromId: number; fromKey: number; morph: MarbleMorph }> | null;
 }>;
 
 export type BathState = {
+  sides: Readonly<Record<string, MorphSide>>;
   identity: MarbleSurface;
   ops: readonly MarbleTimedOp[];
   extEnd: number;
@@ -103,6 +134,7 @@ export function bathStateOf(init: BathInit): BathState {
     })),
   };
   return {
+    sides: init.sides ?? {},
     identity,
     ops: init.ops,
     extEnd: init.extEnd,
@@ -214,6 +246,8 @@ export function bathBake(state: BathState, k: number): MarbleBake {
     scale,
     half,
     rings,
+    depths: ringDepths(rings),
+    morphs: null,
   };
 }
 
@@ -230,7 +264,31 @@ function bathsHere(): Map<number, BathState> {
  * from `init` the first time. Null when the runtime no longer holds it and no
  * `init` came: send it again.
  */
-export function bathBakeOn(id: number, init: BathInit | null, k: number): MarbleBake | null {
+/** A bath's ink as a morph side, in its own unit: rings over its extent at `k`. */
+function bathSide(state: BathState, surface: MarbleSurface, k: number): MorphSide {
+  'worklet';
+  const ext = k < state.ops.length ? state.ops[k].ext : state.extEnd;
+  const rings: number[][] = [];
+  for (const ring of surface.rings) {
+    if (!ring.toggle) continue;
+    const out: number[] = [];
+    for (let i = 0; i < ring.pts.length; i++) out.push(ring.pts[i] / ext);
+    rings.push(out);
+  }
+  return { rings, alpha: 1, depth: ringDepths(rings) };
+}
+
+/**
+ * On the bath's runtime: bake player `id`'s bath at `k`, building its state
+ * from `init` the first time, and the morphs `ask` names into it. Null when
+ * the runtime no longer holds it and no `init` came: send it again.
+ */
+export function bathBakeOn(
+  id: number,
+  init: BathInit | null,
+  k: number,
+  ask: BakeAsk | null = null,
+): MarbleBake | null {
   'worklet';
   const baths = bathsHere();
   let state = baths.get(id);
@@ -244,7 +302,37 @@ export function bathBakeOn(id: number, init: BathInit | null, k: number): Marble
       baths.delete(oldest);
     }
   }
-  return bathBake(state, k);
+  if (ask === null) return bathBake(state, k);
+  // The other sides first: `bathBake` leaves the cursor at `k`.
+  const rise = ask.rise ? bathSide(state, state.identity, 0) : null;
+  let seekSide: MorphSide | null = null;
+  if (ask.seekFrom >= 0) seekSide = bathSide(state, copySurface(bathAt(state, ask.seekFrom)), ask.seekFrom);
+  let stepSide: MorphSide | null = null;
+  if (ask.stepFrom !== null) {
+    const other = baths.get(ask.stepFrom.id);
+    if (other !== undefined) stepSide = bathSide(other, copySurface(bathAt(other, ask.stepFrom.key)), ask.stepFrom.key);
+  }
+  const bake = bathBake(state, k);
+  const ext = k < state.ops.length ? state.ops[k].ext : state.extEnd;
+  const here: MorphSide = {
+    rings: bake.rings.map(ring => ring.map(v => v / ext)),
+    alpha: 1,
+    depth: bake.depths,
+  };
+  const pairs: Record<string, MarbleMorph> = {};
+  if (ask.pairs) for (const key of Object.keys(state.sides)) pairs[key] = buildMarbleMorph(state.sides[key], here, 1);
+  return {
+    ...bake,
+    morphs: {
+      pairs,
+      rise: rise === null || k === 0 ? null : buildMarbleMorph(rise, here, 1),
+      seek: seekSide === null ? null : { fromKey: ask.seekFrom, morph: buildMarbleMorph(seekSide, here, 1) },
+      step:
+        stepSide === null || ask.stepFrom === null
+          ? null
+          : { fromId: ask.stepFrom.id, fromKey: ask.stepFrom.key, morph: buildMarbleMorph(stepSide, here, 1) },
+    },
+  };
 }
 
 /** On the bath's runtime: warm player `id`'s keyframes; true once done (or gone). */
