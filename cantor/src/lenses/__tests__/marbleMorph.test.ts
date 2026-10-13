@@ -162,6 +162,31 @@ describe("marbling's morphs", () => {
     expectNoPop(steps);
   });
 
+  it('morphs the singing circle into marbling, from the contour it is drawn as', () => {
+    const circle = lensIndex('name');
+    const marble = lensIndex('marble');
+    const pair = LENS_PAIRS.find(p => p.a === circle && p.b === marble)!;
+    const circlePlayer = LENSES[circle].player(A, undefined, null, track);
+    const circleIdentity = LENSES[circle].identity(A);
+    const marbleIdentity = LENSES[marble].identity(A);
+    const morph = (t: number) =>
+      raster(c =>
+        pair.drawPlayer(c, circleIdentity, circlePlayer, marbleIdentity, a, t, SIZE, 1, 1, 1, 1, -1, 1, T / a.duration, 1, paints(), frameA),
+      );
+    const circleAlone = raster(c =>
+      LENSES[circle].ui.drawPlayer(c, circlePlayer, circleIdentity, SIZE, 1, 1, 1, 1, -1, 1, T / a.duration, 1, paints(), frameA),
+    );
+    expect(diff(morph(0), circleAlone)).toBe(0);
+    const steps: number[] = [];
+    let last = morph(0);
+    for (let i = 1; i <= STEPS; i++) {
+      const next = morph(i / STEPS);
+      steps.push(diff(last, next));
+      last = next;
+    }
+    expectNoPop(steps);
+  });
+
   it('has a morph for every lens marbling meets', () => {
     const marble = lensIndex('marble');
     for (const lens of LENSES) {

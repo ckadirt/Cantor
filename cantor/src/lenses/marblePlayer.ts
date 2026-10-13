@@ -780,12 +780,14 @@ export function drawMarbleMorphFaded(
   alpha: number,
   paints: PlayerPaints,
   clipR: number,
+  live: readonly number[] | null = null,
+  liveRing = -1,
 ): void {
   'worklet';
   if (alpha <= 0) return;
   const bounds = Skia.XYWHRect(-clipR - 2, -clipR - 2, clipR * 2 + 4, clipR * 2 + 4);
   canvas.saveLayer(undefined, bounds);
-  drawMarbleMorphPaths(canvas, morph, t, alpha, paints);
+  drawMarbleMorphPaths(canvas, morph, t, alpha, paints, live, liveRing);
   const mask = Skia.Paint();
   mask.setBlendMode(BlendMode.DstIn);
   mask.setShader(EDGE_EFFECT.makeShader([clipR]));
