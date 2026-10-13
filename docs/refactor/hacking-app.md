@@ -304,7 +304,12 @@ drawing thread), every fourth op; a runtime shader (`MARBLE_SKSL`) runs the
 inverse of the ops between the bake and the playhead per pixel and tints the
 image. Rings are refined as ops stretch them (`applyMarbleOpRefined`) or
 combs leave chords across the pattern. The seek is the seal's rim, by angle
-anywhere on the disc.
+anywhere on the disc. Its morphs are all one gesture, a drop (`enterDrop`,
+`drawMarblePlayer`'s `push`): the sound rising, the queue's step
+(`drawMarbleMorph`) and a pair with every other lens (`marbleArrivesOver` in
+`pairs.ts`, which records the other lens's player, draws it into an image at the
+screen's density — a picture shader as a runtime effect's child is sampled
+without it on the phone — and pushes it through the same shader).
 `analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
 (side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
 **The motion track and the frame** (docs/interfacealpha/reactive-player-plan.md).
