@@ -16,8 +16,8 @@ import type { Lens } from './types';
 export const LENSES: readonly Lens[] = [
   nameLens,
   sealLens,
-  coverLens,
   marbleLens,
+  coverLens,
 ];
 
 /**
