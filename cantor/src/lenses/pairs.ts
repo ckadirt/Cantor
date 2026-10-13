@@ -28,7 +28,6 @@ import {
   cachedMarbleMorph,
   circleRing,
   morphShares,
-  pathRings,
   type MorphSide,
 } from './marbleMorph';
 import {
@@ -543,23 +542,45 @@ function sealSide(
   return { rings, alpha };
 }
 
-/** The circle's side: its face, filled, round the paper well the clock runs in. */
+/**
+ * The circle's side: its face, filled, round the paper well the clock runs in.
+ * The face is its own 96 samples, kept as they are (`fixed`), so the morph can
+ * take the contour the circle is drawn as each frame, singing (`circleLive`).
+ * An imported song's spindle is a hairline in the well, not ink: left out.
+ */
 function circleSide(
   player: LensPlayer | null,
-  identity: LensIdentity,
+  _identity: LensIdentity,
   size: number,
   arrived: number,
 ): MorphSide | null {
   'worklet';
-  const rings = pathRings(identity as SkPath, size);
-  if (rings.length === 0) return null;
-  const spindle = isCirclePlayer(player) ? player.spindle : 0;
-  const well =
-    NAME_LENS_KNOBS.MARK_RADIUS_PX *
-    size *
-    Math.max(spindle, CIRCLE_BODY_KNOBS.WELL_RATIO * smootherstep(arrived));
+  if (!isCirclePlayer(player)) return null;
+  const R = NAME_LENS_KNOBS.MARK_RADIUS_PX * size;
+  const rings: number[][] = [circleStillPoints(player, R)];
+  const well = NAME_LENS_KNOBS.MARK_RADIUS_PX * size * Math.max(player.spindle, CIRCLE_BODY_KNOBS.WELL_RATIO * smootherstep(arrived));
   if (well > 0.5) rings.push(circleRing(0, 0, well, 48));
-  return { rings, alpha: 1 };
+  return { rings, alpha: 1, fixed: 0 };
+}
+
+/** The circle's face as `drawCirclePlayer` draws it this frame, in px. */
+function circleLive(
+  player: LensPlayer | null,
+  size: number,
+  arrived: number,
+  motion: MotionFrame | null,
+): number[] | null {
+  'worklet';
+  if (!isCirclePlayer(player)) return null;
+  const R = NAME_LENS_KNOBS.MARK_RADIUS_PX * size;
+  const amount = motion === null ? 0 : motion.presence * arrived;
+  return motion !== null && amount > 0 ? circleMotionPoints(player, motion, amount, R) : circleStillPoints(player, R);
+}
+
+/** No live contour: the side is still. */
+function noLive(): number[] | null {
+  'worklet';
+  return null;
 }
 
 /**
@@ -572,7 +593,12 @@ function circleSide(
  * Where either side has nothing to morph (no marbling model, no seal model)
  * it is the drop (`marbleArrivesOver`).
  */
-function marbleMorphsWith(drawOther: PlayerDraw, sideOf: SideOf, kind: string) {
+function marbleMorphsWith(
+  drawOther: PlayerDraw,
+  sideOf: SideOf,
+  kind: string,
+  liveOf: (player: LensPlayer | null, size: number, arrived: number, motion: MotionFrame | null) => number[] | null = noLive,
+) {
   const drop = marbleArrivesOver(drawOther);
   return (
     canvas: SkCanvas,
@@ -615,7 +641,8 @@ function marbleMorphsWith(drawOther: PlayerDraw, sideOf: SideOf, kind: string) {
         () => buildMarbleMorph(from, marbleSide(m, size, arrived, bath), clipR),
       );
       const ink = alpha * (fill + (1 - fill) * arrived);
-      drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR);
+      const live = liveOf(otherPlayer, size, arrived, motionShare(motion, leavingMotion(t)));
+      drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR, live, from.fixed ?? -1);
     }
   };
 }
@@ -624,7 +651,7 @@ export const PAIR_MORPHS: readonly LensPairMorph[] = [
   { a: 'name', b: 'seal', drawPlayer: drawCircleSealMorph },
   { a: 'name', b: 'cover', drawPlayer: drawCircleCoverMorph },
   { a: 'seal', b: 'cover', drawPlayer: drawSealCoverMorph },
-  { a: 'name', b: 'marble', drawPlayer: marbleMorphsWith(drawCirclePlayer, circleSide, 'circle') },
+  { a: 'name', b: 'marble', drawPlayer: marbleMorphsWith(drawCirclePlayer, circleSide, 'circle', circleLive) },
   { a: 'seal', b: 'marble', drawPlayer: marbleMorphsWith(drawSealAsPlayer, sealSide, 'seal') },
   { a: 'cover', b: 'marble', drawPlayer: marbleArrivesOver(drawCoverPlayer) },
 ];

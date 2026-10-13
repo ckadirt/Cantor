@@ -27,12 +27,12 @@ export const MARBLE_MORPH_KNOBS = {
   /** How long each end hands over to the real drawing, of the clock. */
   HAND_OVER: 0.16,
   /** About how far apart a ring's points stand, px. */
-  SEG_PX: 4,
+  SEG_PX: 5,
   /** Points per ring, at least and at most. */
   MIN_POINTS: 8,
   MAX_POINTS: 192,
   /** The most points a morph holds, all rings together: its cost per frame. */
-  BUDGET: 6000,
+  BUDGET: 4000,
   /** Rings smaller than this, px², shrink to a point rather than pair. */
   MIN_AREA_PX2: 2,
   /** How much of the clock a ring with no partner takes to go, or to come. */
@@ -44,6 +44,12 @@ export type MorphSide = Readonly<{
   rings: readonly (readonly number[])[];
   /** Each ring's alpha (the seal's dots still to come are grey), or one for all. */
   alpha: readonly number[] | number;
+  /**
+   * A ring kept as it is, never resampled — its partner is resampled to it —
+   * so the drawing can hand the morph that ring's points live each frame (the
+   * circle's face, singing). Index into `rings`; only on the `from` side.
+   */
+  fixed?: number;
 }>;
 
 /**
@@ -63,6 +69,8 @@ export type MarbleMorph = Readonly<{
   w1: number[];
   aFrom: number[];
   aTo: number[];
+  /** Where in `from.rings` each ring came from, or -1 for one grown from a point. */
+  fromRing: number[];
 }>;
 
 function ringArea(r: readonly number[]): number {
@@ -213,7 +221,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
   const a = order(from);
   const b = order(to);
   const taken = new Array<boolean>(b.length).fill(false);
-  type Pair = { a: number[] | null; b: number[] | null; aAlpha: number; bAlpha: number; centre: [number, number]; want: number };
+  type Pair = { a: number[] | null; b: number[] | null; aAlpha: number; bAlpha: number; centre: [number, number]; want: number; fromRing: number };
   const pairs: Pair[] = [];
   for (const entry of a) {
     let pick = -1;
@@ -242,6 +250,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
       bAlpha: pick >= 0 ? alphaOf(to, b[pick].index) : alphaOf(from, entry.index),
       centre: entry.centre,
       want: length / K.SEG_PX,
+      fromRing: entry.index,
     });
   }
   for (let j = 0; j < b.length; j++) {
@@ -253,6 +262,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
       bAlpha: alphaOf(to, b[j].index),
       centre: b[j].centre,
       want: ringLength(b[j].ring) / K.SEG_PX,
+      fromRing: -1,
     });
   }
   // Points per pair, by length, within the budget.
@@ -264,7 +274,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
     for (let i = 0; i < n; i++) out.push(x, y);
     return out;
   };
-  const morph: { from: number[]; to: number[]; starts: number[]; w0: number[]; w1: number[]; aFrom: number[]; aTo: number[] } = {
+  const morph: { from: number[]; to: number[]; starts: number[]; w0: number[]; w1: number[]; aFrom: number[]; aTo: number[]; fromRing: number[] } = {
     from: [],
     to: [],
     starts: [],
@@ -272,15 +282,19 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
     w1: [],
     aFrom: [],
     aTo: [],
+    fromRing: [],
   };
   for (const pair of pairs) {
-    const n = Math.max(
-      K.MIN_POINTS,
-      Math.round(Math.max(K.MIN_POINTS, Math.min(K.MAX_POINTS, pair.want)) * squeeze),
-    );
+    const fixed = pair.a !== null && from.fixed !== undefined && pair.fromRing === from.fixed;
+    const n = fixed
+      ? pair.a!.length >> 1
+      : Math.max(
+          K.MIN_POINTS,
+          Math.round(Math.max(K.MIN_POINTS, Math.min(K.MAX_POINTS, pair.want)) * squeeze),
+        );
     const centreA = pair.a !== null ? ringCentre(pair.a) : null;
     const centreB = pair.b !== null ? ringCentre(pair.b) : null;
-    const ra = pair.a !== null ? resampleRing(pair.a, n) : point(centreB![0], centreB![1], n);
+    const ra = fixed ? pair.a! : pair.a !== null ? resampleRing(pair.a, n) : point(centreB![0], centreB![1], n);
     let rb = pair.b !== null ? resampleRing(pair.b, n) : point(centreA![0], centreA![1], n);
     if (pair.a !== null && pair.b !== null) rb = alignRing(ra, rb);
     morph.starts.push(morph.from.length);
@@ -293,6 +307,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
     morph.w1.push(pair.b === null ? K.ALONE_WINDOW : 1);
     morph.aFrom.push(pair.aAlpha);
     morph.aTo.push(pair.bAlpha);
+    morph.fromRing.push(pair.fromRing);
   }
   morph.starts.push(morph.from.length);
   return morph;
@@ -326,6 +341,9 @@ export function drawMarbleMorphPaths(
   t: number,
   alpha: number,
   paints: PlayerPaints,
+  /** The `from` side's fixed ring as drawn this frame (`MorphSide.fixed`), or null. */
+  live: readonly number[] | null = null,
+  liveRing = -1,
 ): void {
   'worklet';
   if (alpha <= 0) return;
@@ -349,9 +367,12 @@ export function drawMarbleMorphPaths(
     }
     const start = morph.starts[r];
     const end = morph.starts[r + 1];
+    const own = live !== null && liveRing >= 0 && morph.fromRing[r] === liveRing && live.length === end - start;
     for (let i = start; i < end; i += 2) {
-      const px = morph.from[i] + (morph.to[i] - morph.from[i]) * e;
-      const py = morph.from[i + 1] + (morph.to[i + 1] - morph.from[i + 1]) * e;
+      const fx = own ? live![i - start] : morph.from[i];
+      const fy = own ? live![i - start + 1] : morph.from[i + 1];
+      const px = fx + (morph.to[i] - fx) * e;
+      const py = fy + (morph.to[i + 1] - fy) * e;
       if (i === start) builder.moveTo(px, py);
       else builder.lineTo(px, py);
     }
