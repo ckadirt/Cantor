@@ -274,6 +274,13 @@ export type LensUi = Readonly<{
   /** The player's clock; see `ClockShape`. */
   clock: ClockShape;
   /**
+   * Which version of the player's slow layer the playhead at `seconds` needs
+   * (`Lens.bake`), or -1 for none. An integer that changes rarely — once a
+   * bar, not once a frame — because the renderer bakes on the JS thread
+   * every time it does. Optional: a lens without one has no slow layer.
+   */
+  bakeKey?: (player: LensPlayer | null, seconds: number) => number;
+  /**
    * The player becoming another song's in this same lens: the queue moving
    * on while the camera stays at L2 (`FIELD_CAMERA_KNOBS.STEP_STYLE`). `t`
    * runs 0 → 1 from `a`'s song to `b`'s, already eased, and at 0 it must look

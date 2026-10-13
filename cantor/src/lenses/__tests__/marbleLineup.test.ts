@@ -3,7 +3,7 @@ import { FACE_FILL_ALPHA, FACE_STROKE_ALPHA, NAME_LENS_KNOBS, nameLens } from '.
 import { sealLens } from '../sealLens';
 import { faceSeed, hash, mulberry32, type FaceRecipe } from '../face';
 import { ARRIVING_NONE, type MarkPaints } from '../contract';
-import { MARBLE_MARK_REACH_PX, drawMarbleMark, marbleMarkOf } from '../marbleLens';
+import { MARBLE_MARK_REACH_PX, drawMarbleMark, marbleMarkOf } from '../marbleMark';
 
 /*
  * The marbling plan's M0 line-up (docs/interfacealpha/marbling-plan.md): the
