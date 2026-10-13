@@ -642,7 +642,7 @@ function marbleMorphsWith(
       );
       const ink = alpha * (fill + (1 - fill) * arrived);
       const live = liveOf(otherPlayer, size, arrived, motionShare(motion, leavingMotion(t)));
-      drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR, live, from.fixed ?? -1);
+      drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR, live, from.fixed ?? -1, 1 - smootherstep(t));
     }
   };
 }
