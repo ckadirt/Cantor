@@ -13,3 +13,4 @@ export * from './cover';
 export * from './coverLens';
 export * from './marble';
 export * from './marbleLens';
+export * from './marbleTimeline';
