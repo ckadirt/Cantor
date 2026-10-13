@@ -1,12 +1,15 @@
 import {
   FilterMode,
+  MipmapMode,
   Skia,
   TileMode,
   type SkCanvas,
   type SkPath,
   type SkPicture,
   type SkShader,
+  type SkSurface,
 } from '@shopify/react-native-skia';
+import { PixelRatio } from 'react-native';
 import { makeMutable, type SharedValue } from 'react-native-reanimated';
 import {
   createWorkletRuntime,
@@ -98,6 +101,8 @@ export const MARBLE_PLAYER_KNOBS = {
   NIB_EDGE_PX: 1.2,
   NIB_LINE_ALPHA: 0.45,
   NIB_LINE_PX: 0.7,
+  /** The most screen px per dp another lens is drawn at to be pushed. */
+  PUSH_MAX_DENSITY: 3,
   /** Keyframes are warmed in slices this long, this far apart, on the JS thread. */
   WARM_SLICE_MS: 8,
   WARM_GAP_MS: 40,
@@ -651,11 +656,33 @@ function drawBath(
   drawShaded(canvas, u, bake.shader, clipR);
 }
 
+/** Screen px per dp: the field's recording is played back at this scale. */
+const DENSITY = PixelRatio.get();
+
+/** The surface another lens is drawn into to be pushed, kept between frames on the UI thread. */
+function pushSurface(side: number): SkSurface | null {
+  'worklet';
+  const g = globalThis as unknown as { __marblePush?: { side: number; surface: SkSurface | null } };
+  if (g.__marblePush === undefined || g.__marblePush.side !== side) {
+    g.__marblePush = {
+      side,
+      surface: Skia.Surface.MakeOffscreen(side, side) ?? Skia.Surface.Make(side, side),
+    };
+  }
+  return g.__marblePush.surface;
+}
+
 /**
  * Another lens's player, recorded, pushed aside by marbling's drop `push` px
  * wide and faded past the bath's edge: how anything that is not marbling
  * leaves when marbling arrives (`pairs.ts`). The picture is recorded with its
- * centre at (`reach`, `reach`) — a picture shader's tile starts at its origin.
+ * centre at (`reach`, `reach`).
+ *
+ * Drawn into an image at the screen's own density first, and read by the
+ * shader with coordinates it maps itself, as the bath is: a picture shader as
+ * the shader's child was sampled without the screen's scale on the phone (a
+ * magnified corner of it), since this is recorded into the field's picture
+ * and played back at the density later.
  */
 export function drawPushedPicture(
   canvas: SkCanvas,
@@ -667,10 +694,28 @@ export function drawPushedPicture(
   paints: PlayerPaints,
 ): void {
   'worklet';
-  const centre = Skia.Matrix();
-  centre.translate(-reach, -reach);
-  const child = picture.makeShader(TileMode.Decal, TileMode.Decal, FilterMode.Linear, centre);
-  const u = uniformsOf(1, 1, 0, 1, lineAlpha, paints.fill.getColor(), 1, clipR, 0.5, 1);
+  const m = canvas.getTotalMatrix().get();
+  const scale = Math.sqrt(Math.abs(m[0] * m[4] - m[1] * m[3])) || 1;
+  const d = Math.min(MARBLE_PLAYER_KNOBS.PUSH_MAX_DENSITY, Math.max(1, scale * DENSITY));
+  const side = Math.ceil(2 * reach * d);
+  const surface = pushSurface(side);
+  if (surface === null) {
+    canvas.save();
+    canvas.translate(-reach, -reach);
+    canvas.drawPicture(picture);
+    canvas.restore();
+    return;
+  }
+  const target = surface.getCanvas();
+  target.clear(Skia.Color('transparent'));
+  target.save();
+  target.scale(d, d);
+  target.drawPicture(picture);
+  target.restore();
+  surface.flush();
+  const image = surface.makeImageSnapshot();
+  const child = image.makeShaderOptions(TileMode.Decal, TileMode.Decal, FilterMode.Linear, MipmapMode.None);
+  const u = uniformsOf(1, d, reach * d, 1, lineAlpha, paints.fill.getColor(), 1, clipR, 0.5, 1);
   u[11] = push > 0 ? pushDrop(u, 0, push) : 0;
   drawShaded(canvas, u, child, reach);
 }

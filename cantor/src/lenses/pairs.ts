@@ -469,7 +469,7 @@ function marbleArrivesOver(drawOther: PlayerDraw) {
     if (r <= 0.01) {
       drawOther(canvas, otherPlayer, other, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, leaving);
     } else if (t < 1) {
-      const reach = clipR * 1.6;
+      const reach = clipR * 1.25;
       const recorder = Skia.PictureRecorder();
       const target = recorder.beginRecording(Skia.XYWHRect(0, 0, reach * 2, reach * 2));
       target.translate(reach, reach);
