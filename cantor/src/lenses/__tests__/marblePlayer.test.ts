@@ -106,7 +106,14 @@ describe('marbling as the player', () => {
     expect(marblePlayerOf(RECIPE, undefined, null, track)).toBe(player);
     expect(marblePlayerOf(RECIPE, undefined, null, null).sound).toBeNull();
     expect(marbleBakeKey(player, 0)).toBe(0);
-    expect(marbleBakeKey(player, track.duration + 1)).toBe(sound.ops.length);
+    const end = sound.ops.length;
+    expect(marbleBakeKey(player, track.duration + 1)).toBe(end - (end % MARBLE_PLAYER_KNOBS.BAKE_EVERY));
+    // Every key leaves at most BAKE_EVERY − 1 settled ops for the shader.
+    for (let t = 0; t < track.duration; t += 1.3) {
+      const lag = marbleSettledAt(sound, t) - marbleBakeKey(player, t);
+      expect(lag).toBeGreaterThanOrEqual(0);
+      expect(lag).toBeLessThan(MARBLE_PLAYER_KNOBS.BAKE_EVERY);
+    }
     expect(marbleBakeKey(marblePlayerOf(RECIPE, undefined, null, null), 50)).toBe(-1);
     expect(marbleLens.player(RECIPE, undefined, null, track)).toBe(player);
   });
@@ -124,8 +131,11 @@ describe('marbling as the player', () => {
   });
 
   it('draws the settled bath as the CPU does', () => {
-    const t = 100;
-    const k = marbleSettledAt(sound, t);
+    // Baked a few ops behind, as it is on the phone: the shader lands the rest.
+    let t = 100;
+    while (marbleSettledAt(sound, t) % MARBLE_PLAYER_KNOBS.BAKE_EVERY === 0) t += 0.5;
+    const k = marbleBakeKey(player, t);
+    expect(marbleSettledAt(sound, t)).toBeGreaterThan(k);
     expect(agreement(t, k, 'settled')).toBeGreaterThan(0.985);
   });
 
@@ -133,7 +143,7 @@ describe('marbling as the player', () => {
     // A section start: its comb is landing over its first bar, with bars' drops inside it.
     const section = track.sections[3];
     const t = section.t0 + 0.6 * (240 / track.bpm);
-    const k = marbleSettledAt(sound, t);
+    const k = marbleBakeKey(player, t);
     const live = sound.ops.slice(k).filter(o => o.t <= t);
     expect(live.some(o => o.op.kind === 'tine')).toBe(true);
     expect(agreement(t, k, 'comb')).toBeGreaterThan(0.985);
@@ -142,7 +152,7 @@ describe('marbling as the player', () => {
   it('lands a bullseye as the CPU does', () => {
     const drop = track.drops[1];
     const t = drop.t + 0.2;
-    const k = marbleSettledAt(sound, t);
+    const k = marbleBakeKey(player, t);
     expect(agreement(t, k, 'bullseye')).toBeGreaterThan(0.985);
   });
 
@@ -166,7 +176,7 @@ describe('marbling as the player', () => {
     const other = marblePlayerOf({ ...RECIPE, id: 'song-b', seed: 99 }, undefined, null, track);
     expect(other.baked.value).toBeNull();
     for (const key of [3, 7, 12]) marbleLens.bake!(other, key);
-    for (let i = 0; i < 6; i++) await new Promise(resolve => setTimeout(resolve, 0));
+    for (let i = 0; i < 6; i++) await new Promise<void>(resolve => setTimeout(() => resolve(), 0));
     expect(other.baked.value?.key).toBe(12);
   });
 

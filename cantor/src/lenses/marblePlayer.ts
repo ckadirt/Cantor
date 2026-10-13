@@ -74,8 +74,16 @@ export const MARBLE_PLAYER_KNOBS = {
    */
   CLIP_RATIO: 1.04,
   EDGE_FADE: 0.14,
-  /** The most ops the shader lands at once; a bar's drop and its comb is two. */
+  /** The most ops the shader lands at once. */
   LIVE_MAX: 8,
+  /**
+   * How many settled ops a bake may lag behind: the shader draws the rest,
+   * landed, exactly. Re-baking is a long CPU raster on the bath's runtime,
+   * which on the Xiaomi cost frames while it ran; every fourth op is once
+   * every ~8 s instead of every bar. A bar's drop, its comb and a bullseye's
+   * two drops still leave room under `LIVE_MAX`.
+   */
+  BAKE_EVERY: 4,
   /** The nib: where the next bar's ink falls, on a hairline from the rim. */
   NIB_RADIUS_PX: 2.6,
   NIB_BEAT_PX: 1.6,
@@ -200,13 +208,17 @@ export function marblePlayerOf(
   return player;
 }
 
-/** Which bake the playhead at `seconds` needs: the settled ops, or -1 without a sound. */
+/**
+ * Which bake the playhead at `seconds` needs: the settled ops, rounded down
+ * to `BAKE_EVERY`, or -1 without a sound.
+ */
 export function marbleBakeKey(player: LensPlayer | null, seconds: number): number {
   'worklet';
   if (player === null) return -1;
   const sound = (player as MarblePlayer).sound;
   if (sound === null) return -1;
-  return marbleSettledAt(sound, seconds);
+  const settled = marbleSettledAt(sound, seconds);
+  return settled - (settled % MARBLE_PLAYER_KNOBS.BAKE_EVERY);
 }
 
 /** A bath on this thread, for tests and tools: the same worklets, inline. */
