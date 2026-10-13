@@ -47,6 +47,12 @@ export const MARBLE_MORPH_KNOBS = {
   ROLE_COST: 3,
   /** How many of the rings left each ring looks at for a partner. */
   LOOK: 24,
+  /**
+   * About how many px the bath's unit (its extent) stands at on a phone's
+   * player: what the bath's runtime builds a morph's points for, before it
+   * knows the size it will be drawn at.
+   */
+  UNIT_PX: 150,
   /** Points along a curve when a path is read as rings. */
   CURVE_STEPS: 4,
 } as const;
@@ -259,7 +265,13 @@ function alphaOf(side: MorphSide, index: number): number {
  * no partner flows into (or out of) the nearest shape on the other side,
  * shrinking to a point as it gets there.
  */
-export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number): MarbleMorph {
+export function buildMarbleMorph(
+  from: MorphSide,
+  to: MorphSide,
+  reach: number,
+  /** px per the sides' unit, for how many points a ring needs: 1 for sides in px. */
+  unitPx = 1,
+): MarbleMorph {
   'worklet';
   const K = MARBLE_MORPH_KNOBS;
   const order = (side: MorphSide) =>
@@ -277,7 +289,8 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
   const a = order(from);
   const b = order(to);
   const small = (entry: { area: number }, side: MorphSide) =>
-    side.lines !== true && entry.area < K.MIN_AREA_PX2;
+    side.lines !== true && entry.area * unitPx * unitPx < K.MIN_AREA_PX2;
+  const seg = K.SEG_PX / unitPx;
   const taken = new Array<boolean>(b.length).fill(false);
   type Pair = {
     a: number[] | null;
@@ -338,7 +351,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
       b: pick >= 0 ? b[pick].ring : null,
       aAlpha: alphaOf(from, entry.index),
       bAlpha: pick >= 0 ? alphaOf(to, b[pick].index) : alphaOf(from, entry.index),
-      want: length / K.SEG_PX,
+      want: length / seg,
       fromRing: entry.index,
       order: from.order === undefined ? -1 : from.order[entry.index] ?? -1,
       toward: pick >= 0 ? null : nearestCentre(entry.centre[0], entry.centre[1], b),
@@ -351,7 +364,7 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
       b: b[j].ring,
       aAlpha: alphaOf(to, b[j].index),
       bAlpha: alphaOf(to, b[j].index),
-      want: ringLength(b[j].ring) / K.SEG_PX,
+      want: ringLength(b[j].ring) / seg,
       fromRing: -1,
       order: -1,
       toward: nearestCentre(b[j].centre[0], b[j].centre[1], a),

@@ -12,6 +12,7 @@ import {
 import { load, trackOf } from '../motion/__fixtures__/referenceTrack';
 import { motionFrameAt } from '../motion/motionFrame';
 import { LENS_PAIRS, lensIndex, LENSES } from '../registry';
+import { MARBLE_MORPH_KNOBS } from '../marbleMorph';
 import { drawSealAsPlayer } from '../sealLens';
 
 declare const require: (name: string) => { writeFileSync: (path: string, data: Uint8Array) => void };
@@ -287,6 +288,11 @@ describe("marbling's morphs", () => {
     marbleLens.bake!(x, 0);
     await landed(x, 0);
     expect(x.baked.value!.morphs!.seek?.fromKey).toBe(44);
+    // Built in the bath's unit, not px: its rings get their share of points,
+    // not each the least (they were 8-point shards on the phone).
+    const seek = x.baked.value!.morphs!.seek!.morph;
+    const rings = seek.starts.length - 1;
+    expect(seek.from.length / 2 / rings).toBeGreaterThan(MARBLE_MORPH_KNOBS.MIN_POINTS * 2);
     // The next song's first bake carries the step from this one.
     marbleLens.bake!(x, 8);
     await landed(x, 8);
