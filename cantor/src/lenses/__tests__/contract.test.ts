@@ -8,6 +8,7 @@
  */
 import { analyseWindow } from '../analysis';
 import { LENSES, LENS_PAIRS, LENS_UI, lensIndex } from '../registry';
+import { load, trackOf } from '../motion/__fixtures__/referenceTrack';
 
 const recipe = { seed: 7, id: 'song-a', model: 'light', durationMs: 60_000 };
 
@@ -58,6 +59,7 @@ describe('the lens contract', () => {
         },
       ],
     });
+    const track = trackOf(load('form-48k'));
     for (const lens of LENSES) {
       const quiet = lens.player(recipe, undefined, null);
       if (quiet === null) continue; // its player is its mark, grown
@@ -65,7 +67,9 @@ describe('the lens contract', () => {
       // The circle's sound is the renderer's ring of ticks: its player is
       // only its face's numbers, for the motion (`circleMotion.ts`).
       if (lens.key === 'name') continue;
-      expect(lens.player(recipe, measured, null)?.sound).not.toBeNull();
+      // Measured: the analysis, and the motion track (marbling's sound is
+      // built from the bars).
+      expect(lens.player(recipe, measured, null, track)?.sound).not.toBeNull();
     }
     expect(LENSES[lensIndex('seal')].player(recipe, undefined, null)).not.toBeNull();
     expect(LENSES[lensIndex('name')].player(recipe, measured, null)?.sound).toBeNull();

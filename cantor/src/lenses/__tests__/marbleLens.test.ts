@@ -2,7 +2,8 @@ import { Skia, type SkCanvas } from '@shopify/react-native-skia';
 import { ARRIVING_NONE, arrivingHeld, type MarkPaints } from '../contract';
 import type { FaceRecipe } from '../face';
 import { marbleIdentity } from '../marble';
-import { MARBLE_MARK_REACH_PX, marbleLens, marbleMarkOf } from '../marbleLens';
+import { marbleLens } from '../marbleLens';
+import { MARBLE_MARK_REACH_PX, marbleMarkOf } from '../marbleMark';
 import { LENSES, lensOffered } from '../registry';
 
 const RECIPE: FaceRecipe = { seed: 4242, id: 'song-a', model: 'light', durationMs: 214_000 };

@@ -3,6 +3,7 @@ import type { SongAnalysis } from './analysis';
 import type { LensIdentity, LensPlayer, LensTouchUi, LensUi } from './contract';
 import type { CoverArt } from './cover';
 import type { FaceRecipe } from './face';
+import type { MotionTrack } from './motion/motionTrack';
 
 /** Renderer-ready facts about a song. Runtime objects are never imported here. */
 export type LensSong = Readonly<{
@@ -86,13 +87,28 @@ export type Lens = Readonly<{
    * JS thread, for the one song the camera is in: the player's model at the
    * lens's deepest, with its sound once `analysis` is measured — or null when
    * this lens's player is its mark grown. `cover` is the song's album cover
-   * as glyph levels (`cover.ts`), or null for a song with none.
+   * as glyph levels (`cover.ts`), or null for a song with none. `track` is
+   * its motion track (`lenses/motion/`), or null until it is measured: a
+   * lens whose sound is built from the bars rather than the analysis —
+   * marbling's drops — reads it here, once, rather than from the frame.
    */
   player: (
     recipe: FaceRecipe,
     analysis: SongAnalysis | undefined,
     cover: CoverArt | null,
+    track?: MotionTrack | null,
   ) => LensPlayer | null;
+  /**
+   * JS thread: a player's slow layer, brought to `key` (`LensUi.bakeKey`).
+   *
+   * Optional. A lens whose player is too costly to rebuild every frame but
+   * changes as the playhead moves — marbling's settled bath, which changes
+   * once a bar — rebuilds it here and hands it to its own `drawPlayer`
+   * through the player (a shared value it made in `player`). The renderer
+   * calls it whenever the key changes while the lens is showing; calls may
+   * come faster than a lens can bake, so a lens coalesces them.
+   */
+  bake?: (player: LensPlayer, key: number) => void;
   /** UI thread: worklets only. */
   ui: LensUi;
   /** JS thread: what a finger on the player means. */

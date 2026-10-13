@@ -12,5 +12,7 @@ export * from './types';
 export * from './cover';
 export * from './coverLens';
 export * from './marble';
+export * from './marbleMark';
 export * from './marbleLens';
+export * from './marblePlayer';
 export * from './marbleTimeline';

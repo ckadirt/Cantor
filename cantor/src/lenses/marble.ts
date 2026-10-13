@@ -280,6 +280,175 @@ export function applyMarbleOp(
   }
 }
 
+/** Where one op, fully landed, moves (`x`, `y`). */
+function opForward(op: MarbleOp, x: number, y: number, out: [number, number]): void {
+  if (op.kind === 'drop') {
+    dropForward(x, y, op.x, op.y, op.r, out);
+  } else {
+    tineForward(x, y, op, 1, out);
+  }
+}
+
+/** How deep a segment may be split in one op: 2⁶ pieces at most. */
+const REFINE_DEPTH = 6;
+/** How much coarser a ring may be where it is never seen. */
+const FAR_COARSE = 10;
+/**
+ * A segment as long as `FLAT_LONG` of `maxSeg` stays whole while it bends
+ * less than `FLAT_TOL` of it: a ring needs points where it curves, not where
+ * a comb has drawn it straight.
+ */
+const FLAT_LONG = 8;
+const FLAT_TOL = 0.08;
+
+/**
+ * `applyMarbleOp` for a landed op, keeping every ring's segments under
+ * `maxSeg`: where the op stretches a segment past it, the segment's own
+ * midpoint before the op is pushed through as well, recursively; where it
+ * leaves points closer than a third of it, they are merged.
+ *
+ * A comb stretches a ring many times over, and its few points then stand far
+ * apart: drawn as polygons, the chords cut straight across the pattern and
+ * across their neighbours. Refined, the polygon stays the curve. For the
+ * player's bath only; the mark is too small to need it.
+ */
+export function applyMarbleOpRefined(
+  surface: MarbleSurface,
+  op: MarbleOp,
+  maxSeg: number,
+  /**
+   * Past this radius the bath is never seen again — drops only push ink
+   * outward — so segments there may be `FAR_COARSE` times longer. 0 is none.
+   */
+  far = 0,
+): void {
+  const rings = surface.rings;
+  let added: MarbleRing | null = null;
+  if (op.kind === 'drop') {
+    // Its colour's ground first, as `applyMarbleOp` finds it.
+    let ground = false;
+    for (let index = rings.length - 1; index >= 0; index -= 1) {
+      if (insideRing(rings[index].pts, op.x, op.y)) {
+        ground = rings[index].ink;
+        break;
+      }
+    }
+    const points = Math.max(op.points, Math.ceil((Math.PI * 2 * op.r) / maxSeg));
+    const pts = new Float64Array(points * 2);
+    for (let i = 0; i < points; i += 1) {
+      const a = (i / points) * Math.PI * 2;
+      pts[2 * i] = op.x + Math.cos(a) * op.r;
+      pts[2 * i + 1] = op.y + Math.sin(a) * op.r;
+    }
+    added = { pts, ink: op.ink, toggle: op.ink !== ground };
+  }
+  const max2 = maxSeg * maxSeg;
+  const min2 = max2 / 9;
+  const far2 = far > 0 ? far * far : Infinity;
+  const coarse2 = FAR_COARSE * FAR_COARSE;
+  const long2 = max2 * FLAT_LONG * FLAT_LONG;
+  const tol2 = max2 * FLAT_TOL * FLAT_TOL;
+  const ta: [number, number] = [0, 0];
+  const tb: [number, number] = [0, 0];
+  const tm: [number, number] = [0, 0];
+  for (const ring of rings) {
+    const src = ring.pts;
+    const n = src.length >> 1;
+    const moved = new Float64Array(src.length);
+    for (let i = 0; i < n; i += 1) {
+      opForward(op, src[2 * i], src[2 * i + 1], ta);
+      moved[2 * i] = ta[0];
+      moved[2 * i + 1] = ta[1];
+    }
+    const out: number[] = [];
+    const push = (x: number, y: number) => {
+      const m = out.length;
+      if (m >= 2) {
+        const px = out[m - 2];
+        const py = out[m - 1];
+        const dx = x - px;
+        const dy = y - py;
+        const away = x * x + y * y > far2 && px * px + py * py > far2;
+        if (dx * dx + dy * dy < (away ? min2 * coarse2 : min2)) return;
+        if (m >= 4) {
+          // The point before is on the line from the one before it to here.
+          const ax = out[m - 4];
+          const ay = out[m - 3];
+          const cx = x - ax;
+          const cy = y - ay;
+          const c2 = cx * cx + cy * cy;
+          if (c2 < (away ? long2 * coarse2 : long2) && c2 > 0) {
+            const cross = (px - ax) * cy - (py - ay) * cx;
+            if ((cross * cross) / c2 < (away ? tol2 * coarse2 : tol2)) {
+              out[m - 2] = x;
+              out[m - 1] = y;
+              return;
+            }
+          }
+        }
+      }
+      out.push(x, y);
+    };
+    const split = (
+      ax: number,
+      ay: number,
+      bx: number,
+      by: number,
+      tax: number,
+      tay: number,
+      tbx: number,
+      tby: number,
+      depth: number,
+    ): void => {
+      const dx = tbx - tax;
+      const dy = tby - tay;
+      const away = tax * tax + tay * tay > far2 && tbx * tbx + tby * tby > far2;
+      const len2 = dx * dx + dy * dy;
+      const coarse = away ? coarse2 : 1;
+      if (depth >= REFINE_DEPTH || len2 <= max2 * coarse) return;
+      const mx = (ax + bx) / 2;
+      const my = (ay + by) / 2;
+      opForward(op, mx, my, tm);
+      const tmx = tm[0];
+      const tmy = tm[1];
+      // Straight enough, and not too long: the chord is the curve.
+      const ox = tmx - (tax + tbx) / 2;
+      const oy = tmy - (tay + tby) / 2;
+      if (len2 < long2 * coarse && ox * ox + oy * oy < tol2 * coarse) return;
+      split(ax, ay, mx, my, tax, tay, tmx, tmy, depth + 1);
+      push(tmx, tmy);
+      split(mx, my, bx, by, tmx, tmy, tbx, tby, depth + 1);
+    };
+    for (let i = 0; i < n; i += 1) {
+      const j = (i + 1) % n;
+      push(moved[2 * i], moved[2 * i + 1]);
+      tb[0] = moved[2 * j];
+      tb[1] = moved[2 * j + 1];
+      split(
+        src[2 * i],
+        src[2 * i + 1],
+        src[2 * j],
+        src[2 * j + 1],
+        moved[2 * i],
+        moved[2 * i + 1],
+        tb[0],
+        tb[1],
+        0,
+      );
+    }
+    // Never fewer than a triangle's worth, however tight the ring.
+    ring.pts = out.length >= 16 ? Float64Array.from(out) : moved;
+  }
+  if (added !== null) rings.push(added);
+}
+
+/** How many points the bath holds: its cost. */
+export function surfacePoints(surface: MarbleSurface): number {
+  let count = 0;
+  for (const ring of surface.rings) count += ring.pts.length >> 1;
+  return count;
+}
+
 /** A deep copy, for keeping a keyframe or landing ops on a scratch bath. */
 export function copySurface(surface: MarbleSurface): MarbleSurface {
   return {
@@ -384,15 +553,25 @@ const identityCache = new Map<string, MarbleIdentity>();
 export function marbleIdentity(
   recipe: FaceRecipe,
   points: number = MARBLE_KNOBS.MARK_POINTS,
+  /**
+   * Keep segments under this share of the bath's extent
+   * (`applyMarbleOpRefined`), or 0 for plain polygons: the player's.
+   */
+  refine = 0,
 ): MarbleIdentity {
   const key = `${recipe.seed ?? ''}\u001f${recipe.id}\u001f${recipe.model}\u001f${
     recipe.durationMs
-  }\u001f${recipe.imported === true ? 'i' : ''}\u001f${points}`;
+  }\u001f${recipe.imported === true ? 'i' : ''}\u001f${points}\u001f${refine}`;
   const cached = identityCache.get(key);
   if (cached !== undefined) return cached;
   const ops = marbleIdentityOpsFrom(marbleRandom(recipe), points);
+  let drops = 0;
+  for (const op of ops) if (op.kind === 'drop') drops += op.r * op.r;
+  const maxSeg = refine * Math.sqrt(drops);
+  const apply = (op: MarbleOp) =>
+    maxSeg > 0 ? applyMarbleOpRefined(surface, op, maxSeg) : applyMarbleOp(surface, op, 1);
   const surface: MarbleSurface = { rings: [] };
-  for (const op of ops) applyMarbleOp(surface, op, 1);
+  for (const op of ops) apply(op);
   if (recipe.imported === true) {
     const spindle: MarbleDrop = {
       kind: 'drop',
@@ -403,7 +582,7 @@ export function marbleIdentity(
       points,
     };
     ops.push(spindle);
-    applyMarbleOp(surface, spindle, 1);
+    apply(spindle);
   }
   let area = 0;
   for (const op of ops) if (op.kind === 'drop') area += op.r * op.r;
