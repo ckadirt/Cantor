@@ -21,6 +21,7 @@ import {
   marbleClipPx,
   marbleDropRadius,
   marbleSide,
+  marbleUnitPx,
   type MarblePlayer,
 } from './marblePlayer';
 import {
@@ -28,6 +29,7 @@ import {
   cachedMarbleMorph,
   circleRing,
   morphShares,
+  pathRings,
   type MorphSide,
 } from './marbleMorph';
 import {
@@ -560,7 +562,29 @@ function circleSide(
   const rings: number[][] = [circleStillPoints(player, R)];
   const well = NAME_LENS_KNOBS.MARK_RADIUS_PX * size * Math.max(player.spindle, CIRCLE_BODY_KNOBS.WELL_RATIO * smootherstep(arrived));
   if (well > 0.5) rings.push(circleRing(0, 0, well, 48));
-  return { rings, alpha: 1, fixed: 0 };
+  return { rings, alpha: 1, fixed: 0, depth: [0, 1] };
+}
+
+/**
+ * The cover's side: its picture's strokes, each a ring of its own drawn as a
+ * hairline — filled as it becomes marbling's ink, on the same moving rings.
+ * Before its picture rises the cover at the player is the circle's face as a
+ * hairline (`drawCircleMark` arrived), so a stroke too.
+ */
+function coverSide(
+  player: LensPlayer | null,
+  identity: LensIdentity,
+  size: number,
+  arrived: number,
+  soundIn: number,
+): MorphSide | null {
+  'worklet';
+  const cover = player === null ? null : (player as CoverPlayer).sound;
+  if (cover !== null && soundIn * arrived >= 1) {
+    return { rings: pathRings(cover, size), alpha: 1, lines: true };
+  }
+  const rings = pathRings(identity as SkPath, size);
+  return rings.length === 0 ? null : { rings, alpha: 1, lines: true };
 }
 
 /** The circle's face as `drawCirclePlayer` draws it this frame, in px. */
@@ -621,8 +645,13 @@ function marbleMorphsWith(
   ): void => {
     'worklet';
     const m = marblePlayer as MarblePlayer | null;
-    const from = m === null ? null : sideOf(otherPlayer, other, size, arrived, soundIn, heard);
-    if (m === null || from === null) {
+    const bath = m === null || m.sound === null || soundIn <= 0 ? null : m.baked.value;
+    const built = bath === null || bath.morphs === null ? null : bath.morphs.pairs[kind] ?? null;
+    // The other lens as rings only where the bath's runtime built no morph:
+    // a seal is hundreds of rings, not to be rebuilt every frame.
+    const from = m === null || built !== null ? null : sideOf(otherPlayer, other, size, arrived, soundIn, heard);
+    const fixed = built !== null ? (kind === 'circle' ? 0 : -1) : from === null ? -1 : from.fixed ?? -1;
+    if (m === null || (built === null && from === null)) {
       drop(canvas, other, otherPlayer, marble, marblePlayer, t, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, motion);
       return;
     }
@@ -635,14 +664,34 @@ function marbleMorphsWith(
     }
     if (shares.morph > 0) {
       const clipR = marbleClipPx(size, arrived);
-      const bath = m.sound === null || soundIn <= 0 ? null : m.baked.value;
-      const morph = cachedMarbleMorph(
-        `${kind}:${m.id}:${bath === null ? -1 : bath.key}:${Math.round(size * 100)}:${Math.round(soundIn * 10)}`,
-        () => buildMarbleMorph(from, marbleSide(m, size, arrived, bath), clipR),
-      );
+      // Built with the bake on the bath's runtime, or here if it came without.
+      const morph =
+        built ??
+        cachedMarbleMorph(
+          `${kind}:${m.id}:${bath === null ? -1 : bath.key}:${Math.round(size * 100)}:${Math.round(soundIn * 10)}`,
+          () => buildMarbleMorph(from!, marbleSide(m, size, arrived, bath), clipR),
+        );
       const ink = alpha * (fill + (1 - fill) * arrived);
       const live = liveOf(otherPlayer, size, arrived, motionShare(motion, leavingMotion(t)));
-      drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR, live, from.fixed ?? -1, 1 - smootherstep(t));
+      // The seal's dots grey where the song is still to come, read now.
+      const seal = kind === 'seal' && built !== null ? (otherPlayer as SealPlayer | null) : null;
+      const count = seal === null ? 0 : seal.order.length;
+      const s = seal === null || seal.sound === null ? 0 : arrived * soundIn;
+      drawMarbleMorphFaded(
+        canvas,
+        morph,
+        t,
+        ink * shares.morph,
+        paints,
+        clipR,
+        live,
+        fixed,
+        1 - smootherstep(t),
+        hairlinePx,
+        built === null ? 1 : marbleUnitPx(size, arrived),
+        seal === null ? -1 : heard < 0 ? count : Math.min(Math.max(heard, 0), 1) * count,
+        1 + (SEAL_PLAYER_KNOBS.UNHEARD_ALPHA - 1) * s,
+      );
     }
   };
 }
@@ -653,5 +702,5 @@ export const PAIR_MORPHS: readonly LensPairMorph[] = [
   { a: 'seal', b: 'cover', drawPlayer: drawSealCoverMorph },
   { a: 'name', b: 'marble', drawPlayer: marbleMorphsWith(drawCirclePlayer, circleSide, 'circle', circleLive) },
   { a: 'seal', b: 'marble', drawPlayer: marbleMorphsWith(drawSealAsPlayer, sealSide, 'seal') },
-  { a: 'cover', b: 'marble', drawPlayer: marbleArrivesOver(drawCoverPlayer) },
+  { a: 'cover', b: 'marble', drawPlayer: marbleMorphsWith(drawCoverPlayer, coverSide, 'cover') },
 ];

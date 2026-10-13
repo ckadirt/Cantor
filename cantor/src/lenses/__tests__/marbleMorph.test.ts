@@ -1,7 +1,14 @@
 import { Skia, type SkCanvas } from '@shopify/react-native-skia';
 import type { FaceRecipe } from '../face';
 import { drawMarbleMorph, marbleLens } from '../marbleLens';
-import { drawMarblePlayer, marbleBakeImage, marbleBakeKey, marblePlayerOf, type MarblePlayer } from '../marblePlayer';
+import {
+  MARBLE_PLAYER_KNOBS,
+  drawMarblePlayer,
+  marbleBakeImage,
+  marbleBakeKey,
+  marblePlayerOf,
+  type MarblePlayer,
+} from '../marblePlayer';
 import { load, trackOf } from '../motion/__fixtures__/referenceTrack';
 import { motionFrameAt } from '../motion/motionFrame';
 import { LENS_PAIRS, lensIndex, LENSES } from '../registry';
@@ -177,6 +184,129 @@ describe("marbling's morphs", () => {
       LENSES[circle].ui.drawPlayer(c, circlePlayer, circleIdentity, SIZE, 1, 1, 1, 1, -1, 1, T / a.duration, 1, paints(), frameA),
     );
     expect(diff(morph(0), circleAlone)).toBe(0);
+    const steps: number[] = [];
+    let last = morph(0);
+    for (let i = 1; i <= STEPS; i++) {
+      const next = morph(i / STEPS);
+      steps.push(diff(last, next));
+      last = next;
+    }
+    expectNoPop(steps);
+  });
+
+  it('morphs a seek while playing: held, then the old bath into the new, then the new', () => {
+    const clock = jest.spyOn(Date, 'now');
+    const player = marblePlayerOf({ ...A, id: 'song-seek' }, undefined, null, track);
+    const late = 150;
+    const at = (t: number) => ({ ...motionFrameAt(track, t), presence: 1 });
+    const draw = (t: number, ms: number) => {
+      clock.mockReturnValue(ms);
+      return raster(c => drawMarblePlayer(c, player, SIZE, 1, 1, 1, 1, 1, t / player.duration, 1, paints(), at(t)));
+    };
+    player.baked.value = marbleBakeImage(player, marbleBakeKey(player, late));
+    const oldFrame = draw(late, 1000);
+    draw(late + 0.016, 1016);
+    // The back button: the playhead at 0, its bake not here yet — held.
+    const held = draw(0.02, 1032);
+    expect(diff(held, oldFrame)).toBeLessThan(2);
+    player.baked.value = marbleBakeImage(player, marbleBakeKey(player, 0.05));
+    draw(0.05, 1048);
+    // Frames every 16 ms, as the motion layer draws them while it plays.
+    const until = (ms: number) => {
+      let now = 1048;
+      while (now + 16 < ms) {
+        now += 16;
+        clock.mockReturnValue(now);
+        drawMarblePlayer(Skia.Surface.Make(8, 8)!.getCanvas(), player, SIZE, 1, 1, 1, 1, 1, 0.05, 1, paints(), at(0.05 + (now - 1048) / 1000));
+      }
+    };
+    until(1048 + MARBLE_PLAYER_KNOBS.SEEK_MORPH_MS / 2);
+    const mid = draw(0.3, 1048 + MARBLE_PLAYER_KNOBS.SEEK_MORPH_MS / 2);
+    // The new bath as it is drawn with no seek in flight: the seek's own state set aside.
+    const g = globalThis as unknown as { __marbleSeek?: Map<number, unknown> };
+    const kept = g.__marbleSeek;
+    g.__marbleSeek = new Map();
+    const plainNew = raster(c =>
+      drawMarblePlayer(c, player, SIZE, 1, 1, 1, 1, 1, 0.6 / player.duration, 1, paints(), at(0.6)),
+    );
+    g.__marbleSeek = kept;
+    expect(diff(mid, oldFrame)).toBeGreaterThan(3);
+    expect(diff(mid, plainNew)).toBeGreaterThan(3);
+    until(1048 + MARBLE_PLAYER_KNOBS.SEEK_MORPH_MS + 20);
+    const after = draw(0.6, 1048 + MARBLE_PLAYER_KNOBS.SEEK_MORPH_MS + 20);
+    expect(diff(after, plainNew)).toBe(0);
+    clock.mockRestore();
+  });
+
+  it("morphs the cover's strokes into marbling's ink", () => {
+    const cover = lensIndex('cover');
+    const marble = lensIndex('marble');
+    const pair = LENS_PAIRS.find(p => p.a === cover && p.b === marble)!;
+    const coverIdentity = LENSES[cover].identity(A);
+    const marbleIdentity = LENSES[marble].identity(A);
+    const morph = (t: number) =>
+      raster(c =>
+        pair.drawPlayer(c, coverIdentity, null, marbleIdentity, a, t, SIZE, 1, 1, 1, 1, -1, 1, T / a.duration, 1, paints(), null),
+      );
+    const alone = raster(c =>
+      LENSES[cover].ui.drawPlayer(c, null, coverIdentity, SIZE, 1, 1, 1, 1, -1, 1, T / a.duration, 1, paints(), null),
+    );
+    expect(diff(morph(0), alone)).toBe(0);
+    const steps: number[] = [];
+    let last = morph(0);
+    for (let i = 1; i <= STEPS; i++) {
+      const next = morph(i / STEPS);
+      steps.push(diff(last, next));
+      last = next;
+    }
+    expectNoPop(steps);
+  });
+
+  it('has its morphs built with its bakes, off the drawing threads', async () => {
+    // Until the bake asked for lands (warming slices may be queued before it).
+    const landed = async (player: MarblePlayer, key: number) => {
+      for (let i = 0; i < 200 && player.baked.value?.key !== key; i++) {
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 10));
+      }
+      expect(player.baked.value?.key).toBe(key);
+    };
+    const x = marblePlayerOf({ ...A, id: 'built-x' }, undefined, null, track);
+    const y = marblePlayerOf({ ...B, id: 'built-y' }, undefined, null, track);
+    marbleLens.bake!(x, 40);
+    await landed(x, 40);
+    const first = x.baked.value!;
+    expect(first.key).toBe(40);
+    expect(Object.keys(first.morphs!.pairs).sort()).toEqual(['circle', 'cover', 'seal']);
+    expect(first.morphs!.rise).not.toBeNull();
+    // The next bake along is not a seek; a jump back is.
+    marbleLens.bake!(x, 44);
+    await landed(x, 44);
+    expect(x.baked.value!.morphs!.seek).toBeNull();
+    marbleLens.bake!(x, 0);
+    await landed(x, 0);
+    expect(x.baked.value!.morphs!.seek?.fromKey).toBe(44);
+    // The next song's first bake carries the step from this one.
+    marbleLens.bake!(x, 8);
+    await landed(x, 8);
+    marbleLens.bake!(y, 12);
+    await landed(y, 12);
+    expect(y.baked.value!.morphs!.step?.fromId).toBe(x.id);
+    expect(y.baked.value!.morphs!.step?.fromKey).toBe(8);
+
+    // And the seal pair drawn from the built morph keeps its exact ends.
+    const seal = lensIndex('seal');
+    const marble = lensIndex('marble');
+    const pair = LENS_PAIRS.find(p => p.a === seal && p.b === marble)!;
+    const sealPlayer = LENSES[seal].player(B, undefined, null, track);
+    const sealIdentity = LENSES[seal].identity(B);
+    const marbleIdentity = LENSES[marble].identity(B);
+    const heardY = 30 / y.duration;
+    const morph = (t: number) =>
+      raster(c => pair.drawPlayer(c, sealIdentity, sealPlayer, marbleIdentity, y, t, SIZE, 1, 1, 1, 1, -1, 1, heardY, 1, paints(), null));
+    const sealAlone = raster(c => drawSealAsPlayer(c, sealPlayer, sealIdentity, SIZE, 1, 1, 1, 1, -1, 1, heardY, 1, paints(), null));
+    const marbleAlone = raster(c => marbleLens.ui.drawPlayer(c, y, marbleIdentity, SIZE, 1, 1, 1, 1, -1, 1, heardY, 1, paints(), null));
+    expect(diff(morph(0), sealAlone)).toBe(0);
+    expect(diff(morph(1), marbleAlone)).toBeLessThan(0.5);
     const steps: number[] = [];
     let last = morph(0);
     for (let i = 1; i <= STEPS; i++) {
