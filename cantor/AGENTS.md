@@ -221,12 +221,12 @@ Marbling's identity is a few drops of ink and clear water and one or two tine
 strokes (`lenses/marble.ts`); its sound is the bath the song leaves — a drop a
 bar at the playhead's place round the dial, sized by the bar's loudness and
 kick, nothing ever erased (`lenses/marbleTimeline.ts`). Its clock is the seal's
-rim, and a drag anywhere on the bath seeks by angle. **Everything arrives in
-marbling as a drop** — its sound rising at L2, the queue's next song, a lens
-change to or from it: clear water opens at the centre carrying what arrives
-and pushes what was there out past the bath's edge by the drop's own exact
-equation (`lenses/marblePlayer.ts`, `pairs.ts`). Never a crossfade, and run
-backwards it is the drop closing, so a reversed change draws the same frames. A lens whose field of
+rim, and a drag anywhere on the bath seeks by angle. **Marbling morphs ring by
+ring** — its sound rising at L2, the queue's next song, a change with the seal
+or the circle: both drawings as compound even-odd rings, paired, resampled,
+aligned and lerped, the motion engine's silhouette morph (`lenses/marbleMorph.ts`),
+each end handing over to the lens's own drawing under the morph. The cover,
+whose drawing is glyphs, still arrives as a drop pushing it aside. A lens whose field of
 unloaded songs looks identical has broken the identity rule.
 
 **The player moves to its music, and every frame is a pure function of the
