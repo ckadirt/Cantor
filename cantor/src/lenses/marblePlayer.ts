@@ -747,12 +747,6 @@ export function drawPushedPicture(
   drawShaded(canvas, u, child, reach);
 }
 
-function smootherstepOf(x: number): number {
-  'worklet';
-  const c = x < 0 ? 0 : x > 1 ? 1 : x;
-  return c * c * c * (c * (6 * c - 15) + 10);
-}
-
 /**
  * A marbling player as a morph's side: its bath's ink rings (or its
  * identity's, without one) in px about the centre, at the view the bath is
@@ -781,7 +775,8 @@ export function marbleSide(
 export function drawMarbleMorphFaded(
   canvas: SkCanvas,
   morph: MarbleMorph,
-  e: number,
+  /** The morph's clock, linear: each ring eases through its own window. */
+  t: number,
   alpha: number,
   paints: PlayerPaints,
   clipR: number,
@@ -790,7 +785,7 @@ export function drawMarbleMorphFaded(
   if (alpha <= 0) return;
   const bounds = Skia.XYWHRect(-clipR - 2, -clipR - 2, clipR * 2 + 4, clipR * 2 + 4);
   canvas.saveLayer(undefined, bounds);
-  drawMarbleMorphPaths(canvas, morph, e, alpha, paints);
+  drawMarbleMorphPaths(canvas, morph, t, alpha, paints);
   const mask = Skia.Paint();
   mask.setBlendMode(BlendMode.DstIn);
   mask.setShader(EDGE_EFFECT.makeShader([clipR]));
@@ -927,7 +922,7 @@ export function drawMarblePlayer(
       const morph = cachedMarbleMorph(`rise:${player.id}:${bake.key}:${Math.round(size * 100)}`, () =>
         buildMarbleMorph(marbleSide(player, size, arrived, null), marbleSide(player, size, arrived, bake), clipR),
       );
-      drawMarbleMorphFaded(canvas, morph, smootherstepOf(rising), inkAlpha * shares.morph, paints, clipR);
+      drawMarbleMorphFaded(canvas, morph, rising, inkAlpha * shares.morph, paints, clipR);
     }
   } else {
     // Nothing settled yet: the bath is the identity, and what lands, lands.

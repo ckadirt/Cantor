@@ -139,8 +139,7 @@ export function drawMarbleMorph(
       () => buildMarbleMorph(marbleSide(a, size, arrived, aBath), marbleSide(b, size, arrived, bBath), clipR),
     );
     const ink = alpha * (fill + (1 - fill) * arrived);
-    const c = t < 0 ? 0 : t > 1 ? 1 : t;
-    drawMarbleMorphFaded(canvas, morph, c * c * c * (c * (6 * c - 15) + 10), ink * shares.morph, paints, clipR);
+    drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR);
   }
 }
 
