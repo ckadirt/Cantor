@@ -448,12 +448,15 @@ export function morphShares(t: number): { from: number; to: number; morph: numbe
     const c = x < 0 ? 0 : x > 1 ? 1 : x;
     return c * c * (3 - 2 * c);
   };
-  const into = ss(t / h);
-  const out = ss((t - (1 - h)) / h);
+  // The morph is drawn over both: it comes in over the real drawing at full,
+  // then the real one goes from under it at full — so where the two share ink
+  // it never thins (two half-inks over each other are three quarters).
+  const x = t / h;
+  const y = (t - (1 - h)) / h;
   return {
-    from: 1 - into,
-    to: out,
-    morph: t <= 0 || t >= 1 ? 0 : into * (1 - out),
+    from: 1 - ss(2 * x - 1),
+    to: ss(2 * y),
+    morph: t <= 0 || t >= 1 ? 0 : ss(2 * x) * (1 - ss(2 * y - 1)),
   };
 }
 
