@@ -193,7 +193,9 @@ once measured), worklets to draw a mark and a player, its clock as numbers
 (`ClockShape`), and what a touch on the player means. Adding a lens is a new file
 in `src/lenses/` and one entry in `LENSES`; nothing in `features/field/` changes.
 A lens change is `(from, to, t)` (`features/field/lensClock.ts`) on a retained
-linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS`). Marks and rows take two beats:
+linear clock (`SEAL_PLAYER_KNOBS.LENS_MORPH_MS`) that counts frames, capped, and
+waits out the commit's long frame: a timing lost a third of every lens morph to
+it on the phone. Marks and rows take two beats:
 the lens being left scales in to a point, then the one arriving opens out of it
 — scale, never a ghosted crossfade. The player can have a hand-written pair
 morph instead (`src/lenses/pairs.ts`): circle ↔ seal walks each dot out of the
@@ -219,7 +221,12 @@ Marbling's identity is a few drops of ink and clear water and one or two tine
 strokes (`lenses/marble.ts`); its sound is the bath the song leaves — a drop a
 bar at the playhead's place round the dial, sized by the bar's loudness and
 kick, nothing ever erased (`lenses/marbleTimeline.ts`). Its clock is the seal's
-rim, and a drag anywhere on the bath seeks by angle. A lens whose field of
+rim, and a drag anywhere on the bath seeks by angle. **Everything arrives in
+marbling as a drop** — its sound rising at L2, the queue's next song, a lens
+change to or from it: clear water opens at the centre carrying what arrives
+and pushes what was there out past the bath's edge by the drop's own exact
+equation (`lenses/marblePlayer.ts`, `pairs.ts`). Never a crossfade, and run
+backwards it is the drop closing, so a reversed change draws the same frames. A lens whose field of
 unloaded songs looks identical has broken the identity rule.
 
 **The player moves to its music, and every frame is a pure function of the
