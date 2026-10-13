@@ -8,15 +8,15 @@ import {
 import { drawMarbleMark, marbleMarkOf, marbleSprites } from './marbleMark';
 import {
   bakeMarble,
+  drawMarbleMorphFaded,
   drawMarblePlayer,
-  enterDrop,
-  leaveDrop,
   marbleBakeKey,
   marbleClipPx,
-  marbleDropRadius,
   marblePlayerOf,
+  marbleSide,
   type MarblePlayer,
 } from './marblePlayer';
+import { buildMarbleMorph, cachedMarbleMorph, morphShares } from './marbleMorph';
 import type { MotionFrame } from './motion/motionFrame';
 import { NAME_LENS_KNOBS } from './nameLens';
 import { ringTurnAt } from './ring';
@@ -91,12 +91,10 @@ export function drawMarbleAsPlayer(
 }
 
 /**
- * The queue stepping at L2 in marbling: the next song falls in as a drop.
- * Clear water opens at the centre carrying the arriving song's bath, and
- * pushes the leaving song's — held on the music it was last drawn to
- * (`motion`), or where its playhead stood (`fromHeard`) — out past the edge
- * by the drop's own equation. At 0 it is the leaving player, at 1 the
- * arriving one, and nothing of either is ever faded over the other.
+ * The queue stepping at L2 in marbling: one song's bath becoming the next's,
+ * ring by ring (`marbleMorph.ts`). The leaving bath is held on the music it
+ * was last drawn to (`motion`), or where its playhead stood (`fromHeard`);
+ * each end hands over to that song's own player under the morph.
  */
 export function drawMarbleMorph(
   canvas: SkCanvas,
@@ -123,28 +121,26 @@ export function drawMarbleMorph(
     drawMarbleAsPlayer(canvas, bPlayer, bIdentity, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints);
     return;
   }
-  const clipR = marbleClipPx(size, arrived);
-  const r = marbleDropRadius(t, clipR);
-  if (t < 1) {
-    drawMarblePlayer(
-      canvas,
-      aPlayer as MarblePlayer,
-      size,
-      alpha,
-      weight,
-      fill,
-      arrived,
-      1,
-      motion === null ? fromHeard : motion.head,
-      hairlinePx,
-      paints,
-      motion,
-      r,
-    );
+  const a = aPlayer as MarblePlayer;
+  const b = bPlayer as MarblePlayer;
+  const shares = morphShares(t);
+  if (shares.from > 0) {
+    drawMarblePlayer(canvas, a, size, alpha * shares.from, weight, fill, arrived, 1, motion === null ? fromHeard : motion.head, hairlinePx, paints, motion);
   }
-  if (enterDrop(canvas, r, clipR, alpha, paints)) {
-    drawMarblePlayer(canvas, bPlayer as MarblePlayer, size, alpha, weight, fill, arrived, soundIn, heard, hairlinePx, paints, null);
-    leaveDrop(canvas);
+  if (shares.to > 0) {
+    drawMarblePlayer(canvas, b, size, alpha * shares.to, weight, fill, arrived, soundIn, heard, hairlinePx, paints, null);
+  }
+  if (shares.morph > 0) {
+    const clipR = marbleClipPx(size, arrived);
+    const aBath = a.sound === null ? null : a.baked.value;
+    const bBath = b.sound === null || soundIn <= 0 ? null : b.baked.value;
+    const morph = cachedMarbleMorph(
+      `step:${a.id}:${aBath === null ? -1 : aBath.key}:${b.id}:${Math.round(size * 100)}`,
+      () => buildMarbleMorph(marbleSide(a, size, arrived, aBath), marbleSide(b, size, arrived, bBath), clipR),
+    );
+    const ink = alpha * (fill + (1 - fill) * arrived);
+    const c = t < 0 ? 0 : t > 1 ? 1 : t;
+    drawMarbleMorphFaded(canvas, morph, c * c * c * (c * (6 * c - 15) + 10), ink * shares.morph, paints, clipR);
   }
 }
 

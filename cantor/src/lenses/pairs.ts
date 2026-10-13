@@ -14,12 +14,23 @@ import type {
 import { drawCoverPlayer, type CoverPlayer, type CoverSweep } from './coverLens';
 import { drawMarbleAsPlayer } from './marbleLens';
 import {
+  drawMarbleMorphFaded,
   drawPushedPicture,
   enterDrop,
   leaveDrop,
   marbleClipPx,
   marbleDropRadius,
+  marbleSide,
+  type MarblePlayer,
 } from './marblePlayer';
+import {
+  buildMarbleMorph,
+  cachedMarbleMorph,
+  circleRing,
+  morphShares,
+  pathRings,
+  type MorphSide,
+} from './marbleMorph';
 import {
   NAME_LENS_KNOBS,
   circleLineInk,
@@ -27,13 +38,14 @@ import {
   drawCircleMark,
   drawCirclePlayer,
 } from './nameLens';
-import { SEAL_KNOBS } from './seal';
+import { SEAL_KNOBS, SEAL_PLAYER_KNOBS, sealDotRadius, sealLoudness } from './seal';
 import { drawSealAsPlayer, sealSidePx } from './sealLens';
 import {
   circleMotionClockPoints,
   circleMotionPoints,
   circleStillPoints,
   isCirclePlayer,
+  CIRCLE_BODY_KNOBS,
 } from './circleMotion';
 import type { MotionFrame } from './motion/motionFrame';
 import { drawSealPlayer, type SealPlayer } from './sealPlayer';
@@ -483,11 +495,136 @@ function marbleArrivesOver(drawOther: PlayerDraw) {
   };
 }
 
+/** A lens's player as a marbling morph's side, at the player. */
+type SideOf = (
+  player: LensPlayer | null,
+  identity: LensIdentity,
+  size: number,
+  arrived: number,
+  soundIn: number,
+  heard: number,
+) => MorphSide | null;
+
+/**
+ * The seal's side: each dot in time order at its cell, as large as its sound
+ * makes it, a dot heard in ink and one still to come in the grey the seal
+ * draws it — `drawSealPlayer`'s dots, still.
+ */
+function sealSide(
+  player: LensPlayer | null,
+  _identity: LensIdentity,
+  size: number,
+  arrived: number,
+  soundIn: number,
+  heard: number,
+): MorphSide | null {
+  'worklet';
+  const seal = player as SealPlayer | null;
+  if (seal === null) return null;
+  const side = SEAL_MARK_SIDE_PX * size;
+  const s = seal.sound === null ? 0 : arrived * soundIn;
+  const deep = sealDotRadius(SEAL_KNOBS.SONG_DEPTH) * side;
+  const cell = side / 3 ** SEAL_KNOBS.SONG_DEPTH;
+  const count = seal.order.length;
+  const head = heard < 0 ? count : Math.min(Math.max(heard, 0), 1) * count;
+  const rings: number[][] = [];
+  const alpha: number[] = [];
+  for (let k = 0; k < count; k++) {
+    const dot = seal.order[k];
+    let radius = deep;
+    if (seal.sound !== null) {
+      const loud = seal.knee === undefined ? sealLoudness(seal.sound.loudness[k] ?? 0) : seal.knee[k] ?? 0;
+      const measured = (cell / 2) * (SEAL_KNOBS.SOUND_MIN_FILL + SEAL_KNOBS.SOUND_SPAN_FILL * loud);
+      radius = deep + (measured - deep) * s;
+    }
+    rings.push(circleRing(seal.x[dot] * side, seal.y[dot] * side, radius, 12));
+    alpha.push(k < head ? 1 : 1 + (SEAL_PLAYER_KNOBS.UNHEARD_ALPHA - 1) * s);
+  }
+  return { rings, alpha };
+}
+
+/** The circle's side: its face, filled, round the paper well the clock runs in. */
+function circleSide(
+  player: LensPlayer | null,
+  identity: LensIdentity,
+  size: number,
+  arrived: number,
+): MorphSide | null {
+  'worklet';
+  const rings = pathRings(identity as SkPath, size);
+  if (rings.length === 0) return null;
+  const spindle = isCirclePlayer(player) ? player.spindle : 0;
+  const well =
+    NAME_LENS_KNOBS.MARK_RADIUS_PX *
+    size *
+    Math.max(spindle, CIRCLE_BODY_KNOBS.WELL_RATIO * smootherstep(arrived));
+  if (well > 0.5) rings.push(circleRing(0, 0, well, 48));
+  return { rings, alpha: 1 };
+}
+
+/**
+ * Any lens becoming marbling, at the player, as a true morph: the other
+ * lens's shapes — the seal's dots, the circle's face — flow ring by ring into
+ * marbling's ink (`marbleMorph.ts`, the engine's silhouette morph). Each end
+ * hands over to that lens's own drawing under the morph. Run backwards it is
+ * marbling becoming the other lens, so a reversed change is the same frame.
+ * The leaving lens's motion goes over the first half, marbling's the second.
+ * Where either side has nothing to morph (no marbling model, no seal model)
+ * it is the drop (`marbleArrivesOver`).
+ */
+function marbleMorphsWith(drawOther: PlayerDraw, sideOf: SideOf, kind: string) {
+  const drop = marbleArrivesOver(drawOther);
+  return (
+    canvas: SkCanvas,
+    other: LensIdentity,
+    otherPlayer: LensPlayer | null,
+    marble: LensIdentity,
+    marblePlayer: LensPlayer | null,
+    t: number,
+    size: number,
+    alpha: number,
+    weight: number,
+    fill: number,
+    arrived: number,
+    arriving: number,
+    soundIn: number,
+    heard: number,
+    hairlinePx: number,
+    paints: PlayerPaints,
+    motion: MotionFrame | null = null,
+  ): void => {
+    'worklet';
+    const m = marblePlayer as MarblePlayer | null;
+    const from = m === null ? null : sideOf(otherPlayer, other, size, arrived, soundIn, heard);
+    if (m === null || from === null) {
+      drop(canvas, other, otherPlayer, marble, marblePlayer, t, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, motion);
+      return;
+    }
+    const shares = morphShares(t);
+    if (shares.from > 0) {
+      drawOther(canvas, otherPlayer, other, size, alpha * shares.from, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, motionShare(motion, leavingMotion(t)));
+    }
+    if (shares.to > 0) {
+      drawMarbleAsPlayer(canvas, m, marble, size, alpha * shares.to, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, motionShare(motion, arrivingMotion(t)));
+    }
+    if (shares.morph > 0) {
+      const clipR = marbleClipPx(size, arrived);
+      const bath = m.sound === null || soundIn <= 0 ? null : m.baked.value;
+      const morph = cachedMarbleMorph(
+        `${kind}:${m.id}:${bath === null ? -1 : bath.key}:${Math.round(size * 100)}:${Math.round(soundIn * 10)}`,
+        () => buildMarbleMorph(from, marbleSide(m, size, arrived, bath), clipR),
+      );
+      const ink = alpha * (fill + (1 - fill) * arrived);
+      drawMarbleMorphFaded(canvas, morph, smootherstep(t), ink * shares.morph, paints, clipR);
+    }
+  };
+}
+
 export const PAIR_MORPHS: readonly LensPairMorph[] = [
   { a: 'name', b: 'seal', drawPlayer: drawCircleSealMorph },
   { a: 'name', b: 'cover', drawPlayer: drawCircleCoverMorph },
   { a: 'seal', b: 'cover', drawPlayer: drawSealCoverMorph },
-  { a: 'name', b: 'marble', drawPlayer: marbleArrivesOver(drawCirclePlayer) },
-  { a: 'seal', b: 'marble', drawPlayer: marbleArrivesOver(drawSealAsPlayer) },
+  { a: 'name', b: 'marble', drawPlayer: marbleMorphsWith(drawCirclePlayer, circleSide, 'circle') },
+  { a: 'seal', b: 'marble', drawPlayer: marbleMorphsWith(drawSealAsPlayer, sealSide, 'seal') },
   { a: 'cover', b: 'marble', drawPlayer: marbleArrivesOver(drawCoverPlayer) },
 ];
