@@ -268,7 +268,7 @@ function coverPlayerOf(recipe: FaceRecipe, art: CoverArt): CoverPlayer {
  * cover — anything a node made, a file with no picture — is the circle's
  * player, which is what it would be under the circle anyway.
  */
-function drawCoverPlayer(
+export function drawCoverPlayer(
   canvas: SkCanvas,
   player: LensPlayer | null,
   identity: LensIdentity,

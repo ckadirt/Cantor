@@ -1,4 +1,12 @@
-import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
+import {
+  FilterMode,
+  Skia,
+  TileMode,
+  type SkCanvas,
+  type SkPath,
+  type SkPicture,
+  type SkShader,
+} from '@shopify/react-native-skia';
 import { makeMutable, type SharedValue } from 'react-native-reanimated';
 import {
   createWorkletRuntime,
@@ -90,12 +98,6 @@ export const MARBLE_PLAYER_KNOBS = {
   NIB_EDGE_PX: 1.2,
   NIB_LINE_ALPHA: 0.45,
   NIB_LINE_PX: 0.7,
-  /**
-   * The sound rises as an iris from the nib, not as a crossfade: two
-   * half-inked baths a frame apart read as a ghost (`PlayerPaints.share`).
-   * Its widest, over the bath's clip radius: enough to reach the far edge.
-   */
-  IRIS_REACH: 2.1,
   /** Keyframes are warmed in slices this long, this far apart, on the JS thread. */
   WARM_SLICE_MS: 8,
   WARM_GAP_MS: 40,
@@ -116,6 +118,12 @@ export type MarblePlayer = Readonly<{
   outline: SkPath;
   ink: SkPath;
   baked: SharedValue<MarbleBake | null>;
+  /**
+   * The identity as the shader reads it (the bath before any op), baked once:
+   * what a drop pushes aside when the sound rises, and when this player
+   * leaves before it has.
+   */
+  still: SharedValue<MarbleBake | null>;
 }>;
 
 /**
@@ -133,6 +141,8 @@ type BathFeed = {
   /** One call at a time in flight, so a scrub never queues stale bakes. */
   busy: boolean;
   warmed: boolean;
+  /** Whether the still bake has been asked for. */
+  stilled: boolean;
 };
 
 const feeds = new WeakMap<object, BathFeed>();
@@ -188,6 +198,7 @@ export function marblePlayerOf(
     outline: marbleRingsPath(identity.surface, markScale, false),
     ink: marbleRingsPath(identity.surface, markScale, true),
     baked: slot<MarbleBake | null>(null),
+    still: slot<MarbleBake | null>(null),
   };
   if (timeline !== null) {
     feeds.set(player, {
@@ -198,6 +209,7 @@ export function marblePlayerOf(
       landed: -1,
       busy: false,
       warmed: false,
+      stilled: false,
     });
   }
   if (playerCache.size >= PLAYER_CACHE_LIMIT) {
@@ -242,6 +254,8 @@ export function marbleBathAt(player: MarblePlayer, k: number): MarbleSurface {
 
 /** The settled bath after `k` ops as the shader reads it, drawn on this thread. */
 export function marbleBakeImage(player: MarblePlayer, k: number): MarbleBake {
+  // The identity's own bake, which the sound's rise pushes aside, comes with it.
+  if (player.still.value === null) player.still.value = bathBake(localState(player), 0);
   return bathBake(localState(player), k);
 }
 
@@ -280,6 +294,28 @@ function onBathRuntime<Args extends unknown[], R>(
  */
 function pump(player: MarblePlayer, feed: BathFeed): void {
   if (feed.busy) return;
+  if (!feed.stilled) {
+    // The identity first: cheap, and the sound cannot rise without it.
+    feed.stilled = true;
+    feed.busy = true;
+    onBathRuntime(bathBakeOn, feed.id, feed.sent ? null : feed.init, 0).then(
+      bake => {
+        feed.busy = false;
+        if (bake === null) {
+          feed.sent = false;
+          feed.stilled = false;
+        } else {
+          feed.sent = true;
+          player.still.value = bake;
+        }
+        pump(player, feed);
+      },
+      () => {
+        feed.busy = false;
+      },
+    );
+    return;
+  }
   if (feed.wanted >= 0 && feed.wanted !== feed.landed) {
     const k = feed.wanted;
     feed.busy = true;
@@ -339,6 +375,10 @@ export function bakeMarble(model: LensPlayer, key: number): void {
  * each is a drop (opB.x 0: opA = centre, radius, ink) or a tine (opB.x 1:
  * opA = direction, offset, pull × fraction; opB.y = its reach). A drop's
  * radius already carries its fraction (√landed).
+ *
+ * `mode` 0 reads the child as a bath mask (ink in red, outlines in green) and
+ * tints it; `mode` 1 reads it as colour — another lens's player, recorded,
+ * pushed aside by marbling's drop as it arrives (`drawPushedPicture`).
  */
 export const MARBLE_SKSL = `
 uniform shader bath;
@@ -351,6 +391,7 @@ uniform float4 ink;
 uniform float clipR;
 uniform float lineHalf;
 uniform float count;
+uniform float mode;
 uniform float4 opA[${MARBLE_PLAYER_KNOBS.LIVE_MAX}];
 uniform float4 opB[${MARBLE_PLAYER_KNOBS.LIVE_MAX}];
 half4 main(float2 p) {
@@ -382,6 +423,13 @@ half4 main(float2 p) {
     }
   }
   half4 c = bath.eval(q * bakeScale + float2(bakeHalf, bakeHalf));
+  float edge = 1.0 - smoothstep(clipR * ${1 - MARBLE_PLAYER_KNOBS.EDGE_FADE}, clipR, length(p));
+  if (mode > 0.5) {
+    if (found) c *= 1.0 - cov;
+    c *= edge;
+    float la = found ? dropLine * lineA * edge : 0.0;
+    return c * (1.0 - la) + half4(ink.rgb * la, la);
+  }
   float f = c.r;
   float l = c.g;
   if (found) {
@@ -389,8 +437,7 @@ half4 main(float2 p) {
     l = max(l * (1.0 - cov), dropLine);
   }
   float a = 1.0 - (1.0 - clamp(f, 0.0, 1.0) * fillA) * (1.0 - clamp(l, 0.0, 1.0) * lineA);
-  a *= 1.0 - smoothstep(clipR * ${1 - MARBLE_PLAYER_KNOBS.EDGE_FADE}, clipR, length(p));
-  a *= ink.a;
+  a *= edge * ink.a;
   return half4(ink.rgb * a, a);
 }`;
 
@@ -398,10 +445,13 @@ const effect = Skia.RuntimeEffect.Make(MARBLE_SKSL);
 if (effect === null) throw new Error('The marbling shader did not compile.');
 const MARBLE_EFFECT = effect;
 
+/** Where the ops start in the uniforms: after `s` … `mode`. */
+const OPS_AT = 13;
+
 /**
  * The live layer's uniforms for the playhead at `t`: the ops between the bake
- * and the playhead, each as far as it has landed. Writes into `u`; returns
- * how many ops it holds.
+ * and the playhead, each as far as it has landed, at most `max`. Writes into
+ * `u`; returns how many ops it holds.
  */
 export function marbleLiveOps(
   sound: MarbleTimeline,
@@ -410,13 +460,14 @@ export function marbleLiveOps(
   landing: boolean,
   u: number[],
   offset: number,
+  max: number = MARBLE_PLAYER_KNOBS.LIVE_MAX,
 ): number {
   'worklet';
   const LIVE = MARBLE_PLAYER_KNOBS.LIVE_MAX;
   const ops = sound.ops;
   let count = 0;
   if (landing) {
-    for (let i = bakedKey; i < ops.length && ops[i].t <= t && count < LIVE; i += 1) {
+    for (let i = bakedKey; i < ops.length && ops[i].t <= t && count < max; i += 1) {
       const fraction = marbleLanded(ops[i], t);
       const op = ops[i].op;
       const a = offset + count * 4;
@@ -444,7 +495,187 @@ export function marbleLiveOps(
   return count;
 }
 
-/** The identity, as paths: the player before its sound, and under its iris. */
+/** One more drop on the uniforms, after `count` ops: clear water at the centre. */
+function pushDrop(u: number[], count: number, radius: number): number {
+  'worklet';
+  const LIVE = MARBLE_PLAYER_KNOBS.LIVE_MAX;
+  const a = OPS_AT + count * 4;
+  const b = OPS_AT + LIVE * 4 + count * 4;
+  u[a] = 0;
+  u[a + 1] = 0;
+  u[a + 2] = radius;
+  u[a + 3] = 0;
+  u[b] = 0;
+  u[b + 1] = 1;
+  return count + 1;
+}
+
+/** Mark px → screen px at the player: the mark grown, and a little more as it arrives. */
+function marbleScale(size: number, arrived: number): number {
+  'worklet';
+  return size * (1 + (MARBLE_PLAYER_KNOBS.GROW - 1) * arrived);
+}
+
+/** Where the bath ends at the player, px from its centre: its edge fades to here. */
+export function marbleClipPx(size: number, arrived: number): number {
+  'worklet';
+  return MARBLE_MARK_REACH_PX * marbleScale(size, arrived) * MARBLE_PLAYER_KNOBS.CLIP_RATIO;
+}
+
+/**
+ * How far marbling's arriving drop has opened at `t` (0..1), px: its area
+ * grows on the eased clock, as every drop in the bath lands. At 1 it is the
+ * whole bath, and everything it pushed is past the edge.
+ */
+export function marbleDropRadius(t: number, clipR: number): number {
+  'worklet';
+  const c = t < 0 ? 0 : t > 1 ? 1 : t;
+  return clipR * Math.sqrt(c * c * c * (c * (6 * c - 15) + 10));
+}
+
+/**
+ * Open marbling's drop: what is drawn until `leaveDrop` lands inside it — on
+ * paper, scaled from the centre so that at the drop's full size it is itself.
+ * Returns false (and opens nothing) while the drop is still a point.
+ */
+export function enterDrop(
+  canvas: SkCanvas,
+  radius: number,
+  clipR: number,
+  alpha: number,
+  paints: PlayerPaints,
+): boolean {
+  'worklet';
+  if (radius <= 0.01) return false;
+  canvas.save();
+  const disc = Skia.PathBuilder.Make().addCircle(0, 0, radius).detach();
+  canvas.clipPath(disc, 1, true);
+  paints.paper.setAlphaf(alpha);
+  canvas.drawCircle(0, 0, radius, paints.paper);
+  const k = radius / clipR;
+  canvas.scale(k, k);
+  return true;
+}
+
+export function leaveDrop(canvas: SkCanvas): void {
+  'worklet';
+  canvas.restore();
+}
+
+/** The shader's uniforms, before the ops. */
+function uniformsOf(
+  s: number,
+  bakeScale: number,
+  bakeHalf: number,
+  fillA: number,
+  lineA: number,
+  colour: Float32Array,
+  inkA: number,
+  clipR: number,
+  lineHalf: number,
+  mode: number,
+): number[] {
+  'worklet';
+  const u = new Array<number>(OPS_AT + 8 * MARBLE_PLAYER_KNOBS.LIVE_MAX).fill(0);
+  u[0] = s;
+  u[1] = bakeScale;
+  u[2] = bakeHalf;
+  u[3] = fillA;
+  u[4] = lineA;
+  u[5] = colour[0];
+  u[6] = colour[1];
+  u[7] = colour[2];
+  u[8] = inkA;
+  u[9] = clipR;
+  u[10] = lineHalf;
+  u[12] = mode;
+  return u;
+}
+
+function drawShaded(canvas: SkCanvas, u: number[], child: SkShader, clipR: number): void {
+  'worklet';
+  const paint = Skia.Paint();
+  paint.setAntiAlias(true);
+  paint.setShader(MARBLE_EFFECT.makeShaderWithChildren(u, [child]));
+  canvas.drawRect(Skia.XYWHRect(-clipR - 1, -clipR - 1, clipR * 2 + 2, clipR * 2 + 2), paint);
+}
+
+/**
+ * A bath through the shader: the song's (`sound` given: its live ops at `t`)
+ * or the identity's still bake (`sound` null), pushed aside by a clear drop
+ * at the centre `push` px wide (0: none).
+ */
+function drawBath(
+  canvas: SkCanvas,
+  player: MarblePlayer,
+  bake: MarbleBake,
+  sound: MarbleTimeline | null,
+  t: number,
+  landing: boolean,
+  k: number,
+  inkAlpha: number,
+  lineAlpha: number,
+  push: number,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  const K = MARBLE_PLAYER_KNOBS;
+  const reach = MARBLE_MARK_REACH_PX / player.markScale;
+  let ext = reach;
+  let behind = false;
+  if (sound !== null) {
+    const settled = marbleSettledAt(sound, t);
+    behind = !landing || bake.key > settled;
+    ext = behind ? marbleExtAt(sound, t, settled) : marbleExtAt(sound, t, bake.key);
+  }
+  const s = player.markScale * k * (reach / ext);
+  const clipR = MARBLE_MARK_REACH_PX * k * K.CLIP_RATIO;
+  const u = uniformsOf(
+    s,
+    bake.scale,
+    bake.half,
+    inkAlpha,
+    lineAlpha,
+    paints.fill.getColor(),
+    1,
+    clipR,
+    MARBLE_BATH_KNOBS.BAKE_LINE_PX / 2 / bake.scale,
+    0,
+  );
+  let count = 0;
+  if (sound !== null && !behind) {
+    count = marbleLiveOps(sound, bake.key, t, true, u, OPS_AT, push > 0 ? K.LIVE_MAX - 1 : K.LIVE_MAX);
+  }
+  if (push > 0) count = pushDrop(u, count, push / s);
+  u[11] = count;
+  drawShaded(canvas, u, bake.shader, clipR);
+}
+
+/**
+ * Another lens's player, recorded, pushed aside by marbling's drop `push` px
+ * wide and faded past the bath's edge: how anything that is not marbling
+ * leaves when marbling arrives (`pairs.ts`). The picture is recorded with its
+ * centre at (`reach`, `reach`) — a picture shader's tile starts at its origin.
+ */
+export function drawPushedPicture(
+  canvas: SkCanvas,
+  picture: SkPicture,
+  reach: number,
+  clipR: number,
+  push: number,
+  lineAlpha: number,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  const centre = Skia.Matrix();
+  centre.translate(-reach, -reach);
+  const child = picture.makeShader(TileMode.Decal, TileMode.Decal, FilterMode.Linear, centre);
+  const u = uniformsOf(1, 1, 0, 1, lineAlpha, paints.fill.getColor(), 1, clipR, 0.5, 1);
+  u[11] = push > 0 ? pushDrop(u, 0, push) : 0;
+  drawShaded(canvas, u, child, reach);
+}
+
+/** The identity, as paths: the player before its sound, exactly the mark grown. */
 function drawIdentity(
   canvas: SkCanvas,
   player: MarblePlayer,
@@ -469,14 +700,53 @@ function drawIdentity(
   canvas.restore();
 }
 
+/** The nib, where the next bar's ink falls, on a hairline from the rim. */
+function drawNib(
+  canvas: SkCanvas,
+  player: MarblePlayer,
+  size: number,
+  k: number,
+  t: number,
+  alpha: number,
+  motion: MotionFrame | null,
+  paints: PlayerPaints,
+): void {
+  'worklet';
+  if (alpha <= 0) return;
+  const K = MARBLE_PLAYER_KNOBS;
+  const head = player.duration > 0 ? Math.min(1, Math.max(0, t / player.duration)) : 0;
+  const angle = -Math.PI / 2 + head * Math.PI * 2;
+  const nibR = MARBLE_TIMELINE_KNOBS.BAR_AT * MARBLE_MARK_REACH_PX * k;
+  const nibX = Math.cos(angle) * nibR;
+  const nibY = Math.sin(angle) * nibR;
+  const rim =
+    (SEAL_PLAYER_KNOBS.RIM_RATIO * NAME_LENS_KNOBS.MARK_RADIUS_PX * size) /
+    NAME_LENS_KNOBS.SONG_FACE_RATIO;
+  paints.stroke.setAlphaf(alpha * K.NIB_LINE_ALPHA);
+  paints.stroke.setStrokeWidth(K.NIB_LINE_PX);
+  canvas.drawLine(Math.cos(angle) * rim, Math.sin(angle) * rim, nibX, nibY, paints.stroke);
+  const beat = motion === null ? 0 : motion.beat * motion.presence * motion.beatSure;
+  const r = K.NIB_RADIUS_PX + K.NIB_BEAT_PX * beat;
+  paints.paper.setAlphaf(alpha);
+  canvas.drawCircle(nibX, nibY, r + K.NIB_EDGE_PX, paints.paper);
+  paints.fill.setAlphaf(alpha);
+  canvas.drawCircle(nibX, nibY, r, paints.fill);
+}
+
 /**
  * The player: the identity until its sound has risen, then the bath at the
- * playhead, revealed from the nib in a widening iris; and the nib, where the
- * next bar's ink falls, on a hairline from the rim (the rim and its heard arc
- * are the renderer's clock, `ClockShape`).
+ * playhead; and the nib (the rim and its heard arc are the renderer's clock,
+ * `ClockShape`).
  *
- * `motion` null — reduced motion, or not the song playing — draws the settled
- * bath with nothing landing: it changes once a bar, by a cut (decision 1).
+ * The sound rises as everything arrives in marbling: **a drop**. A drop of
+ * clear water opens at the centre carrying the bath the song has made so far,
+ * and pushes the identity aside — by the drop's own exact equation — out past
+ * the bath's edge. No crossfade: two half-inked baths read as a ghost.
+ *
+ * `push` (px) is the same drop arriving from outside — the next song, another
+ * lens — pushing this player out. `motion` null (reduced motion, or not the
+ * song playing) draws the settled bath with nothing landing: it changes once
+ * a bake lands, by a cut (decision 1).
  */
 export function drawMarblePlayer(
   canvas: SkCanvas,
@@ -491,76 +761,51 @@ export function drawMarblePlayer(
   hairlinePx: number,
   paints: PlayerPaints,
   motion: MotionFrame | null,
+  push = 0,
 ): void {
   'worklet';
-  const K = MARBLE_PLAYER_KNOBS;
-  // Mark px → screen px: the mark grown, and a little more as it arrives.
-  const k = size * (1 + (K.GROW - 1) * arrived);
+  const k = marbleScale(size, arrived);
+  const clipR = marbleClipPx(size, arrived);
   const inkAlpha = alpha * (fill + (1 - fill) * arrived);
   const lineAlpha = alpha * (weight + (1 - weight) * arrived);
   const sound = player.sound;
   const bake = player.baked.value;
-  const rising = sound === null || bake === null ? 0 : soundIn;
-  if (rising < 1) {
+  const still = player.still.value;
+  const rising = sound === null || bake === null ? 0 : Math.min(1, Math.max(0, soundIn));
+  const t = motion !== null ? motion.t : heard >= 0 ? heard * player.duration : 0;
+  const landing = motion !== null;
+  const nib = alpha * rising * arrived * (push > 0 ? 1 - push / clipR : 1);
+  if (push > 0) {
+    // Leaving: what is drawn now, pushed aside.
+    if (rising > 0 && bake !== null) {
+      drawBath(canvas, player, bake, sound, t, landing, k, inkAlpha, lineAlpha, push, paints);
+    } else if (still !== null) {
+      drawBath(canvas, player, still, null, 0, false, k, inkAlpha, lineAlpha, push, paints);
+    } else {
+      drawIdentity(canvas, player, k, lineAlpha, inkAlpha, hairlinePx, paints);
+    }
+    drawNib(canvas, player, size, k, t, nib, motion, paints);
+    return;
+  }
+  if (rising <= 0 || bake === null) {
     drawIdentity(canvas, player, k, lineAlpha, inkAlpha, hairlinePx, paints);
+    return;
   }
-  if (sound === null || bake === null || rising <= 0) return;
-  const t =
-    motion !== null ? motion.t : heard >= 0 ? heard * player.duration : 0;
-  const settled = marbleSettledAt(sound, t);
-  // Behind the bake (a seek back that has not been baked yet): draw the bake.
-  const landing = motion !== null && bake.key <= settled;
-  const ext = landing ? marbleExtAt(sound, t, bake.key) : marbleExtAt(sound, t, settled);
-  const reach = sound.ext0;
-  const s = player.markScale * k * (reach / ext);
-  const clipR = player.markScale * k * reach * K.CLIP_RATIO;
-  // In the shader's order: s … lineHalf, count, then the ops.
-  const u = new Array<number>(12 + 8 * K.LIVE_MAX).fill(0);
-  u[11] = marbleLiveOps(sound, bake.key, t, landing, u, 12);
-  const colour = paints.fill.getColor();
-  u[0] = s;
-  u[1] = bake.scale;
-  u[2] = bake.half;
-  u[3] = inkAlpha;
-  u[4] = lineAlpha;
-  u[5] = colour[0];
-  u[6] = colour[1];
-  u[7] = colour[2];
-  u[8] = 1;
-  u[9] = clipR;
-  u[10] = MARBLE_BATH_KNOBS.BAKE_LINE_PX / 2 / bake.scale;
-  const shaderPaint = Skia.Paint();
-  shaderPaint.setAntiAlias(true);
-  shaderPaint.setShader(MARBLE_EFFECT.makeShaderWithChildren(u, [bake.shader]));
-  const head = player.duration > 0 ? Math.min(1, Math.max(0, t / player.duration)) : 0;
-  const angle = -Math.PI / 2 + head * Math.PI * 2;
-  const nibR = MARBLE_TIMELINE_KNOBS.BAR_AT * reach * player.markScale * k;
-  const nibX = Math.cos(angle) * nibR;
-  const nibY = Math.sin(angle) * nibR;
-  canvas.save();
-  if (rising < 1) {
-    // The iris: the heard bath opening from the nib over the identity.
-    const iris = rising * clipR * K.IRIS_REACH;
-    const clip = Skia.PathBuilder.Make().addCircle(nibX, nibY, iris).detach();
-    canvas.clipPath(clip, 1, true);
-    paints.paper.setAlphaf(alpha);
-    canvas.drawCircle(0, 0, clipR + hairlinePx, paints.paper);
+  if (rising < 1 && bake.key > 0) {
+    // The song so far, falling in as a drop onto the identity.
+    const r = marbleDropRadius(rising, clipR);
+    if (still !== null) {
+      drawBath(canvas, player, still, null, 0, false, k, inkAlpha, lineAlpha, r, paints);
+    } else {
+      drawIdentity(canvas, player, k, lineAlpha, inkAlpha, hairlinePx, paints);
+    }
+    if (enterDrop(canvas, r, clipR, alpha, paints)) {
+      drawBath(canvas, player, bake, sound, t, landing, k, inkAlpha, lineAlpha, 0, paints);
+      leaveDrop(canvas);
+    }
+  } else {
+    // Nothing settled yet: the bath is the identity, and what lands, lands.
+    drawBath(canvas, player, bake, sound, t, landing, k, inkAlpha, lineAlpha, 0, paints);
   }
-  canvas.drawRect(Skia.XYWHRect(-clipR - 1, -clipR - 1, clipR * 2 + 2, clipR * 2 + 2), shaderPaint);
-  canvas.restore();
-  // The nib and its hairline from the rim, rising with the sound.
-  const nibAlpha = alpha * rising * arrived;
-  if (nibAlpha <= 0) return;
-  const rim =
-    (SEAL_PLAYER_KNOBS.RIM_RATIO * NAME_LENS_KNOBS.MARK_RADIUS_PX * size) /
-    NAME_LENS_KNOBS.SONG_FACE_RATIO;
-  paints.stroke.setAlphaf(nibAlpha * K.NIB_LINE_ALPHA);
-  paints.stroke.setStrokeWidth(K.NIB_LINE_PX);
-  canvas.drawLine(Math.cos(angle) * rim, Math.sin(angle) * rim, nibX, nibY, paints.stroke);
-  const beat = motion === null ? 0 : motion.beat * motion.presence * motion.beatSure;
-  const r = K.NIB_RADIUS_PX + K.NIB_BEAT_PX * beat;
-  paints.paper.setAlphaf(nibAlpha);
-  canvas.drawCircle(nibX, nibY, r + K.NIB_EDGE_PX, paints.paper);
-  paints.fill.setAlphaf(nibAlpha);
-  canvas.drawCircle(nibX, nibY, r, paints.fill);
+  drawNib(canvas, player, size, k, t, nib, motion, paints);
 }
