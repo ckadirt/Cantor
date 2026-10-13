@@ -9,7 +9,11 @@ import { drawMarbleMark, marbleMarkOf, marbleSprites } from './marbleMark';
 import {
   bakeMarble,
   drawMarblePlayer,
+  enterDrop,
+  leaveDrop,
   marbleBakeKey,
+  marbleClipPx,
+  marbleDropRadius,
   marblePlayerOf,
   type MarblePlayer,
 } from './marblePlayer';
@@ -50,7 +54,7 @@ export function marbleRimAt(
  * that built none — the mark grown, its bands filling in as the player
  * arrives, as the circle's body does.
  */
-function drawMarbleAsPlayer(
+export function drawMarbleAsPlayer(
   canvas: SkCanvas,
   model: LensPlayer | null,
   identity: LensIdentity,
@@ -86,6 +90,64 @@ function drawMarbleAsPlayer(
   );
 }
 
+/**
+ * The queue stepping at L2 in marbling: the next song falls in as a drop.
+ * Clear water opens at the centre carrying the arriving song's bath, and
+ * pushes the leaving song's — held on the music it was last drawn to
+ * (`motion`), or where its playhead stood (`fromHeard`) — out past the edge
+ * by the drop's own equation. At 0 it is the leaving player, at 1 the
+ * arriving one, and nothing of either is ever faded over the other.
+ */
+export function drawMarbleMorph(
+  canvas: SkCanvas,
+  _aIdentity: LensIdentity,
+  aPlayer: LensPlayer | null,
+  bIdentity: LensIdentity,
+  bPlayer: LensPlayer | null,
+  t: number,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  soundIn: number,
+  heard: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+  motion: MotionFrame | null = null,
+  fromHeard = -1,
+): void {
+  'worklet';
+  if (arrived <= 0 || aPlayer === null || bPlayer === null) {
+    drawMarbleAsPlayer(canvas, bPlayer, bIdentity, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints);
+    return;
+  }
+  const clipR = marbleClipPx(size, arrived);
+  const r = marbleDropRadius(t, clipR);
+  if (t < 1) {
+    drawMarblePlayer(
+      canvas,
+      aPlayer as MarblePlayer,
+      size,
+      alpha,
+      weight,
+      fill,
+      arrived,
+      1,
+      motion === null ? fromHeard : motion.head,
+      hairlinePx,
+      paints,
+      motion,
+      r,
+    );
+  }
+  if (enterDrop(canvas, r, clipR, alpha, paints)) {
+    drawMarblePlayer(canvas, bPlayer as MarblePlayer, size, alpha, weight, fill, arrived, soundIn, heard, hairlinePx, paints, null);
+    leaveDrop(canvas);
+  }
+}
+
 export const marbleLens: Lens = {
   key: 'marble',
   label: 'Marbling',
@@ -105,6 +167,7 @@ export const marbleLens: Lens = {
     drawMark: drawMarbleMark,
     sprites: marbleSprites,
     drawPlayer: drawMarbleAsPlayer,
+    morphPlayer: drawMarbleMorph,
     bakeKey: marbleBakeKey,
     ringTicks: 0,
     hearsPlayhead: 1,

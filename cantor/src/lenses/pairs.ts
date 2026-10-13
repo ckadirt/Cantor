@@ -11,7 +11,15 @@ import type {
   LensPlayer,
   PlayerPaints,
 } from './contract';
-import type { CoverPlayer, CoverSweep } from './coverLens';
+import { drawCoverPlayer, type CoverPlayer, type CoverSweep } from './coverLens';
+import { drawMarbleAsPlayer } from './marbleLens';
+import {
+  drawPushedPicture,
+  enterDrop,
+  leaveDrop,
+  marbleClipPx,
+  marbleDropRadius,
+} from './marblePlayer';
 import {
   NAME_LENS_KNOBS,
   circleLineInk,
@@ -406,8 +414,80 @@ function drawSealCoverMorph(
 }
 
 /** Every hand-written player morph. A pair missing here takes the two beats. */
+/** A lens's own player, as `LensUi.drawPlayer` draws it. */
+type PlayerDraw = (
+  canvas: SkCanvas,
+  player: LensPlayer | null,
+  identity: LensIdentity,
+  size: number,
+  alpha: number,
+  weight: number,
+  fill: number,
+  arrived: number,
+  arriving: number,
+  soundIn: number,
+  heard: number,
+  hairlinePx: number,
+  paints: PlayerPaints,
+  motion: MotionFrame | null,
+) => void;
+
+/**
+ * Any lens becoming marbling, at the player: marbling arrives as everything
+ * arrives in it, as a drop. Clear water opens at the centre carrying the
+ * bath, and the other lens's player — recorded as it is drawn this frame — is
+ * pushed aside by the drop's own equation, out past the bath's edge
+ * (`drawPushedPicture`). Run backwards, the drop closes and the other lens
+ * flows back in from the edge, so a change reversed mid-way is the same
+ * frame. The leaving lens's motion goes over the first half and marbling's
+ * comes over the second.
+ */
+function marbleArrivesOver(drawOther: PlayerDraw) {
+  return (
+    canvas: SkCanvas,
+    other: LensIdentity,
+    otherPlayer: LensPlayer | null,
+    marble: LensIdentity,
+    marblePlayer: LensPlayer | null,
+    t: number,
+    size: number,
+    alpha: number,
+    weight: number,
+    fill: number,
+    arrived: number,
+    arriving: number,
+    soundIn: number,
+    heard: number,
+    hairlinePx: number,
+    paints: PlayerPaints,
+    motion: MotionFrame | null = null,
+  ): void => {
+    'worklet';
+    const clipR = marbleClipPx(size, arrived);
+    const r = marbleDropRadius(t, clipR);
+    const leaving = motionShare(motion, leavingMotion(t));
+    if (r <= 0.01) {
+      drawOther(canvas, otherPlayer, other, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, leaving);
+    } else if (t < 1) {
+      const reach = clipR * 1.6;
+      const recorder = Skia.PictureRecorder();
+      const target = recorder.beginRecording(Skia.XYWHRect(0, 0, reach * 2, reach * 2));
+      target.translate(reach, reach);
+      drawOther(target, otherPlayer, other, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, leaving);
+      drawPushedPicture(canvas, recorder.finishRecordingAsPicture(), reach, clipR, r, alpha, paints);
+    }
+    if (enterDrop(canvas, r, clipR, alpha, paints)) {
+      drawMarbleAsPlayer(canvas, marblePlayer, marble, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, motionShare(motion, arrivingMotion(t)));
+      leaveDrop(canvas);
+    }
+  };
+}
+
 export const PAIR_MORPHS: readonly LensPairMorph[] = [
   { a: 'name', b: 'seal', drawPlayer: drawCircleSealMorph },
   { a: 'name', b: 'cover', drawPlayer: drawCircleCoverMorph },
   { a: 'seal', b: 'cover', drawPlayer: drawSealCoverMorph },
+  { a: 'name', b: 'marble', drawPlayer: marbleArrivesOver(drawCirclePlayer) },
+  { a: 'seal', b: 'marble', drawPlayer: marbleArrivesOver(drawSealAsPlayer) },
+  { a: 'cover', b: 'marble', drawPlayer: marbleArrivesOver(drawCoverPlayer) },
 ];
