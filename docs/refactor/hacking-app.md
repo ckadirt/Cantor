@@ -37,7 +37,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
 | `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens — read only) |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
-| `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them; `motion/` (the motion track, its store and the per-frame `MotionFrame`) and each lens's motion (`circleMotion.ts`, `sealMotion.ts`) |
+| `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), marbling (`marbleLens.ts`; geometry in `marble.ts`, the mark in `marbleMark.ts`, the strokes in time in `marbleTimeline.ts`, the player and its live shader in `marblePlayer.ts`, the settled bath on its own worklet runtime in `marbleBath.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them; `motion/` (the motion track, its store and the per-frame `MotionFrame`) and each lens's motion (`circleMotion.ts`, `sealMotion.ts`) |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
 
 ## The rules that are not obvious
@@ -97,8 +97,9 @@ keepalive, deliver messages, report closure, or schedule a retry.
 
 1. Write it in `src/lenses/<name>Lens.ts` as a `Lens` (`types.ts`): `key`,
    `label`, `identity(recipe)` (JS, cached per recipe — from the recipe alone,
-   which is the two-layer rule), `player(recipe, analysis)` (JS; null if its
-   player is its mark grown), `touch` (JS: `reachRatio`, `landAt`, `seekAt`, in
+   which is the two-layer rule), `player(recipe, analysis, cover, track)` (JS;
+   null if its player is its mark grown; `track` is the song's motion track
+   when its sound is built from the bars), `touch` (JS: `reachRatio`, `landAt`, `seekAt`, in
    coordinates about the player's centre), and `ui` — worklets and numbers only
    (`drawMark`, `drawPlayer`, `ringTicks`, `hearsPlayhead`, `clock`), because it
    is captured onto the UI thread. `drawPlayer`'s last argument is the
@@ -109,9 +110,16 @@ keepalive, deliver messages, report closure, or schedule a retry.
    wherever `paints.share` is above 0 (the field and the motion layer
    crossfade a landed player; two half-inked moving shapes read as a ghost),
    and say in `clock.lettersOutside` which side of its ring the form's letters
-   stand.
+   stand. A player too costly to rebuild every frame that still changes as the
+   song plays has a **slow layer**: `ui.bakeKey(player, seconds)` names the
+   version the playhead needs (an integer that changes rarely) and
+   `bake(player, key)` rebuilds it on the JS thread — or hands it off — and
+   gives the result to `drawPlayer` through a shared value the player holds.
+   The renderer (`features/field/lensBake.ts`) calls it while the lens shows.
 2. Add it to `LENSES` in `registry.ts`. The picker lists it, the renderer draws
-   it, and a change to or from it takes the generic two beats.
+   it, and a change to or from it takes the generic two beats. Mark it
+   `preview: true` until it is done: the picker offers it only while
+   `PREVIEW_LENSES_OFFERED` is on, and a saved lens key is a contract.
 3. For a hand-written player morph with another lens, add a `LensPairMorph` to
    `pairs.ts`; at `t` 0 it must look like its `a` lens's own player.
 4. Extend `lensGoldens.test.ts` and `playerRingGoldens.test.tsx` with frames
@@ -282,6 +290,21 @@ lands. `seekGesture` asks the
 lens drawn at the player what a touch means (`Lens.touch`): the circle scrubs by
 angle; the seal scrubs by rim angle and treats a touch that starts on the dust
 as a tap that jumps to the dot under it.
+**Marbling** (docs/interfacealpha/marbling-plan.md and its log) is suminagashi
+with Jaffer's exact equations: drops of ink and clear water, and tines. Every op
+is a homeomorphism, so ring outlines never cross and the whole bath is one
+even-odd path of the rings whose colour differs from their parent's
+(`MarbleRing.toggle`). Its identity is the recipe's drops and strokes; its sound
+is a drop a bar round the dial, a comb at each section start and a bullseye on
+a drop (`marbleTimeline`), built from the motion track. At the player the
+*settled* bath — everything landed — is baked into an image (ink in red,
+outlines in green) on a worklet runtime of its own (`marble-bath`; on the
+Xiaomi a late bar is 150–300 ms of CPU raster, which cost frames on either
+drawing thread), every fourth op; a runtime shader (`MARBLE_SKSL`) runs the
+inverse of the ops between the bake and the playhead per pixel and tints the
+image. Rings are refined as ops stretch them (`applyMarbleOpRefined`) or
+combs leave chords across the pattern. The seek is the seal's rim, by angle
+anywhere on the disc.
 `analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
 (side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
 **The motion track and the frame** (docs/interfacealpha/reactive-player-plan.md).

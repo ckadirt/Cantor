@@ -214,8 +214,13 @@ own geometry, carries the playhead, and is gone at L0. The seal's identity is
 three nested symmetric 3×3 masks plus an orientation (`lenses/seal.ts`); its sound
 is the Peano-ordered deepest dots, sized by loudness, hollowed by punch, split by
 stereo width (`SongAnalysis.slices`). Its clock and seek are a rim around the
-dust; a touch that starts on the dust is a tap that jumps to that dot. A lens
-whose field of unloaded songs looks identical has broken the identity rule.
+dust; a touch that starts on the dust is a tap that jumps to that dot.
+Marbling's identity is a few drops of ink and clear water and one or two tine
+strokes (`lenses/marble.ts`); its sound is the bath the song leaves — a drop a
+bar at the playhead's place round the dial, sized by the bar's loudness and
+kick, nothing ever erased (`lenses/marbleTimeline.ts`). Its clock is the seal's
+rim, and a drag anywhere on the bath seeks by angle. A lens whose field of
+unloaded songs looks identical has broken the identity rule.
 
 **The player moves to its music, and every frame is a pure function of the
 playhead.** A measured song has a motion track (`lenses/motion/`: beats, onsets,
@@ -225,7 +230,10 @@ state, no springs: seek, scrub, pause and reduced motion fall out of that, and
 since the whole song is known a hit may rise *before* it sounds. **The circle
 shows form as shape** (a pose per section, so a returning chorus returns to the
 same shape); **the seal shows form as its thread**, never as dot motion — a
-seal dot moving means *this sound is sounding*. The one exception, in both, is
+seal dot moving means *this sound is sounding*; **marbling shows form as its
+comb** — a section start drags a comb across the whole bath, in its letter's
+direction, so a returning chorus combs the same way, and a drop of ink means
+only *a bar has passed*. The one exception, in all three, is
 the drop (and its smaller kin, the lift): the only structural event big enough
 to move everything. Every gesture is scaled by the frame's `presence` and by how
 far the player has arrived, so at the hand-off to the row the drawing is the
@@ -234,7 +242,10 @@ lens change the leaving lens's motion goes over the first half and the arriving
 lens's comes over the second, so the morph runs between still shapes. Moving
 content is drawn in pieces the GPU draws by itself (segments, circles, recorded
 pictures): an anti-aliased path that changes every frame is rasterised on the
-CPU and uploaded every frame. And the moving player is drawn on its own canvas
+CPU and uploaded every frame. A player whose drawing is too heavy to redraw
+each frame but changes as the song plays keeps it as a slow layer
+(`Lens.bake`): marbling bakes its settled bath into an image off every drawing
+thread and lands what is still moving in a shader over it. And the moving player is drawn on its own canvas
 (`PlayerMotionLayer`) once it has landed, because re-rendering the field canvas
 costs most of a frame at L2 whatever moves in it.
 
