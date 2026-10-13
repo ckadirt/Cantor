@@ -161,12 +161,12 @@ export class AudioApiPlayer implements PlayerPort {
         player.settleLoad('error');
       },
       onPositionChange(seconds) {
-        if (player.source === null || player.stopped) return;
+        if (player.source === null || player.stopped || player.leaving()) return;
         player.positionSeconds = seconds;
         player.publishPosition();
       },
       onEnded() {
-        if (player.source === null || player.stopped) return;
+        if (player.source === null || player.stopped || player.leaving()) return;
         player.positionSeconds = player.durationSeconds;
         player.publish('ended');
       },
@@ -184,6 +184,11 @@ export class AudioApiPlayer implements PlayerPort {
     this.error = null;
     this.interrupted = false;
     this.positionSeconds = 0;
+    // The song being left stops now, not when the next one's source lands. It
+    // is no longer the track, and the element re-arms its position events
+    // only when its own play state changes: left playing across the swap, the
+    // next song never reported a position at all.
+    this.handle?.pause();
     this.publish('loading');
 
     let duration: number;
@@ -236,7 +241,8 @@ export class AudioApiPlayer implements PlayerPort {
   }
 
   async seek(seconds: number): Promise<void> {
-    if (this.state === 'empty' || this.state === 'error') return;
+    // While loading, the element still holds the song being left.
+    if (this.state === 'empty' || this.state === 'error' || this.leaving()) return;
     const target = clamp(seconds, 0, this.durationSeconds);
     this.positionSeconds = target;
     this.handle?.seekToTime(target);
@@ -371,6 +377,16 @@ export class AudioApiPlayer implements PlayerPort {
   }
 
   // ---- internals --------------------------------------------------------
+
+  /**
+   * True while a load is in flight: the element still holds the song being
+   * left, and what it reports is that song's. Taken as the new track's, its
+   * position carried over — the next song started from 0:00 while the clock
+   * said 2:43.
+   */
+  private leaving(): boolean {
+    return this.state === 'loading';
+  }
 
   private atEndOfTrack(): boolean {
     return (
