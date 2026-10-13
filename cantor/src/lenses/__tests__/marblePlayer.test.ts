@@ -2,6 +2,7 @@ import { Skia, type SkCanvas } from '@shopify/react-native-skia';
 import type { FaceRecipe } from '../face';
 import { applyMarbleOp, applyMarbleOpRefined, copySurface, inkAt, surfacePoints } from '../marble';
 import { marbleLens } from '../marbleLens';
+import { MARBLE_BATH_KNOBS } from '../marbleBath';
 import { MARBLE_MARK_REACH_PX } from '../marbleMark';
 import {
   MARBLE_PLAYER_KNOBS,
@@ -115,7 +116,7 @@ describe('marbling as the player', () => {
     const viaKeys = copySurface(marbleBathAt(player, k));
     marbleBathAt(player, 3); // move the cursor back
     const fresh = copySurface(marbleBathAt(player, 0));
-    for (let i = 0; i < k; i++) applyMarbleOpRefined(fresh, sound.ops[i].op, MARBLE_PLAYER_KNOBS.SEG_MAX * sound.ops[i].ext, MARBLE_PLAYER_KNOBS.BAKE_REACH * sound.ops[i].ext);
+    for (let i = 0; i < k; i++) applyMarbleOpRefined(fresh, sound.ops[i].op, MARBLE_BATH_KNOBS.SEG_MAX * sound.ops[i].ext, MARBLE_BATH_KNOBS.BAKE_REACH * sound.ops[i].ext);
     expect(viaKeys.rings).toHaveLength(fresh.rings.length);
     viaKeys.rings.forEach((ring, i) => {
       for (let j = 0; j < ring.pts.length; j++) expect(ring.pts[j]).toBeCloseTo(fresh.rings[i].pts[j], 9);
@@ -159,6 +160,14 @@ describe('marbling as the player', () => {
     const end = marbleBathAt(player, sound.ops.length);
     if (process.env.MARBLE_SHEET) console.log('points at the end', surfacePoints(end), 'rings', end.rings.length);
     expect(surfacePoints(end)).toBeLessThan(40_000);
+  });
+
+  it('bakes the latest key asked for, coalescing the ones between', async () => {
+    const other = marblePlayerOf({ ...RECIPE, id: 'song-b', seed: 99 }, undefined, null, track);
+    expect(other.baked.value).toBeNull();
+    for (const key of [3, 7, 12]) marbleLens.bake!(other, key);
+    for (let i = 0; i < 6; i++) await new Promise(resolve => setTimeout(resolve, 0));
+    expect(other.baked.value?.key).toBe(12);
   });
 
   it('bakes within its budget', () => {
