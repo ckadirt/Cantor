@@ -60,10 +60,20 @@ function circleSideOf(recipe: FaceRecipe, u: number): MorphSide {
   return { rings: [face, circleRing(0, 0, well, 48)], alpha: 1, depth: [0, 1], fixed: 0 };
 }
 
+/**
+ * The most of the cover's strokes a morph carries. A cover is thousands of
+ * them (7,025 in one), which made every bake's morphs most of its round trip
+ * and the morph's frames 65–100 ms; an even subset keeps the picture's look,
+ * and the real cover covers the rest while the morph hands over.
+ */
+const COVER_MORPH_STROKES = 600;
+
 /** The cover's strokes, or without a cover the circle's face as a hairline (as the cover then is). */
 function coverSideOf(recipe: FaceRecipe, art: CoverArt | null, u: number): MorphSide {
   const path = art === null ? nameLensFacePath(recipe) : coverPlayerOf(recipe, art).sound;
-  return { rings: pathRings(path, u), alpha: 1, lines: true };
+  const all = pathRings(path, u);
+  const every = Math.max(1, Math.ceil(all.length / COVER_MORPH_STROKES));
+  return { rings: all.filter((_, i) => i % every === 0), alpha: 1, lines: true };
 }
 
 export function marbleSidesOf(

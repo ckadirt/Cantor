@@ -276,12 +276,14 @@ describe("marbling's morphs", () => {
     await landed(x, 40);
     const first = x.baked.value!;
     expect(first.key).toBe(40);
-    expect(Object.keys(first.morphs!.pairs).sort()).toEqual(['circle', 'cover', 'seal']);
+    // A first bake carries only the rise, to come back soonest.
     expect(first.morphs!.rise).not.toBeNull();
-    // The next bake along is not a seek; a jump back is.
+    expect(Object.keys(first.morphs!.pairs)).toEqual([]);
+    // The next bake along is not a seek, and carries the other lenses' morphs; a jump back is.
     marbleLens.bake!(x, 44);
     await landed(x, 44);
     expect(x.baked.value!.morphs!.seek).toBeNull();
+    expect(Object.keys(x.baked.value!.morphs!.pairs).sort()).toEqual(['circle', 'cover', 'seal']);
     marbleLens.bake!(x, 0);
     await landed(x, 0);
     expect(x.baked.value!.morphs!.seek?.fromKey).toBe(44);
@@ -292,6 +294,9 @@ describe("marbling's morphs", () => {
     await landed(y, 12);
     expect(y.baked.value!.morphs!.step?.fromId).toBe(x.id);
     expect(y.baked.value!.morphs!.step?.fromKey).toBe(8);
+    marbleLens.bake!(y, 16);
+    await landed(y, 16);
+    expect(y.baked.value!.morphs!.pairs.seal).toBeDefined();
 
     // And the seal pair drawn from the built morph keeps its exact ends.
     const seal = lensIndex('seal');
@@ -300,7 +305,7 @@ describe("marbling's morphs", () => {
     const sealPlayer = LENSES[seal].player(B, undefined, null, track);
     const sealIdentity = LENSES[seal].identity(B);
     const marbleIdentity = LENSES[marble].identity(B);
-    const heardY = 30 / y.duration;
+    const heardY = 36 / y.duration;
     const morph = (t: number) =>
       raster(c => pair.drawPlayer(c, sealIdentity, sealPlayer, marbleIdentity, y, t, SIZE, 1, 1, 1, 1, -1, 1, heardY, 1, paints(), null));
     const sealAlone = raster(c => drawSealAsPlayer(c, sealPlayer, sealIdentity, SIZE, 1, 1, 1, 1, -1, 1, heardY, 1, paints(), null));
