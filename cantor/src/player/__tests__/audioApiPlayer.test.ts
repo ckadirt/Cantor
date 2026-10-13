@@ -204,6 +204,36 @@ describe('AudioApiPlayer source discipline', () => {
     expect(element.mountedSource).toBeNull();
   });
 
+  it('starts the next song at 0 when the one it leaves reports a position mid-load', async () => {
+    let lookup: (seconds: number) => void = () => {};
+    const { player, element } = createPlayer({
+      getDuration: (path: string) =>
+        path === '/audio/second.opus'
+          ? new Promise<number>(resolve => (lookup = resolve))
+          : Promise.resolve(120),
+    });
+    await player.load(FIRST, '/audio/first.opus');
+    await player.seek(60);
+    await player.play();
+
+    const loading = player.load(SECOND, '/audio/second.opus');
+    // The element was stopped with the song it held, so it reports nothing
+    // more; one already on its way still lands, and a seek finds no track.
+    expect(element.playing).toBe(false);
+    player.binding.onPositionChange(60.03);
+    player.binding.onEnded();
+    await player.seek(90);
+    lookup(45);
+    await loading;
+
+    expect(player.snapshot()).toMatchObject({
+      state: 'paused',
+      track: SECOND,
+      positionSeconds: 0,
+      durationSeconds: 45,
+    });
+  });
+
   it('reports a duration lookup failure as an error state, not a throw', async () => {
     const { player } = createPlayer();
     await player.load(FIRST, '/audio/missing.opus');
