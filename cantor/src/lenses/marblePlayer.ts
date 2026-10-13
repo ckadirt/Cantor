@@ -1,4 +1,5 @@
 import {
+  BlendMode,
   FilterMode,
   MipmapMode,
   Skia,
@@ -40,6 +41,14 @@ import {
   marbleTimeline,
   type MarbleTimeline,
 } from './marbleTimeline';
+import {
+  buildMarbleMorph,
+  cachedMarbleMorph,
+  drawMarbleMorphPaths,
+  morphShares,
+  type MarbleMorph,
+  type MorphSide,
+} from './marbleMorph';
 import type { MotionFrame } from './motion/motionFrame';
 import type { MotionTrack } from './motion/motionTrack';
 import { NAME_LENS_KNOBS } from './nameLens';
@@ -115,6 +124,8 @@ export const MARBLE_PLAYER_KNOBS = {
  * the player is its identity (decision 2 in the plan).
  */
 export type MarblePlayer = Readonly<{
+  /** Unique per model, so a morph built for it can be kept between frames. */
+  id: number;
   sound: MarbleTimeline | null;
   duration: number;
   /** From the bath's units to px at the mark's size. */
@@ -122,6 +133,8 @@ export type MarblePlayer = Readonly<{
   /** The identity at the player's resolution, at mark px. */
   outline: SkPath;
   ink: SkPath;
+  /** The identity's ink as rings, in bath units, for morphs. */
+  identityRings: readonly (readonly number[])[];
   baked: SharedValue<MarbleBake | null>;
   /**
    * The identity as the shader reads it (the bath before any op), baked once:
@@ -151,6 +164,7 @@ type BathFeed = {
 };
 
 const feeds = new WeakMap<object, BathFeed>();
+let nextModelId = 1;
 let nextBathId = 1;
 
 const PLAYER_CACHE_LIMIT = 8;
@@ -197,11 +211,13 @@ export function marblePlayerOf(
   const markScale = MARBLE_MARK_REACH_PX / identity.reach;
   const timeline = track === null ? null : marbleTimeline(recipe, track, identity.reach);
   const player: MarblePlayer = {
+    id: nextModelId++,
     sound: timeline,
     duration: track === null ? recipe.durationMs / 1000 : track.duration,
     markScale,
     outline: marbleRingsPath(identity.surface, markScale, false),
     ink: marbleRingsPath(identity.surface, markScale, true),
+    identityRings: identity.surface.rings.filter(ring => ring.toggle).map(ring => Array.from(ring.pts)),
     baked: slot<MarbleBake | null>(null),
     still: slot<MarbleBake | null>(null),
   };
@@ -445,6 +461,17 @@ half4 main(float2 p) {
   a *= edge * ink.a;
   return half4(ink.rgb * a, a);
 }`;
+
+/** The bath's edge as a mask: opaque inside, fading over its last `EDGE_FADE`. */
+const EDGE_SKSL = `
+uniform float clipR;
+half4 main(float2 p) {
+  float a = 1.0 - smoothstep(clipR * ${1 - MARBLE_PLAYER_KNOBS.EDGE_FADE}, clipR, length(p));
+  return half4(a, a, a, a);
+}`;
+const edge = Skia.RuntimeEffect.Make(EDGE_SKSL);
+if (edge === null) throw new Error('The marbling edge did not compile.');
+const EDGE_EFFECT = edge;
 
 const effect = Skia.RuntimeEffect.Make(MARBLE_SKSL);
 if (effect === null) throw new Error('The marbling shader did not compile.');
@@ -720,6 +747,57 @@ export function drawPushedPicture(
   drawShaded(canvas, u, child, reach);
 }
 
+function smootherstepOf(x: number): number {
+  'worklet';
+  const c = x < 0 ? 0 : x > 1 ? 1 : x;
+  return c * c * c * (c * (6 * c - 15) + 10);
+}
+
+/**
+ * A marbling player as a morph's side: its bath's ink rings (or its
+ * identity's, without one) in px about the centre, at the view the bath is
+ * drawn at.
+ */
+export function marbleSide(
+  player: MarblePlayer,
+  size: number,
+  arrived: number,
+  bath: MarbleBake | null,
+): MorphSide {
+  'worklet';
+  const k = marbleScale(size, arrived);
+  const sound = player.sound;
+  if (bath === null || sound === null) {
+    const s0 = player.markScale * k;
+    return { rings: player.identityRings.map(ring => ring.map(v => v * s0)), alpha: 1 };
+  }
+  const reach = MARBLE_MARK_REACH_PX / player.markScale;
+  const ext = bath.key < sound.ops.length ? sound.ops[bath.key].ext : sound.extEnd;
+  const s = player.markScale * k * (reach / ext);
+  return { rings: bath.rings.map(ring => ring.map(v => v * s)), alpha: 1 };
+}
+
+/** A morph's ink, faded at the bath's edge as the bath itself is. */
+export function drawMarbleMorphFaded(
+  canvas: SkCanvas,
+  morph: MarbleMorph,
+  e: number,
+  alpha: number,
+  paints: PlayerPaints,
+  clipR: number,
+): void {
+  'worklet';
+  if (alpha <= 0) return;
+  const bounds = Skia.XYWHRect(-clipR - 2, -clipR - 2, clipR * 2 + 4, clipR * 2 + 4);
+  canvas.saveLayer(undefined, bounds);
+  drawMarbleMorphPaths(canvas, morph, e, alpha, paints);
+  const mask = Skia.Paint();
+  mask.setBlendMode(BlendMode.DstIn);
+  mask.setShader(EDGE_EFFECT.makeShader([clipR]));
+  canvas.drawRect(bounds, mask);
+  canvas.restore();
+}
+
 /** The identity, as paths: the player before its sound, exactly the mark grown. */
 function drawIdentity(
   canvas: SkCanvas,
@@ -783,10 +861,9 @@ function drawNib(
  * playhead; and the nib (the rim and its heard arc are the renderer's clock,
  * `ClockShape`).
  *
- * The sound rises as everything arrives in marbling: **a drop**. A drop of
- * clear water opens at the centre carrying the bath the song has made so far,
- * and pushes the identity aside — by the drop's own exact equation — out past
- * the bath's edge. No crossfade: two half-inked baths read as a ghost.
+ * The sound rises as a morph: the identity's rings flow into the bath the
+ * song has made so far (`marbleMorph.ts`). No crossfade of the two: two
+ * half-inked baths read as a ghost.
  *
  * `push` (px) is the same drop arriving from outside — the next song, another
  * lens — pushing this player out. `motion` null (reduced motion, or not the
@@ -837,16 +914,20 @@ export function drawMarblePlayer(
     return;
   }
   if (rising < 1 && bake.key > 0) {
-    // The song so far, falling in as a drop onto the identity.
-    const r = marbleDropRadius(rising, clipR);
-    if (still !== null) {
-      drawBath(canvas, player, still, null, 0, false, k, inkAlpha, lineAlpha, r, paints);
-    } else {
-      drawIdentity(canvas, player, k, lineAlpha, inkAlpha, hairlinePx, paints);
+    // The identity becoming the song so far: the engine's silhouette morph,
+    // ring by ring, each end handing over to the real drawing under it.
+    const shares = morphShares(rising);
+    if (shares.from > 0) {
+      drawIdentity(canvas, player, k, lineAlpha * shares.from, inkAlpha * shares.from, hairlinePx, paints);
     }
-    if (enterDrop(canvas, r, clipR, alpha, paints)) {
-      drawBath(canvas, player, bake, sound, t, landing, k, inkAlpha, lineAlpha, 0, paints);
-      leaveDrop(canvas);
+    if (shares.to > 0) {
+      drawBath(canvas, player, bake, sound, t, landing, k, inkAlpha * shares.to, lineAlpha * shares.to, 0, paints);
+    }
+    if (shares.morph > 0) {
+      const morph = cachedMarbleMorph(`rise:${player.id}:${bake.key}:${Math.round(size * 100)}`, () =>
+        buildMarbleMorph(marbleSide(player, size, arrived, null), marbleSide(player, size, arrived, bake), clipR),
+      );
+      drawMarbleMorphFaded(canvas, morph, smootherstepOf(rising), inkAlpha * shares.morph, paints, clipR);
     }
   } else {
     // Nothing settled yet: the bath is the identity, and what lands, lands.

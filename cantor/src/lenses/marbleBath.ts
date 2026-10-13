@@ -55,6 +55,12 @@ export type MarbleBake = Readonly<{
   /** Image px per bath unit, and where the bath's centre is in the image. */
   scale: number;
   half: number;
+  /**
+   * The ink as rings, in bath units: every ring whose colour differs from
+   * its parent's, interleaved x, y — the even-odd path the image was drawn
+   * from. What a morph to or from this bath flows (`marbleMorph.ts`).
+   */
+  rings: readonly (readonly number[])[];
 }>;
 
 /** A ring as plain numbers, to cross into the runtime. */
@@ -199,12 +205,15 @@ export function bathBake(state: BathState, k: number): MarbleBake {
   canvas.drawPath(marbleRingsPath(surface, scale, false), line);
   target.flush();
   const image = target.makeImageSnapshot();
+  const rings: number[][] = [];
+  for (const ring of surface.rings) if (ring.toggle) rings.push(Array.from(ring.pts));
   return {
     key: k,
     image,
     shader: image.makeShaderOptions(TileMode.Decal, TileMode.Decal, FilterMode.Linear, MipmapMode.None),
     scale,
     half,
+    rings,
   };
 }
 
