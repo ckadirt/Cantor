@@ -11,11 +11,10 @@ declare const require: (name: string) => { writeFileSync: (path: string, data: U
 declare const process: { env: Record<string, string | undefined> };
 
 /*
- * Marbling's transitions are all one gesture, a drop: what arrives opens at
- * the centre and pushes what was there out past the edge. These pin its ends
- * (each is exactly the drawing it leaves or arrives at), its smoothness (a
- * small step of the clock is a small change of the frame), and write sheets
- * to look at with `MARBLE_SHEET=<dir>`.
+ * Marbling's transitions are ring-by-ring morphs (`marbleMorph.ts`). These pin
+ * their ends (each is exactly the drawing it leaves or arrives at), their
+ * smoothness (no frame that pops), and write sheets to look at with
+ * `MARBLE_SHEET=<dir>`.
  */
 
 const track = trackOf(load('edm-drop'));
@@ -87,7 +86,7 @@ const step = (t: number, sheet?: string) =>
 const plainA = () => raster(c => drawMarblePlayer(c, a as MarblePlayer, SIZE, 1, 1, 1, 1, 1, T / a.duration, 1, paints(), frameA));
 const plainB = () => raster(c => drawMarblePlayer(c, b as MarblePlayer, SIZE, 1, 1, 1, 1, 1, heardB, 1, paints(), null));
 
-describe("marbling's drop", () => {
+describe("marbling's morphs", () => {
   afterAll(() => {
     const dir = process.env.MARBLE_SHEET;
     if (!dir) return;
@@ -112,7 +111,7 @@ describe("marbling's drop", () => {
     expectNoPop(steps);
   });
 
-  it('raises the sound as a drop: the identity at 0, the bath at 1', () => {
+  it('raises the sound as a morph: the identity at 0, the bath at 1', () => {
     const rise = (soundIn: number, sheet?: string) =>
       raster(c => drawMarblePlayer(c, a, SIZE, 1, 1, 1, 1, soundIn, T / a.duration, 1, paints(), frameA), sheet);
     const zero = rise(0);
@@ -131,7 +130,7 @@ describe("marbling's drop", () => {
     expectNoPop(steps);
   });
 
-  it('is the seal pushed aside by marbling, every way the pair runs', () => {
+  it('morphs the seal into marbling, exactly at both ends', () => {
     const seal = lensIndex('seal');
     const marble = lensIndex('marble');
     const pair = LENS_PAIRS.find(p => p.a === seal && p.b === marble)!;
@@ -163,7 +162,7 @@ describe("marbling's drop", () => {
     expectNoPop(steps);
   });
 
-  it('has a drop for every lens marbling meets', () => {
+  it('has a morph for every lens marbling meets', () => {
     const marble = lensIndex('marble');
     for (const lens of LENSES) {
       if (lens.key === 'marble') continue;

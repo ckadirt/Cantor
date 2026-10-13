@@ -615,7 +615,7 @@ function marbleMorphsWith(drawOther: PlayerDraw, sideOf: SideOf, kind: string) {
         () => buildMarbleMorph(from, marbleSide(m, size, arrived, bath), clipR),
       );
       const ink = alpha * (fill + (1 - fill) * arrived);
-      drawMarbleMorphFaded(canvas, morph, smootherstep(t), ink * shares.morph, paints, clipR);
+      drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR);
     }
   };
 }

@@ -35,6 +35,8 @@ export const MARBLE_MORPH_KNOBS = {
   BUDGET: 6000,
   /** Rings smaller than this, px², shrink to a point rather than pair. */
   MIN_AREA_PX2: 2,
+  /** How much of the clock a ring with no partner takes to go, or to come. */
+  ALONE_WINDOW: 0.65,
 } as const;
 
 /** A drawing as rings in px about the player's centre, interleaved x, y, each with its ink. */
@@ -44,9 +46,23 @@ export type MorphSide = Readonly<{
   alpha: readonly number[] | number;
 }>;
 
-/** A built morph: one path pair per alpha pair (`from` at 0, `to` at 1). */
+/**
+ * A built morph: every ring's points at both ends, interleaved x, y, in one
+ * pair of arrays, with where each ring starts, its window of the clock and its
+ * alpha at both ends. Lerped per frame on the UI thread (a few thousand
+ * points), so each ring can keep a window of its own — a ring with no partner
+ * is gone before the end, rather than lingering as a speck until the last
+ * frame — and rings of one alpha share one even-odd path, so holes stay holes.
+ */
 export type MarbleMorph = Readonly<{
-  groups: readonly Readonly<{ from: SkPath; to: SkPath; aFrom: number; aTo: number }>[];
+  from: number[];
+  to: number[];
+  /** Ring `i` is points `starts[i]` up to `starts[i + 1]`. */
+  starts: number[];
+  w0: number[];
+  w1: number[];
+  aFrom: number[];
+  aTo: number[];
 }>;
 
 function ringArea(r: readonly number[]): number {
@@ -243,26 +259,19 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
   let wanted = 0;
   for (const pair of pairs) wanted += Math.max(K.MIN_POINTS, Math.min(K.MAX_POINTS, pair.want));
   const squeeze = wanted > K.BUDGET ? K.BUDGET / wanted : 1;
-  const groups: { from: ReturnType<typeof Skia.PathBuilder.Make>; to: ReturnType<typeof Skia.PathBuilder.Make>; aFrom: number; aTo: number }[] = [];
-  const groupOf = (aFrom: number, aTo: number) => {
-    for (const group of groups) if (group.aFrom === aFrom && group.aTo === aTo) return group;
-    const fromBuilder = Skia.PathBuilder.Make();
-    const toBuilder = Skia.PathBuilder.Make();
-    fromBuilder.setFillType(FillType.EvenOdd);
-    toBuilder.setFillType(FillType.EvenOdd);
-    const group = { from: fromBuilder, to: toBuilder, aFrom, aTo };
-    groups.push(group);
-    return group;
-  };
   const point = (x: number, y: number, n: number): number[] => {
     const out: number[] = [];
     for (let i = 0; i < n; i++) out.push(x, y);
     return out;
   };
-  const add = (builder: ReturnType<typeof Skia.PathBuilder.Make>, ring: number[]) => {
-    builder.moveTo(ring[0], ring[1]);
-    for (let i = 2; i < ring.length; i += 2) builder.lineTo(ring[i], ring[i + 1]);
-    builder.close();
+  const morph: { from: number[]; to: number[]; starts: number[]; w0: number[]; w1: number[]; aFrom: number[]; aTo: number[] } = {
+    from: [],
+    to: [],
+    starts: [],
+    w0: [],
+    w1: [],
+    aFrom: [],
+    aTo: [],
   };
   for (const pair of pairs) {
     const n = Math.max(
@@ -274,18 +283,19 @@ export function buildMarbleMorph(from: MorphSide, to: MorphSide, reach: number):
     const ra = pair.a !== null ? resampleRing(pair.a, n) : point(centreB![0], centreB![1], n);
     let rb = pair.b !== null ? resampleRing(pair.b, n) : point(centreA![0], centreA![1], n);
     if (pair.a !== null && pair.b !== null) rb = alignRing(ra, rb);
-    const group = groupOf(pair.aAlpha, pair.bAlpha);
-    add(group.from, ra);
-    add(group.to, rb);
+    morph.starts.push(morph.from.length);
+    for (let i = 0; i < ra.length; i++) {
+      morph.from.push(ra[i]);
+      morph.to.push(rb[i]);
+    }
+    // Alone: gone over the first part of the clock, or come over the last.
+    morph.w0.push(pair.a === null ? 1 - K.ALONE_WINDOW : 0);
+    morph.w1.push(pair.b === null ? K.ALONE_WINDOW : 1);
+    morph.aFrom.push(pair.aAlpha);
+    morph.aTo.push(pair.bAlpha);
   }
-  return {
-    groups: groups.map(group => ({
-      from: group.from.detach(),
-      to: group.to.detach(),
-      aFrom: group.aFrom,
-      aTo: group.aTo,
-    })),
-  };
+  morph.starts.push(morph.from.length);
+  return morph;
 }
 
 /**
@@ -306,21 +316,50 @@ export function morphShares(t: number): { from: number; to: number; morph: numbe
   };
 }
 
-/** The morph at eased `e` (0..1), filled in the ink at `alpha`. */
+/**
+ * The morph at `t` (0..1, linear), filled in the ink at `alpha`: each ring
+ * eased through its own window, one even-odd path per alpha it stands at.
+ */
 export function drawMarbleMorphPaths(
   canvas: SkCanvas,
   morph: MarbleMorph,
-  e: number,
+  t: number,
   alpha: number,
   paints: PlayerPaints,
 ): void {
   'worklet';
   if (alpha <= 0) return;
-  for (const group of morph.groups) {
-    const path = e <= 0 ? group.from : e >= 1 ? group.to : group.to.interpolate(group.from, e);
-    if (path === null) continue;
-    paints.fill.setAlphaf(alpha * (group.aFrom + (group.aTo - group.aFrom) * e));
-    canvas.drawPath(path, paints.fill);
+  const rings = morph.starts.length - 1;
+  const builders: { a: number; path: ReturnType<typeof Skia.PathBuilder.Make> }[] = [];
+  for (let r = 0; r < rings; r++) {
+    const span = morph.w1[r] - morph.w0[r];
+    const x = span > 0 ? (t - morph.w0[r]) / span : 1;
+    const c = x < 0 ? 0 : x > 1 ? 1 : x;
+    const e = c * c * c * (c * (6 * c - 15) + 10);
+    const a = morph.aFrom[r] + (morph.aTo[r] - morph.aFrom[r]) * e;
+    // A ring gone to a point draws nothing.
+    if ((morph.w1[r] < 1 && e >= 1) || (morph.w0[r] > 0 && e <= 0)) continue;
+    const key = Math.round(a * 100) / 100;
+    let builder = null;
+    for (const b of builders) if (b.a === key) builder = b.path;
+    if (builder === null) {
+      builder = Skia.PathBuilder.Make();
+      builder.setFillType(FillType.EvenOdd);
+      builders.push({ a: key, path: builder });
+    }
+    const start = morph.starts[r];
+    const end = morph.starts[r + 1];
+    for (let i = start; i < end; i += 2) {
+      const px = morph.from[i] + (morph.to[i] - morph.from[i]) * e;
+      const py = morph.from[i + 1] + (morph.to[i + 1] - morph.from[i + 1]) * e;
+      if (i === start) builder.moveTo(px, py);
+      else builder.lineTo(px, py);
+    }
+    builder.close();
+  }
+  for (const b of builders) {
+    paints.fill.setAlphaf(alpha * b.a);
+    canvas.drawPath(b.path.detach(), paints.fill);
   }
 }
 
