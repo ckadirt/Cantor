@@ -357,6 +357,13 @@ export function bathBakeOn(
   };
 }
 
+/** On the bath's runtime: the other lenses' sides for player `id`, changed (its analysis or cover arrived). */
+export function bathSidesOn(id: number, sides: Readonly<Record<string, MorphSide>>): void {
+  'worklet';
+  const state = bathsHere().get(id);
+  if (state !== undefined) state.sides = sides;
+}
+
 /** On the bath's runtime: warm player `id`'s keyframes; true once done (or gone). */
 export function bathWarmOn(id: number, budgetMs: number): boolean {
   'worklet';

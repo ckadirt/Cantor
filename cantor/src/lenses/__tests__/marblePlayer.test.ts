@@ -104,6 +104,10 @@ describe('marbling as the player', () => {
 
   it('builds once per recipe and track, and keys its bake by settled ops', () => {
     expect(marblePlayerOf(RECIPE, undefined, null, track)).toBe(player);
+    // The queue's step asks for the leaving song's model again, with whatever
+    // analysis and cover it has: the same model, its bath still baked.
+    const measured = { rms: new Float32Array(4), peak: new Float32Array(4), measured: true, slices: { loudness: new Float32Array(9), punch: new Float32Array(9), width: new Float32Array(9) } };
+    expect(marblePlayerOf(RECIPE, measured as never, null, track)).toBe(player);
     expect(marblePlayerOf(RECIPE, undefined, null, null).sound).toBeNull();
     expect(marbleBakeKey(player, 0)).toBe(0);
     const end = sound.ops.length;

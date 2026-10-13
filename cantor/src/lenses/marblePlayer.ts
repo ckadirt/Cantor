@@ -26,6 +26,7 @@ import {
   bathBake,
   bathBakeOn,
   bathStateOf,
+  bathSidesOn,
   bathWarmOn,
   plainRings,
   type BakeAsk,
@@ -173,6 +174,8 @@ export type MarblePlayer = Readonly<{
 type BathFeed = {
   id: number;
   init: BathInit;
+  /** What the other lenses' sides were built from: the analysis, the cover. */
+  sidesKey: string;
   /** Whether the runtime has been sent `init`. */
   sent: boolean;
   /** The key last asked for, and the last one landed. */
@@ -222,14 +225,25 @@ export function marblePlayerOf(
   cover?: CoverArt | null,
   track: MotionTrack | null = null,
 ): MarblePlayer {
-  // The analysis and the cover only shape the other lenses' sides of a morph.
   const key = `${recipe.seed ?? ''}\u001f${recipe.id}\u001f${recipe.model}\u001f${
     recipe.durationMs
-  }\u001f${recipe.imported === true ? 'i' : ''}\u001f${trackId(track)}\u001f${
-    analysis?.measured === true ? 'm' : ''
-  }\u001f${cover == null ? '' : 'c'}`;
+  }\u001f${recipe.imported === true ? 'i' : ''}\u001f${trackId(track)}`;
+  // The analysis and the cover only shape the other lenses' sides of a morph,
+  // so they never make a new model — a new model has no bath baked, and the
+  // queue's step, which asks for the leaving song's again, drew its identity.
+  // They change the sides in place.
+  const sidesKey = `${analysis?.measured === true ? 'm' : ''}${cover == null ? '' : 'c'}`;
   const cached = playerCache.get(key);
-  if (cached !== undefined) return cached;
+  if (cached !== undefined) {
+    const feed = feeds.get(cached);
+    if (feed !== undefined && feed.sidesKey !== sidesKey && (analysis !== undefined || cover != null)) {
+      feed.sidesKey = sidesKey;
+      const sides = marbleSidesOf(recipe, analysis, cover ?? null, MARBLE_PLAYER_KNOBS.GROW);
+      feed.init = { ...feed.init, sides };
+      if (feed.sent) onBathRuntime(bathSidesOn, feed.id, sides).catch(() => undefined);
+    }
+    return cached;
+  }
   const identity = marbleIdentity(
     recipe,
     MARBLE_KNOBS.PLAYER_POINTS,
@@ -260,6 +274,7 @@ export function marblePlayerOf(
   if (timeline !== null) {
     feeds.set(player, {
       id: nextBathId++,
+      sidesKey,
       init: {
         rings: plainRings(identity.surface),
         ops: timeline.ops,
