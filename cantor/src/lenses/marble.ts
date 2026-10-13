@@ -282,6 +282,7 @@ export function applyMarbleOp(
 
 /** Where one op, fully landed, moves (`x`, `y`). */
 function opForward(op: MarbleOp, x: number, y: number, out: [number, number]): void {
+  'worklet';
   if (op.kind === 'drop') {
     dropForward(x, y, op.x, op.y, op.r, out);
   } else {
@@ -322,6 +323,7 @@ export function applyMarbleOpRefined(
    */
   far = 0,
 ): void {
+  'worklet';
   const rings = surface.rings;
   let added: MarbleRing | null = null;
   if (op.kind === 'drop') {
@@ -444,6 +446,7 @@ export function applyMarbleOpRefined(
 
 /** How many points the bath holds: its cost. */
 export function surfacePoints(surface: MarbleSurface): number {
+  'worklet';
   let count = 0;
   for (const ring of surface.rings) count += ring.pts.length >> 1;
   return count;
@@ -451,6 +454,7 @@ export function surfacePoints(surface: MarbleSurface): number {
 
 /** A deep copy, for keeping a keyframe or landing ops on a scratch bath. */
 export function copySurface(surface: MarbleSurface): MarbleSurface {
+  'worklet';
   return {
     rings: surface.rings.map(ring => ({
       pts: ring.pts.slice(),

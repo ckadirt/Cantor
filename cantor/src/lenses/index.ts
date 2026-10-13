@@ -16,3 +16,4 @@ export * from './marbleMark';
 export * from './marbleLens';
 export * from './marblePlayer';
 export * from './marbleTimeline';
+export * from './marbleBath';

@@ -1,25 +1,25 @@
-import {
-  BlendMode,
-  FilterMode,
-  MipmapMode,
-  Skia,
-  TileMode,
-  type SkCanvas,
-  type SkImage,
-  type SkPaint,
-  type SkPath,
-  type SkShader,
-} from '@shopify/react-native-skia';
+import { Skia, type SkCanvas, type SkPath } from '@shopify/react-native-skia';
 import { makeMutable, type SharedValue } from 'react-native-reanimated';
+import {
+  createWorkletRuntime,
+  runOnRuntimeAsync,
+  type WorkletRuntime,
+} from 'react-native-worklets';
 import type { LensPlayer, PlayerPaints } from './contract';
 import type { FaceRecipe } from './face';
+import { MARBLE_KNOBS, marbleIdentity, type MarbleSurface } from './marble';
 import {
-  MARBLE_KNOBS,
-  applyMarbleOpRefined,
-  copySurface,
-  marbleIdentity,
-  type MarbleSurface,
-} from './marble';
+  MARBLE_BATH_KNOBS,
+  bathAt,
+  bathBake,
+  bathBakeOn,
+  bathStateOf,
+  bathWarmOn,
+  plainRings,
+  type BathInit,
+  type BathState,
+  type MarbleBake,
+} from './marbleBath';
 import { MARBLE_MARK_REACH_PX, marbleRingsPath } from './marbleMark';
 import {
   MARBLE_TIMELINE_KNOBS,
@@ -67,20 +67,13 @@ export const MARBLE_PLAYER_KNOBS = {
    * it. Eased in by `arrived`, so at the hand-off it is the mark.
    */
   GROW: 1.12,
-  /** Where the bath is clipped, over its extent: the oldest ink leaves past it. */
-  CLIP_RATIO: 1.02,
-  /** The baked image's side, px, and how far it reaches, over the extent. */
-  BAKE_PX: 1200,
-  BAKE_REACH: 1.4,
-  /** An outline's width in the baked image, px. */
-  BAKE_LINE_PX: 1.4,
   /**
-   * The longest a ring's segment may be, over the bath's extent, before an op
-   * splits it (`applyMarbleOpRefined`): about 3 px at the player.
+   * Where the bath ends, over its extent: the oldest ink leaves past it. Its
+   * extent is by area, so stretched ink reaches past this; a hard clip read as
+   * a cut, so the last `EDGE_FADE` of the radius fades the ink out instead.
    */
-  SEG_MAX: 0.012,
-  /** How often the settled bath is kept, in ops, so a seek starts near. */
-  KEYFRAME_EVERY: 16,
+  CLIP_RATIO: 1.04,
+  EDGE_FADE: 0.14,
   /** The most ops the shader lands at once; a bar's drop and its comb is two. */
   LIVE_MAX: 8,
   /** The nib: where the next bar's ink falls, on a hairline from the rim. */
@@ -95,19 +88,11 @@ export const MARBLE_PLAYER_KNOBS = {
    * Its widest, over the bath's clip radius: enough to reach the far edge.
    */
   IRIS_REACH: 2.1,
-  /** How long a baked image is kept after it is replaced, for the frames still drawing it. */
-  RETIRE_MS: 1500,
+  /** Keyframes are warmed in slices this long, this far apart, on the JS thread. */
+  WARM_SLICE_MS: 8,
+  WARM_GAP_MS: 40,
 } as const;
 
-/** The settled bath at `key` ops, as the shader reads it. */
-export type MarbleBake = Readonly<{
-  key: number;
-  image: SkImage;
-  shader: SkShader;
-  /** Image px per bath unit, and where the bath's centre is in the image. */
-  scale: number;
-  half: number;
-}>;
 
 /**
  * The player's model, built once on the JS thread for the song the camera is
@@ -125,17 +110,25 @@ export type MarblePlayer = Readonly<{
   baked: SharedValue<MarbleBake | null>;
 }>;
 
-/** The bath's state on the JS thread, for one player: where it is, and its keyframes. */
-type BathState = {
-  identity: MarbleSurface;
-  timeline: MarbleTimeline;
-  cursor: { k: number; surface: MarbleSurface };
-  keyframes: Map<number, MarbleSurface>;
+/**
+ * What JS keeps for a player's bath: the runtime holds the bath itself
+ * (`marbleBath.ts`); this is what to send it, and where the bakes stand.
+ */
+type BathFeed = {
+  id: number;
+  init: BathInit;
+  /** Whether the runtime has been sent `init`. */
+  sent: boolean;
+  /** The key last asked for, and the last one landed. */
   wanted: number;
-  scheduled: boolean;
+  landed: number;
+  /** One call at a time in flight, so a scrub never queues stale bakes. */
+  busy: boolean;
+  warmed: boolean;
 };
 
-const baths = new WeakMap<object, BathState>();
+const feeds = new WeakMap<object, BathFeed>();
+let nextBathId = 1;
 
 const PLAYER_CACHE_LIMIT = 8;
 const playerCache = new Map<string, MarblePlayer>();
@@ -176,7 +169,7 @@ export function marblePlayerOf(
   const identity = marbleIdentity(
     recipe,
     MARBLE_KNOBS.PLAYER_POINTS,
-    MARBLE_PLAYER_KNOBS.SEG_MAX,
+    MARBLE_BATH_KNOBS.SEG_MAX,
   );
   const markScale = MARBLE_MARK_REACH_PX / identity.reach;
   const timeline = track === null ? null : marbleTimeline(recipe, track, identity.reach);
@@ -189,13 +182,14 @@ export function marblePlayerOf(
     baked: slot<MarbleBake | null>(null),
   };
   if (timeline !== null) {
-    baths.set(player, {
-      identity: identity.surface,
-      timeline,
-      cursor: { k: 0, surface: copySurface(identity.surface) },
-      keyframes: new Map([[0, copySurface(identity.surface)]]),
+    feeds.set(player, {
+      id: nextBathId++,
+      init: { rings: plainRings(identity.surface), ops: timeline.ops, extEnd: timeline.extEnd },
+      sent: false,
       wanted: -1,
-      scheduled: false,
+      landed: -1,
+      busy: false,
+      warmed: false,
     });
   }
   if (playerCache.size >= PLAYER_CACHE_LIMIT) {
@@ -215,109 +209,117 @@ export function marbleBakeKey(player: LensPlayer | null, seconds: number): numbe
   return marbleSettledAt(sound, seconds);
 }
 
-/**
- * The settled bath after `k` ops: from the nearest keyframe or the cursor at
- * or before it, keeping a keyframe every `KEYFRAME_EVERY` ops on the way.
- * Pure in `k`; the keyframes only make it cheap.
- */
-export function marbleBathAt(player: MarblePlayer, k: number): MarbleSurface {
-  const state = baths.get(player);
-  if (state === undefined) throw new Error('This player has no sound to bake.');
-  const ops = state.timeline.ops;
-  const target = Math.max(0, Math.min(ops.length, k));
-  let from = 0;
-  for (const at of state.keyframes.keys()) if (at <= target && at > from) from = at;
-  let surface: MarbleSurface;
-  if (state.cursor.k <= target && state.cursor.k >= from) {
-    surface = state.cursor.surface;
-    from = state.cursor.k;
-  } else {
-    surface = copySurface(state.keyframes.get(from)!);
+/** A bath on this thread, for tests and tools: the same worklets, inline. */
+const local = new WeakMap<object, BathState>();
+
+function localState(player: MarblePlayer): BathState {
+  const feed = feeds.get(player);
+  if (feed === undefined) throw new Error('This player has no sound to bake.');
+  let state = local.get(player);
+  if (state === undefined) {
+    state = bathStateOf(feed.init);
+    local.set(player, state);
   }
-  const every = MARBLE_PLAYER_KNOBS.KEYFRAME_EVERY;
-  for (let i = from; i < target; i += 1) {
-    const ext = ops[i].ext;
-    applyMarbleOpRefined(
-      surface,
-      ops[i].op,
-      MARBLE_PLAYER_KNOBS.SEG_MAX * ext,
-      MARBLE_PLAYER_KNOBS.BAKE_REACH * ext,
-    );
-    if ((i + 1) % every === 0 && !state.keyframes.has(i + 1)) {
-      state.keyframes.set(i + 1, copySurface(surface));
+  return state;
+}
+
+/** The settled bath after `k` ops, on this thread. */
+export function marbleBathAt(player: MarblePlayer, k: number): MarbleSurface {
+  return bathAt(localState(player), k);
+}
+
+/** The settled bath after `k` ops as the shader reads it, drawn on this thread. */
+export function marbleBakeImage(player: MarblePlayer, k: number): MarbleBake {
+  return bathBake(localState(player), k);
+}
+
+let runtime: WorkletRuntime | null | undefined;
+
+/** The bath's own runtime, made the first time it is needed; null where there is none. */
+function bathRuntime(): WorkletRuntime | null {
+  if (runtime === undefined) {
+    try {
+      runtime = createWorkletRuntime({ name: 'marble-bath' }) ?? null;
+    } catch {
+      runtime = null;
     }
   }
-  state.cursor = { k: target, surface };
-  return surface;
+  return runtime;
 }
 
-/** The extent after `k` ops have landed. */
-function settledExt(timeline: MarbleTimeline, k: number): number {
-  return k < timeline.ops.length ? timeline.ops[k].ext : timeline.extEnd;
-}
-
-let bakePaints: { fill: SkPaint; line: SkPaint } | null = null;
-
-/** Draw the settled bath after `k` ops into an image: ink in red, outlines in green. */
-export function marbleBakeImage(player: MarblePlayer, k: number): MarbleBake {
-  const state = baths.get(player);
-  if (state === undefined) throw new Error('This player has no sound to bake.');
-  const K = MARBLE_PLAYER_KNOBS;
-  const surface = marbleBathAt(player, k);
-  const half = K.BAKE_PX / 2;
-  const scale = half / (settledExt(state.timeline, k) * K.BAKE_REACH);
-  if (bakePaints === null) {
-    const fill = Skia.Paint();
-    fill.setAntiAlias(true);
-    fill.setColor(Skia.Color('#FF0000'));
-    const line = Skia.Paint();
-    line.setAntiAlias(true);
-    line.setColor(Skia.Color('#00FF00'));
-    line.setStyle(1);
-    line.setBlendMode(BlendMode.Plus);
-    bakePaints = { fill, line };
+function onBathRuntime<Args extends unknown[], R>(
+  worklet: (...args: Args) => R,
+  ...args: Args
+): Promise<R> {
+  const here = bathRuntime();
+  if (here === null) {
+    try {
+      return Promise.resolve(worklet(...args));
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
-  bakePaints.line.setStrokeWidth(K.BAKE_LINE_PX);
-  const target = Skia.Surface.Make(K.BAKE_PX, K.BAKE_PX);
-  if (target === null) throw new Error('Could not make a surface to bake the bath on.');
-  const canvas = target.getCanvas();
-  canvas.clear(Skia.Color('transparent'));
-  canvas.translate(half, half);
-  canvas.drawPath(marbleRingsPath(surface, scale, true), bakePaints.fill);
-  canvas.drawPath(marbleRingsPath(surface, scale, false), bakePaints.line);
-  target.flush();
-  const image = target.makeImageSnapshot();
-  return {
-    key: k,
-    image,
-    shader: image.makeShaderOptions(TileMode.Decal, TileMode.Decal, FilterMode.Linear, MipmapMode.None),
-    scale,
-    half,
-  };
+  return runOnRuntimeAsync(here, worklet, ...args);
+}
+
+/**
+ * Keep the bath moving: the latest key asked for, else a slice of warming,
+ * one call at a time.
+ */
+function pump(player: MarblePlayer, feed: BathFeed): void {
+  if (feed.busy) return;
+  if (feed.wanted >= 0 && feed.wanted !== feed.landed) {
+    const k = feed.wanted;
+    feed.busy = true;
+    onBathRuntime(bathBakeOn, feed.id, feed.sent ? null : feed.init, k).then(
+      bake => {
+        feed.busy = false;
+        if (bake === null) {
+          // The runtime let it go: send the bath again.
+          feed.sent = false;
+        } else {
+          feed.sent = true;
+          feed.landed = bake.key;
+          player.baked.value = bake;
+        }
+        pump(player, feed);
+      },
+      () => {
+        feed.busy = false;
+        feed.landed = k;
+      },
+    );
+    return;
+  }
+  if (!feed.warmed && feed.sent) {
+    feed.busy = true;
+    onBathRuntime(bathWarmOn, feed.id, MARBLE_PLAYER_KNOBS.WARM_SLICE_MS).then(
+      done => {
+        feed.busy = false;
+        feed.warmed = done;
+        if (!done) setTimeout(() => pump(player, feed), MARBLE_PLAYER_KNOBS.WARM_GAP_MS);
+        else pump(player, feed);
+      },
+      () => {
+        feed.busy = false;
+        feed.warmed = true;
+      },
+    );
+  }
 }
 
 /**
  * `Lens.bake`: bring the player's settled bath to `key`. Calls arrive as the
  * playhead crosses bars — faster during a scrub than a bath can be drawn —
- * so they are coalesced: the bath is drawn for the latest key asked for.
+ * so only the latest is drawn; once there, the runtime warms keyframes for
+ * the rest of the song between bars.
  */
 export function bakeMarble(model: LensPlayer, key: number): void {
   const player = model as MarblePlayer;
-  const state = baths.get(player);
-  if (state === undefined || key < 0) return;
-  state.wanted = key;
-  if (state.scheduled) return;
-  state.scheduled = true;
-  setTimeout(() => {
-    state.scheduled = false;
-    const k = state.wanted;
-    const last = player.baked.value;
-    if (last !== null && last.key === k) return;
-    const next = marbleBakeImage(player, k);
-    player.baked.value = next;
-    // The UI thread may draw the old one for a frame or two more.
-    if (last !== null) setTimeout(() => last.image.dispose(), MARBLE_PLAYER_KNOBS.RETIRE_MS);
-  }, 0);
+  const feed = feeds.get(player);
+  if (feed === undefined || key < 0) return;
+  feed.wanted = key;
+  pump(player, feed);
 }
 
 /*
@@ -375,7 +377,7 @@ half4 main(float2 p) {
     l = max(l * (1.0 - cov), dropLine);
   }
   float a = 1.0 - (1.0 - clamp(f, 0.0, 1.0) * fillA) * (1.0 - clamp(l, 0.0, 1.0) * lineA);
-  a *= 1.0 - smoothstep(clipR - 0.5, clipR + 0.5, length(p));
+  a *= 1.0 - smoothstep(clipR * ${1 - MARBLE_PLAYER_KNOBS.EDGE_FADE}, clipR, length(p));
   a *= ink.a;
   return half4(ink.rgb * a, a);
 }`;
@@ -514,7 +516,7 @@ export function drawMarblePlayer(
   u[7] = colour[2];
   u[8] = 1;
   u[9] = clipR;
-  u[10] = K.BAKE_LINE_PX / 2 / bake.scale;
+  u[10] = MARBLE_BATH_KNOBS.BAKE_LINE_PX / 2 / bake.scale;
   const shaderPaint = Skia.Paint();
   shaderPaint.setAntiAlias(true);
   shaderPaint.setShader(MARBLE_EFFECT.makeShaderWithChildren(u, [bake.shader]));
