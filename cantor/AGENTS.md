@@ -222,11 +222,13 @@ strokes (`lenses/marble.ts`); its sound is the bath the song leaves — a drop a
 bar at the playhead's place round the dial, sized by the bar's loudness and
 kick, nothing ever erased (`lenses/marbleTimeline.ts`). Its clock is the seal's
 rim, and a drag anywhere on the bath seeks by angle. **Marbling morphs ring by
-ring** — its sound rising at L2, the queue's next song, a change with the seal
-or the circle: both drawings as compound even-odd rings, paired, resampled,
-aligned and lerped, the motion engine's silhouette morph (`lenses/marbleMorph.ts`),
-each end handing over to the lens's own drawing under the morph. The cover,
-whose drawing is glyphs, still arrives as a drop pushing it aside. A lens whose field of
+ring** — its sound rising at L2, a seek while it plays (the back button
+restarting a song), the queue's next song, a change with any other lens: both
+drawings as rings, paired (the same ink by id within one song), resampled,
+aligned and lerped, the motion engine's silhouette morph
+(`lenses/marbleMorph.ts`). The morphs are built off the drawing threads by the
+bath's own runtime; the UI thread only lerps them, and each end dissolves into
+the lens's own drawing without thinning the ink. A lens whose field of
 unloaded songs looks identical has broken the identity rule.
 
 **The player moves to its music, and every frame is a pure function of the

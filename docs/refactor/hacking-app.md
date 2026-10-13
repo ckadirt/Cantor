@@ -305,16 +305,18 @@ inverse of the ops between the bake and the playhead per pixel and tints the
 image. Rings are refined as ops stretch them (`applyMarbleOpRefined`) or
 combs leave chords across the pattern. The seek is the seal's rim, by angle
 anywhere on the disc. Its morphs (`marbleMorph.ts`) are the motion engine's
-silhouette morph on the UI thread: the sound rising, the queue's step
-(`drawMarbleMorph`) and the seal and circle pairs (`marbleMorphsWith` in
-`pairs.ts`) flow one drawing's even-odd rings into the other's — the bath's ink
-rings come back from the bath runtime with each bake — lerped per frame so each
-ring keeps its own window, with each end handing over to the real drawing
-under it (`morphShares`). The circle's face is the morph's fixed ring, fed its
-singing contour each frame. The cover pair is still a drop (`marbleArrivesOver`):
-it records the cover's player, draws it into an image at the screen's density
-(a picture shader as a runtime effect's child is sampled without it on the
-phone) and pushes it through the bath's shader.
+silhouette morph: both drawings as rings, wound by nesting depth and filled
+nonzero (crossing ink stays ink), paired — by id within one song (a bath's rings
+in the order they fell), else by size, place and role — resampled, aligned and
+lerped per frame, each ring in its own window. The bath runtime builds them with
+each bake, in its own unit (a bath's rings over its extent), from what JS asks
+(`BakeAsk`: the rise, a seek, a step from the song before, the other lenses'
+sides from `marbleSides.ts`), and sends them as typed arrays; the UI thread
+only lerps, and builds one itself only when it came without. A seek while
+playing (`drawMarbleSeek`) holds the bath until the new bake lands, then
+morphs. The cover pair morphs its strokes (filled toward marbling, stroked at
+its own end); `marbleArrivesOver` (the drop) is the fallback for a lens with no
+model to morph.
 `analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
 (side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
 **The motion track and the frame** (docs/interfacealpha/reactive-player-plan.md).
