@@ -54,8 +54,19 @@ export const MARBLE_KNOBS = {
   OFF_CENTRE_AT: 0.45,
   OFF_R_MIN: 0.15,
   OFF_R_MAX: 0.25,
-  /** Points round an identity ring: the mark and the player draw the same ones. */
-  RING_POINTS: 120,
+  /**
+   * Points round an identity ring at the mark. Every song builds its
+   * marbling whichever lens is showing, and the points are the cost; at 19 px
+   * across a 32-gon is within 0.05 px of a circle.
+   */
+  MARK_POINTS: 32,
+  /**
+   * The same at the player, which builds its own bath for the one song the
+   * camera is in. The page used 120; 96 is within 0.1 px of a circle at the
+   * player's size. Mark and player differ by under a pixel where they meet,
+   * at the row's size.
+   */
+  PLAYER_POINTS: 96,
   /**
    * The imported marker: a clear drop at the centre, last, as a fraction of
    * the identity's reach — the circle's spindle in marbling's own form, which
@@ -183,7 +194,12 @@ export function tineInverse(
 }
 
 /** Whether (`x`, `y`) is inside a ring's polygon (crossings). */
-export function insideRing(pts: Float64Array, x: number, y: number): boolean {
+export function insideRing(
+  pts: Float64Array | readonly number[],
+  x: number,
+  y: number,
+): boolean {
+  'worklet';
   let inside = false;
   const n = pts.length >> 1;
   for (let i = 0, j = n - 1; i < n; j = i++) {
@@ -217,6 +233,7 @@ export function applyMarbleOp(
   op: MarbleOp,
   fraction: number,
 ): void {
+  'worklet';
   const rings = surface.rings;
   if (op.kind === 'drop') {
     const r = op.r * Math.sqrt(Math.max(0, Math.min(1, fraction)));
@@ -311,7 +328,10 @@ export function marbleRandom(recipe: FaceRecipe): () => number {
 const lerp = (a: number, b: number, s: number) => a + (b - a) * s;
 
 /** The page's `identityOps`, drawn from `random`. */
-export function marbleIdentityOpsFrom(random: () => number): MarbleOp[] {
+export function marbleIdentityOpsFrom(
+  random: () => number,
+  points: number = MARBLE_KNOBS.MARK_POINTS,
+): MarbleOp[] {
   const K = MARBLE_KNOBS;
   const ops: MarbleOp[] = [];
   const drops = K.DROPS_MIN + Math.floor(random() * K.DROPS_SPAN);
@@ -319,7 +339,7 @@ export function marbleIdentityOpsFrom(random: () => number): MarbleOp[] {
     const x = (random() - 0.5) * K.DROP_JITTER;
     const y = (random() - 0.5) * K.DROP_JITTER;
     const r = lerp(K.DROP_R_MIN, K.DROP_R_MAX, random());
-    ops.push({ kind: 'drop', x, y, r, ink: i % 2 === 0, points: K.RING_POINTS });
+    ops.push({ kind: 'drop', x, y, r, ink: i % 2 === 0, points });
   }
   const tines = random() < K.TWO_TINES ? 2 : 1;
   for (let i = 0; i < tines; i += 1) {
@@ -338,7 +358,7 @@ export function marbleIdentityOpsFrom(random: () => number): MarbleOp[] {
       y: Math.sin(a) * K.OFF_CENTRE_AT,
       r,
       ink: drops % 2 === 0,
-      points: K.RING_POINTS,
+      points,
     });
   }
   return ops;
@@ -361,13 +381,16 @@ const IDENTITY_CACHE_LIMIT = 512;
 const identityCache = new Map<string, MarbleIdentity>();
 
 /** The identity for a recipe. Same recipe, same marbling, on every device. */
-export function marbleIdentity(recipe: FaceRecipe): MarbleIdentity {
+export function marbleIdentity(
+  recipe: FaceRecipe,
+  points: number = MARBLE_KNOBS.MARK_POINTS,
+): MarbleIdentity {
   const key = `${recipe.seed ?? ''}\u001f${recipe.id}\u001f${recipe.model}\u001f${
     recipe.durationMs
-  }\u001f${recipe.imported === true ? 'i' : ''}`;
+  }\u001f${recipe.imported === true ? 'i' : ''}\u001f${points}`;
   const cached = identityCache.get(key);
   if (cached !== undefined) return cached;
-  const ops = marbleIdentityOpsFrom(marbleRandom(recipe));
+  const ops = marbleIdentityOpsFrom(marbleRandom(recipe), points);
   const surface: MarbleSurface = { rings: [] };
   for (const op of ops) applyMarbleOp(surface, op, 1);
   if (recipe.imported === true) {
@@ -377,7 +400,7 @@ export function marbleIdentity(recipe: FaceRecipe): MarbleIdentity {
       y: 0,
       r: MARBLE_KNOBS.SPINDLE_RATIO * surfaceReach(surface),
       ink: false,
-      points: MARBLE_KNOBS.RING_POINTS,
+      points,
     };
     ops.push(spindle);
     applyMarbleOp(surface, spindle, 1);

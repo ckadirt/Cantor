@@ -1,0 +1,16 @@
+// Jest Snapshot v1, https://goo.gl/fbAQLP
+
+exports[`marbling as a mark draws grey, then black, then filled, each with more ink 1`] = `
+[
+  "ba96f188",
+  "842174c",
+  "6a934b99",
+]
+`;
+
+exports[`marbling as a mark lands its recipe drop by drop while it downloads 1`] = `
+[
+  "34738d9e",
+  "d6a24d82",
+]
+`;
