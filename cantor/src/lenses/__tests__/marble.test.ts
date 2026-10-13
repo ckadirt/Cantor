@@ -168,7 +168,7 @@ describe('the identity', () => {
   it("leaves the page's rings", () => {
     for (const rec of recipes.slice(0, 12)) {
       const page: { pts: Float32Array; ink: boolean }[] = [];
-      for (const op of pageIdentityOps(pageRandom(rec))) pageApply(page, op, 1, MARBLE_KNOBS.RING_POINTS);
+      for (const op of pageIdentityOps(pageRandom(rec))) pageApply(page, op, 1, MARBLE_KNOBS.MARK_POINTS);
       const ours: MarbleSurface = { rings: [] };
       for (const op of marbleIdentityOpsFrom(pageRandom(rec))) applyMarbleOp(ours, op, 1);
       expect(ours.rings).toHaveLength(page.length);
@@ -194,7 +194,7 @@ describe('the identity', () => {
     let wrong = 0;
     let total = 0;
     for (const rec of recipes.slice(0, 20)) {
-      const surface = marbleIdentity(rec).surface;
+      const surface = marbleIdentity(rec, MARBLE_KNOBS.PLAYER_POINTS).surface;
       const random = mulberry32(faceSeed(rec));
       for (let n = 0; n < 300; n++) {
         const x = (random() - 0.5) * 2.4;

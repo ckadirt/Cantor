@@ -11,3 +11,5 @@ export * from './sealPlayer';
 export * from './types';
 export * from './cover';
 export * from './coverLens';
+export * from './marble';
+export * from './marbleLens';

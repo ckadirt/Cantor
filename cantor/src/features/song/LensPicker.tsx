@@ -1,6 +1,6 @@
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { LENSES } from '../../lenses';
+import { LENSES, lensOffered } from '../../lenses';
 import { space, type, usePalette } from '../../theme/tokens';
 
 type Props = {
@@ -60,7 +60,9 @@ function LensPickerImpl({ activeKey, onChange, offered }: Props) {
   return (
     <View style={styles.row}>
       {LENSES.filter(
-        lens => offered === undefined || offered.includes(lens.key),
+        lens =>
+          lensOffered(lens) &&
+          (offered === undefined || offered.includes(lens.key)),
       ).map(lens => {
         const active = lens.key === activeKey;
         return (

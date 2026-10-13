@@ -74,6 +74,12 @@ export type LensPaints = Readonly<{
 export type Lens = Readonly<{
   key: string;
   label: string;
+  /**
+   * A lens still being built: drawn and tested like any other, but the
+   * picker offers it only while `PREVIEW_LENSES_OFFERED` is on, so a
+   * half-built lens is never a choice someone can save.
+   */
+  preview?: boolean;
   /** JS thread, once per song: what the UI half draws from. */
   identity: (recipe: FaceRecipe) => LensIdentity;
   /**
