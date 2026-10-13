@@ -192,8 +192,12 @@ export function metadataSeed(title: string, artist: string | null): number {
   return hash(`${fold(artist ?? '')}\u001f${fold(title)}`);
 }
 
-/** FNV-1a over a string, so ids and model names reduce to a stable integer. */
-function hash(value: string): number {
+/**
+ * FNV-1a over a string, so ids and model names reduce to a stable integer.
+ * Exported for the lenses that salt their own seed with a word, as the
+ * reference pages do (`marble.ts`).
+ */
+export function hash(value: string): number {
   let result = 0x811c9dc5;
   for (let index = 0; index < value.length; index += 1) {
     result ^= value.charCodeAt(index);
