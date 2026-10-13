@@ -62,6 +62,7 @@ import {
 } from './nativeRows';
 import { songDetailOpacity, songDetailPhase } from './songDetailPhase';
 import { lensWeight, useLensClock, type LensClock } from './lensClock';
+import { useLensBakes } from './lensBake';
 import React, {
   useCallback,
   useEffect,
@@ -1378,6 +1379,10 @@ function FieldCanvasImpl({
     focusEntity === null || focusEntity !== playingKey
       ? null
       : motions?.get(focusEntity) ?? null;
+  // The track itself, playing or not: a lens may build its player's sound
+  // from the bars (marbling), which a song has whether or not it plays.
+  const focusTrack =
+    focusEntity === null ? null : motions?.get(focusEntity) ?? null;
   /*
    * The song the player is morphing from, when the queue stepped at L2: its
    * own drawing, for the morph's far side (`stepMorph.ts`). Its motion is
@@ -1432,14 +1437,21 @@ function FieldCanvasImpl({
         songCache.current.get(stepFromKey)?.draw.identities ??
         LENSES.map(lens => lens.identity(recipe)),
       players: LENSES.map(lens =>
-        lens.player(recipe, stepAnalysis, stepCover),
+        lens.player(recipe, stepAnalysis, stepCover, stepMotion),
       ),
       motion: stepMotion,
       heard: stepHeard.current ?? 0,
     };
     // `stepId`: the playhead is read once per step, just above.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stepAnalysis, stepCover, stepFromKey, stepId, stepMotion, stepPresentation]);
+  }, [
+    stepAnalysis,
+    stepCover,
+    stepFromKey,
+    stepId,
+    stepMotion,
+    stepPresentation,
+  ]);
   const focusDraw = useMemo<FocusDraw | null>(
     () =>
       focusKey === null || focusPresentation === undefined
@@ -1447,7 +1459,12 @@ function FieldCanvasImpl({
         : {
             placementKey: focusKey,
             players: LENSES.map(lens =>
-              lens.player(focusPresentation.recipe, focusAnalysis, focusCover),
+              lens.player(
+                focusPresentation.recipe,
+                focusAnalysis,
+                focusCover,
+                focusTrack,
+              ),
             ),
             seconds: focusPresentation.durationMs / 1000,
             motion: focusMotion,
@@ -1459,9 +1476,12 @@ function FieldCanvasImpl({
       focusKey,
       focusMotion,
       focusPresentation,
+      focusTrack,
       stepFrom,
     ],
   );
+  // A lens's slow layer (marbling's bath), kept at the playhead on the JS thread.
+  useLensBakes(focusDraw?.players ?? null, positionSeconds, lensClock);
   /**
    * The songs whose sound has already been shown, so a measurement that lands
    * while you are looking rises into the seal rather than appearing in it —
