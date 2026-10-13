@@ -64,6 +64,8 @@ export type MarbleBake = Readonly<{
   rings: readonly (readonly number[])[];
   /** How deep each of `rings` nests: even is ink, odd a hole (`ringDepths`). */
   depths: readonly number[];
+  /** Each of `rings`' place in the order the bath's rings fell: the same ink at any moment. */
+  ids: readonly number[];
   /** Morphs into this bath, built with it; null for a bake asked for none. */
   morphs: BakeMorphs | null;
 }>;
@@ -238,7 +240,12 @@ export function bathBake(state: BathState, k: number): MarbleBake {
   target.flush();
   const image = target.makeImageSnapshot();
   const rings: number[][] = [];
-  for (const ring of surface.rings) if (ring.toggle) rings.push(Array.from(ring.pts));
+  const ids: number[] = [];
+  surface.rings.forEach((ring, index) => {
+    if (!ring.toggle) return;
+    rings.push(Array.from(ring.pts));
+    ids.push(index);
+  });
   return {
     key: k,
     image,
@@ -247,6 +254,7 @@ export function bathBake(state: BathState, k: number): MarbleBake {
     half,
     rings,
     depths: ringDepths(rings),
+    ids,
     morphs: null,
   };
 }
@@ -269,13 +277,15 @@ function bathSide(state: BathState, surface: MarbleSurface, k: number): MorphSid
   'worklet';
   const ext = k < state.ops.length ? state.ops[k].ext : state.extEnd;
   const rings: number[][] = [];
-  for (const ring of surface.rings) {
-    if (!ring.toggle) continue;
+  const ids: number[] = [];
+  surface.rings.forEach((ring, index) => {
+    if (!ring.toggle) return;
     const out: number[] = [];
     for (let i = 0; i < ring.pts.length; i++) out.push(ring.pts[i] / ext);
     rings.push(out);
-  }
-  return { rings, alpha: 1, depth: ringDepths(rings) };
+    ids.push(index);
+  });
+  return { rings, alpha: 1, depth: ringDepths(rings), ids };
 }
 
 /**
@@ -310,7 +320,11 @@ export function bathBakeOn(
   let stepSide: MorphSide | null = null;
   if (ask.stepFrom !== null) {
     const other = baths.get(ask.stepFrom.id);
-    if (other !== undefined) stepSide = bathSide(other, copySurface(bathAt(other, ask.stepFrom.key)), ask.stepFrom.key);
+    if (other !== undefined) {
+      // Another song's bath: its rings are not this one's, so no ids.
+      const side = bathSide(other, copySurface(bathAt(other, ask.stepFrom.key)), ask.stepFrom.key);
+      stepSide = { rings: side.rings, alpha: 1, depth: side.depth };
+    }
   }
   const bake = bathBake(state, k);
   const ext = k < state.ops.length ? state.ops[k].ext : state.extEnd;
@@ -318,9 +332,11 @@ export function bathBakeOn(
     rings: bake.rings.map(ring => ring.map(v => v / ext)),
     alpha: 1,
     depth: bake.depths,
+    ids: bake.ids,
   };
+  const plain: MorphSide = { rings: here.rings, alpha: 1, depth: bake.depths };
   const pairs: Record<string, MarbleMorph> = {};
-  if (ask.pairs) for (const key of Object.keys(state.sides)) pairs[key] = buildMarbleMorph(state.sides[key], here, 1);
+  if (ask.pairs) for (const key of Object.keys(state.sides)) pairs[key] = buildMarbleMorph(state.sides[key], plain, 1);
   return {
     ...bake,
     morphs: {
@@ -330,7 +346,7 @@ export function bathBakeOn(
       step:
         stepSide === null || ask.stepFrom === null
           ? null
-          : { fromId: ask.stepFrom.id, fromKey: ask.stepFrom.key, morph: buildMarbleMorph(stepSide, here, 1) },
+          : { fromId: ask.stepFrom.id, fromKey: ask.stepFrom.key, morph: buildMarbleMorph(stepSide, plain, 1) },
     },
   };
 }

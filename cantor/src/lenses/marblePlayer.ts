@@ -122,7 +122,7 @@ export const MARBLE_PLAYER_KNOBS = {
   /** A jump of the playhead between two frames longer than this is a seek, seconds. */
   SEEK_JUMP_S: 1,
   /** How long the bath it was is held, waiting for the new one's bake, at most. */
-  SEEK_WAIT_MS: 900,
+  SEEK_WAIT_MS: 1500,
   /** How long the morph takes once the new bath is here. */
   SEEK_MORPH_MS: 560,
   /** A player not drawn for this long has no "last frame" to jump from. */
@@ -155,6 +155,8 @@ export type MarblePlayer = Readonly<{
   /** The identity's ink as rings, in bath units, and how deep each nests, for morphs. */
   identityRings: readonly (readonly number[])[];
   identityDepths: readonly number[];
+  /** Each identity ring's place in the order its rings fell: the bath's first ids. */
+  identityIds: readonly number[];
   baked: SharedValue<MarbleBake | null>;
   /**
    * The identity as the shader reads it (the bath before any op), baked once:
@@ -234,7 +236,13 @@ export function marblePlayerOf(
     MARBLE_BATH_KNOBS.SEG_MAX,
   );
   const markScale = MARBLE_MARK_REACH_PX / identity.reach;
-  const identityRings = identity.surface.rings.filter(ring => ring.toggle).map(ring => Array.from(ring.pts));
+  const identityRings: number[][] = [];
+  const identityIds: number[] = [];
+  identity.surface.rings.forEach((ring, index) => {
+    if (!ring.toggle) return;
+    identityRings.push(Array.from(ring.pts));
+    identityIds.push(index);
+  });
   const timeline = track === null ? null : marbleTimeline(recipe, track, identity.reach);
   const player: MarblePlayer = {
     id: nextModelId++,
@@ -245,6 +253,7 @@ export function marblePlayerOf(
     ink: marbleRingsPath(identity.surface, markScale, true),
     identityRings,
     identityDepths: ringDepths(identityRings),
+    identityIds,
     baked: slot<MarbleBake | null>(null),
     still: slot<MarbleBake | null>(null),
   };
@@ -377,15 +386,18 @@ function pump(player: MarblePlayer, feed: BathFeed): void {
     // before it. Built on the bath's runtime with it.
     const first = feed.landed < 0;
     const before = lastFed;
+    const seekFrom = !first && k !== feed.landed + MARBLE_PLAYER_KNOBS.BAKE_EVERY ? feed.landed : -1;
+    const stepFrom =
+      first && before !== null && before !== feed && before.landed >= 0
+        ? { id: before.id, key: before.landed }
+        : null;
+    // A bake a transition waits on carries only its own morph, to come back soonest;
+    // the other lenses' come with the bakes along the way.
     const ask: BakeAsk = {
-      pairs: true,
+      pairs: !first && seekFrom < 0,
       rise: first,
-      seekFrom:
-        !first && k !== feed.landed + MARBLE_PLAYER_KNOBS.BAKE_EVERY ? feed.landed : -1,
-      stepFrom:
-        first && before !== null && before !== feed && before.landed >= 0
-          ? { id: before.id, key: before.landed }
-          : null,
+      seekFrom,
+      stepFrom,
     };
     lastFed = feed;
     onBathRuntime(bathBakeOn, feed.id, feed.sent ? null : feed.init, k, ask).then(
@@ -824,12 +836,13 @@ export function marbleSide(
       rings: player.identityRings.map(ring => ring.map(v => v * s0)),
       alpha: 1,
       depth: player.identityDepths,
+      ids: player.identityIds,
     };
   }
   const reach = MARBLE_MARK_REACH_PX / player.markScale;
   const ext = bath.key < sound.ops.length ? sound.ops[bath.key].ext : sound.extEnd;
   const s = player.markScale * k * (reach / ext);
-  return { rings: bath.rings.map(ring => ring.map(v => v * s)), alpha: 1, depth: bath.depths };
+  return { rings: bath.rings.map(ring => ring.map(v => v * s)), alpha: 1, depth: bath.depths, ids: bath.ids };
 }
 
 /** A morph's ink, faded at the bath's edge as the bath itself is. */

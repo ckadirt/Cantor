@@ -142,7 +142,16 @@ export function drawMarbleMorph(
       built ??
       cachedMarbleMorph(
         `step:${a.id}:${aBath === null ? -1 : aBath.key}:${b.id}:${Math.round(size * 100)}`,
-        () => buildMarbleMorph(marbleSide(a, size, arrived, aBath), marbleSide(b, size, arrived, bBath), clipR),
+        () => {
+          // Two songs' baths: their rings are not the same ink, so no ids.
+          const from = marbleSide(a, size, arrived, aBath);
+          const to = marbleSide(b, size, arrived, bBath);
+          return buildMarbleMorph(
+            { rings: from.rings, alpha: 1, depth: from.depth },
+            { rings: to.rings, alpha: 1, depth: to.depth },
+            clipR,
+          );
+        },
       );
     const ink = alpha * (fill + (1 - fill) * arrived);
     drawMarbleMorphFaded(canvas, morph, t, ink * shares.morph, paints, clipR, null, -1, 0, hairlinePx, built === null ? 1 : marbleUnitPx(size, arrived));
