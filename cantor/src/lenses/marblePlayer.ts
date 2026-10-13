@@ -110,6 +110,8 @@ export const MARBLE_PLAYER_KNOBS = {
   NIB_EDGE_PX: 1.2,
   NIB_LINE_ALPHA: 0.45,
   NIB_LINE_PX: 0.7,
+  /** How far past the bath's edge a morph opens its fade toward another lens. */
+  EDGE_OPEN: 0.8,
   /** The most screen px per dp another lens is drawn at to be pushed. */
   PUSH_MAX_DENSITY: 3,
   /** Keyframes are warmed in slices this long, this far apart, on the JS thread. */
@@ -782,15 +784,21 @@ export function drawMarbleMorphFaded(
   clipR: number,
   live: readonly number[] | null = null,
   liveRing = -1,
+  /**
+   * How far the edge is opened, 0..1: the bath fades at its edge, another
+   * lens does not, so a morph with one opens the fade toward that lens's end.
+   */
+  open = 0,
 ): void {
   'worklet';
   if (alpha <= 0) return;
-  const bounds = Skia.XYWHRect(-clipR - 2, -clipR - 2, clipR * 2 + 4, clipR * 2 + 4);
+  const edgeR = clipR * (1 + MARBLE_PLAYER_KNOBS.EDGE_OPEN * open);
+  const bounds = Skia.XYWHRect(-edgeR - 2, -edgeR - 2, edgeR * 2 + 4, edgeR * 2 + 4);
   canvas.saveLayer(undefined, bounds);
   drawMarbleMorphPaths(canvas, morph, t, alpha, paints, live, liveRing);
   const mask = Skia.Paint();
   mask.setBlendMode(BlendMode.DstIn);
-  mask.setShader(EDGE_EFFECT.makeShader([clipR]));
+  mask.setShader(EDGE_EFFECT.makeShader([edgeR]));
   canvas.drawRect(bounds, mask);
   canvas.restore();
 }
