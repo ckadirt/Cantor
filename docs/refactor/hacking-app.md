@@ -304,12 +304,17 @@ drawing thread), every fourth op; a runtime shader (`MARBLE_SKSL`) runs the
 inverse of the ops between the bake and the playhead per pixel and tints the
 image. Rings are refined as ops stretch them (`applyMarbleOpRefined`) or
 combs leave chords across the pattern. The seek is the seal's rim, by angle
-anywhere on the disc. Its morphs are all one gesture, a drop (`enterDrop`,
-`drawMarblePlayer`'s `push`): the sound rising, the queue's step
-(`drawMarbleMorph`) and a pair with every other lens (`marbleArrivesOver` in
-`pairs.ts`, which records the other lens's player, draws it into an image at the
-screen's density — a picture shader as a runtime effect's child is sampled
-without it on the phone — and pushes it through the same shader).
+anywhere on the disc. Its morphs (`marbleMorph.ts`) are the motion engine's
+silhouette morph on the UI thread: the sound rising, the queue's step
+(`drawMarbleMorph`) and the seal and circle pairs (`marbleMorphsWith` in
+`pairs.ts`) flow one drawing's even-odd rings into the other's — the bath's ink
+rings come back from the bath runtime with each bake — lerped per frame so each
+ring keeps its own window, with each end handing over to the real drawing
+under it (`morphShares`). The circle's face is the morph's fixed ring, fed its
+singing contour each frame. The cover pair is still a drop (`marbleArrivesOver`):
+it records the cover's player, draws it into an image at the screen's density
+(a picture shader as a runtime effect's child is sampled without it on the
+phone) and pushes it through the bath's shader.
 `analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
 (side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
 **The motion track and the frame** (docs/interfacealpha/reactive-player-plan.md).
