@@ -13,7 +13,13 @@ import {
   type MarbleSurface,
 } from './marble';
 import { marbleRingsPath } from './marbleMark';
-import { buildMarbleMorph, ringDepths, type MarbleMorph, type MorphSide } from './marbleMorph';
+import {
+  MARBLE_MORPH_KNOBS,
+  buildMarbleMorph,
+  ringDepths,
+  type MarbleMorph,
+  type MorphSide,
+} from './marbleMorph';
 import type { MarbleTimedOp } from './marbleTimeline';
 
 /**
@@ -336,17 +342,17 @@ export function bathBakeOn(
   };
   const plain: MorphSide = { rings: here.rings, alpha: 1, depth: bake.depths };
   const pairs: Record<string, MarbleMorph> = {};
-  if (ask.pairs) for (const key of Object.keys(state.sides)) pairs[key] = buildMarbleMorph(state.sides[key], plain, 1);
+  if (ask.pairs) for (const key of Object.keys(state.sides)) pairs[key] = buildMarbleMorph(state.sides[key], plain, 1, MARBLE_MORPH_KNOBS.UNIT_PX);
   return {
     ...bake,
     morphs: {
       pairs,
-      rise: rise === null || k === 0 ? null : buildMarbleMorph(rise, here, 1),
-      seek: seekSide === null ? null : { fromKey: ask.seekFrom, morph: buildMarbleMorph(seekSide, here, 1) },
+      rise: rise === null || k === 0 ? null : buildMarbleMorph(rise, here, 1, MARBLE_MORPH_KNOBS.UNIT_PX),
+      seek: seekSide === null ? null : { fromKey: ask.seekFrom, morph: buildMarbleMorph(seekSide, here, 1, MARBLE_MORPH_KNOBS.UNIT_PX) },
       step:
         stepSide === null || ask.stepFrom === null
           ? null
-          : { fromId: ask.stepFrom.id, fromKey: ask.stepFrom.key, morph: buildMarbleMorph(stepSide, plain, 1) },
+          : { fromId: ask.stepFrom.id, fromKey: ask.stepFrom.key, morph: buildMarbleMorph(stepSide, plain, 1, MARBLE_MORPH_KNOBS.UNIT_PX) },
     },
   };
 }
