@@ -605,13 +605,17 @@ mod tests {
         )
         .expect("idempotent create");
         let idempotent = from_response(idempotent, Some(authentication.principal_id), None);
-        assert!(matches!(
-            idempotent.effects.as_slice(),
-            [
-                ApplicationEffect::WakeJobWorker,
-                ApplicationEffect::RefreshNodeInfo
-            ]
-        ));
+        assert!(
+            matches!(
+                idempotent.effects.as_slice(),
+                [
+                    ApplicationEffect::WakeJobWorker,
+                    ApplicationEffect::RefreshNodeInfo
+                ]
+            ),
+            "an idempotent create answered {:?}",
+            idempotent.response
+        );
         assert!(matches!(
             idempotent.response,
             NodeMessage::JobAccepted { job, .. } if job.id == accepted_id
