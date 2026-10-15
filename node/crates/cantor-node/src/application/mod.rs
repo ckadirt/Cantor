@@ -10,6 +10,7 @@ mod session;
 mod songs;
 mod submission;
 mod transfers;
+mod uploads;
 
 use anyhow::Result;
 use cantor_proto::NodeMessage;

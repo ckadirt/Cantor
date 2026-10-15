@@ -5,4 +5,14 @@ export type NodeFeatures = { jobs_create: boolean, library_list: boolean, artifa
  * Additive: a node that predates `job.forget` omits the key, and a client
  * that reads `false` must not offer the act.
  */
-job_forget: boolean, };
+job_forget: boolean, 
+/**
+ * Additive: `GenerationRequest::audio` is understood. A node that predates
+ * it would ignore the field and render text-to-music instead, so a client
+ * must not send it unless this is `true`.
+ */
+audio_sources: boolean, 
+/**
+ * Additive: `upload.open`, `upload.chunk` and `upload.commit`.
+ */
+uploads: boolean, };

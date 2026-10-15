@@ -39,6 +39,15 @@ pub(crate) fn admit_job(
     {
         bail!("invalid generation parameter: {field}");
     }
+    if let Some(field) = super::jobs::invalid_audio(
+        &submission.generation,
+        variant,
+        &config.model_root(),
+        library,
+        principal_id,
+    ) {
+        bail!("invalid audio prompt: {field}");
+    }
     library.submit(
         principal_id,
         client_public_key,

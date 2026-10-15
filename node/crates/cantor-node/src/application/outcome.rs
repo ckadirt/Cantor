@@ -171,6 +171,7 @@ mod tests {
                     tags: Vec::new(),
                     trashed: false,
                     artifacts: Vec::new(),
+                    derived_from: None,
                 },
             },
             Some(principal_id),

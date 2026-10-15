@@ -18,7 +18,7 @@ mod generated;
 pub use generated::transport::{
     APPLICATION_PROTOCOL_MAX_SUPPORTED_VERSION as MAX_SUPPORTED_VERSION,
     APPLICATION_PROTOCOL_MIN_SUPPORTED_VERSION as MIN_SUPPORTED_VERSION,
-    APPLICATION_PROTOCOL_VERSION as PROTOCOL_VERSION, ARTIFACT_CHUNK_BYTES,
+    APPLICATION_PROTOCOL_VERSION as PROTOCOL_VERSION, ARTIFACT_CHUNK_BYTES, UPLOAD_CHUNK_BYTES,
 };
 
 pub const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -39,6 +39,13 @@ pub const MAX_PAGE_LIMIT: u32 = 100;
 pub const MAX_TITLE_BYTES: usize = 160;
 pub const MAX_TAG_BYTES: usize = 64;
 pub const MAX_TAGS: usize = 16;
+/// The upper end of `AudioPrompt::closeness`: 0 is as close to the source as
+/// the model goes, 1 as free.
+pub const MAX_CLOSENESS: f32 = 1.0;
+/// Longest a tune may be stretched to by tiling, and longest an extension.
+pub const MAX_EXTEND_SECONDS: u32 = MAX_SONG_SECONDS;
+pub const MAX_UPLOAD_ID_BYTES: usize = 64;
+pub const MAX_MEDIA_TYPE_BYTES: usize = 64;
 
 /// Bounds on the declared-parameter extension map.
 ///
@@ -150,6 +157,125 @@ pub struct LyricsCapabilities {
     pub writer_label: Option<String>,
 }
 
+/// What a model can do with audio it is given.
+///
+/// Named for what happens to the sound, not for an engine's task names, so
+/// two families that cover a song in different ways both say `cover`. A model
+/// declares these; nothing infers them from a family name.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum CapabilityKind {
+    /// Re-render a source in a new style, keeping its tune and form.
+    Cover,
+    /// Add time before or after a source, keeping the source to the sample.
+    Extend,
+    /// Regenerate a region of a source, keeping the rest.
+    Inpaint,
+    /// Take a voice and sound from a reference recording.
+    Timbre,
+    /// Add one instrument over a backing track.
+    AddTrack,
+    /// Pull one stem out of a mix.
+    Separate,
+    /// Build a full arrangement around a single stem.
+    Accompany,
+}
+
+impl CapabilityKind {
+    /// The kind for a wire or catalog name, or `None` for one this build does
+    /// not know, which callers drop rather than fail on.
+    pub fn parse(name: &str) -> Option<Self> {
+        serde_json::from_value(serde_json::Value::String(name.to_owned())).ok()
+    }
+}
+
+/// One audio capability a model declares, with its own limits and its own
+/// stage arc: a cover skips planning, so it traces fewer stages than the
+/// model's text-to-music path.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct ModelCapability {
+    pub kind: CapabilityKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stages: Option<Vec<GenerationStage>>,
+    /// Longest source this capability takes, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_source_seconds: Option<u32>,
+    /// Longest result, source included, for `extend`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_total_seconds: Option<u32>,
+}
+
+/// A model's audio capabilities, read leniently.
+///
+/// A catalog or a newer node can name a kind this build has never heard of.
+/// One unknown entry must not make every other declaration unreadable, so it
+/// is dropped here rather than failing the view that carries it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Capabilities(pub Vec<ModelCapability>);
+
+impl<'de> Deserialize<'de> for Capabilities {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+        Ok(Self(
+            raw.into_iter()
+                .filter_map(|value| serde_json::from_value::<ModelCapability>(value).ok())
+                .collect(),
+        ))
+    }
+}
+
+impl Capabilities {
+    pub fn get(&self, kind: CapabilityKind) -> Option<&ModelCapability> {
+        self.0.iter().find(|capability| capability.kind == kind)
+    }
+
+    pub fn has(&self, kind: CapabilityKind) -> bool {
+        self.get(kind).is_some()
+    }
+}
+
+/// Capability kinds, read leniently for the same reason.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct CapabilityKinds(pub Vec<CapabilityKind>);
+
+impl<'de> Deserialize<'de> for CapabilityKinds {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+        Ok(Self(
+            raw.into_iter()
+                .filter_map(|value| serde_json::from_value::<CapabilityKind>(value).ok())
+                .collect(),
+        ))
+    }
+}
+
+/// A model this node does not have but could install, with what it would add.
+///
+/// Drawn from the catalog the node caches and filtered by what its hardware and
+/// backends can run, so the app can say which model would open a door rather
+/// than only that it is shut.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct InstallableView {
+    /// What to pass to `cantor pull`, for example `acestep:1.5-fast`.
+    pub selector: String,
+    pub family: String,
+    #[serde(default)]
+    #[ts(as = "Vec<CapabilityKind>")]
+    pub capabilities: CapabilityKinds,
+    #[ts(type = "number")]
+    pub bytes: u64,
+    #[serde(default)]
+    pub licence: String,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]
 pub struct ModelView {
@@ -173,6 +299,14 @@ pub struct ModelView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub lyrics: Option<LyricsCapabilities>,
+    /// What this model can do with audio, where both its weights (the catalog)
+    /// and the loaded engine build say so.
+    ///
+    /// `None` is an older node, which offers no audio acts. Unknown kinds are
+    /// dropped rather than failing the whole view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Vec<ModelCapability>>")]
+    pub capabilities: Option<Capabilities>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -185,6 +319,14 @@ pub struct NodeLimits {
     pub max_caption_bytes: u32,
     pub max_lyrics_bytes: u32,
     pub max_page_limit: u32,
+    /// Largest file `upload.open` accepts. Absent on a node without uploads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, type = "number | undefined")]
+    pub max_upload_bytes: Option<u64>,
+    /// Longest source an audio act takes, in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub max_source_seconds: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -210,6 +352,14 @@ pub struct NodeFeatures {
     /// that reads `false` must not offer the act.
     #[serde(default)]
     pub job_forget: bool,
+    /// Additive: `GenerationRequest::audio` is understood. A node that predates
+    /// it would ignore the field and render text-to-music instead, so a client
+    /// must not send it unless this is `true`.
+    #[serde(default)]
+    pub audio_sources: bool,
+    /// Additive: `upload.open`, `upload.chunk` and `upload.commit`.
+    #[serde(default)]
+    pub uploads: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -222,6 +372,11 @@ pub struct NodeInfo {
     pub limits: NodeLimits,
     pub load: NodeLoad,
     pub features: NodeFeatures,
+    /// Models this node could install, from its cached catalog, filtered by
+    /// what it can run. Absent when it has never reached the catalog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub installable: Option<Vec<InstallableView>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -308,6 +463,82 @@ pub struct JobView {
     pub error: Option<JobError>,
 }
 
+/// Where the sound an audio act starts from lives on the node.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export, tag = "kind", rename_all = "snake_case")]
+pub enum AudioSource {
+    /// A song in this principal's library: its own recording, already here.
+    Song { song_id: String },
+    /// A committed upload: a tune, or a file from the phone.
+    Upload { upload_id: String },
+}
+
+/// What is done to the source. User-level acts, mapped to engine tasks by the
+/// node, so one wire serves every family that declares the capability.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum AudioAct {
+    /// Needs `cover`; `keep_voice` also needs `timbre`.
+    Cover,
+    /// Needs `extend`.
+    Extend,
+}
+
+impl AudioAct {
+    pub fn capability(self) -> CapabilityKind {
+        match self {
+            Self::Cover => CapabilityKind::Cover,
+            Self::Extend => CapabilityKind::Extend,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum ExtendAt {
+    End,
+    Start,
+}
+
+/// A generation that starts from a sound rather than only from words.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct AudioPrompt {
+    pub source: AudioSource,
+    pub act: AudioAct,
+    /// Cover: how far from the source, 0 (close) to 1 (free). The node maps it
+    /// to the engine's own controls.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub closeness: Option<f32>,
+    /// Cover: keep the source's voice and sound as the timbre reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub keep_voice: Option<bool>,
+    /// Extend: seconds to add.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub extend_seconds: Option<u32>,
+    /// Extend: where to add them. The end when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub extend_at: Option<ExtendAt>,
+    /// Cover: repeat the source to this many seconds first, so a short tune
+    /// becomes a whole song that keeps coming back to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tile_to_seconds: Option<u32>,
+    /// The source is a tune someone made (hummed, whistled, played), not a
+    /// finished recording. A cover has to hold a bare melody much harder than
+    /// a song to keep it, so the node maps `closeness` differently.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tune: Option<bool>,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]
 pub struct GenerationRequest {
@@ -336,6 +567,11 @@ pub struct GenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub extensions: Option<BTreeMap<String, ParameterValue>>,
+    /// Start from a sound. Send only to a node whose features say
+    /// `audio_sources`: an older node ignores the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub audio: Option<Box<AudioPrompt>>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -374,6 +610,22 @@ pub struct SongHeader {
     pub tags: Vec<String>,
     pub trashed: bool,
     pub artifacts: Vec<ArtifactView>,
+    /// Where a song made from a sound came from. Absent for a song made from
+    /// words alone, and from an older node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub derived_from: Option<SongOrigin>,
+}
+
+/// The sound a song was made from.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct SongOrigin {
+    pub act: AudioAct,
+    /// The source song, when it was one; absent for an upload.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub song_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -381,6 +633,12 @@ pub struct SongHeader {
 pub struct SongDetail {
     pub song: SongHeader,
     pub generation: GenerationRequest,
+    /// The words the model wrote, when it was asked to write them
+    /// (`generation.lyrics` absent). Absent for words someone gave it, and for
+    /// songs made before a node recorded them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub written_lyrics: Option<String>,
     pub engine: String,
     pub component_digests: Vec<String>,
     pub attempts: u32,
@@ -657,6 +915,37 @@ pub enum ClientMessage {
         #[ts(type = "number")]
         next_offset: u64,
     },
+    /// Start or resume sending a file. Idempotent on `sha256`: a second open
+    /// of the same bytes resumes the first upload from what arrived.
+    #[serde(rename = "upload.open")]
+    #[ts(rename = "upload.open")]
+    UploadOpen {
+        v: u8,
+        id: String,
+        sha256: String,
+        #[ts(type = "number")]
+        bytes: u64,
+        media_type: String,
+    },
+    /// The next slice, at exactly the offset the node last acknowledged.
+    #[serde(rename = "upload.chunk")]
+    #[ts(rename = "upload.chunk")]
+    UploadChunk {
+        v: u8,
+        id: String,
+        upload_id: String,
+        #[ts(type = "number")]
+        offset: u64,
+        /// Base64, at most `UPLOAD_CHUNK_BYTES` decoded.
+        data: String,
+    },
+    #[serde(rename = "upload.commit")]
+    #[ts(rename = "upload.commit")]
+    UploadCommit {
+        v: u8,
+        id: String,
+        upload_id: String,
+    },
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -798,6 +1087,39 @@ pub enum NodeMessage {
     #[serde(rename = "node.info")]
     #[ts(rename = "node.info")]
     NodeInfoChanged { v: u8, node: NodeInfo },
+    /// Where to continue an upload from, and how large its slices are.
+    #[serde(rename = "upload.ready")]
+    #[ts(rename = "upload.ready")]
+    UploadReady {
+        v: u8,
+        id: String,
+        upload_id: String,
+        #[ts(type = "number")]
+        accepted_offset: u64,
+        chunk_bytes: u32,
+    },
+    #[serde(rename = "upload.ack")]
+    #[ts(rename = "upload.ack")]
+    UploadAck {
+        v: u8,
+        id: String,
+        upload_id: String,
+        #[ts(type = "number")]
+        next_offset: u64,
+    },
+    /// Every byte arrived, the hash matched, and the node could read it as
+    /// audio of this length.
+    #[serde(rename = "upload.committed")]
+    #[ts(rename = "upload.committed")]
+    UploadCommitted {
+        v: u8,
+        id: String,
+        upload_id: String,
+        sha256: String,
+        #[ts(type = "number")]
+        bytes: u64,
+        seconds: f32,
+    },
 }
 
 impl NodeMessage {
@@ -880,6 +1202,11 @@ mod tests {
             include_str!("../../../../protocol/fixtures/v2/job-pause.json"),
             include_str!("../../../../protocol/fixtures/v2/job-forget.json"),
             include_str!("../../../../protocol/fixtures/v2/library-list.json"),
+            include_str!("../../../../protocol/fixtures/v2/job-create-audio.json"),
+            include_str!("../../../../protocol/fixtures/v2/job-create-tune.json"),
+            include_str!("../../../../protocol/fixtures/v2/upload-open.json"),
+            include_str!("../../../../protocol/fixtures/v2/upload-chunk.json"),
+            include_str!("../../../../protocol/fixtures/v2/upload-commit.json"),
         ];
         for fixture in client {
             serde_json::from_str::<ClientMessage>(fixture).expect("valid client fixture");
@@ -887,6 +1214,10 @@ mod tests {
         let node = [
             include_str!("../../../../protocol/fixtures/v2/node-info.json"),
             include_str!("../../../../protocol/fixtures/v2/node-info-lyrics.json"),
+            include_str!("../../../../protocol/fixtures/v2/node-info-capabilities.json"),
+            include_str!("../../../../protocol/fixtures/v2/upload-ready.json"),
+            include_str!("../../../../protocol/fixtures/v2/upload-ack.json"),
+            include_str!("../../../../protocol/fixtures/v2/upload-committed.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page.json"),
             include_str!("../../../../protocol/fixtures/v2/job-forgotten.json"),
             include_str!("../../../../protocol/fixtures/v2/library-page.json"),
@@ -896,6 +1227,58 @@ mod tests {
         for fixture in node {
             serde_json::from_str::<NodeMessage>(fixture).expect("valid node fixture");
         }
+    }
+
+    #[test]
+    fn unknown_capability_kinds_are_dropped_and_the_rest_kept() {
+        let NodeMessage::NodeInfoChanged { node, .. } = serde_json::from_str(include_str!(
+            "../../../../protocol/fixtures/v2/node-info-capabilities.json"
+        ))
+        .expect("node info") else {
+            panic!("node.info");
+        };
+        let kinds: Vec<_> = node.models[0]
+            .capabilities
+            .as_ref()
+            .expect("declared")
+            .0
+            .iter()
+            .map(|c| c.kind)
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                CapabilityKind::Cover,
+                CapabilityKind::Extend,
+                CapabilityKind::Timbre
+            ]
+        );
+        assert!(node.features.audio_sources && node.features.uploads);
+        let installable = node.installable.expect("installable");
+        assert_eq!(installable[0].capabilities.0.len(), 3);
+    }
+
+    #[test]
+    fn an_old_node_info_has_no_audio_and_says_so() {
+        let NodeMessage::NodeInfoChanged { node, .. } = serde_json::from_str(include_str!(
+            "../../../../protocol/fixtures/v2/node-info-lyrics.json"
+        ))
+        .expect("node info") else {
+            panic!("node.info");
+        };
+        assert!(node.models[0].capabilities.is_none());
+        assert!(!node.features.audio_sources && !node.features.uploads);
+        assert!(node.installable.is_none());
+    }
+
+    #[test]
+    fn an_unknown_audio_act_rejects_the_request_rather_than_running_another() {
+        let mut raw: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../protocol/fixtures/v2/job-create-audio.json"
+        ))
+        .expect("fixture");
+        raw["generation"]["audio"]["act"] = serde_json::json!("teleport");
+        assert!(serde_json::from_value::<ClientMessage>(raw).is_err());
     }
 
     #[test]

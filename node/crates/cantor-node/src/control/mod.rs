@@ -480,6 +480,8 @@ mod tests {
                 stages: Vec::new(),
                 parameters: Vec::new(),
                 lyrics: None,
+                capabilities: None,
+                audio: None,
             };
             locked
                 .library
@@ -492,6 +494,7 @@ mod tests {
                         generation: cantor_proto::GenerationRequest {
                             caption: "held".into(),
                             lyrics: None,
+                            audio: None,
                             duration: Some(15),
                             steps: Some(1),
                             cfg: None,

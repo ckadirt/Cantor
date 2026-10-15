@@ -13,8 +13,9 @@ use cantor_proto::ErrorCode;
 
 use super::WorkerFailure;
 use crate::accel;
+use crate::audio::{acts, prepare};
 use crate::backends::{BackendManifest, EngineStore, machine_arch};
-use crate::engine::LoadOptions;
+use crate::engine::{LoadOptions, Stage};
 use crate::generate::{Request, components_for, engine_fields};
 use crate::library::WorkItem;
 use crate::runtime::SharedState;
@@ -25,6 +26,18 @@ pub(crate) struct GenerationPlan {
     pub(super) components: Vec<(String, PathBuf)>,
     pub(super) options: LoadOptions,
     pub(super) request: Request,
+    /// Where a fresh attempt enters, when not the engine's first stage. An
+    /// audio act starts at `diffuse`: there is nothing to plan or code.
+    pub(super) entry: Option<Stage>,
+    /// For an extension: the source's samples and where they sit in the
+    /// result, to be put back exactly after decoding.
+    pub(super) restore: Option<SourceRestore>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SourceRestore {
+    pub(super) source: PathBuf,
+    pub(super) offset_seconds: f64,
 }
 
 pub(crate) async fn resolve(
@@ -165,10 +178,25 @@ pub(crate) async fn resolve(
     if work.generation.seed.is_some() {
         extensions.remove("seed");
     }
+    let audio = match work.generation.audio.as_ref() {
+        Some(prompt) => Some(resolve_audio(state, work, &variant, prompt).await?),
+        None => None,
+    };
+    let mut fields = engine_fields(extensions, &variant.parameters);
+    if let Some((audio_fields, _, _)) = &audio {
+        // The binding's fields win over declared parameters of the same name:
+        // the act is what was asked for.
+        fields.extend(audio_fields.clone());
+    }
     let request = Request {
         caption: work.generation.caption.clone(),
         lyrics: work.generation.lyrics.clone(),
-        duration: work.generation.duration.map(|value| value as f32),
+        // A source decides an audio act's length; an extension's region does.
+        duration: if audio.is_some() {
+            None
+        } else {
+            work.generation.duration.map(|value| value as f32)
+        },
         steps: work.generation.steps,
         cfg: work.generation.cfg,
         seed: work.generation.seed,
@@ -176,13 +204,104 @@ pub(crate) async fn resolve(
         // ones. Validation already happened at admission against this exact
         // installed variant; this only resolves what was left unset, and
         // encodes each value in the shape its declaration gave it.
-        extensions: engine_fields(extensions, &variant.parameters),
+        extensions: fields,
     };
 
+    let restore = audio.and_then(|(_, prepared, restore)| {
+        restore.map(|offset_seconds| SourceRestore {
+            source: prepared.path,
+            offset_seconds,
+        })
+    });
     Ok(GenerationPlan {
         attempts,
         components,
         options,
         request,
+        entry: work.generation.audio.as_ref().map(|_| Stage::Diffuse),
+        restore,
     })
+}
+
+/// Resolve an audio prompt's source, prepare it beside the job, and map the act
+/// to the engine's fields through the catalog's binding.
+async fn resolve_audio(
+    state: &SharedState,
+    work: &WorkItem,
+    variant: &crate::store::InstalledVariant,
+    prompt: &cantor_proto::AudioPrompt,
+) -> std::result::Result<
+    (
+        std::collections::BTreeMap<String, serde_json::Value>,
+        prepare::PreparedSource,
+        Option<f64>,
+    ),
+    WorkerFailure,
+> {
+    let (input, model_root) = {
+        let locked = state
+            .lock()
+            .map_err(|_| WorkerFailure::internal("Node state is unavailable."))?;
+        let input = match &prompt.source {
+            cantor_proto::AudioSource::Song { song_id } => locked
+                .library
+                .verified_master_path(work.principal_id, song_id)
+                .ok(),
+            cantor_proto::AudioSource::Upload { upload_id } => locked
+                .library
+                .committed_upload(work.principal_id, upload_id)
+                .map_err(WorkerFailure::from_internal)?
+                .map(|upload| upload.path),
+        };
+        (input, locked.config.model_root())
+    };
+    let input = input.ok_or_else(|| {
+        WorkerFailure::permanent(
+            ErrorCode::NotFound,
+            "The sound this song starts from is no longer on this node.",
+        )
+    })?;
+    let catalog = crate::capabilities::cached_catalog(&model_root);
+    let binding = crate::capabilities::declared(variant, catalog.as_ref())
+        .and_then(|declared| declared.binding)
+        .ok_or_else(|| {
+            WorkerFailure::permanent(
+                ErrorCode::ModelUnavailable,
+                "This model's catalog entry no longer says how it takes audio.",
+            )
+        })?;
+    let job_directory = work.job_directory().to_owned();
+    let prompt_for_task = prompt.clone();
+    let prepared = tokio::task::spawn_blocking(move || {
+        prepare::prepare(&input, &prompt_for_task, &job_directory)
+    })
+    .await
+    .map_err(|error| {
+        WorkerFailure::with_source(
+            ErrorCode::Internal,
+            true,
+            "Source preparation stopped.",
+            anyhow::anyhow!(error),
+        )
+    })?
+    .map_err(|error| {
+        WorkerFailure::with_source(
+            ErrorCode::InvalidRequest,
+            false,
+            "The node could not read the sound this song starts from.",
+            error,
+        )
+    })?;
+    let fields = acts::engine_fields(&binding, prompt, &prepared.path, prepared.seconds).map_err(
+        |error| {
+            WorkerFailure::with_source(
+                ErrorCode::ModelUnavailable,
+                false,
+                "This model cannot do what this song asks of it.",
+                error,
+            )
+        },
+    )?;
+    let restore = acts::kept_source_seconds(prompt);
+    Ok((fields, prepared, restore))
 }

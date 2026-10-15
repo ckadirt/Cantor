@@ -253,6 +253,8 @@ mod tests {
             stages: Vec::new(),
             parameters: Vec::new(),
             lyrics: None,
+            capabilities: None,
+            audio: None,
         }
     }
 
@@ -278,6 +280,7 @@ mod tests {
             generation: GenerationRequest {
                 caption: "Original title".into(),
                 lyrics: None,
+                audio: None,
                 duration: Some(60),
                 steps: None,
                 cfg: None,
