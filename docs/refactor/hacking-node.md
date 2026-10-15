@@ -263,3 +263,32 @@ accepting `cuda12`. Backend switching validates every required engine family.
 The optional `nvidia_archives_download_verify_extract_and_load` test exercises
 the real NVIDIA downloads; it is ignored in normal CI because it downloads
 about 940 MB. GPU validation failure modes use a compiled GGML API fixture.
+
+## Audio prompts: capabilities, uploads, sources
+
+A generation can start from a sound (`GenerationRequest.audio`): a song in the
+library, or a committed upload. Where each piece lives:
+
+| Path | Owns |
+| --- | --- |
+| `capabilities.rs` | what each installed model advertises (catalog ∩ binding ∩ loaded engine), the catalog cache, `installable`, the startup/daily probe |
+| `catalog.rs` `AudioBinding` | an engine's own field names for audio (source, reference, cover stops, extend region). Data, never sent to an app |
+| `library/uploads.rs` | the uploads table (migration 6), resumable receive, commit (hash + one decode), pin on admission, release on forget, sweep |
+| `application/uploads.rs` | `upload.open` / `upload.chunk` / `upload.commit` |
+| `application/jobs.rs` `invalid_audio` | admission against what is advertised and what the principal owns |
+| `audio/` | decode (symphonia), tile, prepare `source.wav`, map an act to engine fields, put an extension's source back after decode |
+
+Rules:
+
+- **A capability is advertised only when three things agree**: the catalog
+  declares it, the binding can express it, and the loaded engine exports it
+  (`cantor_engine_capabilities`). An engine is never loaded to build
+  `NodeInfo`; `engine::loaded_capabilities` reads engines already loaded.
+- **The node never names an engine field.** Everything engine-specific comes
+  from the catalog's `audio` binding; retuning `closeness` is a catalog edit.
+- **An audio job enters at `diffuse`** (`GenerationPlan.entry`) and sends no
+  `duration`: the source decides it.
+- **An upload a job uses is pinned in the admission transaction**
+  (`pin_for_job`); one nobody uses expires a day after it was last touched.
+- `derived_from` is read from the job's `request_json` with `json_extract`; a
+  song's id is its job's.
