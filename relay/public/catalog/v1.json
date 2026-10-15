@@ -99,7 +99,87 @@
               "maximum": 10,
               "step": 0.1
             }
-          ]
+          ],
+          "capabilities": [
+            {
+              "kind": "cover",
+              "stages": [
+                "diffuse",
+                "decode"
+              ],
+              "max_source_seconds": 600
+            },
+            {
+              "kind": "extend",
+              "stages": [
+                "diffuse",
+                "decode"
+              ],
+              "max_total_seconds": 600
+            },
+            {
+              "kind": "timbre"
+            }
+          ],
+          "audio": {
+            "source_field": "src_audio_path",
+            "reference_field": "ref_audio_path",
+            "cover": {
+              "song": [
+                {
+                  "closeness": 0.0,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.8
+                  }
+                },
+                {
+                  "closeness": 0.5,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.5
+                  }
+                },
+                {
+                  "closeness": 1.0,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.375
+                  }
+                }
+              ],
+              "tune": [
+                {
+                  "closeness": 0.0,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.9
+                  }
+                },
+                {
+                  "closeness": 0.5,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.7
+                  }
+                },
+                {
+                  "closeness": 1.0,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.5
+                  }
+                }
+              ]
+            },
+            "extend": {
+              "fields": {
+                "task_type": "repaint"
+              },
+              "start_field": "repainting_start",
+              "end_field": "repainting_end"
+            }
+          }
         },
         {
           "tag": "1.5-balanced",
@@ -195,7 +275,87 @@
               "maximum": 10,
               "step": 0.1
             }
-          ]
+          ],
+          "capabilities": [
+            {
+              "kind": "cover",
+              "stages": [
+                "diffuse",
+                "decode"
+              ],
+              "max_source_seconds": 600
+            },
+            {
+              "kind": "extend",
+              "stages": [
+                "diffuse",
+                "decode"
+              ],
+              "max_total_seconds": 600
+            },
+            {
+              "kind": "timbre"
+            }
+          ],
+          "audio": {
+            "source_field": "src_audio_path",
+            "reference_field": "ref_audio_path",
+            "cover": {
+              "song": [
+                {
+                  "closeness": 0.0,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.8
+                  }
+                },
+                {
+                  "closeness": 0.5,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.5
+                  }
+                },
+                {
+                  "closeness": 1.0,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.375
+                  }
+                }
+              ],
+              "tune": [
+                {
+                  "closeness": 0.0,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.9
+                  }
+                },
+                {
+                  "closeness": 0.5,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.7
+                  }
+                },
+                {
+                  "closeness": 1.0,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.5
+                  }
+                }
+              ]
+            },
+            "extend": {
+              "fields": {
+                "task_type": "repaint"
+              },
+              "start_field": "repainting_start",
+              "end_field": "repainting_end"
+            }
+          }
         },
         {
           "tag": "1.5-quality",
@@ -291,7 +451,87 @@
               "maximum": 10,
               "step": 0.1
             }
-          ]
+          ],
+          "capabilities": [
+            {
+              "kind": "cover",
+              "stages": [
+                "diffuse",
+                "decode"
+              ],
+              "max_source_seconds": 600
+            },
+            {
+              "kind": "extend",
+              "stages": [
+                "diffuse",
+                "decode"
+              ],
+              "max_total_seconds": 600
+            },
+            {
+              "kind": "timbre"
+            }
+          ],
+          "audio": {
+            "source_field": "src_audio_path",
+            "reference_field": "ref_audio_path",
+            "cover": {
+              "song": [
+                {
+                  "closeness": 0.0,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.8
+                  }
+                },
+                {
+                  "closeness": 0.5,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.5
+                  }
+                },
+                {
+                  "closeness": 1.0,
+                  "fields": {
+                    "task_type": "cover-nofsq",
+                    "audio_cover_strength": 0.375
+                  }
+                }
+              ],
+              "tune": [
+                {
+                  "closeness": 0.0,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.9
+                  }
+                },
+                {
+                  "closeness": 0.5,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.7
+                  }
+                },
+                {
+                  "closeness": 1.0,
+                  "fields": {
+                    "task_type": "cover",
+                    "audio_cover_strength": 0.5
+                  }
+                }
+              ]
+            },
+            "extend": {
+              "fields": {
+                "task_type": "repaint"
+              },
+              "start_field": "repainting_start",
+              "end_field": "repainting_end"
+            }
+          }
         }
       ]
     },
