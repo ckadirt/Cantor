@@ -183,6 +183,24 @@ export const SYMBOL_LIBRARY = {
     ],
   },
 
+  /** ℱ — the script F: hook into the top swash, the long stem, the bar. */
+  fourier: {
+    name: 'fourier',
+    glyph: 'ℱ',
+    label: 'Fourier transform',
+    meaning: 'A signal written as the frequencies it is made of.',
+    artwork: SYMBOL_ARTWORK.fourier,
+    aspectRatio: 1.1,
+    strokeWidth: 1.7,
+    contours: [
+      stroke(
+        'M 24 39 C 18 34 22 22 40 19 C 52 17 60 19 70 22 C 80 25 85 22 90 15',
+      ),
+      stroke('M 61 15 C 54 45 47 72 33 82 C 24 89 12 87 11 79'),
+      stroke('M 35 48.5 L 73 48.5'),
+    ],
+  },
+
   /** ∇ — three independent sides so it can split and re-form during morphs. */
   nabla: {
     name: 'nabla',

@@ -24,9 +24,11 @@ describe('stage symbols', () => {
     expect(Object.keys(STAGE_SYMBOLS)).toEqual([
       'plan',
       'codes',
+      'encode',
       'diffuse',
       'decode',
     ]);
+    expect(STAGE_SYMBOLS.encode).toBe('fourier');
   });
 
   it('has no symbol at all until the node reports a stage', () => {
@@ -43,12 +45,12 @@ describe('stage symbols', () => {
 
 describe('a stage this app has no symbol for', () => {
   it('is drawn as working, never dropped', () => {
-    expect(stageSymbol('encode')).toBe(WORKING_SYMBOL);
+    expect(stageSymbol('mixdown')).toBe(WORKING_SYMBOL);
     expect(WORKING_SYMBOL).toBe('infinity');
     expect(stageSymbol('diffuse')).toBe('contourIntegral');
     // An inherited name is not a stage.
     expect(stageSymbol('toString')).toBe(WORKING_SYMBOL);
-    expect(jobMarkModel(job({ stage: 'encode' }), []).symbol).toBe(
+    expect(jobMarkModel(job({ stage: 'mixdown' }), []).symbol).toBe(
       WORKING_SYMBOL,
     );
   });

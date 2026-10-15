@@ -49,11 +49,12 @@ describe('what a running job is called', () => {
   });
 
   it('names the stages it knows', () => {
+    expect(jobStateLabel(running('encode'))).toBe('Reading the source');
     expect(jobStateLabel(running('diffuse'))).toBe('Shaping audio');
   });
 
   it('calls any other stage, or none yet, working', () => {
-    expect(jobStateLabel(running('encode'))).toBe('Working');
+    expect(jobStateLabel(running('mixdown'))).toBe('Working');
     expect(jobStateLabel(running())).toBe('Working');
   });
 });

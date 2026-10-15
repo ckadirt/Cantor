@@ -48,6 +48,8 @@ export function jobStateLabel(job: JobView): string {
         return 'Writing plan';
       case 'codes':
         return 'Generating codes';
+      case 'encode':
+        return 'Reading the source';
       case 'diffuse':
         return 'Shaping audio';
       case 'decode':
