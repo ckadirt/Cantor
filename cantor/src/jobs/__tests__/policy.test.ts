@@ -1,5 +1,5 @@
 import type { JobView } from '../../core/protocol';
-import { canForgetJob, jobControls } from '../policy';
+import { canForgetJob, jobControls, jobStateLabel } from '../policy';
 
 function job(state: JobView['state'], retryable?: boolean): JobView {
   return {
@@ -39,5 +39,21 @@ describe('what a job lets you do', () => {
     expect(jobControls(job('failed', false))).toEqual([]);
     expect(canForgetJob(job('failed', false))).toBe(true);
     expect(jobControls(job('failed', true))).toEqual(['retry']);
+  });
+});
+
+describe('what a running job is called', () => {
+  const running = (stage?: string): JobView => ({
+    ...job('running'),
+    ...(stage === undefined ? {} : { stage }),
+  });
+
+  it('names the stages it knows', () => {
+    expect(jobStateLabel(running('diffuse'))).toBe('Shaping audio');
+  });
+
+  it('calls any other stage, or none yet, working', () => {
+    expect(jobStateLabel(running('encode'))).toBe('Working');
+    expect(jobStateLabel(running())).toBe('Working');
   });
 });

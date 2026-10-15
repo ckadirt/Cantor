@@ -1,4 +1,4 @@
-import type { JobView } from '../../../protocol/JobView';
+import type { JobView } from '../core/protocol';
 import { parseJob } from '../core/protocol';
 import { createSerializedJsonStore } from '../core/storage/serializedJsonStore';
 import { isRecord } from '../core/validation';

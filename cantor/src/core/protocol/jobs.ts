@@ -1,11 +1,11 @@
 import type { ErrorCode } from '../../../../protocol/ErrorCode';
-import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import type { JobState } from '../../../../protocol/JobState';
-import type { JobView } from '../../../../protocol/JobView';
+import type { JobView } from './types';
 import {
   isNonNegativeInteger,
   isPositiveInteger,
   isRecord,
+  isWireName,
 } from '../validation';
 
 const JOB_STATES = new Set<JobState>([
@@ -21,13 +21,6 @@ const JOB_STATES = new Set<JobState>([
   'cancelled',
   'failed',
 ]);
-const GENERATION_STAGES = new Set<GenerationStage>([
-  'plan',
-  'codes',
-  'diffuse',
-  'decode',
-]);
-const PROGRESS_UNITS = new Set(['tokens', 'steps', 'tiles', 'stage']);
 export const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   'unsupported_version',
   'unauthenticated',
@@ -57,8 +50,7 @@ export function parseJob(value: unknown): JobView | null {
     !isRecord(value) ||
     typeof value.id !== 'string' ||
     !isPositiveInteger(value.revision) ||
-    typeof value.state !== 'string' ||
-    !JOB_STATES.has(value.state as JobState) ||
+    !isWireName(value.state) ||
     typeof value.model !== 'string' ||
     typeof value.created_at !== 'string' ||
     typeof value.updated_at !== 'string'
@@ -69,14 +61,9 @@ export function parseJob(value: unknown): JobView | null {
   if (!(value.caption === undefined || typeof value.caption === 'string')) {
     return null;
   }
-  if (
-    !(
-      value.stage === undefined ||
-      (typeof value.stage === 'string' &&
-        GENERATION_STAGES.has(value.stage as GenerationStage))
-    )
-  )
-    return null;
+  // A stage this app has no symbol for is a newer node's, kept by name and
+  // drawn as working (`jobs/marks.ts`); never a reason to drop the job.
+  if (!(value.stage === undefined || isWireName(value.stage))) return null;
   let progress: JobView['progress'];
   if (value.progress !== undefined) {
     if (
@@ -88,13 +75,12 @@ export function parseJob(value: unknown): JobView | null {
       ) ||
       (typeof value.progress.total === 'number' &&
         value.progress.completed > value.progress.total) ||
-      typeof value.progress.unit !== 'string' ||
-      !PROGRESS_UNITS.has(value.progress.unit)
+      !isWireName(value.progress.unit)
     )
       return null;
     progress = {
       completed: value.progress.completed,
-      unit: value.progress.unit as never,
+      unit: value.progress.unit,
       ...(value.progress.total === undefined
         ? {}
         : { total: value.progress.total }),
@@ -104,8 +90,7 @@ export function parseJob(value: unknown): JobView | null {
   if (value.error !== undefined) {
     if (
       !isRecord(value.error) ||
-      typeof value.error.code !== 'string' ||
-      !ERROR_CODES.has(value.error.code as ErrorCode) ||
+      !isWireName(value.error.code) ||
       typeof value.error.message !== 'string' ||
       !(
         value.error.retryable === undefined ||
@@ -114,19 +99,24 @@ export function parseJob(value: unknown): JobView | null {
     )
       return null;
     error = {
-      code: value.error.code as ErrorCode,
+      code: value.error.code,
       message: value.error.message,
       retryable: value.error.retryable === true,
     };
   }
-  if ((value.state === 'failed') !== (error !== undefined)) return null;
+  // A state this app does not know is a newer node's: live work, unless the
+  // job carries an error, which only a failed job does.
+  const state: JobState = JOB_STATES.has(value.state as JobState)
+    ? (value.state as JobState)
+    : error === undefined
+    ? 'running'
+    : 'failed';
+  if ((state === 'failed') !== (error !== undefined)) return null;
   return {
     id: value.id,
     revision: value.revision,
-    state: value.state as JobState,
-    ...(value.stage === undefined
-      ? {}
-      : { stage: value.stage as GenerationStage }),
+    state,
+    ...(value.stage === undefined ? {} : { stage: value.stage }),
     ...(progress === undefined ? {} : { progress }),
     model: value.model,
     ...(value.caption === undefined ? {} : { caption: value.caption }),

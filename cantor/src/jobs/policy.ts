@@ -52,6 +52,9 @@ export function jobStateLabel(job: JobView): string {
         return 'Shaping audio';
       case 'decode':
         return 'Decoding';
+      default:
+        // A stage a newer node runs, or none reported yet: work all the same.
+        return 'Working';
     }
   }
   switch (job.state) {
@@ -75,8 +78,6 @@ export function jobStateLabel(job: JobView): string {
       return 'Generation failed';
     case 'recovering':
       return 'Restarting from request';
-    default:
-      return job.state.replaceAll('_', ' ');
   }
 }
 

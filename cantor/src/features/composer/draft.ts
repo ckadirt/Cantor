@@ -1,5 +1,5 @@
 import type { ModelParameter } from '../../../../protocol/ModelParameter';
-import type { ModelView } from '../../../../protocol/ModelView';
+import type { ModelView } from '../../core/protocol';
 import type { ParameterValue } from '../../../../protocol/ParameterValue';
 import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import {

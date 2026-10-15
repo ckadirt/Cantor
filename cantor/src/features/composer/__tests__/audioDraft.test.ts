@@ -1,4 +1,4 @@
-import type { ModelView } from '../../../../../protocol/ModelView';
+import type { ModelView } from '../../../core/protocol';
 import type { NodeLimits } from '../../../../../protocol/NodeLimits';
 import {
   draftFromSource,

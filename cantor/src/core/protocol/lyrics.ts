@@ -1,6 +1,6 @@
 import type { LyricsCapabilities } from '../../../../protocol/LyricsCapabilities';
 import { isRecord } from '../validation';
-import type { ModelView } from '../../../../protocol/ModelView';
+import type { ModelView } from './types';
 
 export type LyricsContract = Readonly<{
   writerLabel: string | null;

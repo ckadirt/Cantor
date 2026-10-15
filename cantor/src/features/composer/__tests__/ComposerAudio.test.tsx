@@ -2,7 +2,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
 import { ComposerSheet } from '../ComposerSheet';
-import type { ModelView } from '../../../../../protocol/ModelView';
+import type { ModelView } from '../../../core/protocol';
 import type { NodeLimits } from '../../../../../protocol/NodeLimits';
 import {
   draftFromSource,

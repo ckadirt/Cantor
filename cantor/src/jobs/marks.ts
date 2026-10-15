@@ -1,5 +1,4 @@
-import type { GenerationStage } from '../../../protocol/GenerationStage';
-import type { JobView } from '../core/protocol';
+import type { GenerationStage, JobView, StageName } from '../core/protocol';
 
 /**
  * The canonical symbol for each generation stage.
@@ -15,7 +14,26 @@ export const STAGE_SYMBOLS = {
   decode: 'trebleClef', // 𝄞  — it becomes music here
 } as const satisfies Record<GenerationStage, string>;
 
-export type StageSymbol = (typeof STAGE_SYMBOLS)[GenerationStage];
+/**
+ * The symbol for a stage this app has none for: one a newer node runs, by a
+ * name this build has never seen. ∞, something without a finite bound — work
+ * of a kind and length the app cannot name, shown as work rather than dropped.
+ */
+export const WORKING_SYMBOL = 'infinity';
+
+export type StageSymbol =
+  | (typeof STAGE_SYMBOLS)[GenerationStage]
+  | typeof WORKING_SYMBOL;
+
+/** Whether this app can name a stage, rather than only show it as working. */
+export function isKnownStage(stage: StageName): stage is GenerationStage {
+  return Object.hasOwn(STAGE_SYMBOLS, stage);
+}
+
+/** The symbol any stage is drawn with: its own, or the working one. */
+export function stageSymbol(stage: StageName): StageSymbol {
+  return isKnownStage(stage) ? STAGE_SYMBOLS[stage] : WORKING_SYMBOL;
+}
 
 /**
  * How far along a job is, when that can be said honestly.
@@ -44,8 +62,8 @@ export type JobProgressModel =
  * arc.
  */
 export function declaredArc(
-  declaredStages: readonly GenerationStage[],
-  stage: GenerationStage | undefined,
+  declaredStages: readonly StageName[],
+  stage: StageName | undefined,
   progress: JobProgressModel,
 ): number | null {
   if (declaredStages.length === 0) return null;
@@ -67,9 +85,9 @@ export type JobMarkModel = Readonly<{
    * cannot know how many stages a model has, so the mark draws the history it
    * has watched rather than a future it guessed.
    */
-  observedStages: readonly GenerationStage[];
+  observedStages: readonly StageName[];
   /** The stages this model said it runs, in order; empty when it said nothing. */
-  declaredStages: readonly GenerationStage[];
+  declaredStages: readonly StageName[];
   /** Where the current stage sits in the declared arc, or -1 when unknown. */
   stageIndex: number;
   /**
@@ -98,17 +116,17 @@ const LIVE_STATES: ReadonlySet<JobView['state']> = new Set([
  * stage after `recovering` does not grow a duplicate.
  */
 export function observeStage(
-  observed: readonly GenerationStage[],
-  stage: GenerationStage | undefined,
-): readonly GenerationStage[] {
+  observed: readonly StageName[],
+  stage: StageName | undefined,
+): readonly StageName[] {
   if (stage === undefined || observed.includes(stage)) return observed;
   return [...observed, stage];
 }
 
 export function jobMarkModel(
   job: JobView,
-  observedStages: readonly GenerationStage[],
-  declaredStages: readonly GenerationStage[] = [],
+  observedStages: readonly StageName[],
+  declaredStages: readonly StageName[] = [],
 ): JobMarkModel {
   const total = job.progress?.total;
   const completed = job.progress?.completed ?? 0;
@@ -123,7 +141,7 @@ export function jobMarkModel(
       : { kind: 'indeterminate' };
 
   return {
-    symbol: job.stage === undefined ? null : STAGE_SYMBOLS[job.stage],
+    symbol: job.stage === undefined ? null : stageSymbol(job.stage),
     progress,
     observedStages: observeStage(observedStages, job.stage),
     declaredStages,

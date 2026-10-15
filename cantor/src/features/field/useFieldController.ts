@@ -7,7 +7,7 @@ import type { BackendRecord } from '../../backends/types';
 import { deliveryArtifact, type BackendRuntimeState } from '../../runtime';
 import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
 import type { JobView } from '../../core/protocol';
-import type { GenerationStage } from '../../../../protocol/GenerationStage';
+import type { StageName } from '../../core/protocol';
 import type { FieldEntity, FieldRecord } from '../../field';
 import { metadataSeed, type FaceRecipe } from '../../lenses/face';
 import type {
@@ -207,7 +207,7 @@ export type JobPresentation = Readonly<{
    * the mask is a property of the model: it is how the mark can draw the arc
    * ahead of the work instead of only the part already watched.
    */
-  declaredStages: readonly GenerationStage[];
+  declaredStages: readonly StageName[];
 }>;
 
 export type FieldController = Readonly<{
@@ -528,7 +528,7 @@ function folderName(folder: string): string {
 /** A device song's second line when it names no artist. */
 const DEVICE_LABEL = 'This phone';
 
-const NO_STAGES: readonly GenerationStage[] = [];
+const NO_STAGES: readonly StageName[] = [];
 const NO_TAGS: readonly string[] = [];
 
 /** The entity drawn last time, if nothing the layout reads has changed. */

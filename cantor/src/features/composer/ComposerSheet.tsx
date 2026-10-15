@@ -6,7 +6,8 @@ import { haptic } from '../../haptics';
 import { nameLens } from '../../lenses/nameLens';
 import type { Lens } from '../../lenses/types';
 import type { GenerationRequest } from '../../../../protocol/GenerationRequest';
-import { STAGE_SYMBOLS } from '../../jobs/marks';
+import { stageSymbol } from '../../jobs/marks';
+import type { StageName } from '../../core/protocol';
 import {
   Choice,
   Coda,
@@ -884,7 +885,7 @@ function StageArc({
   stages,
 }: {
   colour: string;
-  stages: readonly (keyof typeof STAGE_SYMBOLS)[];
+  stages: readonly StageName[];
 }) {
   if (stages.length === 0) return null;
   return (
@@ -899,7 +900,7 @@ function StageArc({
       {stages.map((stage, index) => (
         <WriteSymbol
           key={`${stage}-${index}`}
-          symbol={STAGE_SYMBOLS[stage]}
+          symbol={stageSymbol(stage)}
           width={COMPOSER_KNOBS.STAGE_GLYPH_PX}
           height={COMPOSER_KNOBS.STAGE_GLYPH_PX}
           duration={COMPOSER_KNOBS.STAGE_WRITE_MS}

@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import type { ModelView } from '../../../../protocol/ModelView';
+import type { ModelView } from '../../core/protocol';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 import { lyricsContractFor } from '../../core/protocol/lyrics';
 import { describeConnection } from '../../core/protocol/describeError';
