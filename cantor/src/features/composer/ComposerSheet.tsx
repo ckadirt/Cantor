@@ -36,8 +36,21 @@ import {
 import { space, touch, type, usePalette } from '../../theme/tokens';
 import { lyricsContractFor } from '../../core/protocol/lyrics';
 import { ModelParams } from './ModelParams';
+import { SourceRows, clock } from './SourceRows';
+import {
+  askForMicrophone as askForMicrophoneDefault,
+  createTuneRecorder,
+  type MicrophoneAnswer,
+  type TuneRecorderPort,
+} from '../../audio/tuneRecorder';
+import type { LocalSource } from '../../jobs/outbox';
+import { stagesFor } from '../../core/audioActs';
 import {
   EMPTY_DRAFT,
+  actOf,
+  localSourceOf,
+  needsUpload,
+  tuneSource,
   canSubmit,
   declaredFor,
   writeWordsFor,
@@ -103,7 +116,12 @@ type Props = {
     modelSelector: string,
     /** The draft, with the seed its clef was drawn from. */
     generation: GenerationRequest,
+    /** A file to send before the request, for a draft that starts from one. */
+    source?: LocalSource,
   ) => void;
+  /** Where a tune is recorded; the real recorder unless a test gives one. */
+  recorder?: TuneRecorderPort;
+  askForMicrophone?: () => Promise<MicrophoneAnswer>;
 };
 
 /**
@@ -137,8 +155,15 @@ function ComposerSheetImpl({
   recipe = null,
   onClose,
   onSubmit,
+  recorder,
+  askForMicrophone = askForMicrophoneDefault,
 }: Props) {
   const pal = usePalette();
+  // Made once per opening and only touched when Record is pressed.
+  const tuneRecorder = useMemo(
+    () => recorder ?? createTuneRecorder(),
+    [recorder],
+  );
   // The blind takes the composer out of the tree whenever it is closed, so a
   // recipe is read here, once, as the draft this opening begins with.
   const [draft, setDraft] = useState<ComposerDraft>(
@@ -158,10 +183,17 @@ function ComposerSheetImpl({
     draft.nodePublicKey ??
     (targets.length === 1 ? targets[0].nodePublicKey : null);
   const target = targetOf(targets, nodePublicKey);
+  /** The audio act this draft asks for, if it starts from a sound. */
+  const act = actOf(draft);
   // Dependency order in one line: the models on offer are the ones *this* node
-  // has. A union across nodes would offer a pairing that cannot exist and then
-  // report it as the person's mistake.
-  const models = useMemo(() => modelsFor(target), [target]);
+  // has — and, for an audio act, the ones that declare it. A union across
+  // nodes would offer a pairing that cannot exist and then report it as the
+  // person's mistake.
+  const sendsFirst = needsUpload(draft);
+  const models = useMemo(
+    () => modelsFor(target, act, sendsFirst),
+    [target, act, sendsFirst],
+  );
   const selection: ComposerDraft = {
     ...draft,
     nodePublicKey,
@@ -188,7 +220,10 @@ function ComposerSheetImpl({
   const selected = models.find(
     model => model.selector === resolved.modelSelector,
   );
-  const stages = selected?.stages ?? [];
+  const stages =
+    act !== null && selected !== undefined
+      ? stagesFor(selected, act)
+      : selected?.stages ?? [];
   const lengths = durationChoices(target);
 
   /** An empty caption is the page's own state, not a reason to write down. */
@@ -233,10 +268,43 @@ function ComposerSheetImpl({
   };
 
   const overCaption = captionLimit !== null && captionBytes > captionLimit;
+  const sourceSeconds =
+    resolved.source?.kind === 'song'
+      ? resolved.source.durationMs / 1000
+      : resolved.source?.kind === 'tune'
+      ? resolved.source.take?.seconds ?? 0
+      : 0;
+  const tuneSongSeconds =
+    resolved.source?.kind === 'tune'
+      ? resolved.source.fullSongSeconds ?? sourceSeconds
+      : 0;
+  /** Hum a song is on offer where some node can take a tune and cover it. */
+  const canHum = targets.some(
+    candidate => modelsFor(candidate, 'hum').length > 0,
+  );
+  /** A song from this phone is sent whole: say what that costs, and to whom. */
+  const sends =
+    resolved.source?.kind === 'song' && resolved.source.file && target
+      ? `Sends ${(resolved.source.file.bytes / 1e6).toFixed(0)} MB to ${
+          target.label
+        }.`
+      : null;
   const summary = [
     target?.label,
     resolved.modelSelector,
-    resolved.durationSeconds === null ? 'AUTO' : `${resolved.durationSeconds}S`,
+    act === 'hum'
+      ? tuneSongSeconds > 0
+        ? clock(tuneSongSeconds)
+        : 'A TUNE'
+      : act === 'version'
+      ? clock(sourceSeconds)
+      : act === 'longer'
+      ? `${clock(sourceSeconds)} → ${clock(
+          sourceSeconds + resolved.extendSeconds,
+        )}`
+      : resolved.durationSeconds === null
+      ? 'AUTO'
+      : `${resolved.durationSeconds}S`,
   ]
     .filter((part): part is string => typeof part === 'string')
     .join(' · ')
@@ -254,7 +322,15 @@ function ComposerSheetImpl({
                 seed,
                 model: resolved.modelSelector,
                 durationMs:
-                  resolved.durationSeconds === null
+                  act === 'hum'
+                    ? tuneSongSeconds > 0
+                      ? tuneSongSeconds * 1000
+                      : null
+                    : act === 'version'
+                    ? sourceSeconds * 1000
+                    : act === 'longer'
+                    ? (sourceSeconds + resolved.extendSeconds) * 1000
+                    : resolved.durationSeconds === null
                     ? null
                     : resolved.durationSeconds * 1000,
               }}
@@ -273,7 +349,15 @@ function ComposerSheetImpl({
             />
           )
         }
-        eyebrow="COMPOSE · DRAFT"
+        eyebrow={
+          act === 'hum'
+            ? 'COMPOSE · A TUNE'
+            : act === 'version'
+            ? 'COMPOSE · A VERSION'
+            : act === 'longer'
+            ? 'COMPOSE · LONGER'
+            : 'COMPOSE · DRAFT'
+        }
         nav={{
           label: 'CLOSE',
           accessibilityLabel: 'Close composer',
@@ -288,7 +372,9 @@ function ComposerSheetImpl({
             editable={!submitting}
             multiline
             onChangeText={caption => update({ caption })}
-            placeholder="a slow harbour at dusk"
+            placeholder={
+              act === 'hum' ? 'what it should become' : 'a slow harbour at dusk'
+            }
             placeholderTextColor={pal.faint}
             style={[styles.caption, FOLIO_TITLE_STYLE, { color: pal.ink }]}
             value={resolved.caption}
@@ -312,96 +398,187 @@ function ComposerSheetImpl({
       />
 
       <Stave keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
-        <Measure>
-          <Row
-            label="Words"
-            control
-            note={
-              resolved.wordsMode === 'none'
-                ? lyricsContractFor(selected).instrumentalLyrics
-                  ? 'This will be instrumental'
-                  : 'No lyrics supplied'
-                : resolved.wordsMode === 'model'
-                ? 'The model writes the lyrics'
-                : undefined
-            }
-          >
-            <PanelPressable
-              accessibilityLabel={
-                resolved.wordsMode === 'mine' ? 'No lyrics' : 'Write my lyrics'
-              }
-              accessibilityRole="button"
+        {canHum && (act === null || act === 'hum') ? (
+          <>
+            <Measure>
+              <Row
+                control
+                label="Start from"
+                note={
+                  act === 'hum'
+                    ? 'A tune you make'
+                    : 'The caption is where it starts'
+                }
+              >
+                <Dial
+                  compact
+                  activeColour={pal.ink}
+                  activeKey={act === 'hum' ? 'tune' : 'words'}
+                  items={[
+                    {
+                      key: 'words',
+                      label: 'WORDS',
+                      accessibilityLabel: 'Start from words',
+                    },
+                    {
+                      key: 'tune',
+                      label: 'A TUNE',
+                      accessibilityLabel: 'Start from a tune',
+                    },
+                  ]}
+                  itemStyle={LEDGER_DIAL_ITEM}
+                  onSelect={key =>
+                    update(
+                      key === 'tune'
+                        ? {
+                            source: tuneSource(),
+                            wordsMode: 'none',
+                            modelSelector: null,
+                          }
+                        : { source: null, modelSelector: null },
+                    )
+                  }
+                  restColour={pal.faint}
+                  textStyle={styles.dialWord}
+                  tickColour={pal.ink}
+                />
+              </Row>
+            </Measure>
+            <Rest />
+          </>
+        ) : null}
+        {act !== null ? (
+          <>
+            <SourceRows
+              askForMicrophone={askForMicrophone}
+              dialTextStyle={styles.dialWord}
               disabled={submitting}
-              onPress={() =>
-                update({
-                  wordsMode: resolved.wordsMode === 'mine' ? 'none' : 'mine',
-                })
-              }
-              style={LEDGER_DIAL_ITEM}
-            >
-              <Text style={[type.body, { color: pal.ink }]}>
-                {resolved.wordsMode === 'mine'
-                  ? 'My words'
-                  : resolved.wordsMode === 'model'
-                  ? 'Automatic'
-                  : 'None'}
-              </Text>
-            </PanelPressable>
-            {resolved.wordsMode === 'mine' ? (
-              <TextInput
-                accessibilityLabel="Lyrics"
-                editable={!submitting}
-                multiline
-                numberOfLines={COMPOSER_KNOBS.LYRICS_LINES}
-                onChangeText={lyrics => update({ lyrics })}
-                placeholder="Write the words"
-                placeholderTextColor={pal.faint}
-                style={[styles.lyrics, type.body, { color: pal.ink }]}
-                value={resolved.lyrics}
-              />
-            ) : null}
-          </Row>
-          <Row label="Node" control>
-            <Choice
-              activeKey={resolved.nodePublicKey}
-              disabled={submitting}
-              empty="nowhere yet — no node is paired"
-              items={targets.map(candidate => ({
-                key: candidate.nodePublicKey,
-                label: candidate.label,
-                accessibilityLabel: `Run it on ${candidate.label}`,
-                state: noConnection
-                  ? 'no connection'
-                  : candidate.ready
-                  ? 'ready'
-                  : 'offline',
-                quiet: !candidate.ready,
-                mark: (
-                  <StationMark
-                    models={candidate.models.length}
-                    nodePublicKey={candidate.nodePublicKey}
-                    size={COMPOSER_KNOBS.NODE_MARK_PX}
-                    state={candidate.ready ? 'ready' : 'offline'}
-                  />
-                ),
-              }))}
-              onSelect={key =>
-                // Changing the node drops the model with it: the next node's
-                // list is a different list, and carrying a selector across is
-                // how `model-not-installed` used to happen.
-                !submitting &&
-                setDraft(current => ({
-                  ...current,
-                  ...resolved,
-                  nodePublicKey: key,
-                  modelSelector: null,
-                  parameters: {},
-                  wordsMode:
-                    current.wordsMode === 'model' ? 'none' : current.wordsMode,
-                }))
-              }
+              draft={resolved}
+              lens={lens}
+              limits={target?.limits ?? null}
+              model={selected}
+              onChange={update}
+              recorder={tuneRecorder}
             />
-          </Row>
+            <Rest />
+          </>
+        ) : null}
+        <Measure>
+          {act === null ? (
+            <Row
+              label="Words"
+              control
+              note={
+                resolved.wordsMode === 'none'
+                  ? lyricsContractFor(selected).instrumentalLyrics
+                    ? 'This will be instrumental'
+                    : 'No lyrics supplied'
+                  : resolved.wordsMode === 'model'
+                  ? 'The model writes the lyrics'
+                  : undefined
+              }
+            >
+              <PanelPressable
+                accessibilityLabel={
+                  resolved.wordsMode === 'mine'
+                    ? 'No lyrics'
+                    : 'Write my lyrics'
+                }
+                accessibilityRole="button"
+                disabled={submitting}
+                onPress={() =>
+                  update({
+                    wordsMode: resolved.wordsMode === 'mine' ? 'none' : 'mine',
+                  })
+                }
+                style={LEDGER_DIAL_ITEM}
+              >
+                <Text style={[type.body, { color: pal.ink }]}>
+                  {resolved.wordsMode === 'mine'
+                    ? 'My words'
+                    : resolved.wordsMode === 'model'
+                    ? 'Automatic'
+                    : 'None'}
+                </Text>
+              </PanelPressable>
+              {resolved.wordsMode === 'mine' ? (
+                <TextInput
+                  accessibilityLabel="Lyrics"
+                  editable={!submitting}
+                  multiline
+                  numberOfLines={COMPOSER_KNOBS.LYRICS_LINES}
+                  onChangeText={lyrics => update({ lyrics })}
+                  placeholder="Write the words"
+                  placeholderTextColor={pal.faint}
+                  style={[styles.lyrics, type.body, { color: pal.ink }]}
+                  value={resolved.lyrics}
+                />
+              ) : null}
+            </Row>
+          ) : null}
+          {resolved.source?.kind === 'song' &&
+          resolved.source.nodePublicKey !== null &&
+          target !== null ? (
+            // A song's version is made where the song lives: there is nothing
+            // to choose, so the node is stated, not offered.
+            <Row control label="Node" note="Where the song lives">
+              <View style={styles.statedNode}>
+                <StationMark
+                  models={target.models.length}
+                  nodePublicKey={target.nodePublicKey}
+                  size={COMPOSER_KNOBS.NODE_MARK_PX}
+                  state={target.ready ? 'ready' : 'offline'}
+                />
+                <Text style={[type.body, { color: pal.ink }]}>
+                  {target.label}
+                </Text>
+              </View>
+            </Row>
+          ) : (
+            <Row label="Node" control>
+              <Choice
+                activeKey={resolved.nodePublicKey}
+                disabled={submitting}
+                empty="nowhere yet — no node is paired"
+                items={targets.map(candidate => ({
+                  key: candidate.nodePublicKey,
+                  label: candidate.label,
+                  accessibilityLabel: `Run it on ${candidate.label}`,
+                  state: noConnection
+                    ? 'no connection'
+                    : candidate.ready
+                    ? 'ready'
+                    : 'offline',
+                  quiet: !candidate.ready,
+                  mark: (
+                    <StationMark
+                      models={candidate.models.length}
+                      nodePublicKey={candidate.nodePublicKey}
+                      size={COMPOSER_KNOBS.NODE_MARK_PX}
+                      state={candidate.ready ? 'ready' : 'offline'}
+                    />
+                  ),
+                }))}
+                onSelect={key =>
+                  // Changing the node drops the model with it: the next node's
+                  // list is a different list, and carrying a selector across is
+                  // how `model-not-installed` used to happen.
+                  !submitting &&
+                  setDraft(current => ({
+                    ...current,
+                    ...resolved,
+                    nodePublicKey: key,
+                    modelSelector: null,
+                    parameters: {},
+                    wordsMode:
+                      current.wordsMode === 'model'
+                        ? 'none'
+                        : current.wordsMode,
+                  }))
+                }
+              />
+            </Row>
+          )}
 
           <Row
             label="Model"
@@ -416,6 +593,8 @@ function ComposerSheetImpl({
               empty={
                 target === null
                   ? 'not until a node is chosen'
+                  : act !== null
+                  ? 'no model here can do this'
                   : 'nothing installed'
               }
               items={models.map(model => ({
@@ -439,48 +618,56 @@ function ComposerSheetImpl({
             />
           </Row>
 
-          <Row label="Length" control>
-            {/* The value in words above the line it is chosen along. */}
-            <View style={styles.rulerValue}>
+          {act === 'version' ? (
+            <Row label="Length" note="As long as the song">
               <Text style={[type.body, { color: pal.ink }]}>
-                {resolved.durationSeconds === null
-                  ? "the model's choice"
-                  : `${resolved.durationSeconds} seconds`}
+                {clock(sourceSeconds)}
               </Text>
-            </View>
-            {lengths.length > 0 ? (
-              <Ruler
-                auto
-                activeKey={
-                  resolved.durationSeconds === null
-                    ? AUTO_LENGTH
-                    : String(resolved.durationSeconds)
-                }
-                disabled={submitting}
-                onSelect={key =>
-                  update({
-                    durationSeconds: key === AUTO_LENGTH ? null : Number(key),
-                  })
-                }
-                stops={[
-                  {
-                    key: AUTO_LENGTH,
-                    accessibilityLabel: "Length: the model's choice",
-                  },
-                  ...lengths.map(seconds => ({
-                    key: String(seconds),
-                    accessibilityLabel: `Length: ${seconds} seconds`,
-                  })),
-                ]}
-              />
-            ) : null}
-          </Row>
+            </Row>
+          ) : act === 'longer' || act === 'hum' ? null : (
+            <Row label="Length" control>
+              {/* The value in words above the line it is chosen along. */}
+              <View style={styles.rulerValue}>
+                <Text style={[type.body, { color: pal.ink }]}>
+                  {resolved.durationSeconds === null
+                    ? "the model's choice"
+                    : `${resolved.durationSeconds} seconds`}
+                </Text>
+              </View>
+              {lengths.length > 0 ? (
+                <Ruler
+                  auto
+                  activeKey={
+                    resolved.durationSeconds === null
+                      ? AUTO_LENGTH
+                      : String(resolved.durationSeconds)
+                  }
+                  disabled={submitting}
+                  onSelect={key =>
+                    update({
+                      durationSeconds: key === AUTO_LENGTH ? null : Number(key),
+                    })
+                  }
+                  stops={[
+                    {
+                      key: AUTO_LENGTH,
+                      accessibilityLabel: "Length: the model's choice",
+                    },
+                    ...lengths.map(seconds => ({
+                      key: String(seconds),
+                      accessibilityLabel: `Length: ${seconds} seconds`,
+                    })),
+                  ]}
+                />
+              ) : null}
+            </Row>
+          )}
         </Measure>
-        {writer || controls.length > 0 ? (
+        {(writer && act === null) || controls.length > 0 ? (
           <>
             <Rest />
             <Measure>
-              {writer ? (
+              {writer && act === null ? (
                 <Row label="Write words" control>
                   <Dial
                     compact
@@ -546,8 +733,11 @@ function ComposerSheetImpl({
               The draft is kept. It can be sent the moment the phone is back
               online.
             </CodaWhy>
-          ) : shown.length === 0 && error === null ? null : (
+          ) : shown.length === 0 && error === null && sends === null ? null : (
             <>
+              {sends !== null && shown.length === 0 ? (
+                <CodaWhy>{sends}</CodaWhy>
+              ) : null}
               {shown.map(problem => (
                 <CodaWhy
                   key={
@@ -573,6 +763,7 @@ function ComposerSheetImpl({
       >
         <MakeIt
           key={drawn}
+          act={act}
           failed={failed}
           failedWord={errorWord}
           onPress={() => {
@@ -582,11 +773,25 @@ function ComposerSheetImpl({
             // The one firm pulse in the app: a song is being asked for.
             haptic('confirm');
             setFailed(false);
-            onSubmit(
-              resolved.nodePublicKey as string,
-              resolved.modelSelector as string,
-              { ...toGenerationRequest(resolved, declared, selected), seed },
-            );
+            const request = {
+              ...toGenerationRequest(resolved, declared, selected),
+              seed,
+            };
+            const local = localSourceOf(resolved);
+            if (local === null) {
+              onSubmit(
+                resolved.nodePublicKey as string,
+                resolved.modelSelector as string,
+                request,
+              );
+            } else {
+              onSubmit(
+                resolved.nodePublicKey as string,
+                resolved.modelSelector as string,
+                request,
+                local,
+              );
+            }
             setDraft(EMPTY_DRAFT);
             setSeed(draftSeed());
           }}
@@ -604,12 +809,14 @@ function ComposerSheetImpl({
  * goes still and faint and the word says so (`folio.html#working`).
  */
 function MakeIt({
+  act,
   failed,
   failedWord,
   onPress,
   ready,
   submitting,
 }: {
+  act: ReturnType<typeof actOf>;
   failed: boolean;
   failedWord: string | null;
   onPress: () => void;
@@ -619,14 +826,22 @@ function MakeIt({
   // Out of reach only when there is nothing to send; sending is busy, not
   // unavailable, so the word keeps its ink and grows the rule.
   const { colour } = useReach(!ready && !submitting);
+  const idle =
+    act === 'hum'
+      ? 'Make a song'
+      : act === 'version'
+      ? 'Make a version'
+      : act === 'longer'
+      ? 'Make it longer'
+      : 'Make it';
   const label = submitting
     ? 'Sending it'
     : failed
     ? failedWord ?? 'Not sent'
-    : 'Make it';
+    : idle;
   return (
     <PanelPressable
-      accessibilityLabel="Make it"
+      accessibilityLabel={idle}
       accessibilityRole="button"
       accessibilityState={{ disabled: !ready, busy: submitting }}
       disabled={!ready && !submitting}
@@ -758,6 +973,12 @@ const styles = StyleSheet.create({
     minHeight: LEDGER_KNOBS.LINE_PX,
   },
   submit: { justifyContent: 'center', minHeight: touch.min },
+  statedNode: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: space.sm,
+    minHeight: LEDGER_KNOBS.LINE_PX,
+  },
   actSlot: { height: COMPOSER_KNOBS.ACT_SLOT_PX },
 });
 

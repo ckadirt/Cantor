@@ -1,4 +1,10 @@
-import { parseJob, parseJobs, parseNodeInfo } from '../../core/protocol';
+import {
+  parseAudioPrompt,
+  parseJob,
+  parseJobs,
+  parseNodeInfo,
+  parseSong,
+} from '../../core/protocol';
 import { decodeForgottenJob } from '../applicationResponses';
 
 const nodeInfo = require('../../../../protocol/fixtures/v2/node-info.json');
@@ -7,6 +13,10 @@ const forgotten = require('../../../../protocol/fixtures/v2/job-forgotten.json')
 const invalidState = require('../../../../protocol/fixtures/v2/malformed/invalid-state.json');
 const negativeProgress = require('../../../../protocol/fixtures/v2/malformed/negative-progress.json');
 const forward = require('../../../../protocol/fixtures/v2/forward/extra-optional-field.json');
+const capabilities = require('../../../../protocol/fixtures/v2/node-info-capabilities.json');
+const lyricsNode = require('../../../../protocol/fixtures/v2/node-info-lyrics.json');
+const audioJob = require('../../../../protocol/fixtures/v2/job-create-audio.json');
+const tuneJob = require('../../../../protocol/fixtures/v2/job-create-tune.json');
 
 describe('shared protocol v2 fixtures', () => {
   it('parses canonical node and job messages at the app boundary', () => {
@@ -43,6 +53,71 @@ describe('shared protocol v2 fixtures', () => {
     // node deployed before M9 sends, and the app must not offer the act.
     expect(nodeInfo.node.features.job_forget).toBeUndefined();
     expect(parseNodeInfo(nodeInfo.node)?.features.job_forget).toBe(false);
+  });
+
+  it('reads declared audio capabilities, dropping kinds this build does not know', () => {
+    const node = parseNodeInfo(capabilities.node);
+    expect(node?.models[0].capabilities?.map(c => c.kind)).toEqual([
+      'cover',
+      'extend',
+      'timbre',
+    ]);
+    expect(node?.models[0].capabilities?.[0]).toMatchObject({
+      stages: ['diffuse', 'decode'],
+      max_source_seconds: 600,
+    });
+    // Declares none: a node that knows about audio, for a model that takes none.
+    expect(node?.models[1].capabilities).toEqual([]);
+    expect(node?.features).toMatchObject({ audio_sources: true, uploads: true });
+    expect(node?.limits.max_upload_bytes).toBe(209715200);
+    expect(node?.installable?.[0]).toMatchObject({
+      selector: 'acestep:1.5-balanced',
+      capabilities: ['cover', 'extend', 'timbre'],
+    });
+  });
+
+  it('reads a node that predates audio as offering none of it', () => {
+    const node = parseNodeInfo(lyricsNode.node);
+    expect(node?.models[0].capabilities).toBeUndefined();
+    expect(node?.features).toMatchObject({ audio_sources: false, uploads: false });
+    expect(node?.installable).toBeUndefined();
+  });
+
+  it('reads audio prompts and refuses an act it cannot name', () => {
+    expect(parseAudioPrompt(audioJob.generation.audio)).toMatchObject({
+      source: { kind: 'song' },
+      act: 'cover',
+      closeness: 0.5,
+    });
+    expect(parseAudioPrompt(tuneJob.generation.audio)).toMatchObject({
+      source: { kind: 'upload' },
+      tune: true,
+      tile_to_seconds: 120,
+    });
+    expect(parseAudioPrompt({ ...audioJob.generation.audio, act: 'teleport' })).toBeNull();
+    expect(parseAudioPrompt({ ...audioJob.generation.audio, closeness: 2 })).toBeNull();
+  });
+
+  it('keeps a song whose origin it cannot read, without the origin', () => {
+    const song = {
+      id: 's',
+      revision: 1,
+      title: 't',
+      caption_summary: 'c',
+      created_at: '2026-10-14T00:00:00Z',
+      duration_ms: 1000,
+      model: 'acestep:1.5-fast',
+      favorite: false,
+      tags: [],
+      trashed: false,
+      artifacts: [],
+    };
+    expect(
+      parseSong({ ...song, derived_from: { act: 'extend', song_id: 'p' } })?.derived_from,
+    ).toEqual({ act: 'extend', song_id: 'p' });
+    const odd = parseSong({ ...song, derived_from: { act: 'remix' } });
+    expect(odd?.id).toBe('s');
+    expect(odd?.derived_from).toBeUndefined();
   });
 
   it('rejects invalid enum and numeric semantics', () => {

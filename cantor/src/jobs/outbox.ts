@@ -17,6 +17,21 @@ export type OutboxEntry = {
   lastError?: string;
   createdAt: string;
   updatedAt: string;
+  /**
+   * A local file to send before the request can go: a recorded tune, or a song
+   * from this phone. Present while it has not been sent; the entry stays
+   * `pending`, so an older build reading it still loads the outbox. Once the
+   * node has committed it, its upload id is written into the request and this
+   * is removed.
+   */
+  source?: LocalSource;
+};
+
+export type LocalSource = {
+  path: string;
+  mediaType: string;
+  sha256: string;
+  bytes: number;
 };
 
 const outboxStore = createSerializedJsonStore<OutboxEntry[]>({
@@ -36,6 +51,7 @@ export async function putPending(
   nodePublicKey: string,
   model: string,
   generation: GenerationRequest,
+  source?: LocalSource,
 ): Promise<OutboxEntry> {
   return outboxStore.update(entries => {
     const now = new Date().toISOString();
@@ -49,6 +65,7 @@ export async function putPending(
       state: 'pending',
       createdAt: now,
       updatedAt: now,
+      ...(source === undefined ? {} : { source: { ...source } }),
     };
     return { value: [...entries, entry], result: entry };
   });
@@ -73,7 +90,8 @@ function parseEntry(value: unknown): OutboxEntry {
       value.canonicalJobId === undefined ||
       typeof value.canonicalJobId === 'string'
     ) ||
-    !(value.lastError === undefined || typeof value.lastError === 'string')
+    !(value.lastError === undefined || typeof value.lastError === 'string') ||
+    !(value.source === undefined || isLocalSource(value.source))
   ) {
     throw new Error('Submission outbox contains an invalid entry.');
   }
@@ -84,6 +102,58 @@ function parseEntry(value: unknown): OutboxEntry {
     );
   }
   return { ...value, requestHash: expectedHash } as OutboxEntry;
+}
+
+function isLocalSource(value: unknown): value is LocalSource {
+  return (
+    isRecord(value) &&
+    typeof value.path === 'string' &&
+    value.path.length > 0 &&
+    typeof value.mediaType === 'string' &&
+    typeof value.sha256 === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.sha256) &&
+    Number.isSafeInteger(value.bytes) &&
+    (value.bytes as number) > 0
+  );
+}
+
+/**
+ * Record that a submission's source reached its node: the request now names
+ * the committed upload, and the local file is no longer needed by this entry.
+ * Returns the updated entry, whose hash follows its new payload.
+ */
+export async function markSourceSent(
+  clientRequestId: string,
+  uploadId: string,
+): Promise<OutboxEntry | undefined> {
+  return outboxStore.update(entries => {
+    let updated: OutboxEntry | undefined;
+    const value = entries.map(entry => {
+      if (
+        entry.clientRequestId !== clientRequestId ||
+        entry.generation.audio == null
+      ) {
+        return entry;
+      }
+      const generation: GenerationRequest = {
+        ...entry.generation,
+        audio: {
+          ...entry.generation.audio,
+          source: { kind: 'upload', upload_id: uploadId },
+        },
+      };
+      const rest: OutboxEntry = { ...entry };
+      delete rest.source;
+      updated = {
+        ...rest,
+        generation,
+        requestHash: payloadHash(entry.model, generation),
+        updatedAt: new Date().toISOString(),
+      };
+      return updated;
+    });
+    return { value, result: updated };
+  });
 }
 
 function payloadHash(model: string, generation: GenerationRequest): string {

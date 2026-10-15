@@ -41,6 +41,7 @@ export const MAX_NOISE_PLAINTEXT_BYTES = 61440 as const;
 export const MAX_SECURE_CIPHERTEXT_BYTES = 98304 as const;
 export const MAX_LOGICAL_INNER_BYTES = 1048576 as const;
 export const ARTIFACT_CHUNK_BYTES = 65536 as const;
+export const UPLOAD_CHUNK_BYTES = 49152 as const;
 export const MAX_ARTIFACT_IDENTIFIER_UTF8_BYTES = 256 as const;
 export const MAX_ARTIFACT_OFFSET_SAFE_INTEGER = 9007199254740991 as const;
 export const MAX_SESSION_RECORDS_PER_DIRECTION = 1000000 as const;

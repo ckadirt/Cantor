@@ -54,6 +54,7 @@ import {
   useReach,
 } from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
+import { FromIt, type SongAudioActs } from './FromIt';
 import {
   plainTagsOf,
   playlistsOf,
@@ -62,6 +63,7 @@ import {
   toggleTag,
 } from '../../playlists/playlists';
 import { pendingLookup, pendingNames } from './songWish';
+import { wordsOf } from './songWords';
 import { useSongWish } from './useSongWish';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 
@@ -294,6 +296,11 @@ type Props = {
     models: number;
     state: StationState;
   }> | null;
+  /**
+   * Making a new song from this one: a version, or a longer song. Absent for a
+   * song with no node to make it on.
+   */
+  audioActs?: SongAudioActs | null;
 };
 
 /**
@@ -346,6 +353,7 @@ function SongSheetImpl({
   lens,
   node = null,
   arriving = null,
+  audioActs = null,
 }: Props) {
   const pal = usePalette();
   /**
@@ -571,6 +579,7 @@ function SongSheetImpl({
           <Front
             acting={acting}
             arriving={arriving}
+            audioActs={audioActs}
             audioState={audioState}
             problem={problem}
             downloaded={downloaded}
@@ -777,6 +786,7 @@ function Face({
 function Front({
   acting,
   arriving,
+  audioActs,
   audioState,
   downloaded,
   deliveryBytes,
@@ -800,6 +810,7 @@ function Front({
   acting: SongAct | null;
   /** How much of a download has landed, 0..1, or null. */
   arriving: number | null;
+  audioActs: SongAudioActs | null;
   audioState: LocalAudioState;
   downloaded: boolean;
   deliveryBytes: number | null;
@@ -956,6 +967,14 @@ function Front({
             </>
           ) : null}
         </Measure>
+        {audioActs !== null ? (
+          <>
+            <Rest />
+            <Measure>
+              <FromIt acts={audioActs} disabled={locked} />
+            </Measure>
+          </>
+        ) : null}
       </Stave>
 
       {/*
@@ -1051,12 +1070,7 @@ function Back({
 }) {
   const pal = usePalette();
   if (imported !== null) return <ImportedRecord facts={imported} song={song} />;
-  /** The words sung, or null: the model's instrumental marker is not words. */
-  const lyrics = detail?.generation.lyrics?.trim();
-  const words =
-    lyrics === undefined || lyrics === '' || lyrics === instrumentalLyrics
-      ? null
-      : lyrics;
+  const { words, written } = wordsOf(detail, instrumentalLyrics);
   return (
     <View style={styles.page}>
       <Stave>
@@ -1099,14 +1113,16 @@ function Back({
                   </Text>
                 </Copy>
               </Row>
-              <Row label="Words">
+              <Row
+                label="Words"
+                note={written && words ? 'WRITTEN BY THE MODEL' : undefined}>
                 {words ? (
                   <Copy what="words" value={words}>
                     <Text style={[type.body, { color: pal.ink }]}>{words}</Text>
                   </Copy>
                 ) : (
                   <Text style={[type.body, { color: pal.faint }]}>
-                    instrumental
+                    {written ? 'the model\u2019s, not kept' : 'instrumental'}
                   </Text>
                 )}
               </Row>

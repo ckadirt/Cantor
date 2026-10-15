@@ -322,6 +322,24 @@ describe('SongSheet', () => {
     expect(labels()).not.toContain('Copy the words');
   });
 
+  it('shows the words the model wrote, says so, and copies them', () => {
+    const written = 'lanterns the model wrote';
+    const { labels, press, words } = render({
+      detail: { ...detail(), written_lyrics: written },
+    });
+    expect(words()).toContain(written);
+    expect(words()).toContain('WRITTEN BY THE MODEL');
+    press('Copy the words');
+    expect(Clipboard.setString).toHaveBeenLastCalledWith(written);
+    expect(labels()).toContain('Copied the words');
+  });
+
+  it('never calls a song whose written words were not kept instrumental', () => {
+    const { words } = render();
+    expect(words()).toContain('the model’s, not kept');
+    expect(words()).not.toContain('instrumental');
+  });
+
   it('hands the recipe to the composer', () => {
     const onRecompose = jest.fn();
     const { press } = render({ onRecompose });

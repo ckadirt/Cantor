@@ -22,6 +22,7 @@ import {
   type DeviceLibraryState,
 } from '../device/deviceLibrary';
 import { startLookingAgain } from '../device/lookAgain';
+import { lyricsFor } from '../device/lyrics';
 import { androidPermissions } from '../device/permission';
 import { nativeMedia } from '../device/native';
 import { createDeviceRepository } from '../device/repository';
@@ -54,9 +55,13 @@ import { lyricsContractFor } from '../core/protocol/lyrics';
 import {
   ComposerSheet,
   draftFromRecipe,
+  draftFromSource,
   type ComposerDraft,
   type ComposerTarget,
 } from '../features/composer';
+import { doorAcross, doorFor, mediaTypeOfPath } from '../core/audioActs';
+import { sourceFileInfo } from '../audio/native';
+import type { SongAudioActs } from '../features/song/FromIt';
 import { Curtain, useKeyboardInset } from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
@@ -105,6 +110,7 @@ import {
   type SongAct,
 } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
+import { wordsOf } from '../features/song/songWords';
 import {
   MODE_POSE,
   PLAYER_TRANSPORT_KNOBS,
@@ -947,6 +953,8 @@ export function FieldScreen({ identity }: Props) {
           ready: phases[backend.nodePubkey] === 'ready',
           models: info?.models ?? [],
           limits: info?.limits ?? null,
+          takesAudio: info?.features.audio_sources === true,
+          takesUploads: info?.features.uploads === true,
         };
       }),
     [backends, phases],
@@ -964,6 +972,7 @@ export function FieldScreen({ identity }: Props) {
       nodePublicKey: string,
       modelSelector: string,
       generation: Parameters<typeof commands.submit>[2],
+      source?: Parameters<typeof commands.submit>[3],
     ) => {
       setSubmitting(true);
       setSubmitError(null);
@@ -974,7 +983,13 @@ export function FieldScreen({ identity }: Props) {
           jobKey: null,
         });
         setComposerOpen(false);
-        await commands.submit(nodePublicKey, modelSelector, generation);
+        // A tune goes first, through the outbox, which then names its upload
+        // in the request; without one this is the call it always was.
+        if (source === undefined) {
+          await commands.submit(nodePublicKey, modelSelector, generation);
+        } else {
+          await commands.submit(nodePublicKey, modelSelector, generation, source);
+        }
       } catch (error) {
         setCondensing(null);
         setSubmitError(failureWords(error, nodeNameOf(nodePublicKey)));
@@ -1027,8 +1042,8 @@ export function FieldScreen({ identity }: Props) {
   const onComposerSubmit = useCallback<
     React.ComponentProps<typeof ComposerSheet>['onSubmit']
   >(
-    (nodePublicKey, modelSelector, generation) =>
-      void submitDraft(nodePublicKey, modelSelector, generation),
+    (nodePublicKey, modelSelector, generation, source) =>
+      void submitDraft(nodePublicKey, modelSelector, generation, source),
     [submitDraft],
   );
   /**
@@ -2084,6 +2099,119 @@ export function FieldScreen({ identity }: Props) {
       artifacts: [],
     };
   }, [sheetSong]);
+  /**
+   * `From it` on the sheet's front page: a version or a longer song of this
+   * one, made where it lives. Each act's door is what that node declares; an
+   * act opens the composer on a draft that starts from the song, its prompt
+   * as the caption and its words as `same`.
+   */
+  const sheetAudioActs = useMemo<SongAudioActs | null>(() => {
+    if (sheetSong === null) return null;
+    if (sheetSong.source === 'device') {
+      // A song on this phone is sent whole to whichever node can make its
+      // version; a longer song is a node song's act only.
+      const nodes = (backends ?? []).map(backend => ({
+        nodePublicKey: backend.nodePubkey,
+        info: backend.lastNodeInfo ?? null,
+        ready: phases[backend.nodePubkey] === 'ready',
+      }));
+      const door = doorAcross(nodes, 'version', true);
+      const device = sheetSong.device;
+      const recipe = sheetSong.recipe;
+      const title = sheetSong.title;
+      const durationMs = sheetSong.durationMs;
+      const album = sheetSong.album?.title ?? null;
+      return {
+        version: door,
+        longer: { kind: 'unsupported' },
+        nodeLabel:
+          door.kind === 'ready'
+            ? backends?.find(backend => backend.nodePubkey === door.firstAble)
+                ?.petname ?? 'the node'
+            : backends?.[0]?.petname ?? 'your node',
+        onAct: () => {
+          const open = async () => {
+            try {
+              // A kept voice sings the words it is given: without the
+              // song's own, it garbles (audio prompting, A0).
+              const [file, words] = await Promise.all([
+                sourceFileInfo(device.path),
+                lyricsFor({
+                  path: device.path,
+                  title: device.title,
+                  titleFromTag: device.titleFromTag,
+                  artist: device.artist,
+                  album,
+                  durationMs,
+                }),
+              ]);
+              const draft = draftFromSource({
+                kind: 'song',
+                act: 'version',
+                songId: device.id,
+                nodePublicKey: null,
+                title,
+                durationMs,
+                prompt: '',
+                words,
+                seed: recipe.seed,
+                model: recipe.model,
+                file: {
+                  path: device.path,
+                  mediaType: mediaTypeOfPath(device.path),
+                  ...file,
+                },
+              });
+              setComposerRecipe({
+                draft: { ...draft, nodePublicKey: door.firstAble ?? null },
+                seed: draftSeed(),
+              });
+              setSheetOpen(false);
+              openComposer();
+            } catch (error) {
+              setSubmitError(failureWords(error, 'this phone'));
+            }
+          };
+          open().catch(() => {});
+        },
+      };
+    }
+    const nodePublicKey = sheetSong.entity.nodePublicKey;
+    const live =
+      phases[nodePublicKey] === 'ready'
+        ? backends?.find(backend => backend.nodePubkey === nodePublicKey)
+            ?.lastNodeInfo ?? null
+        : null;
+    const song = sheetSong.song;
+    const { words } = wordsOf(
+      songDetail,
+      lyricsContractFor(sheetModel).instrumentalLyrics,
+    );
+    return {
+      version: doorFor(live, 'version'),
+      longer: doorFor(live, 'longer'),
+      nodeLabel: sheetSong.label,
+      onAct: act => {
+        setComposerRecipe({
+          draft: draftFromSource({
+            kind: 'song',
+            act,
+            songId: song.id,
+            nodePublicKey,
+            title: song.title,
+            durationMs: song.duration_ms,
+            prompt: songDetail?.generation.caption ?? song.caption_summary,
+            words,
+            seed: song.seed,
+            model: song.model,
+          }),
+          seed: draftSeed(),
+        });
+        setSheetOpen(false);
+        openComposer();
+      },
+    };
+  }, [backends, failureWords, openComposer, phases, sheetModel, sheetSong, songDetail]);
   const sheetImported = useMemo<ImportedFacts | null>(() => {
     if (sheetSong === null || sheetSong.source !== 'device') return null;
     const { device, album } = sheetSong;
@@ -3041,6 +3169,7 @@ export function FieldScreen({ identity }: Props) {
           viewportHeight={viewport.height}
         >
           <SongSheet
+            audioActs={sheetAudioActs}
             audioState={sheetSong.localAudio.state}
             acting={songAct}
             detail={songDetail}

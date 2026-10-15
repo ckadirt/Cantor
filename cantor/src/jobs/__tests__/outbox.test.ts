@@ -4,6 +4,7 @@ import {
   loadOutbox,
   markAccepted,
   markRejected,
+  markSourceSent,
   putPending,
 } from '../outbox';
 
@@ -137,6 +138,53 @@ describe('submission outbox', () => {
     await expect(loadOutbox()).resolves.toEqual([
       expect.objectContaining({ generation: { caption: 'durable' } }),
     ]);
+  });
+
+  it('keeps a local source until it is sent, then names the upload in the request', async () => {
+    const source = {
+      path: '/data/takes/tune.wav',
+      mediaType: 'audio/wav',
+      sha256: 'b'.repeat(64),
+      bytes: 480044,
+    };
+    const pending = await putPending(
+      'node',
+      'acestep:1.5-fast',
+      {
+        caption: 'warm pop',
+        audio: { source: { kind: 'upload', upload_id: 'local' }, act: 'cover', tune: true },
+      },
+      source,
+    );
+    expect((await loadOutbox())[0]).toMatchObject({ state: 'pending', source });
+
+    const sent = await markSourceSent(pending.clientRequestId, 'up-7');
+    expect(sent?.generation.audio?.source).toEqual({ kind: 'upload', upload_id: 'up-7' });
+    expect(sent?.requestHash).not.toBe(pending.requestHash);
+    const [stored] = await loadOutbox();
+    expect(stored.source).toBeUndefined();
+    expect(stored.generation.audio).toMatchObject({ act: 'cover', tune: true });
+    // The stored hash follows the stored payload, so the next load agrees.
+    expect(stored.requestHash).toBe(sent?.requestHash);
+  });
+
+  it('refuses a source it could not send from', async () => {
+    values.set(
+      KEY,
+      JSON.stringify([
+        {
+          clientRequestId: 'r',
+          nodePublicKey: 'n',
+          model: 'm',
+          generation: { caption: 'c' },
+          state: 'pending',
+          createdAt: 'now',
+          updatedAt: 'now',
+          source: { path: '', mediaType: 'audio/wav', sha256: 'nope', bytes: 0 },
+        },
+      ]),
+    );
+    await expect(loadOutbox()).rejects.toThrow('invalid entry');
   });
 
   it('preserves malformed JSON and legacy hash compatibility', async () => {

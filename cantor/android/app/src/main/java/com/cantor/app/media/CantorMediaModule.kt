@@ -206,6 +206,16 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
   }
 
   /**
+   * The words a file carries in its own tags, raw, or null. Read when a
+   * version of the song is made, never in a scan: a library of lyrics would
+   * be read for nothing.
+   */
+  @ReactMethod
+  fun lyrics(path: String, promise: Promise) {
+    run(promise) { embeddedLyrics(File(path)) }
+  }
+
+  /**
    * Save an album's art, at most `ARTWORK_PX` on its longest side, as
    * `files/artwork/<name>.jpg`; resolves with the file name, or null when the
    * song has none.

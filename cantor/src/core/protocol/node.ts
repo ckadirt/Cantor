@@ -1,5 +1,6 @@
 import { parseModelParameters, parseStages } from './parameters';
 import { parseLyricsCapabilities } from './lyrics';
+import { parseCapabilities, parseInstallable } from './audio';
 import type { NodeInfo } from '../../../../protocol/NodeInfo';
 import {
   isNonNegativeInteger,
@@ -30,6 +31,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
     const stages = parseStages(model.stages);
     const parameters = parseModelParameters(model.parameters);
     const lyrics = parseLyricsCapabilities(model.lyrics);
+    const capabilities = parseCapabilities(model.capabilities);
     return {
       selector: model.selector,
       family: model.family,
@@ -37,6 +39,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       ...(stages === undefined ? {} : { stages }),
       ...(parameters === undefined ? {} : { parameters }),
       ...(lyrics === undefined ? {} : { lyrics }),
+      ...(capabilities === undefined ? {} : { capabilities }),
     };
   });
   if (
@@ -77,9 +80,23 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
     !(
       features.job_forget === undefined ||
       typeof features.job_forget === 'boolean'
+    ) ||
+    // Additive: audio prompts and uploads. Absent reads as false, and the app
+    // offers neither to a node that does not say it takes them.
+    !['audio_sources', 'uploads'].every(
+      key => features[key] === undefined || typeof features[key] === 'boolean',
+    ) ||
+    !(
+      limits.max_upload_bytes === undefined ||
+      isNonNegativeInteger(limits.max_upload_bytes)
+    ) ||
+    !(
+      limits.max_source_seconds === undefined ||
+      isNonNegativeInteger(limits.max_source_seconds)
     )
   )
     return null;
+  const installable = parseInstallable(value.installable);
   return {
     name: value.name,
     device_type: value.device_type,
@@ -93,6 +110,12 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       max_caption_bytes: limits.max_caption_bytes,
       max_lyrics_bytes: limits.max_lyrics_bytes,
       max_page_limit: limits.max_page_limit,
+      ...(limits.max_upload_bytes === undefined
+        ? {}
+        : { max_upload_bytes: limits.max_upload_bytes as number }),
+      ...(limits.max_source_seconds === undefined
+        ? {}
+        : { max_source_seconds: limits.max_source_seconds as number }),
     },
     load: {
       active_jobs: load.active_jobs,
@@ -109,6 +132,9 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       secure_tunnel: features.secure_tunnel as boolean,
       job_controls: features.job_controls as boolean,
       job_forget: features.job_forget === true,
+      audio_sources: features.audio_sources === true,
+      uploads: features.uploads === true,
     },
+    ...(installable === undefined ? {} : { installable }),
   };
 }

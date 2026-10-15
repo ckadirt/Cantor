@@ -52,6 +52,7 @@ type CantorMediaNative = {
   generation(): Promise<unknown>;
   list(minDurationMs: number): Promise<unknown>;
   inspect(path: string): Promise<unknown>;
+  lyrics(path: string): Promise<unknown>;
   albumArt(mediaId: number, name: string): Promise<unknown>;
   pruneArtwork(keep: string[]): Promise<unknown>;
   artworkLuma(file: string, cells: number): Promise<unknown>;
@@ -96,6 +97,17 @@ export const nativeMedia = {
 
   async inspect(path: string): Promise<MediaInspection> {
     return decodeInspection(await module().inspect(path));
+  },
+
+  /**
+   * The words a file carries in its own tags (FLAC, MP3, MP4), raw — an LRC
+   * file's timestamps included — or null.
+   */
+  async lyrics(path: string): Promise<string | null> {
+    const value = await module().lyrics(path);
+    if (value === null || value === undefined) return null;
+    if (typeof value !== 'string') throw new Error('Native lyrics are invalid.');
+    return value;
   },
 
   /** Save an album's art as `files/artwork/<name>.jpg`; its file name, or null. */

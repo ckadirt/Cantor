@@ -5,7 +5,8 @@ import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongHeader } from '../../../protocol/SongHeader';
 import type { SongPatch } from '../../../protocol/SongPatch';
 import { audioKey } from '../audio/repository';
-import type { LocalAudio } from '../audio/native';
+import { readSourceSlice, type LocalAudio } from '../audio/native';
+import { runUpload } from '../backends/upload';
 import type { AudioRef, LocalAudioStore } from '../audio/localAudioStore';
 import { repositoryLocalAudioStore } from '../audio/repositoryLocalAudioStore';
 import {
@@ -38,7 +39,9 @@ import {
   loadOutbox,
   markAccepted,
   markRejected,
+  markSourceSent,
   putPending,
+  type LocalSource,
   type OutboxEntry,
 } from '../jobs/outbox';
 import {
@@ -92,6 +95,7 @@ export type BackendRuntimeConnection = Pick<
   | 'trashSong'
   | 'restoreSong'
   | 'refreshLibrary'
+  | 'uploadPort'
 >;
 
 export type BackendRuntimeConnectionCallbacks = {
@@ -122,6 +126,8 @@ type RuntimeDependencies = {
   putPending: typeof putPending;
   markAccepted: typeof markAccepted;
   markRejected: typeof markRejected;
+  markSourceSent: typeof markSourceSent;
+  readSourceSlice: typeof readSourceSlice;
   audioStore: LocalAudioStore;
   loadWaiting: typeof loadWaiting;
   putWaiting: typeof putWaiting;
@@ -164,6 +170,12 @@ export type BackendRuntimeState = {
    * have no canonical id and so are not addressable here.
    */
   outbox: Record<string, OutboxEntry>;
+  /**
+   * Submissions whose source is on its way to the node, by client request id:
+   * bytes the node has acknowledged, of the total. What the coda reads to say
+   * `SENDING · 12 OF 31 MB`. Gone once the node has the whole file.
+   */
+  sending: Record<string, { sent: number; total: number }>;
 };
 
 export type BackendRuntimeCommands = {
@@ -190,10 +202,15 @@ export type BackendRuntimeCommands = {
    * Nothing is deleted on the node itself. Pair again and everything returns.
    */
   forgetBackend: (nodePublicKey: string) => Promise<void>;
+  /**
+   * Durably queue a generation and send it. With `source`, the local file is
+   * sent first (resumably) and the request then names the committed upload.
+   */
   submit: (
     nodePublicKey: string,
     model: string,
     generation: GenerationRequest,
+    source?: LocalSource,
   ) => Promise<void>;
   controlJob: (
     nodePublicKey: string,
@@ -258,6 +275,8 @@ const defaultDependencies: RuntimeDependencies = {
   putPending,
   markAccepted,
   markRejected,
+  markSourceSent,
+  readSourceSlice,
   audioStore: repositoryLocalAudioStore,
   loadWaiting,
   putWaiting,
@@ -279,6 +298,7 @@ export const INITIAL_RUNTIME_STATE: BackendRuntimeState = {
   downloading: new Set(),
   waiting: {},
   outbox: {},
+  sending: {},
 };
 
 /**
@@ -504,6 +524,9 @@ export class BackendRuntime {
     if (this.outboxInFlight.has(entry.clientRequestId)) return;
     this.outboxInFlight.add(entry.clientRequestId);
     try {
+      if (entry.source !== undefined) {
+        entry = await this.sendSource(connection, entry, entry.source);
+      }
       const job = await connection.createJob(
         entry.clientRequestId,
         entry.model,
@@ -519,6 +542,44 @@ export class BackendRuntime {
       throw error;
     } finally {
       this.outboxInFlight.delete(entry.clientRequestId);
+    }
+  }
+
+  /**
+   * Send a submission's local file and return the entry naming its upload.
+   * Resumable: the node keeps what arrived, and an open of the same bytes
+   * continues from there, so a dropped socket costs one slice.
+   */
+  private async sendSource(
+    connection: BackendRuntimeConnection,
+    entry: OutboxEntry,
+    source: LocalSource,
+  ): Promise<OutboxEntry> {
+    const id = entry.clientRequestId;
+    const progress = (sent: number, total: number) =>
+      this.update({
+        sending: { ...this.state.sending, [id]: { sent, total } },
+      });
+    try {
+      const committed = await runUpload(
+        connection.uploadPort(),
+        {
+          sha256: source.sha256,
+          bytes: source.bytes,
+          mediaType: source.mediaType,
+          read: (offset, length) =>
+            this.deps.readSourceSlice(source.path, offset, length),
+        },
+        progress,
+      );
+      const sent = await this.deps.markSourceSent(id, committed.uploadId);
+      if (sent === undefined)
+        throw new Error('The submission disappeared while it was sending.');
+      return sent;
+    } finally {
+      const rest = { ...this.state.sending };
+      delete rest[id];
+      this.update({ sending: rest });
     }
   }
 
@@ -940,9 +1001,13 @@ export class BackendRuntime {
     nodePublicKey: string,
     model: string,
     generation: GenerationRequest,
+    source?: LocalSource,
   ): Promise<void> => {
     const connection = this.live(nodePublicKey, 'The node is not connected.');
-    const entry = await this.deps.putPending(nodePublicKey, model, generation);
+    const entry =
+      source === undefined
+        ? await this.deps.putPending(nodePublicKey, model, generation)
+        : await this.deps.putPending(nodePublicKey, model, generation, source);
     // Until a read of the outbox finds it sent, snapshots keep retrying it.
     this.outboxPending.add(nodePublicKey);
     await this.refreshOutbox();

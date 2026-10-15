@@ -155,6 +155,27 @@ class CantorAudioModule(
     reducer.execute { runPromise(promise) { MotionTrack.measure(path) } }
   }
 
+  /** Size and SHA-256 of a file about to be sent as a source. Hashing a
+   * whole song takes a while, so it runs off the module's queue. */
+  @ReactMethod
+  fun sourceInfo(path: String, promise: Promise) {
+    reducer.execute {
+      runPromise(promise) {
+        val info = SourceFiles.info(path)
+        WritableNativeMap().apply {
+          putDouble("bytes", info.bytes.toDouble())
+          putString("sha256", info.sha256)
+        }
+      }
+    }
+  }
+
+  /** One slice of a source file, base64, for an upload chunk. */
+  @ReactMethod
+  fun readSlice(path: String, offset: Double, length: Double, promise: Promise) {
+    runPromise(promise) { SourceFiles.slice(path, offset.toLong(), length.toInt()) }
+  }
+
   private fun floats(values: FloatArray): WritableNativeArray =
       WritableNativeArray().apply { values.forEach { pushDouble(it.toDouble()) } }
 

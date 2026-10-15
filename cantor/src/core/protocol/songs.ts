@@ -1,6 +1,7 @@
 import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { SongDetail } from '../../../../protocol/SongDetail';
 import type { SongHeader } from '../../../../protocol/SongHeader';
+import { parseAudioPrompt, parseSongOrigin } from './audio';
 import {
   isNonNegativeInteger,
   isPositiveInteger,
@@ -27,6 +28,9 @@ export function parseSong(value: unknown): SongHeader | null {
     return null;
   const artifacts = value.artifacts.map(parseArtifact);
   if (artifacts.some(artifact => artifact === null)) return null;
+  // Additive: an origin this build cannot read is left off rather than costing
+  // the song.
+  const origin = parseSongOrigin(value.derived_from);
   return {
     id: value.id,
     revision: value.revision,
@@ -40,6 +44,7 @@ export function parseSong(value: unknown): SongHeader | null {
     tags: value.tags as string[],
     trashed: value.trashed,
     artifacts: artifacts as SongHeader['artifacts'],
+    ...(origin ? { derived_from: origin } : {}),
   };
 }
 
@@ -85,7 +90,11 @@ export function parseSongDetail(value: unknown): SongDetail | null {
     typeof value.engine !== 'string' ||
     !Array.isArray(value.component_digests) ||
     !value.component_digests.every(digest => typeof digest === 'string') ||
-    !isNonNegativeInteger(value.attempts)
+    !isNonNegativeInteger(value.attempts) ||
+    !(
+      value.written_lyrics === undefined ||
+      typeof value.written_lyrics === 'string'
+    )
   )
     return null;
   const song = parseSong(value.song);
@@ -108,6 +117,7 @@ export function parseSongDetail(value: unknown): SongDetail | null {
     !(generation.seed === undefined || isNonNegativeInteger(generation.seed))
   )
     return null;
+  const audio = parseAudioPrompt(generation.audio);
   return {
     song,
     generation: {
@@ -119,7 +129,11 @@ export function parseSongDetail(value: unknown): SongDetail | null {
       ...(generation.steps === undefined ? {} : { steps: generation.steps }),
       ...(generation.cfg === undefined ? {} : { cfg: generation.cfg }),
       ...(generation.seed === undefined ? {} : { seed: generation.seed }),
+      ...(audio ? { audio } : {}),
     },
+    ...(value.written_lyrics === undefined
+      ? {}
+      : { written_lyrics: value.written_lyrics }),
     engine: value.engine,
     component_digests: value.component_digests as string[],
     attempts: value.attempts,

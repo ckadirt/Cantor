@@ -5,6 +5,13 @@ export {
 export { parseJob, parseJobs } from './jobs';
 export { parseLibraryChanges } from './library';
 export { parseNodeInfo } from './node';
+export {
+  isCapabilityKind,
+  parseAudioPrompt,
+  parseCapabilities,
+  parseInstallable,
+  parseSongOrigin,
+} from './audio';
 export { parseArtifact, parseSong, parseSongDetail, parseSongs } from './songs';
 export type {
   ErrorCode,
