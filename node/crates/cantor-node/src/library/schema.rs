@@ -164,6 +164,12 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
         "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(7,?1,?2)",
         params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
     )?;
+    // The provisional admission arc, corrected once the runner selects its engine.
+    add_column_if_missing(connection, "jobs", "plan_json", "TEXT")?;
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(8,?1,?2)",
+        params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
+    )?;
     let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;
     if check != "ok" {
         bail!("library database quick_check failed");

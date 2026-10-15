@@ -168,6 +168,13 @@ older apps show it as work rather than dropping the job. Giving it its own
 symbol and words is then an app change. `malformed/invalid-state.json` records
 the split: refused by the node's types, read as `running` by the app.
 
+`JobView.plan` optionally declares this job's ordered stages and each stage's
+progress unit; it describes the job's own arc, including an audio act's encode
+entrance, rather than the model's text pipeline. `JobView.client_request_id`
+optionally echoes `job.create.client_request_id` so the submitting client can
+match an acceptance it missed. Every job response and event is scoped to that principal.
+Older nodes omit both fields, and jobs stored before plans existed have no plan.
+
 ## Model lyric capabilities
 
 `ModelView.lyrics` is an optional additive declaration (`can_generate`,

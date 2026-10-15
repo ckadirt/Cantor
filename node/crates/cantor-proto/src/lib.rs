@@ -437,15 +437,36 @@ pub struct JobError {
     pub retryable: bool,
 }
 
+/// One stage of the plan a job runs (`JobView::plan`), and the unit its
+/// progress is counted in while it runs.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct PlanStage {
+    pub stage: GenerationStage,
+    pub unit: ProgressUnit,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
 #[ts(export)]
 pub struct JobView {
     pub id: String,
+    /// The submitting client's id for this job (`job.create`'s
+    /// `client_request_id`). Only ever sent to the principal that submitted it,
+    /// which every JobView path already is. Lets a client match a job whose
+    /// acceptance it never received.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub client_request_id: Option<String>,
     pub revision: u32,
     pub state: JobState,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub stage: Option<GenerationStage>,
+    /// The stages this job runs, in order, each with the unit its progress is
+    /// counted in. Decided by the node from the request and the engine.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub plan: Option<Vec<PlanStage>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub progress: Option<JobProgress>,
@@ -1222,6 +1243,7 @@ mod tests {
             include_str!("../../../../protocol/fixtures/v2/upload-ack.json"),
             include_str!("../../../../protocol/fixtures/v2/upload-committed.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page.json"),
+            include_str!("../../../../protocol/fixtures/v2/jobs-page-plan.json"),
             include_str!("../../../../protocol/fixtures/v2/job-forgotten.json"),
             include_str!("../../../../protocol/fixtures/v2/library-page.json"),
             include_str!("../../../../protocol/fixtures/v2/error.json"),
@@ -1229,6 +1251,53 @@ mod tests {
         ];
         for fixture in node {
             serde_json::from_str::<NodeMessage>(fixture).expect("valid node fixture");
+        }
+    }
+
+    #[test]
+    fn job_plan_fixture_carries_the_submission_and_arc_and_old_jobs_omit_them() {
+        let NodeMessage::JobsPage { jobs, .. } = serde_json::from_str(include_str!(
+            "../../../../protocol/fixtures/v2/jobs-page-plan.json"
+        ))
+        .expect("job plan fixture") else {
+            panic!("jobs.page");
+        };
+        let job = &jobs[0];
+        assert_eq!(
+            job.client_request_id.as_deref(),
+            Some("019c8f7e-5f2b-7a21-9ee0-8efb630bcb20")
+        );
+        assert_eq!(job.stage, Some(GenerationStage::Encode));
+        assert_eq!(job.state, JobState::Running);
+        assert_eq!(
+            job.plan.as_deref(),
+            Some(
+                &[
+                    PlanStage {
+                        stage: GenerationStage::Encode,
+                        unit: ProgressUnit::Tiles
+                    },
+                    PlanStage {
+                        stage: GenerationStage::Diffuse,
+                        unit: ProgressUnit::Steps
+                    },
+                    PlanStage {
+                        stage: GenerationStage::Decode,
+                        unit: ProgressUnit::Tiles
+                    },
+                ][..]
+            )
+        );
+        let NodeMessage::JobsPage { jobs, .. } = serde_json::from_str(include_str!(
+            "../../../../protocol/fixtures/v2/jobs-page.json"
+        ))
+        .expect("legacy jobs fixture") else {
+            panic!("jobs.page");
+        };
+        for job in jobs {
+            assert!(job.client_request_id.is_none() && job.plan.is_none());
+            let json = serde_json::to_value(job).unwrap();
+            assert!(json.get("client_request_id").is_none() && json.get("plan").is_none());
         }
     }
 

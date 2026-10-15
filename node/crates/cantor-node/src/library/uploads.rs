@@ -588,7 +588,7 @@ mod tests {
         assert!(expires_at(&library, &id).is_some(), "unused uploads expire");
 
         let accepted = library
-            .submit(principal(), &KEY, &with_upload(&id), &variant(), 10, 0)
+            .submit(principal(), &KEY, &with_upload(&id), &variant(), &[], 10, 0)
             .expect("submit");
         assert!(matches!(accepted, SubmitResult::Accepted(_)));
         assert_eq!(expires_at(&library, &id), None, "a job's source is kept");
@@ -609,6 +609,7 @@ mod tests {
                 &KEY,
                 &with_upload(&receiving),
                 &variant(),
+                &[],
                 10,
                 0,
             )
@@ -625,7 +626,15 @@ mod tests {
 
         let stranger = PrincipalId::from_client_public_key(&[6; 32]);
         let theirs = library
-            .submit(stranger, &[6; 32], &with_upload(&id), &variant(), 10, 0)
+            .submit(
+                stranger,
+                &[6; 32],
+                &with_upload(&id),
+                &variant(),
+                &[],
+                10,
+                0,
+            )
             .expect("submit");
         assert!(
             matches!(theirs, SubmitResult::SourceUnavailable),
@@ -639,7 +648,7 @@ mod tests {
         let mut library = Library::open(directory.path()).expect("library");
         let id = committed(&mut library, b"two", 3.0);
         let SubmitResult::Accepted(job) = library
-            .submit(principal(), &KEY, &with_upload(&id), &variant(), 10, 0)
+            .submit(principal(), &KEY, &with_upload(&id), &variant(), &[], 10, 0)
             .expect("submit")
         else {
             panic!("accepted");
@@ -667,7 +676,15 @@ mod tests {
         let mut library = Library::open(directory.path()).expect("library");
         let kept = committed(&mut library, b"kept", 3.0);
         library
-            .submit(principal(), &KEY, &with_upload(&kept), &variant(), 10, 0)
+            .submit(
+                principal(),
+                &KEY,
+                &with_upload(&kept),
+                &variant(),
+                &[],
+                10,
+                0,
+            )
             .expect("submit");
         let stale = committed(&mut library, b"stale", 3.0);
         library

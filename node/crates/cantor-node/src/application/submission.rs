@@ -48,12 +48,40 @@ pub(crate) fn admit_job(
     ) {
         bail!("invalid audio prompt: {field}");
     }
+    let plan = provisional_plan(submission, variant, &config.model_root());
     library.submit(
         principal_id,
         client_public_key,
         submission,
         variant,
+        &plan,
         config.jobs.max_queued_per_principal,
         config.jobs.minimum_free_bytes,
     )
+}
+
+/// Admission chooses the arc; the library only persists it.
+pub(super) fn provisional_plan(
+    submission: &Submission,
+    variant: &InstalledVariant,
+    model_root: &std::path::Path,
+) -> Vec<cantor_proto::PlanStage> {
+    use cantor_proto::GenerationStage::{Codes, Decode, Diffuse, Plan};
+
+    let stages = if let Some(audio) = &submission.generation.audio {
+        let catalog = crate::capabilities::cached_catalog(model_root);
+        crate::capabilities::advertised(
+            crate::capabilities::declared(variant, catalog.as_ref()).as_ref(),
+            crate::engine::loaded_capabilities(variant.engine()).as_ref(),
+        )
+        .into_iter()
+        .find(|capability| capability.kind == audio.act.capability())
+        .and_then(|capability| capability.stages)
+        .unwrap_or_else(|| vec![Diffuse, Decode])
+    } else {
+        variant
+            .declared_stages()
+            .unwrap_or_else(|| vec![Plan, Codes, Diffuse, Decode])
+    };
+    crate::checkpoints::plan_stages(stages)
 }

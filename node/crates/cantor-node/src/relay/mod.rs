@@ -209,6 +209,7 @@ mod tests {
                     },
                 },
                 &variant,
+                &[],
                 20,
                 0,
             )
@@ -693,9 +694,15 @@ mod tests {
                     principal_id,
                     job: JobView {
                         id: "job".into(),
+                        client_request_id: Some("owner-request".into()),
                         revision: 2,
                         state: JobState::Running,
                         stage: None,
+                        plan: Some(crate::checkpoints::plan_stages([
+                            GenerationStage::Encode,
+                            GenerationStage::Diffuse,
+                            GenerationStage::Decode,
+                        ])),
                         progress: None,
                         model: "model:tag".into(),
                         caption: Some("a caption".into()),

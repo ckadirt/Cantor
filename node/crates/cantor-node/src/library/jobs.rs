@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use cantor_proto::{
-    ErrorCode, GenerationRequest, GenerationStage, JobState, JobView, ProgressUnit,
+    ErrorCode, GenerationRequest, GenerationStage, JobState, JobView, PlanStage, ProgressUnit,
 };
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
@@ -102,6 +102,10 @@ pub enum ControlResult {
 }
 
 #[derive(Debug, PartialEq)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Admission returns one owned job view; keep its by-value result API."
+)]
 pub enum SubmitResult {
     Accepted(JobView),
     Conflict,
@@ -113,12 +117,14 @@ pub enum SubmitResult {
 }
 
 impl Library {
+    #[allow(clippy::too_many_arguments)]
     pub fn submit(
         &mut self,
         principal: PrincipalId,
         public_key: &[u8; 32],
         submission: &Submission,
         variant: &InstalledVariant,
+        plan: &[PlanStage],
         max_queued_per_principal: u32,
         minimum_free_bytes: u64,
     ) -> Result<SubmitResult> {
@@ -208,17 +214,19 @@ impl Library {
             return Ok(SubmitResult::SourceUnavailable);
         }
         transaction.execute(
-            "INSERT INTO jobs(id,principal_id,client_request_id,request_hash,model_selector,request_json,state,revision,created_at,updated_at)
-             VALUES(?1,?2,?3,?4,?5,?6,'queued',1,?7,?7)",
-            params![id, principal, submission.client_request_id, request_hash, submission.model, normalized, now],
+            "INSERT INTO jobs(id,principal_id,client_request_id,request_hash,model_selector,request_json,state,revision,created_at,updated_at,plan_json)
+             VALUES(?1,?2,?3,?4,?5,?6,'queued',1,?7,?7,?8)",
+            params![id, principal, submission.client_request_id, request_hash, submission.model, normalized, now, serde_json::to_string(plan)?],
         )?;
         transaction.commit()?;
         File::open(&directory)?.sync_all()?;
         Ok(SubmitResult::Accepted(JobView {
             id,
+            client_request_id: Some(submission.client_request_id.clone()),
             revision: 1,
             state: JobState::Queued,
             stage: None,
+            plan: Some(plan.to_vec()),
             progress: None,
             model: submission.model.clone(),
             caption: Some(submission.generation.caption.clone()),
@@ -554,7 +562,9 @@ impl Library {
         let attempt = previous_attempt + 1;
         let now = now_rfc3339();
         let changed = transaction.execute(
-            "UPDATE jobs SET state='preparing',stage=NULL,progress_completed=NULL,
+            "UPDATE jobs SET state='preparing',
+             stage=CASE WHEN active_checkpoint IS NOT NULL THEN stage ELSE NULL END,
+             progress_completed=NULL,
              progress_total=NULL,progress_unit=NULL,error_code=NULL,error_message=NULL,
              attempt=?2,revision=revision+1,updated_at=?3
              WHERE id=?1 AND state='queued' AND attempt=?4",
@@ -688,6 +698,33 @@ impl Library {
         let job = self
             .job_by_id(&work.id)?
             .context("checkpointed job disappeared")?;
+        write_status(&work.artifact_directory, &job, work.attempt)?;
+        Ok(Some(job))
+    }
+
+    /// Replace the admission plan with the selected engine's arc. Equal plans
+    /// and superseded claims write nothing and produce no event.
+    pub fn record_plan(&mut self, work: &WorkItem, plan: &[PlanStage]) -> Result<Option<JobView>> {
+        let now = now_rfc3339();
+        let changed = self.connection.execute(
+            "UPDATE jobs SET plan_json=?4,revision=revision+1,updated_at=?5
+             WHERE id=?1 AND principal_id=?2 AND attempt=?3 AND state IN
+               ('preparing','running','pause_requested','cancel_requested')
+               AND plan_json IS NOT ?4",
+            params![
+                work.id,
+                work.principal_id.to_string(),
+                work.attempt,
+                serde_json::to_string(plan)?,
+                now
+            ],
+        )?;
+        if changed != 1 {
+            return Ok(None);
+        }
+        let job = self
+            .get(work.principal_id, &work.id)?
+            .context("planned job disappeared")?;
         write_status(&work.artifact_directory, &job, work.attempt)?;
         Ok(Some(job))
     }

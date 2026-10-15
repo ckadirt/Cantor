@@ -312,3 +312,14 @@ Rules:
   (`pin_for_job`); one nobody uses expires a day after it was last touched.
 - `derived_from` is read from the job's `request_json` with `json_extract`; a
   song's id is its job's.
+
+A job's plan is chosen in `application/submission.rs` at admission: an audio
+act uses its advertised capability arc (or `diffuse, decode` before one is
+known), and text uses the model's declared stages or `plan, codes, diffuse,
+decode`. `Library::submit` persists it in `jobs.plan_json` (migration 8). When
+`generation/runner.rs` starts a job (not when it resumes one) and has selected
+the engine and entry stage, it records the actual arc and emits `JobUpdated`
+if it differs; the plan then never changes, so a job resumed on an upgraded
+engine keeps the stages it really ran. Plans and live progress share `checkpoints::stage_unit`. A resumed
+claim keeps the stage recorded by its active checkpoint while clearing progress
+counts; a claim without a checkpoint clears the stage.

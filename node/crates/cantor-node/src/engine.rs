@@ -856,13 +856,19 @@ fn test_capabilities() -> &'static Mutex<TestCapabilities> {
 /// use it pick a family name of their own, so they never see each other's.
 #[cfg(test)]
 pub fn declare_loaded_for_test(family: &str, kinds: Vec<cantor_proto::CapabilityKind>) {
+    declare_loaded_with_stages_for_test(family, kinds, vec![Stage::Diffuse, Stage::Decode]);
+}
+
+#[cfg(test)]
+pub fn declare_loaded_with_stages_for_test(
+    family: &str,
+    kinds: Vec<cantor_proto::CapabilityKind>,
+    stages: Vec<Stage>,
+) {
     test_capabilities()
         .lock()
         .expect("test capabilities")
-        .insert(
-            family.to_owned(),
-            (kinds, vec![Stage::Diffuse, Stage::Decode]),
-        );
+        .insert(family.to_owned(), (kinds, stages));
 }
 
 /// A comma-separated kind list from an engine. Unknown names are dropped: a

@@ -3,8 +3,21 @@ import type { GenerationStage } from "./GenerationStage";
 import type { JobError } from "./JobError";
 import type { JobProgress } from "./JobProgress";
 import type { JobState } from "./JobState";
+import type { PlanStage } from "./PlanStage";
 
-export type JobView = { id: string, revision: number, state: JobState, stage?: GenerationStage, progress?: JobProgress, model: string, 
+export type JobView = { id: string, 
+/**
+ * The submitting client's id for this job (`job.create`'s
+ * `client_request_id`). Only ever sent to the principal that submitted it,
+ * which every JobView path already is. Lets a client match a job whose
+ * acceptance it never received.
+ */
+client_request_id?: string, revision: number, state: JobState, stage?: GenerationStage, 
+/**
+ * The stages this job runs, in order, each with the unit its progress is
+ * counted in. Decided by the node from the request and the engine.
+ */
+plan?: Array<PlanStage>, progress?: JobProgress, model: string, 
 /**
  * The words that were asked for.
  *
