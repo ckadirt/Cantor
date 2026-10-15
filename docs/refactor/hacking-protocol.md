@@ -157,3 +157,23 @@ uses its legacy ACE adapter only when they are absent. Both old and capability
 bearing NodeInfo fixtures must continue to decode. Extra model controls use
 `parameters` and request `extensions`; caption, lyrics and duration remain
 shared core fields.
+
+`SongDetail.written_lyrics` (optional, additive) carries the words a model
+wrote when the request gave none. The node reads them from the planned request
+JSON's `lyrics` as diffusion begins and keeps them in `jobs.written_lyrics`
+(migration 7); songs made earlier have none. The app's `features/song/songWords.ts`
+is the one reader: given words win, and a version or hum is never "the model's".
+
+## Audio capabilities and uploads
+
+`ModelView.capabilities` (lenient: an unknown kind is dropped, never fatal),
+`NodeInfo.installable`, `NodeFeatures.audio_sources` / `uploads`, and
+`NodeLimits.max_upload_bytes` / `max_source_seconds` are additive. A client
+must not send `GenerationRequest.audio` unless `audio_sources` is true: an
+older node ignores the field and would render text-to-music instead.
+`AudioAct` is strict, so an act a node cannot name fails the request rather
+than running another. Uploads (`upload.open` → `upload.ready`, `upload.chunk`
+→ `upload.ack`, `upload.commit` → `upload.committed`) carry base64 slices of at
+most `UPLOAD_CHUNK_BYTES`, a manifest bound. Fixtures:
+`node-info-capabilities.json`, `job-create-audio.json`, `job-create-tune.json`,
+`upload-*.json`, asserted in Rust and the app.

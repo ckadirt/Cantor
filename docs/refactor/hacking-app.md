@@ -35,7 +35,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
-| `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens — read only) |
+| `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens, a file's embedded lyrics — read only), and `lyrics.ts`, an imported song's words for a version that keeps its voice: the file's tags, then LRCLIB, asked only when that song's version opens. LRCLIB is the app's one network call that is not the relay; it learns a title, an artist and a length, never audio |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
 | `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), marbling (`marbleLens.ts`; geometry in `marble.ts`, the mark in `marbleMark.ts`, the strokes in time in `marbleTimeline.ts`, the player and its live shader in `marblePlayer.ts`, the settled bath on its own worklet runtime in `marbleBath.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them; `motion/` (the motion track, its store and the per-frame `MotionFrame`) and each lens's motion (`circleMotion.ts`, `sealMotion.ts`) |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
@@ -767,3 +767,17 @@ median 20.7 → ~12.5, longest 116 → ~25 ms. The web Skia under Jest ignores
 checks each look's alpha by value. What is
 left is the UI thread's own work for the keystroke (the text field), which a
 synchronous send (`executeOnUIRuntimeSync`) did not beat.
+
+### Audio acts
+
+`core/audioActs.ts` decides, from declared capabilities only, which acts a node
+offers (`version`, `longer`, `hum`), whether a version shows Voice, the stage
+arc, and the install hint (`doorFor`, `doorAcross`). The composer's draft
+carries a `source` (a node song, a phone file, or a tune) and builds the
+`audio` prompt (`audioPromptFor`); a sound on the phone travels as an outbox
+`source` (`jobs/outbox.ts`), sent by `runUpload` (`backends/upload.ts`) through
+`BackendConnection.uploadPort()` before the job, hashed and sliced natively
+(`CantorAudio.sourceInfo` / `readSlice`). The record measure
+(`features/composer/RecordMeasure.tsx`) records through `audio/tuneRecorder.ts`
+and draws the pitch from `audio/pitch.ts`. Plan, design and log:
+`docs/plans/audio-prompting*.md` (untracked).
