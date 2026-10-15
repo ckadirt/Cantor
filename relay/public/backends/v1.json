@@ -8,30 +8,30 @@
         {
           "backend": "cpu",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/b79fdf14887a/acestep-engine-cpu-x86_64.tar.gz",
-          "sha256": "170e04c04b78dcea8d6c775b53f51e194128761718d4f437c1aa82cabfeccb5e",
-          "bytes": 8085128
+          "url": "https://cantor-ckpts.ckadirt.xyz/backends/9fba08de29c3/acestep-engine-cpu-x86_64.tar.gz",
+          "sha256": "e98bb8e1e8dd64676b5979699a96c8fa199cb7235fc0e216c22b2f0cb0a84fbf",
+          "bytes": 8125012
         },
         {
           "backend": "cuda12",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/b79fdf14887a/acestep-engine-cuda12-x86_64.tar.gz",
-          "sha256": "13272f1f5285001e82d00583b66792d9502ef57ea920e663a6e5db980dc25228",
-          "bytes": 117917366
+          "url": "https://cantor-ckpts.ckadirt.xyz/backends/9fba08de29c3/acestep-engine-cuda12-x86_64.tar.gz",
+          "sha256": "68e73e7ab7b55e31b18ec1a4d546ce9fa84c05d6badc9af82b5cde6d31215fa8",
+          "bytes": 117964143
         },
         {
           "backend": "vulkan",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/b79fdf14887a/acestep-engine-vulkan-x86_64.tar.gz",
-          "sha256": "a075ed10c19e52302f4a1408eec56bf4ac41e92b02dde8082d85eeb054489214",
-          "bytes": 23990154
+          "url": "https://cantor-ckpts.ckadirt.xyz/backends/9fba08de29c3/acestep-engine-vulkan-x86_64.tar.gz",
+          "sha256": "814a7ee4172ad62bc4e63d329f44da077a3c2c8aba30a4ef451e54f7bd76c57d",
+          "bytes": 24030037
         },
         {
           "backend": "cpu",
           "arch": "arm64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/b79fdf14887a/acestep-engine-cpu-arm64.tar.gz",
-          "sha256": "217194125ff163d79a80fb65c0d14129c76813cf5f412025b82408fb4c4c2686",
-          "bytes": 13796535
+          "url": "https://cantor-ckpts.ckadirt.xyz/backends/9fba08de29c3/acestep-engine-cpu-arm64.tar.gz",
+          "sha256": "2b8bd4d4f2e782255aaedd3b2935216c656463d865aa9ca8ae7d65691c8ab607",
+          "bytes": 13635214
         }
       ]
     },
