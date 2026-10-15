@@ -38,12 +38,29 @@ fn pull_plan(state: &SharedState) -> Result<PullPlan> {
 
 pub(super) fn list(state: &mut NodeState, v: u8, id: String) -> Result<Response> {
     reject_version(v, &id)?;
-    let store = Store::new(state.config.model_root());
+    let model_root = state.config.model_root();
+    let store = Store::new(&model_root);
+    let installed = store.installed();
+    let catalog = crate::capabilities::cached_catalog(&model_root);
+    let offers = installed
+        .iter()
+        .map(|variant| {
+            let kinds = crate::capabilities::advertised(
+                crate::capabilities::declared(variant, catalog.as_ref()).as_ref(),
+                crate::engine::loaded_capabilities(variant.engine()).as_ref(),
+            )
+            .into_iter()
+            .map(|capability| capability.kind)
+            .collect();
+            (variant.selector(), kinds)
+        })
+        .collect();
     Ok(Response::List {
         v: CONTROL_VERSION,
         id,
-        installed: store.installed(),
+        installed,
         available_bytes: store.available_bytes().unwrap_or(0),
+        offers,
     })
 }
 

@@ -77,6 +77,9 @@ pub enum Response {
         id: String,
         installed: Vec<InstalledVariant>,
         available_bytes: u64,
+        /// What each installed model can do here and now, by selector: what
+        /// its weights declare *and* the loaded engine does, as NodeInfo says.
+        offers: std::collections::BTreeMap<String, Vec<cantor_proto::CapabilityKind>>,
     },
     #[serde(rename = "removed")]
     Removed {
