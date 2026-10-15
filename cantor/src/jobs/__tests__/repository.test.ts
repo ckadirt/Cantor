@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { JobView } from '../../../../protocol/JobView';
+import type { JobView } from '../../core/protocol';
 import {
   forgetJobs,
   loadJobs,

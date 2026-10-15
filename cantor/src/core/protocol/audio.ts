@@ -2,7 +2,7 @@ import type { AudioAct } from '../../../../protocol/AudioAct';
 import type { AudioPrompt } from '../../../../protocol/AudioPrompt';
 import type { CapabilityKind } from '../../../../protocol/CapabilityKind';
 import type { InstallableView } from '../../../../protocol/InstallableView';
-import type { ModelCapability } from '../../../../protocol/ModelCapability';
+import type { ModelCapability } from './types';
 import type { SongOrigin } from '../../../../protocol/SongOrigin';
 import { parseStages } from './parameters';
 import { isNonNegativeInteger, isRecord } from '../validation';

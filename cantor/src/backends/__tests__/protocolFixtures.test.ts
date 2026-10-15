@@ -120,9 +120,20 @@ describe('shared protocol v2 fixtures', () => {
     expect(odd?.derived_from).toBeUndefined();
   });
 
-  it('rejects invalid enum and numeric semantics', () => {
-    expect(parseJobs(invalidState.jobs)).toBeNull();
+  it('reads a state it does not know as live work, where the node refuses it', () => {
+    // The node only ever writes states it knows, so for it this vector is
+    // malformed; the app reads a newer node's names forward (core/protocol/types).
+    expect(parseJobs(invalidState.jobs)?.[0]).toMatchObject({
+      state: 'running',
+    });
+  });
+
+  it('rejects malformed numbers and names', () => {
     expect(parseJobs(negativeProgress.jobs)).toBeNull();
+    expect(
+      parseJobs([{ ...invalidState.jobs[0], state: 'Almost Done' }]),
+    ).toBeNull();
+    expect(parseJobs([{ ...invalidState.jobs[0], state: 3 }])).toBeNull();
   });
 
   it('ignores additive optional fields', () => {

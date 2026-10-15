@@ -1,5 +1,11 @@
 import type { JobView } from '../../core/protocol';
-import { STAGE_SYMBOLS, jobMarkModel, observeStage } from '../marks';
+import {
+  STAGE_SYMBOLS,
+  WORKING_SYMBOL,
+  jobMarkModel,
+  observeStage,
+  stageSymbol,
+} from '../marks';
 
 function job(overrides: Partial<JobView> = {}): JobView {
   return {
@@ -33,6 +39,41 @@ describe('stage symbols', () => {
       expect(jobMarkModel(job({ stage }), []).symbol).toBe(STAGE_SYMBOLS[stage]);
     },
   );
+});
+
+describe('a stage this app has no symbol for', () => {
+  it('is drawn as working, never dropped', () => {
+    expect(stageSymbol('encode')).toBe(WORKING_SYMBOL);
+    expect(WORKING_SYMBOL).toBe('infinity');
+    expect(stageSymbol('diffuse')).toBe('contourIntegral');
+    // An inherited name is not a stage.
+    expect(stageSymbol('toString')).toBe(WORKING_SYMBOL);
+    expect(jobMarkModel(job({ stage: 'encode' }), []).symbol).toBe(
+      WORKING_SYMBOL,
+    );
+  });
+
+  it('keeps its own slot on the declared arc', () => {
+    const declared = ['encode', 'diffuse', 'decode'];
+    const encoding = jobMarkModel(
+      job({
+        stage: 'encode',
+        progress: { completed: 3, total: 6, unit: 'tiles' },
+      }),
+      [],
+      declared,
+    );
+    expect(encoding.stageIndex).toBe(0);
+    expect(encoding.arc).toBeCloseTo(1 / 6);
+    const shaping = jobMarkModel(
+      job({ stage: 'diffuse' }),
+      ['encode'],
+      declared,
+    );
+    expect(shaping.stageIndex).toBe(1);
+    expect(shaping.arc).toBeCloseTo(1 / 3);
+    expect(shaping.observedStages).toEqual(['encode', 'diffuse']);
+  });
 });
 
 describe('progress', () => {

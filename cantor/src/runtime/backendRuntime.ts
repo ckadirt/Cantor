@@ -1,6 +1,6 @@
 import type { ArtifactView } from '../../../protocol/ArtifactView';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
-import type { JobView } from '../../../protocol/JobView';
+import type { JobView } from '../core/protocol';
 import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongHeader } from '../../../protocol/SongHeader';
 import type { SongPatch } from '../../../protocol/SongPatch';

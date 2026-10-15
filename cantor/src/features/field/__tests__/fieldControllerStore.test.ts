@@ -6,7 +6,7 @@
  * are the objects the screen already holds, and a change the field does not
  * draw publishes nothing at all.
  */
-import type { JobView } from '../../../../../protocol/JobView';
+import type { JobView } from '../../../core/protocol';
 import type { SongHeader } from '../../../../../protocol/SongHeader';
 import { createStore } from '../../../core/store';
 import {

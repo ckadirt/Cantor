@@ -15,11 +15,15 @@ export {
 export { parseArtifact, parseSong, parseSongDetail, parseSongs } from './songs';
 export type {
   ErrorCode,
+  GenerationStage,
   JobView,
   LibraryChange,
+  ModelCapability,
+  ModelView,
   NodeInfo,
   SongDetail,
   SongHeader,
+  StageName,
 } from './types';
 export {
   describeConnection,

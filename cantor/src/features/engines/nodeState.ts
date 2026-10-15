@@ -1,4 +1,4 @@
-import type { ModelView } from '../../../../protocol/ModelView';
+import type { ModelView } from '../../core/protocol';
 import type { JobState } from '../../../../protocol/JobState';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
 

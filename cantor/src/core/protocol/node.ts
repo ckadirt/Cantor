@@ -1,7 +1,7 @@
 import { parseModelParameters, parseStages } from './parameters';
 import { parseLyricsCapabilities } from './lyrics';
 import { parseCapabilities, parseInstallable } from './audio';
-import type { NodeInfo } from '../../../../protocol/NodeInfo';
+import type { NodeInfo } from './types';
 import {
   isNonNegativeInteger,
   isPositiveInteger,

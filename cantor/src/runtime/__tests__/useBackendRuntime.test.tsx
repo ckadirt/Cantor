@@ -3,7 +3,7 @@ import { buildFieldController } from '../../features/field/useFieldController';
 import { allPlaylists } from '../../playlists';
 import ReactTestRenderer from 'react-test-renderer';
 import type { ArtifactView } from '../../../../protocol/ArtifactView';
-import type { JobView } from '../../../../protocol/JobView';
+import type { JobView } from '../../core/protocol';
 import type { SongDetail } from '../../../../protocol/SongDetail';
 import type { SongHeader } from '../../../../protocol/SongHeader';
 import type { AppIdentity } from '../../identity/derive';

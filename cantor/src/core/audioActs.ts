@@ -7,11 +7,11 @@
  * all agree on (docs/plans/audio-prompting.md, "Capabilities").
  */
 import type { CapabilityKind } from '../../../protocol/CapabilityKind';
-import type { GenerationStage } from '../../../protocol/GenerationStage';
+import type { StageName } from './protocol';
 import type { InstallableView } from '../../../protocol/InstallableView';
-import type { ModelCapability } from '../../../protocol/ModelCapability';
-import type { ModelView } from '../../../protocol/ModelView';
-import type { NodeInfo } from '../../../protocol/NodeInfo';
+import type { ModelCapability } from './protocol';
+import type { ModelView } from './protocol';
+import type { NodeInfo } from './protocol';
 
 /** The acts the interface offers, in the user's words. */
 export type AudioActName = 'version' | 'longer' | 'hum';
@@ -69,13 +69,10 @@ export function voiceOffered(model: ModelView): boolean {
  * The stages a job for `act` traces on this model: the capability's own arc,
  * falling back to the model's from `diffuse` on, since an audio act never plans.
  */
-export function stagesFor(
-  model: ModelView,
-  act: AudioActName,
-): GenerationStage[] {
+export function stagesFor(model: ModelView, act: AudioActName): StageName[] {
   const declared = capabilityOf(model, ACT_NEEDS[act])?.stages;
   if (declared && declared.length > 0) return declared;
-  const all = model.stages ?? ['diffuse', 'decode'];
+  const all: readonly StageName[] = model.stages ?? ['diffuse', 'decode'];
   return all.filter(stage => stage === 'diffuse' || stage === 'decode');
 }
 

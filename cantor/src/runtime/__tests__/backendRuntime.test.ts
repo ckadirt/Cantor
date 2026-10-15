@@ -1,5 +1,5 @@
 import type { ArtifactView } from '../../../../protocol/ArtifactView';
-import type { JobView } from '../../../../protocol/JobView';
+import type { JobView } from '../../core/protocol';
 import type { SongHeader } from '../../../../protocol/SongHeader';
 import type { LocalAudioStore } from '../../audio/localAudioStore';
 import {

@@ -147,6 +147,27 @@ not, and must bump `versions.relay`.
 - [ ] Is the change additive for already-deployed peers, or is the refusal
       deliberate and documented?
 
+## Open names: the app reads a newer node forward
+
+The node writes only names it knows: its serde enums are closed, and the
+malformed fixtures prove it refuses anything else. The app reads them open. A
+job's `stage`, `state`, `progress.unit` and `error.code`, and a model's or
+capability's `stages`, are kept by name when they are well-formed identifiers
+(`isWireName`: `^[a-z][a-z0-9_]{0,31}$`) even if this build has never seen
+them (`core/protocol/types.ts`, `StageName`):
+
+- an unknown stage is drawn as the working stage, ∞ (`WORKING_SYMBOL` in
+  `jobs/marks.ts`), labelled "Working", and keeps its slot on a declared arc;
+- an unknown state is live work (`running`), or `failed` when the job carries
+  an error;
+- an unknown unit keeps its counts; an unknown code reads as `internal`.
+
+A malformed value (a number, an empty or capitalised name) still fails closed.
+So a node may add a stage, state, unit or code without an app release first:
+older apps show it as work rather than dropping the job. Giving it its own
+symbol and words is then an app change. `malformed/invalid-state.json` records
+the split: refused by the node's types, read as `running` by the app.
+
 ## Model lyric capabilities
 
 `ModelView.lyrics` is an optional additive declaration (`can_generate`,

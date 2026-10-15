@@ -1,6 +1,6 @@
 import React from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
-import type { ModelView } from '../../../../protocol/ModelView';
+import type { ModelView } from '../../core/protocol';
 import type { Lens } from '../../lenses/types';
 import {
   Dial,

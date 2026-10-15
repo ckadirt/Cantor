@@ -12,7 +12,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { Canvas } from '@shopify/react-native-skia';
-import type { GenerationStage } from '../../../../protocol/GenerationStage';
+import type { StageName } from '../../core/protocol';
 import { TransformText, WriteText } from '../../motion';
 import { SymbolArtworkPath } from '../../motion/CanonicalSymbol';
 import {
@@ -33,7 +33,7 @@ import {
   useArrivalClock,
   useReach,
 } from '../controls';
-import { STAGE_SYMBOLS, jobMarkModel } from '../../jobs/marks';
+import { jobMarkModel, stageSymbol } from '../../jobs/marks';
 import { describeError } from '../../core/protocol/describeError';
 import {
   canForgetJob,
@@ -250,7 +250,7 @@ export function JobSheet({
                               : pal.ink
                         }
                         size={JOB_SHEET_KNOBS.STAGE_PX}
-                        symbol={STAGE_SYMBOLS[stage]}
+                        symbol={stageSymbol(stage)}
                       />
                     </Canvas>
                   ))}
@@ -399,7 +399,7 @@ const WORKING_WORDS: Record<JobControl, string> = {
 /** How far around the arc the work has come, in words under the glyphs. */
 function arcNote(
   model: ReturnType<typeof jobMarkModel>,
-  stages: readonly GenerationStage[],
+  stages: readonly StageName[],
 ): string {
   const here = stages[model.stageIndex];
   if (here === undefined) {
