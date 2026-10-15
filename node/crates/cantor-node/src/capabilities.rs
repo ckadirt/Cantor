@@ -158,8 +158,9 @@ pub fn declared(variant: &InstalledVariant, catalog: Option<&Catalog>) -> Option
 /// `engine` is the loaded build's kinds and stages, or `None` while no build of
 /// this family has been loaded, in which case nothing is advertised yet; the
 /// background probe loads it and pushes a fresh `NodeInfo`. Each capability's
-/// stage arc is the catalog's when declared, else the engine's pipeline from
-/// `diffuse` on: an audio act skips planning and codes.
+/// stage arc is the catalog's when declared, else the engine's path for an
+/// audio act: `encode` where the build has it, then `diffuse` and `decode`.
+/// An audio act skips planning and codes.
 pub fn advertised(
     declared: Option<&DeclaredAudio>,
     engine: Option<&(Vec<CapabilityKind>, Vec<Stage>)>,
@@ -169,7 +170,7 @@ pub fn advertised(
     };
     let audio_arc: Vec<GenerationStage> = stages
         .iter()
-        .filter(|stage| matches!(stage, Stage::Diffuse | Stage::Decode))
+        .filter(|stage| matches!(stage, Stage::Encode | Stage::Diffuse | Stage::Decode))
         .map(|stage| crate::checkpoints::protocol_stage(*stage))
         .collect();
     let mut seen = BTreeSet::new();
@@ -483,6 +484,32 @@ mod tests {
             "an audio act skips planning and codes"
         );
         assert_eq!(shown[0].max_source_seconds, Some(600));
+    }
+
+    #[test]
+    fn an_engine_that_encodes_starts_the_arc_with_encode() {
+        let declared = declared_with(&[CapabilityKind::Cover]);
+        let engine = (
+            vec![CapabilityKind::Cover],
+            vec![
+                Stage::Plan,
+                Stage::Codes,
+                Stage::Encode,
+                Stage::Diffuse,
+                Stage::Decode,
+            ],
+        );
+        let shown = advertised(Some(&declared), Some(&engine));
+        assert_eq!(
+            shown[0].stages.as_deref(),
+            Some(
+                &[
+                    GenerationStage::Encode,
+                    GenerationStage::Diffuse,
+                    GenerationStage::Decode
+                ][..]
+            ),
+        );
     }
 
     #[test]

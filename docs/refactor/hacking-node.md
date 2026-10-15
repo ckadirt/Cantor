@@ -301,8 +301,13 @@ Rules:
   `NodeInfo`; `engine::loaded_capabilities` reads engines already loaded.
 - **The node never names an engine field.** Everything engine-specific comes
   from the catalog's `audio` binding; retuning `closeness` is a catalog edit.
-- **An audio job enters at `diffuse`** (`GenerationPlan.entry`) and sends no
-  `duration`: the source decides it.
+- **An audio job enters at `encode`** (`GenerationPlan.entry`), or at
+  `diffuse` on an engine without the ENCODE bit, and sends no `duration`: the
+  source decides it. `Stage::Encode` is a side entrance, not part of
+  `Stage::ALL` (the contiguous run `check_stage_mask` validates); its next stage
+  is `diffuse`, its checkpoint holds the source's latents, and it counts tiles.
+  A capability's arc comes from the engine (`encode, diffuse, decode`), so the
+  catalog declares no `stages` for audio capabilities.
 - **An upload a job uses is pinned in the admission transaction**
   (`pin_for_job`); one nobody uses expires a day after it was last touched.
 - `derived_from` is read from the job's `request_json` with `json_extract`; a

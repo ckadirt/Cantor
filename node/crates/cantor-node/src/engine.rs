@@ -82,6 +82,9 @@ pub enum Stage {
     Codes = 2,
     Diffuse = 3,
     Decode = 4,
+    /// A side entrance for a request that carries audio: its files to latents,
+    /// always followed by `Diffuse`. Not part of the contiguous run `ALL`.
+    Encode = 5,
 }
 
 impl Stage {
@@ -91,6 +94,7 @@ impl Stage {
             Self::Codes => "codes",
             Self::Diffuse => "diffuse",
             Self::Decode => "decode",
+            Self::Encode => "encode",
         }
     }
 
@@ -99,6 +103,8 @@ impl Stage {
         1 << (self as u32)
     }
 
+    /// The contiguous run a text generation takes and `check_stage_mask`
+    /// validates. `Encode` is not in it.
     pub const ALL: [Stage; 4] = [Stage::Plan, Stage::Codes, Stage::Diffuse, Stage::Decode];
 }
 
@@ -376,11 +382,19 @@ impl Engine {
         self.stages & stage.bit() != 0
     }
 
+    /// Every stage this build runs, in the order a job meets them: the
+    /// text run, with `Encode` before `Diffuse` where an audio act enters.
     pub fn supported_stages(&self) -> Vec<Stage> {
-        Stage::ALL
-            .into_iter()
-            .filter(|stage| self.supports(*stage))
-            .collect()
+        [
+            Stage::Plan,
+            Stage::Codes,
+            Stage::Encode,
+            Stage::Diffuse,
+            Stage::Decode,
+        ]
+        .into_iter()
+        .filter(|stage| self.supports(*stage))
+        .collect()
     }
 
     /// Where a fresh generation enters this engine. Not every family plans:
@@ -1040,6 +1054,22 @@ mod tests {
         assert!(text.contains("decode"), "names the required end: {text}");
 
         assert!(check_stage_mask(0).is_err(), "an engine must run something");
+    }
+
+    /// ENCODE is a side entrance, bit 5, outside the run: an engine with it is
+    /// as valid as one without, and it never becomes where a text job enters.
+    #[test]
+    fn the_encode_bit_is_a_side_entrance_not_part_of_the_run() {
+        let with_encode = ACESTEP_MASK | Stage::Encode.bit();
+        assert_eq!(with_encode, 0b111110);
+        check_stage_mask(with_encode).expect("the run is still plan..decode");
+        assert_eq!(first_stage(with_encode), Some(Stage::Plan));
+        check_stage_mask(LEVO2_MASK | Stage::Encode.bit()).expect("from codes, with encode");
+        let only_encode = Stage::Encode.bit() | Stage::Decode.bit();
+        assert!(
+            check_stage_mask(only_encode).is_ok(),
+            "encode does not count against the run, decode alone is one"
+        );
     }
 
     #[test]

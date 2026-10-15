@@ -103,18 +103,10 @@
           "capabilities": [
             {
               "kind": "cover",
-              "stages": [
-                "diffuse",
-                "decode"
-              ],
               "max_source_seconds": 600
             },
             {
               "kind": "extend",
-              "stages": [
-                "diffuse",
-                "decode"
-              ],
               "max_total_seconds": 600
             },
             {
@@ -279,18 +271,10 @@
           "capabilities": [
             {
               "kind": "cover",
-              "stages": [
-                "diffuse",
-                "decode"
-              ],
               "max_source_seconds": 600
             },
             {
               "kind": "extend",
-              "stages": [
-                "diffuse",
-                "decode"
-              ],
               "max_total_seconds": 600
             },
             {
@@ -455,18 +439,10 @@
           "capabilities": [
             {
               "kind": "cover",
-              "stages": [
-                "diffuse",
-                "decode"
-              ],
               "max_source_seconds": 600
             },
             {
               "kind": "extend",
-              "stages": [
-                "diffuse",
-                "decode"
-              ],
               "max_total_seconds": 600
             },
             {
