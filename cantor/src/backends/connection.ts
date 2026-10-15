@@ -45,10 +45,14 @@ import {
   decodeLibraryPage,
   decodeSongDetailResponse,
   decodeSongResponse,
+  decodeUploadAck,
+  decodeUploadCommitted,
+  decodeUploadReady,
   isSafeRevision,
   type ArtifactInfo,
   type ArtifactPart,
 } from './applicationResponses';
+import type { UploadCommitted, UploadPort, UploadReady } from './upload';
 import {
   RequestRegistry,
   ignoreResponse,
@@ -452,6 +456,18 @@ export class BackendConnection {
     }
     if (payload.t === 'artifact.complete' && typeof payload.id === 'string') {
       this.requests.deliver(payload.id, 'artifact.part', payload);
+      return;
+    }
+    if (payload.t === 'upload.ready' && typeof payload.id === 'string') {
+      this.requests.deliver(payload.id, 'upload.ready', payload);
+      return;
+    }
+    if (payload.t === 'upload.ack' && typeof payload.id === 'string') {
+      this.requests.deliver(payload.id, 'upload.ack', payload);
+      return;
+    }
+    if (payload.t === 'upload.committed' && typeof payload.id === 'string') {
+      this.requests.deliver(payload.id, 'upload.committed', payload);
       return;
     }
     if (payload.t === 'library.changed' && isSafeRevision(payload.revision)) {
@@ -903,6 +919,95 @@ export class BackendConnection {
   refreshLibrary(): void {
     if (this.snapshot.phase !== 'ready') return;
     this.transitionLibrary({ type: 'refresh' });
+  }
+
+  /**
+   * The node's three upload requests as a port for `runUpload`. Each is one
+   * registered request; a refusal arrives as a `NodeRequestError` carrying
+   * the node's code, which is how `invalid_offset` tells the loop to re-read
+   * its place.
+   */
+  uploadPort(): UploadPort {
+    return {
+      open: (sha256, bytes, mediaType) =>
+        this.uploadRequest<UploadReady>(
+          'upload-open',
+          'upload.ready',
+          decodeUploadReady,
+          'Opening the upload timed out. It is safe to retry.',
+          id => ({
+            t: 'upload.open',
+            v: APPLICATION_PROTOCOL_VERSION,
+            id,
+            sha256,
+            bytes,
+            media_type: mediaType,
+          }),
+        ),
+      chunk: (uploadId, offset, data) =>
+        this.uploadRequest<number>(
+          'upload-chunk',
+          'upload.ack',
+          decodeUploadAck,
+          'Sending timed out. It is safe to retry.',
+          id => ({
+            t: 'upload.chunk',
+            v: APPLICATION_PROTOCOL_VERSION,
+            id,
+            upload_id: uploadId,
+            offset,
+            data,
+          }),
+        ),
+      commit: uploadId =>
+        this.uploadRequest<UploadCommitted>(
+          'upload-commit',
+          'upload.committed',
+          decodeUploadCommitted,
+          'Finishing the upload timed out. It is safe to retry.',
+          id => ({
+            t: 'upload.commit',
+            v: APPLICATION_PROTOCOL_VERSION,
+            id,
+            upload_id: uploadId,
+          }),
+        ),
+    };
+  }
+
+  private uploadRequest<T>(
+    kind: string,
+    expected: 'upload.ready' | 'upload.ack' | 'upload.committed',
+    decode: (message: unknown) => T | null,
+    timeoutMessage: string,
+    message: (id: string) => ClientMessage,
+  ): Promise<T> {
+    if (this.snapshot.phase !== 'ready') {
+      return Promise.reject(new Error('The node is not ready.'));
+    }
+    const request = this.requests.request<T>(kind, {
+      expected,
+      decode: response => {
+        const value = decode(response);
+        return value === null
+          ? rejectResponse(
+              new Error(
+                'The node answered an upload with something unreadable.',
+              ),
+            )
+          : resolveResponse(value);
+      },
+      // A commit decodes the whole file on the node: give it longer.
+      timeout: {
+        afterMs:
+          expected === 'upload.committed'
+            ? REQUEST_TIMEOUT_MS * 4
+            : REQUEST_TIMEOUT_MS,
+        error: () => new Error(timeoutMessage),
+      },
+    });
+    this.sendApplication(message(request.id));
+    return request.promise;
   }
 
   private openArtifact(

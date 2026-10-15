@@ -337,6 +337,7 @@ describe('advertised lyrics capabilities', () => {
       ace,
     );
     expect(loaded).toEqual({
+      ...EMPTY_DRAFT,
       caption: 'a slow harbour at dusk',
       lyrics: 'lanterns on the water',
       wordsMode: 'mine',

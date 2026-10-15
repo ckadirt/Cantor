@@ -8,7 +8,10 @@ export type ExpectedResponse =
   | 'song.updated'
   | 'song.detail'
   | 'artifact.info'
-  | 'artifact.part';
+  | 'artifact.part'
+  | 'upload.ready'
+  | 'upload.ack'
+  | 'upload.committed';
 
 export type RequestDecodeResult<T> =
   | { kind: 'resolve'; value: T }

@@ -13,6 +13,7 @@ import {
   type SongHeader,
 } from '../core/protocol';
 import { isRecord } from '../core/validation';
+import type { UploadCommitted, UploadReady } from './upload';
 
 export type ArtifactInfo = {
   transferId: string;
@@ -184,4 +185,52 @@ export function isSafeRevision(value: unknown): value is number {
 
 function isPositiveSafeInteger(value: unknown): value is number {
   return isSafeRevision(value) && value > 0;
+}
+
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function decodeUploadReady(message: unknown): UploadReady | null {
+  if (
+    !isRecord(message) ||
+    typeof message.upload_id !== 'string' ||
+    message.upload_id.length === 0 ||
+    !isCount(message.accepted_offset) ||
+    !isCount(message.chunk_bytes) ||
+    message.chunk_bytes === 0
+  )
+    return null;
+  return {
+    uploadId: message.upload_id,
+    acceptedOffset: message.accepted_offset,
+    chunkBytes: message.chunk_bytes,
+  };
+}
+
+export function decodeUploadAck(message: unknown): number | null {
+  return isRecord(message) && isCount(message.next_offset)
+    ? message.next_offset
+    : null;
+}
+
+export function decodeUploadCommitted(
+  message: unknown,
+): UploadCommitted | null {
+  if (
+    !isRecord(message) ||
+    typeof message.upload_id !== 'string' ||
+    typeof message.sha256 !== 'string' ||
+    !isCount(message.bytes) ||
+    typeof message.seconds !== 'number' ||
+    !Number.isFinite(message.seconds) ||
+    message.seconds < 0
+  )
+    return null;
+  return {
+    uploadId: message.upload_id,
+    sha256: message.sha256,
+    bytes: message.bytes,
+    seconds: message.seconds,
+  };
 }

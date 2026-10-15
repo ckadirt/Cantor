@@ -4,6 +4,9 @@
     <!-- Whether the phone is online at all: a normal permission, no prompt. -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
+    <!-- A tune is recorded here and sent to a node (Hum a song). Asked for on
+         the first Record, never at launch. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <!-- react-native-audio-api playback: media-playback foreground service and
          its notification, which is what keeps a song alive off-screen. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

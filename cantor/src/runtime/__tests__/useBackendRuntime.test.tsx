@@ -49,6 +49,8 @@ const nodeInfo: NodeInfo = {
     secure_tunnel: true,
     job_controls: true,
     job_forget: true,
+    audio_sources: false,
+    uploads: false,
   },
 };
 
@@ -154,6 +156,7 @@ function connection(): FakeConnection {
     trashSong: jest.fn().mockResolvedValue(song(2, true)),
     restoreSong: jest.fn().mockResolvedValue(song(2, false)),
     refreshLibrary: jest.fn(),
+    uploadPort: jest.fn(),
   };
 }
 

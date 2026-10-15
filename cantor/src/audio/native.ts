@@ -41,6 +41,8 @@ type CantorAudioNative = {
     buckets: number,
   ): Promise<unknown>;
   motionTrack(path: string): Promise<unknown>;
+  sourceInfo(path: string): Promise<unknown>;
+  readSlice(path: string, offset: number, length: number): Promise<unknown>;
 };
 
 function module(): CantorAudioNative {
@@ -143,4 +145,39 @@ export function reduceNativeAudio(
  */
 export function measureNativeMotion(path: string): Promise<unknown> {
   return module().motionTrack(path);
+}
+
+/** A local file about to be sent to a node: its size and SHA-256. */
+export type SourceFileInfo = { bytes: number; sha256: string };
+
+/** Hashed natively: a whole song through JavaScript would hold the thread. */
+export async function sourceFileInfo(path: string): Promise<SourceFileInfo> {
+  const value = await module().sourceInfo(path);
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('bytes' in value) ||
+    typeof value.bytes !== 'number' ||
+    !Number.isSafeInteger(value.bytes) ||
+    value.bytes <= 0 ||
+    !('sha256' in value) ||
+    typeof value.sha256 !== 'string' ||
+    !/^[0-9a-f]{64}$/.test(value.sha256)
+  ) {
+    throw new Error('Native source file info is invalid.');
+  }
+  return { bytes: value.bytes, sha256: value.sha256 };
+}
+
+/** `length` bytes of a local file from `offset`, as base64. */
+export async function readSourceSlice(
+  path: string,
+  offset: number,
+  length: number,
+): Promise<string> {
+  const value = await module().readSlice(path, offset, length);
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error('Native source slice is invalid.');
+  }
+  return value;
 }

@@ -4,6 +4,7 @@ export {
   canSubmit,
   describeProblem,
   draftFromRecipe,
+  draftFromSource,
   modelsFor,
   problemsWith,
   targetOf,
@@ -11,5 +12,9 @@ export {
   utf8Bytes,
   type ComposerDraft,
   type ComposerProblem,
+  type ComposerSource,
+  type SongSource,
+  type TuneSource,
+  type TuneTake,
   type ComposerTarget,
 } from './draft';
