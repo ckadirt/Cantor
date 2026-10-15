@@ -147,6 +147,8 @@ fn run_generation(
         None => {
             let first = match entry.entry {
                 Some(stage) if engine.supports(stage) => stage,
+                // An engine that predates ENCODE encodes inside DIFFUSE.
+                Some(Stage::Encode) if engine.supports(Stage::Diffuse) => Stage::Diffuse,
                 Some(stage) => {
                     return Err(WorkerFailure::with_source(
                         ErrorCode::ModelUnavailable,
@@ -526,6 +528,7 @@ fn persist_progress(
         Stage::Codes => (GenerationStage::Codes, ProgressUnit::Tokens),
         Stage::Diffuse => (GenerationStage::Diffuse, ProgressUnit::Steps),
         Stage::Decode => (GenerationStage::Decode, ProgressUnit::Tiles),
+        Stage::Encode => (GenerationStage::Encode, ProgressUnit::Tiles),
     };
     let updated = state
         .lock()

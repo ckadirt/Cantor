@@ -434,8 +434,11 @@ fn checkpoint_rank(metadata: &CheckpointMetadata) -> (u8, u32, u8) {
     )
 }
 
+/// A stage's place in a job's progress, for picking the furthest checkpoint.
+/// Compared in memory only, never stored: `encode` sits between `codes` and
+/// `diffuse`, since a job that took it is past where a text job plans.
 fn filename_stage(name: &str) -> Option<u8> {
-    ["plan", "codes", "diffuse", "decode"]
+    ["plan", "codes", "encode", "diffuse", "decode"]
         .into_iter()
         .position(|stage| name.contains(&format!(".{stage}.")))
         .map(|index| index as u8 + 1)
@@ -445,8 +448,9 @@ fn stage_rank(stage: GenerationStage) -> u8 {
     match stage {
         GenerationStage::Plan => 1,
         GenerationStage::Codes => 2,
-        GenerationStage::Diffuse => 3,
-        GenerationStage::Decode => 4,
+        GenerationStage::Encode => 3,
+        GenerationStage::Diffuse => 4,
+        GenerationStage::Decode => 5,
     }
 }
 
@@ -456,6 +460,7 @@ pub fn protocol_stage(stage: Stage) -> GenerationStage {
         Stage::Codes => GenerationStage::Codes,
         Stage::Diffuse => GenerationStage::Diffuse,
         Stage::Decode => GenerationStage::Decode,
+        Stage::Encode => GenerationStage::Encode,
     }
 }
 
@@ -465,6 +470,7 @@ pub fn engine_stage(stage: GenerationStage) -> Stage {
         GenerationStage::Codes => Stage::Codes,
         GenerationStage::Diffuse => Stage::Diffuse,
         GenerationStage::Decode => Stage::Decode,
+        GenerationStage::Encode => Stage::Encode,
     }
 }
 
@@ -472,6 +478,7 @@ pub fn next_stage(stage: GenerationStage) -> Option<GenerationStage> {
     match stage {
         GenerationStage::Plan => Some(GenerationStage::Codes),
         GenerationStage::Codes => Some(GenerationStage::Diffuse),
+        GenerationStage::Encode => Some(GenerationStage::Diffuse),
         GenerationStage::Diffuse => Some(GenerationStage::Decode),
         GenerationStage::Decode => None,
     }
@@ -535,6 +542,39 @@ mod tests {
         let selected = select(&job, &expectation, Some(&engine())).unwrap();
         assert!(selected.source.is_none());
         assert_eq!(selected.rejected.len(), 1);
+    }
+
+    /// A finished ENCODE resumes at DIFFUSE with its latents: a crash after
+    /// minutes of encoding does not encode again.
+    #[test]
+    fn a_finished_encode_resumes_at_diffuse_with_its_latents() {
+        assert_eq!(
+            next_stage(GenerationStage::Encode),
+            Some(GenerationStage::Diffuse)
+        );
+        let temporary = tempfile::tempdir().unwrap();
+        let job = temporary.path().join("job");
+        let directory = job.join("checkpoints");
+        let digests = vec!["a".repeat(64)];
+        let expectation = expectation(&digests);
+        write(
+            &directory,
+            &expectation,
+            1,
+            Stage::Encode,
+            CheckpointOutcome::Done,
+            engine(),
+            b"ACEENC01-latents",
+        )
+        .unwrap();
+        let source = select(&job, &expectation, Some(&engine()))
+            .unwrap()
+            .source
+            .unwrap();
+        assert_eq!(source.stage, Stage::Diffuse);
+        assert_eq!(source.input, b"ACEENC01-latents");
+        assert!(filename_stage("x.encode.y") < filename_stage("x.diffuse.y"));
+        assert!(stage_rank(GenerationStage::Codes) < stage_rank(GenerationStage::Encode));
     }
 
     #[test]

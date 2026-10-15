@@ -402,6 +402,9 @@ pub enum JobState {
 pub enum GenerationStage {
     Plan,
     Codes,
+    /// An audio act's source turned into latents, before `diffuse`. Additive:
+    /// an app that predates it draws it as working.
+    Encode,
     Diffuse,
     Decode,
 }

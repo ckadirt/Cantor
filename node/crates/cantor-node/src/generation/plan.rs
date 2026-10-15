@@ -27,7 +27,8 @@ pub(crate) struct GenerationPlan {
     pub(super) options: LoadOptions,
     pub(super) request: Request,
     /// Where a fresh attempt enters, when not the engine's first stage. An
-    /// audio act starts at `diffuse`: there is nothing to plan or code.
+    /// audio act starts at `encode`, its source to latents (`diffuse` on an
+    /// engine without it): there is nothing to plan or code.
     pub(super) entry: Option<Stage>,
     /// For an extension: the source's samples and where they sit in the
     /// result, to be put back exactly after decoding.
@@ -245,7 +246,7 @@ pub(crate) async fn resolve(
         components,
         options,
         request,
-        entry: work.generation.audio.as_ref().map(|_| Stage::Diffuse),
+        entry: work.generation.audio.as_ref().map(|_| Stage::Encode),
         restore,
     })
 }
