@@ -47,7 +47,7 @@ describe('audio acts from declared capabilities', () => {
     expect(modelsFor(info, 'version', false)).toHaveLength(1);
   });
 
-  it('turns a shut door into the smallest model that would open it', () => {
+  it('turns a shut door into the balanced model, then quality, that would open it', () => {
     const info = node({
       models: [capabilities.node.models[1]],
       installable: [
@@ -77,11 +77,48 @@ describe('audio acts from declared capabilities', () => {
     const door = doorFor(info, 'version');
     expect(door).toMatchObject({ kind: 'no-model', catalogKnown: true });
     if (door.kind !== 'no-model') throw new Error('door');
-    expect(door.suggestion?.selector).toBe('acestep:1.5-fast');
+    // No balanced on offer: quality beats fast, though it is larger.
+    expect(door.suggestion?.selector).toBe('acestep:1.5-quality');
     expect(installCommand(door, 'version')).toBe(
-      'cantor pull acestep:1.5-fast',
+      'cantor pull acestep:1.5-quality',
     );
-    expect(suggestionFor(info, 'longer')?.selector).toBe('acestep:1.5-fast');
+    const withBalanced = node({
+      ...info,
+      installable: [
+        ...(info.installable ?? []),
+        {
+          selector: 'acestep:1.5-balanced',
+          family: 'acestep',
+          capabilities: ['cover', 'extend'],
+          bytes: 6e9,
+          licence: '',
+        },
+      ],
+    });
+    expect(suggestionFor(withBalanced, 'longer')?.selector).toBe(
+      'acestep:1.5-balanced',
+    );
+    // A family with no tiers falls back to the smallest.
+    const untiered = node({
+      ...info,
+      installable: [
+        {
+          selector: 'm:big',
+          family: 'm',
+          capabilities: ['cover'],
+          bytes: 9e9,
+          licence: '',
+        },
+        {
+          selector: 'm:small',
+          family: 'm',
+          capabilities: ['cover'],
+          bytes: 1e9,
+          licence: '',
+        },
+      ],
+    });
+    expect(suggestionFor(untiered, 'version')?.selector).toBe('m:small');
   });
 
   it('falls back to asking the catalog when the node has never reached it', () => {
