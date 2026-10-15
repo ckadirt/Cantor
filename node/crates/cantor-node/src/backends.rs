@@ -306,6 +306,187 @@ impl EngineStore {
             .with_context(|| format!("failed to finalise {}", target.display()))?;
         Ok(target)
     }
+
+    /// Install one engine build and record what it is, so it stays usable
+    /// after the manifest has moved on to another build.
+    pub async fn install_engine(
+        &self,
+        client: &reqwest::Client,
+        family: &str,
+        abi: u32,
+        artifact: &BackendArtifact,
+        on_progress: impl FnMut(u64, u64),
+    ) -> Result<PathBuf> {
+        let directory = self.install(client, artifact, on_progress).await?;
+        self.record(family, abi, artifact)?;
+        Ok(directory)
+    }
+
+    /// Write an installed build's record, once. Its directory name says
+    /// backend, arch and digest but not the family, and only a manifest that
+    /// names the build says that; the record keeps it after the manifest no
+    /// longer does. False when the build is not installed or already recorded.
+    pub fn record(&self, family: &str, abi: u32, artifact: &BackendArtifact) -> Result<bool> {
+        let directory = self.directory_for(artifact)?;
+        if !directory.join(".complete").is_file() {
+            return Ok(false);
+        }
+        let path = directory.join(BUILD_RECORD);
+        if path.is_file() {
+            return Ok(false);
+        }
+        let record = BuildRecord {
+            family: family.to_owned(),
+            abi,
+            artifact: artifact.clone(),
+            recorded_at_ms: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_millis() as u64)
+                .unwrap_or(0),
+        };
+        let temporary = directory.join(format!("{BUILD_RECORD}.tmp"));
+        fs::write(&temporary, serde_json::to_vec_pretty(&record)?)
+            .with_context(|| format!("failed to write {}", temporary.display()))?;
+        fs::rename(&temporary, &path)
+            .with_context(|| format!("failed to record {}", directory.display()))?;
+        Ok(true)
+    }
+
+    /// Record every installed build this manifest names. A build installed
+    /// before records existed is otherwise unknown the moment the manifest
+    /// moves on. Returns how many were recorded.
+    pub fn record_manifest(&self, manifest: &BackendManifest) -> usize {
+        let mut recorded = 0;
+        for engine in &manifest.engines {
+            for artifact in &engine.backends {
+                match self.record(&engine.name, engine.abi, artifact) {
+                    Ok(true) => recorded += 1,
+                    Ok(false) => {}
+                    Err(error) => eprintln!(
+                        "engines.record_failed family={} cause={error:#}",
+                        engine.name
+                    ),
+                }
+            }
+        }
+        recorded
+    }
+
+    /// The recorded builds of `family` for this backend, OS and arch that this
+    /// node can call, newest first.
+    pub fn builds(&self, family: &str, backend: &str, arch: &str) -> Vec<(BuildRecord, PathBuf)> {
+        let Ok(entries) = fs::read_dir(self.root.join(ENGINES_DIRECTORY)) else {
+            return Vec::new();
+        };
+        let mut builds: Vec<(BuildRecord, PathBuf)> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|directory| directory.join(".complete").is_file())
+            .filter_map(|directory| {
+                let raw = fs::read(directory.join(BUILD_RECORD)).ok()?;
+                let record: BuildRecord = serde_json::from_slice(&raw).ok()?;
+                // A record copied into the wrong directory names other bytes.
+                let slug = record.artifact.slug().ok()?;
+                (directory.file_name()? == slug.as_str()).then_some((record, directory))
+            })
+            .filter(|(record, _)| {
+                record.family == family
+                    && record.abi == SUPPORTED_ABI
+                    && record.artifact.backend == backend
+                    && record.artifact.os == std::env::consts::OS
+                    && arch_matches(&record.artifact.arch, arch)
+            })
+            .collect();
+        builds.sort_by_key(|(record, _)| std::cmp::Reverse(record.recorded_at_ms));
+        builds
+    }
+
+    /// The build of `family` a job should run on this backend:
+    ///
+    /// 1. the one this process already loaded, since two builds of a family in
+    ///    one process share their ggml's SONAME and must never meet;
+    /// 2. else the build the manifest names, when it is installed;
+    /// 3. else the newest recorded build, so a manifest that has moved on, or
+    ///    cannot be reached, never stops a node that has a working engine.
+    pub fn choose(
+        &self,
+        manifest: Option<&BackendManifest>,
+        family: &str,
+        backend: &str,
+        arch: &str,
+        loaded: Option<&Path>,
+    ) -> Result<Option<Choice>> {
+        let current = manifest.and_then(|manifest| manifest.find(family, backend, arch));
+        let recorded = self.builds(family, backend, arch);
+        if let Some(loaded) = loaded {
+            let artifact = match current {
+                Some(artifact) if self.directory_for(artifact)? == loaded => Some(artifact.clone()),
+                _ => recorded
+                    .iter()
+                    .find(|(_, directory)| directory == loaded)
+                    .map(|(record, _)| record.artifact.clone()),
+            };
+            if let Some(artifact) = artifact {
+                return Ok(Some(Choice {
+                    artifact,
+                    directory: loaded.to_owned(),
+                    reason: ChoiceReason::Loaded,
+                }));
+            }
+        }
+        if let Some(artifact) = current
+            && self.is_installed(artifact)?
+        {
+            return Ok(Some(Choice {
+                artifact: artifact.clone(),
+                directory: self.directory_for(artifact)?,
+                reason: ChoiceReason::Current,
+            }));
+        }
+        Ok(recorded
+            .into_iter()
+            .next()
+            .map(|(record, directory)| Choice {
+                artifact: record.artifact,
+                directory,
+                reason: ChoiceReason::Fallback,
+            }))
+    }
+}
+
+const BUILD_RECORD: &str = ".build.json";
+
+/// What an installed engine build is, kept beside it.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct BuildRecord {
+    pub family: String,
+    pub abi: u32,
+    pub artifact: BackendArtifact,
+    pub recorded_at_ms: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChoiceReason {
+    Loaded,
+    Current,
+    Fallback,
+}
+
+impl ChoiceReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Loaded => "loaded",
+            Self::Current => "current",
+            Self::Fallback => "fallback",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    pub artifact: BackendArtifact,
+    pub directory: PathBuf,
+    pub reason: ChoiceReason,
 }
 
 /// If `root` contains exactly one directory and nothing else, return it.
@@ -551,5 +732,149 @@ mod tests {
         assert_eq!(slug, "cpu-x86_64-009408e6b660");
         // Same bytes must always land in the same place.
         assert_eq!(slug, artifact.slug().expect("slug again"));
+    }
+
+    mod builds {
+        use std::fs;
+        use std::path::{Path, PathBuf};
+
+        use super::super::{
+            BackendArtifact, BackendManifest, BuildRecord, ChoiceReason, EngineStore,
+            SUPPORTED_ABI, machine_arch,
+        };
+
+        fn artifact(backend: &str, fill: char) -> BackendArtifact {
+            BackendArtifact {
+                backend: backend.into(),
+                arch: machine_arch().into(),
+                os: std::env::consts::OS.into(),
+                url: format!("https://e.test/{backend}-{fill}.tar.gz"),
+                sha256: fill.to_string().repeat(64),
+                bytes: 10,
+            }
+        }
+
+        fn manifest(family: &str, abi: u32, artifacts: &[&BackendArtifact]) -> BackendManifest {
+            BackendManifest::parse(
+                &serde_json::json!({"schema": 1, "engines": [{
+                    "name": family, "abi": abi, "backends": artifacts,
+                }]})
+                .to_string(),
+            )
+            .unwrap()
+        }
+
+        /// What a finished install leaves on disk, without the download.
+        fn unpack(store: &EngineStore, artifact: &BackendArtifact) -> PathBuf {
+            let directory = store.directory_for(artifact).unwrap();
+            fs::create_dir_all(&directory).unwrap();
+            fs::write(directory.join(".complete"), &artifact.sha256).unwrap();
+            directory
+        }
+
+        fn chosen(
+            store: &EngineStore,
+            manifest: Option<&BackendManifest>,
+            loaded: Option<&Path>,
+        ) -> Option<(PathBuf, ChoiceReason)> {
+            store
+                .choose(manifest, "acestep", "cpu", machine_arch(), loaded)
+                .unwrap()
+                .map(|choice| (choice.directory, choice.reason))
+        }
+
+        #[test]
+        fn a_manifest_that_moved_on_falls_back_to_the_recorded_build() {
+            let temp = tempfile::tempdir().unwrap();
+            let store = EngineStore::new(temp.path());
+            let old = artifact("cpu", 'a');
+            let new = artifact("cpu", 'b');
+            let old_dir = unpack(&store, &old);
+
+            // Installed before records existed: the manifest that names it
+            // records it.
+            assert_eq!(store.record_manifest(&manifest("acestep", 1, &[&old])), 1);
+            assert_eq!(store.record_manifest(&manifest("acestep", 1, &[&old])), 0);
+            assert_eq!(
+                chosen(&store, Some(&manifest("acestep", 1, &[&old])), None),
+                Some((old_dir.clone(), ChoiceReason::Current))
+            );
+
+            // The manifest names a build this node does not have yet.
+            let moved = manifest("acestep", 1, &[&new]);
+            assert_eq!(store.record_manifest(&moved), 0);
+            assert_eq!(
+                chosen(&store, Some(&moved), None),
+                Some((old_dir.clone(), ChoiceReason::Fallback))
+            );
+            // No manifest at all: still runs.
+            assert_eq!(
+                chosen(&store, None, None),
+                Some((old_dir.clone(), ChoiceReason::Fallback))
+            );
+
+            // Once the new build is installed it is preferred...
+            let new_dir = unpack(&store, &new);
+            // Records order by the millisecond they were written.
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            assert!(store.record("acestep", 1, &new).unwrap());
+            assert_eq!(
+                chosen(&store, Some(&moved), None),
+                Some((new_dir.clone(), ChoiceReason::Current))
+            );
+            // ...except by a process that already loaded the old one.
+            assert_eq!(
+                chosen(&store, Some(&moved), Some(&old_dir)),
+                Some((old_dir, ChoiceReason::Loaded))
+            );
+            // Without a manifest the newest record wins.
+            assert_eq!(
+                chosen(&store, None, None),
+                Some((new_dir, ChoiceReason::Fallback))
+            );
+        }
+
+        #[test]
+        fn only_this_family_backend_and_abi_are_candidates() {
+            let temp = tempfile::tempdir().unwrap();
+            let store = EngineStore::new(temp.path());
+            let levo = artifact("cpu", 'c');
+            unpack(&store, &levo);
+            store.record("levo2", 1, &levo).unwrap();
+            let cuda = artifact("cuda12", 'd');
+            unpack(&store, &cuda);
+            store.record("acestep", 1, &cuda).unwrap();
+            let future = artifact("cpu", 'e');
+            unpack(&store, &future);
+            store.record("acestep", SUPPORTED_ABI + 1, &future).unwrap();
+            assert_eq!(chosen(&store, None, None), None);
+
+            // An unfinished install is never recorded, so never chosen.
+            let half = artifact("cpu", 'f');
+            fs::create_dir_all(store.directory_for(&half).unwrap()).unwrap();
+            assert!(!store.record("acestep", 1, &half).unwrap());
+            assert_eq!(chosen(&store, None, None), None);
+        }
+
+        #[test]
+        fn a_record_in_another_build_directory_is_ignored() {
+            let temp = tempfile::tempdir().unwrap();
+            let store = EngineStore::new(temp.path());
+            let real = artifact("cpu", 'a');
+            let other = artifact("cpu", 'b');
+            let directory = unpack(&store, &real);
+            let lying = BuildRecord {
+                family: "acestep".into(),
+                abi: 1,
+                artifact: other,
+                recorded_at_ms: 1,
+            };
+            fs::write(
+                directory.join(".build.json"),
+                serde_json::to_vec(&lying).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(chosen(&store, None, None), None);
+        }
     }
 }

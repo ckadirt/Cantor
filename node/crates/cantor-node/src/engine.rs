@@ -795,6 +795,17 @@ pub fn select(attempts: &[(String, PathBuf)]) -> Result<Selection> {
     bail!("no backend could be loaded:\n{detail}")
 }
 
+/// Where this process loaded `family` from on `backend`, if it has. Once a
+/// build of a family is loaded, it is the only one this process may load.
+pub fn loaded_directory(family: &str, backend: &str) -> Option<PathBuf> {
+    loaded_engines()
+        .lock()
+        .ok()?
+        .iter()
+        .find(|engine| engine.model == family && engine.backend == backend)
+        .map(|engine| engine.directory.clone())
+}
+
 /// What the loaded build of `family` does with audio, and the stages it runs,
 /// or `None` while no build of that family has been loaded in this process.
 ///

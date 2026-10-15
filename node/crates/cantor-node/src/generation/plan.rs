@@ -94,17 +94,23 @@ pub(crate) async fn resolve(
         )
     })?;
 
-    let manifest = BackendManifest::fetch(&backends_url)
-        .await
-        .map_err(|error| {
-            WorkerFailure::with_source(
-                ErrorCode::TemporarilyUnavailable,
-                true,
-                "The node could not verify its installed engine backend.",
-                error,
-            )
-        })?;
+    // The manifest says which build is current; it is not needed to run one.
+    // A node whose manifest has moved on, or cannot be reached, keeps running
+    // on the build it has (`EngineStore::choose`).
+    let manifest = match BackendManifest::fetch(&backends_url).await {
+        Ok(manifest) => Some(manifest),
+        Err(error) => {
+            eprintln!(
+                "engines.manifest_unavailable job={} cause={error:#}",
+                work.id
+            );
+            None
+        }
+    };
     let engine_store = EngineStore::new(&model_root);
+    if let Some(manifest) = &manifest {
+        engine_store.record_manifest(manifest);
+    }
     let wanted: Vec<String> = match pinned {
         Some(backend) => vec![backend],
         None => accel::candidates()
@@ -114,35 +120,56 @@ pub(crate) async fn resolve(
     };
     let mut attempts = Vec::<(String, PathBuf)>::new();
     for backend in wanted {
-        if let Some(artifact) = manifest.find(variant.engine(), &backend, machine_arch())
-            && engine_store
-                .is_installed(artifact)
-                .map_err(WorkerFailure::from_internal)?
-        {
-            // An upgraded node can have a complete engine archive from before
-            // runtime management existed. Repair its dependencies before load.
-            crate::cuda_runtime::ensure(
-                &engine_store,
-                &reqwest::Client::new(),
-                artifact,
-                |_, _| {},
+        let loaded = crate::engine::loaded_directory(variant.engine(), &backend);
+        let Some(choice) = engine_store
+            .choose(
+                manifest.as_ref(),
+                variant.engine(),
+                &backend,
+                machine_arch(),
+                loaded.as_deref(),
             )
-            .await
-            .map_err(|error| {
-                WorkerFailure::with_source(
-                    ErrorCode::TemporarilyUnavailable,
-                    true,
-                    "The node could not prepare its engine runtime dependencies.",
-                    error,
-                )
-            })?;
-            attempts.push((
-                backend,
-                engine_store
-                    .directory_for(artifact)
-                    .map_err(WorkerFailure::from_internal)?,
-            ));
+            .map_err(WorkerFailure::from_internal)?
+        else {
+            continue;
+        };
+        if choice.reason != crate::backends::ChoiceReason::Current {
+            eprintln!(
+                "engine.chosen job={} family={} backend={backend} build={} reason={}",
+                work.id,
+                variant.engine(),
+                choice.directory.display(),
+                choice.reason.as_str()
+            );
         }
+        // An upgraded node can have a complete engine archive from before
+        // runtime management existed. Repair its dependencies before load.
+        crate::cuda_runtime::ensure(
+            &engine_store,
+            &reqwest::Client::new(),
+            &choice.artifact,
+            |_, _| {},
+        )
+        .await
+        .map_err(|error| {
+            WorkerFailure::with_source(
+                ErrorCode::TemporarilyUnavailable,
+                true,
+                "The node could not prepare its engine runtime dependencies.",
+                error,
+            )
+        })?;
+        attempts.push((backend, choice.directory));
+    }
+    if attempts.is_empty() && manifest.is_none() {
+        // Nothing recorded yet, and nothing to learn the current build from:
+        // the relay may well be back on the next attempt.
+        return Err(WorkerFailure::with_source(
+            ErrorCode::TemporarilyUnavailable,
+            true,
+            "The node could not verify its installed engine backend.",
+            anyhow::anyhow!("the backend manifest is unavailable and no build is recorded"),
+        ));
     }
     if attempts.is_empty() {
         return Err(WorkerFailure::permanent(

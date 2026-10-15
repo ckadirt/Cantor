@@ -191,13 +191,22 @@ pub(super) async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
                     .await?;
                     let mut last = 0_u64;
                     let (progress_tx, mut progress_rx) = mpsc::unbounded_channel::<(u64, u64)>();
-                    let fetch = engine_store.install(&client, artifact, move |done, total| {
-                        let step = total / 25 + 1;
-                        if done >= last + step || done == total {
-                            last = done;
-                            let _ = progress_tx.send((done, total));
-                        }
-                    });
+                    let abi = manifest
+                        .engine(&engine_name)
+                        .map_or(crate::backends::SUPPORTED_ABI, |engine| engine.abi);
+                    let fetch = engine_store.install_engine(
+                        &client,
+                        &engine_name,
+                        abi,
+                        artifact,
+                        move |done, total| {
+                            let step = total / 25 + 1;
+                            if done >= last + step || done == total {
+                                last = done;
+                                let _ = progress_tx.send((done, total));
+                            }
+                        },
+                    );
                     tokio::pin!(fetch);
                     loop {
                         tokio::select! {

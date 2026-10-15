@@ -98,6 +98,21 @@ thread, `generation/runner.rs` drives one job, and `generation/failure.rs` owns
 retry and terminal classification. Fake drivers let you test order and failure
 without weights — use them; a refactor loop should never load a model.
 
+### Publish a new engine build
+
+Since v0.2.1 a published build never stops a node. Each installed build keeps
+a record beside it (`engines/<slug>/.build.json`: family, ABI, artifact), and
+`EngineStore::choose` picks, per job: the build this process already loaded,
+else the manifest's build if installed, else the newest recorded one. A node
+whose manifest moved on, or cannot be reached, keeps running the build it has.
+`cantor backends --update` fetches the manifest's builds without loading them;
+`cantor upgrade` runs it before its restart. Two builds of one family never
+share a process: they would share a ggml SONAME. The plan for background
+fetching and idle restarts is `docs/plans/engine-updates-plan.md`.
+
+A node older than v0.2.1 only runs the build the manifest names. Publishing a
+new build breaks it until `cantor backends --install` and a restart.
+
 ### Publish a new model or engine family
 
 This should need no node release. Add the model to
