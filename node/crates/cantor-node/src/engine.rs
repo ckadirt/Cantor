@@ -233,6 +233,9 @@ pub struct Engine {
     pub version: String,
     pub abi: u32,
     pub stages: u32,
+    /// What this build does with audio (`cantor_engine_capabilities`). Empty
+    /// for an engine that predates the export.
+    pub capabilities: Vec<cantor_proto::CapabilityKind>,
 }
 
 impl Engine {
@@ -344,6 +347,17 @@ impl Engine {
                 directory.display()
             )
         })?;
+        // Optional: an engine that predates audio in does not export it, and
+        // takes none. Read once here, because the build cannot change under a
+        // loaded library.
+        let capabilities = unsafe {
+            match library
+                .get::<unsafe extern "C" fn() -> *const c_char>(b"cantor_engine_capabilities\0")
+            {
+                Ok(symbol) => parse_capabilities(symbol()),
+                Err(_) => Vec::new(),
+            }
+        };
 
         Ok(Self {
             _dependencies: dependencies,
@@ -354,6 +368,7 @@ impl Engine {
             version,
             abi,
             stages,
+            capabilities,
         })
     }
 
@@ -778,6 +793,81 @@ pub fn select(attempts: &[(String, PathBuf)]) -> Result<Selection> {
         .collect::<Vec<_>>()
         .join("\n");
     bail!("no backend could be loaded:\n{detail}")
+}
+
+/// What the loaded build of `family` does with audio, and the stages it runs,
+/// or `None` while no build of that family has been loaded in this process.
+///
+/// Answered from engines already loaded, never by loading one: building a
+/// `NodeInfo` must stay cheap and must not touch a GPU.
+pub fn loaded_capabilities(
+    family: &str,
+) -> Option<(Vec<cantor_proto::CapabilityKind>, Vec<Stage>)> {
+    #[cfg(test)]
+    if let Some(found) = test_capabilities()
+        .lock()
+        .ok()
+        .and_then(|declared| declared.get(family).cloned())
+    {
+        return Some(found);
+    }
+    let engines = loaded_engines().lock().ok()?;
+    let engine = engines.iter().find(|engine| engine.model == family)?;
+    Some((engine.capabilities.clone(), engine.supported_stages()))
+}
+
+/// What tests declare a family's loaded engine does, without loading one.
+#[cfg(test)]
+type TestCapabilities =
+    std::collections::HashMap<String, (Vec<cantor_proto::CapabilityKind>, Vec<Stage>)>;
+
+#[cfg(test)]
+fn test_capabilities() -> &'static Mutex<TestCapabilities> {
+    static DECLARED: OnceLock<Mutex<TestCapabilities>> = OnceLock::new();
+    DECLARED.get_or_init(|| Mutex::new(TestCapabilities::new()))
+}
+
+/// Pretend a build of `family` with these capabilities is loaded. Tests that
+/// use it pick a family name of their own, so they never see each other's.
+#[cfg(test)]
+pub fn declare_loaded_for_test(family: &str, kinds: Vec<cantor_proto::CapabilityKind>) {
+    test_capabilities()
+        .lock()
+        .expect("test capabilities")
+        .insert(
+            family.to_owned(),
+            (kinds, vec![Stage::Diffuse, Stage::Decode]),
+        );
+}
+
+/// A comma-separated kind list from an engine. Unknown names are dropped: a
+/// newer build may know a capability this node does not, and that is not a
+/// reason to throw away the ones both understand.
+///
+/// # Safety
+/// `pointer` must be null or a NUL-terminated string that outlives the call.
+unsafe fn parse_capabilities(pointer: *const c_char) -> Vec<cantor_proto::CapabilityKind> {
+    if pointer.is_null() {
+        return Vec::new();
+    }
+    let text = unsafe { CStr::from_ptr(pointer) }.to_string_lossy();
+    parse_capability_list(&text)
+}
+
+pub(crate) fn parse_capability_list(text: &str) -> Vec<cantor_proto::CapabilityKind> {
+    let mut kinds = Vec::new();
+    for name in text
+        .split(',')
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        if let Some(kind) = cantor_proto::CapabilityKind::parse(name)
+            && !kinds.contains(&kind)
+        {
+            kinds.push(kind);
+        }
+    }
+    kinds
 }
 
 fn to_cstring(value: &str) -> Result<CString> {

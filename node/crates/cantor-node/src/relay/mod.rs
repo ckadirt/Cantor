@@ -142,6 +142,8 @@ mod tests {
             stages: Vec::new(),
             parameters: Vec::new(),
             lyrics: None,
+            capabilities: None,
+            audio: None,
         }
     }
 
@@ -169,6 +171,8 @@ mod tests {
             stages: variant.stages.clone(),
             parameters: variant.parameters.clone(),
             lyrics: variant.lyrics.clone(),
+            capabilities: variant.capabilities.clone(),
+            audio: variant.audio.clone(),
         };
         store
             .mark_installed(&model, &catalog_variant)
@@ -196,6 +200,7 @@ mod tests {
                     generation: cantor_proto::GenerationRequest {
                         caption: "effect characterization".into(),
                         lyrics: None,
+                        audio: None,
                         duration: Some(15),
                         steps: Some(1),
                         cfg: None,

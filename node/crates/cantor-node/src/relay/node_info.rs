@@ -5,17 +5,35 @@ use cantor_proto::{
     ModelView, NodeFeatures, NodeInfo, NodeLimits, NodeLoad,
 };
 
+use crate::capabilities;
 use crate::config::NodeConfig;
+use crate::engine;
 use crate::library::Library;
+use crate::library::MAX_UPLOAD_BYTES;
 use crate::store::Store;
 
 pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeInfo {
+    let model_root = config.model_root();
+    let catalog = capabilities::cached_catalog(&model_root);
+    let installed = Store::new(&model_root).installed();
+    let installable = catalog.as_ref().map(|catalog| {
+        capabilities::installable(
+            &installed,
+            catalog,
+            &capabilities::available_backends(config.backend.as_deref()),
+        )
+    });
     // What is actually on disk, so the app never offers a model this node
     // cannot load. Phase C's push is what keeps it current after a pull.
-    let models = Store::new(config.model_root())
-        .installed()
+    let models = installed
         .into_iter()
         .map(|variant| ModelView {
+            // Declared by the weights and wired by the loaded engine build;
+            // empty until both are known. See `capabilities`.
+            capabilities: Some(cantor_proto::Capabilities(capabilities::advertised(
+                capabilities::declared(&variant, catalog.as_ref()).as_ref(),
+                engine::loaded_capabilities(variant.engine()).as_ref(),
+            ))),
             selector: variant.selector(),
             family: variant.model.clone(),
             engine: variant.engine().to_owned(),
@@ -43,6 +61,8 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             max_caption_bytes: MAX_CAPTION_BYTES,
             max_lyrics_bytes: MAX_LYRICS_BYTES,
             max_page_limit: MAX_PAGE_LIMIT,
+            max_upload_bytes: Some(MAX_UPLOAD_BYTES),
+            max_source_seconds: Some(MAX_SONG_SECONDS),
         },
         load: NodeLoad {
             active_jobs: library.active_count().unwrap_or(0),
@@ -57,6 +77,9 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             secure_tunnel: true,
             job_controls: true,
             job_forget: true,
+            audio_sources: true,
+            uploads: true,
         },
+        installable,
     }
 }

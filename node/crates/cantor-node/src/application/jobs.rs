@@ -118,6 +118,15 @@ pub(super) fn create(
     if let Some(field) = invalid_extensions(&generation, &variant.parameters) {
         return Ok(invalid_field(id, &field));
     }
+    if let Some(field) = invalid_audio(
+        &generation,
+        variant,
+        &config.model_root(),
+        library,
+        context.principal_id,
+    ) {
+        return Ok(invalid_field(id, field));
+    }
     let submission = Submission {
         client_request_id,
         model,
@@ -154,6 +163,7 @@ pub(super) fn create(
             "The node is below its configured free-space reserve.",
             true,
         )),
+        SubmitResult::SourceUnavailable => Ok(invalid_field(id, "audio.source")),
     }
 }
 
@@ -336,6 +346,105 @@ pub(super) fn invalid_submission(
     None
 }
 
+/// Check an audio prompt against what this node advertises for the installed
+/// model and against a source the principal really has. `None` when the
+/// request has no prompt or the prompt is sound; otherwise the field to name.
+pub(super) fn invalid_audio(
+    generation: &GenerationRequest,
+    variant: &crate::store::InstalledVariant,
+    model_root: &std::path::Path,
+    library: &Library,
+    principal: crate::principal::PrincipalId,
+) -> Option<&'static str> {
+    use cantor_proto::{AudioAct, AudioSource, CapabilityKind, MAX_CLOSENESS, MAX_EXTEND_SECONDS};
+
+    let prompt = generation.audio.as_ref()?;
+    // A source decides an audio act's length; an explicit one would be ignored.
+    if generation.duration.is_some() {
+        return Some("duration");
+    }
+    match &prompt.source {
+        AudioSource::Song { song_id } if uuid::Uuid::parse_str(song_id).is_err() => {
+            return Some("audio.source");
+        }
+        AudioSource::Upload { upload_id }
+            if upload_id.is_empty()
+                || upload_id.len() > cantor_proto::MAX_UPLOAD_ID_BYTES
+                || uuid::Uuid::parse_str(upload_id).is_err() =>
+        {
+            return Some("audio.source");
+        }
+        _ => {}
+    }
+    let catalog = crate::capabilities::cached_catalog(model_root);
+    let advertised = crate::capabilities::advertised(
+        crate::capabilities::declared(variant, catalog.as_ref()).as_ref(),
+        crate::engine::loaded_capabilities(variant.engine()).as_ref(),
+    );
+    let Some(capability) = advertised
+        .iter()
+        .find(|c| c.kind == prompt.act.capability())
+    else {
+        return Some("audio.act");
+    };
+    let Ok(Some(seconds)) = library.audio_source_seconds(principal, &prompt.source) else {
+        return Some("audio.source");
+    };
+    let source_limit = capability
+        .max_source_seconds
+        .unwrap_or(MAX_SONG_SECONDS)
+        .min(MAX_SONG_SECONDS);
+    if seconds <= 0.0 || seconds > f64::from(source_limit) {
+        return Some("audio.source");
+    }
+    match prompt.act {
+        AudioAct::Cover => {
+            if prompt.extend_seconds.is_some() || prompt.extend_at.is_some() {
+                return Some("audio.extend_seconds");
+            }
+            if prompt
+                .closeness
+                .is_some_and(|c| !c.is_finite() || !(0.0..=MAX_CLOSENESS).contains(&c))
+            {
+                return Some("audio.closeness");
+            }
+            if prompt.keep_voice == Some(true)
+                && !advertised.iter().any(|c| c.kind == CapabilityKind::Timbre)
+            {
+                return Some("audio.keep_voice");
+            }
+            if prompt
+                .tile_to_seconds
+                .is_some_and(|t| !(MIN_SONG_SECONDS..=MAX_SONG_SECONDS).contains(&t))
+            {
+                return Some("audio.tile_to_seconds");
+            }
+        }
+        AudioAct::Extend => {
+            if prompt.closeness.is_some()
+                || prompt.keep_voice.is_some()
+                || prompt.tile_to_seconds.is_some()
+            {
+                return Some("audio.act");
+            }
+            let Some(added) = prompt.extend_seconds else {
+                return Some("audio.extend_seconds");
+            };
+            let total_limit = capability
+                .max_total_seconds
+                .unwrap_or(MAX_SONG_SECONDS)
+                .min(MAX_SONG_SECONDS);
+            if added == 0
+                || added > MAX_EXTEND_SECONDS
+                || seconds + f64::from(added) > f64::from(total_limit)
+            {
+                return Some("audio.extend_seconds");
+            }
+        }
+    }
+    None
+}
+
 /// Check declared-parameter values against the model that is actually
 /// installed, not against whatever the client believed was installed.
 pub(super) fn invalid_extensions(
@@ -399,6 +508,8 @@ mod tests {
             stages: Vec::new(),
             parameters: Vec::new(),
             lyrics: None,
+            capabilities: None,
+            audio: None,
         };
         let store = Store::new(config.model_root());
         store.prepare().expect("model store");
@@ -420,6 +531,8 @@ mod tests {
                     stages: Vec::new(),
                     parameters: Vec::new(),
                     lyrics: None,
+                    capabilities: None,
+                    audio: None,
                 },
             )
             .expect("installed marker");
@@ -441,6 +554,7 @@ mod tests {
         GenerationRequest {
             caption: caption.into(),
             lyrics: None,
+            audio: None,
             duration: Some(15),
             steps: Some(1),
             cfg: None,
@@ -780,6 +894,7 @@ mod tests {
         let request = GenerationRequest {
             caption: "seed".into(),
             lyrics: None,
+            audio: None,
             duration: None,
             steps: None,
             cfg: None,
@@ -789,6 +904,214 @@ mod tests {
         assert_eq!(
             invalid_submission(&request_id, "acestep:test", &request),
             Some("seed")
+        );
+    }
+}
+
+#[cfg(test)]
+mod audio_admission_tests {
+    use cantor_proto::{
+        AudioAct, AudioPrompt, AudioSource, Capabilities, CapabilityKind, GenerationRequest,
+        ModelCapability,
+    };
+    use tempfile::tempdir;
+
+    use super::invalid_audio;
+    use crate::catalog::AudioBinding;
+    use crate::library::{Library, UploadCommit, UploadOpen};
+    use crate::principal::PrincipalId;
+    use crate::store::InstalledVariant;
+
+    const KEY: [u8; 32] = [3; 32];
+
+    fn capability(kind: CapabilityKind) -> ModelCapability {
+        ModelCapability {
+            kind,
+            stages: None,
+            max_source_seconds: Some(120),
+            max_total_seconds: Some(180),
+        }
+    }
+
+    /// A model whose weights declare cover, extend and timbre, with a binding
+    /// for each, run by an engine family of this test's own.
+    fn variant(family: &str) -> InstalledVariant {
+        InstalledVariant {
+            model: family.into(),
+            tag: "t".into(),
+            licence: String::new(),
+            components: Vec::new(),
+            installed_at: String::new(),
+            engine: family.into(),
+            vram_bytes: 0,
+            stages: Vec::new(),
+            parameters: Vec::new(),
+            lyrics: None,
+            capabilities: Some(Capabilities(vec![
+                capability(CapabilityKind::Cover),
+                capability(CapabilityKind::Extend),
+                capability(CapabilityKind::Timbre),
+            ])),
+            audio: Some(
+                serde_json::from_value::<AudioBinding>(serde_json::json!({
+                    "source_field": "src", "reference_field": "ref",
+                    "cover": {"song": [{"closeness": 0.5, "fields": {}}]},
+                    "extend": {"start_field": "a", "end_field": "b"}
+                }))
+                .expect("binding"),
+            ),
+        }
+    }
+
+    fn upload(library: &mut Library, seconds: f64) -> String {
+        let principal = PrincipalId::from_client_public_key(&KEY);
+        let bytes = format!("audio {seconds}").into_bytes();
+        let sha = sha2::Digest::finalize(sha2::Digest::chain_update(
+            <sha2::Sha256 as sha2::Digest>::new(),
+            &bytes,
+        ))
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+        let UploadOpen::Ready { id, .. } = library
+            .open_upload(principal, &KEY, &sha, bytes.len() as u64, "audio/wav")
+            .expect("open")
+        else {
+            panic!("ready");
+        };
+        library
+            .write_upload_chunk(principal, &id, 0, &bytes)
+            .expect("chunk");
+        assert!(matches!(
+            library
+                .commit_upload(principal, &id, |_| Ok(seconds))
+                .expect("commit"),
+            UploadCommit::Committed { .. }
+        ));
+        id
+    }
+
+    fn request(upload_id: &str, act: AudioAct) -> GenerationRequest {
+        GenerationRequest {
+            caption: "c".into(),
+            lyrics: None,
+            duration: None,
+            steps: None,
+            cfg: None,
+            seed: None,
+            extensions: None,
+            audio: Some(Box::new(AudioPrompt {
+                source: AudioSource::Upload {
+                    upload_id: upload_id.into(),
+                },
+                act,
+                closeness: None,
+                keep_voice: None,
+                extend_seconds: None,
+                extend_at: None,
+                tile_to_seconds: None,
+                tune: None,
+            })),
+        }
+    }
+
+    fn check(
+        family: &str,
+        library: &Library,
+        generation: &GenerationRequest,
+    ) -> Option<&'static str> {
+        invalid_audio(
+            generation,
+            &variant(family),
+            std::path::Path::new("/nonexistent"),
+            library,
+            PrincipalId::from_client_public_key(&KEY),
+        )
+    }
+
+    #[test]
+    fn a_sound_prompt_passes_and_each_fault_names_its_field() {
+        let family = "audio-admission-faults";
+        crate::engine::declare_loaded_for_test(
+            family,
+            vec![
+                CapabilityKind::Cover,
+                CapabilityKind::Extend,
+                CapabilityKind::Timbre,
+            ],
+        );
+        let directory = tempdir().expect("tempdir");
+        let mut library = Library::open(directory.path()).expect("library");
+        let short = upload(&mut library, 30.0);
+        let long = upload(&mut library, 150.0);
+
+        let mut cover = request(&short, AudioAct::Cover);
+        assert_eq!(check(family, &library, &cover), None);
+
+        cover.duration = Some(60);
+        assert_eq!(check(family, &library, &cover), Some("duration"));
+        cover.duration = None;
+
+        cover.audio.as_mut().unwrap().closeness = Some(1.5);
+        assert_eq!(check(family, &library, &cover), Some("audio.closeness"));
+        cover.audio.as_mut().unwrap().closeness = Some(0.0);
+        cover.audio.as_mut().unwrap().keep_voice = Some(true);
+        assert_eq!(check(family, &library, &cover), None);
+
+        assert_eq!(
+            check(family, &library, &request(&long, AudioAct::Cover)),
+            Some("audio.source"),
+            "longer than this capability takes"
+        );
+        assert_eq!(
+            check(
+                family,
+                &library,
+                &request(&uuid::Uuid::new_v4().to_string(), AudioAct::Cover)
+            ),
+            Some("audio.source"),
+            "not an upload of this principal"
+        );
+
+        let mut longer = request(&short, AudioAct::Extend);
+        assert_eq!(
+            check(family, &library, &longer),
+            Some("audio.extend_seconds")
+        );
+        longer.audio.as_mut().unwrap().extend_seconds = Some(60);
+        assert_eq!(check(family, &library, &longer), None);
+        longer.audio.as_mut().unwrap().extend_seconds = Some(200);
+        assert_eq!(
+            check(family, &library, &longer),
+            Some("audio.extend_seconds"),
+            "past the capability's total"
+        );
+        longer.audio.as_mut().unwrap().extend_seconds = Some(60);
+        longer.audio.as_mut().unwrap().closeness = Some(0.5);
+        assert_eq!(check(family, &library, &longer), Some("audio.act"));
+    }
+
+    #[test]
+    fn nothing_is_admitted_that_the_engine_does_not_wire() {
+        let family = "audio-admission-engine";
+        crate::engine::declare_loaded_for_test(family, vec![CapabilityKind::Cover]);
+        let directory = tempdir().expect("tempdir");
+        let mut library = Library::open(directory.path()).expect("library");
+        let id = upload(&mut library, 30.0);
+        let mut keep = request(&id, AudioAct::Cover);
+        keep.audio.as_mut().unwrap().keep_voice = Some(true);
+        assert_eq!(check(family, &library, &keep), Some("audio.keep_voice"));
+        let mut longer = request(&id, AudioAct::Extend);
+        longer.audio.as_mut().unwrap().extend_seconds = Some(30);
+        assert_eq!(check(family, &library, &longer), Some("audio.act"));
+        assert_eq!(
+            check(
+                "audio-admission-never-loaded",
+                &library,
+                &request(&id, AudioAct::Cover)
+            ),
+            Some("audio.act"),
+            "an engine not loaded yet advertises nothing"
         );
     }
 }

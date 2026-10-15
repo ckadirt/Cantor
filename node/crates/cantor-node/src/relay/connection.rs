@@ -508,6 +508,8 @@ mod tests {
                 stages: Vec::new(),
                 parameters: Vec::new(),
                 lyrics: None,
+                capabilities: None,
+                audio: None,
             };
             match locked.library.submit(
                 PrincipalId::from_client_public_key(&client_key_bytes),
@@ -518,6 +520,7 @@ mod tests {
                     generation: cantor_proto::GenerationRequest {
                         caption: "connection ordering".into(),
                         lyrics: None,
+                        audio: None,
                         duration: Some(15),
                         steps: Some(1),
                         cfg: None,

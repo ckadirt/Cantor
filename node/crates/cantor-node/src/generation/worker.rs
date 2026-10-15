@@ -201,6 +201,7 @@ mod tests {
                 generation: GenerationRequest {
                     caption: "fake generation".to_owned(),
                     lyrics: None,
+                    audio: None,
                     duration: None,
                     steps: None,
                     cfg: None,
@@ -219,6 +220,8 @@ mod tests {
                 components: Vec::new(),
                 options: LoadOptions::default(),
                 request: Request::new("fake generation"),
+                entry: None,
+                restore: None,
             },
         )
     }

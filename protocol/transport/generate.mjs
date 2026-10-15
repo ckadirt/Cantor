@@ -84,11 +84,15 @@ const BOUND_KEYS = [
   'secure_ciphertext_bytes',
   'logical_inner_bytes',
   'artifact_chunk_bytes',
+  'upload_chunk_bytes',
   'artifact_identifier_utf8_bytes',
   'artifact_offset_max_safe_integer',
   'session_records_per_direction',
   'session_ciphertext_bytes_per_direction',
 ];
+
+/** Room left for an upload chunk's JSON fields around its base64 data. */
+const UPLOAD_ENVELOPE_BYTES = 1024;
 
 function fail(path, message) {
   throw new TypeError(`${path} ${message}`);
@@ -238,6 +242,18 @@ export function validateSpec(spec) {
     );
   }
 
+  // An upload chunk travels as base64 inside a control JSON message, so its
+  // encoded size plus a generous envelope must fit one logical message.
+  if (
+    Math.ceil(spec.bounds.upload_chunk_bytes / 3) * 4 + UPLOAD_ENVELOPE_BYTES >
+    spec.bounds.logical_inner_bytes
+  ) {
+    fail(
+      'spec.bounds.upload_chunk_bytes',
+      'must fit a logical message as base64 with its JSON envelope',
+    );
+  }
+
   return spec;
 }
 
@@ -277,6 +293,7 @@ pub const APPLICATION_PROTOCOL_VERSION: u8 = ${v.application_current};
 pub const APPLICATION_PROTOCOL_MIN_SUPPORTED_VERSION: u8 = ${v.application_min_supported};
 pub const APPLICATION_PROTOCOL_MAX_SUPPORTED_VERSION: u8 = ${v.application_max_supported};
 pub const ARTIFACT_CHUNK_BYTES: u32 = ${rustNumber(b.artifact_chunk_bytes)};
+pub const UPLOAD_CHUNK_BYTES: u32 = ${rustNumber(b.upload_chunk_bytes)};
 `;
 }
 
@@ -386,6 +403,7 @@ export const MAX_NOISE_PLAINTEXT_BYTES = ${b.noise_plaintext_bytes} as const;
 export const MAX_SECURE_CIPHERTEXT_BYTES = ${b.secure_ciphertext_bytes} as const;
 export const MAX_LOGICAL_INNER_BYTES = ${b.logical_inner_bytes} as const;
 export const ARTIFACT_CHUNK_BYTES = ${b.artifact_chunk_bytes} as const;
+export const UPLOAD_CHUNK_BYTES = ${b.upload_chunk_bytes} as const;
 export const MAX_ARTIFACT_IDENTIFIER_UTF8_BYTES = ${b.artifact_identifier_utf8_bytes} as const;
 export const MAX_ARTIFACT_OFFSET_SAFE_INTEGER = ${b.artifact_offset_max_safe_integer} as const;
 export const MAX_SESSION_RECORDS_PER_DIRECTION = ${b.session_records_per_direction} as const;

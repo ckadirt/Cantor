@@ -139,6 +139,10 @@ test('structural manifest mistakes fail before anything is generated', async () 
       'an artifact chunk that cannot hold its header',
       spec => (spec.bounds.artifact_chunk_bytes = spec.bounds.logical_inner_bytes),
     ],
+    [
+      'an upload chunk whose base64 overflows a logical message',
+      spec => (spec.bounds.upload_chunk_bytes = spec.bounds.logical_inner_bytes),
+    ],
   ];
   for (const [description, mutate] of mutations) {
     const spec = await committedSpec();

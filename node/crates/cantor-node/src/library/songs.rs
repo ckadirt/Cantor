@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use cantor_proto::{
-    ArtifactView, GenerationRequest, LibraryChange, LibraryChangeKind, MAX_TAG_BYTES, MAX_TAGS,
-    MAX_TITLE_BYTES, SongDetail, SongHeader, SongPatch,
+    ArtifactView, AudioAct, GenerationRequest, LibraryChange, LibraryChangeKind, MAX_TAG_BYTES,
+    MAX_TAGS, MAX_TITLE_BYTES, SongDetail, SongHeader, SongOrigin, SongPatch,
 };
 use hmac::{Hmac, Mac};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
@@ -358,11 +358,13 @@ impl Library {
         let Some((song, _)) = header_by_id(&self.connection, Some(&principal), id)? else {
             return Ok(None);
         };
-        let (request_json, attempt): (String, u32) = self.connection.query_row(
-            "SELECT request_json,attempt FROM jobs WHERE principal_id=?1 AND id=?2",
-            params![principal, id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
+        let (request_json, attempt, written_lyrics): (String, u32, Option<String>) =
+            self.connection.query_row(
+                "SELECT request_json,attempt,written_lyrics FROM jobs
+                 WHERE principal_id=?1 AND id=?2",
+                params![principal, id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
         let generation = serde_json::from_str(&request_json)?;
         let sidecar: serde_json::Value = serde_json::from_reader(File::open(
             self.root
@@ -391,6 +393,7 @@ impl Library {
         Ok(Some(SongDetail {
             song,
             generation,
+            written_lyrics,
             engine,
             component_digests,
             attempts: attempt,
@@ -638,8 +641,11 @@ fn header_by_id(
         .query_row(
             "SELECT s.id,s.metadata_revision,s.title,s.caption_summary,s.created_at,
              s.duration_ms,s.model_selector,s.seed,s.favorite,s.tags_json,
-             s.trashed_at,s.principal_id
+             s.trashed_at,s.principal_id,
+             json_extract(j.request_json,'$.audio.act'),
+             json_extract(j.request_json,'$.audio.source.song_id')
              FROM songs s JOIN artifacts a ON a.job_id=s.id AND a.kind='master'
+             LEFT JOIN jobs j ON j.id=s.id
              WHERE s.id=?1 AND (?2 IS NULL OR s.principal_id=?2)",
             params![id, principal],
             |row| {
@@ -678,6 +684,19 @@ fn header_by_id(
                         tags,
                         trashed: row.get::<_, Option<String>>(10)?.is_some(),
                         artifacts: Vec::new(),
+                        // A song's id is its job's, so where it came from is
+                        // read off the request that made it; nothing is stored
+                        // twice.
+                        derived_from: row
+                            .get::<_, Option<String>>(12)?
+                            .and_then(|act| {
+                                serde_json::from_value::<AudioAct>(serde_json::Value::String(act))
+                                    .ok()
+                            })
+                            .map(|act| SongOrigin {
+                                act,
+                                song_id: row.get::<_, Option<String>>(13).ok().flatten(),
+                            }),
                     },
                     row.get(11)?,
                 ))

@@ -50,6 +50,7 @@
     "secure_ciphertext_bytes": 98304,
     "logical_inner_bytes": 1048576,
     "artifact_chunk_bytes": 65536,
+    "upload_chunk_bytes": 49152,
     "artifact_identifier_utf8_bytes": 256,
     "artifact_offset_max_safe_integer": 9007199254740991,
     "session_records_per_direction": 1000000,

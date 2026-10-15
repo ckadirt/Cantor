@@ -232,6 +232,22 @@ pub(super) async fn run_pull<W: tokio::io::AsyncWrite + Unpin>(
         }
     }
 
+    // Load the engine now, so what it does with audio is advertised before
+    // anyone generates with it rather than after the first job.
+    {
+        let events = events.clone();
+        let store_root = plan.store_root.clone();
+        let backends_url = plan.backends_url.clone();
+        let pinned = plan.backend.clone();
+        tokio::spawn(async move {
+            if crate::capabilities::probe_engines(&store_root, &backends_url, pinned.as_deref())
+                .await
+            {
+                let _ = events.send(NodeEvent::NodeInfoChanged).await;
+            }
+        });
+    }
+
     write_line(
         writer,
         &json!({"v": CONTROL_VERSION, "id": id, "t": "ok",

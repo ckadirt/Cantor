@@ -39,6 +39,16 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
         .unwrap_or(false);
     let principal = PrincipalId::local_operator();
     let local_key = [0_u8; 32];
+    let mut request = request.clone();
+    if let Some(file) = request
+        .get("source_file")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+    {
+        let upload_id = upload_local_file(state, principal, &local_key, &file).await?;
+        request["audio"]["source"] = json!({"kind": "upload", "upload_id": upload_id});
+    }
+    let request = &request;
 
     let (job, notify) = {
         let mut locked = state
@@ -81,6 +91,9 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
             }
             crate::library::SubmitResult::Conflict => {
                 bail!("the generated local submission ID conflicted")
+            }
+            crate::library::SubmitResult::SourceUnavailable => {
+                bail!("the source is not a committed upload or song of this node's operator")
             }
         };
         (job, Arc::clone(&locked.job_notify))
@@ -167,6 +180,75 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
     }
 }
 
+/// Send a local file through the same upload path an app uses, so a CLI
+/// source reaches the engine exactly as a phone's would. Decoded once out of
+/// the state lock to measure it; the commit only records that length.
+async fn upload_local_file(
+    state: &SharedState,
+    principal: PrincipalId,
+    key: &[u8; 32],
+    file: &std::path::Path,
+) -> Result<String> {
+    use sha2::{Digest, Sha256};
+
+    let bytes = tokio::fs::read(file)
+        .await
+        .with_context(|| format!("cannot read {}", file.display()))?;
+    if bytes.len() as u64 > crate::library::MAX_UPLOAD_BYTES {
+        bail!("{} is larger than an upload may be", file.display());
+    }
+    let path = file.to_owned();
+    let seconds = tokio::task::spawn_blocking(move || {
+        crate::audio::pcm::decode_file(&path, f64::from(cantor_proto::MAX_SONG_SECONDS) + 1.0)
+            .map(|pcm| pcm.seconds())
+    })
+    .await
+    .context("decoding stopped")??;
+    let sha256 = Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let media_type = match file
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        Some("flac") => "audio/flac",
+        Some("m4a" | "aac" | "mp4") => "audio/mp4",
+        Some("ogg" | "oga") => "audio/ogg",
+        Some("aif" | "aiff") => "audio/aiff",
+        _ => "application/octet-stream",
+    };
+    let mut locked = state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+    let library = &mut locked.library;
+    let id = match library.open_upload(principal, key, &sha256, bytes.len() as u64, media_type)? {
+        crate::library::UploadOpen::Ready { id, received } => {
+            if received < bytes.len() as u64 {
+                library.write_upload_chunk(
+                    principal,
+                    &id,
+                    received,
+                    &bytes[received as usize..],
+                )?;
+            }
+            id
+        }
+        crate::library::UploadOpen::TooLarge => bail!("{} is too large", file.display()),
+        crate::library::UploadOpen::Conflict => {
+            bail!("the same bytes were already sent under another media type")
+        }
+    };
+    match library.commit_upload(principal, &id, |_| Ok(seconds))? {
+        crate::library::UploadCommit::Committed { .. } => Ok(id),
+        other => bail!("the upload of {} did not commit: {other:?}", file.display()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::Path;
@@ -213,6 +295,8 @@ mod tests {
                         stages: Vec::new(),
                         parameters: Vec::new(),
                         lyrics: None,
+                        capabilities: None,
+                        audio: None,
                     },
                 )
                 .expect("installed marker");

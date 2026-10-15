@@ -2,4 +2,10 @@
 import type { GenerationRequest } from "./GenerationRequest";
 import type { SongHeader } from "./SongHeader";
 
-export type SongDetail = { song: SongHeader, generation: GenerationRequest, engine: string, component_digests: Array<string>, attempts: number, };
+export type SongDetail = { song: SongHeader, generation: GenerationRequest, 
+/**
+ * The words the model wrote, when it was asked to write them
+ * (`generation.lyrics` absent). Absent for words someone gave it, and for
+ * songs made before a node recorded them.
+ */
+written_lyrics?: string, engine: string, component_digests: Array<string>, attempts: number, };

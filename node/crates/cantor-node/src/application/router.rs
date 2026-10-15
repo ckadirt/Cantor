@@ -13,6 +13,7 @@ use crate::pairing::PairOffer;
 use super::jobs;
 use super::session::ClientSession;
 use super::songs;
+use super::uploads;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn handle(
@@ -72,6 +73,39 @@ pub(super) fn handle(
             session.authenticated(),
             library,
         ),
+        ClientMessage::UploadOpen {
+            v,
+            id,
+            sha256,
+            bytes,
+            media_type,
+        } => uploads::open(
+            v,
+            id,
+            sha256,
+            bytes,
+            media_type,
+            session.authenticated(),
+            library,
+        ),
+        ClientMessage::UploadChunk {
+            v,
+            id,
+            upload_id,
+            offset,
+            data,
+        } => uploads::chunk(
+            v,
+            id,
+            upload_id,
+            offset,
+            data,
+            session.authenticated(),
+            library,
+        ),
+        ClientMessage::UploadCommit { v, id, upload_id } => {
+            uploads::commit(v, id, upload_id, session.authenticated(), library)
+        }
         ClientMessage::JobCreate {
             v,
             id,

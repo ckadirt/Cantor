@@ -9,11 +9,11 @@ use std::sync::atomic::AtomicU8;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use cantor_proto::{ErrorCode, GenerationStage, JobView, ProgressUnit};
+use cantor_proto::{ErrorCode, GenerationStage, JobView, MAX_LYRICS_BYTES, ProgressUnit};
 use tokio::sync::mpsc;
 
 use super::WorkerFailure;
-use super::plan::GenerationPlan;
+use super::plan::{GenerationPlan, SourceRestore};
 use super::worker::{GenerationCommand, GenerationDriver};
 use crate::checkpoints::{self, CheckpointOutcome, CheckpointReference, EngineProvenance};
 use crate::engine::{self, LoadOptions, Stage};
@@ -57,6 +57,8 @@ impl GenerationDriver for NativeGenerationDriver {
             components,
             options,
             request,
+            entry,
+            restore,
         } = plan;
         let result = run_generation(
             &state,
@@ -67,6 +69,7 @@ impl GenerationDriver for NativeGenerationDriver {
             &components,
             options,
             &request,
+            Entry { entry, restore },
             &mut self.cached,
         );
         // Native engines may retain budgeted stage caches even with this flag
@@ -76,6 +79,12 @@ impl GenerationDriver for NativeGenerationDriver {
         }
         result
     }
+}
+
+/// Where an audio act enters, and what it puts back after decoding.
+struct Entry {
+    entry: Option<Stage>,
+    restore: Option<SourceRestore>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -88,8 +97,10 @@ fn run_generation(
     components: &[(String, PathBuf)],
     options: LoadOptions,
     request: &Request,
+    entry: Entry,
     cached: &mut Option<CachedGeneration>,
 ) -> std::result::Result<(), WorkerFailure> {
+    let family_was_known = engine::loaded_capabilities(&work.engine).is_some();
     let selection = engine::select(attempts).map_err(|error| {
         WorkerFailure::with_source(
             ErrorCode::ModelUnavailable,
@@ -102,6 +113,11 @@ fn run_generation(
         eprintln!("engine.rejected backend={backend} reason={reason}");
     }
     let engine = selection.engine;
+    if !family_was_known {
+        // The first build of this family this process has loaded: what the
+        // node can advertise about it may have just changed.
+        let _ = events.try_send(NodeEvent::NodeInfoChanged);
+    }
     if engine.model != work.engine {
         return Err(WorkerFailure::permanent(
             ErrorCode::ModelUnavailable,
@@ -128,10 +144,24 @@ fn run_generation(
     // pass — and the request JSON is what that first stage consumes either way.
     let (mut stage, mut input) = match selected.source {
         Some(source) => (source.stage, source.input),
-        None => (
-            engine.first_stage(),
-            Generation::initial_state(request).map_err(WorkerFailure::from_internal)?,
-        ),
+        None => {
+            let first = match entry.entry {
+                Some(stage) if engine.supports(stage) => stage,
+                Some(stage) => {
+                    return Err(WorkerFailure::with_source(
+                        ErrorCode::ModelUnavailable,
+                        false,
+                        "This engine cannot start where an audio act starts.",
+                        anyhow::anyhow!("the engine does not run the {} stage", stage.as_str()),
+                    ));
+                }
+                None => engine.first_stage(),
+            };
+            (
+                first,
+                Generation::initial_state(request).map_err(WorkerFailure::from_internal)?,
+            )
+        }
     };
     let key = GenerationKey {
         engine_directory: engine.directory.clone(),
@@ -169,6 +199,9 @@ fn run_generation(
         if settle_standing_stop(state, events, work, signal, None, stage)? {
             return Ok(());
         }
+        if stage == Stage::Diffuse && request.lyrics.is_none() {
+            record_written_lyrics(state, work, &input);
+        }
         let mut last_stage = stage;
         let mut last_persisted = Instant::now();
         let should_stop = || StopReason::load(signal) != StopReason::None;
@@ -204,7 +237,10 @@ fn run_generation(
                     settle_standing_stop(state, events, work, signal, None, Stage::Decode)?;
                     return Ok(());
                 }
-                let audio = generation.audio().map_err(WorkerFailure::from_internal)?;
+                let mut audio = generation.audio().map_err(WorkerFailure::from_internal)?;
+                if let Some(restore) = &entry.restore {
+                    restore_source(&mut audio, restore);
+                }
                 let finalizing = state
                     .lock()
                     .map_err(|_| WorkerFailure::internal("Node state is unavailable."))?
@@ -301,6 +337,58 @@ fn run_generation(
                 input = resume;
             }
         }
+    }
+}
+
+/// Put an extension's source back over its part of the result. A failure here
+/// costs only exactness: the engine already kept the source's latents, so the
+/// audio is a close copy either way.
+/// Diffusion's input is the request as planned: when the model was asked to
+/// write the words, they are in it. Fresh or resumed, every job that diffuses
+/// passes here with that JSON (a paused diffusion's resume blob is not JSON,
+/// and its words were kept when it first began). Never fails the job: a song
+/// without its written words is still the song.
+fn record_written_lyrics(state: &SharedState, work: &WorkItem, input: &[u8]) {
+    let Some(lyrics) = planned_lyrics(input) else {
+        return;
+    };
+    let recorded = state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("node state is unavailable"))
+        .and_then(|mut locked| locked.library.record_written_lyrics(work, &lyrics));
+    if let Err(error) = recorded {
+        eprintln!("lyrics.record_failed job={} cause={error:#}", work.id);
+    }
+}
+
+/// The words in a planned request: trimmed, not empty, within the wire's bound.
+fn planned_lyrics(input: &[u8]) -> Option<String> {
+    let planned = serde_json::from_slice::<serde_json::Value>(input).ok()?;
+    planned
+        .get("lyrics")?
+        .as_str()
+        .map(str::trim)
+        .filter(|lyrics| !lyrics.is_empty() && lyrics.len() <= MAX_LYRICS_BYTES as usize)
+        .map(str::to_owned)
+}
+
+fn restore_source(audio: &mut crate::generate::Audio, restore: &SourceRestore) {
+    match crate::audio::pcm::read_wav16(&restore.source) {
+        Ok(source) => {
+            let offset = (restore.offset_seconds * f64::from(audio.sample_rate)).round() as usize;
+            if !crate::audio::prepare::restore_source(
+                &mut audio.planar,
+                audio.sample_rate,
+                &source,
+                offset,
+            ) {
+                eprintln!(
+                    "audio.restore_skipped rate={} source_rate={}",
+                    audio.sample_rate, source.rate
+                );
+            }
+        }
+        Err(error) => eprintln!("audio.restore_failed cause={error:#}"),
     }
 }
 
@@ -452,4 +540,23 @@ fn persist_progress(
 
 fn emit(events: &mpsc::Sender<NodeEvent>, principal_id: PrincipalId, job: JobView) {
     let _ = events.try_send(NodeEvent::JobUpdated { principal_id, job });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::planned_lyrics;
+
+    #[test]
+    fn planned_lyrics_reads_the_words_a_plan_wrote() {
+        let planned = br#"{"caption":"x","lyrics":"  [verse]\nwritten  ","bpm":96}"#;
+        assert_eq!(planned_lyrics(planned).as_deref(), Some("[verse]\nwritten"));
+        assert_eq!(planned_lyrics(br#"{"caption":"x","lyrics":"   "}"#), None);
+        assert_eq!(planned_lyrics(br#"{"caption":"x"}"#), None);
+        assert_eq!(planned_lyrics(b"\x00resume blob"), None);
+        let long = format!(
+            r#"{{"lyrics":"{}"}}"#,
+            "a".repeat(cantor_proto::MAX_LYRICS_BYTES as usize + 1)
+        );
+        assert_eq!(planned_lyrics(long.as_bytes()), None);
+    }
 }

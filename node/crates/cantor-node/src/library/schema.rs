@@ -81,6 +81,23 @@ CREATE TABLE IF NOT EXISTS library_changes (
 );
 "#;
 
+const MIGRATION_006: &str = r#"
+CREATE TABLE IF NOT EXISTS uploads (
+  id TEXT PRIMARY KEY,
+  principal_id TEXT NOT NULL REFERENCES principals(id),
+  sha256 TEXT NOT NULL,
+  bytes INTEGER NOT NULL CHECK(bytes > 0),
+  media_type TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('receiving','committed')),
+  received INTEGER NOT NULL DEFAULT 0 CHECK(received >= 0),
+  seconds REAL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER,
+  UNIQUE(principal_id, sha256)
+);
+CREATE INDEX IF NOT EXISTS uploads_expiry ON uploads(expires_at);
+"#;
+
 pub(super) fn migrate(connection: &Connection) -> Result<()> {
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA synchronous=FULL;",
@@ -133,6 +150,18 @@ pub(super) fn migrate(connection: &Connection) -> Result<()> {
     )?;
     connection.execute(
         "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(5,?1,?2)",
+        params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
+    )?;
+    // Uploads: files a phone sends as the source of an audio act.
+    connection.execute_batch(MIGRATION_006)?;
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(6,?1,?2)",
+        params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
+    )?;
+    // The words a model wrote when it was asked to write them.
+    add_column_if_missing(connection, "jobs", "written_lyrics", "TEXT")?;
+    connection.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,applied_at,binary_version) VALUES(7,?1,?2)",
         params![now_rfc3339(), env!("CARGO_PKG_VERSION")],
     )?;
     let check: String = connection.query_row("PRAGMA quick_check", [], |row| row.get(0))?;

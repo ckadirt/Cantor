@@ -6,6 +6,7 @@
 //! rather than treated as an error, so a catalog written for a newer node never
 //! stops an older one from starting.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -73,6 +74,61 @@ pub struct Variant {
     pub parameters: Vec<ModelParameter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lyrics: Option<cantor_proto::LyricsCapabilities>,
+    /// What these weights can do with audio. The engine build has its own say;
+    /// the node advertises only what both declare. Unknown kinds are dropped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<cantor_proto::Capabilities>,
+    /// How this engine is told to do those things. Never sent to an app.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<AudioBinding>,
+}
+
+/// How an engine takes audio, in its own field names.
+///
+/// The node never names an engine's fields itself, any more than it does for
+/// `parameters`: the catalog says that `src_audio_path` is where ACE-Step reads
+/// a source and which of its tasks a close cover is. That also makes tuning a
+/// data change. The values a listening session settles are catalog edits, not a
+/// node release.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct AudioBinding {
+    /// The request field that takes the source's path.
+    pub source_field: String,
+    /// The request field that takes a timbre reference's path, for `timbre`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reference_field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cover: Option<CoverBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extend: Option<ExtendBinding>,
+}
+
+/// The engine fields for each stop of `closeness`, close to free.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct CoverBinding {
+    /// For a finished recording: a song, an imported file.
+    pub song: Vec<CoverStop>,
+    /// For a tune someone made. Empty means the song stops serve both.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tune: Vec<CoverStop>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct CoverStop {
+    /// Where on 0 (close) to 1 (free) this stop sits. A request takes the
+    /// nearest one.
+    pub closeness: f32,
+    pub fields: BTreeMap<String, Value>,
+}
+
+/// An extension as a region: these fields, plus where the new part starts and
+/// ends in seconds of the source's timeline, before it (negative) or past it.
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
+pub struct ExtendBinding {
+    #[serde(default)]
+    pub fields: BTreeMap<String, Value>,
+    pub start_field: String,
+    pub end_field: String,
 }
 
 /// Keep the parameters this build understands and silently drop the rest.
@@ -202,6 +258,12 @@ impl Catalog {
     }
 
     pub async fn fetch(url: &str) -> Result<Self> {
+        Self::parse(&Self::fetch_raw(url).await?)
+    }
+
+    /// The catalog's bytes, for a node that keeps a copy to answer from while
+    /// offline. Parsed before it is returned, so a cache never holds garbage.
+    pub async fn fetch_raw(url: &str) -> Result<String> {
         let raw = reqwest::Client::builder()
             .user_agent(concat!("cantor/", env!("CARGO_PKG_VERSION")))
             .timeout(CATALOG_TIMEOUT)
@@ -216,7 +278,8 @@ impl Catalog {
             .text()
             .await
             .context("failed to read the catalog")?;
-        Self::parse(&raw)
+        Self::parse(&raw)?;
+        Ok(raw)
     }
 
     /// Resolves `model:tag`. The error names what is available, because a typo

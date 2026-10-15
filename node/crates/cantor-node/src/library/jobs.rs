@@ -107,6 +107,9 @@ pub enum SubmitResult {
     Conflict,
     QueueFull,
     InsufficientDisk,
+    /// The upload the request starts from is not a committed upload of this
+    /// principal. Checked inside the admission transaction, where it is pinned.
+    SourceUnavailable,
 }
 
 impl Library {
@@ -190,6 +193,20 @@ impl Library {
             "INSERT OR IGNORE INTO principals(id,kind,public_key,created_at) VALUES(?1,'app_key',?2,?3)",
             params![principal, public_key, now],
         )?;
+        if let Some(cantor_proto::AudioSource::Upload { upload_id }) = submission
+            .generation
+            .audio
+            .as_ref()
+            .map(|audio| &audio.source)
+            && !super::uploads::pin_for_job(&transaction, &principal, upload_id)?
+        {
+            transaction.rollback()?;
+            // No row was written, so the sidecars written above describe a
+            // job that never existed. Remove them now rather than leave them
+            // for startup reconciliation to judge.
+            std::fs::remove_dir_all(&directory).ok();
+            return Ok(SubmitResult::SourceUnavailable);
+        }
         transaction.execute(
             "INSERT INTO jobs(id,principal_id,client_request_id,request_hash,model_selector,request_json,state,revision,created_at,updated_at)
              VALUES(?1,?2,?3,?4,?5,?6,'queued',1,?7,?7)",
@@ -425,6 +442,12 @@ impl Library {
             return Ok(ForgetResult::Refused(current));
         }
 
+        let upload: Option<String> = self.connection.query_row(
+            "SELECT json_extract(request_json,'$.audio.source.upload_id') FROM jobs
+             WHERE principal_id=?1 AND id=?2",
+            params![principal_hex, id],
+            |row| row.get(0),
+        )?;
         let transaction = self.connection.transaction()?;
         transaction.execute("DELETE FROM artifacts WHERE job_id=?1", params![id])?;
         let removed = transaction.execute(
@@ -437,6 +460,9 @@ impl Library {
                 .get(principal, id)?
                 .context("forgotten job disappeared")?;
             return Ok(ForgetResult::Conflict(current));
+        }
+        if let Some(upload) = upload {
+            super::uploads::release_for_job(&transaction, &principal_hex, &upload)?;
         }
         transaction.commit()?;
 
@@ -664,6 +690,18 @@ impl Library {
             .context("checkpointed job disappeared")?;
         write_status(&work.artifact_directory, &job, work.attempt)?;
         Ok(Some(job))
+    }
+
+    /// Keep the words a model wrote for this attempt, for the song's detail.
+    /// A superseded attempt writes nothing.
+    pub fn record_written_lyrics(&mut self, work: &WorkItem, lyrics: &str) -> Result<bool> {
+        let changed = self.connection.execute(
+            "UPDATE jobs SET written_lyrics=?4
+             WHERE id=?1 AND principal_id=?2 AND attempt=?3 AND state IN
+               ('preparing','running','pause_requested','cancel_requested')",
+            params![work.id, work.principal_id.to_string(), work.attempt, lyrics],
+        )?;
+        Ok(changed == 1)
     }
 
     pub fn finish_paused(

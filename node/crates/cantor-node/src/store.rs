@@ -59,6 +59,14 @@ pub struct InstalledVariant {
     pub parameters: Vec<ModelParameter>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lyrics: Option<cantor_proto::LyricsCapabilities>,
+    /// What the weights can do with audio, copied from the catalog at install
+    /// time. Absent on markers written before capabilities existed, which the
+    /// node fills from its cached catalog when the components still match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<cantor_proto::Capabilities>,
+    /// How the engine takes audio, copied from the catalog with `capabilities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio: Option<crate::catalog::AudioBinding>,
 }
 
 impl InstalledVariant {
@@ -184,6 +192,8 @@ impl Store {
             vram_bytes: variant.needs.vram_bytes,
             stages: variant.stages.clone(),
             lyrics: variant.lyrics.clone(),
+            capabilities: variant.capabilities.clone(),
+            audio: variant.audio.clone(),
             // A variant whose declarations collide is stored as declaring
             // nothing: half a control set is worse than none.
             parameters: if variant.declarations_are_sound() {
@@ -462,6 +472,8 @@ mod tests {
             stages: Vec::new(),
             parameters: Vec::new(),
             lyrics: None,
+            capabilities: None,
+            audio: None,
         }
     }
 

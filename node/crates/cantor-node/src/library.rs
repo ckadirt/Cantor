@@ -12,6 +12,7 @@ mod rows;
 mod schema;
 mod sidecars;
 mod songs;
+mod uploads;
 
 #[cfg(test)]
 mod contract_tests;
@@ -37,6 +38,7 @@ pub use self::jobs::{
 pub use self::songs::{
     ChangePage, ChangePageResult, MutationResult, PresenceMutation, SongPage, SongPageResult,
 };
+pub use self::uploads::{MAX_UPLOAD_BYTES, UploadChunk, UploadCommit, UploadOpen};
 #[cfg(test)]
 use crate::principal::PrincipalId;
 #[cfg(test)]
@@ -58,7 +60,7 @@ impl Library {
     pub fn open(root: impl Into<PathBuf>) -> Result<Self> {
         let root = root.into();
         prepare_real_directory(&root)?;
-        for child in ["jobs", "tmp", "trash", "quarantine"] {
+        for child in ["jobs", "tmp", "trash", "quarantine", "uploads"] {
             prepare_real_directory(&root.join(child))?;
         }
         let database = root.join("library.db");
@@ -76,6 +78,7 @@ impl Library {
         library.reconcile_startup()?;
         library.recover_interrupted_jobs()?;
         library.backfill_completed_songs()?;
+        library.sweep_uploads()?;
         Ok(library)
     }
 
@@ -112,6 +115,8 @@ mod tests {
             stages: Vec::new(),
             parameters: Vec::new(),
             lyrics: None,
+            capabilities: None,
+            audio: None,
         }
     }
     fn submission(caption: &str) -> Submission {
@@ -121,6 +126,7 @@ mod tests {
             generation: GenerationRequest {
                 caption: caption.into(),
                 lyrics: None,
+                audio: None,
                 duration: Some(60),
                 steps: None,
                 cfg: None,
@@ -167,7 +173,7 @@ mod tests {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap()
         };
-        assert_eq!(versions, vec![1, 2, 3, 4, 5]);
+        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
         drop(library);
 
         let reopened = Library::open(temporary.path()).unwrap();
@@ -997,6 +1003,54 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn written_lyrics_reach_the_song_detail_from_the_running_attempt_only() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        for title in ["written", "given"] {
+            library
+                .submit(principal(1), &[2; 32], &submission(title), &variant(), 20, 0)
+                .unwrap();
+        }
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        let stale = WorkItem {
+            attempt: work.attempt + 1,
+            ..work.clone()
+        };
+        assert!(!library.record_written_lyrics(&stale, "not this").unwrap());
+        assert!(
+            library
+                .record_written_lyrics(&work, "[verse]\nthe model's words")
+                .unwrap()
+        );
+        library
+            .record_progress(&work, GenerationStage::Decode, 1, Some(1), ProgressUnit::Tiles)
+            .unwrap();
+        library.begin_finalizing(&work).unwrap();
+        library
+            .complete(
+                &work,
+                &crate::generate::Audio {
+                    planar: vec![0.0, 0.5, -0.5, 0.0],
+                    sample_rate: 1_000,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        let detail = library.song_detail(principal(1), &work.id).unwrap().unwrap();
+        assert_eq!(
+            detail.written_lyrics.as_deref(),
+            Some("[verse]\nthe model's words")
+        );
+        let json = serde_json::to_value(&detail).unwrap();
+        assert_eq!(json["written_lyrics"], "[verse]\nthe model's words");
+
+        let (other, _) = complete_next(&mut library);
+        let detail = library.song_detail(principal(1), &other.id).unwrap().unwrap();
+        assert_eq!(detail.written_lyrics, None);
+        assert!(serde_json::to_value(&detail).unwrap().get("written_lyrics").is_none());
     }
 
     #[test]

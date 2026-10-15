@@ -37,6 +37,8 @@ fn variant() -> InstalledVariant {
         stages: Vec::new(),
         parameters: Vec::new(),
         lyrics: None,
+        capabilities: None,
+        audio: None,
     }
 }
 
@@ -47,6 +49,7 @@ fn submission(caption: &str) -> Submission {
         generation: GenerationRequest {
             caption: caption.into(),
             lyrics: None,
+            audio: None,
             duration: Some(60),
             steps: None,
             cfg: None,

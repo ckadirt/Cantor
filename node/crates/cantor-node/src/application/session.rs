@@ -222,6 +222,7 @@ mod tests {
                 stages: None,
                 parameters: None,
                 lyrics: None,
+                capabilities: None,
             }],
             limits: NodeLimits {
                 max_concurrent_jobs: 0,
@@ -231,6 +232,8 @@ mod tests {
                 max_caption_bytes: 1_024,
                 max_lyrics_bytes: 65_536,
                 max_page_limit: 100,
+                max_upload_bytes: None,
+                max_source_seconds: None,
             },
             load: NodeLoad {
                 active_jobs: 0,
@@ -245,7 +248,10 @@ mod tests {
                 secure_tunnel: false,
                 job_controls: false,
                 job_forget: false,
+                audio_sources: false,
+                uploads: false,
             },
+            installable: None,
         }
     }
 
@@ -875,6 +881,8 @@ mod tests {
             stages: Vec::new(),
             parameters: Vec::new(),
             lyrics: None,
+            capabilities: None,
+            audio: None,
         };
         let accepted = match library
             .submit(
@@ -886,6 +894,7 @@ mod tests {
                     generation: cantor_proto::GenerationRequest {
                         caption: "control".into(),
                         lyrics: None,
+                        audio: None,
                         duration: Some(15),
                         steps: Some(1),
                         cfg: None,

@@ -1,6 +1,8 @@
 mod accel;
 mod application;
+mod audio;
 mod backends;
+mod capabilities;
 mod catalog;
 mod checkpoints;
 mod config;
@@ -55,11 +57,14 @@ Usage:
   cantor start | stop | restart
   cantor logs      [--follow] [--lines N]
   cantor pull      [<model:tag>]   # no argument opens a chooser
-  cantor list      [--all]
+  cantor list      [--all] [--can cover|extend|timbre]
   cantor rm        <model:tag>
   cantor backends  [--install] [--use cpu|cuda12|metal|vulkan] [--keep-loaded on|off]
   cantor generate  <caption> [--model model:tag] [-o out.wav] [--detach]
                    [--lyrics TEXT] [--duration SECONDS] [--steps N] [--cfg N] [--seed N]
+                   [--version-of SONG [--closeness 0..1] [--keep-voice]]
+                   [--longer SONG --add SECONDS [--at start|end]]
+                   [--source FILE [--tune] [--tile SECONDS] [--closeness 0..1]]
   cantor upgrade   [--check]
 
 Options common to every command:
@@ -113,6 +118,16 @@ struct Cli {
     seed: Option<u64>,
     output: Option<String>,
     detach: bool,
+    version_of: Option<String>,
+    longer: Option<String>,
+    add: Option<u32>,
+    at_start: bool,
+    source: Option<String>,
+    tune: bool,
+    tile: Option<u32>,
+    closeness: Option<f32>,
+    keep_voice: bool,
+    can: Option<String>,
     positional: Vec<String>,
 }
 
@@ -170,6 +185,16 @@ impl Cli {
             seed: None,
             output: None,
             detach: false,
+            version_of: None,
+            longer: None,
+            add: None,
+            at_start: false,
+            source: None,
+            tune: false,
+            tile: None,
+            closeness: None,
+            keep_voice: false,
+            can: None,
             positional: Vec::new(),
         };
         while let Some(option) = args.next() {
@@ -224,6 +249,26 @@ impl Cli {
                 Some("--cfg") => cli.cfg = Some(next_utf8_value(&mut args, "--cfg")?.parse()?),
                 Some("--seed") => cli.seed = Some(next_utf8_value(&mut args, "--seed")?.parse()?),
                 Some("--detach") => cli.detach = true,
+                Some("--version-of") => {
+                    cli.version_of = Some(next_utf8_value(&mut args, "--version-of")?)
+                }
+                Some("--longer") => cli.longer = Some(next_utf8_value(&mut args, "--longer")?),
+                Some("--add") => cli.add = Some(next_utf8_value(&mut args, "--add")?.parse()?),
+                Some("--at") => {
+                    cli.at_start = match next_utf8_value(&mut args, "--at")?.as_str() {
+                        "start" => true,
+                        "end" => false,
+                        _ => bail!("--at expects start or end"),
+                    }
+                }
+                Some("--source") => cli.source = Some(next_utf8_value(&mut args, "--source")?),
+                Some("--tune") => cli.tune = true,
+                Some("--tile") => cli.tile = Some(next_utf8_value(&mut args, "--tile")?.parse()?),
+                Some("--closeness") => {
+                    cli.closeness = Some(next_utf8_value(&mut args, "--closeness")?.parse()?)
+                }
+                Some("--keep-voice") => cli.keep_voice = true,
+                Some("--can") => cli.can = Some(next_utf8_value(&mut args, "--can")?),
                 Some("--version") | Some("-V") => {
                     println!("cantor {}", update::CURRENT_VERSION);
                     std::process::exit(0);
@@ -348,12 +393,80 @@ async fn run(cli: Cli) -> Result<()> {
     tokio::spawn(control::serve(listener, state.clone(), events_tx.clone()));
     tokio::spawn(jobs::run(state.clone(), events_tx.clone()));
     tokio::spawn(delivery::run(state.clone(), events_tx.clone()));
+    tokio::spawn(capabilities::run(state.clone(), events_tx.clone()));
+    // Uploads no job uses expire after a day; the library also sweeps at open.
+    {
+        let state = state.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(capabilities::REFRESH_EVERY).await;
+                let swept = state
+                    .lock()
+                    .map(|mut locked| locked.library.sweep_uploads());
+                if let Ok(Err(error)) = swept {
+                    eprintln!("uploads.sweep_failed cause={error:#}");
+                }
+            }
+        });
+    }
 
     let result = relay::run_forever(state, &identity, &mut events_rx, &events_tx).await;
     // The socket is not reusable once this process is gone, and a stale one
     // makes the next start look like a permissions problem.
     let _ = std::fs::remove_file(&socket_path);
     result
+}
+
+/// The audio prompt the generate flags describe, and the local file to send
+/// first when one is named. A local file becomes an upload inside the daemon,
+/// so the CLI and the app reach the engine by the same path.
+fn cli_audio_prompt(cli: &Cli) -> Result<(Option<Value>, Option<String>)> {
+    let chosen = [
+        cli.version_of.is_some(),
+        cli.longer.is_some(),
+        cli.source.is_some(),
+    ]
+    .iter()
+    .filter(|set| **set)
+    .count();
+    if chosen > 1 {
+        bail!("pick one of --version-of, --longer and --source");
+    }
+    if let Some(song) = &cli.version_of {
+        return Ok((
+            Some(
+                json!({"source": {"kind": "song", "song_id": song}, "act": "cover",
+                        "closeness": cli.closeness, "keep_voice": cli.keep_voice.then_some(true)}),
+            ),
+            None,
+        ));
+    }
+    if let Some(song) = &cli.longer {
+        let added = cli.add.context("--longer needs --add SECONDS")?;
+        return Ok((
+            Some(
+                json!({"source": {"kind": "song", "song_id": song}, "act": "extend",
+                        "extend_seconds": added,
+                        "extend_at": if cli.at_start { "start" } else { "end" }}),
+            ),
+            None,
+        ));
+    }
+    if let Some(file) = &cli.source {
+        let absolute = std::path::absolute(file)
+            .with_context(|| format!("cannot resolve {file}"))?
+            .display()
+            .to_string();
+        return Ok((
+            Some(
+                json!({"source": {"kind": "upload", "upload_id": "local"}, "act": "cover",
+                        "closeness": cli.closeness, "tile_to_seconds": cli.tile,
+                        "tune": cli.tune.then_some(true)}),
+            ),
+            Some(absolute),
+        ));
+    }
+    Ok((None, None))
 }
 
 async fn talk_to_daemon(cli: Cli) -> Result<()> {
@@ -417,6 +530,7 @@ async fn talk_to_daemon(cli: Cli) -> Result<()> {
 async fn streaming_command(cli: Cli) -> Result<()> {
     let socket_path = cli.connect_path()?;
     let id = "1";
+    let cli_can = cli.can.clone();
     let request = match cli.command {
         Command_::Pull => {
             let selector = match cli.positional.first() {
@@ -440,10 +554,12 @@ async fn streaming_command(cli: Cli) -> Result<()> {
                     .display()
                     .to_string()
             });
+            let (audio, source_file) = cli_audio_prompt(&cli)?;
             json!({"v": 1, "id": id, "t": "generate", "caption": caption,
                    "model": cli.model, "output": output, "detach": cli.detach,
                    "lyrics": cli.lyrics, "duration": cli.duration, "steps": cli.steps,
-                   "cfg": cli.cfg, "seed": cli.seed})
+                   "cfg": cli.cfg, "seed": cli.seed, "audio": audio,
+                   "source_file": source_file})
         }
         _ => json!({"v": 1, "id": id, "t": "catalog"}),
     };
@@ -479,7 +595,7 @@ async fn streaming_command(cli: Cli) -> Result<()> {
         eprintln!();
     }
     match response.get("t").and_then(Value::as_str) {
-        Some("catalog") => print_catalog(&response),
+        Some("catalog") => print_catalog(&response, cli_can.as_deref()),
         _ => {
             println!(
                 "{}",
@@ -804,7 +920,12 @@ fn print_progress(frame: &Value, rate: &mut DownloadRate) {
     eprint!("\r{line:<72}");
 }
 
-fn print_catalog(response: &Value) -> Result<()> {
+fn print_catalog(response: &Value, can: Option<&str>) -> Result<()> {
+    if let Some(kind) = can
+        && cantor_proto::CapabilityKind::parse(kind).is_none()
+    {
+        bail!("--can expects cover, extend, inpaint, timbre, add_track, separate or accompany");
+    }
     let installed: Vec<&str> = response
         .get("installed")
         .and_then(Value::as_array)
@@ -827,13 +948,19 @@ fn print_catalog(response: &Value) -> Result<()> {
     for model in models {
         let name = string_field(model, "name");
         let licence = string_field(model, "licence");
-        println!("{name}  ({licence})");
-        for variant in model
+        let variants: Vec<&Value> = model
             .get("variants")
             .and_then(Value::as_array)
             .map(Vec::as_slice)
             .unwrap_or_default()
-        {
+            .iter()
+            .filter(|variant| can.is_none_or(|kind| variant_can(variant, kind)))
+            .collect();
+        if variants.is_empty() {
+            continue;
+        }
+        println!("{name}  ({licence})");
+        for variant in variants {
             let tag = string_field(variant, "tag");
             let selector = format!("{name}:{tag}");
             let bytes: u64 = variant
@@ -853,11 +980,40 @@ fn print_catalog(response: &Value) -> Result<()> {
             } else {
                 ""
             };
-            println!("  {tag:<16} {:>10}  {mark}", store::human_bytes(bytes));
+            let kinds: Vec<&str> = variant
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .map(|capabilities| {
+                    capabilities
+                        .iter()
+                        .filter_map(|c| c.get("kind").and_then(Value::as_str))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let kinds = if kinds.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", kinds.join(" · "))
+            };
+            println!(
+                "  {tag:<16} {:>10}  {mark}{kinds}",
+                store::human_bytes(bytes)
+            );
         }
     }
     println!("\n{} free on this node.", store::human_bytes(available));
     Ok(())
+}
+
+fn variant_can(variant: &Value, kind: &str) -> bool {
+    variant
+        .get("capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|capabilities| {
+            capabilities
+                .iter()
+                .any(|c| c.get("kind").and_then(Value::as_str) == Some(kind))
+        })
 }
 
 fn print_response(command: Command_, response: &Value) -> Result<()> {
