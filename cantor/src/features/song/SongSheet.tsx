@@ -54,7 +54,7 @@ import {
   useReach,
 } from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
-import { FromIt, type SongAudioActs } from './FromIt';
+import { FromIt, type CopyWrap, type SongAudioActs } from './FromIt';
 import {
   plainTagsOf,
   playlistsOf,
@@ -971,7 +971,7 @@ function Front({
           <>
             <Rest />
             <Measure>
-              <FromIt acts={audioActs} disabled={locked} />
+              <FromIt acts={audioActs} copy={copyWrap} disabled={locked} />
             </Measure>
           </>
         ) : null}
@@ -1115,7 +1115,8 @@ function Back({
               </Row>
               <Row
                 label="Words"
-                note={written && words ? 'WRITTEN BY THE MODEL' : undefined}>
+                note={written && words ? 'WRITTEN BY THE MODEL' : undefined}
+              >
                 {words ? (
                   <Copy what="words" value={words}>
                     <Text style={[type.body, { color: pal.ink }]}>{words}</Text>
@@ -1356,6 +1357,13 @@ function Act({
     </Pressable>
   );
 }
+
+/** `From it`'s commands take the sheet's own copy mark. */
+const copyWrap: CopyWrap = (value, what, children) => (
+  <Copy value={value} what={what}>
+    {children}
+  </Copy>
+);
 
 /**
  * A fact with its copy mark beside it, level with its first line.
