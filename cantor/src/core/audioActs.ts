@@ -80,9 +80,22 @@ export function stagesFor(
 }
 
 /**
- * The model this node could install to do `act`: the smallest one that adds
- * the needed capability, or null when the node lists none (or has never
- * reached its catalog, in which case `installable` is undefined).
+ * Knob: the catalog tiers a shut door suggests, best first. Every family's
+ * tags end in one of `-fast`, `-balanced`, `-quality`; a version is worth the
+ * better weights, so `fast` is only suggested when nothing else would do.
+ */
+export const SUGGESTED_TIERS: readonly string[] = ['balanced', 'quality'];
+
+function tierRank(selector: string): number {
+  const rank = SUGGESTED_TIERS.findIndex(tier => selector.endsWith(`-${tier}`));
+  return rank < 0 ? SUGGESTED_TIERS.length : rank;
+}
+
+/**
+ * The model this node could install to do `act`: the first of
+ * `SUGGESTED_TIERS` that adds the needed capability, the smallest among
+ * equals, or null when the node lists none (or has never reached its catalog,
+ * in which case `installable` is undefined).
  */
 export function suggestionFor(
   node: NodeInfo,
@@ -93,7 +106,9 @@ export function suggestionFor(
     view.capabilities.includes(needed),
   );
   if (candidates.length === 0) return null;
-  return [...candidates].sort((a, b) => a.bytes - b.bytes)[0];
+  return [...candidates].sort(
+    (a, b) => tierRank(a.selector) - tierRank(b.selector) || a.bytes - b.bytes,
+  )[0];
 }
 
 /** Where an act stands on one node, for the door that offers it. */
