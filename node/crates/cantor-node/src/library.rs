@@ -1011,7 +1011,14 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         for title in ["written", "given"] {
             library
-                .submit(principal(1), &[2; 32], &submission(title), &variant(), 20, 0)
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &submission(title),
+                    &variant(),
+                    20,
+                    0,
+                )
                 .unwrap();
         }
         let (work, _) = library.claim_next().unwrap().unwrap();
@@ -1026,7 +1033,13 @@ mod tests {
                 .unwrap()
         );
         library
-            .record_progress(&work, GenerationStage::Decode, 1, Some(1), ProgressUnit::Tiles)
+            .record_progress(
+                &work,
+                GenerationStage::Decode,
+                1,
+                Some(1),
+                ProgressUnit::Tiles,
+            )
             .unwrap();
         library.begin_finalizing(&work).unwrap();
         library
@@ -1039,7 +1052,10 @@ mod tests {
             )
             .unwrap()
             .unwrap();
-        let detail = library.song_detail(principal(1), &work.id).unwrap().unwrap();
+        let detail = library
+            .song_detail(principal(1), &work.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(
             detail.written_lyrics.as_deref(),
             Some("[verse]\nthe model's words")
@@ -1048,9 +1064,17 @@ mod tests {
         assert_eq!(json["written_lyrics"], "[verse]\nthe model's words");
 
         let (other, _) = complete_next(&mut library);
-        let detail = library.song_detail(principal(1), &other.id).unwrap().unwrap();
+        let detail = library
+            .song_detail(principal(1), &other.id)
+            .unwrap()
+            .unwrap();
         assert_eq!(detail.written_lyrics, None);
-        assert!(serde_json::to_value(&detail).unwrap().get("written_lyrics").is_none());
+        assert!(
+            serde_json::to_value(&detail)
+                .unwrap()
+                .get("written_lyrics")
+                .is_none()
+        );
     }
 
     #[test]
