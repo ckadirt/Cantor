@@ -529,7 +529,7 @@ async fn talk_to_daemon(cli: Cli) -> Result<()> {
     .await
     .context("the node did not answer in time")??;
 
-    print_response(cli.command, &response)
+    print_response(cli.command, &response, cli.can.as_deref())
 }
 
 /// `pull` and `list --all` read many frames from the socket before a terminal
@@ -573,15 +573,24 @@ async fn streaming_command(cli: Cli) -> Result<()> {
     };
 
     let mut planned = false;
+    // A progress line is redrawn in place; anything printed after it must
+    // end it first, or it lands on the same line.
+    let mut mid_line = false;
     let mut rate = DownloadRate::default();
     let response = control::request_streaming(&socket_path, &request, |frame| {
-        match frame.get("t").and_then(Value::as_str) {
+        let kind = frame.get("t").and_then(Value::as_str);
+        if mid_line && kind != Some("progress") {
+            eprintln!();
+            mid_line = false;
+        }
+        match kind {
             Some("plan") => {
                 planned = true;
                 print_pull_plan(frame);
             }
             Some("progress") => {
                 planned = true;
+                mid_line = true;
                 print_progress(frame, &mut rate);
             }
             Some("generating") => print_generating(frame),
@@ -598,8 +607,7 @@ async fn streaming_command(cli: Cli) -> Result<()> {
     })
     .await?;
 
-    if planned {
-        // The progress line is rewritten in place, so it needs terminating.
+    if mid_line {
         eprintln!();
     }
     match response.get("t").and_then(Value::as_str) {
@@ -1024,7 +1032,7 @@ fn variant_can(variant: &Value, kind: &str) -> bool {
         })
 }
 
-fn print_response(command: Command_, response: &Value) -> Result<()> {
+fn print_response(command: Command_, response: &Value, can: Option<&str>) -> Result<()> {
     match command {
         Command_::Status => {
             println!("name       {}", string_field(response, "name"));
@@ -1098,6 +1106,38 @@ fn print_response(command: Command_, response: &Value) -> Result<()> {
                 .unwrap_or_default();
             if installed.is_empty() {
                 println!("No models installed. Run `cantor list --all` to see the catalog.");
+                return Ok(());
+            }
+            // `--can` asks what this node can do now: the weights and the
+            // loaded engine agreeing, which only the daemon knows.
+            if let Some(kind) = can
+                && cantor_proto::CapabilityKind::parse(kind).is_none()
+            {
+                bail!(
+                    "--can expects cover, extend, inpaint, timbre, add_track, separate or accompany"
+                );
+            }
+            let offers = response.get("offers");
+            let can_now = |variant: &Value| {
+                let selector = format!(
+                    "{}:{}",
+                    string_field(variant, "model"),
+                    string_field(variant, "tag")
+                );
+                offers
+                    .and_then(|offers| offers.get(&selector))
+                    .and_then(Value::as_array)
+                    .is_some_and(|kinds| kinds.iter().any(|k| k.as_str() == can))
+            };
+            let installed: Vec<&Value> = installed
+                .iter()
+                .filter(|variant| can.is_none() || can_now(variant))
+                .collect();
+            if installed.is_empty() {
+                let kind = can.unwrap_or_default();
+                println!(
+                    "No installed model can {kind} on this node now. `cantor list --all --can {kind}` shows what could."
+                );
                 return Ok(());
             }
             for variant in installed {
