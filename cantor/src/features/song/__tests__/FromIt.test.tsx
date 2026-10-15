@@ -7,9 +7,14 @@ function render(acts: SongAudioActs) {
   ReactTestRenderer.act(() => {
     tree = ReactTestRenderer.create(<FromIt acts={acts} disabled={false} />);
   });
+  // Host text only: the composite `Text` carries the same string again.
   const words = () =>
     tree.root
-      .findAll(node => typeof node.props.children === 'string')
+      .findAll(
+        node =>
+          typeof node.type === 'string' &&
+          typeof node.props.children === 'string',
+      )
       .map(node => node.props.children as string);
   const press = (label: string) => {
     const target = tree.root.find(
@@ -28,7 +33,12 @@ const ready = { kind: 'ready' as const, models: [] };
 describe('From it', () => {
   it('offers both acts on a node that can, and says what each makes', () => {
     const onAct = jest.fn();
-    const { words, press } = render({ version: ready, longer: ready, nodeLabel: 'agentbox', onAct });
+    const { words, press } = render({
+      version: ready,
+      longer: ready,
+      nodeLabel: 'agentbox',
+      onAct,
+    });
     expect(words()).toEqual(
       expect.arrayContaining(['A version', 'THE SAME SONG, CHANGED', 'Longer']),
     );
@@ -46,37 +56,105 @@ describe('From it', () => {
     expect(words()).toContain('AGENTBOX IS AWAY · THE SONG LIVES THERE');
   });
 
-  it('turns a shut door into the model that would open it', () => {
+  const fast = {
+    kind: 'no-model' as const,
+    catalogKnown: true,
+    suggestion: {
+      selector: 'acestep:1.5-fast',
+      family: 'acestep',
+      capabilities: ['cover' as const, 'extend' as const, 'timbre' as const],
+      bytes: 3_300_000_000,
+      licence: 'Apache-2.0',
+    },
+  };
+
+  it('gives acts shut for one reason one door, and one command', () => {
     const onAct = jest.fn();
     const { words, press } = render({
-      version: {
-        kind: 'no-model',
-        catalogKnown: true,
-        suggestion: {
-          selector: 'acestep:1.5-fast',
-          family: 'acestep',
-          capabilities: ['cover', 'extend', 'timbre'],
-          bytes: 4_500_000_000,
-          licence: 'Apache-2.0',
-        },
-      },
-      longer: { kind: 'no-model', catalogKnown: false, suggestion: null },
+      version: fast,
+      longer: fast,
       nodeLabel: 'agentbox',
       onAct,
     });
-    expect(words()).toContain('NO MODEL ON AGENTBOX MAKES VERSIONS');
+    expect(words()).toEqual(
+      expect.arrayContaining(['A version · Longer', 'NOT ON AGENTBOX YET']),
+    );
     expect(words()).not.toContain('cantor pull acestep:1.5-fast');
-    press('A version: no model on agentbox can do this');
+    press('A version · Longer: not on agentbox yet');
+    const opened = words();
+    expect(
+      opened.filter(word => word === 'cantor pull acestep:1.5-fast'),
+    ).toHaveLength(1);
+    expect(opened).toContain('ACESTEP 1.5 FAST · 3.3 GB');
+    expect(onAct).not.toHaveBeenCalled();
+  });
+
+  it('lists each distinct command once, and finds what could when the catalog is unknown', () => {
+    const { words, press } = render({
+      version: fast,
+      longer: { kind: 'no-model', catalogKnown: false, suggestion: null },
+      nodeLabel: 'agentbox',
+      onAct: jest.fn(),
+    });
+    press('A version · Longer: not on agentbox yet');
     expect(words()).toEqual(
       expect.arrayContaining([
-        'acestep:1.5-fast can',
-        'COVER · EXTEND · TIMBRE · 4.5 GB',
         'cantor pull acestep:1.5-fast',
+        'cantor list --all --can extend',
+        'LISTS WHAT COULD',
       ]),
     );
-    press('Longer: no model on agentbox can do this');
-    expect(words()).toContain('cantor list --all --can extend');
-    expect(onAct).not.toHaveBeenCalled();
+  });
+
+  it('keeps an act that can apart from one that cannot', () => {
+    const onAct = jest.fn();
+    const { words, press } = render({
+      version: ready,
+      longer: fast,
+      nodeLabel: 'agentbox',
+      onAct,
+    });
+    expect(words()).toEqual(
+      expect.arrayContaining([
+        'A version',
+        'THE SAME SONG, CHANGED',
+        'Longer',
+        'NOT ON AGENTBOX YET',
+      ]),
+    );
+    expect(words().filter(word => word === 'FROM IT')).toHaveLength(1);
+    press('A version');
+    expect(onAct).toHaveBeenCalledWith('version');
+  });
+
+  it('lets the sheet make the command copyable', () => {
+    const copy = jest.fn(
+      (_value: string, _what: string, children: React.ReactNode) => children,
+    );
+    let tree!: ReactTestRenderer.ReactTestRenderer;
+    ReactTestRenderer.act(() => {
+      tree = ReactTestRenderer.create(
+        <FromIt
+          acts={{
+            version: fast,
+            longer: fast,
+            nodeLabel: 'agentbox',
+            onAct: jest.fn(),
+          }}
+          copy={copy}
+          disabled={false}
+        />,
+      );
+    });
+    const door = tree.root.find(
+      node =>
+        node.props.accessibilityLabel ===
+          'A version · Longer: not on agentbox yet' &&
+        typeof node.props.onPress === 'function',
+    );
+    ReactTestRenderer.act(() => door.props.onPress());
+    expect(copy).toHaveBeenCalledTimes(1);
+    expect(copy.mock.calls[0]![0]).toBe('cantor pull acestep:1.5-fast');
   });
 
   it('draws nothing for a node that predates audio', () => {
