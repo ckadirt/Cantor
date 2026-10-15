@@ -155,7 +155,7 @@ pub async fn print_notice_if_stale() {
     }
 }
 
-pub async fn upgrade(check_only: bool) -> Result<()> {
+pub async fn upgrade(check_only: bool, engines: bool) -> Result<()> {
     let latest = latest_version(NOTICE_TIMEOUT * 5).await?;
     if !is_newer(&latest, CURRENT_VERSION) {
         println!("cantor {CURRENT_VERSION} is already the newest release.");
@@ -244,10 +244,72 @@ pub async fn upgrade(check_only: bool) -> Result<()> {
         .with_context(|| format!("failed to replace {}", target.display()))?;
 
     println!("installed cantor {latest} at {}", target.display());
+    if engines {
+        update_engines().await;
+    }
     // Replacing the file leaves the running daemon on the old, now-unlinked
     // inode: without this the upgrade appears to work and changes nothing.
     crate::service::restart_after_upgrade().await;
     Ok(())
+}
+
+/// Before the restart, have the running node fetch the engine builds the
+/// manifest names, so the restarted node runs them. A failure never fails the
+/// upgrade: the node keeps the build it has (`EngineStore::choose`).
+async fn update_engines() {
+    let Ok(socket) = crate::control::client_socket_path() else {
+        return;
+    };
+    if !socket.exists() {
+        return;
+    }
+    println!("updating engines…");
+    let request = serde_json::json!({"v": 1, "id": "1", "t": "backends", "update": true});
+    let mut last_percent = None;
+    let result = crate::control::request_streaming(&socket, &request, |frame| {
+        match frame.get("t").and_then(serde_json::Value::as_str) {
+            Some("note") => {
+                if let Some(msg) = frame.get("msg").and_then(serde_json::Value::as_str) {
+                    println!("  {msg}");
+                }
+            }
+            Some("progress") => {
+                let done = frame
+                    .get("done")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let total = frame
+                    .get("total")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0);
+                let percent = (done * 100).checked_div(total).unwrap_or(0) / 10 * 10;
+                if last_percent != Some(percent) {
+                    last_percent = Some(percent);
+                    let role = frame
+                        .get("role")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    println!("  {role}: {percent}%");
+                }
+            }
+            _ => {}
+        }
+    })
+    .await;
+    match result {
+        // A node from before `--update` answers with its plain backend report.
+        Ok(reply) if reply.get("restart").is_none() => println!(
+            "  this node predates engine updates; after the restart run: cantor backends --update && cantor restart"
+        ),
+        Ok(reply) => {
+            if let Some(msg) = reply.get("msg").and_then(serde_json::Value::as_str) {
+                println!("  {msg}");
+            }
+        }
+        Err(error) => {
+            println!("  engines were not updated ({error:#}); the node keeps the build it has")
+        }
+    }
 }
 
 fn directory_is_writable(directory: &Path) -> bool {

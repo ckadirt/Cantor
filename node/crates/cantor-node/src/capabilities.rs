@@ -280,24 +280,27 @@ pub async fn probe_engines(model_root: &Path, backends_url: &str, pinned: Option
     if families.is_empty() {
         return false;
     }
+    // Recorded builds run without the manifest; it only says which is current.
     let manifest = match BackendManifest::fetch(backends_url).await {
-        Ok(manifest) => manifest,
+        Ok(manifest) => Some(manifest),
         Err(error) => {
-            eprintln!("capabilities.probe_skipped cause={error:#}");
-            return false;
+            eprintln!("capabilities.manifest_unavailable cause={error:#}");
+            None
         }
     };
     let engine_store = EngineStore::new(model_root);
+    if let Some(manifest) = &manifest {
+        engine_store.record_manifest(manifest);
+    }
     let backends = available_backends(pinned);
     let mut loaded = false;
     for family in families {
         let mut attempts = Vec::new();
         for backend in &backends {
-            if let Some(artifact) = manifest.find(&family, backend, machine_arch())
-                && engine_store.is_installed(artifact).unwrap_or(false)
-                && let Ok(directory) = engine_store.directory_for(artifact)
+            if let Ok(Some(choice)) =
+                engine_store.choose(manifest.as_ref(), &family, backend, machine_arch(), None)
             {
-                attempts.push((backend.clone(), directory));
+                attempts.push((backend.clone(), choice.directory));
             }
         }
         if attempts.is_empty() {

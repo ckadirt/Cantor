@@ -59,11 +59,15 @@ pub(in crate::control) async fn stream_long_request<W: tokio::io::AsyncWrite + U
                 write_line(writer, &json!({"v": CONTROL_VERSION, "id": id, "t": "note",
                     "msg": format!("keep_loaded={keep}; applies to the next generation (restart to unload an idle session now)")})).await?;
                 if request.get("install").and_then(Value::as_bool) != Some(true)
+                    && request.get("update").and_then(Value::as_bool) != Some(true)
                     && request.get("use").and_then(Value::as_str).is_none()
                 {
                     return write_line(writer, &json!({"v": CONTROL_VERSION, "id": id, "t": "ok"}))
                         .await;
                 }
+            }
+            if request.get("update").and_then(Value::as_bool) == Some(true) {
+                return backends::run_update(state, writer, &id).await;
             }
             let install = request
                 .get("install")

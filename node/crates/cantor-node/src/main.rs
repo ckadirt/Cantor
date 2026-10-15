@@ -60,12 +60,13 @@ Usage:
   cantor list      [--all] [--can cover|extend|timbre]
   cantor rm        <model:tag>
   cantor backends  [--install] [--use cpu|cuda12|metal|vulkan] [--keep-loaded on|off]
+                   [--update]   # fetch the published engine builds; they run after a restart
   cantor generate  <caption> [--model model:tag] [-o out.wav] [--detach]
                    [--lyrics TEXT] [--duration SECONDS] [--steps N] [--cfg N] [--seed N]
                    [--version-of SONG [--closeness 0..1] [--keep-voice]]
                    [--longer SONG --add SECONDS [--at start|end]]
                    [--source FILE [--tune] [--tile SECONDS] [--closeness 0..1]]
-  cantor upgrade   [--check]
+  cantor upgrade   [--check] [--no-engines]
 
 Options common to every command:
   --control-socket PATH   where the running node listens (default: per install)
@@ -108,6 +109,8 @@ struct Cli {
     check_only: bool,
     all: bool,
     install: bool,
+    update: bool,
+    no_engines: bool,
     use_backend: Option<String>,
     keep_loaded: Option<bool>,
     model: Option<String>,
@@ -175,6 +178,8 @@ impl Cli {
             check_only: false,
             all: false,
             install: false,
+            update: false,
+            no_engines: false,
             use_backend: None,
             keep_loaded: None,
             model: None,
@@ -223,6 +228,8 @@ impl Cli {
                 Some("--check") => cli.check_only = true,
                 Some("--all") => cli.all = true,
                 Some("--install") => cli.install = true,
+                Some("--update") => cli.update = true,
+                Some("--no-engines") => cli.no_engines = true,
                 Some("--keep-loaded") => {
                     cli.keep_loaded = Some(
                         match next_utf8_value(&mut args, "--keep-loaded")?.as_str() {
@@ -325,7 +332,7 @@ async fn main() -> Result<()> {
     // person types.
     match cli.command {
         Command_::Run => run(cli).await,
-        Command_::Upgrade => update::upgrade(cli.check_only).await,
+        Command_::Upgrade => update::upgrade(cli.check_only, !cli.no_engines).await,
         // A pull, and `list --all`, report as they go rather than answering once.
         Command_::Pull => streaming_command(cli).await,
         Command_::List if cli.all => streaming_command(cli).await,
@@ -540,7 +547,8 @@ async fn streaming_command(cli: Cli) -> Result<()> {
             json!({"v": 1, "id": id, "t": "pull", "selector": selector})
         }
         Command_::Backends => json!({"v": 1, "id": id, "t": "backends",
-                                     "install": cli.install, "use": cli.use_backend, "keep_loaded": cli.keep_loaded}),
+                                     "install": cli.install, "update": cli.update, "use": cli.use_backend,
+                                     "keep_loaded": cli.keep_loaded}),
         Command_::Generate => {
             let caption = cli
                 .positional
