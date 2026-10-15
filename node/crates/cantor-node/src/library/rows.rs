@@ -5,7 +5,7 @@ use cantor_proto::{ErrorCode, JobError, JobProgress, JobView};
 use serde::{Deserialize, Serialize};
 
 pub(super) const JOB_VIEW_COLUMNS: &str = "id,revision,state,stage,progress_completed,progress_total,progress_unit,\
-     model_selector,created_at,updated_at,error_code,error_message,error_retryable,request_json";
+     model_selector,created_at,updated_at,error_code,error_message,error_retryable,request_json,client_request_id,plan_json";
 
 /// Just the caption out of a stored request.
 ///
@@ -57,9 +57,14 @@ pub(super) fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::
     });
     Ok(JobView {
         id: row.get(offset)?,
+        client_request_id: row.get(offset + 14)?,
         revision: row.get(offset + 1)?,
         state,
         stage,
+        // Old jobs have no plan; unrecognised stored plans remain listable.
+        plan: row
+            .get::<_, Option<String>>(offset + 15)?
+            .and_then(|json| serde_json::from_str(&json).ok()),
         progress,
         model: row.get(offset + 7)?,
         caption,

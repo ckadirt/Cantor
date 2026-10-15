@@ -62,7 +62,7 @@ fn submission(caption: &str) -> Submission {
 fn accept(library: &mut Library, caption: &str) -> (Submission, JobView, PathBuf) {
     let request = submission(caption);
     let job = match library
-        .submit(principal(), &[0x42; 32], &request, &variant(), 20, 0)
+        .submit(principal(), &[0x42; 32], &request, &variant(), &[], 20, 0)
         .expect("submission")
     {
         SubmitResult::Accepted(job) => job,

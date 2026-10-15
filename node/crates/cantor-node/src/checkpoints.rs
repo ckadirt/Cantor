@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use cantor_proto::GenerationStage;
+use cantor_proto::{GenerationStage, PlanStage, ProgressUnit};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -464,6 +464,25 @@ pub fn protocol_stage(stage: Stage) -> GenerationStage {
     }
 }
 
+/// The unit shared by a stage's advertised plan and its live progress.
+pub fn stage_unit(stage: GenerationStage) -> ProgressUnit {
+    match stage {
+        GenerationStage::Plan | GenerationStage::Codes => ProgressUnit::Tokens,
+        GenerationStage::Encode | GenerationStage::Decode => ProgressUnit::Tiles,
+        GenerationStage::Diffuse => ProgressUnit::Steps,
+    }
+}
+
+pub fn plan_stages(stages: impl IntoIterator<Item = GenerationStage>) -> Vec<PlanStage> {
+    stages
+        .into_iter()
+        .map(|stage| PlanStage {
+            stage,
+            unit: stage_unit(stage),
+        })
+        .collect()
+}
+
 pub fn engine_stage(stage: GenerationStage) -> Stage {
     match stage {
         GenerationStage::Plan => Stage::Plan,
@@ -491,6 +510,19 @@ fn hex<const N: usize>(bytes: &[u8; N]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_stage_has_its_progress_unit() {
+        for (stage, unit) in [
+            (GenerationStage::Plan, ProgressUnit::Tokens),
+            (GenerationStage::Codes, ProgressUnit::Tokens),
+            (GenerationStage::Encode, ProgressUnit::Tiles),
+            (GenerationStage::Diffuse, ProgressUnit::Steps),
+            (GenerationStage::Decode, ProgressUnit::Tiles),
+        ] {
+            assert_eq!(stage_unit(stage), unit);
+        }
+    }
 
     fn expectation<'a>(digests: &'a [String]) -> CheckpointExpectation<'a> {
         CheckpointExpectation {

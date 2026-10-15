@@ -13,6 +13,10 @@ pub struct ApplicationOutcome {
 }
 
 #[derive(Clone, Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "Effects carry owned events by value, including the additive job view."
+)]
 pub enum ApplicationEffect {
     WakeJobWorker,
     StopActiveJob { job_id: String, reason: StopReason },
@@ -91,9 +95,11 @@ mod tests {
     fn job(state: JobState) -> JobView {
         JobView {
             id: "job-id".into(),
+            client_request_id: None,
             revision: 3,
             state,
             stage: None,
+            plan: None,
             progress: None,
             model: "model:variant".into(),
             caption: Some("a caption".into()),

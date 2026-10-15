@@ -142,10 +142,10 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         let request = submission("one");
         let first = library
-            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
             .unwrap();
         let second = library
-            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
             .unwrap();
         assert_eq!(first, second);
         drop(library);
@@ -156,6 +156,186 @@ mod tests {
                 .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn admission_identity_and_plan_are_durable_and_only_the_current_owner_attempt_replaces_it() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        let request = submission("planned job");
+        let provisional = crate::checkpoints::plan_stages([
+            GenerationStage::Plan,
+            GenerationStage::Codes,
+            GenerationStage::Diffuse,
+            GenerationStage::Decode,
+        ]);
+        let SubmitResult::Accepted(accepted) = library
+            .submit(
+                principal(1),
+                &[2; 32],
+                &request,
+                &variant(),
+                &provisional,
+                20,
+                0,
+            )
+            .unwrap()
+        else {
+            panic!("accepted");
+        };
+        assert_eq!(
+            accepted.client_request_id.as_deref(),
+            Some(request.client_request_id.as_str())
+        );
+        assert_eq!(accepted.plan.as_ref(), Some(&provisional));
+        assert_eq!(
+            library.list(principal(1), 20).unwrap().as_slice(),
+            std::slice::from_ref(&accepted)
+        );
+        assert_eq!(
+            library.get(principal(1), &accepted.id).unwrap(),
+            Some(accepted)
+        );
+        let (stale, _) = library.claim_next().unwrap().unwrap();
+        library
+            .finish_failure(&stale, ErrorCode::TemporarilyUnavailable, "retry", true)
+            .unwrap();
+        let (work, preparing) = library.claim_next().unwrap().unwrap();
+        let actual = crate::checkpoints::plan_stages([
+            GenerationStage::Codes,
+            GenerationStage::Diffuse,
+            GenerationStage::Decode,
+        ]);
+        assert!(library.record_plan(&stale, &actual).unwrap().is_none());
+        let mut stranger = work.clone();
+        stranger.principal_id = principal(3);
+        assert!(library.record_plan(&stranger, &actual).unwrap().is_none());
+        assert_eq!(
+            library.get(principal(1), &work.id).unwrap(),
+            Some(preparing.clone())
+        );
+        let updated = library.record_plan(&work, &actual).unwrap().unwrap();
+        assert_eq!(updated.plan.as_ref(), Some(&actual));
+        assert_eq!(updated.revision, preparing.revision + 1);
+        assert!(library.record_plan(&work, &actual).unwrap().is_none());
+        // The idempotent admission response reads the corrected durable plan.
+        assert_eq!(
+            library
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &request,
+                    &variant(),
+                    &provisional,
+                    20,
+                    0,
+                )
+                .unwrap(),
+            SubmitResult::Accepted(updated)
+        );
+        library
+            .finish_shutdown(&work, None, GenerationStage::Codes)
+            .unwrap();
+        drop(library);
+        let reopened = Library::open(temporary.path()).unwrap();
+        let job = reopened.get(principal(1), &work.id).unwrap().unwrap();
+        assert_eq!(job.plan, Some(actual));
+        assert_eq!(job.client_request_id, Some(request.client_request_id));
+    }
+
+    #[test]
+    fn absent_or_unparseable_stored_plans_leave_jobs_listable() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        library
+            .submit(
+                principal(1),
+                &[2; 32],
+                &submission("legacy"),
+                &variant(),
+                &[],
+                20,
+                0,
+            )
+            .unwrap();
+        for json in [
+            None,
+            Some("garbage"),
+            Some(r#"[{"stage":"future_stage","unit":"steps"}]"#),
+        ] {
+            library
+                .connection
+                .execute("UPDATE jobs SET plan_json=?1", params![json])
+                .unwrap();
+            let jobs = library.list(principal(1), 20).unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert!(jobs[0].plan.is_none());
+        }
+    }
+
+    #[test]
+    fn a_recovered_claim_keeps_its_checkpoint_stage_and_clears_counts() {
+        for has_checkpoint in [true, false] {
+            let temporary = tempdir().unwrap();
+            let mut library = Library::open(temporary.path()).unwrap();
+            library
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &submission("resume"),
+                    &variant(),
+                    &[],
+                    20,
+                    0,
+                )
+                .unwrap();
+            let (work, _) = library.claim_next().unwrap().unwrap();
+            if has_checkpoint {
+                let reference = crate::checkpoints::write(
+                    &work.job_directory().join("checkpoints"),
+                    &work.checkpoint_expectation(),
+                    work.attempt,
+                    crate::engine::Stage::Diffuse,
+                    crate::checkpoints::CheckpointOutcome::Done,
+                    crate::checkpoints::EngineProvenance {
+                        family: "acestep".into(),
+                        abi: 1,
+                        build: "build".into(),
+                        backend: "cpu".into(),
+                    },
+                    b"latents",
+                )
+                .unwrap();
+                library
+                    .record_checkpoint(&work, &reference, GenerationStage::Decode)
+                    .unwrap();
+            }
+            library
+                .record_progress(
+                    &work,
+                    GenerationStage::Decode,
+                    1,
+                    Some(4),
+                    ProgressUnit::Tiles,
+                )
+                .unwrap();
+            drop(library);
+            let mut reopened = Library::open(temporary.path()).unwrap();
+            let queued = reopened.get(principal(1), &work.id).unwrap().unwrap();
+            assert!(queued.stage.is_some());
+            // Counts are cleared by claim even if present in the queued row.
+            reopened.connection.execute(
+                "UPDATE jobs SET progress_completed=1,progress_total=4,progress_unit='tiles' WHERE id=?1",
+                params![work.id],
+            ).unwrap();
+            let (_, claimed) = reopened.claim_next().unwrap().unwrap();
+            assert_eq!(claimed.state, JobState::Preparing);
+            assert_eq!(
+                claimed.stage,
+                has_checkpoint.then_some(GenerationStage::Decode)
+            );
+            assert!(claimed.progress.is_none());
+        }
     }
 
     #[test]
@@ -173,7 +353,7 @@ mod tests {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap()
         };
-        assert_eq!(versions, vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(versions, (1..=8).collect::<Vec<_>>());
         drop(library);
 
         let reopened = Library::open(temporary.path()).unwrap();
@@ -204,13 +384,13 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         let request = submission("one");
         library
-            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
             .unwrap();
         let mut changed = request.clone();
         changed.generation.caption = "different".into();
         assert_eq!(
             library
-                .submit(principal(1), &[2; 32], &changed, &variant(), 20, 0)
+                .submit(principal(1), &[2; 32], &changed, &variant(), &[], 20, 0)
                 .unwrap(),
             SubmitResult::Conflict
         );
@@ -226,17 +406,33 @@ mod tests {
         let mut library = Library::open(temporary.path()).unwrap();
         let request = submission("one");
         let accepted = library
-            .submit(principal(1), &[2; 32], &request, &variant(), 1, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), &[], 1, 0)
             .unwrap();
         assert_eq!(
             library
-                .submit(principal(1), &[2; 32], &request, &variant(), 1, u64::MAX)
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &request,
+                    &variant(),
+                    &[],
+                    1,
+                    u64::MAX
+                )
                 .unwrap(),
             accepted
         );
         assert_eq!(
             library
-                .submit(principal(1), &[2; 32], &submission("two"), &variant(), 1, 0)
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &submission("two"),
+                    &variant(),
+                    &[],
+                    1,
+                    0
+                )
                 .unwrap(),
             SubmitResult::QueueFull
         );
@@ -249,7 +445,15 @@ mod tests {
         let request = submission("one");
         assert_eq!(
             library
-                .submit(principal(1), &[2; 32], &request, &variant(), 20, u64::MAX,)
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &request,
+                    &variant(),
+                    &[],
+                    20,
+                    u64::MAX,
+                )
                 .unwrap(),
             SubmitResult::InsufficientDisk
         );
@@ -260,10 +464,10 @@ mod tests {
         );
 
         let first = library
-            .submit(principal(1), &[2; 32], &request, &variant(), 20, 0)
+            .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
             .unwrap();
         let second = library
-            .submit(principal(3), &[4; 32], &request, &variant(), 20, 0)
+            .submit(principal(3), &[4; 32], &request, &variant(), &[], 20, 0)
             .unwrap();
         assert_ne!(first, second);
         assert_eq!(library.queued_count().unwrap(), 2);
@@ -312,6 +516,7 @@ mod tests {
                     &[2; 32],
                     &submission(caption),
                     &variant(),
+                    &[],
                     20,
                     0,
                 )
@@ -410,6 +615,7 @@ mod tests {
                 &[2; 32],
                 &submission("restart"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -436,6 +642,7 @@ mod tests {
                 &[2; 32],
                 &submission("stale worker"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -480,6 +687,7 @@ mod tests {
                 &[2; 32],
                 &submission("controlled"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -611,6 +819,7 @@ mod tests {
                 &[2; 32],
                 &submission("fallback"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -678,6 +887,7 @@ mod tests {
                 &[2; 32],
                 &submission("retry"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -725,6 +935,7 @@ mod tests {
                 &[2; 32],
                 &submission("where did it stop"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -789,6 +1000,7 @@ mod tests {
                 &[2; 32],
                 &submission("una cumbia lenta"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -833,6 +1045,7 @@ mod tests {
                 &[2; 32],
                 &submission("forget me"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -904,6 +1117,7 @@ mod tests {
                 &[2; 32],
                 &submission("keep"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -956,6 +1170,7 @@ mod tests {
                 &[2; 32],
                 &submission("Música nocturna"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -1016,6 +1231,7 @@ mod tests {
                     &[2; 32],
                     &submission(title),
                     &variant(),
+                    &[],
                     20,
                     0,
                 )
@@ -1087,6 +1303,7 @@ mod tests {
                 &[2; 32],
                 &submission("transaction boundary"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -1170,6 +1387,7 @@ mod tests {
                     &[2; 32],
                     &submission(caption),
                     &variant(),
+                    &[],
                     20,
                     0,
                 )
@@ -1285,6 +1503,7 @@ mod tests {
                 &[2; 32],
                 &submission("adopt"),
                 &variant(),
+                &[],
                 20,
                 0,
             )
@@ -1340,6 +1559,7 @@ mod tests {
                 &[2; 32],
                 &submission("corrupt"),
                 &variant(),
+                &[],
                 20,
                 0,
             )

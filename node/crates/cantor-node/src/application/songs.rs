@@ -289,7 +289,7 @@ mod tests {
             },
         };
         let accepted = match library
-            .submit(principal_id, &key, &submission, &variant(), 20, 0)
+            .submit(principal_id, &key, &submission, &variant(), &[], 20, 0)
             .expect("submission")
         {
             SubmitResult::Accepted(job) => job,

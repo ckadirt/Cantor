@@ -1034,6 +1034,110 @@ mod audio_admission_tests {
     }
 
     #[test]
+    fn admitted_audio_uses_the_advertised_arc_and_text_uses_the_model_stages() {
+        use crate::application::admit_job;
+        use crate::checkpoints::plan_stages;
+        use crate::config::{ConfigSeed, NodeConfig, NodePaths};
+        use crate::engine::{Stage, declare_loaded_for_test, declare_loaded_with_stages_for_test};
+        use crate::library::{Submission, SubmitResult};
+        use cantor_proto::GenerationStage::{Codes, Decode, Diffuse, Encode, Plan};
+
+        let directory = tempdir().expect("tempdir");
+        let paths = NodePaths::resolve(Some(directory.path().join("config"))).unwrap();
+        paths.prepare_directory().unwrap();
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).unwrap();
+        config.jobs.minimum_free_bytes = 0;
+        let mut library = Library::open(directory.path().join("library")).unwrap();
+        let source = upload(&mut library, 30.0);
+        let principal = PrincipalId::from_client_public_key(&KEY);
+        for (family, encode) in [
+            ("admitted-plan-legacy", false),
+            ("admitted-plan-encode", true),
+        ] {
+            declare_loaded_for_test(family, vec![CapabilityKind::Cover]);
+            if encode {
+                declare_loaded_with_stages_for_test(
+                    family,
+                    vec![CapabilityKind::Cover],
+                    vec![
+                        Stage::Plan,
+                        Stage::Codes,
+                        Stage::Encode,
+                        Stage::Diffuse,
+                        Stage::Decode,
+                    ],
+                );
+            }
+            let mut variant = variant(family);
+            // The model's text arc must not leak into an audio job's plan.
+            variant.stages = vec![Plan, Codes, Diffuse, Decode];
+            let submission = Submission {
+                client_request_id: uuid::Uuid::new_v4().to_string(),
+                model: variant.selector(),
+                generation: request(&source, AudioAct::Cover),
+            };
+            let SubmitResult::Accepted(job) = admit_job(
+                &mut library,
+                &config,
+                principal,
+                &KEY,
+                &submission,
+                &variant,
+            )
+            .unwrap() else {
+                panic!("accepted audio");
+            };
+            let expected = if encode {
+                vec![Encode, Diffuse, Decode]
+            } else {
+                vec![Diffuse, Decode]
+            };
+            assert_eq!(job.plan, Some(plan_stages(expected)));
+            assert_eq!(job.client_request_id, Some(submission.client_request_id));
+        }
+        let mut variant = variant("admitted-plan-text");
+        for stages in [vec![Codes, Diffuse, Decode], Vec::new()] {
+            variant.stages = stages.clone();
+            let mut generation = request(&source, AudioAct::Cover);
+            generation.audio = None;
+            let submission = Submission {
+                client_request_id: uuid::Uuid::new_v4().to_string(),
+                model: variant.selector(),
+                generation,
+            };
+            let SubmitResult::Accepted(job) = admit_job(
+                &mut library,
+                &config,
+                principal,
+                &KEY,
+                &submission,
+                &variant,
+            )
+            .unwrap() else {
+                panic!("accepted text");
+            };
+            let expected = if stages.is_empty() {
+                vec![Plan, Codes, Diffuse, Decode]
+            } else {
+                stages
+            };
+            assert_eq!(job.plan, Some(plan_stages(expected)));
+        }
+        // A not-yet-loaded engine has no advertised capability arc.
+        let variant = self::variant("admitted-plan-not-loaded");
+        let submission = Submission {
+            client_request_id: uuid::Uuid::new_v4().to_string(),
+            model: variant.selector(),
+            generation: request(&source, AudioAct::Cover),
+        };
+        assert_eq!(
+            super::super::submission::provisional_plan(&submission, &variant, &config.model_root()),
+            plan_stages([Diffuse, Decode])
+        );
+    }
+
+    #[test]
     fn a_sound_prompt_passes_and_each_fault_names_its_field() {
         let family = "audio-admission-faults";
         crate::engine::declare_loaded_for_test(

@@ -9,7 +9,7 @@ use std::sync::atomic::AtomicU8;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use cantor_proto::{ErrorCode, GenerationStage, JobView, MAX_LYRICS_BYTES, ProgressUnit};
+use cantor_proto::{ErrorCode, GenerationStage, JobView, MAX_LYRICS_BYTES, PlanStage};
 use tokio::sync::mpsc;
 
 use super::WorkerFailure;
@@ -142,28 +142,41 @@ fn run_generation(
     // A fresh job enters at whatever stage this engine actually begins with —
     // `plan` for ACE-Step, `codes` for a family that has no separate planning
     // pass — and the request JSON is what that first stage consumes either way.
+    let first = match entry.entry {
+        Some(stage) if engine.supports(stage) => stage,
+        // An engine that predates ENCODE encodes inside DIFFUSE.
+        Some(Stage::Encode) if engine.supports(Stage::Diffuse) => Stage::Diffuse,
+        Some(stage) => {
+            return Err(WorkerFailure::with_source(
+                ErrorCode::ModelUnavailable,
+                false,
+                "This engine cannot start where an audio act starts.",
+                anyhow::anyhow!("the engine does not run the {} stage", stage.as_str()),
+            ));
+        }
+        None => engine.first_stage(),
+    };
+    // A job's plan is fixed by the run that starts it. A resume keeps the plan
+    // that run recorded, even on an engine that would now start elsewhere (an
+    // upgrade that added ENCODE must not add a stage this job never ran).
+    if selected.source.is_none() {
+        let plan = actual_plan(first, |stage| engine.supports(stage));
+        let updated = state
+            .lock()
+            .map_err(|_| WorkerFailure::internal("Node state is unavailable."))?
+            .library
+            .record_plan(work, &plan)
+            .map_err(WorkerFailure::from_internal)?;
+        if let Some(job) = updated {
+            emit(events, work.principal_id, job);
+        }
+    }
     let (mut stage, mut input) = match selected.source {
         Some(source) => (source.stage, source.input),
-        None => {
-            let first = match entry.entry {
-                Some(stage) if engine.supports(stage) => stage,
-                // An engine that predates ENCODE encodes inside DIFFUSE.
-                Some(Stage::Encode) if engine.supports(Stage::Diffuse) => Stage::Diffuse,
-                Some(stage) => {
-                    return Err(WorkerFailure::with_source(
-                        ErrorCode::ModelUnavailable,
-                        false,
-                        "This engine cannot start where an audio act starts.",
-                        anyhow::anyhow!("the engine does not run the {} stage", stage.as_str()),
-                    ));
-                }
-                None => engine.first_stage(),
-            };
-            (
-                first,
-                Generation::initial_state(request).map_err(WorkerFailure::from_internal)?,
-            )
-        }
+        None => (
+            first,
+            Generation::initial_state(request).map_err(WorkerFailure::from_internal)?,
+        ),
     };
     let key = GenerationKey {
         engine_directory: engine.directory.clone(),
@@ -514,6 +527,19 @@ fn next_engine_stage(stage: Stage) -> Option<Stage> {
     checkpoints::next_stage(checkpoints::protocol_stage(stage)).map(checkpoints::engine_stage)
 }
 
+fn actual_plan(first: Stage, supports: impl Fn(Stage) -> bool) -> Vec<PlanStage> {
+    let stages = if first == Stage::Encode {
+        vec![Stage::Encode, Stage::Diffuse, Stage::Decode]
+    } else {
+        Stage::ALL
+            .into_iter()
+            .skip_while(|stage| *stage != first)
+            .filter(|stage| supports(*stage))
+            .collect()
+    };
+    checkpoints::plan_stages(stages.into_iter().map(checkpoints::protocol_stage))
+}
+
 fn persist_progress(
     state: &SharedState,
     events: &mpsc::Sender<NodeEvent>,
@@ -523,13 +549,8 @@ fn persist_progress(
     let completed = progress.done.max(0) as u32;
     let total = (progress.total > 0).then_some(progress.total as u32);
     let completed = total.map_or(completed, |total| completed.min(total));
-    let (stage, unit) = match progress.stage {
-        Stage::Plan => (GenerationStage::Plan, ProgressUnit::Tokens),
-        Stage::Codes => (GenerationStage::Codes, ProgressUnit::Tokens),
-        Stage::Diffuse => (GenerationStage::Diffuse, ProgressUnit::Steps),
-        Stage::Decode => (GenerationStage::Decode, ProgressUnit::Tiles),
-        Stage::Encode => (GenerationStage::Encode, ProgressUnit::Tiles),
-    };
+    let stage = checkpoints::protocol_stage(progress.stage);
+    let unit = checkpoints::stage_unit(stage);
     let updated = state
         .lock()
         .map_err(|_| anyhow::anyhow!("node state is poisoned"))?
@@ -547,7 +568,30 @@ fn emit(events: &mpsc::Sender<NodeEvent>, principal_id: PrincipalId, job: JobVie
 
 #[cfg(test)]
 mod tests {
-    use super::planned_lyrics;
+    use super::{actual_plan, planned_lyrics};
+    use crate::checkpoints::plan_stages;
+    use crate::engine::Stage;
+    use cantor_proto::GenerationStage::{Codes, Decode, Diffuse, Encode, Plan};
+
+    #[test]
+    fn actual_arc_follows_the_entry_and_supported_engine_stages() {
+        assert_eq!(
+            actual_plan(Stage::Plan, |_| true),
+            plan_stages([Plan, Codes, Diffuse, Decode])
+        );
+        assert_eq!(
+            actual_plan(Stage::Codes, |stage| stage != Stage::Plan),
+            plan_stages([Codes, Diffuse, Decode])
+        );
+        assert_eq!(
+            actual_plan(Stage::Encode, |_| true),
+            plan_stages([Encode, Diffuse, Decode])
+        );
+        assert_eq!(
+            actual_plan(Stage::Diffuse, |_| true),
+            plan_stages([Diffuse, Decode])
+        );
+    }
 
     #[test]
     fn planned_lyrics_reads_the_words_a_plan_wrote() {
