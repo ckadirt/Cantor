@@ -77,6 +77,7 @@ describe('canonical symbol primitives', () => {
     'segno',
     'fermata',
     'partial',
+    'fourier',
     'nabla',
     'continuum',
     'eighthNote',
