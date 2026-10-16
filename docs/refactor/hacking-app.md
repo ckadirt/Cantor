@@ -128,6 +128,17 @@ made of known inputs needs no app change; a new input kind needs its row in
 `SourceRows`, its rule in `problemsWith`, its fields in `audioPromptFor`, and
 its parser case in `parseActs` (which otherwise drops the act).
 
+**A made song's recipe is kept on the phone.** `library/recipes.ts` stores
+every `SongDetail` the app fetches (phone database, `node_song_recipe`) and
+`FieldScreen` keeps the recipe of every song whose audio is cached or pinned,
+while its node is ready. The sheet and the lyrics fact read through
+`recipes.detail`: the node when it answers, the kept copy when it does not.
+A made song never changes, so a kept recipe never goes stale. When a song's
+node is away and its audio is on the phone, an act that takes an upload opens
+on another ready node from that copy, and its From it door says so
+(`FROM THE COPY ON THIS PHONE · SENT TO <NODE>`): the copy is the delivery
+file, not the master, and the result lives on that node.
+
 ## Recipes
 
 ### Add a screen

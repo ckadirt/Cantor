@@ -106,4 +106,19 @@ export const DEVICE_MIGRATIONS: readonly Migration[] = [
      */
     'ALTER TABLE device_song_fact ADD COLUMN reason TEXT',
   ],
+  [
+    /*
+     * A made song's recipe (`SongDetail`, as its node sent it), kept on the
+     * phone so a song whose node is away still shows what made it and what
+     * it sings (`src/library/recipes.ts`). A made song never changes, so a
+     * stored recipe is good for as long as the song is.
+     */
+    `CREATE TABLE node_song_recipe (
+      node_key TEXT NOT NULL,
+      song_id TEXT NOT NULL,
+      detail_json TEXT NOT NULL,
+      saved_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (node_key, song_id)
+    ) STRICT, WITHOUT ROWID`,
+  ],
 ];
