@@ -69,10 +69,18 @@ const WORDS_FROM: Readonly<Record<string, string>> = {
   lrclib: 'From LRCLIB',
 };
 
-/** A service the words could not be fetched from, by provider. */
+/** Why there are no words, as the last provider asked put it. */
+const WORDS_NONE: Readonly<Record<string, string>> = {
+  instrumental: 'LRCLIB lists it instrumental',
+  'not-found': 'Not in LRCLIB',
+  untagged: 'Nothing to search by',
+};
+
+/** Out of reach, by provider and why: busy answered; offline did not. */
 const WORDS_UNREACHABLE: Readonly<Record<string, string>> = {
-  recipe: "Can't reach its node",
+  'lrclib:busy': 'LRCLIB is busy',
   lrclib: "Can't reach LRCLIB",
+  recipe: "Can't reach its node",
 };
 
 /**
@@ -102,18 +110,27 @@ export function songWordsNote(
   if (draft.wordsMode === 'same') {
     // Asked again after the service was out of reach: say so until it answers.
     const last = reading?.status === 'looking' ? reading.previous : reading;
-    if (last?.status === 'unreachable') return unreachableWords(last.source);
+    if (last?.status === 'unreachable') return unreachableWords(last);
     if (reading === null || reading.status === 'looking') {
       return 'Looking for its words';
     }
-    return 'No words found';
+    return (
+      (reading.reason !== null && WORDS_NONE[reading.reason]) ||
+      'No words found'
+    );
   }
   return 'This will be instrumental';
 }
 
-function unreachableWords(source: string | null): string {
+function unreachableWords(
+  fact: Readonly<{ source: string | null; reason: string | null }>,
+): string {
+  const { source, reason } = fact;
   return (
-    (source !== null && WORDS_UNREACHABLE[source]) || "Can't reach its words"
+    (source !== null &&
+      (WORDS_UNREACHABLE[`${source}:${reason}`] ??
+        WORDS_UNREACHABLE[source])) ||
+    "Can't reach its words"
   );
 }
 
@@ -363,14 +380,6 @@ function SongRows({
               )
             }
           />
-          {unreachable && wordsMode === 'none' && draft.wordsMode === 'same' ? (
-            <RowAct
-              accessibilityLabel="Look for its words again"
-              label="Try again"
-              onPress={() => sourceWords?.retry()}
-              working={reading?.status === 'looking'}
-            />
-          ) : null}
           {wordsMode === 'mine' ? (
             <TextInput
               accessibilityLabel="Lyrics"
@@ -385,6 +394,17 @@ function SongRows({
             />
           ) : null}
         </Row>
+        {unreachable && wordsMode === 'none' && draft.wordsMode === 'same' ? (
+          // An act takes no label: it sits under the fact it would change.
+          <Row>
+            <RowAct
+              accessibilityLabel="Look for its words again"
+              label="Try again"
+              onPress={() => sourceWords?.retry()}
+              working={reading?.status === 'looking'}
+            />
+          </Row>
+        ) : null}
       </Measure>
     </>
   );

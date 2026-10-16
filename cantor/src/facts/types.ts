@@ -17,6 +17,15 @@ export type FactKind = 'lyrics';
  */
 export type FactSource = 'recipe' | 'file-tags' | 'lrclib' | (string & {});
 
+/** Why a fact has no value. Open: a provider may give its own. */
+export type FactReason =
+  | 'instrumental'
+  | 'not-found'
+  | 'untagged'
+  | 'busy'
+  | 'offline'
+  | (string & {});
+
 /** Only `found` and `none` are final. */
 export type FactStatus = 'found' | 'none' | 'unreachable';
 
@@ -28,6 +37,12 @@ export type Fact = Readonly<{
   value: string | null;
   /** The provider that found it, or the one that could not be reached. */
   source: FactSource | null;
+  /**
+   * Why there is no value, in the provider's words: `instrumental`,
+   * `not-found`, `untagged` for none; `busy`, `offline` for unreachable.
+   * Open, like `source`; null when found or when the provider gave none.
+   */
+  reason: FactReason | null;
   checkedAtMs: number;
   /** When an unreachable fact may be asked again; null when final. */
   retryAtMs: number | null;
@@ -36,8 +51,12 @@ export type Fact = Readonly<{
 /** One provider's answer. */
 export type Lookup =
   | Readonly<{ status: 'found'; value: string }>
-  | Readonly<{ status: 'none' }>
-  | Readonly<{ status: 'unreachable'; retryAfterMs?: number }>;
+  | Readonly<{ status: 'none'; reason?: FactReason }>
+  | Readonly<{
+      status: 'unreachable';
+      reason?: FactReason;
+      retryAfterMs?: number;
+    }>;
 
 /** A song on this phone: what its file and tags say. */
 export type DeviceSubject = Readonly<{

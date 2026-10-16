@@ -118,6 +118,32 @@ describe('song facts', () => {
     });
   });
 
+  it("keeps why: the last provider's none, the first unreachable's reason", async () => {
+    const none = await setup([
+      scripted('file-tags', { status: 'none' }).provider,
+      scripted('lrclib', { status: 'none', reason: 'instrumental' }).provider,
+    ]);
+    await none.facts.ensure(device, 'lyrics');
+    expect(none.read()).toMatchObject({
+      status: 'none',
+      reason: 'instrumental',
+    });
+
+    const busy = await setup([
+      scripted('lrclib', { status: 'unreachable', reason: 'busy' }).provider,
+    ]);
+    await busy.facts.ensure(device, 'lyrics');
+    expect(busy.read()).toMatchObject({
+      status: 'unreachable',
+      source: 'lrclib',
+      reason: 'busy',
+    });
+    // And the phone remembers it.
+    const again = await setup([], busy.db);
+    await again.facts.ensure(device, 'lyrics');
+    expect(again.read()).toMatchObject({ reason: 'busy' });
+  });
+
   it('rests an unreachable fact, backing off, and honours Retry-After', async () => {
     const lrclib = scripted(
       'lrclib',

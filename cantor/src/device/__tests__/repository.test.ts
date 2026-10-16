@@ -289,7 +289,7 @@ describe('migrate', () => {
       albums: [album],
       missing: [],
     });
-    expect(await migrate(db, DEVICE_MIGRATIONS)).toBe(2);
+    expect(await migrate(db, DEVICE_MIGRATIONS)).toBe(DEVICE_MIGRATIONS.length);
     expect((await repository.load()).songs).toHaveLength(1);
     const facts = await db.execute('SELECT * FROM device_song_fact');
     expect(facts.rows).toEqual([]);
