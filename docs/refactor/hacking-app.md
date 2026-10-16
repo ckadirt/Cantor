@@ -113,6 +113,21 @@ every render, so words that land while it is open fill the row, and a choice
 the person made stays. A new fact kind is a new `FactKind` and its providers;
 a new source of words is one more provider.
 
+**Acts are declared; the composer renders inputs, not act names.** A model's
+acts come from `ModelView.acts`, or, from a node that predates them, the
+built-in three in `core/protocol/acts.ts` (`actsOf`), kept identical to the
+node's `builtin_acts`. The composer draws the source (a song or a tune) and
+then one row per declared input, in the declaration's order (`SourceRows`'
+`InputRow`); `audioPromptFor` sends one field per declared input plus
+`act_id`, and an input the act does not declare (lyrics included) is never
+sent. An optional prompt's default is its placeholder and is sent for an
+empty caption (`captionOf`). Words for an act come from `wordsForAct`: the
+app's own for ids it knows, else made from the catalog's `label`. Nothing
+outside `core/audioActs.ts`'s word table branches on an act id. A new act
+made of known inputs needs no app change; a new input kind needs its row in
+`SourceRows`, its rule in `problemsWith`, its fields in `audioPromptFor`, and
+its parser case in `parseActs` (which otherwise drops the act).
+
 ## Recipes
 
 ### Add a screen

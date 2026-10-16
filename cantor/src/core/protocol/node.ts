@@ -1,6 +1,7 @@
 import { parseModelParameters, parseStages } from './parameters';
 import { parseLyricsCapabilities } from './lyrics';
 import { parseCapabilities, parseInstallable } from './audio';
+import { parseActs } from './acts';
 import type { NodeInfo } from './types';
 import {
   isNonNegativeInteger,
@@ -32,6 +33,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
     const parameters = parseModelParameters(model.parameters);
     const lyrics = parseLyricsCapabilities(model.lyrics);
     const capabilities = parseCapabilities(model.capabilities);
+    const acts = parseActs(model.acts);
     return {
       selector: model.selector,
       family: model.family,
@@ -40,6 +42,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       ...(parameters === undefined ? {} : { parameters }),
       ...(lyrics === undefined ? {} : { lyrics }),
       ...(capabilities === undefined ? {} : { capabilities }),
+      ...(acts === undefined ? {} : { acts }),
     };
   });
   if (

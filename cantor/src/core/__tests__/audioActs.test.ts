@@ -5,10 +5,10 @@ import {
   mediaTypeOfPath,
   installCommand,
   modelsFor,
-  stagesFor,
+  stagesForCapability,
   suggestionFor,
-  voiceOffered,
 } from '../audioActs';
+import { actOn, inputOf } from '../protocol/acts';
 
 const capabilities = require('../../../../protocol/fixtures/v2/node-info-capabilities.json');
 const lyricsNode = require('../../../../protocol/fixtures/v2/node-info-lyrics.json');
@@ -28,8 +28,14 @@ describe('audio acts from declared capabilities', () => {
     expect(modelsFor(info, 'longer').map(m => m.selector)).toEqual([
       'acestep:1.5-fast',
     ]);
-    expect(voiceOffered(info.models[0])).toBe(true);
-    expect(stagesFor(info.models[0], 'version')).toEqual(['diffuse', 'decode']);
+    // An older node is read through the built-in acts: Voice where `timbre` is.
+    expect(inputOf(actOn(info.models[0], 'version'), 'voice')).toEqual({
+      kind: 'voice',
+    });
+    expect(stagesForCapability(info.models[0], 'cover')).toEqual([
+      'diffuse',
+      'decode',
+    ]);
   });
 
   it('offers nothing on a node that predates audio, and does not suggest installs there', () => {

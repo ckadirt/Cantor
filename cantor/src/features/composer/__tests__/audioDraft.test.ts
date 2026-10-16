@@ -129,6 +129,7 @@ describe('a draft that starts from a song', () => {
       audio: {
         source: { kind: 'song', song_id: song.songId },
         act: 'cover',
+        act_id: 'version',
         closeness: 0,
         keep_voice: true,
       },
@@ -155,6 +156,7 @@ describe('a draft that starts from a song', () => {
     ).toEqual({
       source: { kind: 'song', song_id: song.songId },
       act: 'extend',
+      act_id: 'longer',
       extend_seconds: 60,
       extend_at: 'start',
     });
@@ -186,6 +188,7 @@ describe('a draft that starts from a song', () => {
     ).toContainEqual({
       kind: 'model-cannot',
       act: 'version',
+      missing: 'No model on this node makes versions.',
     });
     expect(problemsWith(versionDraft(), [target()])).toEqual([]);
   });

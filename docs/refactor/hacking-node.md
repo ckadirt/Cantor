@@ -319,6 +319,21 @@ Rules:
   is `diffuse`, its checkpoint holds the source's latents, and it counts tiles.
   A capability's arc comes from the engine (`encode, diffuse, decode`), so the
   catalog declares no `stages` for audio capabilities.
+- **Acts are declared beside capabilities** (structures plan S3). A catalog
+  variant's `acts` (copied into the install marker with `capabilities`) say
+  what a person can do with a sound: an id, the capability it `needs`, its
+  sources and its typed inputs (`prompt`, `words`, `voice`, `follow`,
+  `added_length`, `tile`). Weights whose entry declares none get
+  `capabilities::builtin_acts` (version, longer, hum). `advertised_acts`
+  keeps an act only while its `needs` is advertised, and drops `voice`
+  without `timbre`; `NodeInfo` sends the result as `ModelView.acts`. A
+  request naming `audio.act_id` must name an advertised act for the
+  capability it asks for (`application/jobs.rs`, `settle_act`), and an empty
+  caption becomes the act's `prompt.default` when the prompt is optional,
+  before admission, so the stored recipe says what was sent. A new act made
+  of known inputs is a catalog edit; a new input kind is code here (its
+  `AudioPrompt` fields) and in the app (its row). `Acts` parses leniently:
+  an act this build cannot fill is dropped, never half-offered.
 - **An upload a job uses is pinned in the admission transaction**
   (`pin_for_job`); one nobody uses expires a day after it was last touched.
 - `derived_from` is read from the job's `request_json` with `json_extract`; a

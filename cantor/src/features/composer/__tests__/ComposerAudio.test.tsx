@@ -272,6 +272,7 @@ describe('the composer, starting from a song', () => {
       audio: {
         source: { kind: 'song', song_id: song.songId },
         act: 'cover',
+        act_id: 'version',
         closeness: 0,
       },
     });
@@ -289,5 +290,105 @@ describe('the composer, starting from a song', () => {
       audio: { act: 'extend', extend_seconds: 90, extend_at: 'start' },
     });
     expect(onSubmit.mock.calls[0][2]).not.toHaveProperty('duration');
+  });
+});
+
+describe('the composer draws an act from what it declares', () => {
+  function renderOn(models: ModelView[], source: SongSource) {
+    const onSubmit = jest.fn();
+    let tree!: ReactTestRenderer.ReactTestRenderer;
+    ReactTestRenderer.act(() => {
+      tree = ReactTestRenderer.create(
+        <GestureHandlerRootView>
+          <ComposerSheet
+            error={null}
+            onClose={jest.fn()}
+            onSubmit={onSubmit}
+            recipe={{ draft: draftFromSource(source), seed: 99 }}
+            submitting={false}
+            targets={[{ ...agentbox, models }]}
+          />
+        </GestureHandlerRootView>,
+      );
+    });
+    const words = () =>
+      tree.root
+        .findAll(node => typeof node.props.children === 'string')
+        .map(node => node.props.children as string);
+    const press = (label: string) => {
+      const target = tree.root.find(
+        node =>
+          typeof node.type !== 'string' &&
+          typeof node.props.onPress === 'function' &&
+          node.props.accessibilityLabel === label,
+      );
+      ReactTestRenderer.act(() => target.props.onPress());
+    };
+    return { words, press, onSubmit };
+  }
+
+  it('offers an act it has never heard of, in its catalog words and its inputs', () => {
+    const remixer: ModelView = {
+      ...ace,
+      acts: [
+        {
+          id: 'remix',
+          label: 'A remix',
+          needs: 'cover',
+          sources: ['song'],
+          inputs: [
+            { kind: 'follow', stops: [0, 1] },
+            { kind: 'prompt', required: false, default: 'A remix of it' },
+          ],
+        },
+      ],
+    };
+    const { words, press, onSubmit } = renderOn([remixer], {
+      ...song,
+      act: 'remix',
+      prompt: '',
+    });
+    expect(words()).toEqual(
+      expect.arrayContaining(['COMPOSE · A REMIX', 'FOLLOW', 'CLOSE', 'FREE']),
+    );
+    // Only what it declares: no Voice, no Words, no Between.
+    expect(words()).not.toContain('VOICE');
+    expect(words()).not.toContain('WORDS');
+    expect(words()).not.toContain('BETWEEN');
+    press('Follow: free. A song that remembers it');
+    press('Make a remix');
+    expect(onSubmit.mock.calls[0][2]).toEqual({
+      caption: 'A remix of it',
+      seed: 99,
+      audio: {
+        source: { kind: 'song', song_id: song.songId },
+        act: 'cover',
+        act_id: 'remix',
+        closeness: 1,
+      },
+    });
+  });
+
+  it('makes a version with an empty prompt, sending the act’s default', () => {
+    const { press, onSubmit } = renderOn([ace], {
+      ...song,
+      prompt: '',
+      words: null,
+    });
+    press('Make a version');
+    expect(onSubmit.mock.calls[0][2]).toMatchObject({
+      caption: 'The same song, its own style and instruments',
+      audio: { act_id: 'version' },
+    });
+  });
+
+  it('still asks for a prompt where the act requires one', () => {
+    const { press, onSubmit } = renderOn([ace], {
+      ...song,
+      act: 'longer',
+      prompt: '',
+    });
+    press('Make it longer');
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

@@ -1,3 +1,4 @@
+import type { ActView } from '../../../../protocol/ActView';
 import type { ErrorCode } from '../../../../protocol/ErrorCode';
 import type { GenerationStage } from '../../../../protocol/GenerationStage';
 import type { JobError } from '../../../../protocol/JobError';
@@ -27,9 +28,14 @@ export type ModelCapability = Omit<WireModelCapability, 'stages'> & {
 };
 
 /** The wire's model, with stages open (see `StageName`). */
-export type ModelView = Omit<WireModelView, 'stages' | 'capabilities'> & {
+export type ModelView = Omit<
+  WireModelView,
+  'stages' | 'capabilities' | 'acts'
+> & {
   stages?: StageName[];
   capabilities?: ModelCapability[];
+  /** Undefined from a node that predates acts (`core/protocol/acts.ts`). */
+  acts?: ActView[];
 };
 
 /** The wire's node info, with its models' stages open. */

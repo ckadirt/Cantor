@@ -45,10 +45,12 @@ import {
   type TuneRecorderPort,
 } from '../../audio/tuneRecorder';
 import type { LocalSource } from '../../jobs/outbox';
-import { stagesFor } from '../../core/audioActs';
+import { stagesForCapability, wordsForAct } from '../../core/audioActs';
+import { actsOf, inputOf } from '../../core/protocol/acts';
 import {
   EMPTY_DRAFT,
   actOf,
+  declarationFor,
   localSourceOf,
   needsUpload,
   tuneSource,
@@ -232,9 +234,13 @@ function ComposerSheetImpl({
   const selected = models.find(
     model => model.selector === resolved.modelSelector,
   );
+  /** The act's declaration on the chosen model: its rows, words and arc. */
+  const declaration = declarationFor(resolved, selected);
+  const actWords =
+    act === null ? null : wordsForAct(declaration ?? { id: act, label: act });
   const stages =
-    act !== null && selected !== undefined
-      ? stagesFor(selected, act)
+    declaration !== undefined && selected !== undefined
+      ? stagesForCapability(selected, declaration.needs)
       : selected?.stages ?? [];
   const lengths = durationChoices(target);
 
@@ -290,10 +296,33 @@ function ComposerSheetImpl({
     resolved.source?.kind === 'tune'
       ? resolved.source.fullSongSeconds ?? sourceSeconds
       : 0;
-  /** Hum a song is on offer where some node can take a tune and cover it. */
-  const canHum = targets.some(
-    candidate => modelsFor(candidate, 'hum').length > 0,
-  );
+  /**
+   * The act a tune starts, where some node can take one: the first a model
+   * there declares for a `tune` source (`hum`, unless a catalog says more).
+   */
+  const tuneAct = useMemo(() => {
+    for (const candidate of targets) {
+      for (const model of candidate.models) {
+        const tune = actsOf(model).find(each => each.sources.includes('tune'));
+        if (tune && modelsFor(candidate, tune.id, true).length > 0) {
+          return tune.id;
+        }
+      }
+    }
+    return null;
+  }, [targets]);
+  const fromTune = resolved.source?.kind === 'tune';
+  /** How long the result is, or null when the model or the tune decides. */
+  const resultSeconds =
+    act === null
+      ? resolved.durationSeconds
+      : inputOf(declaration, 'added_length')
+      ? sourceSeconds + resolved.extendSeconds
+      : fromTune
+      ? tuneSongSeconds > 0
+        ? tuneSongSeconds
+        : null
+      : sourceSeconds;
   /** A song from this phone is sent whole: say what that costs, and to whom. */
   const sends =
     resolved.source?.kind === 'song' && resolved.source.file && target
@@ -304,19 +333,15 @@ function ComposerSheetImpl({
   const summary = [
     target?.label,
     resolved.modelSelector,
-    act === 'hum'
-      ? tuneSongSeconds > 0
-        ? clock(tuneSongSeconds)
-        : 'A TUNE'
-      : act === 'version'
-      ? clock(sourceSeconds)
-      : act === 'longer'
-      ? `${clock(sourceSeconds)} → ${clock(
-          sourceSeconds + resolved.extendSeconds,
-        )}`
-      : resolved.durationSeconds === null
-      ? 'AUTO'
-      : `${resolved.durationSeconds}S`,
+    act === null
+      ? resolved.durationSeconds === null
+        ? 'AUTO'
+        : `${resolved.durationSeconds}S`
+      : resultSeconds === null
+      ? 'A TUNE'
+      : inputOf(declaration, 'added_length')
+      ? `${clock(sourceSeconds)} → ${clock(resultSeconds)}`
+      : clock(resultSeconds),
   ]
     .filter((part): part is string => typeof part === 'string')
     .join(' · ')
@@ -334,17 +359,7 @@ function ComposerSheetImpl({
                 seed,
                 model: resolved.modelSelector,
                 durationMs:
-                  act === 'hum'
-                    ? tuneSongSeconds > 0
-                      ? tuneSongSeconds * 1000
-                      : null
-                    : act === 'version'
-                    ? sourceSeconds * 1000
-                    : act === 'longer'
-                    ? (sourceSeconds + resolved.extendSeconds) * 1000
-                    : resolved.durationSeconds === null
-                    ? null
-                    : resolved.durationSeconds * 1000,
+                  resultSeconds === null ? null : resultSeconds * 1000,
               }}
               lens={lens}
               size={FOLIO_KNOBS.CLEF_PX}
@@ -361,15 +376,7 @@ function ComposerSheetImpl({
             />
           )
         }
-        eyebrow={
-          act === 'hum'
-            ? 'COMPOSE · A TUNE'
-            : act === 'version'
-            ? 'COMPOSE · A VERSION'
-            : act === 'longer'
-            ? 'COMPOSE · LONGER'
-            : 'COMPOSE · DRAFT'
-        }
+        eyebrow={`COMPOSE · ${actWords?.eyebrow ?? 'DRAFT'}`}
         nav={{
           label: 'CLOSE',
           accessibilityLabel: 'Close composer',
@@ -385,7 +392,9 @@ function ComposerSheetImpl({
             multiline
             onChangeText={caption => update({ caption })}
             placeholder={
-              act === 'hum' ? 'what it should become' : 'a slow harbour at dusk'
+              // An optional prompt shows what an empty one sends.
+              inputOf(declaration, 'prompt')?.default ??
+              (fromTune ? 'what it should become' : 'a slow harbour at dusk')
             }
             placeholderTextColor={pal.faint}
             style={[styles.caption, FOLIO_TITLE_STYLE, { color: pal.ink }]}
@@ -410,14 +419,14 @@ function ComposerSheetImpl({
       />
 
       <Stave keyboardDismissMode="on-drag" keyboardShouldPersistTaps="handled">
-        {canHum && (act === null || act === 'hum') ? (
+        {tuneAct !== null && (act === null || fromTune) ? (
           <>
             <Measure>
               <Row
                 control
                 label="Start from"
                 note={
-                  act === 'hum'
+                  fromTune
                     ? 'A tune you make'
                     : 'The caption is where it starts'
                 }
@@ -425,7 +434,7 @@ function ComposerSheetImpl({
                 <Dial
                   compact
                   activeColour={pal.ink}
-                  activeKey={act === 'hum' ? 'tune' : 'words'}
+                  activeKey={fromTune ? 'tune' : 'words'}
                   items={[
                     {
                       key: 'words',
@@ -443,7 +452,7 @@ function ComposerSheetImpl({
                     update(
                       key === 'tune'
                         ? {
-                            source: tuneSource(),
+                            source: tuneSource(tuneAct),
                             wordsMode: 'none',
                             modelSelector: null,
                           }
@@ -463,6 +472,7 @@ function ComposerSheetImpl({
           <>
             <SourceRows
               askForMicrophone={askForMicrophone}
+              declaration={declaration}
               dialTextStyle={styles.dialWord}
               disabled={submitting}
               draft={resolved}
@@ -631,13 +641,15 @@ function ComposerSheetImpl({
             />
           </Row>
 
-          {act === 'version' ? (
+          {act !== null &&
+          resolved.source?.kind === 'song' &&
+          !inputOf(declaration, 'added_length') ? (
             <Row label="Length" note="As long as the song">
               <Text style={[type.body, { color: pal.ink }]}>
                 {clock(sourceSeconds)}
               </Text>
             </Row>
-          ) : act === 'longer' || act === 'hum' ? null : (
+          ) : act !== null ? null : (
             <Row label="Length" control>
               {/* The value in words above the line it is chosen along. */}
               <View style={styles.rulerValue}>
@@ -776,7 +788,7 @@ function ComposerSheetImpl({
       >
         <MakeIt
           key={drawn}
-          act={act}
+          idle={actWords?.make ?? 'Make it'}
           failed={failed}
           failedWord={errorWord}
           onPress={() => {
@@ -822,14 +834,15 @@ function ComposerSheetImpl({
  * goes still and faint and the word says so (`folio.html#working`).
  */
 function MakeIt({
-  act,
+  idle,
   failed,
   failedWord,
   onPress,
   ready,
   submitting,
 }: {
-  act: ReturnType<typeof actOf>;
+  /** The act's own words at rest: `Make a version`, `Make it`. */
+  idle: string;
   failed: boolean;
   failedWord: string | null;
   onPress: () => void;
@@ -839,14 +852,6 @@ function MakeIt({
   // Out of reach only when there is nothing to send; sending is busy, not
   // unavailable, so the word keeps its ink and grows the rule.
   const { colour } = useReach(!ready && !submitting);
-  const idle =
-    act === 'hum'
-      ? 'Make a song'
-      : act === 'version'
-      ? 'Make a version'
-      : act === 'longer'
-      ? 'Make it longer'
-      : 'Make it';
   const label = submitting
     ? 'Sending it'
     : failed
