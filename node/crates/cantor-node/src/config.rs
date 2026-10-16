@@ -547,27 +547,45 @@ pub fn sanitize_petname(petname: &str) -> Option<String> {
     Some(trimmed.to_owned())
 }
 
+/// The per-user default for a store the config does not place.
+///
+/// A test never gets here: it would write into the real store of whoever
+/// runs it, and share it with every test running beside it (a model marker
+/// in `~/.local/share/cantor/models` made `ModelNotInstalled` flake on CI).
+/// Tests place their stores under a temporary directory.
+fn user_data_dir(store: &str) -> PathBuf {
+    #[cfg(test)]
+    panic!("a test reached the user's real {store} store: set the config's directory");
+    #[cfg(not(test))]
+    dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("/var/lib"))
+        .join("cantor")
+        .join(store)
+}
+
 impl NodeConfig {
+    /// Put this config's model store and library under `dir`: what every test
+    /// config does, since the per-user default is refused under test.
+    #[cfg(test)]
+    pub fn keep_stores_in(&mut self, dir: &Path) {
+        self.model_dir = Some(dir.join("models").display().to_string());
+        self.library_dir = Some(dir.join("library").display().to_string());
+    }
+
     /// Where the blob store lives. The installer writes `model_dir`; this
     /// fallback keeps a hand-made config working without one.
     pub fn model_root(&self) -> PathBuf {
         if let Some(configured) = &self.model_dir {
             return PathBuf::from(configured);
         }
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("/var/lib"))
-            .join("cantor")
-            .join("models")
+        user_data_dir("models")
     }
 
     pub fn library_root(&self) -> PathBuf {
         if let Some(configured) = &self.library_dir {
             return PathBuf::from(configured);
         }
-        dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("/var/lib"))
-            .join("cantor")
-            .join("library")
+        user_data_dir("library")
     }
 
     pub fn catalog_url(&self) -> String {
