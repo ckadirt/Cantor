@@ -95,6 +95,44 @@ function gestures(): [
 
 let latest: ReturnType<typeof useFieldCamera>;
 
+const mountedCameras: ReactTestRenderer.ReactTestRenderer[] = [];
+
+function mountCamera(element: React.ReactElement) {
+  const renderer = ReactTestRenderer.create(element);
+  mountedCameras.push(renderer);
+  return renderer;
+}
+
+beforeEach(() => {
+  // Gather/follow and step fallbacks must only run when a test advances them.
+  // The Reanimated mock's withTiming callback still lands synchronously.
+  // React's act uses microtasks to flush commits, independently of time.
+  jest.useFakeTimers({ now: 0, doNotFake: ['queueMicrotask'] });
+});
+
+afterEach(async () => {
+  try {
+    // An old probe re-rendering would overwrite the next test's `latest`.
+    // Unmount while fake timers are installed so the hook cancels its waits.
+    await ReactTestRenderer.act(async () => {
+      for (const renderer of mountedCameras) renderer.unmount();
+    });
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    mountedCameras.length = 0;
+    jest.clearAllTimers();
+    jest.useRealTimers();
+    mockReducedMotion = true;
+    jest.restoreAllMocks();
+  }
+});
+
+async function advanceCameraTime(ms: number) {
+  await ReactTestRenderer.act(async () => {
+    jest.advanceTimersByTime(ms);
+  });
+}
+
 /**
  * Hold the next re-cuts in the air at `progress`, and hand back the landing.
  *
@@ -161,7 +199,7 @@ async function renderCamera() {
   const onHoldPlacement = jest.fn();
   const layout = layoutField({ entities, arrangement: byTime, viewport });
   await ReactTestRenderer.act(async () => {
-    ReactTestRenderer.create(
+    mountCamera(
       <Probe
         layout={layout}
         onHoldPlacement={onHoldPlacement}
@@ -190,11 +228,6 @@ function camera(): Camera {
 }
 
 describe('useFieldCamera', () => {
-  afterEach(() => {
-    mockReducedMotion = true;
-    jest.restoreAllMocks();
-  });
-
   it('keeps the pinch focal world point stable and clamps at the closest look', async () => {
     const { layout } = await renderCamera();
     const [pinch] = gestures();
@@ -689,31 +722,15 @@ describe('useFieldCamera', () => {
   });
 
   describe('the queue stepping to the next song on the shelf', () => {
-    afterEach(() => {
-      jest.useRealTimers();
-    });
-
     const shelf: FieldEntity[] = [
       entities[0],
       { ...entities[0], key: 'node-a:song-b', entityId: 'song-b' },
     ];
 
-    let mounted: ReactTestRenderer.ReactTestRenderer | null = null;
-    afterEach(async () => {
-      // Unmounted, so nothing of these songs re-renders into a later test.
-      const renderer = mounted;
-      mounted = null;
-      if (renderer !== null) {
-        await ReactTestRenderer.act(async () => {
-          renderer.unmount();
-        });
-      }
-    });
-
     async function inFirstSong() {
       const layout = layoutField({ entities: shelf, arrangement: byTime, viewport });
       await ReactTestRenderer.act(async () => {
-        mounted = ReactTestRenderer.create(
+        mountCamera(
           <Probe layout={layout} onOpenComposer={jest.fn()} onOpenEngines={jest.fn()} />,
         );
       });
@@ -735,9 +752,7 @@ describe('useFieldCamera', () => {
      * here, so the fallback stands in for both, and the step lands at once.
      */
     async function cutWithoutCanvas() {
-      await ReactTestRenderer.act(async () => {
-        jest.advanceTimersByTime(FIELD_CAMERA_KNOBS.STEP_CUT_WAIT_MS);
-      });
+      await advanceCameraTime(FIELD_CAMERA_KNOBS.STEP_CUT_WAIT_MS);
     }
 
     /*
@@ -748,7 +763,6 @@ describe('useFieldCamera', () => {
     it('morphs in place: the next song is the player, and the camera never climbs', async () => {
       mockReducedMotion = false;
       const { layout, first, second } = await inFirstSong();
-      jest.useFakeTimers();
 
       await ReactTestRenderer.act(async () => {
         latest.step(second);
@@ -781,7 +795,6 @@ describe('useFieldCamera', () => {
     it('holds a step asked mid-morph until the morph lands, and says where it is going', async () => {
       mockReducedMotion = false;
       const { first, second } = await inFirstSong();
-      jest.useFakeTimers();
       await ReactTestRenderer.act(async () => {
         latest.step(second);
       });
@@ -880,7 +893,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<TransitionProbe field={month} />);
+      renderer = mountCamera(<TransitionProbe field={month} />);
     });
     renders.length = 0;
 
@@ -981,7 +994,7 @@ describe('useFieldCamera', () => {
     }
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<HeldProbe field={month} />);
+      renderer = mountCamera(<HeldProbe field={month} />);
     });
     await ReactTestRenderer.act(async () => {
       renderer.update(<HeldProbe field={playlist} />);
@@ -1027,7 +1040,7 @@ describe('useFieldCamera', () => {
     const field = layoutField({ entities, arrangement: byTime, viewport });
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(
+      renderer = mountCamera(
         <Probe
           layout={field}
           onOpenComposer={jest.fn()}
@@ -1182,9 +1195,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(
-        <NativeProbe field={month} tick={0} />,
-      );
+      renderer = mountCamera(<NativeProbe field={month} tick={0} />);
     });
     await ReactTestRenderer.act(async () => {
       renderer.update(<NativeProbe field={playlist} tick={0} />);
@@ -1245,7 +1256,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<NativeProbe field={month} />);
+      renderer = mountCamera(<NativeProbe field={month} />);
     });
     await ReactTestRenderer.act(async () => {
       renderer.update(<NativeProbe field={playlist} />);
@@ -1316,7 +1327,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<TransitionProbe field={both} />);
+      renderer = mountCamera(<TransitionProbe field={both} />);
     });
 
     await ReactTestRenderer.act(async () => {
@@ -1373,7 +1384,7 @@ describe('useFieldCamera', () => {
       return null;
     }
     await ReactTestRenderer.act(async () => {
-      ReactTestRenderer.create(<TallProbe />);
+      mountCamera(<TallProbe />);
     });
 
     const [seat] = shelfSeats(field);
@@ -1463,7 +1474,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<TransitionProbe field={all} />);
+      renderer = mountCamera(<TransitionProbe field={all} />);
     });
 
     const inside = all.placements.find(
@@ -1553,7 +1564,7 @@ describe('useFieldCamera', () => {
     async function standInAShelf() {
       let renderer!: ReactTestRenderer.ReactTestRenderer;
       await ReactTestRenderer.act(async () => {
-        renderer = ReactTestRenderer.create(
+        renderer = mountCamera(
           <FilterProbe field={whole} filtered={false} quiet={false} />,
         );
       });
@@ -1617,7 +1628,7 @@ describe('useFieldCamera', () => {
       mockReducedMotion = false;
       let renderer!: ReactTestRenderer.ReactTestRenderer;
       await ReactTestRenderer.act(async () => {
-        renderer = ReactTestRenderer.create(
+        renderer = mountCamera(
           <FilterProbe field={whole} filtered={false} quiet={false} />,
         );
       });
@@ -1671,10 +1682,11 @@ describe('useFieldCamera', () => {
       mockReducedMotion = false;
       let renderer!: ReactTestRenderer.ReactTestRenderer;
       await ReactTestRenderer.act(async () => {
-        renderer = ReactTestRenderer.create(
+        renderer = mountCamera(
           <FindProbe field={map} finding={false} />,
         );
       });
+      const beforeCamera = camera();
       const before = latest.recut?.generation ?? 0;
       let planned: ReturnType<typeof latest.recutNow> = null;
       // As a keystroke does: plan first, then hand React the same layout in
@@ -1690,13 +1702,22 @@ describe('useFieldCamera', () => {
       expect(latest.recut).toBe(planned);
       // And asking again for the same layout plans nothing.
       expect(latest.recutNow(gathered, true)).toBeNull();
+
+      // No canvas acknowledges this cut. It stays pending until the explicit
+      // fallback deadline, then the synchronous timing mock lands it.
+      await advanceCameraTime(FIELD_CAMERA_KNOBS.PENDING_CUT_MAX_MS - 1);
+      expect(latest.cameraShared.value).toEqual(beforeCamera);
+      expect(latest.layoutProgress).toBe(0);
+      await advanceCameraTime(1);
+      expect(camera()).toEqual(planned!.toCamera);
+      expect(latest.layoutProgress).toBe(1);
     });
 
     it('flies to the found shelf on the re-cut, holds over an empty query, and goes back', async () => {
       mockReducedMotion = false;
       let renderer!: ReactTestRenderer.ReactTestRenderer;
       await ReactTestRenderer.act(async () => {
-        renderer = ReactTestRenderer.create(
+        renderer = mountCamera(
           <FindProbe field={map} finding={false} />,
         );
       });
@@ -1742,6 +1763,10 @@ describe('useFieldCamera', () => {
       expect(latest.recut?.toCamera.x).toBeCloseTo(before.x, 6);
       expect(latest.recut?.toCamera.y).toBeCloseTo(before.y, 6);
       expect(latest.recut?.toCamera.scale).toBeCloseTo(before.scale, 6);
+
+      await advanceCameraTime(FIELD_CAMERA_KNOBS.PENDING_CUT_MAX_MS);
+      expect(camera()).toEqual(before);
+      expect(latest.layoutProgress).toBe(1);
     });
   });
 
@@ -1781,7 +1806,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<TransitionProbe field={both} />);
+      renderer = mountCamera(<TransitionProbe field={both} />);
     });
     const inside = both.placements.find(
       placement => placement.entityKey === 'node-a:song-a',
@@ -1847,7 +1872,7 @@ describe('useFieldCamera', () => {
       mockReducedMotion = true;
       let renderer!: ReactTestRenderer.ReactTestRenderer;
       await ReactTestRenderer.act(async () => {
-        renderer = ReactTestRenderer.create(<RegroupProbe field={weeks} />);
+        renderer = mountCamera(<RegroupProbe field={weeks} />);
       });
       await panFarAway();
       expect(latest.level).toBe('field');
@@ -1875,7 +1900,7 @@ describe('useFieldCamera', () => {
         });
       let renderer!: ReactTestRenderer.ReactTestRenderer;
       await ReactTestRenderer.act(async () => {
-        renderer = ReactTestRenderer.create(<RegroupProbe field={weeks} />);
+        renderer = mountCamera(<RegroupProbe field={weeks} />);
       });
       await panFarAway();
       await ReactTestRenderer.act(async () => {
@@ -1936,7 +1961,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<TransitionProbe field={before} />);
+      renderer = mountCamera(<TransitionProbe field={before} />);
     });
     const inside = before.placements.find(
       placement => placement.entityKey === 'node-a:song-a',
@@ -1999,7 +2024,7 @@ describe('useFieldCamera', () => {
 
     let renderer!: ReactTestRenderer.ReactTestRenderer;
     await ReactTestRenderer.act(async () => {
-      renderer = ReactTestRenderer.create(<TransitionProbe field={dated} />);
+      renderer = mountCamera(<TransitionProbe field={dated} />);
     });
     const inside = dated.placements[0];
     await ReactTestRenderer.act(async () => {
@@ -2018,11 +2043,6 @@ describe('useFieldCamera', () => {
 });
 
 describe('useFieldCamera: landing where you were, and throws', () => {
-  afterEach(() => {
-    mockReducedMotion = true;
-    jest.restoreAllMocks();
-  });
-
   async function renderField(field: FieldLayout) {
     function FieldProbe() {
       latest = useFieldCamera({
@@ -2034,7 +2054,7 @@ describe('useFieldCamera: landing where you were, and throws', () => {
       return null;
     }
     await ReactTestRenderer.act(async () => {
-      ReactTestRenderer.create(<FieldProbe />);
+      mountCamera(<FieldProbe />);
     });
   }
 
@@ -2278,11 +2298,6 @@ describe('useFieldCamera: landing where you were, and throws', () => {
 });
 
 describe('useFieldCamera: each axis keeps its place, and the rail', () => {
-  afterEach(() => {
-    mockReducedMotion = true;
-    jest.restoreAllMocks();
-  });
-
   /** Two cuts of one library: the same songs by week and by month. */
   const library = groupScenario(Array(30).fill(30));
   const weeks = layoutField({
@@ -2310,9 +2325,7 @@ describe('useFieldCamera: each axis keeps its place, and the rail', () => {
   async function show(field: FieldLayout, axis: string) {
     await ReactTestRenderer.act(async () => {
       if (renderer === undefined) {
-        renderer = ReactTestRenderer.create(
-          <AxisProbe axis={axis} field={field} />,
-        );
+        renderer = mountCamera(<AxisProbe axis={axis} field={field} />);
       } else {
         renderer.update(<AxisProbe axis={axis} field={field} />);
       }
@@ -2405,7 +2418,7 @@ describe('useFieldCamera: each axis keeps its place, and the rail', () => {
         <FilterAxisProbe axis={axis} field={field} filtered={filtered} />
       );
       await ReactTestRenderer.act(async () => {
-        if (probe === undefined) probe = ReactTestRenderer.create(element);
+        if (probe === undefined) probe = mountCamera(element);
         else probe.update(element);
       });
     }
