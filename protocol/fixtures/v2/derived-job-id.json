@@ -1,0 +1,20 @@
+{
+  "description": "A new job's id from the submitting client's public key and its request id (S1b).",
+  "vectors": [
+    {
+      "client_public_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "client_request_id": "019c8f7e-5f2b-7a21-9ee0-8efb630bcb20",
+      "job_id": "950815c6-8100-8e2e-bf53-19d57e99ea60"
+    },
+    {
+      "client_public_key_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "client_request_id": "019c8f7e-5f2b-7a21-9ee0-8efb630bcb20",
+      "job_id": "84d20840-bb28-89ac-b6ff-e3c358b93eb7"
+    },
+    {
+      "client_public_key_hex": "a9d10a5f64d390982bc408ec4c3dc8c6b8ee75cf7e753843a4197d2e6f2c0b51",
+      "client_request_id": "019c8f7e-5f2b-7a21-9ee0-8efb630bcb21-café-雨-🎵",
+      "job_id": "6cfcfc57-77b8-89f6-92d6-83278438b53b"
+    }
+  ]
+}

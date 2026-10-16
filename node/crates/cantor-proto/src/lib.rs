@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 mod generated;
+mod job_id;
+
+pub use job_id::derive_job_id;
 
 /// Application layer versions and the artifact chunk size come from the shared
 /// transport manifest; every other bound below is application-local policy.
@@ -348,6 +351,10 @@ pub struct NodeFeatures {
     pub artifacts_transfer: bool,
     pub secure_tunnel: bool,
     pub job_controls: bool,
+    /// Additive: a client may predict a new job's id from its principal and
+    /// client request id only when this is `true`.
+    #[serde(default)]
+    pub derived_job_ids: bool,
     /// Additive: a node that predates `job.forget` omits the key, and a client
     /// that reads `false` must not offer the act.
     #[serde(default)]
@@ -1252,6 +1259,17 @@ mod tests {
         for fixture in node {
             serde_json::from_str::<NodeMessage>(fixture).expect("valid node fixture");
         }
+    }
+
+    #[test]
+    fn old_node_info_does_not_advertise_derived_job_ids() {
+        let NodeMessage::NodeInfoChanged { node, .. } = serde_json::from_str(include_str!(
+            "../../../../protocol/fixtures/v2/node-info.json"
+        ))
+        .expect("legacy node info fixture") else {
+            panic!("node.info");
+        };
+        assert!(!node.features.derived_job_ids);
     }
 
     #[test]

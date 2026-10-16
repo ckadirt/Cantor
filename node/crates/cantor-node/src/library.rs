@@ -144,17 +144,95 @@ mod tests {
         let first = library
             .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
             .unwrap();
+        let SubmitResult::Accepted(job) = &first else {
+            panic!("accepted");
+        };
+        assert_eq!(
+            job.id,
+            cantor_proto::derive_job_id(principal(1).as_bytes(), &request.client_request_id)
+        );
         let second = library
             .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
             .unwrap();
         assert_eq!(first, second);
         drop(library);
+        let mut library = Library::open(temporary.path()).unwrap();
+        assert_eq!(library.queued_count().unwrap(), 1);
         assert_eq!(
-            Library::open(temporary.path())
-                .unwrap()
-                .queued_count()
+            library
+                .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
                 .unwrap(),
-            1
+            first
+        );
+    }
+
+    #[test]
+    fn same_request_id_for_different_principals_derives_different_job_ids() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        let request = submission("shared request id");
+        let owners = [
+            PrincipalId::from_client_public_key(&[1; 32]),
+            PrincipalId::from_client_public_key(&[2; 32]),
+        ];
+        let mut ids = Vec::new();
+        for (owner, key) in owners.into_iter().zip([[1; 32], [2; 32]]) {
+            let SubmitResult::Accepted(job) = library
+                .submit(owner, &key, &request, &variant(), &[], 20, 0)
+                .unwrap()
+            else {
+                panic!("accepted");
+            };
+            assert_eq!(
+                job.id,
+                cantor_proto::derive_job_id(owner.as_bytes(), &request.client_request_id)
+            );
+            assert_eq!(
+                library
+                    .submit(owner, &key, &request, &variant(), &[], 20, 0)
+                    .unwrap(),
+                SubmitResult::Accepted(job.clone())
+            );
+            ids.push(job.id);
+        }
+        assert_ne!(ids[0], ids[1]);
+    }
+
+    #[test]
+    fn resubmission_returns_a_stored_legacy_id_before_admission_checks() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        let request = submission("legacy job");
+        let SubmitResult::Accepted(mut job) = library
+            .submit(principal(1), &[2; 32], &request, &variant(), &[], 20, 0)
+            .unwrap()
+        else {
+            panic!("accepted");
+        };
+        // Model the stored row from before derived ids. An idempotent lookup
+        // must return it without touching sidecars or allocating another id.
+        let legacy_id = Uuid::now_v7().to_string();
+        library
+            .connection
+            .execute(
+                "UPDATE jobs SET id=?1 WHERE id=?2",
+                params![legacy_id, job.id],
+            )
+            .unwrap();
+        job.id = legacy_id;
+        assert_eq!(
+            library
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &request,
+                    &variant(),
+                    &[],
+                    0,
+                    u64::MAX
+                )
+                .unwrap(),
+            SubmitResult::Accepted(job)
         );
     }
 
@@ -503,6 +581,36 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn jobs_submitted_within_one_second_are_claimed_in_submission_order() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        // One second's resolution in `created_at` makes these ties, and derived
+        // ids sort in no particular order: only insertion order can rank them.
+        let captions = ["first", "second", "third", "fourth", "fifth"];
+        for caption in captions {
+            library
+                .submit(
+                    principal(1),
+                    &[2; 32],
+                    &submission(caption),
+                    &variant(),
+                    &[],
+                    20,
+                    0,
+                )
+                .unwrap();
+        }
+        for caption in captions {
+            let (work, _) = library.claim_next().unwrap().unwrap();
+            assert_eq!(work.generation.caption, caption);
+            library
+                .connection
+                .execute("UPDATE jobs SET state='cancelled' WHERE id=?1", [&work.id])
+                .unwrap();
+        }
     }
 
     #[test]

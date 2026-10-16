@@ -247,6 +247,7 @@ mod tests {
                 artifacts_transfer: false,
                 secure_tunnel: false,
                 job_controls: false,
+                derived_job_ids: false,
                 job_forget: false,
                 audio_sources: false,
                 uploads: false,

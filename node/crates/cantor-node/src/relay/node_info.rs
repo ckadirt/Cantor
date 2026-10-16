@@ -76,10 +76,35 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             artifacts_transfer: true,
             secure_tunnel: true,
             job_controls: true,
+            derived_job_ids: true,
             job_forget: true,
             audio_sources: true,
             uploads: true,
         },
         installable,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ConfigSeed;
+    use cantor_proto::{NodeMessage, PROTOCOL_VERSION};
+    use tempfile::tempdir;
+
+    #[test]
+    fn node_info_json_advertises_derived_job_ids() {
+        let temporary = tempdir().unwrap();
+        let (mut config, _) =
+            NodeConfig::load_or_create(&temporary.path().join("node.toml"), ConfigSeed::default())
+                .unwrap();
+        config.model_dir = Some(temporary.path().join("models").display().to_string());
+        let library = Library::open(temporary.path().join("library")).unwrap();
+        let message = NodeMessage::NodeInfoChanged {
+            v: PROTOCOL_VERSION,
+            node: static_node_info(&config, &library),
+        };
+        let json = serde_json::to_value(message).unwrap();
+        assert_eq!(json["node"]["features"]["derived_job_ids"], true);
     }
 }
