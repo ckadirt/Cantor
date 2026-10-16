@@ -272,9 +272,27 @@ describe('deviceSongId', () => {
 describe('migrate', () => {
   it('is idempotent and refuses a newer database', async () => {
     const db = openTestDatabase();
-    expect(await migrate(db, DEVICE_MIGRATIONS)).toBe(1);
-    expect(await migrate(db, DEVICE_MIGRATIONS)).toBe(1);
+    expect(await migrate(db, DEVICE_MIGRATIONS)).toBe(DEVICE_MIGRATIONS.length);
+    expect(await migrate(db, DEVICE_MIGRATIONS)).toBe(DEVICE_MIGRATIONS.length);
     await expect(migrate(db, [])).rejects.toThrow('newer than this build');
+  });
+
+  it('brings a first-schema database up to song facts, keeping its songs', async () => {
+    const db = openTestDatabase();
+    expect(await migrate(db, DEVICE_MIGRATIONS.slice(0, 1))).toBe(1);
+    const repository = createDeviceRepository(db);
+    await repository.commitScan({
+      volume: 'external_primary',
+      generation: 1,
+      scannedAtMs: 1_790_000_100_000,
+      songs: [song()],
+      albums: [album],
+      missing: [],
+    });
+    expect(await migrate(db, DEVICE_MIGRATIONS)).toBe(2);
+    expect((await repository.load()).songs).toHaveLength(1);
+    const facts = await db.execute('SELECT * FROM device_song_fact');
+    expect(facts.rows).toEqual([]);
   });
 
   it('leaves the database at a whole version when a migration fails', async () => {

@@ -1,15 +1,15 @@
-import { nativeMedia } from './native';
+import type { DeviceSubject, Lookup } from '../facts/types';
 
 /**
- * The words of a song on this phone, for a version that keeps them.
+ * Where an imported song's words can come from: its file's own tags, and
+ * LRCLIB. The adapters behind the `file-tags` and `lrclib` fact providers
+ * (`src/facts/`), which decide the order and remember the answer.
  *
  * A version sung against `[Instrumental]` or no words garbles the kept voice;
  * the same render against the song's real words sings them (audio prompting,
- * A0). So: the file's own tags first, which never leave the phone, then
- * LRCLIB, which learns the song's title, artist and length. Asked only when a
- * version of that one song is opened, never for the library.
- *
- * Never throws: a song whose words cannot be found opens as instrumental.
+ * A0). The tags never leave the phone; LRCLIB learns a title, an artist and a
+ * length. Both say `none` only when they were asked and had nothing, and
+ * LRCLIB says `unreachable` when it could not be asked.
  */
 export const LYRICS_KNOBS = {
   LRCLIB_SEARCH: 'https://lrclib.net/api/search',
@@ -20,35 +20,49 @@ export const LYRICS_KNOBS = {
   TIMEOUT_MS: 8000,
 } as const;
 
-export type LyricsQuery = Readonly<{
-  path: string;
-  title: string;
-  /** False when `title` is the file's name: nothing to search by. */
-  titleFromTag: boolean;
-  artist: string | null;
-  album: string | null;
-  durationMs: number;
-}>;
+export type LyricsQuery = Pick<
+  DeviceSubject,
+  'title' | 'titleFromTag' | 'artist' | 'album' | 'durationMs'
+>;
 
-export type LyricsSources = Readonly<{
-  tags: (path: string) => Promise<string | null>;
-  fetch: typeof fetch;
-}>;
+/** The file's embedded words (`EmbeddedLyrics.kt`). A file that cannot be read has none. */
+export async function tagLyrics(
+  path: string,
+  read: (path: string) => Promise<string | null>,
+): Promise<Lookup> {
+  const tagged = await read(path).catch(() => null);
+  const words = tagged === null ? null : cleanLyrics(tagged);
+  return words === null ? { status: 'none' } : { status: 'found', value: words };
+}
 
-const DEFAULT_SOURCES: LyricsSources = {
-  tags: path => nativeMedia.lyrics(path),
-  fetch: (...args) => fetch(...args),
-};
-
-export async function lyricsFor(
+/**
+ * LRCLIB's words for the song, matched by length. A song without a title
+ * tag or an artist is not searched: a file name finds someone else's song.
+ */
+export async function lrclibLyrics(
   song: LyricsQuery,
-  sources: LyricsSources = DEFAULT_SOURCES,
-): Promise<string | null> {
-  const tagged = await sources.tags(song.path).catch(() => null);
-  const fromTags = tagged === null ? null : cleanLyrics(tagged);
-  if (fromTags !== null) return fromTags;
-  if (!song.titleFromTag || song.artist === null) return null;
-  return lookUp(song, sources.fetch).catch(() => null);
+  fetchFn: typeof fetch,
+  signal?: AbortSignal,
+): Promise<Lookup> {
+  if (!song.titleFromTag || song.artist === null) return { status: 'none' };
+  const seconds = song.durationMs / 1000;
+  let unreachable: Extract<Lookup, { status: 'unreachable' }> | null = null;
+  for (const { title, artist } of searchesFor(song)) {
+    const answer = await search(fetchFn, title, artist, signal);
+    if (answer.status === 'unreachable') {
+      unreachable = laterOf(unreachable, answer);
+      continue;
+    }
+    const best = answer.hits
+      .filter(hit => typeof hit.duration === 'number')
+      .map(hit => ({ hit, off: Math.abs((hit.duration as number) - seconds) }))
+      .filter(({ off }) => off <= LYRICS_KNOBS.DURATION_SLACK_S)
+      .sort((a, b) => a.off - b.off)
+      .map(({ hit }) => hit)
+      .find(hit => hit.instrumental !== true && wordsOf(hit) !== null);
+    if (best !== undefined) return { status: 'found', value: wordsOf(best)! };
+  }
+  return unreachable ?? { status: 'none' };
 }
 
 /**
@@ -83,25 +97,6 @@ type LrclibHit = {
   syncedLyrics?: unknown;
 };
 
-async function lookUp(
-  song: LyricsQuery,
-  fetchFn: typeof fetch,
-): Promise<string | null> {
-  const seconds = song.durationMs / 1000;
-  for (const { title, artist } of searchesFor(song)) {
-    const hits = await search(fetchFn, title, artist);
-    const best = hits
-      .filter(hit => typeof hit.duration === 'number')
-      .map(hit => ({ hit, off: Math.abs((hit.duration as number) - seconds) }))
-      .filter(({ off }) => off <= LYRICS_KNOBS.DURATION_SLACK_S)
-      .sort((a, b) => a.off - b.off)
-      .map(({ hit }) => hit)
-      .find(hit => hit.instrumental !== true && wordsOf(hit) !== null);
-    if (best !== undefined) return wordsOf(best);
-  }
-  return null;
-}
-
 function wordsOf(hit: LrclibHit): string | null {
   const text =
     typeof hit.plainLyrics === 'string' && hit.plainLyrics.trim() !== ''
@@ -134,27 +129,71 @@ export function searchesFor(
     : [asWritten, bare];
 }
 
+type SearchAnswer =
+  | Readonly<{ status: 'answered'; hits: LrclibHit[] }>
+  | Extract<Lookup, { status: 'unreachable' }>;
+
+/**
+ * One search. A 404 or a request LRCLIB refuses is an answer with no hits; a
+ * timeout, no network, a 429 or a 5xx is unreachable, with LRCLIB's
+ * `Retry-After` when it sends one.
+ */
 async function search(
   fetchFn: typeof fetch,
   title: string,
   artist: string,
-): Promise<LrclibHit[]> {
+  signal?: AbortSignal,
+): Promise<SearchAnswer> {
   const query = `track_name=${encodeURIComponent(title)}&artist_name=${encodeURIComponent(artist)}`;
   const abort = new AbortController();
   const timer = setTimeout(() => abort.abort(), LYRICS_KNOBS.TIMEOUT_MS);
+  const stop = () => abort.abort();
+  signal?.addEventListener('abort', stop);
   try {
     const response = await fetchFn(`${LYRICS_KNOBS.LRCLIB_SEARCH}?${query}`, {
       headers: { 'User-Agent': LYRICS_KNOBS.USER_AGENT },
       signal: abort.signal,
     });
-    if (!response.ok) return [];
+    if (response.status === 429 || response.status >= 500) {
+      const retryAfterMs = retryAfter(response.headers?.get('Retry-After'));
+      return retryAfterMs === undefined
+        ? { status: 'unreachable' }
+        : { status: 'unreachable', retryAfterMs };
+    }
+    if (!response.ok) return { status: 'answered', hits: [] };
     const body: unknown = await response.json();
-    return Array.isArray(body)
-      ? body.filter(
-          (hit): hit is LrclibHit => typeof hit === 'object' && hit !== null,
-        )
-      : [];
+    return {
+      status: 'answered',
+      hits: Array.isArray(body)
+        ? body.filter(
+            (hit): hit is LrclibHit => typeof hit === 'object' && hit !== null,
+          )
+        : [],
+    };
+  } catch {
+    return { status: 'unreachable' };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', stop);
   }
+}
+
+/** `Retry-After` as seconds or an HTTP date, in milliseconds from now. */
+export function retryAfter(
+  header: string | null | undefined,
+  nowMs: number = Date.now(),
+): number | undefined {
+  if (header === null || header === undefined) return undefined;
+  const trimmed = header.trim();
+  if (/^\d+$/.test(trimmed)) return Number(trimmed) * 1000;
+  const at = Date.parse(trimmed);
+  return Number.isFinite(at) ? Math.max(0, at - nowMs) : undefined;
+}
+
+function laterOf(
+  left: Extract<Lookup, { status: 'unreachable' }> | null,
+  right: Extract<Lookup, { status: 'unreachable' }>,
+): Extract<Lookup, { status: 'unreachable' }> {
+  if (left === null) return right;
+  return (right.retryAfterMs ?? 0) > (left.retryAfterMs ?? 0) ? right : left;
 }

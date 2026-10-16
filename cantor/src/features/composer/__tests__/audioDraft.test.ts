@@ -6,6 +6,8 @@ import {
   problemsWith,
   toGenerationRequest,
   voiceOf,
+  withSourceWords,
+  wordsModeOf,
   type SongSource,
   type ComposerTarget,
 } from '../draft';
@@ -58,6 +60,7 @@ const song: SongSource = {
   title: 'Harbour at dusk',
   durationMs: 192_000,
   prompt: 'a slow harbour at dusk',
+  subject: 'node-a:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b',
   words: 'the tide comes in',
   model: 'acestep:1.5-fast',
 };
@@ -79,7 +82,13 @@ describe('a draft that starts from a song', () => {
       wordsMode: 'same',
       follow: 0.5,
     });
-    expect(draftFromSource({ ...song, words: null }).wordsMode).toBe('none');
+    // Without words found yet, SAME is held as the intent and sends none.
+    const waiting = draftFromSource({ ...song, words: null });
+    expect(waiting.wordsMode).toBe('same');
+    expect(wordsModeOf(waiting)).toBe('none');
+    expect(wordsModeOf(withSourceWords(waiting, 'the tide comes in'))).toBe(
+      'same',
+    );
   });
 
   it('offers only models that declare the act, and none on a node without audio', () => {

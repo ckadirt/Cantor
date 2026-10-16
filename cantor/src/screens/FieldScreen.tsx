@@ -24,7 +24,6 @@ import {
   type DeviceLibraryState,
 } from '../device/deviceLibrary';
 import { startLookingAgain } from '../device/lookAgain';
-import { lyricsFor } from '../device/lyrics';
 import { androidPermissions } from '../device/permission';
 import { nativeMedia } from '../device/native';
 import { createDeviceRepository } from '../device/repository';
@@ -112,7 +111,13 @@ import {
   type SongAct,
 } from '../features/song/SongSheet';
 import { SongSurface } from '../features/song/SongSurface';
-import { wordsOf } from '../features/song/songWords';
+import {
+  createFactRepository,
+  createFacts,
+  lyricsProviders,
+  readingOf,
+  type FactSubject,
+} from '../facts';
 import {
   MODE_POSE,
   PLAYER_TRANSPORT_KNOBS,
@@ -674,6 +679,11 @@ export function FieldScreen({ identity }: Props) {
     [localPathOf, player],
   );
   useEffect(() => () => analysisStore.dispose(), [analysisStore]);
+  /** The phone database, opened once for the device library and song facts. */
+  const [phoneDatabase] = useState(() => {
+    let opened: ReturnType<typeof openPhoneDatabase> | null = null;
+    return () => (opened ??= openPhoneDatabase());
+  });
   /**
    * Every opened song's motion track: what moves the player in time with it
    * (`lenses/motion/`). Measured natively, about a second for a four-minute
@@ -703,7 +713,7 @@ export function FieldScreen({ identity }: Props) {
     () =>
       new DeviceLibraryService({
         openRepository: async () =>
-          createDeviceRepository(await openPhoneDatabase()),
+          createDeviceRepository(await phoneDatabase()),
         media: nativeMedia,
         now: () => Date.now(),
         permissions: androidPermissions,
@@ -728,6 +738,24 @@ export function FieldScreen({ identity }: Props) {
       stop?.();
     };
   }, [deviceLibrary]);
+  /**
+   * What is known about songs — their words, for now — with where it came
+   * from, remembered on the phone (`src/facts/`, structures plan S4).
+   */
+  const [facts] = useState(() =>
+    createFacts({
+      openRepository: async () => createFactRepository(await phoneDatabase()),
+      providers: {
+        lyrics: lyricsProviders({
+          readTags: path => nativeMedia.lyrics(path),
+          fetch: (...args) => fetch(...args),
+        }),
+      },
+      now: () => Date.now(),
+      onError: error => console.warn('song facts', readError(error)),
+    }),
+  );
+  useEffect(() => () => facts.dispose(), [facts]);
   const [controllerStore] = useState(() =>
     createFieldControllerStore(runtime.store, deviceLibrary.store, network),
   );
@@ -950,9 +978,38 @@ export function FieldScreen({ identity }: Props) {
     draft: ComposerDraft;
     seed: number;
   }> | null>(null);
+  /**
+   * The song a version's words are read from: its lyrics fact, which may land
+   * while the composer is open (plan D12d).
+   */
+  const [wordsSubject, setWordsSubject] = useState<FactSubject | null>(null);
   useEffect(() => {
-    if (!composerOpen) setComposerRecipe(null);
+    if (!composerOpen) {
+      setComposerRecipe(null);
+      setWordsSubject(null);
+    }
   }, [composerOpen]);
+  useEffect(() => {
+    // Asked when the version opens too, for a sheet that was skipped.
+    if (wordsSubject !== null) {
+      facts.ensure(wordsSubject, 'lyrics').catch(() => {});
+    }
+  }, [facts, wordsSubject]);
+  const wordsReading = useStore(facts.store, state =>
+    wordsSubject === null ? null : readingOf(state, wordsSubject.key, 'lyrics'),
+  );
+  const sourceWords = useMemo(
+    () =>
+      wordsSubject === null
+        ? null
+        : {
+            reading: wordsReading,
+            retry: () => {
+              facts.retry(wordsSubject, 'lyrics').catch(() => {});
+            },
+          },
+    [facts, wordsReading, wordsSubject],
+  );
 
   /** What each paired node advertises, which is what the composer validates against. */
   const composerTargets = useMemo<readonly ComposerTarget[]>(
@@ -1420,6 +1477,52 @@ export function FieldScreen({ identity }: Props) {
   }, [composerTargets, sheetSong]);
   /** Which node a failure in the song sheet is about, by name. */
   const sheetNodeName = sheetSong?.label ?? 'the node';
+  /** The recipe the sheet last fetched, lent to the facts' recipe provider. */
+  const songDetailHeld = useRef(songDetail);
+  songDetailHeld.current = songDetail;
+  /** The sheet's song as the subject of its facts (its words). */
+  const sheetSubject = useMemo<FactSubject | null>(() => {
+    if (sheetSong === null) return null;
+    if (sheetSong.source === 'device') {
+      const { device } = sheetSong;
+      return {
+        kind: 'device',
+        key: sheetSong.entity.key,
+        path: device.path,
+        title: device.title,
+        titleFromTag: device.titleFromTag,
+        artist: device.artist,
+        album: sheetSong.album?.title ?? null,
+        durationMs: sheetSong.durationMs,
+      };
+    }
+    const { nodePublicKey, entityId } = sheetSong.entity;
+    return {
+      kind: 'node',
+      key: sheetSong.entity.key,
+      detail: () => {
+        const held = songDetailHeld.current;
+        return held?.song.id === entityId
+          ? Promise.resolve(held)
+          : commands.getSongDetail(nodePublicKey, entityId);
+      },
+      instrumentalLyrics: lyricsContractFor(sheetModel).instrumentalLyrics,
+    };
+  }, [commands, sheetModel, sheetSong]);
+  // A song's words are looked up when its sheet opens, in the background, so
+  // its version opens with them (plan D12d). A made song waits for the
+  // recipe the sheet is already fetching rather than ask its node twice.
+  useEffect(() => {
+    if (sheetSubject === null) return;
+    if (
+      sheetSubject.kind === 'node' &&
+      songDetail === null &&
+      songDetailError === null
+    ) {
+      return;
+    }
+    facts.ensure(sheetSubject, 'lyrics').catch(() => {});
+  }, [facts, sheetSubject, songDetail, songDetailError]);
 
   /**
    * What the sheet is allowed to say about scope.
@@ -2093,7 +2196,7 @@ export function FieldScreen({ identity }: Props) {
       const recipe = sheetSong.recipe;
       const title = sheetSong.title;
       const durationMs = sheetSong.durationMs;
-      const album = sheetSong.album?.title ?? null;
+      const subject = sheetSubject;
       return {
         version: door,
         longer: { kind: 'unsupported' },
@@ -2105,19 +2208,7 @@ export function FieldScreen({ identity }: Props) {
         onAct: () => {
           const open = async () => {
             try {
-              // A kept voice sings the words it is given: without the
-              // song's own, it garbles (audio prompting, A0).
-              const [file, words] = await Promise.all([
-                sourceFileInfo(device.path),
-                lyricsFor({
-                  path: device.path,
-                  title: device.title,
-                  titleFromTag: device.titleFromTag,
-                  artist: device.artist,
-                  album,
-                  durationMs,
-                }),
-              ]);
+              const file = await sourceFileInfo(device.path);
               const draft = draftFromSource({
                 kind: 'song',
                 act: 'version',
@@ -2126,7 +2217,11 @@ export function FieldScreen({ identity }: Props) {
                 title,
                 durationMs,
                 prompt: '',
-                words,
+                // A kept voice sings the words it is given: without the
+                // song's own, it garbles (audio prompting, A0). The composer
+                // reads them from the song's lyrics fact as they arrive.
+                subject: sheetSong.entity.key,
+                words: null,
                 seed: recipe.seed,
                 model: recipe.model,
                 file: {
@@ -2139,6 +2234,7 @@ export function FieldScreen({ identity }: Props) {
                 draft: { ...draft, nodePublicKey: door.firstAble ?? null },
                 seed: draftSeed(),
               });
+              setWordsSubject(subject);
               setSheetOpen(false);
               openComposer();
             } catch (error) {
@@ -2156,10 +2252,7 @@ export function FieldScreen({ identity }: Props) {
             ?.lastNodeInfo ?? null
         : null;
     const song = sheetSong.song;
-    const { words } = wordsOf(
-      songDetail,
-      lyricsContractFor(sheetModel).instrumentalLyrics,
-    );
+    const subject = sheetSubject;
     return {
       version: doorFor(live, 'version'),
       longer: doorFor(live, 'longer'),
@@ -2174,17 +2267,19 @@ export function FieldScreen({ identity }: Props) {
             title: song.title,
             durationMs: song.duration_ms,
             prompt: songDetail?.generation.caption ?? song.caption_summary,
-            words,
+            subject: sheetSong.entity.key,
+            words: null,
             seed: song.seed,
             model: song.model,
           }),
           seed: draftSeed(),
         });
+        setWordsSubject(subject);
         setSheetOpen(false);
         openComposer();
       },
     };
-  }, [backends, failureWords, openComposer, phases, setSubmitError, sheetModel, sheetSong, songDetail]);
+  }, [backends, failureWords, openComposer, phases, setSubmitError, sheetSong, sheetSubject, songDetail]);
   const sheetImported = useMemo<ImportedFacts | null>(() => {
     if (sheetSong === null || sheetSong.source !== 'device') return null;
     const { device, album } = sheetSong;
@@ -3055,6 +3150,7 @@ export function FieldScreen({ identity }: Props) {
             onClose={closeComposer}
             onSubmit={onComposerSubmit}
             recipe={composerRecipe}
+            sourceWords={sourceWords}
             submitting={submitting}
             targets={composerTargets}
           />

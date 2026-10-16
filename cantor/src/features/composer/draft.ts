@@ -83,7 +83,13 @@ export type SongSource = Readonly<{
   durationMs: number;
   /** The song's own prompt: Voice keeps the voice while the caption is this. */
   prompt: string;
-  /** The words it sings, or null when it sings none. */
+  /** The song's field key: what its facts (its words) are about. */
+  subject: string;
+  /**
+   * The words its lyrics fact has found, or null while none are: written by
+   * the composer from the fact as it renders (`withSourceWords`), never by
+   * whoever opened the draft, so a lookup that lands later still arrives.
+   */
   words: string | null;
   /** The song's face, for the From row. */
   seed?: number;
@@ -163,11 +169,33 @@ export function draftFromSource(source: SongSource): ComposerDraft {
   return {
     ...EMPTY_DRAFT,
     caption: source.prompt,
-    wordsMode:
-      source.act === 'version' && source.words !== null ? 'same' : 'none',
+    // `same` is an intent: the song's words once its fact has found them,
+    // none until then (`wordsModeOf`). Untouched, the row follows the fact.
+    wordsMode: source.act === 'version' ? 'same' : 'none',
     nodePublicKey: source.nodePublicKey,
     source,
   };
+}
+
+/**
+ * The words mode a draft actually sends: `same` without words found is none.
+ * The draft keeps `same` so the row turns to SAME when the lookup lands.
+ */
+export function wordsModeOf(draft: ComposerDraft): WordsMode {
+  return draft.wordsMode === 'same' &&
+    (draft.source?.kind !== 'song' || draft.source.words === null)
+    ? 'none'
+    : draft.wordsMode;
+}
+
+/** The draft with its source song's words as the fact now has them. */
+export function withSourceWords(
+  draft: ComposerDraft,
+  words: string | null,
+): ComposerDraft {
+  const source = draft.source;
+  if (source?.kind !== 'song' || source.words === words) return draft;
+  return { ...draft, source: { ...source, words } };
 }
 
 /** Whether a draft's sound is on this phone and must be sent first. */
@@ -370,20 +398,21 @@ export function problemsWith(
     }
   }
 
+  const wordsMode = wordsModeOf(draft);
   if (
-    draft.wordsMode === 'none' &&
+    wordsMode === 'none' &&
     lyricsContractFor(modelFor(targets, draft)).requiresLyrics
   ) {
     problems.push({ kind: 'lyrics-required' });
   }
-  if (draft.wordsMode === 'model' && writeWordsFor(targets, draft) === null) {
+  if (wordsMode === 'model' && writeWordsFor(targets, draft) === null) {
     problems.push({ kind: 'writer-unavailable' });
   }
 
   // Only what was actually chosen is measured. Words typed and then abandoned
   // for `none` are kept in the draft so the dial can be moved back without
   // losing them, and a draft that is not sending them cannot be too long.
-  if (draft.wordsMode === 'mine') {
+  if (wordsMode === 'mine') {
     const words = draft.lyrics.trim();
     if (words.length === 0) {
       problems.push({ kind: 'words-empty' });
@@ -470,12 +499,13 @@ export function toGenerationRequest(
   model?: ModelView,
 ) {
   const extensions = extensionsFor(declared, draft.parameters);
+  const wordsMode = wordsModeOf(draft);
   const words =
-    draft.wordsMode === 'mine'
+    wordsMode === 'mine'
       ? draft.lyrics.trim()
-      : draft.wordsMode === 'same'
+      : wordsMode === 'same'
       ? (draft.source?.kind === 'song' ? draft.source.words : null) ?? undefined
-      : draft.wordsMode === 'none'
+      : wordsMode === 'none'
       ? lyricsContractFor(model).instrumentalLyrics
       : undefined;
   const audio = audioPromptFor(draft, model);

@@ -1,4 +1,4 @@
-import type { SongDetail } from '../../../../protocol/SongDetail';
+import type { SongDetail } from '../../../protocol/SongDetail';
 
 export type SongWords = Readonly<{
   /** The words sung, or null: the model's instrumental marker is not words. */

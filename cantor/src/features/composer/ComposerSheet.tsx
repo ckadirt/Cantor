@@ -37,7 +37,7 @@ import {
 import { space, touch, type, usePalette } from '../../theme/tokens';
 import { lyricsContractFor } from '../../core/protocol/lyrics';
 import { ModelParams } from './ModelParams';
-import { SourceRows, clock } from './SourceRows';
+import { SourceRows, clock, type SourceWords } from './SourceRows';
 import {
   askForMicrophone as askForMicrophoneDefault,
   createTuneRecorder,
@@ -61,6 +61,7 @@ import {
   targetOf,
   toGenerationRequest,
   utf8Bytes,
+  withSourceWords,
   type ComposerDraft,
   type ComposerTarget,
 } from './draft';
@@ -111,6 +112,11 @@ type Props = {
   noConnection?: boolean;
   /** A made song's recipe, as the draft and seed this opening begins with. */
   recipe?: Readonly<{ draft: ComposerDraft; seed: number }> | null;
+  /**
+   * The words of the song a version starts from, as its lyrics fact has them
+   * now: a lookup that lands while the composer is open fills the Words row.
+   */
+  sourceWords?: SourceWords | null;
   onClose: () => void;
   onSubmit: (
     nodePublicKey: string,
@@ -154,6 +160,7 @@ function ComposerSheetImpl({
   lens = nameLens,
   noConnection = false,
   recipe = null,
+  sourceWords = null,
   onClose,
   onSubmit,
   recorder,
@@ -195,8 +202,12 @@ function ComposerSheetImpl({
     () => modelsFor(target, act, sendsFirst),
     [target, act, sendsFirst],
   );
+  // Without a fact to follow, the draft's words are as it was opened with.
+  const found = sourceWords?.reading ?? null;
   const selection: ComposerDraft = {
-    ...draft,
+    ...(sourceWords === null
+      ? draft
+      : withSourceWords(draft, found?.status === 'found' ? found.value : null)),
     nodePublicKey,
     modelSelector:
       draft.modelSelector !== null &&
@@ -460,6 +471,7 @@ function ComposerSheetImpl({
               model={selected}
               onChange={update}
               recorder={tuneRecorder}
+              sourceWords={sourceWords}
             />
             <Rest />
           </>

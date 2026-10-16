@@ -199,7 +199,7 @@ shared core fields.
 `SongDetail.written_lyrics` (optional, additive) carries the words a model
 wrote when the request gave none. The node reads them from the planned request
 JSON's `lyrics` as diffusion begins and keeps them in `jobs.written_lyrics`
-(migration 7); songs made earlier have none. The app's `features/song/songWords.ts`
+(migration 7); songs made earlier have none. The app's `facts/recipeWords.ts`
 is the one reader: given words win, and a version or hum is never "the model's".
 
 ## Audio capabilities and uploads
