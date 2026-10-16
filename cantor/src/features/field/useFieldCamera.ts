@@ -14,6 +14,7 @@ import {
 import { runOnUISync } from 'react-native-worklets';
 import { easeSmoother } from '../../motion';
 import { cameraSummary, type OriginFrame } from './cameraSummary';
+import { groupContents } from './shelfLabels';
 import type { StepMorph } from './stepMorph';
 import {
   flightOnScreen,
@@ -3273,7 +3274,7 @@ function layoutsDiffer(left: FieldLayout, right: FieldLayout): boolean {
     const after = right.groups[index];
     if (
       before.key !== after.key ||
-      before.label !== after.label ||
+      !sameWords(before, after) ||
       before.cx !== after.cx ||
       before.cy !== after.cy ||
       before.entityKeys.length !== after.entityKeys.length ||
@@ -3333,7 +3334,19 @@ function groupsChanged(
   if (before.length !== after.length) return true;
   return before.some(
     (group, index) =>
-      group.key !== after[index].key || group.label !== after[index].label,
+      group.key !== after[index].key || !sameWords(group, after[index]),
+  );
+}
+
+/**
+ * Whether a cluster reads the same: its name and its second line. The words
+ * can change while nothing moves — a job that becomes its song keeps its key
+ * and seat — and a re-cut is what writes them again.
+ */
+function sameWords(before: Group, after: Group): boolean {
+  return (
+    before.label === after.label &&
+    groupContents(before) === groupContents(after)
   );
 }
 
