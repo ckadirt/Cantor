@@ -20,6 +20,11 @@ export type SongAudioActs = Readonly<{
   acts: readonly FromItAct[];
   /** The node's name, for `NOT ON AGENTBOX YET` and `AGENTBOX IS AWAY`. */
   nodeLabel: string;
+  /**
+   * Where the song lives: on its node, which must be here to make anything
+   * of it, or on this phone, which can send it to whichever node comes back.
+   */
+  lives: 'node' | 'phone';
   onAct: (act: ActId) => void;
 }>;
 
@@ -79,6 +84,7 @@ export function FromIt({
             disabled={disabled}
             door={act.door}
             nodeLabel={acts.nodeLabel}
+            lives={acts.lives}
             onAct={() => acts.onAct(act.id)}
           />
         </Row>
@@ -97,12 +103,14 @@ function OpenDoor({
   disabled,
   door,
   nodeLabel,
+  lives,
   onAct,
 }: {
   words: ActWords;
   disabled: boolean;
   door: ActDoor;
   nodeLabel: string;
+  lives: SongAudioActs['lives'];
   onAct: () => void;
 }) {
   const pal = usePalette();
@@ -121,14 +129,20 @@ function OpenDoor({
   return (
     <View
       accessible
-      accessibilityLabel={`${words.label}: ${nodeLabel} is away, the song lives there`}
+      accessibilityLabel={
+        lives === 'phone'
+          ? `${words.label}: waiting for a node`
+          : `${words.label}: ${nodeLabel} is away, the song lives there`
+      }
     >
       <View style={styles.held}>
         <Fermata colour={pal.faint} />
         <Text style={[type.body, { color: pal.faint }]}>{words.label}</Text>
       </View>
       <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>
-        {`${nodeLabel.toUpperCase()} IS AWAY · THE SONG LIVES THERE`}
+        {lives === 'phone'
+          ? 'WAITING FOR A NODE'
+          : `${nodeLabel.toUpperCase()} IS AWAY · THE SONG LIVES THERE`}
       </Text>
     </View>
   );
