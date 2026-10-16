@@ -2212,6 +2212,7 @@ export function FieldScreen({ identity }: Props) {
       const subject = sheetSubject;
       return {
         acts,
+        lives: 'phone',
         nodeLabel:
           firstAble !== null
             ? backends?.find(backend => backend.nodePubkey === firstAble)
@@ -2276,6 +2277,7 @@ export function FieldScreen({ identity }: Props) {
         door: doorFor(live, act.id),
       })),
       nodeLabel: sheetSong.label,
+      lives: 'node',
       onAct: act => {
         setComposerRecipe({
           draft: draftFromSource({

@@ -45,6 +45,7 @@ describe('From it', () => {
     const { words, press } = render({
       acts: doors(ready, ready),
       nodeLabel: 'agentbox',
+      lives: 'node',
       onAct,
     });
     expect(words()).toEqual(
@@ -58,9 +59,21 @@ describe('From it', () => {
     const { words } = render({
       acts: doors({ kind: 'away' }, { kind: 'away' }),
       nodeLabel: 'agentbox',
+      lives: 'node',
       onAct: jest.fn(),
     });
     expect(words()).toContain('AGENTBOX IS AWAY · THE SONG LIVES THERE');
+  });
+
+  it('waits for any node, not its own, for a song that lives on this phone', () => {
+    const { words } = render({
+      acts: doors({ kind: 'away' }, { kind: 'away' }).slice(0, 1),
+      nodeLabel: 'nodegpu',
+      lives: 'phone',
+      onAct: jest.fn(),
+    });
+    expect(words()).toContain('WAITING FOR A NODE');
+    expect(words().join(' ')).not.toContain('LIVES THERE');
   });
 
   const fast = {
@@ -80,6 +93,7 @@ describe('From it', () => {
     const { words, press } = render({
       acts: doors(fast, fast),
       nodeLabel: 'agentbox',
+      lives: 'node',
       onAct,
     });
     expect(words()).toEqual(
@@ -103,6 +117,7 @@ describe('From it', () => {
         suggestion: null,
       }),
       nodeLabel: 'agentbox',
+      lives: 'node',
       onAct: jest.fn(),
     });
     press('A version · Longer: not on agentbox yet');
@@ -120,6 +135,7 @@ describe('From it', () => {
     const { words, press } = render({
       acts: doors(ready, fast),
       nodeLabel: 'agentbox',
+      lives: 'node',
       onAct,
     });
     expect(words()).toEqual(
@@ -146,6 +162,7 @@ describe('From it', () => {
           acts={{
             acts: doors(fast, fast),
             nodeLabel: 'agentbox',
+            lives: 'node',
             onAct: jest.fn(),
           }}
           copy={copy}
@@ -168,6 +185,7 @@ describe('From it', () => {
     const { tree } = render({
       acts: doors({ kind: 'unsupported' }, { kind: 'unsupported' }),
       nodeLabel: 'old',
+      lives: 'node',
       onAct: jest.fn(),
     });
     expect(tree.toJSON()).toBeNull();
@@ -185,6 +203,7 @@ describe('From it', () => {
         },
       ],
       nodeLabel: 'agentbox',
+      lives: 'node',
       onAct,
     });
     expect(words()).toContain('A remix');
