@@ -2,6 +2,11 @@
 
 export type NodeFeatures = { jobs_create: boolean, library_list: boolean, artifacts_transfer: boolean, secure_tunnel: boolean, job_controls: boolean, 
 /**
+ * Additive: a client may predict a new job's id from its principal and
+ * client request id only when this is `true`.
+ */
+derived_job_ids: boolean, 
+/**
  * Additive: a node that predates `job.forget` omits the key, and a client
  * that reads `false` must not offer the act.
  */

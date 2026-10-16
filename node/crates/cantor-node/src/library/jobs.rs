@@ -8,10 +8,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use cantor_proto::{
     ErrorCode, GenerationRequest, GenerationStage, JobState, JobView, PlanStage, ProgressUnit,
+    derive_job_id,
 };
 use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
-use uuid::Uuid;
 
 use crate::config::now_rfc3339;
 use crate::principal::PrincipalId;
@@ -128,6 +128,7 @@ impl Library {
         max_queued_per_principal: u32,
         minimum_free_bytes: u64,
     ) -> Result<SubmitResult> {
+        let principal_bytes = *principal.as_bytes();
         let principal = principal.to_string();
         let public_key = bs58::encode(public_key).into_string();
         let normalized = serde_json::to_string(&submission.generation)?;
@@ -158,7 +159,7 @@ impl Library {
             return Ok(SubmitResult::InsufficientDisk);
         }
 
-        let id = Uuid::now_v7().to_string();
+        let id = derive_job_id(&principal_bytes, &submission.client_request_id);
         let now = now_rfc3339();
         let principal_directory = self.root.join("jobs").join(&principal);
         prepare_real_directory(&principal_directory)?;
@@ -532,6 +533,9 @@ impl Library {
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let candidate = transaction
             .query_row(
+                // First in, first out. `created_at` has one-second resolution, and a job id
+                // is derived (a hash, not a clock), so ties break on insertion order, never
+                // on the id: nothing may order work by the shape of its id.
                 "SELECT id,principal_id,model_selector,request_json,request_hash,attempt
                  FROM jobs WHERE state='queued'
                    AND NOT EXISTS (
@@ -539,7 +543,7 @@ impl Library {
                      WHERE active.state IN
                        ('preparing','running','pause_requested','cancel_requested','finalizing')
                    )
-                 ORDER BY priority DESC,created_at ASC,id ASC LIMIT 1",
+                 ORDER BY priority DESC,created_at ASC,rowid ASC LIMIT 1",
                 [],
                 |row| {
                     Ok((

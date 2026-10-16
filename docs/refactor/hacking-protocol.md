@@ -175,6 +175,16 @@ optionally echoes `job.create.client_request_id` so the submitting client can
 match an acceptance it missed. Every job response and event is scoped to that principal.
 Older nodes omit both fields, and jobs stored before plans existed have no plan.
 
+A new job's id is `uuid_v8(sha256(b"cantor.job.v1\0" || principal_id_bytes ||
+client_request_id_utf8))`: `cantor_proto::derive_job_id` takes the principal's
+32 bytes (SHA-256 of the client's public key) and the exact request bytes, keeps
+the digest's first 16 bytes, and sets the UUIDv8 version and RFC 9562 variant
+bits. This gives the app one key from Make through the job to its song. A client
+may predict an id only when `NodeFeatures.derived_job_ids` is true; missing means
+false, and existing jobs retain their stored ids on resubmission. The shared
+`protocol/fixtures/v2/derived-job-id.json` vectors include UTF-8 and are asserted
+in Rust; the app must assert the same file in TypeScript.
+
 ## Model lyric capabilities
 
 `ModelView.lyrics` is an optional additive declaration (`can_generate`,

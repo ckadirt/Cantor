@@ -219,6 +219,12 @@ encrypted carrier frames, node authentication, and a `status` round trip.
 
 ## Traps
 
+- **Nothing may order work by the shape of a job id.** A new job's id is
+  derived (a hash of the principal and the client's request id), not a clock,
+  and `created_at` has one-second resolution. The scheduler breaks ties on
+  insertion order (`rowid`); a list may use the id as a tiebreak only for a
+  stable display order, never for fairness.
+
 - **`--config-dir` is not the library directory.** The library lives under the
   platform data directory. Pointing `--config-dir` at a parent creates a fresh
   identity and claims an unrelated relay room; pass the exact config directory.
