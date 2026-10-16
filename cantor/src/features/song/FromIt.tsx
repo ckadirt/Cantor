@@ -12,7 +12,16 @@ import { Fermata, LEDGER_NOTE_STYLE, Row, RowAct } from '../controls';
 import { font, space, type, usePalette } from '../../theme/tokens';
 
 /** One act the front page offers from a song: its words and its door. */
-export type FromItAct = Readonly<{ id: ActId; words: ActWords; door: ActDoor }>;
+export type FromItAct = Readonly<{
+  id: ActId;
+  words: ActWords;
+  door: ActDoor;
+  /**
+   * Where it will be made, when that is not where the song lives: said in
+   * place of the promise (`FROM THE COPY ON THIS PHONE · SENT TO AGENTBOX`).
+   */
+  via?: string;
+}>;
 
 /** The acts the front page offers from a song, and what each needs. */
 export type SongAudioActs = Readonly<{
@@ -80,6 +89,7 @@ export function FromIt({
       {open.map((act, index) => (
         <Row control key={act.id} label={index === 0 ? 'From it' : undefined}>
           <OpenDoor
+            via={act.via}
             words={act.words}
             disabled={disabled}
             door={act.door}
@@ -99,6 +109,7 @@ export function FromIt({
 }
 
 function OpenDoor({
+  via,
   words,
   disabled,
   door,
@@ -106,6 +117,7 @@ function OpenDoor({
   lives,
   onAct,
 }: {
+  via?: string;
   words: ActWords;
   disabled: boolean;
   door: ActDoor;
@@ -118,9 +130,9 @@ function OpenDoor({
     return (
       <View>
         <RowAct disabled={disabled} label={words.label} onPress={onAct} />
-        {words.promise !== '' ? (
+        {(via ?? words.promise) !== '' ? (
           <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>
-            {words.promise}
+            {via ?? words.promise}
           </Text>
         ) : null}
       </View>

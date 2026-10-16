@@ -210,4 +210,21 @@ describe('From it', () => {
     press('A remix');
     expect(onAct).toHaveBeenCalledWith('remix');
   });
+
+  it('says where a version is made when it is not the song’s node', () => {
+    const [version] = doors(ready, ready);
+    const { words } = render({
+      acts: [
+        {
+          ...version!,
+          via: 'FROM THE COPY ON THIS PHONE · SENT TO AGENTBOX',
+        },
+      ],
+      nodeLabel: 'rtx6000',
+      lives: 'node',
+      onAct: jest.fn(),
+    });
+    expect(words()).toContain('FROM THE COPY ON THIS PHONE · SENT TO AGENTBOX');
+    expect(words()).not.toContain('THE SAME SONG, CHANGED');
+  });
 });

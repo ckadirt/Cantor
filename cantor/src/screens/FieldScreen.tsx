@@ -19,6 +19,7 @@ import { GestureDetector } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { PairBackendModal } from '../backends/PairBackendModal';
 import { openPhoneDatabase } from '../device/database';
+import { createRecipeRepository, createRecipes } from '../library/recipes';
 import {
   DeviceLibraryService,
   type DeviceLibraryState,
@@ -762,6 +763,19 @@ export function FieldScreen({ identity }: Props) {
     }),
   );
   useEffect(() => () => facts.dispose(), [facts]);
+  /**
+   * Made songs' recipes, kept on the phone (`library/recipes.ts`): read from
+   * the node when it is here, from the kept copy when it is not.
+   */
+  const [recipes] = useState(() =>
+    createRecipes({
+      openRepository: async () =>
+        createRecipeRepository(await phoneDatabase()),
+      fetchLive: (nodeKey, songId) => commands.getSongDetail(nodeKey, songId),
+      now: () => Date.now(),
+      onError: error => console.warn('song recipes', readError(error)),
+    }),
+  );
   const [controllerStore] = useState(() =>
     createFieldControllerStore(runtime.store, deviceLibrary.store, network),
   );
@@ -1510,11 +1524,11 @@ export function FieldScreen({ identity }: Props) {
         const held = songDetailHeld.current;
         return held?.song.id === entityId
           ? Promise.resolve(held)
-          : commands.getSongDetail(nodePublicKey, entityId);
+          : recipes.detail(nodePublicKey, entityId);
       },
       instrumentalLyrics: lyricsContractFor(sheetModel).instrumentalLyrics,
     };
-  }, [commands, sheetModel, sheetSong]);
+  }, [recipes, sheetModel, sheetSong]);
   // A song's words are looked up when its sheet opens, in the background, so
   // its version opens with them (plan D12d). A made song waits for the
   // recipe the sheet is already fetching rather than ask its node twice.
@@ -2270,37 +2284,94 @@ export function FieldScreen({ identity }: Props) {
         : null;
     const song = sheetSong.song;
     const subject = sheetSubject;
+    // Its node away and its sound on this phone: another node can make an act
+    // that takes an upload from the copy here, and the door says so. The copy
+    // is the delivery file, not the master, and the result lives on that node.
+    const delivery = sheetSong.delivery;
+    const held =
+      sheetSong.localAudio.state === 'cached' ||
+      sheetSong.localAudio.state === 'pinned';
+    const others =
+      live === null && held && delivery !== undefined
+        ? (backends ?? [])
+            .filter(backend => backend.nodePubkey !== nodePublicKey)
+            .map(backend => ({
+              nodePublicKey: backend.nodePubkey,
+              info: backend.lastNodeInfo ?? null,
+              ready: phases[backend.nodePubkey] === 'ready',
+            }))
+        : [];
+    const fromCopy = new Map(
+      actsFor(
+        'upload',
+        others.flatMap(node => node.info?.models ?? []),
+      ).flatMap(act => {
+        const door = doorAcross(others, act.id, true);
+        return door.kind === 'ready' ? [[act.id, door] as const] : [];
+      }),
+    );
+    const petnameOf = (key: string | undefined) =>
+      backends?.find(backend => backend.nodePubkey === key)?.petname ??
+      'another node';
+    const open = (draft: ComposerDraft) => {
+      setComposerRecipe({ draft, seed: draftSeed() });
+      setWordsSubject(subject);
+      setSheetOpen(false);
+      openComposer();
+    };
+    const source = {
+      kind: 'song' as const,
+      songId: song.id,
+      title: song.title,
+      durationMs: song.duration_ms,
+      prompt: songDetail?.generation.caption ?? song.caption_summary,
+      subject: sheetSong.entity.key,
+      words: null,
+      seed: song.seed,
+      model: song.model,
+    };
     return {
-      acts: actsFor('song', live?.models ?? []).map(act => ({
-        id: act.id,
-        words: wordsForAct(act),
-        door: doorFor(live, act.id),
-      })),
+      acts: actsFor('song', live?.models ?? []).map(act => {
+        const copy = fromCopy.get(act.id);
+        return copy === undefined
+          ? { id: act.id, words: wordsForAct(act), door: doorFor(live, act.id) }
+          : {
+              id: act.id,
+              words: wordsForAct(act),
+              door: copy,
+              via: `FROM THE COPY ON THIS PHONE · SENT TO ${petnameOf(
+                copy.firstAble,
+              ).toUpperCase()}`,
+            };
+      }),
       nodeLabel: sheetSong.label,
       lives: 'node',
       onAct: act => {
-        setComposerRecipe({
-          draft: draftFromSource({
-            kind: 'song',
-            act,
-            songId: song.id,
-            nodePublicKey,
-            title: song.title,
-            durationMs: song.duration_ms,
-            prompt: songDetail?.generation.caption ?? song.caption_summary,
-            subject: sheetSong.entity.key,
-            words: null,
-            seed: song.seed,
-            model: song.model,
-          }),
-          seed: draftSeed(),
-        });
-        setWordsSubject(subject);
-        setSheetOpen(false);
-        openComposer();
+        const copy = fromCopy.get(act);
+        if (copy === undefined || delivery === undefined) {
+          open(draftFromSource({ ...source, act, nodePublicKey }));
+          return;
+        }
+        const send = async () => {
+          try {
+            const path = await commands.audioPath(nodePublicKey, song, delivery);
+            const file = await sourceFileInfo(path);
+            const draft = draftFromSource({
+              ...source,
+              act,
+              // Sent whole, so made wherever the person chooses.
+              nodePublicKey: null,
+              file: { path, mediaType: delivery.media_type, ...file },
+            });
+            open({ ...draft, nodePublicKey: copy.firstAble ?? null });
+          } catch (error) {
+            setSubmitError(failureWords(error, 'this phone'));
+          }
+        };
+        send().catch(() => {});
       },
     };
-  }, [backends, failureWords, openComposer, phases, setSubmitError, sheetSong, sheetSubject, songDetail]);
+  }, [backends, commands, failureWords, openComposer, phases, setSubmitError, sheetSong, sheetSubject, songDetail]);
   const sheetImported = useMemo<ImportedFacts | null>(() => {
     if (sheetSong === null || sheetSong.source !== 'device') return null;
     const { device, album } = sheetSong;
@@ -2367,8 +2438,9 @@ export function FieldScreen({ identity }: Props) {
     setSongProblem(null);
     // An imported song has no recipe and no node to ask.
     if (sheetSong.source !== 'node') return;
-    commands
-      .getSongDetail(sheetSong.entity.nodePublicKey, sheetSong.entity.entityId)
+    // Its node when it is here, else the recipe this phone kept.
+    recipes
+      .detail(sheetSong.entity.nodePublicKey, sheetSong.entity.entityId)
       .then(detail => {
         if (active) setSongDetail(detail);
       })
@@ -2380,7 +2452,20 @@ export function FieldScreen({ identity }: Props) {
     return () => {
       active = false;
     };
-  }, [commands, failureWords, sheetSong]);
+  }, [failureWords, recipes, sheetSong]);
+
+  // A song whose audio is on this phone keeps its recipe too, however the
+  // download finished: asked of its node while it is here, once.
+  useEffect(() => {
+    for (const presentation of controller.presentations.values()) {
+      if (presentation.source !== 'node') continue;
+      const state = presentation.localAudio.state;
+      if (state !== 'cached' && state !== 'pinned') continue;
+      const nodeKey = presentation.entity.nodePublicKey;
+      if (phases[nodeKey] !== 'ready') continue;
+      recipes.keep(nodeKey, presentation.song.id).catch(() => {});
+    }
+  }, [controller.presentations, phases, recipes]);
 
   /**
    * Where the caption in flight should land.
