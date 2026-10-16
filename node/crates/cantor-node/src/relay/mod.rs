@@ -126,6 +126,7 @@ mod tests {
 
     fn installed_variant() -> InstalledVariant {
         InstalledVariant {
+            acts: None,
             model: "effect-test".into(),
             tag: "fast".into(),
             licence: String::new(),
@@ -162,6 +163,7 @@ mod tests {
             variants: Vec::new(),
         };
         let catalog_variant = crate::catalog::Variant {
+            acts: None,
             tag: variant.tag.clone(),
             components: variant.components.clone(),
             needs: crate::catalog::Needs {

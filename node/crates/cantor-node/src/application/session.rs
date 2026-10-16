@@ -216,6 +216,7 @@ mod tests {
             device_type: "linux".to_owned(),
             engine_version: "ace-step-1.5-stub".to_owned(),
             models: vec![ModelView {
+                acts: None,
                 selector: "acestep:1.5-fast".to_owned(),
                 family: "acestep".to_owned(),
                 engine: "acestep".to_owned(),
@@ -866,6 +867,7 @@ mod tests {
         );
         let principal = owner.authenticated().unwrap().principal_id;
         let variant = crate::store::InstalledVariant {
+            acts: None,
             model: "acestep".into(),
             tag: "1.5-fast".into(),
             licence: String::new(),

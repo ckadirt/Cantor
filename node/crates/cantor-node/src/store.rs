@@ -67,6 +67,9 @@ pub struct InstalledVariant {
     /// How the engine takes audio, copied from the catalog with `capabilities`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<crate::catalog::AudioBinding>,
+    /// The acts, copied from the catalog with `capabilities`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acts: Option<cantor_proto::Acts>,
 }
 
 impl InstalledVariant {
@@ -194,6 +197,7 @@ impl Store {
             lyrics: variant.lyrics.clone(),
             capabilities: variant.capabilities.clone(),
             audio: variant.audio.clone(),
+            acts: variant.acts.clone(),
             // A variant whose declarations collide is stored as declaring
             // nothing: half a control set is worse than none.
             parameters: if variant.declarations_are_sound() {
@@ -462,6 +466,7 @@ mod tests {
 
     fn variant(tag: &str, digests: &[&str]) -> Variant {
         Variant {
+            acts: None,
             tag: tag.to_owned(),
             components: digests
                 .iter()

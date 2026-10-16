@@ -289,6 +289,7 @@ mod tests {
                         variants: Vec::new(),
                     },
                     &Variant {
+                        acts: None,
                         tag: (*tag).to_owned(),
                         components: Vec::new(),
                         needs: Needs::default(),

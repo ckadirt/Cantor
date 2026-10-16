@@ -464,6 +464,7 @@ mod tests {
                 .authorize_key(&path, &public_key, Some("Phone".to_owned()))
                 .expect("authorize");
             let variant = crate::store::InstalledVariant {
+                acts: None,
                 model: "acestep".into(),
                 tag: "1.5-fast".into(),
                 licence: String::new(),

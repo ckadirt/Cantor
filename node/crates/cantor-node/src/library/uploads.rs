@@ -493,6 +493,7 @@ mod tests {
 
     fn variant() -> InstalledVariant {
         InstalledVariant {
+            acts: None,
             model: "acestep".into(),
             tag: "1.5-fast".into(),
             licence: String::new(),
@@ -527,6 +528,7 @@ mod tests {
                 seed: None,
                 extensions: None,
                 audio: Some(Box::new(AudioPrompt {
+                    act_id: None,
                     source: AudioSource::Upload {
                         upload_id: upload_id.into(),
                     },
