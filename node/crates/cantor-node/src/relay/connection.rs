@@ -230,8 +230,9 @@ mod tests {
         let temporary = tempdir().expect("temporary directory");
         let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
         paths.prepare_directory().expect("directory");
-        let (config, _) =
+        let (mut config, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+        config.keep_stores_in(temporary.path());
         let (identity, _) = NodeIdentity::load_or_create(&paths.key).expect("identity");
         let public_key = identity.public_key_base58();
         let public_key_bytes = identity.public_key_bytes();

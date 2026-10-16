@@ -98,8 +98,9 @@ mod tests {
         let temporary = tempdir().expect("temporary directory");
         let paths = NodePaths::resolve(Some(temporary.path().join("cantor"))).expect("paths");
         paths.prepare_directory().expect("directory");
-        let (config, _) =
+        let (mut config, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+        config.keep_stores_in(temporary.path());
         let config_path = paths.config.clone();
         let library =
             crate::library::Library::open(temporary.path().join("library")).expect("library");

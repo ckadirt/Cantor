@@ -540,6 +540,7 @@ mod tests {
         paths.prepare_directory().expect("directory");
         let (mut config, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
+        config.keep_stores_in(path);
         config.jobs.minimum_free_bytes = 0;
         let installed = InstalledVariant {
             acts: None,
@@ -1101,6 +1102,7 @@ mod audio_admission_tests {
         paths.prepare_directory().unwrap();
         let (mut config, _) =
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).unwrap();
+        config.keep_stores_in(directory.path());
         config.jobs.minimum_free_bytes = 0;
         let mut library = Library::open(directory.path().join("library")).unwrap();
         let source = upload(&mut library, 30.0);
