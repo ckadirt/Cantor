@@ -51,6 +51,7 @@ const nodeInfo: NodeInfo = {
     job_forget: true,
     audio_sources: false,
     uploads: false,
+    derived_job_ids: false,
   },
 };
 

@@ -134,6 +134,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       job_forget: features.job_forget === true,
       audio_sources: features.audio_sources === true,
       uploads: features.uploads === true,
+      derived_job_ids: features.derived_job_ids === true,
     },
     ...(installable === undefined ? {} : { installable }),
   };
