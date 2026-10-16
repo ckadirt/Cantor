@@ -177,7 +177,7 @@ import { titleTracePaths, traceTitlePath } from './titleTrace';
 import { font, type as textType, type Palette } from '../../theme/tokens';
 import type { SampleWindow } from '../../player';
 import { jobMarkModel } from '../../jobs/marks';
-import { jobStateLabel } from '../../jobs/policy';
+import { jobProgressLabel, jobStateLabel } from '../../jobs/policy';
 import { compoundPolygonPath } from '../../motion/geometry';
 import { resolveSilhouette } from '../../motion/silhouette';
 import { SYMBOL_LIBRARY, type SymbolName } from '../../motion/symbolLibrary';
@@ -6487,11 +6487,7 @@ export function drawJobMark(
       pending.phase,
       pending.nodeLabels[0] ?? pending.backend.petname,
     );
-    const counted =
-      model.progress.kind === 'determinate'
-        ? ` ${model.progress.completed}/${model.progress.total}`
-        : '';
-    const line = `${label}${counted}`;
+    const line = `${label}${jobProgressLabel(model.progress, pending.phase)}`;
     request.paints.muted.setAlphaf(alpha.row * quiet);
     canvas.drawText(
       line,

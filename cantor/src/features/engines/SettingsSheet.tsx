@@ -13,6 +13,7 @@ import {
   Door,
   Measure,
   Rest,
+  Reveal,
   Row,
   Ruler,
   Stave,
@@ -39,6 +40,8 @@ const SETTINGS_KNOBS = {
   ACT_MS: 520,
   /** The seat that morphing act takes: `type.body`'s own 22 px line. */
   ACT_SLOT_PX: 22,
+  /** Two body lines for a storage/settings failure, beside the budget. */
+  STORAGE_ERROR_SLOT_PX: 44,
 } as const;
 
 /** What this phone is holding, counted the way the design counts it. */
@@ -60,6 +63,7 @@ type Props = {
   library: LibraryReport;
   storage: StorageReport;
   budgetBytes: number;
+  storageError?: string | null;
   onChangeBudget: (bytes: number) => void;
   /** How many failures Diagnostics holds, and the door to them. */
   failures?: number;
@@ -83,6 +87,7 @@ export function SettingsSheet({
   library,
   storage,
   budgetBytes,
+  storageError = null,
   onChangeBudget,
   failures = 0,
   onOpenDiagnostics = () => {},
@@ -140,6 +145,17 @@ export function SettingsSheet({
               note="Here because you listened. Reclaimed first."
             />
           </Row>
+          <Reveal
+            open={storageError !== null}
+            height={SETTINGS_KNOBS.STORAGE_ERROR_SLOT_PX}
+          >
+            <TransformText
+              text={storageError ?? ''}
+              charStyle={type.body}
+              color={pal.ink}
+              style={styles.storageError}
+            />
+          </Reveal>
           <Row label="Budget" control>
             {/* The value in words above the line it is chosen along. */}
             <View style={styles.rulerValue}>
@@ -437,6 +453,7 @@ function Band({
 }
 
 const styles = StyleSheet.create({
+  storageError: { height: SETTINGS_KNOBS.STORAGE_ERROR_SLOT_PX },
   meta: {
     ...type.eyebrow,
     fontSize: SETTINGS_KNOBS.META_PX,

@@ -55,6 +55,7 @@ import {
   type Level,
   type TagFilter,
 } from '../../field';
+import { notices, useNotices } from '../../notices';
 import { space, type, usePalette } from '../../theme/tokens';
 
 type Props = {
@@ -79,7 +80,6 @@ type Props = {
    * (`310 ARRIVED FROM THIS PHONE`); null says the count as usual.
    */
   arrived?: number | null;
-  storageError: string | null;
   onOpenEngines: () => void;
   onOpenComposer: () => void;
   /** How the field is grouped, and the control that changes it. */
@@ -203,8 +203,6 @@ export const OVERLAY_KNOBS = {
   TAB_LABEL_TRACKING_PX: 1.4,
   /** Clear of the tab, which now reaches `TAB_REACH_PX` up from the same edge. */
   FOOT_INSET_PX: 72,
-  /** High enough to clear the dial at L0 and the player's transport at L2. */
-  ALERT_INSET_PX: 150,
   /**
    * How far a tab's body reaches back into the screen from its edge: three
    * hairlines, two gaps, the label's own gap, and one line of the tab's type.
@@ -470,7 +468,6 @@ function FieldOverlayImpl({
   noConnection = false,
   playableHere = 0,
   arrived = null,
-  storageError,
   onOpenEngines,
   onOpenComposer,
   arrangementKey,
@@ -504,6 +501,7 @@ function FieldOverlayImpl({
   // this corner. Two headers in one place is the fault this step exists to
   // remove, so at those levels the breadcrumb carries the depth alone.
   const showHeader = level === 'field' || level === 'shelf';
+  const notice = useNotices(showHeader);
   /*
    * What the header and the foot say, held at the last level they were shown.
    *
@@ -532,6 +530,7 @@ function FieldOverlayImpl({
     orderKey,
     finding,
     keyboardUp,
+    notice,
   };
   const shown = useRef(live);
   if (showHeader) shown.current = live;
@@ -634,7 +633,8 @@ function FieldOverlayImpl({
           ? phraseLeft + lineWidth(countFont, tracking, doorPhrase.text)
           : lineWidth(countFont, tracking, countLine)) -
         NOW_PLAYING_KNOBS.COUNT_GAP_PX;
-  const legendShown = showLegend && h.level === 'field' && h.finding === null;
+  const legendShown =
+    showLegend && h.notice === null && h.level === 'field' && h.finding === null;
   // The key and the hint share one seat; they cross rather than cut.
   const legendIn = useSharedValue(legendShown ? 1 : 0);
   useEffect(() => {
@@ -728,6 +728,12 @@ function FieldOverlayImpl({
     : h.level === 'field'
     ? `${HINTS.field} ${noun}`
     : HINTS.shelf;
+  const hintWords =
+    h.notice === null
+      ? hint
+      : `${h.notice.words.short}${
+          h.notice.action ? ` · ${h.notice.action.label}` : ''
+        }`.toUpperCase();
   const orderOpen =
     h.level === 'shelf' &&
     (h.finding === null || (!typing && hasQuery(h.finding)));
@@ -981,15 +987,6 @@ function FieldOverlayImpl({
         </Reveal>
       </Animated.View>
 
-      {/* An alert clears the player's transport as well as the dial. */}
-      {storageError ? (
-        <Text
-          accessibilityRole="alert"
-          style={[type.small, styles.alert, { color: pal.ink }]}
-        >
-          {storageError}
-        </Text>
-      ) : null}
       <Animated.View
         accessibilityElementsHidden={away}
         importantForAccessibility={away ? 'no-hide-descendants' : 'auto'}
@@ -1059,18 +1056,52 @@ function FieldOverlayImpl({
             field cannot say for itself. The hint writes itself back in when
             the key leaves.
           */}
-        <View style={styles.hintSeat}>
-          <WriteText
-            text={hint}
-            charStyle={CHROME_STYLES.hint}
-            color={pal.faint}
-            duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-            hosted
-            hostOpacity={presentOpacity}
-            writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
-            variant="transform"
-            style={styles.hintSlot}
-          />
+        <View
+          style={styles.hintSeat}
+          testID="field-hint-seat"
+          accessible={h.notice !== null && h.notice.action === undefined}
+          accessibilityRole={h.notice === null ? undefined : 'alert'}
+          accessibilityLiveRegion={h.notice === null ? 'none' : 'assertive'}
+          accessibilityLabel={h.notice?.words.sentence}
+        >
+          <Pressable
+            accessible={h.notice?.action !== undefined}
+            accessibilityRole={
+              h.notice?.action === undefined ? undefined : 'button'
+            }
+            accessibilityLabel={h.notice?.words.sentence}
+            accessibilityHint={h.notice?.action?.label}
+            disabled={!showHeader || h.notice?.action === undefined}
+            onPress={() => {
+              if (h.notice !== null) notices.act(h.notice);
+            }}
+          >
+            <View
+              accessibilityElementsHidden={h.notice !== null}
+              importantForAccessibility={
+                h.notice === null ? 'auto' : 'no-hide-descendants'
+              }
+            >
+              <WriteText
+                text={hintWords}
+                charStyle={CHROME_STYLES.hint}
+                color={
+                  // A hint whispers; a notice that something failed is read.
+                  h.notice === null
+                    ? pal.faint
+                    : h.notice.tone === 'info'
+                    ? pal.muted
+                    : pal.ink
+                }
+                duration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+                hosted
+                hostOpacity={presentOpacity}
+                writeDuration={OVERLAY_KNOBS.HEADER_CHANGE_MS}
+                variant="transform"
+                style={styles.hintSlot}
+              />
+            </View>
+          </Pressable>
           {mountLegend ? (
             <Animated.View
               pointerEvents="none"
@@ -1427,12 +1458,6 @@ const styles = StyleSheet.create({
     right: space.lg,
   },
   resolution: { ...type.eyebrow, fontSize: 9, letterSpacing: 1.4 },
-  alert: {
-    bottom: OVERLAY_KNOBS.ALERT_INSET_PX,
-    left: space.lg,
-    position: 'absolute',
-    right: space.lg,
-  },
   tab: {
     alignItems: 'center',
     alignSelf: 'center',
