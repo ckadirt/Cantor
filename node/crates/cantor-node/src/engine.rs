@@ -106,6 +106,23 @@ impl Stage {
     /// The contiguous run a text generation takes and `check_stage_mask`
     /// validates. `Encode` is not in it.
     pub const ALL: [Stage; 4] = [Stage::Plan, Stage::Codes, Stage::Diffuse, Stage::Decode];
+
+    /// Every stage this node knows, run or side entrance. The one list a raw
+    /// stage number from an engine is read against; a test keeps it complete.
+    pub const EVERY: [Stage; 5] = [
+        Stage::Plan,
+        Stage::Codes,
+        Stage::Encode,
+        Stage::Diffuse,
+        Stage::Decode,
+    ];
+
+    /// The stage an engine means by its raw `cantor_stage` number, or `None`
+    /// for one this node does not know. Never a guess: a default here once
+    /// filed every ENCODE tile under `decode`.
+    pub fn from_raw(raw: u32) -> Option<Stage> {
+        Self::EVERY.into_iter().find(|stage| *stage as u32 == raw)
+    }
 }
 
 /// An engine may skip *leading* stages — a family that does no separate
@@ -519,6 +536,8 @@ pub struct Session {
 
 /// What a running stage reports back and asks of us.
 struct CallbackState<'a> {
+    /// The stage this call asked the engine to run.
+    running: Stage,
     on_progress: &'a mut dyn FnMut(Stage, i32, i32),
     should_cancel: &'a dyn Fn() -> bool,
 }
@@ -533,12 +552,9 @@ unsafe extern "C" fn progress_trampoline(stage: u32, i: i32, n: i32, userdata: *
     }
     let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let state = unsafe { &mut *(userdata as *mut CallbackState) };
-        let stage = match stage {
-            1 => Stage::Plan,
-            2 => Stage::Codes,
-            3 => Stage::Diffuse,
-            _ => Stage::Decode,
-        };
+        // A number this node does not know (a newer engine's) is counted as
+        // the stage it was asked to run, never as some other stage.
+        let stage = Stage::from_raw(stage).unwrap_or(state.running);
         (state.on_progress)(stage, i, n);
     }));
 }
@@ -618,6 +634,7 @@ impl Session {
         }
 
         let mut state = CallbackState {
+            running: stage,
             on_progress,
             should_cancel,
         };
@@ -1060,6 +1077,26 @@ mod tests {
         assert!(text.contains("decode"), "names the required end: {text}");
 
         assert!(check_stage_mask(0).is_err(), "an engine must run something");
+    }
+
+    #[test]
+    fn every_stage_is_read_back_from_its_raw_number() {
+        for stage in Stage::EVERY {
+            assert_eq!(Stage::from_raw(stage as u32), Some(stage));
+        }
+        assert_eq!(Stage::from_raw(0), None);
+        assert_eq!(Stage::from_raw(6), None);
+        // Exhaustive on purpose: a new variant does not compile here until
+        // `EVERY` lists it, so `from_raw` can never miss a stage again.
+        fn listed(stage: Stage) -> bool {
+            match stage {
+                Stage::Plan | Stage::Codes | Stage::Encode | Stage::Diffuse | Stage::Decode => {
+                    Stage::EVERY.contains(&stage)
+                }
+            }
+        }
+        assert!(Stage::EVERY.into_iter().all(listed));
+        assert!(listed(Stage::Encode));
     }
 
     /// ENCODE is a side entrance, bit 5, outside the run: an engine with it is

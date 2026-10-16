@@ -219,6 +219,11 @@ encrypted carrier frames, node authentication, and a `status` round trip.
 
 ## Traps
 
+- **An engine's raw stage number is read only through `Stage::from_raw`.**
+  A second, hand-written match with a `_ =>` default once filed every ENCODE
+  tile under `decode`. A number the node does not know counts as the stage it
+  asked the engine to run; `Stage::EVERY` is the one list, kept complete by an
+  exhaustive test.
 - **Nothing may order work by the shape of a job id.** A new job's id is
   derived (a hash of the principal and the client's request id), not a clock,
   and `created_at` has one-second resolution. The scheduler breaks ties on
