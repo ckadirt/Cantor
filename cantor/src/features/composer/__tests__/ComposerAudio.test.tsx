@@ -111,6 +111,7 @@ describe("the Words row follows the song's lyrics fact", () => {
     status: 'found',
     value: null,
     source: null,
+    reason: null,
     checkedAtMs: 0,
     retryAtMs: null,
     ...patch,
@@ -192,6 +193,24 @@ describe("the Words row follows the song's lyrics fact", () => {
       previous: fact({ status: 'unreachable', source: 'lrclib' }),
     });
     expect(words()).toContain("CAN'T REACH LRCLIB");
+  });
+
+  it("says why there are none, in LRCLIB's terms", () => {
+    expect(
+      renderWith(fact({ status: 'none', reason: 'not-found' })).words(),
+    ).toContain('NOT IN LRCLIB');
+    expect(
+      renderWith(fact({ status: 'none', reason: 'instrumental' })).words(),
+    ).toContain('LRCLIB LISTS IT INSTRUMENTAL');
+    expect(
+      renderWith(fact({ status: 'none', reason: 'untagged' })).words(),
+    ).toContain('NOTHING TO SEARCH BY');
+    const busy = renderWith(
+      fact({ status: 'unreachable', source: 'lrclib', reason: 'busy' }),
+    ).words();
+    expect(busy).toEqual(
+      expect.arrayContaining(['LRCLIB IS BUSY', 'Try again']),
+    );
   });
 
   it('keeps a choice of NONE when the words land after it', () => {

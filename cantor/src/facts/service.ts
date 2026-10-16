@@ -3,6 +3,7 @@ import type { FactRepository } from './repository';
 import type {
   Fact,
   FactKind,
+  FactReason,
   FactProvider,
   FactReading,
   FactSource,
@@ -92,8 +93,13 @@ export function createFacts(deps: {
     kind: FactKind,
     previous: Fact | null,
   ): Promise<Fact> => {
-    let unreachable: { source: FactSource; retryAfterMs?: number } | null =
-      null;
+    let unreachable: {
+      source: FactSource;
+      reason?: FactReason;
+      retryAfterMs?: number;
+    } | null = null;
+    // The last provider asked knows most about why there is nothing.
+    let noneReason: FactReason | null = null;
     for (const provider of deps.providers[kind]) {
       const answer: Lookup = await inLane(provider.source, () =>
         provider.lookup(subject, abort.signal),
@@ -108,13 +114,18 @@ export function createFacts(deps: {
           status: 'found',
           value: answer.value,
           source: provider.source,
+          reason: null,
           checkedAtMs: deps.now(),
           retryAtMs: null,
         };
       }
+      if (answer.status === 'none' && answer.reason !== undefined) {
+        noneReason = answer.reason;
+      }
       if (answer.status === 'unreachable' && unreachable === null) {
         unreachable = {
           source: provider.source,
+          reason: answer.reason,
           retryAfterMs: answer.retryAfterMs,
         };
       }
@@ -127,6 +138,7 @@ export function createFacts(deps: {
         status: 'none',
         value: null,
         source: null,
+        reason: noneReason,
         checkedAtMs,
         retryAtMs: null,
       };
@@ -137,6 +149,7 @@ export function createFacts(deps: {
       status: 'unreachable',
       value: null,
       source: unreachable.source,
+      reason: unreachable.reason ?? null,
       checkedAtMs,
       retryAtMs:
         checkedAtMs + (unreachable.retryAfterMs ?? nextBackoff(previous)),

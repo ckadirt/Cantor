@@ -98,4 +98,12 @@ export const DEVICE_MIGRATIONS: readonly Migration[] = [
       PRIMARY KEY (subject, kind)
     ) STRICT, WITHOUT ROWID`,
   ],
+  [
+    /*
+     * Why a fact has no value, in its provider's words: LRCLIB says a song is
+     * instrumental, has nothing of its length, or is too busy to answer. The
+     * composer says which, rather than one "no words" for all of them.
+     */
+    'ALTER TABLE device_song_fact ADD COLUMN reason TEXT',
+  ],
 ];

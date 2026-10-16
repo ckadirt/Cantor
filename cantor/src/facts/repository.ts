@@ -24,12 +24,14 @@ export function createFactRepository(db: SqlExecutor): FactRepository {
     async put(fact) {
       await db.execute(
         `INSERT INTO device_song_fact
-           (subject, kind, status, value, source, checked_at_ms, retry_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+           (subject, kind, status, value, source, reason, checked_at_ms,
+            retry_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT (subject, kind) DO UPDATE SET
            status = excluded.status,
            value = excluded.value,
            source = excluded.source,
+           reason = excluded.reason,
            checked_at_ms = excluded.checked_at_ms,
            retry_at_ms = excluded.retry_at_ms`,
         [
@@ -38,6 +40,7 @@ export function createFactRepository(db: SqlExecutor): FactRepository {
           fact.status,
           fact.value,
           fact.source,
+          fact.reason,
           fact.checkedAtMs,
           fact.retryAtMs,
         ],
@@ -64,6 +67,7 @@ function factFromRow(row: SqlRow): Fact {
     status: status as FactStatus,
     value: optionalText(row, 'value'),
     source: optionalText(row, 'source'),
+    reason: optionalText(row, 'reason'),
     checkedAtMs: integer(row, 'checked_at_ms'),
     retryAtMs: optionalInteger(row, 'retry_at_ms'),
   };
