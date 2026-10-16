@@ -1,5 +1,10 @@
 import type { JobView } from '../../core/protocol';
-import { canForgetJob, jobControls, jobStateLabel } from '../policy';
+import {
+  canForgetJob,
+  jobControls,
+  jobProgressLabel,
+  jobStateLabel,
+} from '../policy';
 
 function job(state: JobView['state'], retryable?: boolean): JobView {
   return {
@@ -83,3 +88,24 @@ it.each(['encode', 'diffuse', 'decode', 'mixdown'])(
     );
   },
 );
+
+it('writes sending bytes in MB while tile and step counts keep their units', () => {
+  const progress = {
+    kind: 'determinate',
+    completed: 7225344,
+    total: 25149263,
+    fraction: 0.28,
+  } as const;
+  const phase = {
+    kind: 'sending',
+    sent: progress.completed,
+    total: progress.total,
+  } as const;
+  expect(
+    `${jobStateLabel(null, phase)}${jobProgressLabel(progress, phase)}`,
+  ).toBe('Sending the source · 7.2 of 25 MB');
+  expect(
+    jobProgressLabel({ ...progress, completed: 3, total: 12 }, { kind: 'job' }),
+  ).toBe(' 3/12');
+  expect(jobProgressLabel({ kind: 'indeterminate' }, phase)).toBe('');
+});

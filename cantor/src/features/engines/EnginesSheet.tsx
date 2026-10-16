@@ -68,6 +68,7 @@ type Props = {
   library: LibraryReport;
   storage: StorageReport;
   budgetBytes: number;
+  storageError?: string | null;
   onChangeBudget: (bytes: number) => void;
   /** The song playing, for the sync row; see `SyncRow`. */
   sync?: SyncSong | null;
@@ -105,6 +106,7 @@ function EnginesSheetImpl({
   library,
   storage,
   budgetBytes,
+  storageError = null,
   onChangeBudget,
   sync = null,
   device,
@@ -289,6 +291,7 @@ function EnginesSheetImpl({
           ) : page.kind === 'settings' ? (
             <SettingsSheet
               budgetBytes={budgetBytes}
+              storageError={storageError}
               library={library}
               onChangeBudget={onChangeBudget}
               sync={sync}

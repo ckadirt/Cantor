@@ -1,5 +1,5 @@
 import React from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Text } from 'react-native';
 import * as Renderer from 'react-test-renderer';
 import type { SharedValue } from 'react-native-reanimated';
 import {
@@ -10,6 +10,8 @@ import {
   type Level,
 } from '../../../field';
 import { nameLens } from '../../../lenses';
+import { describeFailure } from '../../../core/protocol';
+import { notices, NOTICE_KNOBS } from '../../../notices';
 import { FieldOverlay } from '../FieldOverlay';
 import {
   fitWithEllipsis,
@@ -69,7 +71,6 @@ function opacities(level: Level, ratio: number) {
         showLegend={false}
         mountLegend={false}
         songCount={8}
-        storageError={null}
       />,
     );
   });
@@ -142,7 +143,6 @@ describe("the header's one act", () => {
           showLegend={false}
           mountLegend={false}
           songCount={8}
-          storageError={null}
         />,
       );
     });
@@ -247,7 +247,6 @@ describe("find's door to the tags", () => {
           showLegend={false}
           mountLegend={false}
           songCount={8}
-          storageError={null}
         />,
       );
     });
@@ -275,5 +274,117 @@ describe("find's door to the tags", () => {
     const { tree, texts } = render('p');
     expect(texts).toContain('4 SONGS · 4 WEEKS');
     Renderer.act(() => tree.unmount());
+  });
+});
+
+describe('notices borrow the hint seat', () => {
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    Renderer.act(() => {
+      for (const notice of notices.store.get()) notices.clear(notice.key);
+    });
+    jest.useRealTimers();
+  });
+
+  function mount(level: Level = 'field', legend = false) {
+    const render = (next: Level) => (
+      <FieldOverlay
+        arrangementKey={byTime.key}
+        cameraShared={shared({ x: 0, y: 0, scale: FIT })}
+        dateResolution="week"
+        fitScaleShared={shared(FIT)}
+        groupCount={3}
+        groupLabel="This week"
+        lens={nameLens}
+        level={next}
+        offline={false}
+        onChangeArrangement={() => {}}
+        onChangeDateResolution={() => {}}
+        onChangeOrder={() => {}}
+        onOpenComposer={() => {}}
+        onOpenEngines={() => {}}
+        onShelfAction={() => {}}
+        orderKey="date"
+        shelfAction={null}
+        showLegend={legend}
+        mountLegend={legend}
+        songCount={8}
+      />
+    );
+    let tree!: Renderer.ReactTestRenderer;
+    Renderer.act(() => { tree = Renderer.create(render(level)); });
+    const seat = () => tree.root.findByProps({ testID: 'field-hint-seat' });
+    const line = () => seat().findAll(
+      node => node.props.hosted && typeof node.props.text === 'string',
+    )[0];
+    return {
+      tree,
+      level: (next: Level) => {
+        Renderer.act(() => tree.update(render(next)));
+      },
+      seat,
+      line,
+      text: () => line().props.text,
+    };
+  }
+
+  const words = describeFailure(new Error('Timed out'), 'agentbox');
+
+  it('morphs the hint into a notice in the same seat, then back without an alert over the dial', () => {
+    const f = mount();
+    const line = f.line();
+    const hint = line.props.text;
+    Renderer.act(() => notices.post({ key: 'work:a', tone: 'refusal', words }));
+    expect(f.line()).toBe(line);
+    expect(f.text()).toBe('AGENTBOX DID NOT ANSWER');
+    expect(f.seat().props.accessibilityRole).toBe('alert');
+    expect(f.seat().props.accessibilityLabel).toBe(words.sentence);
+    const alerts = f.tree.root.findAll(
+      node => node.type === Text && node.props.accessibilityRole === 'alert',
+    );
+    expect(alerts).toHaveLength(0);
+    expect(StyleSheet.flatten(f.seat().props.style).position).toBeUndefined();
+    Renderer.act(() => jest.advanceTimersByTime(NOTICE_KNOBS.STANDS_MS));
+    expect(f.text()).toBe(hint);
+    expect(f.line()).toBe(line);
+    Renderer.act(() => f.tree.unmount());
+  });
+
+  it.each(['song', 'grain'] as const)(
+    'waits at %s and starts its lifetime on return to L0/L1',
+    level => {
+      const f = mount(level);
+      const hidden = f.text();
+      Renderer.act(() => notices.post({ key: 'work:a', tone: 'refusal', words }));
+      Renderer.act(() => jest.advanceTimersByTime(NOTICE_KNOBS.STANDS_MS * 3));
+      expect(f.text()).toBe(hidden);
+      expect(notices.store.get()).toHaveLength(1);
+      f.level('shelf');
+      expect(f.text()).toBe('AGENTBOX DID NOT ANSWER');
+      Renderer.act(() => jest.advanceTimersByTime(NOTICE_KNOBS.STANDS_MS));
+      expect(f.text()).toBe('TAP A ROW TO ARRIVE');
+      Renderer.act(() => f.tree.unmount());
+    },
+  );
+
+  it('offers the action as a button and gives a notice priority over the legend', () => {
+    const f = mount('field', true);
+    const run = jest.fn();
+    Renderer.act(() => notices.post({
+      key: 'audio:a', tone: 'unreachable', words,
+      action: { label: 'TRY AGAIN', run },
+    }));
+    expect(f.text()).toBe('AGENTBOX DID NOT ANSWER · TRY AGAIN');
+    const button = f.seat().findAll(
+      node => node.props.accessibilityRole === 'button' &&
+        typeof node.props.onPress === 'function',
+    )[0];
+    expect(button.props.accessibilityRole).toBe('button');
+    expect(button.props.accessibilityLabel).toBe(words.sentence);
+    Renderer.act(() => button.props.onPress());
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(notices.store.get()).toEqual([]);
+    expect(f.text()).toBe(''); // the legend takes its seat back
+    Renderer.act(() => f.tree.unmount());
   });
 });

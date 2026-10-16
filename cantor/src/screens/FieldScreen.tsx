@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useFieldNotices } from '../features/field/useFieldNotices';
 import { useSubmission } from '../features/composer/useSubmission';
 import {
   AppState,
@@ -449,15 +450,13 @@ export function FieldScreen({ identity }: Props) {
   const submissionFailure = useStore(
     runtime.store, state => state.submissionFailure,
   );
-  useEffect(() => {
-    if (submissionFailure === null) return;
-    setCondensing(current =>
-      current?.jobKey === submissionFailure.workKey ? null : current,
-    );
-    setSubmitError(failureWords(
-      submissionFailure.error, nodeNameOf(submissionFailure.nodePublicKey),
-    ));
-  }, [submissionFailure, failureWords, nodeNameOf, setCondensing, setSubmitError]);
+  const withAudioNotice = useFieldNotices({
+    submissionFailure,
+    runtimeError: storageError,
+    failureWords,
+    nodeNameOf,
+    setCondensing,
+  });
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   /**
    * The song the sheet is open on, and the cluster it was opened from.
@@ -556,6 +555,7 @@ export function FieldScreen({ identity }: Props) {
    */
   const [orderKey, setOrderKey] = useState<string>(DEFAULT_ORDER_KEY);
   /** The cache ceiling, read once and written when it is changed. */
+  const [budgetError, setBudgetError] = useState<string | null>(null);
   const [budgetBytes, setBudgetBytes] = useState(DEFAULT_AUDIO_CACHE_BYTES);
   useEffect(() => {
     let active = true;
@@ -568,8 +568,11 @@ export function FieldScreen({ identity }: Props) {
   }, []);
   const changeBudget = useCallback((bytes: number) => {
     setBudgetBytes(bytes);
-    saveAudioBudget(bytes).catch(error => setAudioError(readError(error)));
-  }, []);
+    setBudgetError(null);
+    saveAudioBudget(bytes).catch(error =>
+      setBudgetError(failureWords(error, 'this phone').sentence),
+    );
+  }, [failureWords]);
 
   /**
    * The generation whose detail is open, if any, and whether its blind is down.
@@ -630,7 +633,6 @@ export function FieldScreen({ identity }: Props) {
   const tagsDestination = useSharedValue(0);
   /** Rows whose audio command is in flight, so a second tap cannot double it. */
   const audioBusy = useRef(new Set<string>());
-  const [audioError, setAudioError] = useState<string | null>(null);
   /**
    * Every song's measurement: read back from disk, or decoded one at a time.
    * See `AnalysisStore`.
@@ -1041,8 +1043,6 @@ export function FieldScreen({ identity }: Props) {
       // A second tap on a row already working would submit the same transfer
       // twice; the runtime would survive it, the row would not read honestly.
       if (audioBusy.current.has(key)) return;
-      audioBusy.current.add(key);
-      setAudioError(null);
       const run = (verb: Parameters<typeof commands.audio>[3]) =>
         commands.audio(
           presentation.entity.nodePublicKey,
@@ -1050,46 +1050,48 @@ export function FieldScreen({ identity }: Props) {
           artifact,
           verb,
         );
-      try {
-        if (action === 'CANCEL') {
-          // Nothing was sent: withdrawing the wish is the whole act.
-          commands.cancelWaiting(
-            presentation.entity.nodePublicKey,
-            presentation.entity.entityId,
-            artifact.sha256,
-          );
-        } else if (action === 'START AGAIN') {
-          // The bytes here are no longer the song's: drop them, then fetch.
-          commands.cancelWaiting(
-            presentation.entity.nodePublicKey,
-            presentation.entity.entityId,
-            artifact.sha256,
-          );
-          if (presentation.localAudio.state !== 'remote') await run('remove');
-          await run('keep');
-        } else if (action === 'GET') {
-          await run('keep');
-        } else if (action === 'KEEP') {
-          await run('pin');
-        } else {
-          // Never delete a file the player still holds open.
-          const track = transport.snapshot.track;
-          if (
-            track?.nodeKey === presentation.entity.nodePublicKey &&
-            track?.songId === presentation.entity.entityId
-          ) {
-            await transport.close();
+      await withAudioNotice(key, presentation.entity.nodePublicKey, async () => {
+        if (audioBusy.current.has(key)) return;
+        audioBusy.current.add(key);
+        try {
+          if (action === 'CANCEL') {
+            // Nothing was sent: withdrawing the wish is the whole act.
+            commands.cancelWaiting(
+              presentation.entity.nodePublicKey,
+              presentation.entity.entityId,
+              artifact.sha256,
+            );
+          } else if (action === 'START AGAIN') {
+            // The bytes here are no longer the song's: drop them, then fetch.
+            commands.cancelWaiting(
+              presentation.entity.nodePublicKey,
+              presentation.entity.entityId,
+              artifact.sha256,
+            );
+            if (presentation.localAudio.state !== 'remote') await run('remove');
+            await run('keep');
+          } else if (action === 'GET') {
+            await run('keep');
+          } else if (action === 'KEEP') {
+            await run('pin');
+          } else {
+            // Never delete a file the player still holds open.
+            const track = player.snapshot().track;
+            if (
+              track?.nodeKey === presentation.entity.nodePublicKey &&
+              track?.songId === presentation.entity.entityId
+            ) {
+              await transport.close();
+            }
+            if (presentation.localAudio.state === 'pinned') await run('unpin');
+            await run('remove');
           }
-          if (presentation.localAudio.state === 'pinned') await run('unpin');
-          await run('remove');
+        } finally {
+          audioBusy.current.delete(key);
         }
-      } catch (error) {
-        setAudioError(failureWords(error, presentation.label).sentence);
-      } finally {
-        audioBusy.current.delete(key);
-      }
+      });
     },
-    [commands, failureWords, transport],
+    [commands, withAudioNotice, transport, player],
   );
 
   const onRowAction = useCallback(
@@ -3025,7 +3027,6 @@ export function FieldScreen({ identity }: Props) {
           keyboardUp={keyboardUp}
           onChangeQuery={changeQuery}
           onCloseFind={leaveFind}
-          storageError={audioError ?? storageError}
         />
       </View>
 
@@ -3081,6 +3082,7 @@ export function FieldScreen({ identity }: Props) {
             onRefresh={commands.refreshLibraries}
             refreshing={refreshing}
             budgetBytes={budgetBytes}
+            storageError={budgetError}
             footprints={footprints}
             library={libraryReport}
             onChangeBudget={changeBudget}

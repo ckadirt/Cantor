@@ -1,4 +1,6 @@
 import type { WorkPhase } from '../work';
+import { formatInstallBytes } from '../core/audioActs';
+import type { JobProgressModel } from './marks';
 import type { JobView } from '../core/protocol';
 
 /** What a caller may ask the node to do to a job. */
@@ -106,4 +108,22 @@ export function jobStateLabel(
 
 export function shortKey(value: string): string {
   return `${value.slice(0, 8)}…${value.slice(-6)}`;
+}
+
+/** Counts on a shelf: source bytes in decimal MB; node tiles and steps as counted. */
+export function jobProgressLabel(
+  progress: JobProgressModel,
+  phase: WorkPhase,
+): string {
+  if (progress.kind !== 'determinate') return '';
+  if (phase.kind === 'sending') {
+    const sent = (progress.completed / 1e6).toFixed(1).replace(/\.0$/, '');
+    // Uploads stay in MB even above a GB: both sides of `of` share one unit.
+    const total =
+      progress.total >= 1e9
+        ? `${Math.round(progress.total / 1e6)} MB`
+        : formatInstallBytes(progress.total);
+    return ` · ${sent} of ${total}`;
+  }
+  return ` ${progress.completed}/${progress.total}`;
 }

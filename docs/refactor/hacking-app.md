@@ -35,6 +35,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/screens/` | `FieldScreen`: the one screen after onboarding — composition and wiring |
 | `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
 | `src/work/` | pure `deriveWork`, submission/job matching, derived job ids and the plan a piece of work runs. The field and sheets read `Work`, never the outbox or snapshots directly |
+| `src/notices/` | transient notices keyed by subject, their lifetime, and the hook lending them the field foot’s hint seat |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
 | `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens, a file's embedded lyrics — read only), and `lyrics.ts`, an imported song's words for a version that keeps its voice: the file's tags, then LRCLIB, asked only when that song's version opens. LRCLIB is the app's one network call that is not the relay; it learns a title, an artist and a length, never audio |
@@ -84,6 +85,19 @@ dirty-draft conflict policy is separate product work.
 
 **A superseded socket cannot speak.** Only the currently owned socket may start
 keepalive, deliver messages, report closure, or schedule a retry.
+
+**Transient notices have one seat.** `src/notices/` replaces by subject key
+(`audio:<entityKey>`, `work:<workKey>`), newest first. Failed row audio actions
+(download/keep/remove) offer TRY AGAIN; a durable submission refused after Make
+has closed the composer posts its `submissionFailure`. The foot's hint line at
+L0/L1 morphs into `words.short` and an optional action, then back into the hint.
+Notices wait at L2/L3, where the player's transport owns the foot. Unactionable
+notices stand for `NOTICE_KNOBS.STANDS_MS` (6000 ms); actionable ones stand until
+acted on, cleared, or replaced. The full sentence is the accessibility label.
+Sheet and composer errors (`songProblem`, `songDetailError`, `jobError`, composer
+`error`) stay on their surface; playback errors stay in the transport; OFFLINE
+stays in the header. A durable submission timeout remains pending, without a
+notice. Storage/settings failures belong to Settings, never over the field dial.
 
 ## Recipes
 
