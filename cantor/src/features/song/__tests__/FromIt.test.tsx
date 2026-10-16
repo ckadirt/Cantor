@@ -1,6 +1,15 @@
 import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
+import { wordsForAct, wordsForId, type ActDoor } from '../../../core/audioActs';
 import { FromIt, type SongAudioActs } from '../FromIt';
+
+/** The two acts a node song offers, in the order the sheet gets them. */
+function doors(version: ActDoor, longer: ActDoor) {
+  return [
+    { id: 'version', words: wordsForId('version'), door: version },
+    { id: 'longer', words: wordsForId('longer'), door: longer },
+  ];
+}
 
 function render(acts: SongAudioActs) {
   let tree!: ReactTestRenderer.ReactTestRenderer;
@@ -34,8 +43,7 @@ describe('From it', () => {
   it('offers both acts on a node that can, and says what each makes', () => {
     const onAct = jest.fn();
     const { words, press } = render({
-      version: ready,
-      longer: ready,
+      acts: doors(ready, ready),
       nodeLabel: 'agentbox',
       onAct,
     });
@@ -48,8 +56,7 @@ describe('From it', () => {
 
   it('holds with the fermata while the node is away', () => {
     const { words } = render({
-      version: { kind: 'away' },
-      longer: { kind: 'away' },
+      acts: doors({ kind: 'away' }, { kind: 'away' }),
       nodeLabel: 'agentbox',
       onAct: jest.fn(),
     });
@@ -71,8 +78,7 @@ describe('From it', () => {
   it('gives acts shut for one reason one door, and one command', () => {
     const onAct = jest.fn();
     const { words, press } = render({
-      version: fast,
-      longer: fast,
+      acts: doors(fast, fast),
       nodeLabel: 'agentbox',
       onAct,
     });
@@ -91,8 +97,11 @@ describe('From it', () => {
 
   it('lists each distinct command once, and finds what could when the catalog is unknown', () => {
     const { words, press } = render({
-      version: fast,
-      longer: { kind: 'no-model', catalogKnown: false, suggestion: null },
+      acts: doors(fast, {
+        kind: 'no-model',
+        catalogKnown: false,
+        suggestion: null,
+      }),
       nodeLabel: 'agentbox',
       onAct: jest.fn(),
     });
@@ -109,8 +118,7 @@ describe('From it', () => {
   it('keeps an act that can apart from one that cannot', () => {
     const onAct = jest.fn();
     const { words, press } = render({
-      version: ready,
-      longer: fast,
+      acts: doors(ready, fast),
       nodeLabel: 'agentbox',
       onAct,
     });
@@ -136,8 +144,7 @@ describe('From it', () => {
       tree = ReactTestRenderer.create(
         <FromIt
           acts={{
-            version: fast,
-            longer: fast,
+            acts: doors(fast, fast),
             nodeLabel: 'agentbox',
             onAct: jest.fn(),
           }}
@@ -159,11 +166,29 @@ describe('From it', () => {
 
   it('draws nothing for a node that predates audio', () => {
     const { tree } = render({
-      version: { kind: 'unsupported' },
-      longer: { kind: 'unsupported' },
+      acts: doors({ kind: 'unsupported' }, { kind: 'unsupported' }),
       nodeLabel: 'old',
       onAct: jest.fn(),
     });
     expect(tree.toJSON()).toBeNull();
+  });
+
+  it('opens a door for an act a catalog declares, in its own words', () => {
+    const onAct = jest.fn();
+    const { words, press } = render({
+      acts: [
+        ...doors(ready, ready),
+        {
+          id: 'remix',
+          words: wordsForAct({ id: 'remix', label: 'A remix' }),
+          door: ready,
+        },
+      ],
+      nodeLabel: 'agentbox',
+      onAct,
+    });
+    expect(words()).toContain('A remix');
+    press('A remix');
+    expect(onAct).toHaveBeenCalledWith('remix');
   });
 });

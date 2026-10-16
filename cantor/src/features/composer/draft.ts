@@ -9,12 +9,14 @@ import {
 import { lyricsContractFor } from '../../core/protocol/lyrics';
 import type { NodeLimits } from '../../../../protocol/NodeLimits';
 import type { AudioPrompt } from '../../../../protocol/AudioPrompt';
+import { capabilityOf, wordsForId, type ActId } from '../../core/audioActs';
 import {
-  ACT_NEEDS,
-  capabilityOf,
-  voiceOffered,
-  type AudioActName,
-} from '../../core/audioActs';
+  WIRE_ACT,
+  actOn,
+  declarationOf,
+  inputOf,
+  type ActView,
+} from '../../core/protocol/acts';
 
 /**
  * A node the composer can send to, reduced to what the decision needs.
@@ -54,7 +56,8 @@ export type TuneTake = Readonly<{
 /** A tune someone makes into a song (Hum a song). */
 export type TuneSource = Readonly<{
   kind: 'tune';
-  act: 'hum';
+  /** An act whose sources include `tune`: `hum`, unless a catalog says more. */
+  act: ActId;
   /** Null until something has been recorded. */
   take: TuneTake | null;
   /** The count-in and beat, or null for `free`. */
@@ -65,7 +68,8 @@ export type TuneSource = Readonly<{
 
 export type SongSource = Readonly<{
   kind: 'song';
-  act: 'version' | 'longer';
+  /** An act whose sources include `song` (or `upload`, for a phone's file). */
+  act: ActId;
   songId: string;
   /**
    * Where the song lives, and so where its version must be made; null for a
@@ -97,18 +101,18 @@ export type SongSource = Readonly<{
 }>;
 
 /** A draft that starts from a tune, before anything is recorded. */
-export function tuneSource(): TuneSource {
+export function tuneSource(act: ActId = 'hum'): TuneSource {
   return {
     kind: 'tune',
-    act: 'hum',
+    act,
     take: null,
     bpm: AUDIO_DRAFT_KNOBS.TEMPO_DEFAULT_BPM,
     fullSongSeconds: null,
   };
 }
 
-/** `Follow`: three stops, close to free. */
-export type Follow = 0 | 0.5 | 1;
+/** `Follow`: how free of its source, 0 (close) to 1 (free), at an act's stops. */
+export type Follow = number;
 
 /**
  * Internal lyrics intent. The Words editor and optional Write words switch
@@ -208,8 +212,21 @@ export function needsUpload(draft: ComposerDraft): boolean {
 }
 
 /** The audio act a draft asks for, or null for one made from words. */
-export function actOf(draft: ComposerDraft): AudioActName | null {
+export function actOf(draft: ComposerDraft): ActId | null {
   return draft.source?.act ?? null;
+}
+
+/**
+ * The declaration of the act a draft makes on its chosen model, else the one
+ * the app has seen or built in: what its rows, rules and request read.
+ */
+export function declarationFor(
+  draft: ComposerDraft,
+  model: ModelView | undefined,
+): ActView | undefined {
+  const id = actOf(draft);
+  if (id === null) return undefined;
+  return actOn(model, id) ?? declarationOf(id, model ? [model] : []);
 }
 
 /**
@@ -222,11 +239,12 @@ export function voiceOf(
   draft: ComposerDraft,
   model: ModelView | undefined,
 ): 'keep' | 'new' | null {
-  if (draft.source?.kind !== 'song' || draft.source.act !== 'version')
-    return null;
-  if (model === undefined || !voiceOffered(model)) return null;
+  const source = draft.source;
+  if (source === null || model === undefined) return null;
+  if (inputOf(actOn(model, source.act), 'voice') === undefined) return null;
   if (draft.voice !== null) return draft.voice;
-  return draft.caption.trim() === draft.source.prompt.trim() ? 'keep' : 'new';
+  const prompt = source.kind === 'song' ? source.prompt : '';
+  return draft.caption.trim() === prompt.trim() ? 'keep' : 'new';
 }
 
 /** The longest a longer song may grow by on this model and node, in seconds. */
@@ -237,8 +255,12 @@ export function maxExtendSeconds(
 ): number {
   const source = draft.source;
   if (source?.kind !== 'song' || model === undefined) return 0;
+  const act = actOn(model, source.act);
+  if (act === undefined || inputOf(act, 'added_length') === undefined) {
+    return 0;
+  }
   const total = Math.min(
-    capabilityOf(model, 'extend')?.max_total_seconds ??
+    capabilityOf(model, act.needs)?.max_total_seconds ??
       Number.POSITIVE_INFINITY,
     limits?.max_song_seconds ?? Number.POSITIVE_INFINITY,
   );
@@ -259,7 +281,7 @@ export type ComposerProblem =
   | { kind: 'duration-out-of-range'; min: number; max: number }
   | { kind: 'parameter'; key: string; message: string }
   | { kind: 'source-elsewhere'; label: string }
-  | { kind: 'model-cannot'; act: AudioActName }
+  | { kind: 'model-cannot'; act: ActId; missing: string }
   | { kind: 'too-long-to-extend'; max: number }
   | { kind: 'no-take' }
   | { kind: 'take-too-short'; min: number };
@@ -295,8 +317,8 @@ export function utf8Bytes(value: string): number {
  */
 export function modelsFor(
   target: ComposerTarget | null,
-  act: AudioActName | null = null,
-  upload = act === 'hum',
+  act: ActId | null = null,
+  upload = false,
 ): readonly ModelView[] {
   if (target === null) return [];
   // An audio act is offered only by models that declare what it needs, and
@@ -308,9 +330,7 @@ export function modelsFor(
     act === null
       ? target.models
       : takes
-      ? target.models.filter(
-          model => capabilityOf(model, ACT_NEEDS[act]) !== undefined,
-        )
+      ? target.models.filter(model => actOn(model, act) !== undefined)
       : [];
   return [...able].sort((left, right) =>
     left.selector.localeCompare(right.selector),
@@ -362,10 +382,13 @@ export function problemsWith(
       });
     }
   }
+  const cannot = (id: ActId): ComposerProblem => ({
+    kind: 'model-cannot',
+    act: id,
+    missing: wordsForId(id, target?.models ?? []).missing,
+  });
   if (draft.modelSelector === null) {
-    problems.push(
-      act === null ? { kind: 'no-model' } : { kind: 'model-cannot', act },
-    );
+    problems.push(act === null ? { kind: 'no-model' } : cannot(act));
   } else if (
     act !== null &&
     target !== null &&
@@ -373,7 +396,7 @@ export function problemsWith(
       model => model.selector === draft.modelSelector,
     )
   ) {
-    problems.push({ kind: 'model-cannot', act });
+    problems.push(cannot(act));
   } else if (
     target !== null &&
     !target.models.some(model => model.selector === draft.modelSelector)
@@ -385,7 +408,8 @@ export function problemsWith(
     });
   }
 
-  const caption = draft.caption.trim();
+  // An act whose prompt is optional sends its default for an empty caption.
+  const caption = captionOf(draft, modelFor(targets, draft));
   if (caption.length === 0) problems.push({ kind: 'caption-empty' });
   else if (target?.limits) {
     const bytes = utf8Bytes(caption);
@@ -500,17 +524,22 @@ export function toGenerationRequest(
 ) {
   const extensions = extensionsFor(declared, draft.parameters);
   const wordsMode = wordsModeOf(draft);
-  const words =
-    wordsMode === 'mine'
-      ? draft.lyrics.trim()
-      : wordsMode === 'same'
-      ? (draft.source?.kind === 'song' ? draft.source.words : null) ?? undefined
-      : wordsMode === 'none'
-      ? lyricsContractFor(model).instrumentalLyrics
-      : undefined;
+  // An act that asks for no words sends none: an input it does not declare is
+  // never sent, the instrumental marker included.
+  const act = declarationFor(draft, model);
+  const asksWords = act === undefined || inputOf(act, 'words') !== undefined;
+  const words = !asksWords
+    ? undefined
+    : wordsMode === 'mine'
+    ? draft.lyrics.trim()
+    : wordsMode === 'same'
+    ? (draft.source?.kind === 'song' ? draft.source.words : null) ?? undefined
+    : wordsMode === 'none'
+    ? lyricsContractFor(model).instrumentalLyrics
+    : undefined;
   const audio = audioPromptFor(draft, model);
   return {
-    caption: draft.caption.trim(),
+    caption: captionOf(draft, model),
     ...(words ? { lyrics: words } : {}),
     ...(audio === null && draft.durationSeconds !== null
       ? { duration: draft.durationSeconds }
@@ -520,6 +549,24 @@ export function toGenerationRequest(
     ...(extensions === undefined ? {} : { extensions }),
     ...(audio === null ? {} : { audio }),
   };
+}
+
+/**
+ * The caption a draft sends: what was written, else the default of an act
+ * whose prompt is optional ("its own character" for a version), so the request
+ * and the recipe say what the model was told. A node that knows acts fills
+ * the same default; one that does not needs it sent.
+ */
+export function captionOf(
+  draft: ComposerDraft,
+  model: ModelView | undefined,
+): string {
+  const written = draft.caption.trim();
+  if (written.length > 0) return written;
+  const prompt = inputOf(declarationFor(draft, model), 'prompt');
+  return prompt !== undefined && !prompt.required
+    ? (prompt.default ?? '').trim()
+    : '';
 }
 
 /** What an unsent upload is called until the node names it. */
@@ -534,44 +581,39 @@ export function localSourceOf(draft: ComposerDraft) {
   return { path, mediaType, sha256, bytes };
 }
 
-/** The audio prompt a draft sends, or null for one made from words. */
+/**
+ * The audio prompt a draft sends, or null for one made from words: the act's
+ * capability as the request names it, its id, and one field per input it
+ * declares. An input the act does not ask for is never sent.
+ */
 export function audioPromptFor(
   draft: ComposerDraft,
   model: ModelView | undefined,
 ): AudioPrompt | null {
   const source = draft.source;
   if (source === null) return null;
-  if (source.kind === 'tune') {
-    // The upload is named once the node has the file: the outbox sends the
-    // take first and writes its id here (`markSourceSent`).
-    return {
-      source: { kind: 'upload', upload_id: PENDING_UPLOAD },
-      act: 'cover',
-      closeness: draft.follow,
-      tune: true,
-      ...(source.fullSongSeconds === null
-        ? {}
-        : { tile_to_seconds: source.fullSongSeconds }),
-    };
-  }
+  const act = declarationFor(draft, model);
+  const wire = act === undefined ? undefined : WIRE_ACT[act.needs];
+  if (act === undefined || wire === undefined) return null;
+  // An upload is named once the node has the file: the outbox sends it first
+  // and writes its id here (`markSourceSent`).
   const from =
-    source.file !== undefined
+    source.kind === 'tune' || source.file !== undefined
       ? { kind: 'upload' as const, upload_id: PENDING_UPLOAD }
       : { kind: 'song' as const, song_id: source.songId };
-  if (source.act === 'longer') {
-    return {
-      source: from,
-      act: 'extend',
-      extend_seconds: draft.extendSeconds,
-      extend_at: draft.extendAt,
-    };
-  }
   const voice = voiceOf(draft, model);
+  const tile = source.kind === 'tune' ? source.fullSongSeconds : null;
   return {
     source: from,
-    act: 'cover',
-    closeness: draft.follow,
-    ...(voice === 'keep' ? { keep_voice: true } : {}),
+    act: wire,
+    act_id: act.id,
+    ...(inputOf(act, 'follow') ? { closeness: draft.follow } : {}),
+    ...(inputOf(act, 'voice') && voice === 'keep' ? { keep_voice: true } : {}),
+    ...(inputOf(act, 'added_length')
+      ? { extend_seconds: draft.extendSeconds, extend_at: draft.extendAt }
+      : {}),
+    ...(inputOf(act, 'tile') && tile !== null ? { tile_to_seconds: tile } : {}),
+    ...(source.kind === 'tune' ? { tune: true } : {}),
   };
 }
 
@@ -604,9 +646,7 @@ export function describeProblem(problem: ComposerProblem): string {
     case 'source-elsewhere':
       return `The song lives on another node, not ${problem.label}.`;
     case 'model-cannot':
-      return problem.act === 'longer'
-        ? 'No model on this node makes songs longer.'
-        : 'No model on this node makes versions.';
+      return problem.missing;
     case 'no-take':
       return 'Record a tune first.';
     case 'take-too-short':

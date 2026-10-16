@@ -60,7 +60,13 @@ import {
   type ComposerDraft,
   type ComposerTarget,
 } from '../features/composer';
-import { doorAcross, doorFor, mediaTypeOfPath } from '../core/audioActs';
+import {
+  actsFor,
+  doorAcross,
+  doorFor,
+  mediaTypeOfPath,
+  wordsForAct,
+} from '../core/audioActs';
 import { sourceFileInfo } from '../audio/native';
 import type { SongAudioActs } from '../features/song/FromIt';
 import { Curtain, useKeyboardInset } from '../features/curtain';
@@ -2184,34 +2190,40 @@ export function FieldScreen({ identity }: Props) {
   const sheetAudioActs = useMemo<SongAudioActs | null>(() => {
     if (sheetSong === null) return null;
     if (sheetSong.source === 'device') {
-      // A song on this phone is sent whole to whichever node can make its
-      // version; a longer song is a node song's act only.
+      // A song on this phone is sent whole to whichever node can make an act
+      // that takes an upload; each act's door is the best across the nodes.
       const nodes = (backends ?? []).map(backend => ({
         nodePublicKey: backend.nodePubkey,
         info: backend.lastNodeInfo ?? null,
         ready: phases[backend.nodePubkey] === 'ready',
       }));
-      const door = doorAcross(nodes, 'version', true);
+      const models = nodes.flatMap(node => node.info?.models ?? []);
+      const acts = actsFor('upload', models).map(act => ({
+        id: act.id,
+        words: wordsForAct(act),
+        door: doorAcross(nodes, act.id, true),
+      }));
+      const able = acts.find(act => act.door.kind === 'ready')?.door;
+      const firstAble = able?.firstAble ?? null;
       const device = sheetSong.device;
       const recipe = sheetSong.recipe;
       const title = sheetSong.title;
       const durationMs = sheetSong.durationMs;
       const subject = sheetSubject;
       return {
-        version: door,
-        longer: { kind: 'unsupported' },
+        acts,
         nodeLabel:
-          door.kind === 'ready'
-            ? backends?.find(backend => backend.nodePubkey === door.firstAble)
+          firstAble !== null
+            ? backends?.find(backend => backend.nodePubkey === firstAble)
                 ?.petname ?? 'the node'
             : backends?.[0]?.petname ?? 'your node',
-        onAct: () => {
+        onAct: id => {
           const open = async () => {
             try {
               const file = await sourceFileInfo(device.path);
               const draft = draftFromSource({
                 kind: 'song',
-                act: 'version',
+                act: id,
                 songId: device.id,
                 nodePublicKey: null,
                 title,
@@ -2231,7 +2243,11 @@ export function FieldScreen({ identity }: Props) {
                 },
               });
               setComposerRecipe({
-                draft: { ...draft, nodePublicKey: door.firstAble ?? null },
+                draft: {
+                  ...draft,
+                  nodePublicKey:
+                    acts.find(act => act.id === id)?.door.firstAble ?? null,
+                },
                 seed: draftSeed(),
               });
               setWordsSubject(subject);
@@ -2254,8 +2270,11 @@ export function FieldScreen({ identity }: Props) {
     const song = sheetSong.song;
     const subject = sheetSubject;
     return {
-      version: doorFor(live, 'version'),
-      longer: doorFor(live, 'longer'),
+      acts: actsFor('song', live?.models ?? []).map(act => ({
+        id: act.id,
+        words: wordsForAct(act),
+        door: doorFor(live, act.id),
+      })),
       nodeLabel: sheetSong.label,
       onAct: act => {
         setComposerRecipe({

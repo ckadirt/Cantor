@@ -1,6 +1,6 @@
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
 import type { BackendRecord, ConnectionSnapshot } from '../backends/types';
-import { stagesFor } from '../core/audioActs';
+import { stagesForCapability } from '../core/audioActs';
 import type { JobView, ModelView, PlanStage } from '../core/protocol';
 import type { OutboxEntry } from '../jobs/outbox';
 import { derivedJobId, submissionJobId } from './derivedJobId';
@@ -146,11 +146,9 @@ function fallbackPlan(
 ): readonly PlanStage[] {
   if (model === undefined) return [];
   const audio = request?.audio;
+  // The request names the capability it asks for; that is the arc's key.
   const stages = audio
-    ? stagesFor(
-        model,
-        audio.act === 'extend' ? 'longer' : audio.tune ? 'hum' : 'version',
-      )
+    ? stagesForCapability(model, audio.act)
     : model.stages ?? [];
   // Legacy models declare stages only. Do not invent counted units for them.
   return stages.map(stage => ({ stage, unit: 'stage' }));

@@ -1,10 +1,11 @@
 /**
- * Which of the three audio acts a node offers, from what its models declare.
+ * Which audio acts a node offers, from what its models declare.
  *
  * Pure. The app never infers a capability from a family name: a model offers
- * an act because the node advertised the capabilities that act needs, and the
- * node advertises only what the catalog, the binding and the loaded engine
- * all agree on (docs/plans/audio-prompting.md, "Capabilities").
+ * an act because it declares it (`ModelView.acts`, or the built-in acts for an
+ * older node, `core/protocol/acts.ts`), and the node advertises only what the
+ * catalog, the binding and the loaded engine all agree on
+ * (docs/plans/audio-prompting.md, "Capabilities"; structures plan S3).
  */
 import type { CapabilityKind } from '../../../protocol/CapabilityKind';
 import type { StageName } from './protocol';
@@ -12,29 +13,98 @@ import type { InstallableView } from '../../../protocol/InstallableView';
 import type { ModelCapability } from './protocol';
 import type { ModelView } from './protocol';
 import type { NodeInfo } from './protocol';
-
-/** The acts the interface offers, in the user's words. */
-export type AudioActName = 'version' | 'longer' | 'hum';
+import {
+  BUILT_IN_ACTS,
+  actOn,
+  actsOf,
+  declarationOf,
+  type ActSource,
+  type ActView,
+} from './protocol/acts';
 
 /**
- * KNOBS — what each act needs. `hum` asks for `cover` until the listening
- * session (A0) says a bare tune needs `accompany` (the base DiT) instead.
+ * An act's id: an open wire name (`version`, `longer`, `hum`, or one a newer
+ * catalog declares).
  */
-export const ACT_NEEDS: Readonly<Record<AudioActName, CapabilityKind>> = {
-  version: 'cover',
-  longer: 'extend',
-  hum: 'cover',
+export type ActId = string;
+
+/** The words the app keeps for an act it knows, in every place it is named. */
+export type ActWords = Readonly<{
+  /** The composer's eyebrow after `COMPOSE ·`. */
+  eyebrow: string;
+  /** The page's one act. */
+  make: string;
+  /** What a shut door promises an installed model would add. */
+  door: string;
+  /** The From it row's door. */
+  label: string;
+  /** Under that door. */
+  promise: string;
+  /** When no model on the chosen node can. */
+  missing: string;
+}>;
+
+/** KNOBS — the app's own words for the acts it knows, by id. */
+const KNOWN_WORDS: Readonly<Record<string, ActWords>> = {
+  version: {
+    eyebrow: 'A VERSION',
+    make: 'Make a version',
+    door: 'MAKES VERSIONS',
+    label: 'A version',
+    promise: 'THE SAME SONG, CHANGED',
+    missing: 'No model on this node makes versions.',
+  },
+  longer: {
+    eyebrow: 'LONGER',
+    make: 'Make it longer',
+    door: 'MAKES SONGS LONGER',
+    label: 'Longer',
+    promise: 'MORE OF IT, AT THE END OR THE START',
+    missing: 'No model on this node makes songs longer.',
+  },
+  hum: {
+    eyebrow: 'A TUNE',
+    make: 'Make a song',
+    door: 'HEARS A TUNE',
+    label: 'A tune',
+    promise: 'A SONG FROM WHAT YOU HUM',
+    missing: 'No model on this node hears a tune.',
+  },
 };
 
-/** The capability that, when present, adds the Voice row to a version. */
-export const VOICE_CAPABILITY: CapabilityKind = 'timbre';
+/**
+ * The words for an act: the app's own for an id it knows, else made from the
+ * catalog's label, so a new act reads as itself rather than as nothing.
+ */
+export function wordsForAct(act: Pick<ActView, 'id' | 'label'>): ActWords {
+  const known = KNOWN_WORDS[act.id];
+  if (known !== undefined) return known;
+  const label = act.label.trim() || act.id;
+  return {
+    eyebrow: label.toUpperCase(),
+    make: `Make ${label.charAt(0).toLowerCase()}${label.slice(1)}`,
+    door: `MAKES ${label.toUpperCase()}`,
+    label,
+    promise: '',
+    missing: `No model on this node makes ${label.toLowerCase()}.`,
+  };
+}
 
-/** What the closed door says, from the capability the act lacks. */
-export const ACT_WORDS: Readonly<Record<AudioActName, string>> = {
-  version: 'MAKES VERSIONS',
-  longer: 'MAKES SONGS LONGER',
-  hum: 'HEARS A TUNE',
-};
+/** Words for an act by id, from any declaration of it the app has seen. */
+export function wordsForId(
+  id: ActId,
+  models: readonly ModelView[] = [],
+): ActWords {
+  return wordsForAct(declarationOf(id, models) ?? { id, label: id });
+}
+
+/** The capability an act needs, from its declaration. */
+export function needsOf(
+  id: ActId,
+  models: readonly ModelView[] = [],
+): CapabilityKind | undefined {
+  return declarationOf(id, models)?.needs;
+}
 
 export function capabilityOf(
   model: ModelView,
@@ -51,26 +121,56 @@ export function nodeTakesAudio(node: NodeInfo, needsUpload: boolean): boolean {
 /** The node's models that can do `act`, in the node's own order. */
 export function modelsFor(
   node: NodeInfo,
-  act: AudioActName,
+  act: ActId,
   needsUpload = false,
 ): ModelView[] {
   if (!nodeTakesAudio(node, needsUpload)) return [];
-  return node.models.filter(
-    model => capabilityOf(model, ACT_NEEDS[act]) !== undefined,
-  );
-}
-
-/** Whether a version on this model may keep the source's voice. */
-export function voiceOffered(model: ModelView): boolean {
-  return capabilityOf(model, VOICE_CAPABILITY) !== undefined;
+  return node.models.filter(model => actOn(model, act) !== undefined);
 }
 
 /**
- * The stages a job for `act` traces on this model: the capability's own arc,
- * falling back to the model's from `diffuse` on, since an audio act never plans.
+ * The acts a sound of one kind could start, once each: the built-in ones the
+ * app always names (so a node without them shows a shut door, not nothing),
+ * then any others these models declare. A model's own declaration of an id
+ * wins over the built-in one.
  */
-export function stagesFor(model: ModelView, act: AudioActName): StageName[] {
-  const declared = capabilityOf(model, ACT_NEEDS[act])?.stages;
+export function actsFor(
+  source: ActSource,
+  models: readonly ModelView[],
+): ActView[] {
+  const found = new Map<string, ActView>();
+  for (const act of BUILT_IN_ACTS) {
+    if (act.sources.includes(source)) found.set(act.id, act);
+  }
+  for (const model of models) {
+    for (const act of actsOf(model)) {
+      if (act.sources.includes(source)) found.set(act.id, act);
+    }
+  }
+  return [...found.values()];
+}
+
+/** The acts any model on a node offers, once each, in the node's order. */
+export function actsOnNode(node: NodeInfo): ActView[] {
+  const seen = new Map<string, ActView>();
+  for (const model of node.models) {
+    for (const act of actsOf(model)) {
+      if (!seen.has(act.id)) seen.set(act.id, act);
+    }
+  }
+  return [...seen.values()];
+}
+
+/**
+ * The stages a job for a capability traces on this model: the capability's
+ * own arc, falling back to the model's from `diffuse` on, since an audio act
+ * never plans.
+ */
+export function stagesForCapability(
+  model: ModelView,
+  needs: CapabilityKind,
+): StageName[] {
+  const declared = capabilityOf(model, needs)?.stages;
   if (declared && declared.length > 0) return declared;
   const all: readonly StageName[] = model.stages ?? ['diffuse', 'decode'];
   return all.filter(stage => stage === 'diffuse' || stage === 'decode');
@@ -96,9 +196,10 @@ function tierRank(selector: string): number {
  */
 export function suggestionFor(
   node: NodeInfo,
-  act: AudioActName,
+  act: ActId,
 ): InstallableView | null {
-  const needed = ACT_NEEDS[act];
+  const needed = needsOf(act, node.models);
+  if (needed === undefined) return null;
   const candidates = (node.installable ?? []).filter(view =>
     view.capabilities.includes(needed),
   );
@@ -124,7 +225,7 @@ export type ActDoor =
 
 export function doorFor(
   node: NodeInfo | null,
-  act: AudioActName,
+  act: ActId,
   needsUpload = false,
 ): ActDoor {
   if (node === null) return { kind: 'away' };
@@ -141,11 +242,12 @@ export function doorFor(
 /** The command an operator runs on the node, the same block the nodes panel shows. */
 export function installCommand(
   door: Extract<ActDoor, { kind: 'no-model' }>,
-  act: AudioActName,
+  act: ActId,
+  models: readonly ModelView[] = [],
 ): string {
   return door.suggestion
     ? `cantor pull ${door.suggestion.selector}`
-    : `cantor list --all --can ${ACT_NEEDS[act]}`;
+    : `cantor list --all --can ${needsOf(act, models) ?? act}`;
 }
 
 /** Bytes in the words the coda uses: `4.5 GB`. */
@@ -170,7 +272,7 @@ export type NodeForActs = Readonly<{
  */
 export function doorAcross(
   nodes: readonly NodeForActs[],
-  act: AudioActName,
+  act: ActId,
   needsUpload: boolean,
 ): ActDoor & { firstAble?: string } {
   const here = nodes.filter(node => node.ready && node.info !== null);

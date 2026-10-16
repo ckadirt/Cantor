@@ -4,18 +4,23 @@ import {
   formatInstallBytes,
   installCommand,
   type ActDoor,
+  type ActId,
+  type ActWords,
 } from '../../core/audioActs';
 import { modelLabel } from '../../field/arrangements/byRecord';
 import { Fermata, LEDGER_NOTE_STYLE, Row, RowAct } from '../controls';
 import { font, space, type, usePalette } from '../../theme/tokens';
 
-/** The two acts the front page offers from a song, and what each needs. */
+/** One act the front page offers from a song: its words and its door. */
+export type FromItAct = Readonly<{ id: ActId; words: ActWords; door: ActDoor }>;
+
+/** The acts the front page offers from a song, and what each needs. */
 export type SongAudioActs = Readonly<{
-  version: ActDoor;
-  longer: ActDoor;
+  /** In the order offered (`actsFor`): the built-in ones, then the rest. */
+  acts: readonly FromItAct[];
   /** The node's name, for `NOT ON AGENTBOX YET` and `AGENTBOX IS AWAY`. */
   nodeLabel: string;
-  onAct: (act: 'version' | 'longer') => void;
+  onAct: (act: ActId) => void;
 }>;
 
 /** Wraps a value so it can be copied: the sheet's own `Copy` mark. */
@@ -36,20 +41,7 @@ export const FROM_IT_KNOBS = {
   COMMAND_LINE_PX: 18,
 } as const;
 
-type Act = 'version' | 'longer';
 type Shut = Extract<ActDoor, { kind: 'no-model' }>;
-
-const PROMISE: Readonly<Record<Act, string>> = {
-  version: 'THE SAME SONG, CHANGED',
-  longer: 'MORE OF IT, AT THE END OR THE START',
-};
-
-const LABEL: Readonly<Record<Act, string>> = {
-  version: 'A version',
-  longer: 'Longer',
-};
-
-const ACTS: readonly Act[] = ['version', 'longer'];
 
 /**
  * `From it`: making a new song out of this one.
@@ -59,7 +51,8 @@ const ACTS: readonly Act[] = ['version', 'longer'];
  * `NOT ON AGENTBOX YET`, since they are shut for one reason; pressing it opens
  * the command that would open them, once per distinct command, and nothing
  * more. Nothing is installed from the phone. A node that predates audio offers
- * neither act and the row is not drawn.
+ * no act and the row is not drawn. The acts are whatever the sheet is given
+ * (`actsFor`): a new one is a new door, in its catalog words.
  */
 export function FromIt({
   acts,
@@ -70,31 +63,29 @@ export function FromIt({
   copy?: CopyWrap;
   disabled: boolean;
 }) {
-  const open = ACTS.filter(
-    act => acts[act].kind === 'ready' || acts[act].kind === 'away',
+  const open = acts.acts.filter(
+    act => act.door.kind === 'ready' || act.door.kind === 'away',
   );
-  const shut = ACTS.filter(act => acts[act].kind === 'no-model');
+  const shut = acts.acts.filter(
+    (act): act is FromItAct & { door: Shut } => act.door.kind === 'no-model',
+  );
   if (open.length === 0 && shut.length === 0) return null;
   return (
     <>
       {open.map((act, index) => (
-        <Row control key={act} label={index === 0 ? 'From it' : undefined}>
+        <Row control key={act.id} label={index === 0 ? 'From it' : undefined}>
           <OpenDoor
-            act={act}
+            words={act.words}
             disabled={disabled}
-            door={acts[act]}
+            door={act.door}
             nodeLabel={acts.nodeLabel}
-            onAct={() => acts.onAct(act)}
+            onAct={() => acts.onAct(act.id)}
           />
         </Row>
       ))}
       {shut.length > 0 ? (
         <Row control label={open.length === 0 ? 'From it' : undefined}>
-          <ShutDoor
-            acts={shut.map(act => [act, acts[act] as Shut] as const)}
-            copy={copy}
-            nodeLabel={acts.nodeLabel}
-          />
+          <ShutDoor acts={shut} copy={copy} nodeLabel={acts.nodeLabel} />
         </Row>
       ) : null}
     </>
@@ -102,13 +93,13 @@ export function FromIt({
 }
 
 function OpenDoor({
-  act,
+  words,
   disabled,
   door,
   nodeLabel,
   onAct,
 }: {
-  act: Act;
+  words: ActWords;
   disabled: boolean;
   door: ActDoor;
   nodeLabel: string;
@@ -118,21 +109,23 @@ function OpenDoor({
   if (door.kind === 'ready') {
     return (
       <View>
-        <RowAct disabled={disabled} label={LABEL[act]} onPress={onAct} />
-        <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>
-          {PROMISE[act]}
-        </Text>
+        <RowAct disabled={disabled} label={words.label} onPress={onAct} />
+        {words.promise !== '' ? (
+          <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>
+            {words.promise}
+          </Text>
+        ) : null}
       </View>
     );
   }
   return (
     <View
       accessible
-      accessibilityLabel={`${LABEL[act]}: ${nodeLabel} is away, the song lives there`}
+      accessibilityLabel={`${words.label}: ${nodeLabel} is away, the song lives there`}
     >
       <View style={styles.held}>
         <Fermata colour={pal.faint} />
-        <Text style={[type.body, { color: pal.faint }]}>{LABEL[act]}</Text>
+        <Text style={[type.body, { color: pal.faint }]}>{words.label}</Text>
       </View>
       <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>
         {`${nodeLabel.toUpperCase()} IS AWAY · THE SONG LIVES THERE`}
@@ -144,10 +137,10 @@ function OpenDoor({
 /** One command, and what it installs or finds. */
 type Hint = Readonly<{ command: string; note: string }>;
 
-function hintsFor(acts: readonly (readonly [Act, Shut])[]): Hint[] {
+function hintsFor(acts: readonly (FromItAct & { door: Shut })[]): Hint[] {
   const hints = new Map<string, string>();
-  for (const [act, door] of acts) {
-    const command = installCommand(door, act);
+  for (const { id, door } of acts) {
+    const command = installCommand(door, id);
     if (hints.has(command)) continue;
     hints.set(
       command,
@@ -166,13 +159,13 @@ function ShutDoor({
   copy,
   nodeLabel,
 }: {
-  acts: readonly (readonly [Act, Shut])[];
+  acts: readonly (FromItAct & { door: Shut })[];
   copy: CopyWrap;
   nodeLabel: string;
 }) {
   const pal = usePalette();
   const [open, setOpen] = useState(false);
-  const label = acts.map(([act]) => LABEL[act]).join(' · ');
+  const label = acts.map(act => act.words.label).join(' · ');
   return (
     <View>
       <Pressable

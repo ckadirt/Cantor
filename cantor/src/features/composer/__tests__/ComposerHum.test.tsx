@@ -147,6 +147,7 @@ describe('Hum a song', () => {
     expect(request.audio).toEqual({
       source: { kind: 'upload', upload_id: 'pending' },
       act: 'cover',
+      act_id: 'hum',
       closeness: 0.5,
       tune: true,
       tile_to_seconds: 120,
