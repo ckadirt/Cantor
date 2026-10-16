@@ -42,7 +42,7 @@ import {
   type Group,
   type Point,
 } from '../../field';
-import { shelfLabel } from './shelfLabels';
+import { groupContents, shelfLabel } from './shelfLabels';
 
 /** KNOBS — how a label changes into another label. */
 export const LABEL_MORPH_KNOBS = {
@@ -757,16 +757,4 @@ function read(
     primary: shelfLabel(group.label, nowMs).primary.toUpperCase(),
     secondary: groupContents(group).toUpperCase(),
   };
-}
-
-/** `18 songs`, `Engine · 3 songs`; a cluster of jobs alone says it is being made. */
-export function groupContents(
-  group: Pick<Group, 'entityKeys' | 'songCount' | 'subtitle'>,
-): string {
-  const making = group.entityKeys.length - group.songCount;
-  const count =
-    group.songCount === 0 && making > 0
-      ? `${making} being made`
-      : `${group.songCount} ${group.songCount === 1 ? 'song' : 'songs'}`;
-  return group.subtitle === null ? count : `${group.subtitle} · ${count}`;
 }

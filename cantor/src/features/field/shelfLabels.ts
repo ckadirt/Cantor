@@ -10,6 +10,7 @@
  * Anything that is not a date key passes straight through, which is how a
  * playlist keeps its own name without this file knowing playlists exist.
  */
+import type { Group } from '../../field';
 
 /** KNOBS — how a date cluster reads. */
 const SHELF_LABEL_KNOBS = {
@@ -147,4 +148,21 @@ function currentIsoWeek(nowMs: number): [number, number] {
   const yearStart = Date.UTC(isoYear, 0, 1);
   const week = Math.ceil(((utcDate.getTime() - yearStart) / DAY_MS + 1) / 7);
   return [isoYear, week];
+}
+
+/**
+ * A cluster's second line: `18 songs`, `Engine · 3 songs`; a cluster of jobs
+ * alone says it is being made. The re-cut diff reads it too
+ * (`useFieldCamera`'s `layoutsDiffer`): a job that becomes its song keeps its
+ * key and its seat, so these words are all that changes.
+ */
+export function groupContents(
+  group: Pick<Group, 'entityKeys' | 'songCount' | 'subtitle'>,
+): string {
+  const making = group.entityKeys.length - group.songCount;
+  const count =
+    group.songCount === 0 && making > 0
+      ? `${making} being made`
+      : `${group.songCount} ${group.songCount === 1 ? 'song' : 'songs'}`;
+  return group.subtitle === null ? count : `${group.subtitle} · ${count}`;
 }

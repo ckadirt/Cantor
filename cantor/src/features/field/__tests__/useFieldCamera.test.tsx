@@ -1074,6 +1074,44 @@ describe('useFieldCamera', () => {
     expect(latest.transitionGeneration).toBe(generation);
   });
 
+  it('re-cuts when a job becomes its song under the same key', async () => {
+    // The job list arrives before the library: the same keys, the same seats,
+    // and only the clusters' second lines change ("1 being made" → "1 song").
+    const making = entities.map(entity => ({ ...entity, kind: 'job' as const }));
+    const before = layoutField({
+      entities: making,
+      arrangement: byTime,
+      viewport,
+    });
+    let renderer!: ReactTestRenderer.ReactTestRenderer;
+    await ReactTestRenderer.act(async () => {
+      renderer = mountCamera(
+        <Probe
+          layout={before}
+          onOpenComposer={jest.fn()}
+          onOpenEngines={jest.fn()}
+        />,
+      );
+    });
+    const generation = latest.transitionGeneration;
+    const after = layoutField({ entities, arrangement: byTime, viewport });
+
+    await ReactTestRenderer.act(async () => {
+      renderer.update(
+        <Probe
+          layout={after}
+          onOpenComposer={jest.fn()}
+          onOpenEngines={jest.fn()}
+        />,
+      );
+    });
+
+    expect(latest.transitionGeneration).not.toBe(generation);
+    expect(latest.recut?.layout.groups.map(group => group.songCount)).toEqual(
+      after.groups.map(group => group.songCount),
+    );
+  });
+
   it('allows dragging in both axes at minimum zoom even when all groups fit', async () => {
     await renderCamera();
     const [pinch] = gestures();
