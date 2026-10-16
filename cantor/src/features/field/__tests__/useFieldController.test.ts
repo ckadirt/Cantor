@@ -93,6 +93,7 @@ describe('buildFieldController', () => {
         backends: null,
         snapshots: {},
         localAudio: {},
+        principal: new Uint8Array(32),
         outbox: {},
       }),
     ).toEqual({ entities: [], presentations: new Map(), jobs: new Map() });
@@ -122,6 +123,7 @@ describe('buildFieldController', () => {
           bytes: artifact.byte_length,
         },
       },
+      principal: new Uint8Array(32),
       outbox: {},
     });
 
@@ -151,6 +153,7 @@ describe('generation as marks', () => {
       backends: [node],
       snapshots: { 'node-a': snapshot(songs, 'ready', jobs) },
       localAudio: {},
+      principal: new Uint8Array(32),
       outbox,
     });
   }
@@ -160,7 +163,7 @@ describe('generation as marks', () => {
 
     expect(model.entities.map(entity => entity.key)).toEqual(['node-a:job-1']);
     expect(model.entities[0].kind).toBe('job');
-    expect(model.jobs.get('node-a:job-1')?.job.state).toBe('running');
+    expect(model.jobs.get('node-a:job-1')?.job?.state).toBe('running');
   });
 
   it.each([
@@ -249,6 +252,7 @@ describe('reusing the last projection', () => {
         backends: [node],
         snapshots: { 'node-a': snapshot(songs, 'ready', jobs) },
         localAudio: {},
+        principal: new Uint8Array(32),
         outbox: {},
       },
       previous,
@@ -260,12 +264,13 @@ describe('reusing the last projection', () => {
     expect(build([job('job-1', 'running')], first).presentations).toBe(
       first.presentations,
     );
-    const running = first.jobs.get('node-a:job-1')!.job;
+    const running = first.jobs.get('node-a:job-1')!.job!;
     const again = buildFieldController(
       {
         backends: [node],
         snapshots: { 'node-a': snapshot(songs, 'ready', [running]) },
         localAudio: {},
+        principal: new Uint8Array(32),
         outbox: {},
       },
       first,
@@ -317,7 +322,13 @@ describe('device songs', () => {
     importedAtMs: 1_790_600_000_000,
     missingSinceMs: null,
   };
-  const empty = { backends: [], snapshots: {}, localAudio: {}, outbox: {} };
+  const empty = {
+    principal: new Uint8Array(32),
+    backends: [],
+    snapshots: {},
+    localAudio: {},
+    outbox: {},
+  };
   const library = (songs: DeviceSong[], tags: [string, string[]][] = []) => ({
     songs,
     albums: [album],
@@ -450,5 +461,66 @@ describe('device songs', () => {
     );
     expect(second.entities[0]).not.toBe(first.entities[0]);
     expect(second.entities[0].record?.artist).toBe('Someone');
+  });
+});
+
+it('keeps a saved submission on the field through upload, lost acceptance, and the job plan', () => {
+  const node = backend('node-a', 'Studio');
+  const entry = {
+    ...outboxEntry('node-a', 'unused', 'Rain')['node-a:unused'],
+    state: 'pending' as const,
+    canonicalJobId: undefined,
+  };
+  const state = {
+    principal: new Uint8Array(32),
+    backends: [node],
+    snapshots: { 'node-a': snapshot([], 'disconnected') },
+    localAudio: {},
+    outbox: { 'req-1': entry },
+  };
+  const first = buildFieldController(state);
+  const key = 'node-a:pending:req-1';
+  expect(first.jobs.get(key)).toMatchObject({
+    phase: { kind: 'waiting' },
+    job: null,
+    caption: 'Rain',
+    entity: { entityId: 'pending:req-1' },
+  });
+  const sending = buildFieldController(
+    { ...state, sending: { 'req-1': { sent: 3, total: 12 } } },
+    first,
+  );
+  expect(sending.jobs.get(key)?.phase).toEqual({
+    kind: 'sending',
+    sent: 3,
+    total: 12,
+  });
+  expect(sending.entities).toBe(first.entities);
+  const readyState = {
+    ...state,
+    snapshots: { 'node-a': snapshot([], 'ready') },
+  };
+  const submitted = buildFieldController(readyState, sending);
+  expect(submitted.jobs.get(key)?.phase).toEqual({ kind: 'submitted' });
+  expect(buildFieldController(readyState, submitted)).toBe(submitted);
+  const remote = {
+    ...job('canonical', 'running'),
+    client_request_id: 'req-1',
+    stage: 'encode',
+    plan: [
+      { stage: 'encode', unit: 'tiles' },
+      { stage: 'diffuse', unit: 'steps' },
+    ],
+  };
+  const accepted = buildFieldController(
+    { ...state, snapshots: { 'node-a': snapshot([], 'ready', [remote]) } },
+    submitted,
+  );
+  expect(accepted.jobs.size).toBe(1);
+  expect(accepted.jobs.get('node-a:canonical')).toMatchObject({
+    phase: { kind: 'job' },
+    caption: 'Rain',
+    declaredStages: ['encode', 'diffuse'],
+    work: { plan: remote.plan },
   });
 });

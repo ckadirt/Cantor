@@ -6,7 +6,8 @@ import type { SongHeader } from '../../../../../protocol/SongHeader';
 import { byTime, layoutField } from '../../../field';
 import { FieldA11yList } from '../FieldA11yList';
 import { drawJobMark } from '../FieldCanvas';
-import { nodePresentation } from '../useFieldController';
+import { buildFieldController, nodePresentation } from '../useFieldController';
+import { INITIAL_RUNTIME_STATE } from '../../../runtime/backendRuntime';
 
 const viewport = { width: 380, height: 800 };
 const artifact: ArtifactView = {
@@ -92,6 +93,20 @@ describe('job marks and the accessibility mirror', () => {
       { x: 0, y: 0 },
       {
         entity: jobEntity,
+        phase: { kind: 'job' },
+        work: {
+          key: entity.key,
+          nodePublicKey: entity.nodePublicKey,
+          jobId: entity.entityId,
+          clientRequestId: null,
+          phase: { kind: 'job' },
+          job: null,
+          request: null,
+          caption: 'working',
+          model: 'light',
+          createdAtMs: 0,
+          plan: [],
+        },
         job: {
           id: 'job-1',
           revision: 1,
@@ -138,3 +153,55 @@ describe('job marks and the accessibility mirror', () => {
     ).toBeTruthy();
   });
 });
+
+it.each(['waiting', 'sending', 'submitted'] as const)(
+  'records the %s mark with real CanvasKit before a node job exists',
+  kind => {
+    const entry = {
+      clientRequestId: 'request',
+      nodePublicKey: 'node-a',
+      model: 'light',
+      generation: { caption: 'Rain' },
+      requestHash: 'hash',
+      state: 'pending' as const,
+      createdAt: '2026-10-14T00:00:00Z',
+      updatedAt: '2026-10-14T00:00:00Z',
+    };
+    const controller = buildFieldController({
+      ...INITIAL_RUNTIME_STATE,
+      backends: [presentation.backend],
+      outbox: { request: entry },
+      sending: kind === 'sending' ? { request: { sent: 3, total: 12 } } : {},
+      snapshots: {
+        'node-a': {
+          phase: kind === 'waiting' ? 'disconnected' : 'ready',
+          error: null,
+          jobs: [],
+          songs: [],
+          libraryRevision: null,
+          librarySyncing: false,
+        },
+      },
+    });
+    const pending = controller.jobs.get('node-a:pending:request')!;
+    expect(pending.phase.kind).toBe(kind);
+    const recorder = Skia.PictureRecorder();
+    const canvas = recorder.beginRecording(Skia.XYWHRect(-256, -128, 512, 256));
+    drawJobMark(
+      canvas,
+      {
+        paints: {
+          ink: paint('#000000'),
+          muted: paint('#666666'),
+          faint: paint('#A6A6A6'),
+          outline: paint('#000000'),
+        },
+        fonts: { mono: Skia.Font(undefined, 9) },
+      },
+      { x: 0, y: 0 },
+      pending,
+      { dot: 1, row: 1, song: 0, grain: 0 },
+    );
+    expect(recorder.finishRecordingAsPicture()).toBeTruthy();
+  },
+);

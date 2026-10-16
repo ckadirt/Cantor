@@ -1,3 +1,6 @@
+import { base58 } from '@scure/base';
+import { sha256 } from '@noble/hashes/sha2.js';
+import { submissionJobId } from '../work';
 import type { ArtifactView } from '../../../protocol/ArtifactView';
 import type { GenerationRequest } from '../../../protocol/GenerationRequest';
 import type { JobView } from '../core/protocol';
@@ -143,6 +146,11 @@ export type BackendRuntimeState = {
   snapshots: Record<string, ConnectionSnapshot>;
   pairing: boolean;
   storageError: string | null;
+  submissionFailure: {
+    nodePublicKey: string;
+    workKey: string;
+    error: NodeRequestError;
+  } | null;
   localAudio: Record<string, LocalAudio>;
   /**
    * Keys of the artifacts a transfer is running for right now.
@@ -160,15 +168,9 @@ export type BackendRuntimeState = {
    * drained when the node is ready again.
    */
   waiting: WaitingQueue;
-  /**
-   * Persisted submissions, keyed `${nodePublicKey}:${canonicalJobId}`.
-   *
-   * A job mark needs the caption the person actually typed, and `JobView` does
-   * not carry it. Reading it back off the outbox keeps that text in the one
-   * place that already stores it durably, instead of duplicating it onto the
-   * wire model or into a second store. Entries the node has not accepted yet
-   * have no canonical id and so are not addressable here.
-   */
+  /** SHA-256 of the authenticated Ed25519 public key bytes, computed once. */
+  principal: Uint8Array;
+  /** All persisted submissions, keyed by client request id, including pending. */
   outbox: Record<string, OutboxEntry>;
   /**
    * Submissions whose source is on its way to the node, by client request id:
@@ -203,15 +205,15 @@ export type BackendRuntimeCommands = {
    */
   forgetBackend: (nodePublicKey: string) => Promise<void>;
   /**
-   * Durably queue a generation and send it. With `source`, the local file is
-   * sent first (resumably) and the request then names the committed upload.
+   * Save a generation and return its field key. Sending runs in the background
+   * when ready; a local source uploads before the request names its upload.
    */
   submit: (
     nodePublicKey: string,
     model: string,
     generation: GenerationRequest,
     source?: LocalSource,
-  ) => Promise<void>;
+  ) => Promise<string>;
   controlJob: (
     nodePublicKey: string,
     job: JobView,
@@ -294,9 +296,11 @@ export const INITIAL_RUNTIME_STATE: BackendRuntimeState = {
   snapshots: {},
   pairing: false,
   storageError: null,
+  submissionFailure: null,
   localAudio: {},
   downloading: new Set(),
   waiting: {},
+  principal: new Uint8Array(32),
   outbox: {},
   sending: {},
 };
@@ -351,6 +355,8 @@ export class BackendRuntime {
     dependencies: BackendRuntimeDependencies = {},
   ) {
     this.deps = { ...defaultDependencies, ...dependencies };
+    // connection.ts sends identity.publicKey as the authenticated client pubkey.
+    this.update({ principal: sha256(base58.decode(identity.publicKey)) });
     this.commands = {
       showPairing: () => this.update({ pairing: true }),
       hidePairing: () => this.update({ pairing: false }),
@@ -507,12 +513,7 @@ export class BackendRuntime {
     const entries = await this.deps.loadOutbox();
     this.update({
       outbox: Object.fromEntries(
-        entries
-          .filter(entry => entry.canonicalJobId !== undefined)
-          .map(entry => [
-            `${entry.nodePublicKey}:${entry.canonicalJobId}`,
-            entry,
-          ]),
+        entries.map(entry => [entry.clientRequestId, entry]),
       ),
     });
   }
@@ -538,8 +539,22 @@ export class BackendRuntime {
       if (error instanceof NodeRequestError && !error.retryable) {
         await this.deps.markRejected(entry.clientRequestId, error.message);
         await this.refreshOutbox();
+        const jobId = submissionJobId(
+          entry,
+          this.state.principal,
+          this.state.backends?.find(
+            backend => backend.nodePubkey === entry.nodePublicKey,
+          )?.lastNodeInfo?.features.derived_job_ids === true,
+        );
+        this.update({
+          submissionFailure: {
+            nodePublicKey: entry.nodePublicKey,
+            workKey: `${entry.nodePublicKey}:${jobId}`,
+            error,
+          },
+        });
       }
-      throw error;
+      // A lost answer leaves the durable request pending for the next snapshot.
     } finally {
       this.outboxInFlight.delete(entry.clientRequestId);
     }
@@ -560,6 +575,7 @@ export class BackendRuntime {
       this.update({
         sending: { ...this.state.sending, [id]: { sent, total } },
       });
+    progress(0, source.bytes);
     try {
       const committed = await runUpload(
         connection.uploadPort(),
@@ -1002,16 +1018,29 @@ export class BackendRuntime {
     model: string,
     generation: GenerationRequest,
     source?: LocalSource,
-  ): Promise<void> => {
-    const connection = this.live(nodePublicKey, 'The node is not connected.');
+  ): Promise<string> => {
     const entry =
       source === undefined
         ? await this.deps.putPending(nodePublicKey, model, generation)
         : await this.deps.putPending(nodePublicKey, model, generation, source);
     // Until a read of the outbox finds it sent, snapshots keep retrying it.
     this.outboxPending.add(nodePublicKey);
-    await this.refreshOutbox();
-    await this.sendOutbox(connection, entry);
+    this.update({
+      submissionFailure: null,
+      outbox: { ...this.state.outbox, [entry.clientRequestId]: entry },
+    });
+    await this.refreshOutbox().catch(this.reportError);
+    const jobId = submissionJobId(
+      entry,
+      this.state.principal,
+      this.state.backends?.find(backend => backend.nodePubkey === nodePublicKey)
+        ?.lastNodeInfo?.features.derived_job_ids === true,
+    );
+    const connection = this.connections.get(nodePublicKey)?.connection;
+    if (connection && this.state.snapshots[nodePublicKey]?.phase === 'ready') {
+      this.sendOutbox(connection, entry).catch(this.reportError);
+    }
+    return `${nodePublicKey}:${jobId}`;
   };
 
   private readonly patchSong = async (

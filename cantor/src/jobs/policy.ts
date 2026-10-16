@@ -1,3 +1,4 @@
+import type { WorkPhase } from '../work';
 import type { JobView } from '../core/protocol';
 
 /** What a caller may ask the node to do to a job. */
@@ -12,7 +13,8 @@ export type JobControl = 'pause' | 'resume' | 'cancel' | 'retry';
  * nothing, and a failure only offers a retry when the node said it is
  * retryable.
  */
-export function jobControls(job: JobView): JobControl[] {
+export function jobControls(job: JobView | null): JobControl[] {
+  if (job === null) return [];
   switch (job.state) {
     case 'queued':
     case 'preparing':
@@ -37,11 +39,30 @@ export function jobControls(job: JobView): JobControl[] {
  * The node enforces the same two states; this is the app agreeing with it in
  * advance rather than offering an act that would be refused.
  */
-export function canForgetJob(job: JobView): boolean {
+export function canForgetJob(job: JobView | null): boolean {
+  if (job === null) return false;
   return job.state === 'failed' || job.state === 'cancelled';
 }
 
-export function jobStateLabel(job: JobView): string {
+export function jobStateLabel(
+  job: JobView | null,
+  phase: WorkPhase = { kind: 'job' },
+  node = 'node',
+): string {
+  if (job === null) {
+    switch (phase.kind) {
+      case 'waiting':
+        return `Waiting for ${node}`;
+      case 'sending':
+        return 'Sending the source';
+      default:
+        return `Handing it to ${node}`;
+    }
+  }
+  if (job.state === 'preparing' && job.stage !== undefined) {
+    const label = jobStateLabel({ ...job, state: 'running' });
+    return `Resuming: ${label.charAt(0).toLowerCase()}${label.slice(1)}`;
+  }
   if (job.state === 'running') {
     switch (job.stage) {
       case 'plan':

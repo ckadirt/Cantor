@@ -64,6 +64,24 @@ export function parseJob(value: unknown): JobView | null {
   // A stage this app has no symbol for is a newer node's, kept by name and
   // drawn as working (`jobs/marks.ts`); never a reason to drop the job.
   if (!(value.stage === undefined || isWireName(value.stage))) return null;
+  if (
+    !(
+      value.client_request_id === undefined ||
+      typeof value.client_request_id === 'string'
+    )
+  )
+    return null;
+  // An unreadable optional plan never hides the job. New stage/unit names stay.
+  const plan =
+    Array.isArray(value.plan) &&
+    value.plan.every(
+      part => isRecord(part) && isWireName(part.stage) && isWireName(part.unit),
+    )
+      ? value.plan.map(part => ({
+          stage: part.stage as string,
+          unit: part.unit as string,
+        }))
+      : undefined;
   let progress: JobView['progress'];
   if (value.progress !== undefined) {
     if (
@@ -115,6 +133,10 @@ export function parseJob(value: unknown): JobView | null {
   return {
     id: value.id,
     revision: value.revision,
+    ...(value.client_request_id === undefined
+      ? {}
+      : { client_request_id: value.client_request_id }),
+    ...(plan === undefined ? {} : { plan }),
     state,
     ...(value.stage === undefined ? {} : { stage: value.stage }),
     ...(progress === undefined ? {} : { progress }),

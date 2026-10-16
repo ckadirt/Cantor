@@ -1,3 +1,4 @@
+import { deriveWork, type Work, type WorkPhase } from '../../work';
 import { audioKey } from '../../audio/repository';
 import type { AudioRef } from '../../audio/localAudioStore';
 import type { LocalAudio } from '../../audio/native';
@@ -190,7 +191,9 @@ export function sameDrawnSong(
  */
 export type JobPresentation = Readonly<{
   entity: FieldEntity;
-  job: JobView;
+  job: JobView | null;
+  phase: WorkPhase;
+  work: Work;
   backend: BackendRecord;
   nodeLabels: readonly string[];
   caption: string | null;
@@ -200,13 +203,7 @@ export type JobPresentation = Readonly<{
    * wire model carries none of it — the outbox is the only copy.
    */
   request: GenerationRequest | null;
-  /**
-   * The stages the model running this job said it runs.
-   *
-   * Read from the node's advertised catalogue rather than from the job, because
-   * the mask is a property of the model: it is how the mark can draw the arc
-   * ahead of the work instead of only the part already watched.
-   */
+  /** The ordered stages this work runs, from its plan. */
   declaredStages: readonly StageName[];
 }>;
 
@@ -218,36 +215,15 @@ export type FieldController = Readonly<{
 
 type FieldRuntimeState = Pick<
   BackendRuntimeState,
-  'backends' | 'snapshots' | 'localAudio' | 'outbox'
+  'backends' | 'snapshots' | 'localAudio' | 'outbox' | 'principal'
 > &
-  Partial<Pick<BackendRuntimeState, 'downloading' | 'waiting'>> &
+  Partial<Pick<BackendRuntimeState, 'downloading' | 'waiting' | 'sending'>> &
   Readonly<{
     /** Songs whose files live on this phone; absent before the database opens. */
     device?: DeviceLibrary;
     /** The phone has no connection at all. */
     noConnection?: boolean;
   }>;
-
-/**
- * Job states that are still worth drawing.
- *
- * A cancelled job is absent rather than struck through: it was withdrawn, so
- * leaving a mark for it would be keeping a record the person chose to end. A
- * completed job stays until its song is observed, which is what makes the
- * hand-off keep the same placement instead of blinking.
- */
-const LIVE_JOB_STATES: ReadonlySet<string> = new Set([
-  'queued',
-  'preparing',
-  'running',
-  'pause_requested',
-  'paused',
-  'cancel_requested',
-  'recovering',
-  'finalizing',
-  'completed',
-  'failed',
-]);
 
 const REMOTE_AUDIO: LocalAudio = { state: 'remote', bytes: 0 };
 
@@ -352,55 +328,48 @@ export function buildFieldController(
   if (state.device !== undefined) {
     addDeviceSongs(state.device, previous, presentations);
   }
-  // Jobs join the same field as songs, keyed by canonical job id, so a job that
-  // resolves into a song keeps its identity and its place.
   const jobs = new Map<string, JobPresentation>();
-  for (const backend of state.backends ?? []) {
-    const snapshot = state.snapshots[backend.nodePubkey];
-    for (const job of snapshot?.jobs ?? []) {
-      if (!LIVE_JOB_STATES.has(job.state)) continue;
-      const key = `${backend.nodePubkey}:${job.id}`;
-      // Once the song exists it owns the placement; the job stops drawing.
-      if (presentations.has(key)) continue;
-      const kept = previous?.jobs.get(key);
-      const entity = keepEntity(kept?.entity, {
-        key,
-        nodePublicKey: backend.nodePubkey,
-        entityId: job.id,
-        kind: 'job',
-        createdAtMs: timestampOrEpoch(job.created_at),
-        // A job has no length until it becomes a song; by duration it sorts
-        // to the head, which is where a thing being made belongs anyway.
-        durationMs: 0,
-        tags: NO_TAGS,
-        model: job.model,
-      });
-      const caption =
-        job.caption ?? state.outbox[key]?.generation.caption ?? null;
-      const request = state.outbox[key]?.generation ?? null;
-      if (
-        kept !== undefined &&
-        kept.job === job &&
-        kept.backend === backend &&
-        kept.caption === caption &&
-        kept.request === request
-      ) {
-        jobs.set(key, kept);
-        continue;
-      }
-      jobs.set(key, {
-        entity,
-        job,
-        backend,
-        nodeLabels: nodeLabelsOf(backend),
-        caption,
-        request,
-        declaredStages:
-          backend.lastNodeInfo?.models?.find(
-            model => model.selector === job.model,
-          )?.stages ?? NO_STAGES,
-      });
+  const works = deriveWork(
+    {
+      outbox: Object.values(state.outbox),
+      sending: state.sending ?? {},
+      snapshots: state.snapshots,
+      backends: state.backends ?? [],
+      principal: state.principal,
+    },
+    previous === null
+      ? undefined
+      : new Map([...previous.jobs].map(([key, value]) => [key, value.work])),
+  );
+  for (const [key, work] of works) {
+    if (presentations.has(key)) continue;
+    const backend = paired.get(work.nodePublicKey)!;
+    const kept = previous?.jobs.get(key);
+    if (kept?.work === work && kept.backend === backend) {
+      jobs.set(key, kept);
+      continue;
     }
+    const entity = keepEntity(kept?.entity, {
+      key,
+      nodePublicKey: work.nodePublicKey,
+      entityId: work.jobId,
+      kind: 'job',
+      createdAtMs: work.createdAtMs,
+      durationMs: 0,
+      tags: NO_TAGS,
+      model: work.model,
+    });
+    jobs.set(key, {
+      entity,
+      work,
+      phase: work.phase,
+      job: work.job,
+      backend,
+      nodeLabels: nodeLabelsOf(backend),
+      caption: work.caption,
+      request: work.request,
+      declaredStages: work.plan.map(part => part.stage),
+    });
   }
 
   if (
@@ -528,7 +497,6 @@ function folderName(folder: string): string {
 /** A device song's second line when it names no artist. */
 const DEVICE_LABEL = 'This phone';
 
-const NO_STAGES: readonly StageName[] = [];
 const NO_TAGS: readonly string[] = [];
 
 /** The entity drawn last time, if nothing the layout reads has changed. */

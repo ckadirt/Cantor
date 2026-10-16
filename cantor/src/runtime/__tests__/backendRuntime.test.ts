@@ -1,3 +1,4 @@
+import { sha256 } from '@noble/hashes/sha2.js';
 import type { ArtifactView } from '../../../../protocol/ArtifactView';
 import type { JobView } from '../../core/protocol';
 import type { SongHeader } from '../../../../protocol/SongHeader';
@@ -8,6 +9,8 @@ import {
   type WaitingQueue,
 } from '../../audio/waiting';
 import type { BackendRecord, ConnectionSnapshot } from '../../backends/types';
+import { NodeRequestError } from '../../backends/connection';
+import { deriveWork, derivedJobId } from '../../work';
 import type { AppIdentity } from '../../identity/derive';
 import type { OutboxEntry } from '../../jobs/outbox';
 import {
@@ -17,7 +20,7 @@ import {
 } from '../backendRuntime';
 
 const identity: AppIdentity = {
-  publicKey: 'app-key',
+  publicKey: '11111111111111111111111111111111',
   secretKey: new Uint8Array(32),
 };
 
@@ -105,7 +108,19 @@ function setup() {
   };
   const mergeJobs = jest.fn(async (_node: string, jobs: JobView[]) => jobs);
   const commitLibrary = jest.fn().mockResolvedValue(undefined);
-  const loadOutbox = jest.fn().mockResolvedValue([] as OutboxEntry[]);
+  let entries: OutboxEntry[] = [];
+  const loadOutbox = jest.fn(async () => entries);
+  const putPending = jest.fn(async (nodePublicKey: string, model: string, generation: OutboxEntry['generation'], source?: OutboxEntry['source']) => {
+    const entry: OutboxEntry = { clientRequestId: 'request-a', nodePublicKey, model, generation, requestHash: 'hash', state: 'pending', createdAt: '2026-10-14T00:00:00Z', updatedAt: '2026-10-14T00:00:00Z', ...(source ? { source } : {}) };
+    entries = [...entries, entry];
+    return entry;
+  });
+  const markAccepted = jest.fn(async (id: string, canonicalJobId: string) => {
+    entries = entries.map(entry => entry.clientRequestId === id ? { ...entry, state: 'accepted', canonicalJobId } : entry);
+  });
+  const markRejected = jest.fn(async (id: string, lastError: string) => {
+    entries = entries.map(entry => entry.clientRequestId === id ? { ...entry, state: 'rejected', lastError } : entry);
+  });
   const markSourceSent = jest.fn(async (id: string, uploadId: string) => ({
     clientRequestId: id,
     nodePublicKey: 'node-a',
@@ -153,9 +168,9 @@ function setup() {
     commitLibrary,
     loadOutbox,
     forgetSubmission: jest.fn(),
-    putPending: jest.fn(),
-    markAccepted: jest.fn(),
-    markRejected: jest.fn(),
+    putPending,
+    markAccepted,
+    markRejected,
     markSourceSent,
     readSourceSlice,
     audioStore,
@@ -173,6 +188,9 @@ function setup() {
     loadOutbox,
     markSourceSent,
     readSourceSlice,
+    putPending,
+    markAccepted,
+    markRejected,
   };
 }
 
@@ -527,5 +545,98 @@ describe('BackendRuntime', () => {
       await flush();
       expect(f.runtime.store.get().waiting[key]).toBeUndefined();
     });
+  });
+});
+
+
+describe('saving work before a node answers', () => {
+  it('returns the work key while away, and the field has it before acceptance', async () => {
+    const f = setup();
+    f.runtime.start();
+    await flush();
+    await expect(f.runtime.commands.submit('node-a', 'light', { caption: 'Rain' })).resolves.toBe('node-a:pending:request-a');
+    expect(f.connection.createJob).not.toHaveBeenCalled();
+    const state = f.runtime.store.get();
+    const work = deriveWork({ ...state, backends: state.backends!, outbox: Object.values(state.outbox) });
+    expect(work.get('node-a:pending:request-a')).toMatchObject({ caption: 'Rain', phase: { kind: 'waiting' }, job: null });
+    expect(state.principal).toEqual(sha256(new Uint8Array(32)));
+    f.runtime.dispose();
+  });
+
+  it('returns a derived key and counts the source while its upload is still open', async () => {
+    const f = setup();
+    f.runtime.start();
+    await flush();
+    const nodeInfo = require('../../../../protocol/fixtures/v2/node-info.json').node;
+    f.callbacks[0].onNodeInfo({ ...nodeInfo, features: { ...nodeInfo.features, derived_job_ids: true } });
+    f.callbacks[0].onSnapshot(snapshot([], []));
+    await flush();
+    let finish!: (value: { uploadId: string; acceptedOffset: number; chunkBytes: number }) => void;
+    (f.connection.uploadPort as jest.Mock).mockReturnValue({
+      open: () => new Promise(resolve => { finish = resolve; }),
+      commit: async () => ({ uploadId: 'up', sha256: 'a'.repeat(64), bytes: 10, seconds: 1 }),
+    });
+    (f.connection.createJob as jest.Mock).mockResolvedValue(job(1));
+    const source = { path: '/source.wav', mediaType: 'audio/wav', sha256: 'a'.repeat(64), bytes: 10 };
+    const key = await f.runtime.commands.submit('node-a', 'light', { caption: 'Rain', audio: { source: { kind: 'upload', upload_id: 'local' }, act: 'cover' } }, source);
+    expect(key).toBe(`node-a:${derivedJobId(f.runtime.store.get().principal, 'request-a')}`);
+    expect(f.runtime.store.get().sending['request-a']).toEqual({ sent: 0, total: 10 });
+    expect(f.connection.createJob).not.toHaveBeenCalled();
+    // A ready snapshot during the upload cannot start a second send.
+    f.callbacks[0].onSnapshot(snapshot([], []));
+    await flush();
+    expect(f.connection.uploadPort).toHaveBeenCalledTimes(1);
+    finish({ uploadId: 'up', acceptedOffset: 10, chunkBytes: 4 });
+    await flush();
+    await flush();
+    expect(f.connection.createJob).toHaveBeenCalledTimes(1);
+    f.runtime.dispose();
+  });
+
+  it.each([new Error('Request timed out'), new NodeRequestError('Busy', 'temporarily_unavailable', true)])('keeps a lost or retryable answer pending and retries with the same request id: %s', async error => {
+    const f = setup();
+    (f.connection.createJob as jest.Mock).mockRejectedValueOnce(error).mockResolvedValue(job(1));
+    f.runtime.start();
+    await flush();
+    f.callbacks[0].onSnapshot(snapshot([], []));
+    await flush();
+    await f.runtime.commands.submit('node-a', 'light', { caption: 'Rain' });
+    await flush();
+    expect(f.runtime.store.get().outbox['request-a'].state).toBe('pending');
+    expect(f.runtime.store.get().submissionFailure).toBeNull();
+    expect(f.markRejected).not.toHaveBeenCalled();
+    f.callbacks[0].onSnapshot(snapshot([], []));
+    await flush();
+    await flush();
+    expect(f.connection.createJob).toHaveBeenCalledTimes(2);
+    expect((f.connection.createJob as jest.Mock).mock.calls.map(args => args[0])).toEqual(['request-a', 'request-a']);
+    expect(f.runtime.store.get().outbox['request-a'].state).toBe('accepted');
+    f.runtime.dispose();
+  });
+
+  it('rejects only a non-retryable node refusal and publishes it for failureWords', async () => {
+    const f = setup();
+    const error = new NodeRequestError('No model', 'model_not_installed', false);
+    (f.connection.createJob as jest.Mock).mockRejectedValue(error);
+    f.runtime.start();
+    await flush();
+    f.callbacks[0].onSnapshot(snapshot([], []));
+    await flush();
+    await expect(f.runtime.commands.submit('node-a', 'light', { caption: 'Rain' })).resolves.toBe('node-a:pending:request-a');
+    await flush();
+    expect(f.markRejected).toHaveBeenCalledWith('request-a', 'No model');
+    expect(f.runtime.store.get().outbox['request-a'].state).toBe('rejected');
+    expect(f.runtime.store.get().submissionFailure).toEqual({ nodePublicKey: 'node-a', workKey: 'node-a:pending:request-a', error });
+    f.callbacks[0].onSnapshot(snapshot([], []));
+    await flush();
+    expect(f.connection.createJob).toHaveBeenCalledTimes(1);
+    f.runtime.dispose();
+  });
+
+  it('throws when the submission cannot be saved', async () => {
+    const f = setup();
+    f.putPending.mockRejectedValueOnce(new Error('Disk full'));
+    await expect(f.runtime.commands.submit('node-a', 'light', { caption: 'Rain' })).rejects.toThrow('Disk full');
+    expect(f.connection.createJob).not.toHaveBeenCalled();
   });
 });

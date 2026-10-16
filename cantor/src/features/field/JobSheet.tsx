@@ -143,7 +143,7 @@ export function JobSheet({
    * `busy` alone cannot say which (`controls/state.tsx`).
    */
   const [pressed, setPressed] = useState<string | null>(null);
-  const jobId = pending?.job.id ?? null;
+  const jobId = pending?.work.jobId ?? null;
   useEffect(() => {
     setPressed(null);
   }, [jobId, visible]);
@@ -161,7 +161,12 @@ export function JobSheet({
   const arrival = useDerivedValue(() => windowed(blind.value, 0.5, 1));
   if (pending === null) return null;
 
-  const model = jobMarkModel(pending.job, [], pending.declaredStages);
+  const model = jobMarkModel(
+    pending.job,
+    [],
+    pending.declaredStages,
+    pending.phase,
+  );
   const controls = jobControls(pending.job);
   // The node refuses to erase anything still working or already published, and
   // one that predates deletion refuses the word itself.
@@ -172,9 +177,15 @@ export function JobSheet({
     model.declaredStages.length > 0
       ? model.declaredStages
       : model.observedStages;
-  const failure = pending.job.error;
+  const failure = pending.job?.error;
   const node = pending.nodeLabels[0] ?? pending.backend.petname;
-  const made = new Date(pending.job.created_at);
+  const made = new Date(pending.work.createdAtMs);
+  const stateLabel = jobStateLabel(pending.job, pending.phase, node);
+  const progressNote = pending.phase.kind === 'job'
+    ? arcNote(model, stages, pending.work.plan)
+    : model.progress.kind === 'determinate'
+      ? `${model.progress.completed} OF ${model.progress.total} bytes`
+      : stateLabel;
 
   return (
     <View style={styles.sheet}>
@@ -213,7 +224,7 @@ export function JobSheet({
             arrival={arrival}
             charStyle={FOLIO_TITLE_STYLE}
             colour={pal.ink}
-            text={pending.caption ?? jobStateLabel(pending.job)}
+            text={pending.caption ?? stateLabel}
             window={JOB_SHEET_KNOBS.WRITE_WINDOW}
           />
         }
@@ -232,10 +243,14 @@ export function JobSheet({
       />
 
       <Stave>
-          {stages.length === 0 ? null : (
+        <Measure>
+          <Fact label="State" value={stateLabel} />
+        </Measure>
+        <Rest />
+          {stages.length === 0 && pending.phase.kind !== 'sending' ? null : (
             <>
               <Measure>
-              <Row label="Stages" note={arcNote(model, stages)}>
+              <Row label="Stages" note={progressNote}>
                 <View style={styles.arc}>
                   {stages.map((stage, index) => (
                     <Canvas key={stage} style={styles.stageGlyph}>
@@ -298,7 +313,11 @@ export function JobSheet({
           <>
             {stages.length === 0 && failure === undefined ? null : <Rest />}
             <Measure>
-            <Fact label="Started" note={clockOf(made)} value={dateOf(made)} />
+            <Fact
+              label={pending.job === null ? 'Saved' : 'Started'}
+              note={clockOf(made)}
+              value={dateOf(made)}
+            />
           {/*
             The rest of the submission is what this phone kept, so a job sent
             from another device shows what the wire carries and no more.
@@ -312,8 +331,8 @@ export function JobSheet({
             {pending.request?.seed === undefined ? null : (
               <Fact label="Seed" mono value={String(pending.request.seed)} />
             )}
-            <Fact label="Model" mono value={pending.job.model} />
-            <Fact label="Ref" mono value={shortKey(pending.job.id)} />
+            <Fact label="Model" mono value={pending.work.model} />
+            <Fact label="Ref" mono value={shortKey(pending.work.jobId)} />
             </Measure>
           </>
       </Stave>
@@ -400,6 +419,7 @@ const WORKING_WORDS: Record<JobControl, string> = {
 function arcNote(
   model: ReturnType<typeof jobMarkModel>,
   stages: readonly StageName[],
+  plan: JobPresentation['work']['plan'],
 ): string {
   const here = stages[model.stageIndex];
   if (here === undefined) {
@@ -409,8 +429,9 @@ function arcNote(
     return model.failed ? 'IT NEVER BEGAN' : 'NOT STARTED';
   }
   const where = model.failed ? `STOPPED IN ${here}` : here;
+  const unit = plan[model.stageIndex]?.unit;
   return model.progress.kind === 'determinate'
-    ? `${where} · ${model.progress.completed} OF ${model.progress.total}`
+    ? `${where} · ${model.progress.completed} OF ${model.progress.total}${unit ? ` ${unit}` : ''}`
     : where;
 }
 
