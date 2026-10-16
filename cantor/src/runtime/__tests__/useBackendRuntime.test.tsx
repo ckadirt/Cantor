@@ -23,7 +23,7 @@ import {
 } from '../useBackendRuntime';
 
 const identity: AppIdentity = {
-  publicKey: 'app-key',
+  publicKey: '11111111111111111111111111111111',
   secretKey: new Uint8Array(32),
 };
 
@@ -529,10 +529,13 @@ describe('useBackendRuntime', () => {
     });
     const mounted = await mount(f);
     const live = f.connections[0];
-
-    await mounted.current().commands.submit('node-a', 'light', {
-      caption: 'New song',
+    await ReactTestRenderer.act(async () => {
+      f.callbacks[0].onSnapshot({ phase: 'ready', error: null, jobs: [], songs: [], libraryRevision: null, librarySyncing: false });
+      await mounted.current().commands.submit('node-a', 'light', {
+        caption: 'New song',
+      });
     });
+    await settle();
     expect(f.putPending).toHaveBeenCalledWith('node-a', 'light', {
       caption: 'New song',
     });
@@ -620,7 +623,7 @@ describe('useBackendRuntime', () => {
       offline.current().commands.submit('node-a', 'light', {
         caption: 'Offline',
       }),
-    ).rejects.toThrow('The node is not connected.');
+    ).resolves.toBe('node-a:pending:request-a');
     await expect(
       offline.current().commands.controlJob('node-a', job('job-a'), 'pause'),
     ).rejects.toThrow('Job node is not connected.');
@@ -652,7 +655,7 @@ describe('useBackendRuntime', () => {
     const mounted = await mount(f);
     await settle();
 
-    expect(mounted.current().state.outbox['node-a:cached-job']).toMatchObject({
+    expect(mounted.current().state.outbox['request-a']).toMatchObject({
       generation: { caption: 'una cumbia lenta' },
     });
     expect(

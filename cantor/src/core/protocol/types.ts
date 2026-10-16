@@ -36,7 +36,16 @@ export type ModelView = Omit<WireModelView, 'stages' | 'capabilities'> & {
 export type NodeInfo = Omit<WireNodeInfo, 'models'> & { models: ModelView[] };
 
 /** The wire's job, with its stage, progress unit and error code open. */
-export type JobView = Omit<WireJobView, 'stage' | 'progress' | 'error'> & {
+export type PlanStage = {
+  stage: StageName;
+  unit: ProgressUnit | (string & {});
+};
+
+export type JobView = Omit<
+  WireJobView,
+  'stage' | 'progress' | 'error' | 'plan'
+> & {
+  plan?: PlanStage[];
   stage?: StageName;
   /** Counts are drawn; the unit is kept by name and never drawn. */
   progress?: Omit<JobProgress, 'unit'> & { unit: ProgressUnit | (string & {}) };

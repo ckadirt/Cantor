@@ -183,3 +183,19 @@ describe('liveness and failure', () => {
     expect(permanent).toMatchObject({ failed: true, retryable: false });
   });
 });
+
+
+describe('work before a node job exists', () => {
+  it('waits with a fermata and no filled progress', () => {
+    expect(jobMarkModel(null, [], ['encode'], { kind: 'waiting' })).toMatchObject({ symbol: 'fermata', arc: 0, live: false });
+  });
+  it('counts the source bytes under interchange, independently of the job arc', () => {
+    expect(jobMarkModel(null, [], ['encode', 'diffuse'], { kind: 'sending', sent: 3, total: 12 })).toMatchObject({ symbol: 'interchange', arc: null, progress: { kind: 'determinate', fraction: 0.25, completed: 3, total: 12 } });
+  });
+  it('hands off without a stage symbol or an invented fraction', () => {
+    expect(jobMarkModel(null, [], ['encode'], { kind: 'submitted' })).toMatchObject({ symbol: null, arc: null, progress: { kind: 'indeterminate' }, live: true });
+  });
+  it('restores a resumed stage while preparing', () => {
+    expect(jobMarkModel(job({ state: 'preparing', stage: 'encode' }), []).symbol).toBe('restore');
+  });
+});

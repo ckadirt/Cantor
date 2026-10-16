@@ -1,3 +1,4 @@
+import type { WorkPhase } from '../work';
 import type { GenerationStage, JobView, StageName } from '../core/protocol';
 
 /**
@@ -77,7 +78,7 @@ export function declaredArc(
 
 export type JobMarkModel = Readonly<{
   /** Symbol for the current stage, or null when no stage has been reported. */
-  symbol: StageSymbol | null;
+  symbol: StageSymbol | 'fermata' | 'interchange' | 'restore' | null;
   progress: JobProgressModel;
   /**
    * Stages actually observed for this job, in the order they were seen.
@@ -125,10 +126,37 @@ export function observeStage(
 }
 
 export function jobMarkModel(
-  job: JobView,
+  job: JobView | null,
   observedStages: readonly StageName[],
   declaredStages: readonly StageName[] = [],
+  phase: WorkPhase = { kind: 'job' },
 ): JobMarkModel {
+  if (job === null) {
+    const sending = phase.kind === 'sending' && phase.total > 0 ? phase : null;
+    return {
+      symbol:
+        phase.kind === 'waiting'
+          ? 'fermata'
+          : phase.kind === 'sending'
+          ? 'interchange'
+          : null,
+      progress: sending
+        ? {
+            kind: 'determinate',
+            completed: sending.sent,
+            total: sending.total,
+            fraction: Math.min(Math.max(sending.sent / sending.total, 0), 1),
+          }
+        : { kind: 'indeterminate' },
+      observedStages: [],
+      declaredStages,
+      stageIndex: -1,
+      arc: phase.kind === 'waiting' ? 0 : null,
+      live: phase.kind !== 'waiting',
+      failed: false,
+      retryable: false,
+    };
+  }
   const total = job.progress?.total;
   const completed = job.progress?.completed ?? 0;
   const progress: JobProgressModel =
@@ -142,7 +170,12 @@ export function jobMarkModel(
       : { kind: 'indeterminate' };
 
   return {
-    symbol: job.stage === undefined ? null : stageSymbol(job.stage),
+    symbol:
+      job.state === 'preparing' && job.stage !== undefined
+        ? 'restore'
+        : job.stage === undefined
+        ? null
+        : stageSymbol(job.stage),
     progress,
     observedStages: observeStage(observedStages, job.stage),
     declaredStages,

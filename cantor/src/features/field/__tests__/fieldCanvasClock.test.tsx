@@ -358,6 +358,10 @@ describe('field canvas re-cut clock', () => {
     ]);
     const pending: JobPresentation = {
       entity: { ...entity, kind: 'job' },
+      phase: { kind: 'job' },
+      work: { key: entity.key, nodePublicKey: entity.nodePublicKey, jobId: entity.entityId,
+        clientRequestId: null, phase: { kind: 'job' }, job: null, request: null,
+        caption: 'working', model: 'light', createdAtMs: 0, plan: [] },
       backend,
       nodeLabels: ['Studio'],
       caption: 'working',

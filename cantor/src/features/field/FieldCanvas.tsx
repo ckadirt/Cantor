@@ -6419,7 +6419,12 @@ export function drawJobMark(
   pending: JobPresentation,
   alpha: RepresentationAlphas,
 ): void {
-  const model = jobMarkModel(pending.job, [], pending.declaredStages);
+  const model = jobMarkModel(
+    pending.job,
+    [],
+    pending.declaredStages,
+    pending.phase,
+  );
   const visible = Math.max(alpha.dot, alpha.row);
   if (visible <= 0.01) return;
 
@@ -6477,7 +6482,11 @@ export function drawJobMark(
   // Compact map clusters show the job ring/symbol. State words arrive
   // with the shelf, where each entity owns a full row.
   if (alpha.row > 0.01) {
-    const label = jobStateLabel(pending.job);
+    const label = jobStateLabel(
+      pending.job,
+      pending.phase,
+      pending.nodeLabels[0] ?? pending.backend.petname,
+    );
     const counted =
       model.progress.kind === 'determinate'
         ? ` ${model.progress.completed}/${model.progress.total}`

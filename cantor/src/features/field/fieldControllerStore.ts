@@ -56,6 +56,8 @@ export function createFieldControllerStore(
       next.snapshots === read.snapshots &&
       next.localAudio === read.localAudio &&
       next.outbox === read.outbox &&
+      next.sending === read.sending &&
+      next.principal === read.principal &&
       next.downloading === read.downloading &&
       next.waiting === read.waiting &&
       nextDevice === deviceRead &&

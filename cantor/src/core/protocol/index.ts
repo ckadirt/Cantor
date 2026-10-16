@@ -20,6 +20,7 @@ export type {
   LibraryChange,
   ModelCapability,
   ModelView,
+  PlanStage,
   NodeInfo,
   SongDetail,
   SongHeader,

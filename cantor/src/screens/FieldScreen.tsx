@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { useSubmission } from '../features/composer/useSubmission';
 import {
   AppState,
   BackHandler,
@@ -436,17 +437,27 @@ export function FieldScreen({ identity }: Props) {
   const transport = usePlayer(player);
   const [enginesOpen, setEnginesOpen] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState<ErrorWords | null>(null);
-  /**
-   * The caption in flight, from the moment it is sent until it has become a
-   * mark. `jobKey` is filled in when the node names the job.
-   */
-  const [condensing, setCondensing] = useState<{
-    caption: string;
-    nodePublicKey: string;
-    jobKey: string | null;
-  } | null>(null);
+  const closeComposer = useCallback(() => setComposerOpen(false), []);
+  const {
+    submitting, submitError, setSubmitError, condensing, setCondensing, submitDraft,
+  } = useSubmission({
+    submit: commands.submit,
+    closeComposer,
+    failureWords,
+    nodeNameOf,
+  });
+  const submissionFailure = useStore(
+    runtime.store, state => state.submissionFailure,
+  );
+  useEffect(() => {
+    if (submissionFailure === null) return;
+    setCondensing(current =>
+      current?.jobKey === submissionFailure.workKey ? null : current,
+    );
+    setSubmitError(failureWords(
+      submissionFailure.error, nodeNameOf(submissionFailure.nodePublicKey),
+    ));
+  }, [submissionFailure, failureWords, nodeNameOf, setCondensing, setSubmitError]);
   const [playbackError, setPlaybackError] = useState<string | null>(null);
   /**
    * The song the sheet is open on, and the cluster it was opened from.
@@ -927,7 +938,7 @@ export function FieldScreen({ identity }: Props) {
   const openComposer = useCallback(() => {
     setSubmitError(null);
     setComposerOpen(true);
-  }, []);
+  }, [setSubmitError]);
   /**
    * A made song's recipe for the composer's next opening. Dropped when the
    * composer closes, the same as any draft: an opening from `NEW SONG` after
@@ -960,45 +971,6 @@ export function FieldScreen({ identity }: Props) {
     [backends, phases],
   );
 
-  /**
-   * Send one generation.
-   *
-   * Routed through `runtime.submit` so the persisted outbox and its idempotency
-   * behaviour stay intact: a submission survives the app dying between the tap
-   * and the node's answer.
-   */
-  const submitDraft = useCallback(
-    async (
-      nodePublicKey: string,
-      modelSelector: string,
-      generation: Parameters<typeof commands.submit>[2],
-      source?: Parameters<typeof commands.submit>[3],
-    ) => {
-      setSubmitting(true);
-      setSubmitError(null);
-      try {
-        setCondensing({
-          caption: generation.caption,
-          nodePublicKey,
-          jobKey: null,
-        });
-        setComposerOpen(false);
-        // A tune goes first, through the outbox, which then names its upload
-        // in the request; without one this is the call it always was.
-        if (source === undefined) {
-          await commands.submit(nodePublicKey, modelSelector, generation);
-        } else {
-          await commands.submit(nodePublicKey, modelSelector, generation, source);
-        }
-      } catch (error) {
-        setCondensing(null);
-        setSubmitError(failureWords(error, nodeNameOf(nodePublicKey)));
-      } finally {
-        setSubmitting(false);
-      }
-    },
-    [commands, failureWords, nodeNameOf],
-  );
   const openEngines = useCallback(() => setEnginesOpen(true), []);
   /** Where the nodes blind opens: the empty field's door opens the phone's page. */
   const [enginesStart, setEnginesStart] = useState<'phone' | null>(null);
@@ -1010,7 +982,6 @@ export function FieldScreen({ identity }: Props) {
     setEnginesOpen(true);
   }, []);
   const closeEngines = useCallback(() => setEnginesOpen(false), []);
-  const closeComposer = useCallback(() => setComposerOpen(false), []);
   /**
    * Whether the song sheet's blind is down, kept apart from which song it
    * holds.
@@ -2211,7 +2182,7 @@ export function FieldScreen({ identity }: Props) {
         openComposer();
       },
     };
-  }, [backends, failureWords, openComposer, phases, sheetModel, sheetSong, songDetail]);
+  }, [backends, failureWords, openComposer, phases, setSubmitError, sheetModel, sheetSong, songDetail]);
   const sheetImported = useMemo<ImportedFacts | null>(() => {
     if (sheetSong === null || sheetSong.source !== 'device') return null;
     const { device, album } = sheetSong;
@@ -2296,20 +2267,12 @@ export function FieldScreen({ identity }: Props) {
   /**
    * Where the caption in flight should land.
    *
-   * Null until the node has named the job *and* the field has laid out a
+   * Null until the submission is saved *and* the field has laid out a
    * placement for it. Both halves matter: a placement that does not exist yet
    * is not a position to fly to, and guessing one would land the caption
    * somewhere the mark is not.
    */
-  const condenseKey = useStore(controllerStore.store, current =>
-    condensing === null
-      ? null
-      : condensing.jobKey ??
-        [...current.jobs.keys()].find(candidate =>
-          candidate.startsWith(`${condensing.nodePublicKey}:`),
-        ) ??
-        null,
-  );
+  const condenseKey = condensing?.jobKey ?? null;
   const condenseTarget = useMemo(() => {
     if (condenseKey === null || viewport === null) return null;
     const key = condenseKey;
@@ -3301,7 +3264,9 @@ export function FieldScreen({ identity }: Props) {
           destination={jobDestination}
           pull={jobPull}
           title={(
-            pendingJob.caption ?? jobStateLabel(pendingJob.job)
+            pendingJob.caption ?? jobStateLabel(
+              pendingJob.job, pendingJob.phase, pendingJob.backend.petname,
+            )
           ).toUpperCase()}
           viewportHeight={viewport.height}
         >
@@ -3310,6 +3275,7 @@ export function FieldScreen({ identity }: Props) {
             error={jobError}
             onClose={closeJobSheet}
             onControl={control => {
+              if (pendingJob.job === null) return;
               setJobBusy(true);
               setJobError(null);
               void commands
@@ -3329,6 +3295,7 @@ export function FieldScreen({ identity }: Props) {
                 .finally(() => setJobBusy(false));
             }}
             onForget={() => {
+              if (pendingJob.job === null) return;
               setJobBusy(true);
               setJobError(null);
               void commands

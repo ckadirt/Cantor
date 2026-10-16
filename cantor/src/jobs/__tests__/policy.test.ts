@@ -58,3 +58,28 @@ describe('what a running job is called', () => {
     expect(jobStateLabel(running())).toBe('Working');
   });
 });
+
+it('names each local phase and offers no controls before a node job exists', () => {
+  expect(jobStateLabel(null, { kind: 'waiting' }, 'Studio')).toBe(
+    'Waiting for Studio',
+  );
+  expect(
+    jobStateLabel(null, { kind: 'sending', sent: 1, total: 10 }, 'Studio'),
+  ).toBe('Sending the source');
+  expect(jobStateLabel(null, { kind: 'submitted' }, 'Studio')).toBe(
+    'Handing it to Studio',
+  );
+  expect(jobControls(null)).toEqual([]);
+  expect(canForgetJob(null)).toBe(false);
+});
+
+it.each(['encode', 'diffuse', 'decode', 'mixdown'])(
+  'resumes at the same label as the running %s stage',
+  stage => {
+    const running = { ...job('running'), stage };
+    const label = jobStateLabel(running);
+    expect(jobStateLabel({ ...running, state: 'preparing' })).toBe(
+      `Resuming: ${label.charAt(0).toLowerCase()}${label.slice(1)}`,
+    );
+  },
+);

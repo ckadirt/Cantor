@@ -22,7 +22,7 @@ function pending(
   overrides: Partial<JobPresentation> = {},
   features: Partial<NodeInfo['features']> = {},
 ): JobPresentation {
-  return {
+  const presentation = {
     entity: {
       key: 'node:job-1',
       nodePublicKey: 'node',
@@ -57,6 +57,13 @@ function pending(
     declaredStages: [],
     ...overrides,
   };
+  const phase = overrides.phase ?? { kind: 'job' as const };
+  return { ...presentation, phase, work: overrides.work ?? {
+    key: presentation.entity.key, nodePublicKey: 'node', jobId: presentation.job!.id,
+    clientRequestId: null, phase, job: presentation.job, request: presentation.request,
+    caption: presentation.caption, model: presentation.job!.model,
+    createdAtMs: Date.parse(presentation.job!.created_at), plan: [],
+  } } as JobPresentation;
 }
 
 function render(presentation: JobPresentation | null) {
@@ -221,4 +228,27 @@ describe('the stopped generation sheet', () => {
     expect(words()).toContain('019c8f7e…0bcb17');
     expect(words()).not.toContain('2:05');
   });
+});
+
+
+it.each(['waiting', 'sending', 'submitted'] as const)('shows %s work without node controls and counts the sending bytes', kind => {
+  const base = pending({ state: 'running', error: undefined });
+  const phase = kind === 'sending' ? { kind, sent: 3, total: 12 } : { kind };
+  const presentation: JobPresentation = { ...base, phase, job: null, declaredStages: ['encode', 'diffuse'], work: { ...base.work, phase, job: null, plan: [{ stage: 'encode', unit: 'tiles' }, { stage: 'diffuse', unit: 'steps' }] } };
+  const sheet = render(presentation);
+  const labels = { waiting: 'Waiting for Studio', sending: 'Sending the source', submitted: 'Handing it to Studio' };
+  expect(sheet.words()).toContain(labels[kind]);
+  for (const control of ['Pause', 'Cancel', 'Try again', 'Delete']) expect(sheet.labels()).not.toContain(control);
+  if (kind === 'sending') {
+    expect(sheet.words()).toContain('3 OF 12 BYTES');
+    expect(sheet.tree.root.findAll(element => Array.isArray(element.props.style) && element.props.style.some((style: { width?: string } | null) => style?.width === '25%')).length).toBeGreaterThan(0);
+  }
+});
+
+it('shows the resumed stage and the plan’s own units', () => {
+  const base = pending({ state: 'preparing', stage: 'encode', error: undefined, progress: { completed: 1, total: 4, unit: 'tiles' } });
+  const plan = [{ stage: 'encode', unit: 'tiles' }, { stage: 'diffuse', unit: 'steps' }];
+  const sheet = render({ ...base, declaredStages: plan.map(part => part.stage), work: { ...base.work, plan } });
+  expect(sheet.words()).toContain('Resuming: reading the source');
+  expect(sheet.words()).toContain('ENCODE · 1 OF 4 TILES');
 });

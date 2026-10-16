@@ -2,7 +2,8 @@
 
 The app is the React Native client in `cantor/`. It pairs with nodes, submits
 generations, mirrors the library offline, downloads encrypted audio, and plays
-it back. Everything it shows comes from a node it has authenticated.
+it back. Node library and job state come from authenticated nodes; this phone
+also keeps saved submissions visible while they wait or send.
 
 Read `cantor/AGENTS.md` before touching motion or Skia code — the Flicker Law
 and the Shapes/Verbs/Clock model are not negotiable and are not repeated here.
@@ -33,6 +34,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/features/` | `field/` (the canvas, camera, controller, overlays), `find/` (the tags blind, set as an index), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
 | `src/screens/` | `FieldScreen`: the one screen after onboarding — composition and wiring |
 | `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
+| `src/work/` | pure `deriveWork`, submission/job matching, derived job ids and the plan a piece of work runs. The field and sheets read `Work`, never the outbox or snapshots directly |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
 | `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens, a file's embedded lyrics — read only), and `lyrics.ts`, an imported song's words for a version that keeps its voice: the file's tags, then LRCLIB, asked only when that song's version opens. LRCLIB is the app's one network call that is not the relay; it learns a title, an artist and a length, never audio |
@@ -404,6 +406,10 @@ cable is replugged.
   `ROWS_FROM + index * ARRIVAL_LAG` to `+ ARRIVAL_RISE`, and a window that ends
   past 1 is a row that never reaches full ink — it does not fail, it just sits
   at a fraction of its opacity forever. Adding a block means lowering the lag.
+- **A submission keeps one key from Make to song.** Its key is its derived job
+  id when the node advertises `derived_job_ids`; acceptance and the published
+  song keep it. Older nodes use `pending:<clientRequestId>` until acceptance.
+  Never guess a submission’s mark from the first job on its node.
 - **A job's caption has two sources, and the node's wins.** `JobView.caption`
   is what every device sees; the submission outbox is what only the phone that
   typed it has. `useBackendRuntime` hydrates the outbox at mount — without that

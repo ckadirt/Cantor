@@ -8,6 +8,7 @@ import {
 import { decodeForgottenJob } from '../applicationResponses';
 
 const nodeInfo = require('../../../../protocol/fixtures/v2/node-info.json');
+const jobsPlan = require('../../../../protocol/fixtures/v2/jobs-page-plan.json');
 const jobsPage = require('../../../../protocol/fixtures/v2/jobs-page.json');
 const forgotten = require('../../../../protocol/fixtures/v2/job-forgotten.json');
 const invalidState = require('../../../../protocol/fixtures/v2/malformed/invalid-state.json');
@@ -154,3 +155,17 @@ describe('shared protocol v2 fixtures', () => {
     ).toMatchObject({ retryable: false });
   });
 });
+
+ it('reads the shared job plan and request id, preserving newer names and dropping only malformed plans', () => {
+  const job = jobsPlan.jobs[0];
+  expect(parseJobs(jobsPlan.jobs)?.[0]).toMatchObject({
+    client_request_id: job.client_request_id, stage: 'encode', plan: job.plan,
+  });
+  expect(parseJob({ ...job, plan: [{ stage: 'mixdown', unit: 'samples' }] })?.plan).toEqual([{ stage: 'mixdown', unit: 'samples' }]);
+  for (const plan of [null, 'bad', [{ stage: 'Encode', unit: 'tiles' }], [{ stage: 'encode', unit: 3 }], [{}]]) {
+    const parsed = parseJob({ ...job, plan });
+    expect(parsed?.id).toBe(job.id);
+    expect(parsed?.plan).toBeUndefined();
+  }
+  expect(parseJob({ ...job, client_request_id: 3 })).toBeNull();
+ });

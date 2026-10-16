@@ -110,11 +110,11 @@ describe('the field controller store', () => {
     runtime.set(() => withJob(3));
     const release = field.connect();
     const [job] = [...field.store.get().jobs.values()];
-    expect(job.job.revision).toBe(3);
+    expect(job.job?.revision).toBe(3);
     release();
 
     // And stops following once released.
     runtime.set(() => withJob(4));
-    expect([...field.store.get().jobs.values()][0].job.revision).toBe(3);
+    expect([...field.store.get().jobs.values()][0].job?.revision).toBe(3);
   });
 });
