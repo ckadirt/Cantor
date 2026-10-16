@@ -492,6 +492,7 @@ mod tests {
                 .config
                 .authorize_key(&fixture.config_path, &client_key, None)?;
             let variant = InstalledVariant {
+                acts: None,
                 model: "connection-test".into(),
                 tag: "fast".into(),
                 licence: String::new(),

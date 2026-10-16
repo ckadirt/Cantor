@@ -171,7 +171,105 @@
               "start_field": "repainting_start",
               "end_field": "repainting_end"
             }
-          }
+          },
+          "acts": [
+            {
+              "id": "version",
+              "label": "A version",
+              "needs": "cover",
+              "sources": [
+                "song",
+                "upload"
+              ],
+              "inputs": [
+                {
+                  "kind": "follow",
+                  "stops": [
+                    0.0,
+                    0.5,
+                    1.0
+                  ]
+                },
+                {
+                  "kind": "voice"
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "same",
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "prompt",
+                  "required": false,
+                  "default": "The same song, its own style and instruments"
+                }
+              ]
+            },
+            {
+              "id": "longer",
+              "label": "Longer",
+              "needs": "extend",
+              "sources": [
+                "song"
+              ],
+              "inputs": [
+                {
+                  "kind": "added_length",
+                  "step_seconds": 30,
+                  "at": [
+                    "end",
+                    "start"
+                  ]
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "prompt",
+                  "required": true
+                }
+              ]
+            },
+            {
+              "id": "hum",
+              "label": "A tune",
+              "needs": "cover",
+              "sources": [
+                "tune"
+              ],
+              "inputs": [
+                {
+                  "kind": "follow",
+                  "stops": [
+                    0.0,
+                    0.5,
+                    1.0
+                  ]
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "tile"
+                },
+                {
+                  "kind": "prompt",
+                  "required": true
+                }
+              ]
+            }
+          ]
         },
         {
           "tag": "1.5-balanced",
@@ -339,7 +437,105 @@
               "start_field": "repainting_start",
               "end_field": "repainting_end"
             }
-          }
+          },
+          "acts": [
+            {
+              "id": "version",
+              "label": "A version",
+              "needs": "cover",
+              "sources": [
+                "song",
+                "upload"
+              ],
+              "inputs": [
+                {
+                  "kind": "follow",
+                  "stops": [
+                    0.0,
+                    0.5,
+                    1.0
+                  ]
+                },
+                {
+                  "kind": "voice"
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "same",
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "prompt",
+                  "required": false,
+                  "default": "The same song, its own style and instruments"
+                }
+              ]
+            },
+            {
+              "id": "longer",
+              "label": "Longer",
+              "needs": "extend",
+              "sources": [
+                "song"
+              ],
+              "inputs": [
+                {
+                  "kind": "added_length",
+                  "step_seconds": 30,
+                  "at": [
+                    "end",
+                    "start"
+                  ]
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "prompt",
+                  "required": true
+                }
+              ]
+            },
+            {
+              "id": "hum",
+              "label": "A tune",
+              "needs": "cover",
+              "sources": [
+                "tune"
+              ],
+              "inputs": [
+                {
+                  "kind": "follow",
+                  "stops": [
+                    0.0,
+                    0.5,
+                    1.0
+                  ]
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "tile"
+                },
+                {
+                  "kind": "prompt",
+                  "required": true
+                }
+              ]
+            }
+          ]
         },
         {
           "tag": "1.5-quality",
@@ -507,7 +703,105 @@
               "start_field": "repainting_start",
               "end_field": "repainting_end"
             }
-          }
+          },
+          "acts": [
+            {
+              "id": "version",
+              "label": "A version",
+              "needs": "cover",
+              "sources": [
+                "song",
+                "upload"
+              ],
+              "inputs": [
+                {
+                  "kind": "follow",
+                  "stops": [
+                    0.0,
+                    0.5,
+                    1.0
+                  ]
+                },
+                {
+                  "kind": "voice"
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "same",
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "prompt",
+                  "required": false,
+                  "default": "The same song, its own style and instruments"
+                }
+              ]
+            },
+            {
+              "id": "longer",
+              "label": "Longer",
+              "needs": "extend",
+              "sources": [
+                "song"
+              ],
+              "inputs": [
+                {
+                  "kind": "added_length",
+                  "step_seconds": 30,
+                  "at": [
+                    "end",
+                    "start"
+                  ]
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "prompt",
+                  "required": true
+                }
+              ]
+            },
+            {
+              "id": "hum",
+              "label": "A tune",
+              "needs": "cover",
+              "sources": [
+                "tune"
+              ],
+              "inputs": [
+                {
+                  "kind": "follow",
+                  "stops": [
+                    0.0,
+                    0.5,
+                    1.0
+                  ]
+                },
+                {
+                  "kind": "words",
+                  "offers": [
+                    "none",
+                    "mine"
+                  ]
+                },
+                {
+                  "kind": "tile"
+                },
+                {
+                  "kind": "prompt",
+                  "required": true
+                }
+              ]
+            }
+          ]
         }
       ]
     },

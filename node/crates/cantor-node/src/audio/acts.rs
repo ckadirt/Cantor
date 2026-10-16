@@ -131,6 +131,7 @@ mod tests {
 
     fn prompt(act: AudioAct) -> AudioPrompt {
         AudioPrompt {
+            act_id: None,
             source: AudioSource::Song {
                 song_id: "s".into(),
             },

@@ -21,6 +21,7 @@ fn principal() -> PrincipalId {
 
 fn variant() -> InstalledVariant {
     InstalledVariant {
+        acts: None,
         model: "acestep".into(),
         tag: "1.5-fast".into(),
         licence: String::new(),

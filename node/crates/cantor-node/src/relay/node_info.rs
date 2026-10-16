@@ -27,22 +27,28 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
     // cannot load. Phase C's push is what keeps it current after a pull.
     let models = installed
         .into_iter()
-        .map(|variant| ModelView {
+        .map(|variant| {
+            let declared = capabilities::declared(&variant, catalog.as_ref());
             // Declared by the weights and wired by the loaded engine build;
             // empty until both are known. See `capabilities`.
-            capabilities: Some(cantor_proto::Capabilities(capabilities::advertised(
-                capabilities::declared(&variant, catalog.as_ref()).as_ref(),
+            let advertised = capabilities::advertised(
+                declared.as_ref(),
                 engine::loaded_capabilities(variant.engine()).as_ref(),
-            ))),
-            selector: variant.selector(),
-            family: variant.model.clone(),
-            engine: variant.engine().to_owned(),
-            // Straight from the installed marker. The node converts nothing
-            // here: an engine's internal stage bitmask was already turned into
-            // an ordered list at install time.
-            stages: variant.declared_stages(),
-            parameters: variant.declared_parameters(),
-            lyrics: variant.lyrics.clone(),
+            );
+            let acts = capabilities::advertised_acts(declared.as_ref(), &advertised);
+            ModelView {
+                capabilities: Some(cantor_proto::Capabilities(advertised)),
+                acts: Some(acts),
+                selector: variant.selector(),
+                family: variant.model.clone(),
+                engine: variant.engine().to_owned(),
+                // Straight from the installed marker. The node converts nothing
+                // here: an engine's internal stage bitmask was already turned into
+                // an ordered list at install time.
+                stages: variant.declared_stages(),
+                parameters: variant.declared_parameters(),
+                lyrics: variant.lyrics.clone(),
+            }
         })
         .collect();
     let has_disk = library

@@ -8,6 +8,12 @@ import type { ExtendAt } from "./ExtendAt";
  */
 export type AudioPrompt = { source: AudioSource, act: AudioAct, 
 /**
+ * The declared act this request makes (`ModelView.acts`), when the app
+ * knows acts. The node checks the model offers it and fills an empty
+ * caption from its prompt's default.
+ */
+act_id?: string, 
+/**
  * Cover: how far from the source, 0 (close) to 1 (free). The node maps it
  * to the engine's own controls.
  */

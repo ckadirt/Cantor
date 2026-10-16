@@ -81,6 +81,11 @@ pub struct Variant {
     /// How this engine is told to do those things. Never sent to an app.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio: Option<AudioBinding>,
+    /// What a person can do with a sound on these weights, and what each act
+    /// asks for. Absent in an older catalog: the node offers its built-in
+    /// acts for the capabilities instead (`capabilities::advertised_acts`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acts: Option<cantor_proto::Acts>,
 }
 
 /// How an engine takes audio, in its own field names.

@@ -91,6 +91,7 @@ pub(super) fn create(
     if let Some(field) = invalid_submission(&client_request_id, &model, &generation) {
         return Ok(invalid_field(id, field));
     }
+    let mut generation = generation;
     let variants = Store::new(config.model_root()).installed();
     let Some(variant) = variants.iter().find(|variant| variant.selector() == model) else {
         return Ok(NodeMessage::Error {
@@ -114,6 +115,9 @@ pub(super) fn create(
             .is_none_or(|text| text.trim().is_empty())
     {
         return Ok(invalid_field(id, "lyrics"));
+    }
+    if let Some(field) = settle_act(&mut generation, variant, &config.model_root()) {
+        return Ok(invalid_field(id, field));
     }
     if let Some(field) = invalid_extensions(&generation, &variant.parameters) {
         return Ok(invalid_field(id, &field));
@@ -308,7 +312,13 @@ pub(super) fn invalid_submission(
     if model.is_empty() || model.len() > MAX_MODEL_SELECTOR_BYTES {
         return Some("model");
     }
-    if generation.caption.trim().is_empty()
+    // An act whose prompt is optional takes an empty caption; `settle_act`
+    // fills it from the act's default once the model is known.
+    let names_act = generation
+        .audio
+        .as_ref()
+        .is_some_and(|audio| audio.act_id.is_some());
+    if (generation.caption.trim().is_empty() && !names_act)
         || generation.caption.len() > MAX_CAPTION_BYTES as usize
         || generation.caption.chars().any(char::is_control)
     {
@@ -346,6 +356,50 @@ pub(super) fn invalid_submission(
     None
 }
 
+/// The acts this node advertises for an installed variant, with the
+/// capabilities they were filtered by: the same projection `NodeInfo` sends.
+fn advertised_for(
+    variant: &crate::store::InstalledVariant,
+    model_root: &std::path::Path,
+) -> (Vec<cantor_proto::ModelCapability>, cantor_proto::Acts) {
+    let catalog = crate::capabilities::cached_catalog(model_root);
+    let declared = crate::capabilities::declared(variant, catalog.as_ref());
+    let advertised = crate::capabilities::advertised(
+        declared.as_ref(),
+        crate::engine::loaded_capabilities(variant.engine()).as_ref(),
+    );
+    let acts = crate::capabilities::advertised_acts(declared.as_ref(), &advertised);
+    (advertised, acts)
+}
+
+/// A request that names its act: the model must offer it, for the capability
+/// the request asks for, and an empty caption becomes the act's default
+/// prompt, so the stored recipe says what was sent. `None` when settled.
+pub(super) fn settle_act(
+    generation: &mut GenerationRequest,
+    variant: &crate::store::InstalledVariant,
+    model_root: &std::path::Path,
+) -> Option<&'static str> {
+    let prompt = generation.audio.as_ref()?;
+    let act_id = prompt.act_id.as_deref()?;
+    let (_, acts) = advertised_for(variant, model_root);
+    let Some(act) = acts.get(act_id) else {
+        return Some("audio.act_id");
+    };
+    if act.needs != prompt.act.capability() {
+        return Some("audio.act_id");
+    }
+    if generation.caption.trim().is_empty() {
+        match act.prompt() {
+            Some((false, Some(default))) if !default.trim().is_empty() => {
+                generation.caption = default.to_owned();
+            }
+            _ => return Some("caption"),
+        }
+    }
+    None
+}
+
 /// Check an audio prompt against what this node advertises for the installed
 /// model and against a source the principal really has. `None` when the
 /// request has no prompt or the prompt is sound; otherwise the field to name.
@@ -376,11 +430,7 @@ pub(super) fn invalid_audio(
         }
         _ => {}
     }
-    let catalog = crate::capabilities::cached_catalog(model_root);
-    let advertised = crate::capabilities::advertised(
-        crate::capabilities::declared(variant, catalog.as_ref()).as_ref(),
-        crate::engine::loaded_capabilities(variant.engine()).as_ref(),
-    );
+    let (advertised, _) = advertised_for(variant, model_root);
     let Some(capability) = advertised
         .iter()
         .find(|c| c.kind == prompt.act.capability())
@@ -492,6 +542,7 @@ mod tests {
             NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).expect("config");
         config.jobs.minimum_free_bytes = 0;
         let installed = InstalledVariant {
+            acts: None,
             model: "effect-test".into(),
             tag: "fast".into(),
             licence: String::new(),
@@ -522,6 +573,7 @@ mod tests {
                     variants: Vec::new(),
                 },
                 &Variant {
+                    acts: None,
                     tag: installed.tag.clone(),
                     components: installed.components.clone(),
                     needs: Needs {
@@ -941,6 +993,7 @@ mod audio_admission_tests {
     /// for each, run by an engine family of this test's own.
     fn variant(family: &str) -> InstalledVariant {
         InstalledVariant {
+            acts: None,
             model: family.into(),
             tag: "t".into(),
             licence: String::new(),
@@ -1005,6 +1058,7 @@ mod audio_admission_tests {
             seed: None,
             extensions: None,
             audio: Some(Box::new(AudioPrompt {
+                act_id: None,
                 source: AudioSource::Upload {
                     upload_id: upload_id.into(),
                 },
@@ -1220,6 +1274,81 @@ mod audio_admission_tests {
             ),
             Some("audio.act"),
             "an engine not loaded yet advertises nothing"
+        );
+    }
+    fn act(upload_id: &str, act: AudioAct, act_id: &str, caption: &str) -> GenerationRequest {
+        let mut generation = request(upload_id, act);
+        generation.caption = caption.into();
+        generation.audio.as_mut().unwrap().act_id = Some(act_id.into());
+        generation
+    }
+
+    fn settle(family: &str, generation: &mut GenerationRequest) -> Option<&'static str> {
+        super::settle_act(
+            generation,
+            &variant(family),
+            std::path::Path::new("/nonexistent"),
+        )
+    }
+
+    #[test]
+    fn a_version_left_without_a_prompt_is_sent_with_its_default() {
+        let family = "audio-admission-acts";
+        crate::engine::declare_loaded_for_test(
+            family,
+            vec![CapabilityKind::Cover, CapabilityKind::Extend],
+        );
+        let mut version = act("u", AudioAct::Cover, "version", "  ");
+        assert_eq!(settle(family, &mut version), None);
+        assert_eq!(
+            version.caption,
+            crate::capabilities::VERSION_DEFAULT_PROMPT,
+            "the stored recipe says what was sent"
+        );
+        // A prompt that was given is kept.
+        let mut given = act("u", AudioAct::Cover, "version", "sung by a choir");
+        assert_eq!(settle(family, &mut given), None);
+        assert_eq!(given.caption, "sung by a choir");
+        // `longer` asks for its prompt.
+        let mut longer = act("u", AudioAct::Extend, "longer", "");
+        assert_eq!(settle(family, &mut longer), Some("caption"));
+    }
+
+    #[test]
+    fn an_act_the_model_does_not_offer_or_that_asks_for_another_capability_is_refused() {
+        let family = "audio-admission-acts-refused";
+        crate::engine::declare_loaded_for_test(family, vec![CapabilityKind::Cover]);
+        assert_eq!(
+            settle(family, &mut act("u", AudioAct::Cover, "stems", "c")),
+            Some("audio.act_id")
+        );
+        // `longer` needs `extend`, which this engine does not wire.
+        assert_eq!(
+            settle(family, &mut act("u", AudioAct::Extend, "longer", "c")),
+            Some("audio.act_id")
+        );
+        // `version` is a cover, not an extension.
+        assert_eq!(
+            settle(family, &mut act("u", AudioAct::Extend, "version", "c")),
+            Some("audio.act_id")
+        );
+        // A request that names no act is settled as before.
+        assert_eq!(settle(family, &mut request("u", AudioAct::Cover)), None);
+    }
+
+    #[test]
+    fn an_empty_caption_is_refused_unless_the_request_names_an_act() {
+        let mut plain = request("u", AudioAct::Cover);
+        plain.caption = String::new();
+        let client_request_id = uuid::Uuid::new_v4().to_string();
+        assert_eq!(
+            super::invalid_submission(&client_request_id, "m:t", &plain),
+            Some("caption")
+        );
+        plain.audio.as_mut().unwrap().act_id = Some("version".into());
+        assert_eq!(
+            super::invalid_submission(&client_request_id, "m:t", &plain),
+            None
         );
     }
 }

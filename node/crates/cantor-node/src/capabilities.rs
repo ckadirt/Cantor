@@ -20,8 +20,8 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
 use cantor_proto::{
-    Capabilities, CapabilityKind, CapabilityKinds, GenerationStage, InstallableView,
-    ModelCapability,
+    ActInput, ActSource, ActView, Acts, Capabilities, CapabilityKind, CapabilityKinds, ExtendAt,
+    GenerationStage, InstallableView, ModelCapability, WordsOffer,
 };
 use tokio::sync::mpsc;
 
@@ -85,6 +85,8 @@ pub async fn refresh_catalog(url: &str, model_root: &Path) -> Result<()> {
 pub struct DeclaredAudio {
     pub capabilities: Capabilities,
     pub binding: Option<AudioBinding>,
+    /// The catalog's acts for these weights; `None` reads as the built-in ones.
+    pub acts: Option<Acts>,
 }
 
 impl DeclaredAudio {
@@ -126,6 +128,7 @@ pub fn declared(variant: &InstalledVariant, catalog: Option<&Catalog>) -> Option
         return Some(DeclaredAudio {
             capabilities: capabilities.clone(),
             binding: variant.audio.clone(),
+            acts: variant.acts.clone(),
         });
     }
     let catalog = catalog?;
@@ -149,6 +152,7 @@ pub fn declared(variant: &InstalledVariant, catalog: Option<&Catalog>) -> Option
     Some(DeclaredAudio {
         capabilities: entry.capabilities.clone()?,
         binding: entry.audio.clone(),
+        acts: entry.acts.clone(),
     })
 }
 
@@ -193,6 +197,99 @@ pub fn advertised(
         .collect()
 }
 
+/// KNOBS — what a version says when the person leaves its prompt empty, for
+/// weights whose catalog entry declares no acts of its own.
+pub const VERSION_DEFAULT_PROMPT: &str = "The same song, its own style and instruments";
+
+/// The acts this node offers for weights whose catalog entry predates acts:
+/// the three the app has always had, in the inputs it has always asked for.
+pub fn builtin_acts() -> Acts {
+    let follow = ActInput::Follow {
+        stops: vec![0.0, 0.5, 1.0],
+    };
+    Acts(vec![
+        ActView {
+            id: "version".to_owned(),
+            label: "A version".to_owned(),
+            needs: CapabilityKind::Cover,
+            sources: vec![ActSource::Song, ActSource::Upload],
+            inputs: vec![
+                follow.clone(),
+                ActInput::Voice,
+                ActInput::Words {
+                    offers: vec![WordsOffer::Same, WordsOffer::Nothing, WordsOffer::Mine],
+                },
+                ActInput::Prompt {
+                    required: false,
+                    default: Some(VERSION_DEFAULT_PROMPT.to_owned()),
+                },
+            ],
+        },
+        ActView {
+            id: "longer".to_owned(),
+            label: "Longer".to_owned(),
+            needs: CapabilityKind::Extend,
+            sources: vec![ActSource::Song],
+            inputs: vec![
+                ActInput::AddedLength {
+                    step_seconds: 30,
+                    at: vec![ExtendAt::End, ExtendAt::Start],
+                },
+                ActInput::Words {
+                    offers: vec![WordsOffer::Nothing, WordsOffer::Mine],
+                },
+                ActInput::Prompt {
+                    required: true,
+                    default: None,
+                },
+            ],
+        },
+        ActView {
+            id: "hum".to_owned(),
+            label: "A tune".to_owned(),
+            needs: CapabilityKind::Cover,
+            sources: vec![ActSource::Tune],
+            inputs: vec![
+                follow,
+                ActInput::Words {
+                    offers: vec![WordsOffer::Nothing, WordsOffer::Mine],
+                },
+                ActInput::Tile,
+                ActInput::Prompt {
+                    required: true,
+                    default: None,
+                },
+            ],
+        },
+    ])
+}
+
+/// The acts to advertise: the catalog's (else the built-in three), each only
+/// while the capability it needs is advertised, and without `voice` where
+/// `timbre` is not.
+pub fn advertised_acts(declared: Option<&DeclaredAudio>, advertised: &[ModelCapability]) -> Acts {
+    let has = |kind| advertised.iter().any(|c| c.kind == kind);
+    let acts = declared
+        .and_then(|declared| declared.acts.clone())
+        .unwrap_or_else(builtin_acts);
+    Acts(
+        acts.0
+            .into_iter()
+            .filter(|act| has(act.needs))
+            .map(|act| ActView {
+                inputs: act
+                    .inputs
+                    .into_iter()
+                    .filter(|input| {
+                        !matches!(input, ActInput::Voice) || has(CapabilityKind::Timbre)
+                    })
+                    .collect(),
+                ..act
+            })
+            .collect(),
+    )
+}
+
 /// Catalog variants this node could install that would add an audio
 /// capability, smallest first, limited to what its backends can run.
 pub fn installable(
@@ -210,6 +307,7 @@ pub fn installable(
             let declared = DeclaredAudio {
                 capabilities: variant.capabilities.clone().unwrap_or_default(),
                 binding: variant.audio.clone(),
+                acts: None,
             };
             let kinds: Vec<CapabilityKind> = declared
                 .capabilities
@@ -347,7 +445,7 @@ pub async fn run(state: SharedState, events: mpsc::Sender<NodeEvent>) {
 mod tests {
     use cantor_proto::{Capabilities, CapabilityKind, GenerationStage, ModelCapability};
 
-    use super::{DeclaredAudio, advertised, declared, installable};
+    use super::{DeclaredAudio, advertised, advertised_acts, declared, installable};
     use crate::catalog::{
         AudioBinding, Catalog, Component, CoverBinding, CoverStop, ExtendBinding, Needs, Variant,
     };
@@ -375,6 +473,7 @@ mod tests {
 
     fn installed(tag: &str, fill: char, capabilities: Option<Capabilities>) -> InstalledVariant {
         InstalledVariant {
+            acts: None,
             model: "acestep".into(),
             tag: tag.into(),
             licence: String::new(),
@@ -411,6 +510,7 @@ mod tests {
 
     fn declared_with(kinds: &[CapabilityKind]) -> DeclaredAudio {
         DeclaredAudio {
+            acts: None,
             capabilities: Capabilities(kinds.iter().copied().map(capability).collect()),
             binding: Some(binding()),
         }
@@ -611,14 +711,21 @@ mod tests {
         for model in &catalog.models {
             for variant in &model.variants {
                 let declared = DeclaredAudio {
+                    acts: variant.acts.clone(),
                     capabilities: variant.capabilities.clone().unwrap_or_default(),
                     binding: variant.audio.clone(),
                 };
-                let kinds: Vec<_> = advertised(Some(&declared), Some(&engine))
-                    .iter()
-                    .map(|c| c.kind)
-                    .collect();
+                let shown = advertised(Some(&declared), Some(&engine));
+                let kinds: Vec<_> = shown.iter().map(|c| c.kind).collect();
                 if model.name == "acestep" {
+                    let acts = advertised_acts(Some(&declared), &shown);
+                    assert_eq!(
+                        act_ids(&acts),
+                        ["version", "longer", "hum"],
+                        "{}:{} declares its acts",
+                        model.name,
+                        variant.tag
+                    );
                     assert_eq!(
                         kinds,
                         [
@@ -640,6 +747,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    fn act_ids(acts: &cantor_proto::Acts) -> Vec<&str> {
+        acts.0.iter().map(|act| act.id.as_str()).collect()
+    }
+
+    #[test]
+    fn weights_without_declared_acts_offer_the_built_in_three_they_can_run() {
+        let declared = declared_with(&[CapabilityKind::Cover, CapabilityKind::Timbre]);
+        let shown = [
+            capability(CapabilityKind::Cover),
+            capability(CapabilityKind::Timbre),
+        ];
+        let acts = advertised_acts(Some(&declared), &shown);
+        // `longer` needs `extend`, which these weights do not advertise.
+        assert_eq!(act_ids(&acts), ["version", "hum"]);
+        let version = &acts.0[0];
+        assert!(version.inputs.contains(&cantor_proto::ActInput::Voice));
+        assert_eq!(
+            version.prompt(),
+            Some((false, Some(super::VERSION_DEFAULT_PROMPT)))
+        );
+    }
+
+    #[test]
+    fn voice_is_offered_only_where_timbre_is() {
+        let declared = declared_with(&[CapabilityKind::Cover]);
+        let acts = advertised_acts(Some(&declared), &[capability(CapabilityKind::Cover)]);
+        assert!(
+            acts.0
+                .iter()
+                .all(|act| !act.inputs.contains(&cantor_proto::ActInput::Voice))
+        );
+    }
+
+    #[test]
+    fn the_catalogs_own_acts_replace_the_built_in_ones() {
+        let mut declared = declared_with(&[CapabilityKind::Cover]);
+        declared.acts = Some(
+            serde_json::from_value(serde_json::json!([
+                {"id": "remix", "label": "A remix", "needs": "cover",
+                 "sources": ["song"], "inputs": [{"kind": "follow", "stops": [0, 1]}]},
+                {"id": "longer", "label": "Longer", "needs": "extend",
+                 "sources": ["song"], "inputs": []}
+            ]))
+            .unwrap(),
+        );
+        let acts = advertised_acts(Some(&declared), &[capability(CapabilityKind::Cover)]);
+        assert_eq!(act_ids(&acts), ["remix"]);
+        // Nothing advertised, nothing offered.
+        assert!(advertised_acts(Some(&declared), &[]).0.is_empty());
     }
 
     #[test]

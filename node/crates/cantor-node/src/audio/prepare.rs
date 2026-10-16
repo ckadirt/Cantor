@@ -105,6 +105,7 @@ mod tests {
 
     fn prompt(act: AudioAct, tile: Option<u32>) -> AudioPrompt {
         AudioPrompt {
+            act_id: None,
             source: AudioSource::Upload {
                 upload_id: "u".into(),
             },

@@ -259,6 +259,120 @@ impl<'de> Deserialize<'de> for CapabilityKinds {
     }
 }
 
+/// Where the sound an act starts from: a song in the library, a file the
+/// phone sends, or a tune someone records.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum ActSource {
+    Song,
+    Upload,
+    Tune,
+}
+
+/// Which words an act's Words input may offer.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, rename_all = "snake_case")]
+pub enum WordsOffer {
+    /// The source's own words (the app's song facts).
+    Same,
+    /// Words the person writes.
+    Mine,
+    /// No words: the model's instrumental marker.
+    #[serde(rename = "none")]
+    Nothing,
+}
+
+/// One thing an act asks of the person, by kind. Each kind fills known
+/// `AudioPrompt` (or request) fields; a new kind is the one place a new act
+/// needs code in the node and the app.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[ts(export, tag = "kind", rename_all = "snake_case")]
+pub enum ActInput {
+    /// The caption. Optional with a default: an empty caption is the
+    /// default, filled in by the node, so the recipe says what was sent.
+    Prompt {
+        required: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[ts(optional)]
+        default: Option<String>,
+    },
+    /// The lyrics, from the offers listed.
+    Words { offers: Vec<WordsOffer> },
+    /// Keep the source's voice (`AudioPrompt.keep_voice`); needs `timbre`.
+    Voice,
+    /// How far from the source (`AudioPrompt.closeness`), at these stops.
+    Follow { stops: Vec<f32> },
+    /// Time added (`extend_seconds`) in steps, and where (`extend_at`).
+    AddedLength {
+        step_seconds: u32,
+        at: Vec<ExtendAt>,
+    },
+    /// A short source repeated to a whole song (`tile_to_seconds`).
+    Tile,
+}
+
+/// Something a model can do with a sound, as the person meets it: "a
+/// version", "longer". Declared in the catalog beside the capabilities, and
+/// advertised only when the capability it `needs` is.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct ActView {
+    /// An open wire name (`version`, `longer`, `hum`, …): an app keeps its own
+    /// words for the ids it knows and shows `label` for the rest.
+    pub id: String,
+    /// The catalog's own words for it.
+    pub label: String,
+    pub needs: CapabilityKind,
+    pub sources: Vec<ActSource>,
+    pub inputs: Vec<ActInput>,
+}
+
+impl ActView {
+    pub fn prompt(&self) -> Option<(bool, Option<&str>)> {
+        self.inputs.iter().find_map(|input| match input {
+            ActInput::Prompt { required, default } => Some((*required, default.as_deref())),
+            _ => None,
+        })
+    }
+}
+
+/// A model's acts, read leniently: an act with an unknown capability or
+/// input kind, or an id that is not a wire name, is dropped rather than
+/// making the others unreadable. An act this build cannot fill is not one it
+/// can offer.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(transparent)]
+pub struct Acts(pub Vec<ActView>);
+
+impl<'de> Deserialize<'de> for Acts {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+        Ok(Self(
+            raw.into_iter()
+                .filter_map(|value| serde_json::from_value::<ActView>(value).ok())
+                .filter(|act| is_wire_name(&act.id))
+                .collect(),
+        ))
+    }
+}
+
+impl Acts {
+    pub fn get(&self, id: &str) -> Option<&ActView> {
+        self.0.iter().find(|act| act.id == id)
+    }
+}
+
+/// `[a-z][a-z0-9_]{0,31}`: the shape of every open name on the wire.
+pub fn is_wire_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    name.len() <= 32
+        && chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// A model this node does not have but could install, with what it would add.
 ///
 /// Drawn from the catalog the node caches and filtered by what its hardware and
@@ -310,6 +424,12 @@ pub struct ModelView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional, as = "Option<Vec<ModelCapability>>")]
     pub capabilities: Option<Capabilities>,
+    /// What a person can do with a sound on this model: each act names the
+    /// capability it needs and the inputs it asks for. `None` is an older
+    /// node, read through the app's built-in acts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional, as = "Option<Vec<ActView>>")]
+    pub acts: Option<Acts>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -540,6 +660,12 @@ pub enum ExtendAt {
 pub struct AudioPrompt {
     pub source: AudioSource,
     pub act: AudioAct,
+    /// The declared act this request makes (`ModelView.acts`), when the app
+    /// knows acts. The node checks the model offers it and fills an empty
+    /// caption from its prompt's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub act_id: Option<String>,
     /// Cover: how far from the source, 0 (close) to 1 (free). The node maps it
     /// to the engine's own controls.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1379,5 +1505,64 @@ mod tests {
         ] {
             assert!(serde_json::from_str::<NodeMessage>(fixture).is_err());
         }
+    }
+
+    #[test]
+    fn acts_use_the_tagged_wire_shape() {
+        let act = ActView {
+            id: "version".to_owned(),
+            label: "A version".to_owned(),
+            needs: CapabilityKind::Cover,
+            sources: vec![ActSource::Song, ActSource::Upload],
+            inputs: vec![
+                ActInput::Voice,
+                ActInput::Words {
+                    offers: vec![WordsOffer::Same, WordsOffer::Nothing],
+                },
+                ActInput::Prompt {
+                    required: false,
+                    default: Some("d".to_owned()),
+                },
+                ActInput::AddedLength {
+                    step_seconds: 30,
+                    at: vec![ExtendAt::End],
+                },
+            ],
+        };
+        assert_eq!(
+            serde_json::to_value(&act).unwrap(),
+            serde_json::json!({
+                "id": "version", "label": "A version", "needs": "cover",
+                "sources": ["song", "upload"],
+                "inputs": [
+                    {"kind": "voice"},
+                    {"kind": "words", "offers": ["same", "none"]},
+                    {"kind": "prompt", "required": false, "default": "d"},
+                    {"kind": "added_length", "step_seconds": 30, "at": ["end"]}
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn an_act_this_build_cannot_fill_is_dropped_not_fatal() {
+        let acts: Acts = serde_json::from_value(serde_json::json!([
+            {"id": "version", "label": "A version", "needs": "cover",
+             "sources": ["song"], "inputs": [{"kind": "voice"}]},
+            // An input kind from a newer catalog.
+            {"id": "redo", "label": "Redo a part", "needs": "cover",
+             "sources": ["song"], "inputs": [{"kind": "region"}]},
+            // A capability this build does not know.
+            {"id": "stems", "label": "Stems", "needs": "demix",
+             "sources": ["song"], "inputs": []},
+            // Not a wire name.
+            {"id": "Bad Id", "label": "x", "needs": "cover",
+             "sources": ["song"], "inputs": []}
+        ]))
+        .unwrap();
+        assert_eq!(
+            acts.0.iter().map(|act| act.id.as_str()).collect::<Vec<_>>(),
+            ["version"]
+        );
     }
 }

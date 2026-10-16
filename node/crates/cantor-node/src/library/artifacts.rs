@@ -516,6 +516,7 @@ mod tests {
 
     fn variant() -> InstalledVariant {
         InstalledVariant {
+            acts: None,
             model: "acestep".into(),
             tag: "test".into(),
             licence: String::new(),
