@@ -1,6 +1,7 @@
 import React from 'react';
 import { StyleSheet, Text, TextInput, View } from 'react-native';
 import type { ModelView } from '../../core/protocol';
+import type { FactReading } from '../../facts';
 import type { Lens } from '../../lenses/types';
 import {
   Dial,
@@ -8,6 +9,7 @@ import {
   Measure,
   Rest,
   Row,
+  RowAct,
   Ruler,
   SongClef,
 } from '../controls';
@@ -16,6 +18,7 @@ import {
   AUDIO_DRAFT_KNOBS,
   maxExtendSeconds,
   voiceOf,
+  wordsModeOf,
   type ComposerDraft,
   type Follow,
   type TuneSource,
@@ -50,6 +53,70 @@ const FOLLOW_STOPS: readonly { key: string; follow: Follow; label: string }[] =
     { key: 'free', follow: 1, label: 'FREE' },
   ];
 
+/**
+ * The source song's words as its lyrics fact has them, and how to ask again
+ * when the lyrics service could not be reached.
+ */
+export type SourceWords = Readonly<{
+  reading: FactReading | null;
+  retry: () => void;
+}>;
+
+/** Where SAME's words came from, said under the dial. */
+const WORDS_FROM: Readonly<Record<string, string>> = {
+  recipe: 'The words it already sings',
+  'file-tags': 'From the file',
+  lrclib: 'From LRCLIB',
+};
+
+/** A service the words could not be fetched from, by provider. */
+const WORDS_UNREACHABLE: Readonly<Record<string, string>> = {
+  recipe: "Can't reach its node",
+  lrclib: "Can't reach LRCLIB",
+};
+
+/**
+ * The Words row's note for a draft from a song: where SAME's words came
+ * from, or, without words, why: still looking, none found, or the service
+ * out of reach. Chosen NONE or MINE say what they always said.
+ */
+export function songWordsNote(
+  draft: ComposerDraft,
+  reading: FactReading | null,
+): string | undefined {
+  const source = draft.source;
+  if (source?.kind !== 'song') return undefined;
+  const mode = wordsModeOf(draft);
+  if (mode === 'same') {
+    const from =
+      reading !== null && reading.status === 'found' ? reading.source : null;
+    return (from !== null && WORDS_FROM[from]) || WORDS_FROM.recipe;
+  }
+  if (mode === 'mine') {
+    return source.act === 'longer'
+      ? 'Words for the new part only'
+      : 'Your words, to its tune';
+  }
+  if (source.act === 'longer') return 'No words for the new part';
+  // `same` asked for and not found: say why, while the row waits for it.
+  if (draft.wordsMode === 'same') {
+    // Asked again after the service was out of reach: say so until it answers.
+    const last = reading?.status === 'looking' ? reading.previous : reading;
+    if (last?.status === 'unreachable') return unreachableWords(last.source);
+    if (reading === null || reading.status === 'looking') {
+      return 'Looking for its words';
+    }
+    return 'No words found';
+  }
+  return 'This will be instrumental';
+}
+
+function unreachableWords(source: string | null): string {
+  return (
+    (source !== null && WORDS_UNREACHABLE[source]) || "Can't reach its words"
+  );
+}
+
 /** `3:12` */
 export function clock(seconds: number): string {
   const whole = Math.max(0, Math.round(seconds));
@@ -69,6 +136,7 @@ function SongRows({
   model,
   onChange,
   dialTextStyle,
+  sourceWords = null,
 }: {
   disabled: boolean;
   draft: ComposerDraft;
@@ -77,6 +145,7 @@ function SongRows({
   model: ModelView | undefined;
   onChange: (patch: Partial<ComposerDraft>) => void;
   dialTextStyle: object;
+  sourceWords?: SourceWords | null;
 }) {
   const pal = usePalette();
   const source = draft.source;
@@ -113,10 +182,16 @@ function SongRows({
     { key: 'none', label: 'NONE', accessibilityLabel: 'Words: none' },
     { key: 'mine', label: 'MINE', accessibilityLabel: 'Words: my words' },
   ];
+  const wordsMode = wordsModeOf(draft);
   const wordsKey =
-    draft.wordsMode === 'same' || draft.wordsMode === 'mine'
-      ? draft.wordsMode
-      : 'none';
+    wordsMode === 'same' || wordsMode === 'mine' ? wordsMode : 'none';
+  const reading = sourceWords?.reading ?? null;
+  // TRY AGAIN stands while the words are out of reach, and works while asked.
+  const unreachable =
+    reading !== null &&
+    (reading.status === 'unreachable' ||
+      (reading.status === 'looking' &&
+        reading.previous?.status === 'unreachable'));
 
   return (
     <>
@@ -268,34 +343,35 @@ function SongRows({
             </Row>
           </>
         )}
-        <Row
-          control
-          label="Words"
-          note={
-            draft.wordsMode === 'same'
-              ? 'The words it already sings'
-              : wordsKey === 'none'
-              ? source.act === 'longer'
-                ? 'No words for the new part'
-                : 'This will be instrumental'
-              : source.act === 'longer'
-              ? 'Words for the new part only'
-              : undefined
-          }
-        >
+        <Row control label="Words" note={songWordsNote(draft, reading)}>
           <Dial
             {...dial}
             activeKey={wordsKey}
             items={wordsItems}
             onSelect={key =>
               !disabled &&
-              onChange({
-                wordsMode:
-                  key === 'same' ? 'same' : key === 'mine' ? 'mine' : 'none',
-              })
+              onChange(
+                key === 'mine'
+                  ? {
+                      wordsMode: 'mine',
+                      // MINE starts from the song's own words, to edit.
+                      ...(draft.lyrics.trim() === '' && source.words !== null
+                        ? { lyrics: source.words }
+                        : {}),
+                    }
+                  : { wordsMode: key === 'same' ? 'same' : 'none' },
+              )
             }
           />
-          {draft.wordsMode === 'mine' ? (
+          {unreachable && wordsMode === 'none' && draft.wordsMode === 'same' ? (
+            <RowAct
+              accessibilityLabel="Look for its words again"
+              label="Try again"
+              onPress={() => sourceWords?.retry()}
+              working={reading?.status === 'looking'}
+            />
+          ) : null}
+          {wordsMode === 'mine' ? (
             <TextInput
               accessibilityLabel="Lyrics"
               editable={!disabled}

@@ -1,8 +1,11 @@
-import { parseSongDetail } from '../../../core/protocol';
-import type { SongDetail } from '../../../../../protocol/SongDetail';
-import { wordsOf } from '../songWords';
+import { parseSongDetail } from '../../core/protocol';
+import type { SongDetail } from '../../../../protocol/SongDetail';
+import { wordsOf } from '../recipeWords';
 
-const detail = (extra: Partial<SongDetail> = {}, lyrics?: string): SongDetail => ({
+const detail = (
+  extra: Partial<SongDetail> = {},
+  lyrics?: string,
+): SongDetail => ({
   song: {
     id: 'song-1',
     title: 'Lanterns',
@@ -29,21 +32,31 @@ const detail = (extra: Partial<SongDetail> = {}, lyrics?: string): SongDetail =>
 
 describe('wordsOf', () => {
   it('reads given words, and never the written ones beside them', () => {
-    expect(wordsOf(detail({ written_lyrics: 'other' }, ' mine '), '[Instrumental]')).toEqual({
+    expect(
+      wordsOf(detail({ written_lyrics: 'other' }, ' mine '), '[Instrumental]'),
+    ).toEqual({
       words: 'mine',
       written: false,
     });
   });
 
   it('reads the words the model wrote when the recipe gave none', () => {
-    expect(wordsOf(detail({ written_lyrics: '[verse]\nwritten\n' }), '[Instrumental]')).toEqual({
+    expect(
+      wordsOf(
+        detail({ written_lyrics: '[verse]\nwritten\n' }),
+        '[Instrumental]',
+      ),
+    ).toEqual({
       words: '[verse]\nwritten',
       written: true,
     });
   });
 
   it('knows a song whose written words were not kept', () => {
-    expect(wordsOf(detail(), '[Instrumental]')).toEqual({ words: null, written: true });
+    expect(wordsOf(detail(), '[Instrumental]')).toEqual({
+      words: null,
+      written: true,
+    });
   });
 
   it('reads the instrumental marker as no words, given or written', () => {
@@ -52,7 +65,8 @@ describe('wordsOf', () => {
       written: false,
     });
     expect(
-      wordsOf(detail({ written_lyrics: '[Instrumental]' }), '[Instrumental]').words,
+      wordsOf(detail({ written_lyrics: '[Instrumental]' }), '[Instrumental]')
+        .words,
     ).toBeNull();
   });
 
@@ -65,7 +79,10 @@ describe('wordsOf', () => {
         audio: { source: { kind: 'song', song_id: 's' }, act: 'cover' },
       },
     } as SongDetail;
-    expect(wordsOf(withAudio, '[Instrumental]')).toEqual({ words: null, written: false });
+    expect(wordsOf(withAudio, '[Instrumental]')).toEqual({
+      words: null,
+      written: false,
+    });
   });
 
   it('is nothing before the detail arrives', () => {
@@ -84,7 +101,9 @@ describe('parseSongDetail written_lyrics', () => {
   });
 
   it('keeps them when present and is unchanged when absent', () => {
-    expect(parseSongDetail(wire({ written_lyrics: 'words' }))?.written_lyrics).toBe('words');
+    expect(
+      parseSongDetail(wire({ written_lyrics: 'words' }))?.written_lyrics,
+    ).toBe('words');
     const old = parseSongDetail(wire({}));
     expect(old).not.toBeNull();
     expect(old).not.toHaveProperty('written_lyrics');

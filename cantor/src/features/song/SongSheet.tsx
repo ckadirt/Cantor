@@ -63,7 +63,7 @@ import {
   toggleTag,
 } from '../../playlists/playlists';
 import { pendingLookup, pendingNames } from './songWish';
-import { wordsOf } from './songWords';
+import { wordsOf } from '../../facts/recipeWords';
 import { useSongWish } from './useSongWish';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 

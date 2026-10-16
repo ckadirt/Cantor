@@ -36,9 +36,10 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
 | `src/work/` | pure `deriveWork`, submission/job matching, derived job ids and the plan a piece of work runs. The field and sheets read `Work`, never the outbox or snapshots directly |
 | `src/notices/` | transient notices keyed by subject, their lifetime, and the hook lending them the field foot’s hint seat |
+| `src/facts/` | what is known about a song, with provenance (structures plan S4): `types` (subjects, providers, readings), the `device_song_fact` repository, the service that runs providers in order and remembers the answer, `lyrics` (the `recipe` → `file-tags` → `lrclib` providers) and `recipeWords` (`wordsOf`, the one reader of a made song's words) |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
-| `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens, a file's embedded lyrics — read only), and `lyrics.ts`, an imported song's words for a version that keeps its voice: the file's tags, then LRCLIB, asked only when that song's version opens. LRCLIB is the app's one network call that is not the relay; it learns a title, an artist and a length, never audio |
+| `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens, a file's embedded lyrics — read only), and `lyrics.ts`, the adapters behind the `file-tags` and `lrclib` fact providers: each answers found, none, or (LRCLIB offline, 429, 5xx) unreachable with its `Retry-After`. LRCLIB is the app's one network call that is not the relay; it learns a title, an artist and a length, never audio |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
 | `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), marbling (`marbleLens.ts`; geometry in `marble.ts`, the mark in `marbleMark.ts`, the strokes in time in `marbleTimeline.ts`, the player and its live shader in `marblePlayer.ts`, the settled bath on its own worklet runtime in `marbleBath.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them; `motion/` (the motion track, its store and the per-frame `MotionFrame`) and each lens's motion (`circleMotion.ts`, `sealMotion.ts`) |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
@@ -98,6 +99,19 @@ Sheet and composer errors (`songProblem`, `songDetailError`, `jobError`, compose
 `error`) stay on their surface; playback errors stay in the transport; OFFLINE
 stays in the header. A durable submission timeout remains pending, without a
 notice. Storage/settings failures belong to Settings, never over the field dial.
+
+**A song's facts carry where they came from, and unknown is not none.**
+`src/facts/` asks providers in order; the first `found` wins, `none` passes
+on, and nothing found with any provider out of reach is `unreachable`, rested
+(`FACT_KNOBS.BACKOFF_MS`, or LRCLIB's `Retry-After`) and asked again on the
+next opening or TRY AGAIN. Only `found` and `none` are final; the subject is
+the song's field key, which changes with an imported song's audio. Lookups
+start when a sheet opens (a made song's once the sheet has its recipe) and
+when a version opens. The composer never fetches words: the draft's `same` is
+an intent, and `withSourceWords`/`wordsModeOf` resolve it against the fact on
+every render, so words that land while it is open fill the row, and a choice
+the person made stays. A new fact kind is a new `FactKind` and its providers;
+a new source of words is one more provider.
 
 ## Recipes
 

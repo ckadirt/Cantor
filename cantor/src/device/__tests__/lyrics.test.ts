@@ -1,7 +1,13 @@
-import { cleanLyrics, lyricsFor, searchesFor, type LyricsQuery } from '../lyrics';
+import {
+  cleanLyrics,
+  lrclibLyrics,
+  retryAfter,
+  searchesFor,
+  tagLyrics,
+  type LyricsQuery,
+} from '../lyrics';
 
 const song: LyricsQuery = {
-  path: '/storage/emulated/0/Music/runaway.flac',
   title: 'Runaway',
   titleFromTag: true,
   artist: 'Kanye West;Pusha T',
@@ -9,8 +15,13 @@ const song: LyricsQuery = {
   durationMs: 547_733,
 };
 
-function respond(body: unknown, ok = true) {
-  return Promise.resolve({ ok, json: () => Promise.resolve(body) } as Response);
+function respond(body: unknown, status = 200, headers: Record<string, string> = {}) {
+  return Promise.resolve({
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name: string) => headers[name] ?? null },
+    json: () => Promise.resolve(body),
+  } as unknown as Response);
 }
 
 describe('cleanLyrics', () => {
@@ -63,18 +74,28 @@ describe('searchesFor', () => {
   });
 });
 
-describe('lyricsFor', () => {
-  it('takes the tags first and never asks LRCLIB', async () => {
-    const fetchFn = jest.fn();
-    const words = await lyricsFor(song, {
-      tags: () => Promise.resolve('[00:30.00]line one\n[00:33.00]line two'),
-      fetch: fetchFn,
-    });
-    expect(words).toBe('line one\nline two');
-    expect(fetchFn).not.toHaveBeenCalled();
+describe('tagLyrics', () => {
+  it('cleans the file\'s own words', async () => {
+    expect(
+      await tagLyrics('/a.flac', () =>
+        Promise.resolve('[00:30.00]line one\n[00:33.00]line two'),
+      ),
+    ).toEqual({ status: 'found', value: 'line one\nline two' });
   });
 
-  it('asks LRCLIB by title and artist, and takes the hit of the same length', async () => {
+  it('is none for no tag, an instrumental tag, or a file it cannot read', async () => {
+    expect(await tagLyrics('/a.flac', () => Promise.resolve(null))).toEqual({ status: 'none' });
+    expect(await tagLyrics('/a.flac', () => Promise.resolve('[Instrumental]'))).toEqual({
+      status: 'none',
+    });
+    expect(
+      await tagLyrics('/a.flac', () => Promise.reject(new Error('unreadable'))),
+    ).toEqual({ status: 'none' });
+  });
+});
+
+describe('lrclibLyrics', () => {
+  it('asks by title and artist, and takes the hit of the same length', async () => {
     const fetchFn = jest.fn((url: string, init?: RequestInit) => {
       expect(init?.headers).toEqual({
         'User-Agent': 'Cantor (https://github.com/ckadirt/Cantor)',
@@ -87,9 +108,10 @@ describe('lyricsFor', () => {
             { duration: 548.0, plainLyrics: 'the album cut', syncedLyrics: '[00:01.00]x' },
           ]);
     });
-    expect(
-      await lyricsFor(song, { tags: () => Promise.resolve(null), fetch: fetchFn as never }),
-    ).toBe('the album cut');
+    expect(await lrclibLyrics(song, fetchFn as never)).toEqual({
+      status: 'found',
+      value: 'the album cut',
+    });
     expect(fetchFn).toHaveBeenCalledTimes(2);
     expect(fetchFn.mock.calls[1]![0]).toBe(
       'https://lrclib.net/api/search?track_name=Runaway&artist_name=Kanye%20West',
@@ -97,35 +119,61 @@ describe('lyricsFor', () => {
   });
 
   it('reads synced lyrics when a hit has no plain ones', async () => {
-    const words = await lyricsFor(song, {
-      tags: () => Promise.resolve(null),
-      fetch: (() => respond([{ duration: 547, syncedLyrics: '[00:10.00]look at ya' }])) as never,
-    });
-    expect(words).toBe('look at ya');
+    expect(
+      await lrclibLyrics(
+        song,
+        (() => respond([{ duration: 547, syncedLyrics: '[00:10.00]look at ya' }])) as never,
+      ),
+    ).toEqual({ status: 'found', value: 'look at ya' });
   });
 
-  it('is null when nothing matches the length, or anything fails', async () => {
-    const none = { tags: () => Promise.resolve(null) };
+  it('is none when it answered with nothing of that length, or not found', async () => {
     expect(
-      await lyricsFor(song, { ...none, fetch: (() => respond([{ duration: 300, plainLyrics: 'x' }])) as never }),
-    ).toBeNull();
-    expect(await lyricsFor(song, { ...none, fetch: (() => respond({}, false)) as never })).toBeNull();
+      await lrclibLyrics(song, (() => respond([{ duration: 300, plainLyrics: 'x' }])) as never),
+    ).toEqual({ status: 'none' });
+    expect(await lrclibLyrics(song, (() => respond({}, 404)) as never)).toEqual({
+      status: 'none',
+    });
+  });
+
+  it('is unreachable offline, on a 429 or a 5xx, with its Retry-After', async () => {
     expect(
-      await lyricsFor(song, { ...none, fetch: (() => Promise.reject(new Error('offline'))) as never }),
-    ).toBeNull();
+      await lrclibLyrics(song, (() => Promise.reject(new Error('offline'))) as never),
+    ).toEqual({ status: 'unreachable' });
     expect(
-      await lyricsFor(song, {
-        tags: () => Promise.reject(new Error('unreadable')),
-        fetch: (() => respond([{ duration: 548, plainLyrics: 'still found' }])) as never,
-      }),
-    ).toBe('still found');
+      await lrclibLyrics(song, (() => respond({}, 429, { 'Retry-After': '120' })) as never),
+    ).toEqual({ status: 'unreachable', retryAfterMs: 120_000 });
+    expect(await lrclibLyrics(song, (() => respond({}, 503)) as never)).toEqual({
+      status: 'unreachable',
+    });
+  });
+
+  it('takes a found answer over a search that could not be reached', async () => {
+    const fetchFn = (url: string) =>
+      url.includes('Pusha')
+        ? Promise.reject(new Error('reset'))
+        : respond([{ duration: 548, plainLyrics: 'still found' }]);
+    expect(await lrclibLyrics(song, fetchFn as never)).toEqual({
+      status: 'found',
+      value: 'still found',
+    });
   });
 
   it('never searches by a file name, or without an artist', async () => {
     const fetchFn = jest.fn();
-    const sources = { tags: () => Promise.resolve(null), fetch: fetchFn };
-    expect(await lyricsFor({ ...song, titleFromTag: false }, sources)).toBeNull();
-    expect(await lyricsFor({ ...song, artist: null }, sources)).toBeNull();
+    expect(await lrclibLyrics({ ...song, titleFromTag: false }, fetchFn)).toEqual({
+      status: 'none',
+    });
+    expect(await lrclibLyrics({ ...song, artist: null }, fetchFn)).toEqual({ status: 'none' });
     expect(fetchFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('retryAfter', () => {
+  it('reads seconds or an HTTP date', () => {
+    expect(retryAfter('30', 0)).toBe(30_000);
+    expect(retryAfter('Thu, 01 Jan 1970 00:01:00 GMT', 0)).toBe(60_000);
+    expect(retryAfter(null)).toBeUndefined();
+    expect(retryAfter('soon')).toBeUndefined();
   });
 });

@@ -78,4 +78,24 @@ export const DEVICE_MIGRATIONS: readonly Migration[] = [
       folder TEXT PRIMARY KEY NOT NULL
     ) STRICT`,
   ],
+  [
+    /*
+     * What is known about a song, by kind (`lyrics`), and where it came from
+     * (`src/facts/`). The subject is the song's field key (`device:<id>`,
+     * `<node>:<songId>`), so a fact is about any song, imported or made.
+     * `found` and `none` are final; `unreachable` is asked again after
+     * `retry_at_ms`. `source` names the provider that found it, or the one
+     * that could not be reached.
+     */
+    `CREATE TABLE device_song_fact (
+      subject TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('found', 'none', 'unreachable')),
+      value TEXT,
+      source TEXT,
+      checked_at_ms INTEGER NOT NULL,
+      retry_at_ms INTEGER,
+      PRIMARY KEY (subject, kind)
+    ) STRICT, WITHOUT ROWID`,
+  ],
 ];

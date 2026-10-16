@@ -2,6 +2,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import React from 'react';
 import * as ReactTestRenderer from 'react-test-renderer';
 import { ComposerSheet } from '../ComposerSheet';
+import type { Fact, FactReading } from '../../../facts';
 import type { ModelView } from '../../../core/protocol';
 import type { NodeLimits } from '../../../../../protocol/NodeLimits';
 import {
@@ -56,6 +57,7 @@ const song: SongSource = {
   title: 'Harbour at dusk',
   durationMs: 192_000,
   prompt: 'a slow harbour at dusk',
+  subject: 'a:0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b',
   words: 'the tide comes in',
   seed: 7,
   model: 'acestep:1.5-fast',
@@ -101,6 +103,121 @@ function render(source: SongSource) {
   };
   return { onSubmit, words, press, type };
 }
+
+describe("the Words row follows the song's lyrics fact", () => {
+  const fact = (patch: Partial<Fact>): Fact => ({
+    subject: song.subject,
+    kind: 'lyrics',
+    status: 'found',
+    value: null,
+    source: null,
+    checkedAtMs: 0,
+    retryAtMs: null,
+    ...patch,
+  });
+
+  function renderWith(reading: FactReading | null) {
+    const retry = jest.fn();
+    const onSubmit = jest.fn();
+    let tree!: ReactTestRenderer.ReactTestRenderer;
+    const sheet = (next: FactReading | null) => (
+      <GestureHandlerRootView>
+        <ComposerSheet
+          error={null}
+          onClose={jest.fn()}
+          onSubmit={onSubmit}
+          recipe={{
+            draft: draftFromSource({ ...song, words: null }),
+            seed: 99,
+          }}
+          sourceWords={{ reading: next, retry }}
+          submitting={false}
+          targets={[agentbox]}
+        />
+      </GestureHandlerRootView>
+    );
+    ReactTestRenderer.act(() => {
+      tree = ReactTestRenderer.create(sheet(reading));
+    });
+    const words = () =>
+      tree.root
+        .findAll(node => typeof node.props.children === 'string')
+        .map(node => node.props.children as string);
+    const press = (label: string) => {
+      const target = tree.root.find(
+        node =>
+          typeof node.type !== 'string' &&
+          typeof node.props.onPress === 'function' &&
+          node.props.accessibilityLabel === label,
+      );
+      ReactTestRenderer.act(() => target.props.onPress());
+    };
+    const land = (next: FactReading | null) =>
+      ReactTestRenderer.act(() => tree.update(sheet(next)));
+    return { words, press, land, retry, onSubmit };
+  }
+
+  it('says it is looking, then turns to SAME when the words land, from where', () => {
+    const { words, land, press, onSubmit } = renderWith({
+      status: 'looking',
+      previous: null,
+    });
+    expect(words()).toContain('LOOKING FOR ITS WORDS');
+    expect(words()).not.toContain('SAME');
+
+    land(fact({ value: 'the tide comes in', source: 'lrclib' }));
+    expect(words()).toEqual(expect.arrayContaining(['SAME', 'FROM LRCLIB']));
+    press('Make a version');
+    expect(onSubmit.mock.calls[0]![2]).toMatchObject({
+      lyrics: 'the tide comes in',
+    });
+  });
+
+  it('says none were found, and sends the instrumental marker', () => {
+    const { words } = renderWith(fact({ status: 'none' }));
+    expect(words()).toContain('NO WORDS FOUND');
+    expect(words()).not.toContain('SAME');
+  });
+
+  it('says LRCLIB is out of reach and offers to try again', () => {
+    const { words, press, retry, land } = renderWith(
+      fact({ status: 'unreachable', source: 'lrclib', retryAtMs: 60_000 }),
+    );
+    expect(words()).toContain("CAN'T REACH LRCLIB");
+    press('Look for its words again');
+    expect(retry).toHaveBeenCalledTimes(1);
+    // Asked again: the same words until it answers.
+    land({
+      status: 'looking',
+      previous: fact({ status: 'unreachable', source: 'lrclib' }),
+    });
+    expect(words()).toContain("CAN'T REACH LRCLIB");
+  });
+
+  it('keeps a choice of NONE when the words land after it', () => {
+    const { words, press, land } = renderWith({
+      status: 'looking',
+      previous: null,
+    });
+    press('Words: my words');
+    press('Words: none');
+    land(fact({ value: 'the tide comes in', source: 'file-tags' }));
+    expect(words()).toContain('THIS WILL BE INSTRUMENTAL');
+  });
+
+  it("starts MINE from the song's own words, to edit", () => {
+    const { press, land, onSubmit } = renderWith({
+      status: 'looking',
+      previous: null,
+    });
+    land(fact({ value: 'the tide comes in', source: 'file-tags' }));
+    press('Words: my words');
+    press('Make a version');
+    expect(onSubmit.mock.calls[0]![2]).toMatchObject({
+      lyrics: 'the tide comes in',
+    });
+  });
+});
 
 describe('the composer, starting from a song', () => {
   it('draws a version: its source, Follow, Voice and words, and the length as a fact', () => {
