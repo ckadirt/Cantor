@@ -94,4 +94,9 @@ impl Library {
         .unwrap();
         song_id
     }
+
+    /// The library's database, for a test that reads a row directly.
+    pub(crate) fn connection_for_test(&self) -> &rusqlite::Connection {
+        &self.connection
+    }
 }

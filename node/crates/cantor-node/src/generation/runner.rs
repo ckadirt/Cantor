@@ -159,8 +159,15 @@ fn run_generation(
     // A job's plan is fixed by the run that starts it. A resume keeps the plan
     // that run recorded, even on an engine that would now start elsewhere (an
     // upgrade that added ENCODE must not add a stage this job never ran).
+    let listens = listens(work);
+    if listens && !(first == Stage::Encode && engine.supports(Stage::Listen)) {
+        return Err(WorkerFailure::permanent(
+            ErrorCode::ModelUnavailable,
+            "This engine cannot listen to the source to describe it. Write a prompt.",
+        ));
+    }
     if selected.source.is_none() {
-        let plan = actual_plan(first, |stage| engine.supports(stage));
+        let plan = actual_plan(first, |stage| engine.supports(stage), listens);
         let updated = state
             .lock()
             .map_err(|_| WorkerFailure::internal("Node state is unavailable."))?
@@ -297,6 +304,12 @@ fn run_generation(
                 return Ok(());
             }
             StageExecution::Done { output } => {
+                if stage == Stage::Listen {
+                    record_heard(state, work, generation.heard());
+                }
+                let next = next_engine_stage(stage, listens)
+                    .context("decode handled above")
+                    .map_err(WorkerFailure::from_internal)?;
                 let reference = persist_checkpoint(
                     state,
                     events,
@@ -305,10 +318,8 @@ fn run_generation(
                     CheckpointOutcome::Done,
                     provenance.clone(),
                     &output,
+                    Some(next),
                 )?;
-                let next = next_engine_stage(stage)
-                    .context("decode handled above")
-                    .map_err(WorkerFailure::from_internal)?;
                 if settle_standing_stop(state, events, work, signal, Some(&reference), next)? {
                     return Ok(());
                 }
@@ -328,6 +339,7 @@ fn run_generation(
                     CheckpointOutcome::Paused,
                     provenance.clone(),
                     &resume,
+                    None,
                 ) {
                     Ok(reference) => Some(reference),
                     Err(error)
@@ -407,6 +419,32 @@ fn restore_source(audio: &mut crate::generate::Audio, restore: &SourceRestore) {
     }
 }
 
+/// Write what the model heard into the job's request, so the recipe says what
+/// the model was told. A build that cannot say leaves the caption as the
+/// engine filled it in its blob, unrecorded: logged, not fatal.
+fn record_heard(state: &SharedState, work: &WorkItem, heard: Option<serde_json::Value>) {
+    let caption = heard
+        .as_ref()
+        .and_then(|value| value.get("caption"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|caption| !caption.is_empty())
+        .map(str::to_owned);
+    let Some(caption) = caption else {
+        eprintln!("listen.unheard job={}", work.id);
+        return;
+    };
+    let recorded = state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("node state is unavailable"))
+        .and_then(|mut locked| locked.library.record_heard_caption(work, &caption));
+    match recorded {
+        Ok(_) => eprintln!("listen.heard job={} chars={}", work.id, caption.len()),
+        Err(error) => eprintln!("listen.record_failed job={} cause={error:#}", work.id),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn persist_checkpoint(
     state: &SharedState,
     events: &mpsc::Sender<NodeEvent>,
@@ -415,8 +453,16 @@ fn persist_checkpoint(
     outcome: CheckpointOutcome,
     engine: EngineProvenance,
     bytes: &[u8],
+    next: Option<Stage>,
 ) -> std::result::Result<CheckpointReference, WorkerFailure> {
-    let reference = checkpoints::write(
+    let resume_stage = match outcome {
+        CheckpointOutcome::Paused => checkpoints::protocol_stage(stage),
+        CheckpointOutcome::Done => next
+            .map(checkpoints::protocol_stage)
+            .context("decode output is not a resumable checkpoint")
+            .map_err(WorkerFailure::from_internal)?,
+    };
+    let reference = checkpoints::write_resuming(
         &work.job_directory().join("checkpoints"),
         &work.checkpoint_expectation(),
         work.attempt,
@@ -424,6 +470,7 @@ fn persist_checkpoint(
         outcome,
         engine,
         bytes,
+        resume_stage,
     )
     .map_err(|error| {
         WorkerFailure::with_source(
@@ -433,12 +480,6 @@ fn persist_checkpoint(
             error,
         )
     })?;
-    let resume_stage = match outcome {
-        CheckpointOutcome::Paused => checkpoints::protocol_stage(stage),
-        CheckpointOutcome::Done => checkpoints::next_stage(checkpoints::protocol_stage(stage))
-            .context("decode output is not a resumable checkpoint")
-            .map_err(WorkerFailure::from_internal)?,
-    };
     let job = state
         .lock()
         .map_err(|_| WorkerFailure::internal("Node state is unavailable."))?
@@ -523,13 +564,27 @@ pub(crate) fn current_stage(
     Ok(checkpoints::engine_stage(stage))
 }
 
-fn next_engine_stage(stage: Stage) -> Option<Stage> {
-    checkpoints::next_stage(checkpoints::protocol_stage(stage)).map(checkpoints::engine_stage)
+fn next_engine_stage(stage: Stage, listens: bool) -> Option<Stage> {
+    checkpoints::next_stage(checkpoints::protocol_stage(stage), listens)
+        .map(checkpoints::engine_stage)
 }
 
-fn actual_plan(first: Stage, supports: impl Fn(Stage) -> bool) -> Vec<PlanStage> {
+/// Whether a job listens to its source before diffusing: an audio act whose
+/// caption was left to the source and is still empty. Once the model has
+/// described it the caption is recorded, so a resumed job does not listen
+/// again.
+fn listens(work: &WorkItem) -> bool {
+    work.generation.audio.is_some() && work.generation.caption.trim().is_empty()
+}
+
+fn actual_plan(first: Stage, supports: impl Fn(Stage) -> bool, listens: bool) -> Vec<PlanStage> {
     let stages = if first == Stage::Encode {
-        vec![Stage::Encode, Stage::Diffuse, Stage::Decode]
+        let mut stages = vec![Stage::Encode];
+        if listens {
+            stages.push(Stage::Listen);
+        }
+        stages.extend([Stage::Diffuse, Stage::Decode]);
+        stages
     } else {
         Stage::ALL
             .into_iter()
@@ -571,24 +626,29 @@ mod tests {
     use super::{actual_plan, planned_lyrics};
     use crate::checkpoints::plan_stages;
     use crate::engine::Stage;
-    use cantor_proto::GenerationStage::{Codes, Decode, Diffuse, Encode, Plan};
+    use cantor_proto::GenerationStage::{Codes, Decode, Diffuse, Encode, Listen, Plan};
 
     #[test]
     fn actual_arc_follows_the_entry_and_supported_engine_stages() {
         assert_eq!(
-            actual_plan(Stage::Plan, |_| true),
+            actual_plan(Stage::Plan, |_| true, false),
             plan_stages([Plan, Codes, Diffuse, Decode])
         );
         assert_eq!(
-            actual_plan(Stage::Codes, |stage| stage != Stage::Plan),
+            actual_plan(Stage::Codes, |stage| stage != Stage::Plan, false),
             plan_stages([Codes, Diffuse, Decode])
         );
         assert_eq!(
-            actual_plan(Stage::Encode, |_| true),
+            actual_plan(Stage::Encode, |_| true, false),
             plan_stages([Encode, Diffuse, Decode])
         );
+        // A caption left to the source: the model listens after encoding.
         assert_eq!(
-            actual_plan(Stage::Diffuse, |_| true),
+            actual_plan(Stage::Encode, |_| true, true),
+            plan_stages([Encode, Listen, Diffuse, Decode])
+        );
+        assert_eq!(
+            actual_plan(Stage::Diffuse, |_| true, false),
             plan_stages([Diffuse, Decode])
         );
     }

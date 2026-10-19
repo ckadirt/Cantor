@@ -81,6 +81,9 @@ pub struct Selection {
     pub rejected: Vec<String>,
 }
 
+/// `write_resuming` at the usual next stage; for tests that set up a job's
+/// checkpoints by hand.
+#[cfg(test)]
 pub fn write(
     directory: &Path,
     expectation: &CheckpointExpectation<'_>,
@@ -89,6 +92,38 @@ pub fn write(
     outcome: CheckpointOutcome,
     engine: EngineProvenance,
     bytes: &[u8],
+) -> Result<CheckpointReference> {
+    let resumes = match outcome {
+        CheckpointOutcome::Paused => protocol_stage(stage),
+        CheckpointOutcome::Done => {
+            next_stage(protocol_stage(stage), false).unwrap_or(protocol_stage(stage))
+        }
+    };
+    write_resuming(
+        directory,
+        expectation,
+        attempt,
+        stage,
+        outcome,
+        engine,
+        bytes,
+        resumes,
+    )
+}
+
+/// `write`, naming the stage the job resumes at: for a finished stage, the
+/// next one this job runs (an `encode` is followed by `listen` only in a job
+/// that listens), which must be one `may_follow` allows.
+#[allow(clippy::too_many_arguments)]
+pub fn write_resuming(
+    directory: &Path,
+    expectation: &CheckpointExpectation<'_>,
+    attempt: u32,
+    stage: Stage,
+    outcome: CheckpointOutcome,
+    engine: EngineProvenance,
+    bytes: &[u8],
+    resumes_stage: GenerationStage,
 ) -> Result<CheckpointReference> {
     if bytes.is_empty() || bytes.len() as u64 > MAX_CHECKPOINT_BYTES {
         bail!("checkpoint blob size is outside the configured bound");
@@ -121,10 +156,13 @@ pub fn write(
     blob_temp.as_file().sync_all()?;
     let digest: [u8; 32] = Sha256::digest(bytes).into();
     let stage = protocol_stage(stage);
-    let resumes_stage = match outcome {
-        CheckpointOutcome::Paused => stage,
-        CheckpointOutcome::Done => next_stage(stage).unwrap_or(stage),
+    let valid = match outcome {
+        CheckpointOutcome::Paused => resumes_stage == stage,
+        CheckpointOutcome::Done => may_follow(stage, resumes_stage),
     };
+    if !valid {
+        bail!("a checkpoint cannot resume at that stage");
+    }
     let metadata = CheckpointMetadata {
         schema: 1,
         job_id: expectation.job_id.to_owned(),
@@ -340,7 +378,7 @@ fn verify(
     }
     let valid_relationship = match metadata.outcome {
         CheckpointOutcome::Paused => metadata.resumes_stage == metadata.stage,
-        CheckpointOutcome::Done => next_stage(metadata.stage) == Some(metadata.resumes_stage),
+        CheckpointOutcome::Done => may_follow(metadata.stage, metadata.resumes_stage),
     };
     if !valid_relationship {
         bail!("checkpoint stage/outcome relationship is invalid");
@@ -438,7 +476,7 @@ fn checkpoint_rank(metadata: &CheckpointMetadata) -> (u8, u32, u8) {
 /// Compared in memory only, never stored: `encode` sits between `codes` and
 /// `diffuse`, since a job that took it is past where a text job plans.
 fn filename_stage(name: &str) -> Option<u8> {
-    ["plan", "codes", "encode", "diffuse", "decode"]
+    ["plan", "codes", "encode", "listen", "diffuse", "decode"]
         .into_iter()
         .position(|stage| name.contains(&format!(".{stage}.")))
         .map(|index| index as u8 + 1)
@@ -449,8 +487,9 @@ fn stage_rank(stage: GenerationStage) -> u8 {
         GenerationStage::Plan => 1,
         GenerationStage::Codes => 2,
         GenerationStage::Encode => 3,
-        GenerationStage::Diffuse => 4,
-        GenerationStage::Decode => 5,
+        GenerationStage::Listen => 4,
+        GenerationStage::Diffuse => 5,
+        GenerationStage::Decode => 6,
     }
 }
 
@@ -461,6 +500,7 @@ pub fn protocol_stage(stage: Stage) -> GenerationStage {
         Stage::Diffuse => GenerationStage::Diffuse,
         Stage::Decode => GenerationStage::Decode,
         Stage::Encode => GenerationStage::Encode,
+        Stage::Listen => GenerationStage::Listen,
     }
 }
 
@@ -470,6 +510,8 @@ pub fn stage_unit(stage: GenerationStage) -> ProgressUnit {
         GenerationStage::Plan | GenerationStage::Codes => ProgressUnit::Tokens,
         GenerationStage::Encode | GenerationStage::Decode => ProgressUnit::Tiles,
         GenerationStage::Diffuse => ProgressUnit::Steps,
+        // The engine reports no counts while it listens.
+        GenerationStage::Listen => ProgressUnit::Stage,
     }
 }
 
@@ -490,17 +532,28 @@ pub fn engine_stage(stage: GenerationStage) -> Stage {
         GenerationStage::Diffuse => Stage::Diffuse,
         GenerationStage::Decode => Stage::Decode,
         GenerationStage::Encode => Stage::Encode,
+        GenerationStage::Listen => Stage::Listen,
     }
 }
 
-pub fn next_stage(stage: GenerationStage) -> Option<GenerationStage> {
+/// The stage a job runs after `stage`. Only `encode` branches: a job whose
+/// caption is left to its source (`listens`) describes the source first.
+pub fn next_stage(stage: GenerationStage, listens: bool) -> Option<GenerationStage> {
     match stage {
         GenerationStage::Plan => Some(GenerationStage::Codes),
         GenerationStage::Codes => Some(GenerationStage::Diffuse),
+        GenerationStage::Encode if listens => Some(GenerationStage::Listen),
         GenerationStage::Encode => Some(GenerationStage::Diffuse),
+        GenerationStage::Listen => Some(GenerationStage::Diffuse),
         GenerationStage::Diffuse => Some(GenerationStage::Decode),
         GenerationStage::Decode => None,
     }
+}
+
+/// Whether a job may go from `from` straight to `to`: every path any job
+/// takes, which is what a stored checkpoint is checked against.
+pub fn may_follow(from: GenerationStage, to: GenerationStage) -> bool {
+    next_stage(from, false) == Some(to) || next_stage(from, true) == Some(to)
 }
 
 fn hex<const N: usize>(bytes: &[u8; N]) -> String {
@@ -576,12 +629,83 @@ mod tests {
         assert_eq!(selected.rejected.len(), 1);
     }
 
+    /// In a job that listens, a finished ENCODE resumes at LISTEN and a
+    /// finished LISTEN at DIFFUSE, each with the blob it left; a checkpoint
+    /// that names a stage no job could go to is refused.
+    #[test]
+    fn a_listening_job_resumes_through_listen() {
+        assert!(may_follow(GenerationStage::Encode, GenerationStage::Listen));
+        assert!(may_follow(
+            GenerationStage::Listen,
+            GenerationStage::Diffuse
+        ));
+        assert!(!may_follow(
+            GenerationStage::Encode,
+            GenerationStage::Decode
+        ));
+        assert!(!may_follow(
+            GenerationStage::Listen,
+            GenerationStage::Decode
+        ));
+        let temporary = tempfile::tempdir().unwrap();
+        let job = temporary.path().join("job");
+        let directory = job.join("checkpoints");
+        let digests = vec!["a".repeat(64)];
+        let expectation = expectation(&digests);
+        write_resuming(
+            &directory,
+            &expectation,
+            1,
+            Stage::Encode,
+            CheckpointOutcome::Done,
+            engine(),
+            b"ACEENC01-latents",
+            GenerationStage::Listen,
+        )
+        .unwrap();
+        let source = select(&job, &expectation, Some(&engine()))
+            .unwrap()
+            .source
+            .unwrap();
+        assert_eq!(source.stage, Stage::Listen);
+        write_resuming(
+            &directory,
+            &expectation,
+            1,
+            Stage::Listen,
+            CheckpointOutcome::Done,
+            engine(),
+            b"ACEENC01-heard",
+            GenerationStage::Diffuse,
+        )
+        .unwrap();
+        let source = select(&job, &expectation, Some(&engine()))
+            .unwrap()
+            .source
+            .unwrap();
+        assert_eq!(source.stage, Stage::Diffuse);
+        assert_eq!(source.input, b"ACEENC01-heard");
+        assert!(
+            write_resuming(
+                &directory,
+                &expectation,
+                1,
+                Stage::Encode,
+                CheckpointOutcome::Done,
+                engine(),
+                b"x",
+                GenerationStage::Decode,
+            )
+            .is_err()
+        );
+    }
+
     /// A finished ENCODE resumes at DIFFUSE with its latents: a crash after
     /// minutes of encoding does not encode again.
     #[test]
     fn a_finished_encode_resumes_at_diffuse_with_its_latents() {
         assert_eq!(
-            next_stage(GenerationStage::Encode),
+            next_stage(GenerationStage::Encode, false),
             Some(GenerationStage::Diffuse)
         );
         let temporary = tempfile::tempdir().unwrap();

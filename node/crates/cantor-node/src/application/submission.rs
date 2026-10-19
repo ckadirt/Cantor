@@ -77,6 +77,22 @@ pub(super) fn provisional_plan(
         .into_iter()
         .find(|capability| capability.kind == audio.act.capability())
         .and_then(|capability| capability.stages)
+        .map(|stages| {
+            // A caption left to the source is heard after encoding.
+            if submission.generation.caption.trim().is_empty() {
+                stages
+                    .into_iter()
+                    .flat_map(|stage| match stage {
+                        cantor_proto::GenerationStage::Encode => {
+                            vec![stage, cantor_proto::GenerationStage::Listen]
+                        }
+                        other => vec![other],
+                    })
+                    .collect()
+            } else {
+                stages
+            }
+        })
         .unwrap_or_else(|| vec![Diffuse, Decode])
     } else {
         variant

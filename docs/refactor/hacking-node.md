@@ -337,6 +337,17 @@ Rules:
   of known inputs is a catalog edit; a new input kind is code here (its
   `AudioPrompt` fields) and in the app (its row). `Acts` parses leniently:
   an act this build cannot fill is dropped, never half-offered.
+- **LISTEN (`Stage::Listen`, bit 6) describes an upload for an empty
+  prompt** (plan D15). A job listens after `encode` exactly when it is an
+  audio act whose caption is still empty (`runner::listens`); when LISTEN
+  finishes, `record_heard` writes `cantor_engine_heard`'s caption into the
+  job's request, so a resumed job never listens twice and the recipe says
+  what the model was told. Which stage follows which is
+  `checkpoints::next_stage(stage, listens)`; a stored checkpoint is checked
+  against `may_follow`, every path any job takes. A version's prompt is
+  advertised `heard` only where the loaded engine runs LISTEN
+  (`capabilities::with_hearing`); admission accepts an upload's empty
+  prompt only then. `Engine::supported_stages` reads `Stage::EVERY`.
 - **An upload a job uses is pinned in the admission transaction**
   (`pin_for_job`); one nobody uses expires a day after it was last touched.
 - `derived_from` is read from the job's `request_json` with `json_extract`; a

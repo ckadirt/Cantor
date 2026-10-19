@@ -304,6 +304,12 @@ pub enum ActInput {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         #[ts(as = "Option<bool>", optional)]
         from_source: bool,
+        /// With `from_source`: this node can listen to a source that has no
+        /// recipe (an upload, a tune) and describe it, so its empty prompt is
+        /// accepted. Set by the node from the loaded engine, never the catalog.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        heard: bool,
     },
     /// The lyrics, from the offers listed.
     Words { offers: Vec<WordsOffer> },
@@ -345,6 +351,7 @@ impl ActView {
                 required,
                 default,
                 from_source,
+                ..
             } => Some((*required, default.as_deref(), *from_source)),
             _ => None,
         })
@@ -544,6 +551,10 @@ pub enum GenerationStage {
     /// An audio act's source turned into latents, before `diffuse`. Additive:
     /// an app that predates it draws it as working.
     Encode,
+    /// The model listens to an audio act's source and describes it, for a
+    /// prompt left to the source (plan D15). After `encode`, before
+    /// `diffuse`. Additive like `encode`.
+    Listen,
     Diffuse,
     Decode,
 }
@@ -1538,6 +1549,7 @@ mod tests {
                     offers: vec![WordsOffer::Same, WordsOffer::Nothing],
                 },
                 ActInput::Prompt {
+                    heard: false,
                     from_source: false,
                     required: false,
                     default: Some("d".to_owned()),

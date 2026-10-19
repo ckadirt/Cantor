@@ -85,6 +85,10 @@ pub enum Stage {
     /// A side entrance for a request that carries audio: its files to latents,
     /// always followed by `Diffuse`. Not part of the contiguous run `ALL`.
     Encode = 5,
+    /// A second side step, after `Encode` and before `Diffuse`: the model
+    /// describes the source from its latents, filling an empty caption. Read
+    /// what it heard with `Session::heard`.
+    Listen = 6,
 }
 
 impl Stage {
@@ -95,6 +99,7 @@ impl Stage {
             Self::Diffuse => "diffuse",
             Self::Decode => "decode",
             Self::Encode => "encode",
+            Self::Listen => "listen",
         }
     }
 
@@ -109,10 +114,11 @@ impl Stage {
 
     /// Every stage this node knows, run or side entrance. The one list a raw
     /// stage number from an engine is read against; a test keeps it complete.
-    pub const EVERY: [Stage; 5] = [
+    pub const EVERY: [Stage; 6] = [
         Stage::Plan,
         Stage::Codes,
         Stage::Encode,
+        Stage::Listen,
         Stage::Diffuse,
         Stage::Decode,
     ];
@@ -400,18 +406,13 @@ impl Engine {
     }
 
     /// Every stage this build runs, in the order a job meets them: the
-    /// text run, with `Encode` before `Diffuse` where an audio act enters.
+    /// text run, with `Encode` (and `Listen`) before `Diffuse` where an audio
+    /// act enters. Read off `Stage::EVERY`, never a list of its own.
     pub fn supported_stages(&self) -> Vec<Stage> {
-        [
-            Stage::Plan,
-            Stage::Codes,
-            Stage::Encode,
-            Stage::Diffuse,
-            Stage::Decode,
-        ]
-        .into_iter()
-        .filter(|stage| self.supports(*stage))
-        .collect()
+        Stage::EVERY
+            .into_iter()
+            .filter(|stage| self.supports(*stage))
+            .collect()
     }
 
     /// Where a fresh generation enters this engine. Not every family plans:
@@ -728,6 +729,25 @@ impl Session {
 
     pub fn supports(&self, stage: Stage) -> bool {
         self.engine.supports(stage)
+    }
+
+    /// What the last `Listen` heard, as the engine's JSON object (`caption`,
+    /// `bpm`, `keyscale`, …), or `None` from a build without the optional
+    /// `cantor_engine_heard`, or after any other stage. Copied out at once:
+    /// it is only valid until the next `run_stage`.
+    pub fn heard(&self) -> Option<serde_json::Value> {
+        let pointer = unsafe {
+            self.engine
+                .library
+                .get::<unsafe extern "C" fn(*mut c_void) -> *const c_char>(b"cantor_engine_heard\0")
+                .ok()
+                .map(|symbol| symbol(self.raw))?
+        };
+        if pointer.is_null() {
+            return None;
+        }
+        let text = unsafe { std::ffi::CStr::from_ptr(pointer) }.to_str().ok()?;
+        serde_json::from_str(text).ok()
     }
 
     /// Optional ABI-1 extension for engines whose stage state is binary.
@@ -1085,18 +1105,22 @@ mod tests {
             assert_eq!(Stage::from_raw(stage as u32), Some(stage));
         }
         assert_eq!(Stage::from_raw(0), None);
-        assert_eq!(Stage::from_raw(6), None);
+        assert_eq!(Stage::from_raw(7), None);
         // Exhaustive on purpose: a new variant does not compile here until
         // `EVERY` lists it, so `from_raw` can never miss a stage again.
         fn listed(stage: Stage) -> bool {
             match stage {
-                Stage::Plan | Stage::Codes | Stage::Encode | Stage::Diffuse | Stage::Decode => {
-                    Stage::EVERY.contains(&stage)
-                }
+                Stage::Plan
+                | Stage::Codes
+                | Stage::Encode
+                | Stage::Listen
+                | Stage::Diffuse
+                | Stage::Decode => Stage::EVERY.contains(&stage),
             }
         }
         assert!(Stage::EVERY.into_iter().all(listed));
         assert!(listed(Stage::Encode));
+        assert!(listed(Stage::Listen));
     }
 
     /// ENCODE is a side entrance, bit 5, outside the run: an engine with it is

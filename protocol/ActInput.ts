@@ -13,4 +13,10 @@ export type ActInput = { "kind": "prompt", required: boolean, default?: string,
  * recipe caption (later, what the node hears in an upload). Takes
  * precedence over `default`.
  */
-from_source?: boolean, } | { "kind": "words", offers: Array<WordsOffer>, } | { "kind": "voice" } | { "kind": "follow", stops: Array<number>, } | { "kind": "added_length", step_seconds: number, at: Array<ExtendAt>, } | { "kind": "tile" };
+from_source?: boolean, 
+/**
+ * With `from_source`: this node can listen to a source that has no
+ * recipe (an upload, a tune) and describe it, so its empty prompt is
+ * accepted. Set by the node from the loaded engine, never the catalog.
+ */
+heard?: boolean, } | { "kind": "words", offers: Array<WordsOffer>, } | { "kind": "voice" } | { "kind": "follow", stops: Array<number>, } | { "kind": "added_length", step_seconds: number, at: Array<ExtendAt>, } | { "kind": "tile" };

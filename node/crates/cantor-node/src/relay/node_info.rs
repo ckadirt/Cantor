@@ -35,7 +35,10 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
                 declared.as_ref(),
                 engine::loaded_capabilities(variant.engine()).as_ref(),
             );
-            let acts = capabilities::advertised_acts(declared.as_ref(), &advertised);
+            let acts = capabilities::with_hearing(
+                capabilities::advertised_acts(declared.as_ref(), &advertised),
+                capabilities::engine_listens(variant.engine()),
+            );
             ModelView {
                 capabilities: Some(cantor_proto::Capabilities(advertised)),
                 acts: Some(acts),

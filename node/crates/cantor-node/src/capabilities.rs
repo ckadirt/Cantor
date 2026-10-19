@@ -218,6 +218,7 @@ pub fn builtin_acts() -> Acts {
                 // Left empty, it is the source's own description: a fixed
                 // sentence is a poor caption for a diffusion model.
                 ActInput::Prompt {
+                    heard: false,
                     required: false,
                     default: None,
                     from_source: true,
@@ -238,6 +239,7 @@ pub fn builtin_acts() -> Acts {
                     offers: vec![WordsOffer::Nothing, WordsOffer::Mine],
                 },
                 ActInput::Prompt {
+                    heard: false,
                     required: true,
                     default: None,
                     from_source: false,
@@ -256,6 +258,7 @@ pub fn builtin_acts() -> Acts {
                 },
                 ActInput::Tile,
                 ActInput::Prompt {
+                    heard: false,
                     required: true,
                     default: None,
                     from_source: false,
@@ -289,6 +292,42 @@ pub fn advertised_acts(declared: Option<&DeclaredAudio>, advertised: &[ModelCapa
             })
             .collect(),
     )
+}
+
+/// Mark the prompts this node can fill by listening (`heard`): every
+/// `from_source` prompt, when the loaded engine runs `Stage::Listen`.
+pub fn with_hearing(acts: Acts, listens: bool) -> Acts {
+    Acts(
+        acts.0
+            .into_iter()
+            .map(|act| ActView {
+                inputs: act
+                    .inputs
+                    .into_iter()
+                    .map(|input| match input {
+                        ActInput::Prompt {
+                            required,
+                            default,
+                            from_source,
+                            ..
+                        } => ActInput::Prompt {
+                            required,
+                            default,
+                            from_source,
+                            heard: listens && from_source,
+                        },
+                        other => other,
+                    })
+                    .collect(),
+                ..act
+            })
+            .collect(),
+    )
+}
+
+/// Whether the engine build loaded for a family can listen to a source.
+pub fn engine_listens(family: &str) -> bool {
+    engine::loaded_capabilities(family).is_some_and(|(_, stages)| stages.contains(&Stage::Listen))
 }
 
 /// Catalog variants this node could install that would add an audio
@@ -767,6 +806,36 @@ mod tests {
         let version = &acts.0[0];
         assert!(version.inputs.contains(&cantor_proto::ActInput::Voice));
         assert_eq!(version.prompt(), Some((false, None, true)));
+    }
+
+    #[test]
+    fn a_prompt_left_to_the_source_is_heard_only_where_the_engine_listens() {
+        let heard = |acts: &cantor_proto::Acts| {
+            acts.0
+                .iter()
+                .find(|act| act.id == "version")
+                .and_then(|act| {
+                    act.inputs.iter().find_map(|input| match input {
+                        cantor_proto::ActInput::Prompt { heard, .. } => Some(*heard),
+                        _ => None,
+                    })
+                })
+        };
+        let declared = declared_with(&[CapabilityKind::Cover]);
+        let acts = advertised_acts(Some(&declared), &[capability(CapabilityKind::Cover)]);
+        assert_eq!(heard(&super::with_hearing(acts.clone(), true)), Some(true));
+        assert_eq!(
+            heard(&super::with_hearing(acts.clone(), false)),
+            Some(false)
+        );
+        // A prompt that is required is never heard: `hum` asks for its words.
+        let hum = super::with_hearing(acts, true);
+        let hum = hum.get("hum").unwrap();
+        assert!(
+            hum.inputs
+                .iter()
+                .all(|input| !matches!(input, cantor_proto::ActInput::Prompt { heard: true, .. }))
+        );
     }
 
     #[test]

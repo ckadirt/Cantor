@@ -745,6 +745,25 @@ impl Library {
         Ok(changed == 1)
     }
 
+    /// The caption the model gave an audio act's source while listening
+    /// (`Stage::Listen`), written into the job's request: the recipe says
+    /// what the model was told. Only fills an empty caption.
+    pub fn record_heard_caption(&mut self, work: &WorkItem, caption: &str) -> Result<bool> {
+        let changed = self.connection.execute(
+            "UPDATE jobs SET request_json=json_set(request_json,'$.caption',?4)
+             WHERE id=?1 AND principal_id=?2 AND attempt=?3
+               AND trim(coalesce(json_extract(request_json,'$.caption'),''))='' AND state IN
+               ('preparing','running','pause_requested','cancel_requested')",
+            params![
+                work.id,
+                work.principal_id.to_string(),
+                work.attempt,
+                caption
+            ],
+        )?;
+        Ok(changed == 1)
+    }
+
     pub fn finish_paused(
         &mut self,
         work: &WorkItem,

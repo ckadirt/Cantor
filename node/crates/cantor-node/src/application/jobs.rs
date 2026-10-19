@@ -381,7 +381,10 @@ fn advertised_for(
         declared.as_ref(),
         crate::engine::loaded_capabilities(variant.engine()).as_ref(),
     );
-    let acts = crate::capabilities::advertised_acts(declared.as_ref(), &advertised);
+    let acts = crate::capabilities::with_hearing(
+        crate::capabilities::advertised_acts(declared.as_ref(), &advertised),
+        crate::capabilities::engine_listens(variant.engine()),
+    );
     (advertised, acts)
 }
 
@@ -408,8 +411,15 @@ pub(super) fn settle_act(
         let Some((false, default, from_source)) = act.prompt() else {
             return Some("caption");
         };
-        // The source's own description first: a made song's recipe caption.
-        // An upload has none yet; the node will listen to it (plan D15).
+        // The source's own description first: a made song's recipe caption;
+        // an upload's is heard by the engine (`Stage::Listen`, plan D15), so
+        // its caption stays empty here and the job listens before diffusing.
+        if from_source
+            && matches!(prompt.source, cantor_proto::AudioSource::Upload { .. })
+            && crate::capabilities::engine_listens(variant.engine())
+        {
+            return None;
+        }
         let described = match (&prompt.source, from_source) {
             (cantor_proto::AudioSource::Song { song_id }, true) => library
                 .song_detail(principal, song_id)
@@ -1120,6 +1130,93 @@ mod audio_admission_tests {
             library,
             PrincipalId::from_client_public_key(&KEY),
         )
+    }
+
+    #[test]
+    fn an_upload_left_without_a_prompt_is_heard_where_the_engine_can_listen() {
+        use crate::application::admit_job;
+        use crate::checkpoints::plan_stages;
+        use crate::config::{ConfigSeed, NodeConfig, NodePaths};
+        use crate::engine::{Stage, declare_loaded_with_stages_for_test};
+        use crate::library::{Submission, SubmitResult};
+        use cantor_proto::GenerationStage::{Decode, Diffuse, Encode, Listen};
+
+        let directory = tempdir().expect("tempdir");
+        let paths = NodePaths::resolve(Some(directory.path().join("config"))).unwrap();
+        paths.prepare_directory().unwrap();
+        let (mut config, _) =
+            NodeConfig::load_or_create(&paths.config, ConfigSeed::default()).unwrap();
+        config.keep_stores_in(directory.path());
+        config.jobs.minimum_free_bytes = 0;
+        let mut library = Library::open(directory.path().join("library")).unwrap();
+        let source = upload(&mut library, 30.0);
+        let principal = PrincipalId::from_client_public_key(&KEY);
+        let stages = |listen: bool| {
+            let mut stages = vec![Stage::Encode, Stage::Diffuse, Stage::Decode];
+            if listen {
+                stages.insert(1, Stage::Listen);
+            }
+            stages
+        };
+
+        // An engine that cannot listen: the prompt is still needed.
+        let deaf = "admitted-listen-deaf";
+        declare_loaded_with_stages_for_test(deaf, vec![CapabilityKind::Cover], stages(false));
+        let mut unwritten = act(&source, AudioAct::Cover, "version", "");
+        assert_eq!(settle_in(deaf, &mut unwritten, &library), Some("caption"));
+
+        // One that can: the caption waits for the engine, and the plan says so.
+        let family = "admitted-listen";
+        declare_loaded_with_stages_for_test(family, vec![CapabilityKind::Cover], stages(true));
+        let mut generation = act(&source, AudioAct::Cover, "version", "");
+        assert_eq!(settle_in(family, &mut generation, &library), None);
+        assert_eq!(generation.caption, "", "left for the engine to fill");
+        let variant = variant(family);
+        let submission = Submission {
+            client_request_id: uuid::Uuid::new_v4().to_string(),
+            model: variant.selector(),
+            generation,
+        };
+        let SubmitResult::Accepted(job) = admit_job(
+            &mut library,
+            &config,
+            principal,
+            &KEY,
+            &submission,
+            &variant,
+        )
+        .unwrap() else {
+            panic!("accepted");
+        };
+        assert_eq!(
+            job.plan,
+            Some(plan_stages([Encode, Listen, Diffuse, Decode]))
+        );
+
+        // What the engine heard becomes the recipe's caption, once.
+        let (work, _) = library.claim_next().unwrap().unwrap();
+        assert!(
+            library
+                .record_heard_caption(&work, "funk rock, rap")
+                .unwrap()
+        );
+        assert!(
+            !library
+                .record_heard_caption(&work, "something else")
+                .unwrap()
+        );
+        let request: serde_json::Value = serde_json::from_str(
+            &library
+                .connection_for_test()
+                .query_row(
+                    "SELECT request_json FROM jobs WHERE id=?1",
+                    [&work.id],
+                    |row| row.get::<_, String>(0),
+                )
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(request["caption"], "funk rock, rap");
     }
 
     #[test]

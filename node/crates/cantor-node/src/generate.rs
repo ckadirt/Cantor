@@ -172,6 +172,11 @@ impl Generation {
         self.session.resident_bytes()
     }
 
+    /// What the last `Listen` heard (the engine's JSON), if it was one.
+    pub fn heard(&self) -> Option<serde_json::Value> {
+        self.session.heard()
+    }
+
     pub fn initial_state(request: &Request) -> Result<Vec<u8>> {
         request.to_json()
     }
