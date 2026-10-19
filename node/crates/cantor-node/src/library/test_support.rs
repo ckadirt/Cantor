@@ -58,4 +58,40 @@ impl Library {
             .unwrap();
         (song_id, digest)
     }
+
+    /// A made song whose recipe says `caption`, readable by `song_detail`.
+    pub(crate) fn seed_made_song_for_test(&self, key: [u8; 32], caption: &str) -> String {
+        let (song_id, _) = self.seed_delivery_fixture_for_test(key);
+        let principal = PrincipalId::from_client_public_key(&key).to_string();
+        // A song is published once its master exists.
+        self.connection
+            .execute(
+                "INSERT INTO artifacts(job_id,kind,profile,relative_path,media_type,byte_length,
+                 sha256,sample_rate,channels,duration_ms,created_at)
+                 VALUES(?1,'master','wav','artifacts/master.wav','audio/wav',100,
+                 'master',48000,2,1000,'2026-08-09T00:00:00Z')",
+                rusqlite::params![song_id],
+            )
+            .unwrap();
+        let request = serde_json::json!({ "caption": caption }).to_string();
+        self.connection
+            .execute(
+                "UPDATE jobs SET request_json=?1 WHERE id=?2",
+                rusqlite::params![request, song_id],
+            )
+            .unwrap();
+        std::fs::write(
+            self.root
+                .join("jobs")
+                .join(&principal)
+                .join(&song_id)
+                .join("request.json"),
+            serde_json::json!({
+                "model": { "engine": "test", "component_digests": [] }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        song_id
+    }
 }

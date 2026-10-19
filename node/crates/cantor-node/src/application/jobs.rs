@@ -116,7 +116,13 @@ pub(super) fn create(
     {
         return Ok(invalid_field(id, "lyrics"));
     }
-    if let Some(field) = settle_act(&mut generation, variant, &config.model_root()) {
+    if let Some(field) = settle_act(
+        &mut generation,
+        variant,
+        &config.model_root(),
+        library,
+        context.principal_id,
+    ) {
         return Ok(invalid_field(id, field));
     }
     if let Some(field) = invalid_extensions(&generation, &variant.parameters) {
@@ -324,6 +330,13 @@ pub(super) fn invalid_submission(
     {
         return Some("caption");
     }
+    if generation.title.as_ref().is_some_and(|title| {
+        title.trim().is_empty()
+            || title.len() > cantor_proto::MAX_TITLE_BYTES
+            || title.chars().any(char::is_control)
+    }) {
+        return Some("title");
+    }
     if generation.lyrics.as_ref().is_some_and(|lyrics| {
         lyrics.len() > MAX_LYRICS_BYTES as usize
             || lyrics
@@ -379,6 +392,8 @@ pub(super) fn settle_act(
     generation: &mut GenerationRequest,
     variant: &crate::store::InstalledVariant,
     model_root: &std::path::Path,
+    library: &Library,
+    principal: crate::principal::PrincipalId,
 ) -> Option<&'static str> {
     let prompt = generation.audio.as_ref()?;
     let act_id = prompt.act_id.as_deref()?;
@@ -390,11 +405,27 @@ pub(super) fn settle_act(
         return Some("audio.act_id");
     }
     if generation.caption.trim().is_empty() {
-        match act.prompt() {
-            Some((false, Some(default))) if !default.trim().is_empty() => {
-                generation.caption = default.to_owned();
-            }
-            _ => return Some("caption"),
+        let Some((false, default, from_source)) = act.prompt() else {
+            return Some("caption");
+        };
+        // The source's own description first: a made song's recipe caption.
+        // An upload has none yet; the node will listen to it (plan D15).
+        let described = match (&prompt.source, from_source) {
+            (cantor_proto::AudioSource::Song { song_id }, true) => library
+                .song_detail(principal, song_id)
+                .ok()
+                .flatten()
+                .map(|detail| detail.generation.caption)
+                .filter(|caption| !caption.trim().is_empty()),
+            _ => None,
+        };
+        match described.or_else(|| {
+            default
+                .filter(|text| !text.trim().is_empty())
+                .map(str::to_owned)
+        }) {
+            Some(caption) => generation.caption = caption,
+            None => return Some("caption"),
         }
     }
     None
@@ -605,6 +636,7 @@ mod tests {
 
     fn generation(caption: &str) -> GenerationRequest {
         GenerationRequest {
+            title: None,
             caption: caption.into(),
             lyrics: None,
             audio: None,
@@ -949,6 +981,7 @@ mod tests {
     fn seed_is_bounded_to_jsons_exact_integer_range() {
         let request_id = uuid::Uuid::new_v4().to_string();
         let request = GenerationRequest {
+            title: None,
             caption: "seed".into(),
             lyrics: None,
             audio: None,
@@ -1051,6 +1084,7 @@ mod audio_admission_tests {
 
     fn request(upload_id: &str, act: AudioAct) -> GenerationRequest {
         GenerationRequest {
+            title: None,
             caption: "c".into(),
             lyrics: None,
             duration: None,
@@ -1286,34 +1320,55 @@ mod audio_admission_tests {
     }
 
     fn settle(family: &str, generation: &mut GenerationRequest) -> Option<&'static str> {
+        let directory = tempdir().expect("tempdir");
+        let library = Library::open(directory.path()).expect("library");
+        settle_in(family, generation, &library)
+    }
+
+    fn settle_in(
+        family: &str,
+        generation: &mut GenerationRequest,
+        library: &Library,
+    ) -> Option<&'static str> {
         super::settle_act(
             generation,
             &variant(family),
             std::path::Path::new("/nonexistent"),
+            library,
+            PrincipalId::from_client_public_key(&KEY),
         )
     }
 
     #[test]
-    fn a_version_left_without_a_prompt_is_sent_with_its_default() {
+    fn a_version_left_without_a_prompt_describes_its_source_with_its_own_recipe() {
         let family = "audio-admission-acts";
         crate::engine::declare_loaded_for_test(
             family,
             vec![CapabilityKind::Cover, CapabilityKind::Extend],
         );
+        let directory = tempdir().expect("tempdir");
+        let library = Library::open(directory.path()).expect("library");
+        let source = library.seed_made_song_for_test(KEY, "latin hip hop, Spanish rap");
         let mut version = act("u", AudioAct::Cover, "version", "  ");
-        assert_eq!(settle(family, &mut version), None);
+        version.audio.as_mut().unwrap().source = AudioSource::Song {
+            song_id: source.clone(),
+        };
+        assert_eq!(settle_in(family, &mut version, &library), None);
         assert_eq!(
-            version.caption,
-            crate::capabilities::VERSION_DEFAULT_PROMPT,
+            version.caption, "latin hip hop, Spanish rap",
             "the stored recipe says what was sent"
         );
         // A prompt that was given is kept.
         let mut given = act("u", AudioAct::Cover, "version", "sung by a choir");
-        assert_eq!(settle(family, &mut given), None);
+        assert_eq!(settle_in(family, &mut given, &library), None);
         assert_eq!(given.caption, "sung by a choir");
+        // An upload has no recipe, and the node cannot listen to it yet.
+        let mut upload = act("u", AudioAct::Cover, "version", "");
+        assert_eq!(settle_in(family, &mut upload, &library), Some("caption"));
         // `longer` asks for its prompt.
         let mut longer = act("u", AudioAct::Extend, "longer", "");
-        assert_eq!(settle(family, &mut longer), Some("caption"));
+        longer.audio.as_mut().unwrap().source = AudioSource::Song { song_id: source };
+        assert_eq!(settle_in(family, &mut longer, &library), Some("caption"));
     }
 
     #[test]
@@ -1352,5 +1407,16 @@ mod audio_admission_tests {
             super::invalid_submission(&client_request_id, "m:t", &plain),
             None
         );
+        for bad in [
+            "  ",
+            "a\u{7}b",
+            &"x".repeat(cantor_proto::MAX_TITLE_BYTES + 1),
+        ] {
+            plain.title = Some(bad.to_owned());
+            assert_eq!(
+                super::invalid_submission(&client_request_id, "m:t", &plain),
+                Some("title")
+            );
+        }
     }
 }

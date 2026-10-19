@@ -199,6 +199,7 @@ mod tests {
                 principal_id: PrincipalId::from_bytes_for_test([7_u8; 32]),
                 model: "fake:fast".to_owned(),
                 generation: GenerationRequest {
+                    title: None,
                     caption: "fake generation".to_owned(),
                     lyrics: None,
                     audio: None,

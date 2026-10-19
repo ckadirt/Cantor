@@ -104,7 +104,7 @@ pub(super) fn get(
         Some(detail) => Ok(NodeMessage::SongDetail {
             v: PROTOCOL_VERSION,
             id,
-            detail,
+            detail: Box::new(detail),
         }),
         None => Ok(song_not_found(id)),
     }
@@ -279,6 +279,7 @@ mod tests {
             client_request_id: Uuid::new_v4().to_string(),
             model: "acestep:1.5-fast".into(),
             generation: GenerationRequest {
+                title: None,
                 caption: "Original title".into(),
                 lyrics: None,
                 audio: None,

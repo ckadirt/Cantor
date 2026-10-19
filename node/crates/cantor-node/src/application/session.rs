@@ -895,6 +895,7 @@ mod tests {
                     client_request_id: uuid::Uuid::new_v4().to_string(),
                     model: variant.selector(),
                     generation: cantor_proto::GenerationRequest {
+                        title: None,
                         caption: "control".into(),
                         lyrics: None,
                         audio: None,

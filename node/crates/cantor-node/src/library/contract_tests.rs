@@ -48,6 +48,7 @@ fn submission(caption: &str) -> Submission {
         client_request_id: Uuid::new_v4().to_string(),
         model: "acestep:1.5-fast".into(),
         generation: GenerationRequest {
+            title: None,
             caption: caption.into(),
             lyrics: None,
             audio: None,

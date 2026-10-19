@@ -204,7 +204,7 @@
                 {
                   "kind": "prompt",
                   "required": false,
-                  "default": "The same song, its own style and instruments"
+                  "from_source": true
                 }
               ]
             },
@@ -470,7 +470,7 @@
                 {
                   "kind": "prompt",
                   "required": false,
-                  "default": "The same song, its own style and instruments"
+                  "from_source": true
                 }
               ]
             },
@@ -736,7 +736,7 @@
                 {
                   "kind": "prompt",
                   "required": false,
-                  "default": "The same song, its own style and instruments"
+                  "from_source": true
                 }
               ]
             },

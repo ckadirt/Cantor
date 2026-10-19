@@ -16,4 +16,10 @@ extensions?: { [key in string]: ParameterValue },
  * Start from a sound. Send only to a node whose features say
  * `audio_sources`: an older node ignores the field.
  */
-audio?: AudioPrompt, };
+audio?: AudioPrompt, 
+/**
+ * The song's name, when the app gives one (an audio act names its song
+ * after its source: "Variation of Terraza"). Absent: the node names it
+ * from the caption, as before. At most `MAX_TITLE_BYTES`.
+ */
+title?: string, };

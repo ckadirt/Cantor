@@ -298,6 +298,12 @@ pub enum ActInput {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         default: Option<String>,
+        /// An empty prompt is the source's own description: a made song's
+        /// recipe caption (later, what the node hears in an upload). Takes
+        /// precedence over `default`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        #[ts(as = "Option<bool>", optional)]
+        from_source: bool,
     },
     /// The lyrics, from the offers listed.
     Words { offers: Vec<WordsOffer> },
@@ -331,9 +337,15 @@ pub struct ActView {
 }
 
 impl ActView {
-    pub fn prompt(&self) -> Option<(bool, Option<&str>)> {
+    /// The act's prompt input: whether it is required, its literal default,
+    /// and whether an empty one is the source's own description.
+    pub fn prompt(&self) -> Option<(bool, Option<&str>, bool)> {
         self.inputs.iter().find_map(|input| match input {
-            ActInput::Prompt { required, default } => Some((*required, default.as_deref())),
+            ActInput::Prompt {
+                required,
+                default,
+                from_source,
+            } => Some((*required, default.as_deref(), *from_source)),
             _ => None,
         })
     }
@@ -729,6 +741,12 @@ pub struct GenerationRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub audio: Option<Box<AudioPrompt>>,
+    /// The song's name, when the app gives one (an audio act names its song
+    /// after its source: "Variation of Terraza"). Absent: the node names it
+    /// from the caption, as before. At most `MAX_TITLE_BYTES`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub title: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -1181,7 +1199,7 @@ pub enum NodeMessage {
     SongDetail {
         v: u8,
         id: String,
-        detail: SongDetail,
+        detail: Box<SongDetail>,
     },
     #[serde(rename = "song.updated")]
     #[ts(rename = "song.updated")]
@@ -1520,6 +1538,7 @@ mod tests {
                     offers: vec![WordsOffer::Same, WordsOffer::Nothing],
                 },
                 ActInput::Prompt {
+                    from_source: false,
                     required: false,
                     default: Some("d".to_owned()),
                 },

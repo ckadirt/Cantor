@@ -520,6 +520,7 @@ mod tests {
             client_request_id: uuid::Uuid::new_v4().to_string(),
             model: "acestep:1.5-fast".into(),
             generation: GenerationRequest {
+                title: None,
                 caption: "a version".into(),
                 lyrics: None,
                 duration: None,

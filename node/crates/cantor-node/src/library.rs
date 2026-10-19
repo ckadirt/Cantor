@@ -125,6 +125,7 @@ mod tests {
             client_request_id: Uuid::new_v4().to_string(),
             model: "acestep:1.5-fast".into(),
             generation: GenerationRequest {
+                title: None,
                 caption: caption.into(),
                 lyrics: None,
                 audio: None,
@@ -1267,6 +1268,23 @@ mod tests {
             .unwrap()
             .unwrap();
         (work, song)
+    }
+
+    #[test]
+    fn a_song_is_named_by_its_request_title_when_it_has_one() {
+        let temporary = tempdir().unwrap();
+        let mut library = Library::open(temporary.path()).unwrap();
+        let mut named = submission("latin hip hop, Spanish rap, male vocals");
+        named.generation.title = Some("Variation of Terraza".into());
+        library
+            .submit(principal(1), &[2; 32], &named, &variant(), &[], 20, 0)
+            .unwrap();
+        let (_, song) = complete_next(&mut library);
+        assert_eq!(song.title, "Variation of Terraza");
+        assert_eq!(
+            song.caption_summary,
+            "latin hip hop, Spanish rap, male vocals"
+        );
     }
 
     #[test]

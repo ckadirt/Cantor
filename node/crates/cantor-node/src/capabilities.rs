@@ -197,10 +197,6 @@ pub fn advertised(
         .collect()
 }
 
-/// KNOBS — what a version says when the person leaves its prompt empty, for
-/// weights whose catalog entry declares no acts of its own.
-pub const VERSION_DEFAULT_PROMPT: &str = "The same song, its own style and instruments";
-
 /// The acts this node offers for weights whose catalog entry predates acts:
 /// the three the app has always had, in the inputs it has always asked for.
 pub fn builtin_acts() -> Acts {
@@ -219,9 +215,12 @@ pub fn builtin_acts() -> Acts {
                 ActInput::Words {
                     offers: vec![WordsOffer::Same, WordsOffer::Nothing, WordsOffer::Mine],
                 },
+                // Left empty, it is the source's own description: a fixed
+                // sentence is a poor caption for a diffusion model.
                 ActInput::Prompt {
                     required: false,
-                    default: Some(VERSION_DEFAULT_PROMPT.to_owned()),
+                    default: None,
+                    from_source: true,
                 },
             ],
         },
@@ -241,6 +240,7 @@ pub fn builtin_acts() -> Acts {
                 ActInput::Prompt {
                     required: true,
                     default: None,
+                    from_source: false,
                 },
             ],
         },
@@ -258,6 +258,7 @@ pub fn builtin_acts() -> Acts {
                 ActInput::Prompt {
                     required: true,
                     default: None,
+                    from_source: false,
                 },
             ],
         },
@@ -765,10 +766,7 @@ mod tests {
         assert_eq!(act_ids(&acts), ["version", "hum"]);
         let version = &acts.0[0];
         assert!(version.inputs.contains(&cantor_proto::ActInput::Voice));
-        assert_eq!(
-            version.prompt(),
-            Some((false, Some(super::VERSION_DEFAULT_PROMPT)))
-        );
+        assert_eq!(version.prompt(), Some((false, None, true)));
     }
 
     #[test]

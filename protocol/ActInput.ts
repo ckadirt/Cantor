@@ -7,4 +7,10 @@ import type { WordsOffer } from "./WordsOffer";
  * `AudioPrompt` (or request) fields; a new kind is the one place a new act
  * needs code in the node and the app.
  */
-export type ActInput = { "kind": "prompt", required: boolean, default?: string, } | { "kind": "words", offers: Array<WordsOffer>, } | { "kind": "voice" } | { "kind": "follow", stops: Array<number>, } | { "kind": "added_length", step_seconds: number, at: Array<ExtendAt>, } | { "kind": "tile" };
+export type ActInput = { "kind": "prompt", required: boolean, default?: string, 
+/**
+ * An empty prompt is the source's own description: a made song's
+ * recipe caption (later, what the node hears in an upload). Takes
+ * precedence over `default`.
+ */
+from_source?: boolean, } | { "kind": "words", offers: Array<WordsOffer>, } | { "kind": "voice" } | { "kind": "follow", stops: Array<number>, } | { "kind": "added_length", step_seconds: number, at: Array<ExtendAt>, } | { "kind": "tile" };

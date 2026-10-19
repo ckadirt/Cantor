@@ -547,6 +547,7 @@ mod tests {
                     client_request_id: uuid::Uuid::new_v4().to_string(),
                     model: variant().selector(),
                     generation: GenerationRequest {
+                        title: None,
                         caption: caption.into(),
                         lyrics: None,
                         audio: None,

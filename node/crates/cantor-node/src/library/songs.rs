@@ -114,7 +114,12 @@ pub(super) fn publish_song(transaction: &Transaction<'_>, id: &str) -> Result<(S
     let artifact = artifact_record(transaction, id)?;
     let revision = allocate_revision(transaction, &principal)?;
     let caption_summary = bounded_text(&generation.caption, CAPTION_SUMMARY_BYTES);
-    let title = bounded_text(&generation.caption, MAX_TITLE_BYTES);
+    // The app's name for it when it gave one (an audio act names its song
+    // after its source), else the caption, as it always was.
+    let title = bounded_text(
+        generation.title.as_deref().unwrap_or(&generation.caption),
+        MAX_TITLE_BYTES,
+    );
     let title = if title.is_empty() {
         "Untitled song".to_owned()
     } else {
