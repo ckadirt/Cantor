@@ -124,7 +124,9 @@ sent. An optional prompt with `from_source` sends, for an empty caption,
 the source's own description (a made song's recipe caption, carried as
 `source.prompt`; plan D14) and shows it as the placeholder; with no
 description (an imported song, until a node can listen) the act needs a
-prompt and the placeholder says why (`captionOf`, `promptPlaceholder`). A
+prompt and the placeholder says why (`captionOf`, `promptPlaceholder`),
+unless the node advertises the prompt `heard`: then an empty prompt is sent
+and the node listens to the source (`heardByNode`; stage `listen`, ∂). A
 song made from a source is named by its act's words (`titleOf`: `Variation
 of Terraza`), never by its caption; the sheet's From row names the source. Words for an act come from `wordsForAct`: the
 app's own for ids it knows, else made from the catalog's `label`. Nothing

@@ -25,10 +25,12 @@ describe('stage symbols', () => {
       'plan',
       'codes',
       'encode',
+      'listen',
       'diffuse',
       'decode',
     ]);
     expect(STAGE_SYMBOLS.encode).toBe('fourier');
+    expect(STAGE_SYMBOLS.listen).toBe('partial');
   });
 
   it('has no symbol at all until the node reports a stage', () => {

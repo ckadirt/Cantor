@@ -12,6 +12,7 @@ export const STAGE_SYMBOLS = {
   plan: 'nabla', // ∇  — the gradient the plan descends
   codes: 'alephNull', // ℵ₀ — the count of things being enumerated
   encode: 'fourier', // ℱ  — the source written as what it is made of
+  listen: 'partial', // ∂  — what it is, one part at a time
   diffuse: 'contourIntegral', // ∮  — accumulation around a closed curve
   decode: 'trebleClef', // 𝄞  — it becomes music here
 } as const satisfies Record<GenerationStage, string>;

@@ -55,6 +55,7 @@ describe('what a running job is called', () => {
 
   it('names the stages it knows', () => {
     expect(jobStateLabel(running('encode'))).toBe('Reading the source');
+    expect(jobStateLabel(running('listen'))).toBe('Listening to the source');
     expect(jobStateLabel(running('diffuse'))).toBe('Shaping audio');
   });
 

@@ -900,6 +900,9 @@ function promptPlaceholder(
         : '';
     if (described !== '') return described;
     if (prompt.default) return prompt.default;
+    if (prompt.from_source === true && prompt.heard === true) {
+      return 'left empty, the node listens to it and describes it';
+    }
     if (prompt.from_source === true) {
       return 'describe it: no node can listen to it yet';
     }

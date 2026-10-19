@@ -137,8 +137,9 @@ function parseInput(value: unknown): ActInput | null {
         return null;
       }
       if (
-        value.from_source !== undefined &&
-        typeof value.from_source !== 'boolean'
+        (value.from_source !== undefined &&
+          typeof value.from_source !== 'boolean') ||
+        (value.heard !== undefined && typeof value.heard !== 'boolean')
       ) {
         return null;
       }
@@ -147,6 +148,7 @@ function parseInput(value: unknown): ActInput | null {
         required: value.required,
         ...(value.default === undefined ? {} : { default: value.default }),
         ...(value.from_source === true ? { from_source: true } : {}),
+        ...(value.heard === true ? { heard: true } : {}),
       };
     case 'words': {
       const offers = listOf(value.offers, OFFERS);

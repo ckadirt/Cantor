@@ -73,6 +73,8 @@ export function jobStateLabel(
         return 'Generating codes';
       case 'encode':
         return 'Reading the source';
+      case 'listen':
+        return 'Listening to the source';
       case 'diffuse':
         return 'Shaping audio';
       case 'decode':

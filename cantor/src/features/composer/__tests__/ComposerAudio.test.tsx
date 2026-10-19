@@ -408,6 +408,43 @@ describe('the composer draws an act from what it declares', () => {
     expect(placeholder()).toBe('describe it: no node can listen to it yet');
   });
 
+  it('leaves an empty prompt to a node that can listen to the song', () => {
+    const listening: ModelView = {
+      ...ace,
+      acts: [
+        {
+          id: 'version',
+          label: 'A version',
+          needs: 'cover',
+          sources: ['song', 'upload'],
+          inputs: [
+            { kind: 'follow', stops: [0, 0.5, 1] },
+            {
+              kind: 'prompt',
+              required: false,
+              from_source: true,
+              heard: true,
+            },
+          ],
+        },
+      ],
+    };
+    const { placeholder, press, onSubmit } = renderOn([listening], {
+      ...song,
+      prompt: '',
+      words: null,
+    });
+    expect(placeholder()).toBe(
+      'left empty, the node listens to it and describes it',
+    );
+    press('Make a version');
+    expect(onSubmit.mock.calls[0][2]).toMatchObject({
+      caption: '',
+      title: 'Variation of Harbour at dusk',
+      audio: { act_id: 'version' },
+    });
+  });
+
   it('still asks for a prompt where the act requires one', () => {
     const { press, onSubmit } = renderOn([ace], {
       ...song,

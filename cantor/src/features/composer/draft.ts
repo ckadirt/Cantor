@@ -413,10 +413,13 @@ export function problemsWith(
     });
   }
 
-  // An act whose prompt is optional sends its default for an empty caption.
-  const caption = captionOf(draft, modelFor(targets, draft));
-  if (caption.length === 0) problems.push({ kind: 'caption-empty' });
-  else if (target?.limits) {
+  // An act whose prompt is optional sends its default for an empty caption,
+  // or leaves it to the node to describe the source by listening.
+  const model = modelFor(targets, draft);
+  const caption = captionOf(draft, model);
+  if (caption.length === 0 && !heardByNode(draft, model)) {
+    problems.push({ kind: 'caption-empty' });
+  } else if (target?.limits) {
     const bytes = utf8Bytes(caption);
     if (bytes > target.limits.max_caption_bytes) {
       problems.push({
@@ -578,6 +581,24 @@ export function captionOf(
       ? draft.source.prompt.trim()
       : '';
   return described || (prompt.default ?? '').trim();
+}
+
+/**
+ * Whether an empty prompt is left for the node to fill by listening to the
+ * source (plan D15): the act's prompt is the source's description, the node
+ * says it can hear it (`heard`), and nothing written or recorded describes it.
+ */
+export function heardByNode(
+  draft: ComposerDraft,
+  model: ModelView | undefined,
+): boolean {
+  const prompt = inputOf(declarationFor(draft, model), 'prompt');
+  return (
+    draft.source !== null &&
+    prompt?.from_source === true &&
+    prompt.heard === true &&
+    captionOf(draft, model) === ''
+  );
 }
 
 /** KNOBS — the longest title a node takes, in UTF-8 bytes (`MAX_TITLE_BYTES`). */
