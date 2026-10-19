@@ -9,7 +9,12 @@ import {
 import { lyricsContractFor } from '../../core/protocol/lyrics';
 import type { NodeLimits } from '../../../../protocol/NodeLimits';
 import type { AudioPrompt } from '../../../../protocol/AudioPrompt';
-import { capabilityOf, wordsForId, type ActId } from '../../core/audioActs';
+import {
+  capabilityOf,
+  wordsForAct,
+  wordsForId,
+  type ActId,
+} from '../../core/audioActs';
 import {
   WIRE_ACT,
   actOn,
@@ -538,8 +543,10 @@ export function toGenerationRequest(
     ? lyricsContractFor(model).instrumentalLyrics
     : undefined;
   const audio = audioPromptFor(draft, model);
+  const title = titleOf(draft, model);
   return {
     caption: captionOf(draft, model),
+    ...(title === undefined ? {} : { title }),
     ...(words ? { lyrics: words } : {}),
     ...(audio === null && draft.durationSeconds !== null
       ? { duration: draft.durationSeconds }
@@ -552,10 +559,11 @@ export function toGenerationRequest(
 }
 
 /**
- * The caption a draft sends: what was written, else the default of an act
- * whose prompt is optional ("its own character" for a version), so the request
- * and the recipe say what the model was told. A node that knows acts fills
- * the same default; one that does not needs it sent.
+ * The caption a draft sends: what was written, else, for an act whose prompt
+ * is optional, the source's own description (plan D14: a made song's recipe
+ * caption, which the draft carries as `source.prompt`) or the act's literal
+ * default. Empty when there is neither: an imported song has no description
+ * until a node can listen to it, so its version asks for a prompt.
  */
 export function captionOf(
   draft: ComposerDraft,
@@ -564,9 +572,38 @@ export function captionOf(
   const written = draft.caption.trim();
   if (written.length > 0) return written;
   const prompt = inputOf(declarationFor(draft, model), 'prompt');
-  return prompt !== undefined && !prompt.required
-    ? (prompt.default ?? '').trim()
-    : '';
+  if (prompt === undefined || prompt.required) return '';
+  const described =
+    prompt.from_source === true && draft.source?.kind === 'song'
+      ? draft.source.prompt.trim()
+      : '';
+  return described || (prompt.default ?? '').trim();
+}
+
+/** KNOBS — the longest title a node takes, in UTF-8 bytes (`MAX_TITLE_BYTES`). */
+const TITLE_MAX_BYTES = 160;
+
+/**
+ * The song's name, for an act made from a song: its act's words around the
+ * source's title (`Variation of Terraza`), cut to what the node takes.
+ * Undefined for a song made from words or a tune: the node names it from its
+ * caption.
+ */
+export function titleOf(
+  draft: ComposerDraft,
+  model: ModelView | undefined,
+): string | undefined {
+  const source = draft.source;
+  const act = declarationFor(draft, model);
+  if (source?.kind !== 'song' || act === undefined) return undefined;
+  const title = wordsForAct(act).title?.(source.title.trim());
+  if (title === undefined || title.trim() === '') return undefined;
+  let fitted = '';
+  for (const character of title.trim()) {
+    if (utf8Bytes(fitted + character) > TITLE_MAX_BYTES) break;
+    fitted += character;
+  }
+  return fitted;
 }
 
 /** What an unsent upload is called until the node names it. */

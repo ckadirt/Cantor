@@ -42,6 +42,11 @@ export type ActWords = Readonly<{
   promise: string;
   /** When no model on the chosen node can. */
   missing: string;
+  /**
+   * The made song's name, from its source's: `Variation of Terraza`. Absent
+   * for an act whose song is not named after a source (a tune).
+   */
+  title?: (source: string) => string;
 }>;
 
 /** KNOBS — the app's own words for the acts it knows, by id. */
@@ -53,6 +58,7 @@ const KNOWN_WORDS: Readonly<Record<string, ActWords>> = {
     label: 'A version',
     promise: 'THE SAME SONG, CHANGED',
     missing: 'No model on this node makes versions.',
+    title: source => `Variation of ${source}`,
   },
   longer: {
     eyebrow: 'LONGER',
@@ -61,6 +67,7 @@ const KNOWN_WORDS: Readonly<Record<string, ActWords>> = {
     label: 'Longer',
     promise: 'MORE OF IT, AT THE END OR THE START',
     missing: 'No model on this node makes songs longer.',
+    title: source => `${source}, longer`,
   },
   hum: {
     eyebrow: 'A TUNE',
@@ -87,6 +94,7 @@ export function wordsForAct(act: Pick<ActView, 'id' | 'label'>): ActWords {
     label,
     promise: '',
     missing: `No model on this node makes ${label.toLowerCase()}.`,
+    title: source => `${label} of ${source}`,
   };
 }
 

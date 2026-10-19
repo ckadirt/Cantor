@@ -40,11 +40,8 @@ export const BUILT_IN_ACTS: readonly ActView[] = [
       FOLLOW,
       { kind: 'voice' },
       { kind: 'words', offers: ['same', 'none', 'mine'] },
-      {
-        kind: 'prompt',
-        required: false,
-        default: 'The same song, its own style and instruments',
-      },
+      // Left empty, the source's own description (plan D14).
+      { kind: 'prompt', required: false, from_source: true },
     ],
   },
   {
@@ -139,10 +136,17 @@ function parseInput(value: unknown): ActInput | null {
       if (value.default !== undefined && typeof value.default !== 'string') {
         return null;
       }
+      if (
+        value.from_source !== undefined &&
+        typeof value.from_source !== 'boolean'
+      ) {
+        return null;
+      }
       return {
         kind: 'prompt',
         required: value.required,
         ...(value.default === undefined ? {} : { default: value.default }),
+        ...(value.from_source === true ? { from_source: true } : {}),
       };
     case 'words': {
       const offers = listOf(value.offers, OFFERS);

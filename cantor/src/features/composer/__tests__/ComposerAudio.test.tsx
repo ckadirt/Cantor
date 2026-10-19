@@ -267,6 +267,7 @@ describe('the composer, starting from a song', () => {
     press('Make a version');
     expect(onSubmit).toHaveBeenCalledWith('a', 'acestep:1.5-fast', {
       caption: 'sung by a woman, acoustic guitar',
+      title: 'Variation of Harbour at dusk',
       lyrics: 'the tide comes in',
       seed: 99,
       audio: {
@@ -324,7 +325,22 @@ describe('the composer draws an act from what it declares', () => {
       );
       ReactTestRenderer.act(() => target.props.onPress());
     };
-    return { words, press, onSubmit };
+    const caption = () =>
+      tree.root.find(
+        node =>
+          typeof node.props.onChangeText === 'function' &&
+          node.props.accessibilityLabel === 'Describe the song',
+      );
+    const type = (label: string, value: string) => {
+      const input = tree.root.find(
+        node =>
+          typeof node.props.onChangeText === 'function' &&
+          node.props.accessibilityLabel === label,
+      );
+      ReactTestRenderer.act(() => input.props.onChangeText(value));
+    };
+    const placeholder = () => caption().props.placeholder as string;
+    return { words, press, onSubmit, type, placeholder };
   }
 
   it('offers an act it has never heard of, in its catalog words and its inputs', () => {
@@ -359,6 +375,7 @@ describe('the composer draws an act from what it declares', () => {
     press('Make a remix');
     expect(onSubmit.mock.calls[0][2]).toEqual({
       caption: 'A remix of it',
+      title: 'A remix of Harbour at dusk',
       seed: 99,
       audio: {
         source: { kind: 'song', song_id: song.songId },
@@ -369,17 +386,26 @@ describe('the composer draws an act from what it declares', () => {
     });
   });
 
-  it('makes a version with an empty prompt, sending the act’s default', () => {
-    const { press, onSubmit } = renderOn([ace], {
+  it('makes a version of a made song with an empty prompt, sending its recipe caption', () => {
+    const { press, type, onSubmit } = renderOn([ace], { ...song, words: null });
+    type('Describe the song', '');
+    press('Make a version');
+    expect(onSubmit.mock.calls[0][2]).toMatchObject({
+      caption: 'a slow harbour at dusk',
+      title: 'Variation of Harbour at dusk',
+      audio: { act_id: 'version' },
+    });
+  });
+
+  it('asks for a prompt for a song it cannot describe, and says why', () => {
+    const { placeholder, press, onSubmit } = renderOn([ace], {
       ...song,
       prompt: '',
       words: null,
     });
     press('Make a version');
-    expect(onSubmit.mock.calls[0][2]).toMatchObject({
-      caption: 'The same song, its own style and instruments',
-      audio: { act_id: 'version' },
-    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(placeholder()).toBe('describe it: no node can listen to it yet');
   });
 
   it('still asks for a prompt where the act requires one', () => {

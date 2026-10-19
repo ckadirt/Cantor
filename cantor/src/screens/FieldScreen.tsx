@@ -2372,6 +2372,25 @@ export function FieldScreen({ identity }: Props) {
       },
     };
   }, [backends, commands, failureWords, openComposer, phases, setSubmitError, sheetSong, sheetSubject, songDetail]);
+  /**
+   * What the sheet's song was made from, in words: its source's name when it
+   * was a song still here, else what kind of sound it was.
+   */
+  const sheetOrigin = useMemo<string | null>(() => {
+    if (sheetSong === null || sheetSong.source !== 'node') return null;
+    const origin = sheetSong.song.derived_from;
+    if (origin === undefined) return null;
+    if (origin.song_id !== undefined) {
+      return (
+        controller.presentations.get(
+          `${sheetSong.entity.nodePublicKey}:${origin.song_id}`,
+        )?.title ?? 'A song no longer here'
+      );
+    }
+    return songDetail?.generation.audio?.tune === true
+      ? 'A tune'
+      : 'A file from a phone';
+  }, [controller.presentations, sheetSong, songDetail]);
   const sheetImported = useMemo<ImportedFacts | null>(() => {
     if (sheetSong === null || sheetSong.source !== 'device') return null;
     const { device, album } = sheetSong;
@@ -3348,6 +3367,7 @@ export function FieldScreen({ identity }: Props) {
                 : null
             }
             imported={sheetImported}
+            origin={sheetOrigin}
             lens={activeLens}
             arriving={
               sheetSong.source === 'node' &&

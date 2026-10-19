@@ -1,10 +1,14 @@
 import type { ModelView } from '../../../core/protocol';
 import type { NodeLimits } from '../../../../../protocol/NodeLimits';
 import {
+  EMPTY_DRAFT,
   draftFromSource,
   modelsFor,
   problemsWith,
+  titleOf,
+  utf8Bytes,
   toGenerationRequest,
+  tuneSource,
   voiceOf,
   withSourceWords,
   wordsModeOf,
@@ -125,6 +129,7 @@ describe('a draft that starts from a song', () => {
     );
     expect(request).toEqual({
       caption: 'a slow harbour at dusk',
+      title: 'Variation of Harbour at dusk',
       lyrics: 'the tide comes in',
       audio: {
         source: { kind: 'song', song_id: song.songId },
@@ -191,5 +196,20 @@ describe('a draft that starts from a song', () => {
       missing: 'No model on this node makes versions.',
     });
     expect(problemsWith(versionDraft(), [target()])).toEqual([]);
+  });
+});
+
+describe('the title an act gives its song', () => {
+  it('names a version after its source, cut to what the node takes', () => {
+    const long = draftFromSource({ ...song, title: 'é'.repeat(100) });
+    const title = titleOf(long, audioModel)!;
+    expect(title.startsWith('Variation of é')).toBe(true);
+    expect(utf8Bytes(title)).toBeLessThanOrEqual(160);
+  });
+
+  it('gives a tune no title: the node names it from its caption', () => {
+    expect(
+      titleOf({ ...EMPTY_DRAFT, source: tuneSource() }, audioModel),
+    ).toBeUndefined();
   });
 });

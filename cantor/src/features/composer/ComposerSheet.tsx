@@ -391,11 +391,7 @@ function ComposerSheetImpl({
             editable={!submitting}
             multiline
             onChangeText={caption => update({ caption })}
-            placeholder={
-              // An optional prompt shows what an empty one sends.
-              inputOf(declaration, 'prompt')?.default ??
-              (fromTune ? 'what it should become' : 'a slow harbour at dusk')
-            }
+            placeholder={promptPlaceholder(resolved, declaration)}
             placeholderTextColor={pal.faint}
             style={[styles.caption, FOLIO_TITLE_STYLE, { color: pal.ink }]}
             value={resolved.caption}
@@ -883,6 +879,34 @@ function MakeIt({
       </View>
     </PanelPressable>
   );
+}
+
+/**
+ * What the empty caption says. An optional prompt shows what an empty one
+ * sends: the source's own description, or the act's default. One that would
+ * describe its source but cannot (an imported song, before a node can listen
+ * to it) says so, where the person would type.
+ */
+function promptPlaceholder(
+  draft: ComposerDraft,
+  declaration: ReturnType<typeof declarationFor>,
+): string {
+  const prompt = inputOf(declaration, 'prompt');
+  const source = draft.source;
+  if (prompt !== undefined && !prompt.required) {
+    const described =
+      prompt.from_source === true && source?.kind === 'song'
+        ? source.prompt.trim()
+        : '';
+    if (described !== '') return described;
+    if (prompt.default) return prompt.default;
+    if (prompt.from_source === true) {
+      return 'describe it: no node can listen to it yet';
+    }
+  }
+  return source?.kind === 'tune'
+    ? 'what it should become'
+    : 'a slow harbour at dusk';
 }
 
 /** The key `auto` occupies on the length dial; no engine can collide with it. */

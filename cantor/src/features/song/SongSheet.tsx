@@ -284,6 +284,11 @@ type Props = {
    * on ACE-Step): drawn as no words, and not offered to copy.
    */
   instrumentalLyrics?: string;
+  /**
+   * What a version was made from, in words (`Terraza`, `A tune`): set for a
+   * song made from a sound, so a song named after its source also says it.
+   */
+  origin?: string | null;
   /** An imported song's facts; absent for a song a node holds. */
   imported?: ImportedFacts | null;
   /** The lens the person has chosen: the clef is drawn in it. */
@@ -349,6 +354,7 @@ function SongSheetImpl({
   onDelete,
   onRecompose,
   instrumentalLyrics,
+  origin = null,
   imported = null,
   lens,
   node = null,
@@ -613,6 +619,7 @@ function SongSheetImpl({
             downloaded={downloaded}
             imported={imported}
             instrumentalLyrics={instrumentalLyrics}
+            origin={origin}
             onDelete={onDelete}
             onRecompose={onRecompose}
             placementCount={placementCount}
@@ -1045,6 +1052,7 @@ function Back({
   nodeLabel,
   onDelete,
   instrumentalLyrics,
+  origin,
   onRecompose,
   placementCount,
   song,
@@ -1064,6 +1072,7 @@ function Back({
   nodeLabel: string;
   onDelete: () => void;
   instrumentalLyrics?: string;
+  origin: string | null;
   onRecompose?: (detail: SongDetail) => void;
   placementCount: number;
   song: SongHeader;
@@ -1106,6 +1115,11 @@ function Back({
         ) : (
           <>
             <Measure>
+              {origin === null ? null : (
+                <Row label="From">
+                  <Text style={[type.body, { color: pal.ink }]}>{origin}</Text>
+                </Row>
+              )}
               <Row label="Prompt">
                 <Copy what="prompt" value={detail.generation.caption}>
                   <Text style={[type.body, { color: pal.ink }]}>

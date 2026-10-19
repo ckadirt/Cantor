@@ -120,8 +120,13 @@ node's `builtin_acts`. The composer draws the source (a song or a tune) and
 then one row per declared input, in the declaration's order (`SourceRows`'
 `InputRow`); `audioPromptFor` sends one field per declared input plus
 `act_id`, and an input the act does not declare (lyrics included) is never
-sent. An optional prompt's default is its placeholder and is sent for an
-empty caption (`captionOf`). Words for an act come from `wordsForAct`: the
+sent. An optional prompt with `from_source` sends, for an empty caption,
+the source's own description (a made song's recipe caption, carried as
+`source.prompt`; plan D14) and shows it as the placeholder; with no
+description (an imported song, until a node can listen) the act needs a
+prompt and the placeholder says why (`captionOf`, `promptPlaceholder`). A
+song made from a source is named by its act's words (`titleOf`: `Variation
+of Terraza`), never by its caption; the sheet's From row names the source. Words for an act come from `wordsForAct`: the
 app's own for ids it knows, else made from the catalog's `label`. Nothing
 outside `core/audioActs.ts`'s word table branches on an act id. A new act
 made of known inputs needs no app change; a new input kind needs its row in
