@@ -1,8 +1,8 @@
 # cantor-relay
 
 Changing this Worker? Read
-[`../docs/refactor/hacking-relay.md`](../docs/refactor/hacking-relay.md) first,
-and [`../docs/refactor/hacking-protocol.md`](../docs/refactor/hacking-protocol.md)
+[`../contributing/hacking-relay.md`](../contributing/hacking-relay.md) first,
+and [`../contributing/hacking-protocol.md`](../contributing/hacking-protocol.md)
 before touching carrier framing.
 
 The relay is a Cloudflare Worker backed by one hibernating `NodeRoom` Durable

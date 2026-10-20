@@ -83,7 +83,7 @@ export type SampleWindow = Readonly<{
 /**
  * The one seam between Cantor and whatever library actually makes sound.
  *
- * It exists so the library stays swappable: see `docs/interface/m3-audio-gate.md`
+ * It exists so the library stays swappable: see `internal/docs/interface/m3-audio-gate.md`
  * for the qualification that chose the current adapter and the two defects the
  * adapter has to contain. Only `src/player/` may import an audio library, and
  * only `load` may replace the underlying source.

@@ -2,7 +2,7 @@
  * The sync check — not shipped UI. Flip SYNC_CHECK in App.tsx to open.
  *
  * Measures how far the picture runs from the sound (the reactive player's M1,
- * docs/interfacealpha/reactive-player-log.md). It plays a click track it
+ * internal/docs/interfacealpha/reactive-player-log.md). It plays a click track it
  * writes itself — 120 BPM, a high click on each downbeat — through the real
  * player and its real visual clock, and turns the whole screen black for the
  * first 50 ms of every beat by that clock.

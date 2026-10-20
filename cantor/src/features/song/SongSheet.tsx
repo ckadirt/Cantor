@@ -186,7 +186,7 @@ const STATE_NOTE_GAP_PX = 3;
 export type SongAct = 'pin' | 'unpin' | 'remove' | 'delete';
 
 /**
- * What an imported song's file says about itself (docs/import/plan.md).
+ * What an imported song's file says about itself (internal/docs/import/plan.md).
  *
  * Present, the sheet is an imported song's: its name, audio and life belong to
  * the person's own file, so nothing here renames, fetches, frees or deletes

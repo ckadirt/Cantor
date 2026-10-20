@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // The reference motion analysis of a song, written as JSON: the page
-// `docs/interfacealpha/reactive-player.html` run headless.
+// `internal/docs/interfacealpha/reactive-player.html` run headless.
 //
 // The page is the reference implementation of the reactive player (its plan,
 // M0), so this does not copy its analysis: it evaluates the page's own script
@@ -19,7 +19,7 @@ import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
-let page = resolve(here, '../../docs/interfacealpha/reactive-player.html');
+let page = resolve(here, '../../internal/docs/interfacealpha/reactive-player.html');
 if (args[0] === '--page') {
   page = resolve(args[1]);
   args.splice(0, 2);

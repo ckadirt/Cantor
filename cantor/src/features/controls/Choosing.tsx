@@ -30,7 +30,7 @@ import { font, touch, type, usePalette } from '../../theme/tokens';
 
 /**
  * KNOBS — the three choosing controls beside the dial
- * (`docs/interfacealpha/folio.html#choosing`). A choice is drawn in the shape
+ * (`internal/docs/interfacealpha/folio.html#choosing`). A choice is drawn in the shape
  * of what it chooses: names as a fact with a whisper, quantities along a line,
  * numbers you drag.
  */

@@ -4,7 +4,7 @@ import { base64 } from '@scure/base';
  * What moves a player in time with its song: the song's beats, onsets,
  * sections and drops, measured natively from the file the player plays
  * (`android/app/src/main/cpp/motion/`, a port of the reference page
- * docs/interfacealpha/reactive-player.html).
+ * internal/docs/interfacealpha/reactive-player.html).
  *
  * Events, not curves: a worklet cannot hold a typed array, and a long plain
  * array is copied into every closure that reads it, so the frame is evaluated

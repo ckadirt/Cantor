@@ -5,7 +5,7 @@
  * an act because it declares it (`ModelView.acts`, or the built-in acts for an
  * older node, `core/protocol/acts.ts`), and the node advertises only what the
  * catalog, the binding and the loaded engine all agree on
- * (docs/plans/audio-prompting.md, "Capabilities"; structures plan S3).
+ * (internal/docs/plans/audio-prompting.md, "Capabilities"; structures plan S3).
  */
 import type { CapabilityKind } from '../../../protocol/CapabilityKind';
 import type { StageName } from './protocol';

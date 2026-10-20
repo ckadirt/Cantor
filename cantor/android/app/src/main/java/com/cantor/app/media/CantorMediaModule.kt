@@ -25,7 +25,7 @@ import kotlin.math.roundToInt
 
 private const val MODULE_NAME = "CantorMedia"
 
-/** Bytes of a file's head hashed for its fingerprint (docs/import/plan.md). */
+/** Bytes of a file's head hashed for its fingerprint (internal/docs/import/plan.md). */
 private const val HEAD_BYTES = 64 * 1024
 
 /** The longest side of a saved album thumbnail, in pixels. */
@@ -41,7 +41,7 @@ private const val LUMA_MAX_CELLS = 96
 /**
  * The phone's music, as Android indexes it — read only.
  *
- * Device import (docs/import/) reads MediaStore for what is on the phone, opens
+ * Device import (internal/docs/import/) reads MediaStore for what is on the phone, opens
  * a file by its path to fingerprint it, and asks MediaStore for album art. It
  * never writes, moves or deletes a user's file. Decisions — what a row means,
  * which title wins, what an album is — are the JS resolver's; this module
@@ -163,7 +163,7 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
    * A new or changed file's fingerprint and the tags `MediaMetadataRetriever`
    * reads from it.
    *
-   * The retriever is the second reader (docs/import/log.md, I0): its album is
+   * The retriever is the second reader (internal/docs/import/log.md, I0): its album is
    * null when the file has no album tag, where MediaStore substitutes the
    * folder's name, and its date fills the year MediaStore drops for FLAC, Ogg
    * and Opus. It reads neither WAV nor AIFF tags.
@@ -281,7 +281,7 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
    * to 1 white, row by row: the middle square of the picture, averaged down.
    * Null when the file is gone. Reads only Cantor's own `files/artwork/`.
    *
-   * What the cover lens draws from (docs/import/ I6c). Nothing is kept: the
+   * What the cover lens draws from (internal/docs/import/ I6c). Nothing is kept: the
    * grid is a few kilobytes and a few milliseconds, so it is made again
    * whenever it is asked for.
    */
@@ -304,7 +304,7 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
    * same reduction as `artworkLuma`; null when it has none.
    *
    * For the picture shown while an album is being read, before its art is
-   * saved (docs/import/flow-plan.md, I7b). Display only: nothing is written.
+   * saved (internal/docs/import/flow-plan.md, I7b). Display only: nothing is written.
    */
   @ReactMethod
   fun thumbnailLuma(mediaId: Double, cells: Double, promise: Promise) {

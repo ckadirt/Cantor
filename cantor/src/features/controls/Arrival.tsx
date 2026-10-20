@@ -10,7 +10,7 @@ import Animated, {
 } from 'react-native-reanimated';
 
 /**
- * KNOBS — a blind arrives as a sentence (`docs/interfacealpha/folio.html#arrival`).
+ * KNOBS — a blind arrives as a sentence (`internal/docs/interfacealpha/folio.html#arrival`).
  *
  * Every window is a stretch of one clock, 0..1, which is how far the blind is
  * drawn — the curtain's own height, read on the UI thread, never React state —

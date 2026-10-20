@@ -14,7 +14,7 @@ const light = {
   line: '#E6E6E6', // hairline rules and borders
   /**
    * The Folio spine and its ticks: darker than `line`, which vanished on the
-   * phone's panel at arm's length (docs/interfacealpha/folio.html#measures).
+   * phone's panel at arm's length (internal/docs/interfacealpha/folio.html#measures).
    */
   spine: '#D4D4D4',
 };

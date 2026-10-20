@@ -195,7 +195,7 @@ export function usePlayer(player: PlayerPort): PlayerController {
 
   // Coming back from the background is a resync point: JS timers were frozen
   // while the screen was off, so the clock is stale even though audio kept
-  // playing. See docs/interface/m3-audio-gate.md.
+  // playing. See internal/docs/interface/m3-audio-gate.md.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', state => {
       if (state !== 'active') {

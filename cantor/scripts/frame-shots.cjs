@@ -1,4 +1,4 @@
-// Screenshot frames of a design document (docs/import/flow.html) on the
+// Screenshot frames of a design document (internal/docs/import/flow.html) on the
 // desktop, at the phone's 392 dp width, without the phone's browser.
 //
 //   python3 -m http.server 8099 &          # from the repository root
@@ -16,7 +16,7 @@ const { chromium } = require(process.env.PLAYWRIGHT || 'playwright-core');
     viewport: { width: 392, height: 764 },
     deviceScaleFactor: 2,
   });
-  const doc = process.env.DOC || 'docs/import/flow.html';
+  const doc = process.env.DOC || 'internal/docs/import/flow.html';
   const lens = process.env.LENS ? `&lens=${process.env.LENS}` : '';
   await page.goto(`http://localhost:8099/${doc}?phone&still${lens}`);
   await page.waitForTimeout(800);

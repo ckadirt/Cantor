@@ -27,8 +27,10 @@ the project.
 - Availability attacks, traffic analysis, malicious endpoint software, and
   anonymous routing are outside this transport's guarantees.
 
-The exact construction and wire limits are recorded in
-[`docs/private-library-milestones/milestone-6-security-adr.md`](docs/private-library-milestones/milestone-6-security-adr.md).
+The wire limits are the transport manifest,
+[`protocol/transport/v1/spec.json`](protocol/transport/v1/spec.json); the
+construction and its rules are in
+[`contributing/hacking-protocol.md`](contributing/hacking-protocol.md).
 
 ## Release gate
 

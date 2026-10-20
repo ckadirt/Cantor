@@ -31,7 +31,7 @@ import { font, space, touch, type, usePalette } from '../../theme/tokens';
  * curtain already inset its content by `space.lg`, so a panel that added the
  * page margin again would push its spine 24 px to the right of every other
  * panel's. Everything here is therefore 24 less than the number in
- * `docs/interfacealpha/ledger.html`, which is drawn in frame coordinates.
+ * `internal/docs/interfacealpha/ledger.html`, which is drawn in frame coordinates.
  */
 export const LEDGER_KNOBS = {
   /**

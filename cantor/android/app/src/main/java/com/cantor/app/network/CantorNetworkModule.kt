@@ -13,7 +13,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule
 
 /**
  * Whether this phone has a connection at all — the one failure that is about
- * the whole app (docs/interfacealpha/folio.html#errors, F9c).
+ * the whole app (internal/docs/interfacealpha/folio.html#errors, F9c).
  *
  * `ConnectivityManager`'s default-network callback rather than a library: one
  * question, one system service. "Online" means the default network can reach

@@ -26,6 +26,8 @@ application message in the clear and holds no key material.
 | `src/room.ts` | the Durable Object: claim, presence, session registry, fanout, detach |
 | `src/frames.ts` | frame types, carrier encode/parse, attachment parsing |
 | `src/generated/transport.ts` | the relay's slice of the shared transport manifest |
+| `public/` | static assets served beside the rooms: `install.sh`, the model catalog (`catalog/v1.json`), and the engine manifest (`backends/v1.json`) |
+| `scripts/client.mjs` | `npm run client -- <ws://…/v1/room/<pubkey>>`: a raw room client for poking a relay by hand |
 | `scripts/smoke.mjs` | hosted check that a deployed relay still answers rooms |
 | `scripts/verify-assets.mjs` | the published `install.sh` is a symlink, not a copy |
 | `test/` | Vitest suites, including the shared carrier fixtures |
@@ -50,6 +52,14 @@ the node-facing carrier adds the session id (`version | kind | u16 sid length |
 sid | u32 length`). Both sizes come from
 `protocol/transport/v1/spec.json` through `src/generated/transport.ts`. Do not
 restate them.
+
+**Static manifests.** Nodes read `catalog/v1.json` (which model weights exist,
+their blobs, URLs, and sizes) and `backends/v1.json` (which engine builds exist
+per backend and architecture) from the relay's domain; the node's parsers are
+`catalog.rs` and `backends.rs`. They are published by deploying the relay, so a
+change to either is a release step, not a relay change. Listing a new engine
+build breaks nodes older than v0.2.1; see `hacking-node.md` before editing
+`backends/v1.json`.
 
 ## Recipes
 

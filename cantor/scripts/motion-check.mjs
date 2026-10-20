@@ -6,7 +6,7 @@
 //   node scripts/motion-check.mjs <fixtures-dir> [name …]
 //
 // <fixtures-dir> holds `reference/<name>.motion.json` and the audio under
-// `audio/` or `synth/` (docs/interfacealpha/motion-fixtures on Cesar's disk).
+// `audio/` or `synth/` (internal/docs/interfacealpha/motion-fixtures on Cesar's disk).
 // Tolerances are the plan's: beats ±10 ms, the same sections and letters,
 // drops ±1 beat.
 import { execFileSync, spawnSync } from 'node:child_process';

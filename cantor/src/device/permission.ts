@@ -1,7 +1,7 @@
 import { Linking, PermissionsAndroid, Platform } from 'react-native';
 
 /**
- * Whether Cantor may read the phone's music (docs/import/flow-plan.md, I7c).
+ * Whether Cantor may read the phone's music (internal/docs/import/flow-plan.md, I7c).
  *
  * `unknown`: never asked in this run, or asked and not yet answered.
  * `denied`: refused, and Android will ask again. `blocked`: refused for good

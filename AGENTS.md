@@ -8,16 +8,20 @@ Three programs and one shared wire contract.
 | `node/` | the Rust daemon: library, generation, relay and control adapters, CLI |
 | `relay/` | the Cloudflare Worker that splices opaque bytes between them |
 | `protocol/` | the transport manifest, shared fixtures, and generated wire types |
-| `docs/` | milestones, the framework refactor record, and the contributor guides |
+| `contributing/` | the architecture map and the contributor guides |
+
+`internal/` holds private plans, logs, prototypes, and reports. It is ignored:
+read it from disk and never commit it. Code comments may cite it; tracked docs
+must not depend on it. Put durable contributor instructions in the guides below.
 
 ## Read before changing code
 
-- [`docs/refactor/architecture.md`](docs/refactor/architecture.md) — the layer
+- [`contributing/architecture.md`](contributing/architecture.md) — the layer
   map, a "where does this change belong?" table, and the verification matrix.
-- [`docs/refactor/hacking-app.md`](docs/refactor/hacking-app.md),
-  [`hacking-node.md`](docs/refactor/hacking-node.md),
-  [`hacking-protocol.md`](docs/refactor/hacking-protocol.md), and
-  [`hacking-relay.md`](docs/refactor/hacking-relay.md) — module maps,
+- [`contributing/hacking-app.md`](contributing/hacking-app.md),
+  [`hacking-node.md`](contributing/hacking-node.md),
+  [`hacking-protocol.md`](contributing/hacking-protocol.md), and
+  [`hacking-relay.md`](contributing/hacking-relay.md) — module maps,
   dependency rules, extension recipes, traps, and review checklists.
 - [`cantor/AGENTS.md`](cantor/AGENTS.md) — product direction and the motion
   rules. Required before touching motion or Skia code.

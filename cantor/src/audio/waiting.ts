@@ -3,7 +3,7 @@ import { isRecord } from '../core/validation';
 import { audioKey } from './repository';
 
 /**
- * Downloads waiting for their node (`docs/interfacealpha/folio.html#errors`).
+ * Downloads waiting for their node (`internal/docs/interfacealpha/folio.html#errors`).
  *
  * `GET` on a song whose node is away does not fail: it promises, and the
  * promise is kept here until the node is back. A transfer cut off half way

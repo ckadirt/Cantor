@@ -36,13 +36,20 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/library/` | cached library repository, `find` (the folded search index and the layout-ordered matcher), and the pure `sync` reducer |
 | `src/work/` | pure `deriveWork`, submission/job matching, derived job ids and the plan a piece of work runs. The field and sheets read `Work`, never the outbox or snapshots directly |
 | `src/notices/` | transient notices keyed by subject, their lifetime, and the hook lending them the field foot’s hint seat |
-| `src/facts/` | what is known about a song, with provenance (structures plan S4): `types` (subjects, providers, readings), the `device_song_fact` repository, the service that runs providers in order and remembers the answer, `lyrics` (the `recipe` → `file-tags` → `lrclib` providers) and `recipeWords` (`wordsOf`, the one reader of a made song's words) |
+| `src/facts/` | what is known about a song, with provenance: `types` (subjects, providers, readings), the `device_song_fact` repository, the service that runs providers in order and remembers the answer, `lyrics` (the `recipe` → `file-tags` → `lrclib` providers) and `recipeWords` (`wordsOf`, the one reader of a made song's words) |
 | `src/jobs/` | job repository and the submission outbox |
 | `src/audio/` | `AudioRef`, the `LocalAudioStore` port, its repository implementation, and the native bridge |
-| `src/device/` | songs whose files live on the phone (device import, `docs/import/`): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens, a file's embedded lyrics — read only), and `lyrics.ts`, the adapters behind the `file-tags` and `lrclib` fact providers: each answers found, none, or (LRCLIB offline, 429, 5xx) unreachable with its `Retry-After`. LRCLIB is the app's one network call that is not the relay; it learns a title, an artist and a length, never audio |
+| `src/device/` | songs whose files live on the phone (device import): the phone database's schema (`schema.ts`), its op-sqlite binding (`database.ts`, the only importer of op-sqlite), `repository.ts`, and `native.ts`, the bridge to `CantorMedia` (Kotlin `media/`: MediaStore list, fingerprint, album art and its brightness grid for the cover lens, a file's embedded lyrics — read only), and `lyrics.ts`, the adapters behind the `file-tags` and `lrclib` fact providers: each answers found, none, or (LRCLIB offline, 429, 5xx) unreachable with its `Retry-After`. LRCLIB is the app's one network call that is not the relay; it learns a title, an artist and a length, never audio |
 | `src/identity/` | phrase derivation, mnemonic, and keychain-backed identity |
 | `src/lenses/` | how a song is drawn: the lens contract (`contract.ts`), the registry (`LENSES`, `LENS_UI`, `LENS_PAIRS`), the circle (`nameLens.ts`), the seal (`sealLens.ts`, `sealPlayer.ts`, geometry in `seal.ts`) and the cover (`coverLens.ts`: the circle's marks, an imported song's album art as hairline glyphs at the player, from `cover.ts`), marbling (`marbleLens.ts`; geometry in `marble.ts`, the mark in `marbleMark.ts`, the strokes in time in `marbleTimeline.ts`, the player and its live shader in `marblePlayer.ts`, the settled bath on its own worklet runtime in `marbleBath.ts`), pair morphs (`pairs.ts`), its `analysis`, and the `AnalysisStore` that measures songs once and keeps them; `motion/` (the motion track, its store and the per-frame `MotionFrame`) and each lens's motion (`circleMotion.ts`, `sealMotion.ts`) |
 | `src/motion/`, `src/onboarding/`, `src/theme/` | the motion engine and the onboarding experience |
+| `src/player/` | the player contract, the react-native-audio-api player and its fake, `PlayerHost` (the one player for the app's life), scrub sessions, output latency and sync offsets, the visual clock, and what happens after a song ends (`afterSong.ts`) |
+| `src/playlists/` | playlists as the `p/` tag namespace on songs, and every operation on it |
+| `src/network/` | whether the phone has a connection at all, from `CantorNetworkModule.kt` |
+| `src/haptics/` | the rationed haptics (`tick`, `click`, `confirm`), backed by `CantorHapticsModule.kt`; nothing else buzzes |
+| `src/marks/` | identity marks drawn from public keys: the phone's seal and a node's station |
+| `src/field/` | the field's pure geometry: layout and arrangements, camera levels and bands, bloom and gather, filter, glide, rail, shelf queue, hit testing |
+| `src/dev/` | developer labs and HUDs (motion lab and bench, sync check, perf HUD), switched by constants at the top of `App.tsx`; every one ships off |
 
 ## The rules that are not obvious
 
@@ -122,7 +129,7 @@ then one row per declared input, in the declaration's order (`SourceRows`'
 `act_id`, and an input the act does not declare (lyrics included) is never
 sent. An optional prompt with `from_source` sends, for an empty caption,
 the source's own description (a made song's recipe caption, carried as
-`source.prompt`; plan D14) and shows it as the placeholder; with no
+`source.prompt`) and shows it as the placeholder; with no
 description (an imported song, until a node can listen) the act needs a
 prompt and the placeholder says why (`captionOf`, `promptPlaceholder`),
 unless the node advertises the prompt `heard`: then an empty prompt is sent
@@ -234,8 +241,8 @@ its miniaudio (looked up with `dlsym` in its library) for everything else — so
 the columns match what plays. `player/nativeSamples.ts` falls back to the JS
 decode if the native side throws. **Upgrading react-native-audio-api** can
 break it (the FFmpeg paths, the dispatch rule, the exported `ma_*` symbols);
-the fallback keeps the app working, but re-check with
-`docs/import/log.md` § I1.
+the fallback keeps the app working, but re-check native reduction against the
+JavaScript fallback on representative audio formats after an upgrade.
 
 ## Forgetting and recovering engines
 
@@ -323,9 +330,6 @@ appearance when becoming active because the retained React tree may now live
 in a new Android window. There is no queue persistence, process-death recovery,
 or automatic playback after Force stop or reboot.
 
-Verification and device evidence live in
-[`background-playback-log.md`](../interface/background-playback-log.md).
-
 ## Playback gestures and field lenses
 
 `player/scrubSession.ts` owns a silent seek transaction: pause once, preview on
@@ -353,7 +357,7 @@ lands. `seekGesture` asks the
 lens drawn at the player what a touch means (`Lens.touch`): the circle scrubs by
 angle; the seal scrubs by rim angle and treats a touch that starts on the dust
 as a tap that jumps to the dot under it.
-**Marbling** (docs/interfacealpha/marbling-plan.md and its log) is suminagashi
+**Marbling** is suminagashi
 with Jaffer's exact equations: drops of ink and clear water, and tines. Every op
 is a homeomorphism, so ring outlines never cross and the whole bath is one
 even-odd path of the rings whose colour differs from their parent's
@@ -382,7 +386,7 @@ its own end); `marbleArrivesOver` (the drop) is the fallback for a lens with no
 model to morph.
 `analyseWindow` keeps per-bucket loudness, punch (crest factor) and width
 (side/mid, from `SampleWindow.stereo`) at `ANALYSIS_BUCKETS = 729`.
-**The motion track and the frame** (docs/interfacealpha/reactive-player-plan.md).
+**The motion track and the frame.**
 `CantorAudio.motionTrack(path)` runs the analysis in C++
 (`android/app/src/main/cpp/motion/`, a port of the reference page held exact by
 `scripts/motion-check.mjs`) on the reduction's decoder; `MotionStore`
@@ -461,8 +465,7 @@ cable is replugged.
   scrolling measures, whose last stretch of spine meets the coda, with a paper
   fade and no scroll indicator), `Measure`/`Rest` (a spine per group, broken
   between), and `Coda` (the double bar and the page's one act, or nothing).
-  Do not hand-roll a header or a foot in a new sheet; see
-  `docs/interfacealpha/folio.html` and `folio-steps.md`.
+  Use those components when adding a sheet.
 - **An arrival stagger has to finish inside its clock.** A block's window is
   `ROWS_FROM + index * ARRIVAL_LAG` to `+ ARRIVAL_RISE`, and a window that ends
   past 1 is a row that never reaches full ink — it does not fail, it just sits
@@ -655,7 +658,7 @@ if the axis changed meanwhile). While filtered, the per-axis memory is
 neither read nor written. A re-cut that removes the shelf you stand in goes
 home rather than leaving you over an empty page.
 
-Find is a gather (`docs/interfacealpha/gather-plan.md`). `FIND` turns the
+Find is a gather. `FIND` turns the
 header's title line into the query (`FieldScreen.finding`, a `TextInput` in
 `FieldOverlay`'s title slot, crossing with the title on one linear clock).
 `library/find.ts` folds each song's searchable text once per library change
@@ -846,5 +849,4 @@ carries a `source` (a node song, a phone file, or a tune) and builds the
 `BackendConnection.uploadPort()` before the job, hashed and sliced natively
 (`CantorAudio.sourceInfo` / `readSlice`). The record measure
 (`features/composer/RecordMeasure.tsx`) records through `audio/tuneRecorder.ts`
-and draws the pitch from `audio/pitch.ts`. Plan, design and log:
-`docs/plans/audio-prompting*.md` (untracked).
+and draws the pitch from `audio/pitch.ts`.

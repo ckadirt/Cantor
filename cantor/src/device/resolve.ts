@@ -12,7 +12,7 @@ import {
  * songs, albums and one commit out.
  *
  * Every rule here answers something measured on the phone
- * (docs/import/log.md, I0 and I3): MediaStore substitutes the folder's name for
+ * (internal/docs/import/log.md, I0 and I3): MediaStore substitutes the folder's name for
  * a missing album and `<unknown>` for a missing artist, packs the disc into the
  * track number, drops the year of FLAC, Ogg and Opus, and reads no WAV or AIFF
  * tags; `MediaMetadataRetriever` (the inspection's tags) says null when a tag

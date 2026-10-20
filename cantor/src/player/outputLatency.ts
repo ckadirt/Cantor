@@ -5,7 +5,7 @@
  * low-latency and exclusive, but `calculateLatencyMillis` is never asked, and a
  * file source's `currentTime` is the position the audio thread has *rendered*,
  * not the one in the air. So the delay is a constant per route, measured on the
- * phones (docs/interfacealpha/reactive-player-log.md, M1).
+ * phones (internal/docs/interfacealpha/reactive-player-log.md, M1).
  */
 export type OutputRoute = 'speaker' | 'wired' | 'usb' | 'bluetooth' | 'other';
 

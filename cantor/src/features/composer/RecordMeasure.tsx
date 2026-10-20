@@ -26,7 +26,7 @@ import type { TuneTake } from './draft';
 import { Fermata, LEDGER_NOTE_STYLE, Underway, useReach } from '../controls';
 import { type, usePalette } from '../../theme/tokens';
 
-/** KNOBS — the record measure (docs/plans/audio-prompting-design.md). */
+/** KNOBS — the record measure (internal/docs/plans/audio-prompting-design.md). */
 export const RECORD_KNOBS = {
   /** Longest take; reaching it stops, never discards. */
   TAKE_MAX_S: 30,

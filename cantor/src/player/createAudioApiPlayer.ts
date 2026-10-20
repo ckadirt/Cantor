@@ -17,7 +17,7 @@ import type { ChannelWindow, SampleRequest, SampleWindow } from './types';
  * The fallback behind the native reduction (`nativeSamples.ts`): it answers
  * only what the platform decoder cannot, ALAC and AIFF among them. The decode
  * is the expensive part: a three-minute song is roughly 69 MB of
- * float samples (measured in `docs/interface/m3-audio-gate.md`). The buffer is
+ * float samples (measured in `internal/docs/interface/m3-audio-gate.md`). The buffer is
  * dropped as soon as it has been reduced, and callers are expected to ask for
  * one song at a time rather than a whole shelf.
  */

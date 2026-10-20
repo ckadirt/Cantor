@@ -712,7 +712,7 @@ export function FieldScreen({ identity }: Props) {
    * job's progress leaves as the same objects; the jobs where they are drawn.
    */
   /*
-   * The songs whose files live on this phone (device import, docs/import/).
+   * The songs whose files live on this phone (device import, internal/docs/import/).
    * Opened once; if the database cannot be opened the field shows node songs
    * only, as it did before import existed.
    */
@@ -780,7 +780,7 @@ export function FieldScreen({ identity }: Props) {
     createFieldControllerStore(runtime.store, deviceLibrary.store, network),
   );
   /**
-   * An album the phone's folder page asked for (docs/import/flow-plan.md,
+   * An album the phone's folder page asked for (internal/docs/import/flow-plan.md,
    * I7h): the blind closes, the field takes the ALBUM arrangement, and once
    * that re-cut has landed the camera descends into the album's group.
    */
@@ -811,7 +811,7 @@ export function FieldScreen({ identity }: Props) {
     },
     [arrangementKey],
   );
-  /** The phone's page in the nodes blind (docs/import/flow-plan.md, I7f). */
+  /** The phone's page in the nodes blind (internal/docs/import/flow-plan.md, I7f). */
   const phoneActions = useMemo(
     () => ({
       requestPermission: () => deviceLibrary.requestPermission(),
@@ -1314,7 +1314,7 @@ export function FieldScreen({ identity }: Props) {
       : indexRuns(mapLayout, arrangement);
   }, [arrangement, mapLayout, viewport]);
   /*
-   * Songs that just arrived from the phone (docs/import/flow-plan.md, I7j):
+   * Songs that just arrived from the phone (internal/docs/import/flow-plan.md, I7j):
    * armed when a bring-in commits — held at a point behind the blind — and
    * opened album by album when the blind lifts, with the camera in the group
    * of the first of them and the meta line saying how many came. A plan is

@@ -10,7 +10,7 @@ import type { MotionFrame } from './motion/motionFrame';
  * *how present* it is; the lens decides only what it looks like there. So a new
  * lens is a new file here and one entry in `LENSES`, and nothing under
  * `features/field/` changes. That is the whole point of R6 in
- * `docs/refactor/field-rewrite-log.md`, which also has the port order: this
+ * `internal/docs/refactor/field-rewrite-log.md`, which also has the port order: this
  * contract grows one method per step as the renderer's lens code moves behind
  * it.
  *

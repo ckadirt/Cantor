@@ -6,7 +6,7 @@ import {
   nativeMedia,
 } from '../native';
 
-// Taken from the Xiaomi (docs/import/log.md, I0 and I3).
+// Taken from the Xiaomi (internal/docs/import/log.md, I0 and I3).
 const row = {
   mediaId: 1000000776,
   path: '/storage/emulated/0/Music/cantor-import-test/Test Artist/Fixture Album/01 - Tone MP3.mp3',

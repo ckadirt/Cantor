@@ -9,7 +9,7 @@ import { MAP_KNOBS, hubCoverPath } from './nativeMap';
 
 /**
  * The covers of the albums opened lately, by art file name — in memory only.
- * The ASCII is never stored (docs/import/plan.md § Decisions 1): a cover is
+ * The ASCII is never stored (internal/docs/import/plan.md § Decisions 1): a cover is
  * made from the album's thumbnail when it is opened, and a few are kept so
  * stepping back and forth along an album does not ask again.
  */

@@ -9,7 +9,7 @@ import {
   rowsToInspect,
 } from '../resolve';
 
-// Rows and tags exactly as the Xiaomi reported them (docs/import/log.md, I3).
+// Rows and tags exactly as the Xiaomi reported them (internal/docs/import/log.md, I3).
 const ROOT = '/storage/emulated/0/Music/cantor-import-test';
 const ALBUM = `${ROOT}/Test Artist/Fixture Album`;
 const NOW = 1_790_600_000_000;

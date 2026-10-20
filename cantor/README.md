@@ -3,7 +3,7 @@
 A new way to interact with music. Cantor generates full songs through a paired local node today, with on-device generation as the destination and no cloud inference required. It is built around the ACE-Step 1.5 music model. This repo is the **React Native app** (RN 0.86, bare CLI, `applicationId com.cantor.app`).
 
 Changing app code? Read [`AGENTS.md`](AGENTS.md) for product and motion rules
-and [`../docs/refactor/hacking-app.md`](../docs/refactor/hacking-app.md) for the
+and [`../contributing/hacking-app.md`](../contributing/hacking-app.md) for the
 module map, layering rules, and extension recipes. This file is about building
 and running the app.
 

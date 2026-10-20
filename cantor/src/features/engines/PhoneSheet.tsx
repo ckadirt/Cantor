@@ -51,7 +51,7 @@ import {
   type PhonePageKind,
 } from './phoneState';
 
-/** KNOBS — the phone's page (docs/import/flow-plan.md, I7f and I7g). */
+/** KNOBS — the phone's page (internal/docs/import/flow-plan.md, I7f and I7g). */
 export const PHONE_SHEET_KNOBS = {
   /** A folder's cover in the summary's label column. */
   FOLDER_COVER_PX: 34,

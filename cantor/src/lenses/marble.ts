@@ -18,9 +18,9 @@
  * fixed the moment it falls, and the whole surface is one even-odd path of
  * the rings whose colour differs from their parent's (`toggle`).
  *
- * The reference implementation is `docs/interfacealpha/lenses-four.html`,
+ * The reference implementation is `internal/docs/interfacealpha/lenses-four.html`,
  * section IV (`MARBLE`); where this file and the page disagree about a number,
- * the page is right unless `docs/interfacealpha/marbling-log.md` says why not.
+ * the page is right unless `internal/docs/interfacealpha/marbling-log.md` says why not.
  *
  * Geometry only: no Skia here, so it can be tested without a canvas.
  * Coordinates are the bath's own units: the identity's drops have radii of a

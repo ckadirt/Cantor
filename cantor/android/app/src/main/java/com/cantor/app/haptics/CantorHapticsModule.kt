@@ -13,7 +13,7 @@ import com.facebook.react.bridge.UiThreadUtil
  * `View.performHapticFeedback` rather than the vibrator: the constants are the
  * system's, so each one feels the way the rest of the phone does and honours
  * the person's touch-feedback setting, and it needs no permission. The app
- * rations these to four places (docs/interfacealpha/folio-steps.md, F7).
+ * rations these to four places (internal/docs/interfacealpha/folio-steps.md, F7).
  */
 class CantorHapticsModule(context: ReactApplicationContext) :
     ReactContextBaseJavaModule(context) {

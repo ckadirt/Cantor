@@ -17,7 +17,7 @@ export type LensSong = Readonly<{
   /**
    * `SongHeader.seed` when the node sent one. With the model and the duration
    * this is the whole recipe, which is what a lens draws the song's face from —
-   * see `face.ts` and `docs/interface/alpha-design.md`.
+   * see `face.ts` and `internal/docs/interface/alpha-design.md`.
    */
   seed: number | undefined;
   nodeLabel: string;

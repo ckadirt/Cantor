@@ -53,7 +53,7 @@ function PlayerHostImpl({
     const interruption = AudioManager.addSystemEventListener(
       'interruption',
       event => {
-        // Only `began` ever arrives (docs/interface/m3-audio-gate.md); the
+        // Only `began` ever arrives (internal/docs/interface/m3-audio-gate.md); the
         // adapter's policy is to pause and stay paused.
         if (event.type === 'began') player.onInterruption();
       },

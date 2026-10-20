@@ -6,7 +6,7 @@ import { NativeModules } from 'react-native';
  * Values are exactly what Android reports; reading them — `<unknown>` for a
  * missing artist, the folder's name for a missing album, `disc × 1000 + track`
  * in `track`, `disc` as the tag's text (`1/1`) — is the resolver's job
- * (docs/import/plan.md § MediaStore traps). Null means the column was empty,
+ * (internal/docs/import/plan.md § MediaStore traps). Null means the column was empty,
  * or does not exist before Android 11 (`albumArtist`, `disc`, `genre`,
  * `generation`).
  */

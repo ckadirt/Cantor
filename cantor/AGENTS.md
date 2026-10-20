@@ -5,9 +5,9 @@ all work under `cantor/`. The code remains the source of truth when details drif
 update this file when the product direction or established motion rules change.
 
 For the app's module map, dependency rules, extension recipes, and review
-checklist, see [`../docs/refactor/hacking-app.md`](../docs/refactor/hacking-app.md).
+checklist, see [`../contributing/hacking-app.md`](../contributing/hacking-app.md).
 For where a change belongs across the whole repository, see
-[`../docs/refactor/architecture.md`](../docs/refactor/architecture.md).
+[`../contributing/architecture.md`](../contributing/architecture.md).
 
 ## Product vision
 

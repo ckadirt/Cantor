@@ -3,7 +3,7 @@ import { circlePlayerOf } from '../../../lenses/circleMotion';
  * Golden pixels for everything a lens draws — the guard for R6.
  *
  * R6 moves the circle and the seal behind one lens contract without changing
- * a pixel of what either draws (see `docs/refactor/field-rewrite-log.md`,
+ * a pixel of what either draws (see `internal/docs/refactor/field-rewrite-log.md`,
  * "R6 plan"). The other tests here read the draw *calls*; a port reorganises
  * the calls, so those tests would move with it and prove nothing. This one
  * rasterises the frames with real CanvasKit and pins a hash of the pixels, so
@@ -359,7 +359,7 @@ describe('golden pixels: faces', () => {
 });
 
 /**
- * The imported marker (docs/import I6a): the same songs with `imported` set,
+ * The imported marker (internal/docs/import I6a): the same songs with `imported` set,
  * as a device song's recipe has it. Each lens draws its spindle in its own
  * form, at the mark, the row, and through the descent, where the circle keeps
  * it as the player's hub and the seal lets it go.
@@ -437,7 +437,7 @@ describe('golden pixels: the imported mark', () => {
 });
 
 /**
- * The cover (docs/import I6c): the circle growing into the player, and the
+ * The cover (internal/docs/import I6c): the circle growing into the player, and the
  * album's picture as glyphs rising once the camera is there — or, with no
  * cover, the circle's own player.
  */

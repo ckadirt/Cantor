@@ -1,6 +1,6 @@
 /**
  * Marbling's sound: the song's strokes in time, from its motion track — the
- * page's `timelineOf` (`docs/interfacealpha/lenses-four.html`, `MARBLE`).
+ * page's `timelineOf` (`internal/docs/interfacealpha/lenses-four.html`, `MARBLE`).
  *
  * - **A drop on every bar**, at the playhead's place round the dial, sized by
  *   the bar's loudness and its kick, ink and clear water by turns, so the bars

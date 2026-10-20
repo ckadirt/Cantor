@@ -1,7 +1,7 @@
 import { NativeModules } from 'react-native';
 
 /**
- * The app's haptics, rationed (docs/interfacealpha/folio-steps.md, F7):
+ * The app's haptics, rationed (internal/docs/interfacealpha/folio-steps.md, F7):
  *
  * | Kind | Where |
  * | --- | --- |

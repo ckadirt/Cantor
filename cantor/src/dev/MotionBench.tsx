@@ -1,7 +1,7 @@
 /**
  * The motion analysis bench — not shipped UI. Flip MOTION_BENCH in App.tsx.
  *
- * The reactive player's M2 exit (docs/interfacealpha/reactive-player-log.md):
+ * The reactive player's M2 exit (internal/docs/interfacealpha/reactive-player-log.md):
  * the native motion track timed on the phone, release build, median of five,
  * decode and analysis apart. Reads `<len>-<rate>.<ext>` from the app's own
  * external files directory, which `adb push` can reach on the test phone:

@@ -18,7 +18,7 @@ export type AppStatePort = Readonly<{
 /**
  * Look at the phone's music the way a music player does: once when Cantor
  * opens, and again each time it comes back to the foreground
- * (docs/import/flow-plan.md, I7d). `refresh` does the deciding — nothing
+ * (internal/docs/import/flow-plan.md, I7d). `refresh` does the deciding — nothing
  * without the permission or before music was ever brought in, one native call
  * when nothing changed — so this only says when.
  *

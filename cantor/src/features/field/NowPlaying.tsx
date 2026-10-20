@@ -36,7 +36,7 @@ import { space, type Palette } from '../../theme/tokens';
  * The song the player holds, as the header's one act on the map: its own face
  * inside the ring the map draws round it, and its name.
  *
- * `docs/interfacealpha/now-playing-variants.html` § I, "The song, in
+ * `internal/docs/interfacealpha/now-playing-variants.html` § I, "The song, in
  * miniature". The face is the lens's identity — the same mark you tapped on
  * the map — turning slowly while the song sounds; the ring is the clock, its
  * ink arc how far into the song you are. Once the song's motion track is

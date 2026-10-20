@@ -62,7 +62,7 @@ export type NowPlaying = {
  * `source` is the element's *intent*: the host renders exactly one `<Audio>` for
  * as long as a source exists, and changes only the `source` prop when the track
  * changes. Replacing an element's source leaks about 1.6 MB per load
- * (`docs/interface/m3-audio-gate.md`), so a spurious swap is a real cost, not a
+ * (`internal/docs/interface/m3-audio-gate.md`), so a spurious swap is a real cost, not a
  * style issue — the adapter never assigns a source it already has.
  */
 /**
@@ -114,7 +114,7 @@ export class AudioApiPlayer implements PlayerPort {
    * True while the adapter paused because something else took the audio output.
    *
    * The library reports `began` and never reports `ended`
-   * (`docs/interface/m3-audio-gate.md`), so this is only ever cleared by the
+   * (`internal/docs/interface/m3-audio-gate.md`), so this is only ever cleared by the
    * user pressing play. Nothing here waits for a resume event, because none
    * arrives.
    */

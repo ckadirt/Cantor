@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Build the device-import fixtures: one 30 s tone per format, tagged as one
-album, plus untagged loose files and a 3 s blip. See docs/import/log.md.
+album, plus untagged loose files and a 3 s blip. See internal/docs/import/log.md.
 
     python3 cantor/scripts/import-fixtures.py [out_dir]
     adb push <out_dir> /sdcard/Music/

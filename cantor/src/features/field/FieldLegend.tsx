@@ -62,7 +62,7 @@ const SAMPLE: FaceRecipe = {
  * One `<Canvas>` under the whole row, not one per mark: a canvas outside the
  * field is a TextureView the window composites on every frame it draws, and
  * the header and foot animate on every level change (the R5a trap in
- * `docs/refactor/field-rewrite-log.md`). The words are laid out by React; the
+ * `internal/docs/refactor/field-rewrite-log.md`). The words are laid out by React; the
  * marks are drawn where each word's item says it starts.
  */
 export function FieldLegend({

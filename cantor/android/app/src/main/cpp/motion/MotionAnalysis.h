@@ -2,7 +2,7 @@
 // from the decoded audio, for the player that moves in time with the music.
 //
 // A port of `analyse`, `beatSync`, `structureOf` and `labelSegments` from
-// docs/interfacealpha/reactive-player.html, which is the reference: every
+// internal/docs/interfacealpha/reactive-player.html, which is the reference: every
 // constant here is the page's, and `scripts/motion-check.mjs` holds the two
 // against each other on the fixture songs. Where this file departs from the
 // page it says so and why (search for "Departs").

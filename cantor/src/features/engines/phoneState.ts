@@ -3,7 +3,7 @@ import type { FolderSummary } from '../../device/folders';
 
 /**
  * What the phone's page and its roster line say, from the device store alone
- * (docs/import/flow-plan.md, I7e and I7f). Pure, so every life of the page is
+ * (internal/docs/import/flow-plan.md, I7e and I7f). Pure, so every life of the page is
  * tested without drawing it.
  */
 

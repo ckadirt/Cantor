@@ -20,7 +20,7 @@ import { touch, usePalette } from '../../theme/tokens';
 
 /**
  * KNOBS — a destructive act, held rather than confirmed
- * (`docs/interfacealpha/folio.html#weight`).
+ * (`internal/docs/interfacealpha/folio.html#weight`).
  */
 export const STRIKE_KNOBS = {
   /** How long the rule takes to cross the word: the hold that acts. */

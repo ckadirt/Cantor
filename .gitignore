@@ -35,24 +35,8 @@ icons/
 /*.html
 
 implementation-notes.md
-reports/*
-!reports/todo.md
-docs/*
-!docs/refactor/
-!docs/refactor/**
-!docs/import/
-!docs/import/**
-!docs/interface/
-!docs/interface/**
-!docs/private-library-milestones/
-docs/private-library-milestones/*
-!docs/private-library-milestones/implementation-notes.md
-!docs/private-library-milestones/milestone-0-implementation-report.html
-!docs/private-library-milestones/milestone-1-implementation-report.html
-!docs/private-library-milestones/milestone-2-implementation-report.html
-!docs/private-library-milestones/milestone-3-implementation-report.html
-!docs/private-library-milestones/milestone-4-implementation-report.html
-!docs/private-library-milestones/milestone-6-implementation-report.html
-!docs/private-library-milestones/milestone-6-security-adr.md
+
+# Private plans, logs, prototypes, and reports: kept on disk, never tracked.
+/internal/
 
 .env

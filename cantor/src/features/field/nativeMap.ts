@@ -67,7 +67,7 @@ export const MAP_KNOBS = {
  * the Xiaomi (release build, A/B). This is one draw and eight numbers, made
  * at the head of the faces' own recording rather than as a picture of its
  * own — a picture is a mapper, and every mapper is installed again on every
- * re-cut (`docs/refactor/field-rewrite-log.md`, "L0 design pass").
+ * re-cut (`internal/docs/refactor/field-rewrite-log.md`, "L0 design pass").
  */
 const LATTICE_SKSL = `
 uniform float2 origin;

@@ -3,7 +3,7 @@
  * whose density is how dark the cell is — the cover the way a terminal would
  * print it, in the field's own hairline.
  *
- * Never stored (docs/import/plan.md § Decisions 1): the album's small cached
+ * Never stored (internal/docs/import/plan.md § Decisions 1): the album's small cached
  * thumbnail is reduced natively to `COVER_KNOBS.CELLS`² brightness values
  * (`nativeMedia.artworkLuma`) whenever a song with it is opened, and this
  * turns them into glyph levels. Both steps are milliseconds.

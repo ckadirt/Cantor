@@ -2,7 +2,7 @@ import { mulberry32 } from '../lenses/face';
 import { fnv1a } from './hash';
 
 /**
- * KNOBS — Station, the node's mark (`docs/interfacealpha/nodes.html#mark`):
+ * KNOBS — Station, the node's mark (`internal/docs/interfacealpha/nodes.html#mark`):
  * a polygon drawn from the node's public key, with one edge left open as its
  * gate, and a dot inside for each model it has installed.
  *

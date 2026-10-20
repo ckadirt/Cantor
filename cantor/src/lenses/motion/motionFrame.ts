@@ -7,7 +7,7 @@ import type { MotionSection, MotionTrack } from './motionTrack';
  * seek, a scrub or reduced motion lands on the right frame, and a hit may rise
  * before it sounds: the attack kernel looks ahead. A port of the reference
  * page's `features`, `beatAt`, `recent`, `tensionAt` and `structureAt`
- * (docs/interfacealpha/reactive-player.html); its numbers are checked against
+ * (internal/docs/interfacealpha/reactive-player.html); its numbers are checked against
  * the page's own in `__tests__/motionFrame.test.ts`.
  *
  * Lenses see only this, never the track or the clock: a lens stays what a song

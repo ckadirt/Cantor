@@ -1,7 +1,7 @@
 # cantor
 
 Changing this daemon? Read
-[`../docs/refactor/hacking-node.md`](../docs/refactor/hacking-node.md) first —
+[`../contributing/hacking-node.md`](../contributing/hacking-node.md) first —
 module map, layering rules, extension recipes, and the traps that bite.
 
 The node owns a stable Ed25519 identity, claims its relay room, authenticates

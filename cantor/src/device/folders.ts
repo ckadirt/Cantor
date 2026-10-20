@@ -3,7 +3,7 @@ import type { DeviceLibrary } from './repository';
 
 /**
  * The folders a person keeps or leaves out, and the summary drawn before any
- * file is opened (docs/import/flow-plan.md, I7a).
+ * file is opened (internal/docs/import/flow-plan.md, I7a).
  *
  * A folder here is a hint, never an album: the summary counts what MediaStore
  * lists under it and claims nothing about how the resolver will group it.

@@ -71,7 +71,7 @@ Who consumes what today:
 | `fragment.json` | `secure/fragment.rs` | — | — | `FragmentCodecTest` | `transport.test.mjs` |
 | `inner.json` | `secure/inner.rs` | `security/__tests__/inner.test.ts` | — | — | `transport.test.mjs` |
 | `identity.json` | `secure.rs` | `security/__tests__/descriptor.test.ts` | — | `TransportFixtureTest` | `transport.test.mjs` |
-| `negotiation.json` | `secure.rs`, `secure/negotiation.rs` | `secureTunnel.test.ts` | — | — | — |
+| `negotiation.json` | `secure.rs`, `secure/negotiation.rs` | `security/__tests__/descriptor.test.ts` | — | — | — |
 
 A malformed vector may record *different* rejection layers per language; that is
 what the `rust` and `kotlin` keys inside a vector mean. One such difference is

@@ -67,7 +67,7 @@ import { SEAL_PLAYER_KNOBS } from './seal';
  * Drawn the page's way, marbling is hundreds of filled shapes that all change
  * on every drop — the worst case for `cantor/AGENTS.md`'s rule that a path
  * changing every frame is rasterised on the CPU every frame. So the player is
- * split by how fast things change (docs/interfacealpha/marbling-plan.md):
+ * split by how fast things change (internal/docs/interfacealpha/marbling-plan.md):
  *
  * 1. **The settled bath**, on the JS thread (`bakeMarble`): every ring pushed
  *    through every op that has finished landing, drawn once into an image —

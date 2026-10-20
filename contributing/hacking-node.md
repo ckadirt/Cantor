@@ -40,6 +40,15 @@ An adapter may depend on the core. The core may never depend on an adapter. If
 | `service.rs`, `process_lock.rs` | systemd/launchd adapters, detached lifecycle, config/socket lifetime locks |
 | `runtime/` | `NodeState`, `SharedState`, and `NodeEvent` |
 | `principal.rs` | `PrincipalId`, the canonical owner identity |
+| `identity.rs`, `signing.rs`, `pairing.rs` | the node's Ed25519 identity, the domain-separated signing preimages, pairing tokens and the `cantor://pair` URI |
+| `catalog.rs`, `store.rs` | the published model catalog and the content-addressed blob store for weights (`cantor pull`) |
+| `backends.rs`, `engine.rs`, `accel.rs` | the engine manifest and engine store, loading an engine over its C ABI, and what backends this machine can run |
+| `generate.rs`, `checkpoints.rs`, `capabilities.rs` | driving an engine's stages, durable stage checkpoints, and what each installed model advertises |
+| `audio/` | decoding, tiling, and preparing audio sources (see "Audio prompts" below) |
+| `cuda_runtime.rs` | the managed NVIDIA runtime (see "CUDA runtime preparation") |
+| `update.rs` | `cantor upgrade`: self-update against GitHub Releases |
+| `config.rs`, `menu.rs` | `node.toml` and the arrow-key chooser the installer and CLI use |
+| `session.rs`, `jobs.rs` | compatibility re-exports for code that has not moved under `application/` and `jobs/` |
 
 ## The rules that are not obvious
 
@@ -107,8 +116,7 @@ else the manifest's build if installed, else the newest recorded one. A node
 whose manifest moved on, or cannot be reached, keeps running the build it has.
 `cantor backends --update` fetches the manifest's builds without loading them;
 `cantor upgrade` runs it before its restart. Two builds of one family never
-share a process: they would share a ggml SONAME. The plan for background
-fetching and idle restarts is `docs/plans/engine-updates-plan.md`.
+share a process: they would share a ggml SONAME.
 
 A node older than v0.2.1 only runs the build the manifest names. Publishing a
 new build breaks it until `cantor backends --install` and a restart.
@@ -265,8 +273,7 @@ encrypted carrier frames, node authentication, and a `status` round trip.
 
 ## Portable lifecycle
 
-See [the portability plan](node-portability-plan.md) for lifecycle ownership and
-release sequencing. `daemon-stop` is a local Unix control request only; it must
+`daemon-stop` is a local Unix control request only; it must
 never become an application/relay request. Never replace the kernel locks with
 a PID-file kill scheme. The installer records custom config paths in
 `installation.toml`; existing node config and library layouts remain intact.
@@ -321,7 +328,7 @@ Rules:
   catalog declares no `stages` for audio capabilities.
 - **A request's `title` names its song** (`library/songs.rs`); without one
   the song is named from its caption, as before.
-- **Acts are declared beside capabilities** (structures plan S3). A catalog
+- **Acts are declared beside capabilities.** A catalog
   variant's `acts` (copied into the install marker with `capabilities`) say
   what a person can do with a sound: an id, the capability it `needs`, its
   sources and its typed inputs (`prompt`, `words`, `voice`, `follow`,
@@ -338,7 +345,7 @@ Rules:
   `AudioPrompt` fields) and in the app (its row). `Acts` parses leniently:
   an act this build cannot fill is dropped, never half-offered.
 - **LISTEN (`Stage::Listen`, bit 6) describes an upload for an empty
-  prompt** (plan D15). A job listens after `encode` exactly when it is an
+  prompt.** A job listens after `encode` exactly when it is an
   audio act whose caption is still empty (`runner::listens`); when LISTEN
   finishes, `record_heard` writes `cantor_engine_heard`'s caption into the
   job's request, so a resumed job never listens twice and the recipe says

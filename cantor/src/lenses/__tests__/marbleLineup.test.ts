@@ -6,7 +6,7 @@ import { ARRIVING_NONE, type MarkPaints } from '../contract';
 import { MARBLE_MARK_REACH_PX, drawMarbleMark, marbleMarkOf } from '../marbleMark';
 
 /*
- * The marbling plan's M0 line-up (docs/interfacealpha/marbling-plan.md): the
+ * The marbling plan's M0 line-up (internal/docs/interfacealpha/marbling-plan.md): the
  * four candidate marks mixed on one field at the size they stand at, in every
  * ink and both palettes, so the lens can be judged where it has to live. The
  * circle, the seal and marbling are the app's own drawing; the Spirograph is

@@ -3,7 +3,7 @@
  *
  * The shape is a pure function of the song's *recipe* — seed, model and
  * duration — which every `SongHeader` already carries. That is deliberate and
- * documented in `docs/interface/alpha-design.md`: shape is identity, position is
+ * documented in `internal/docs/interfacealpha/alpha-design.md`: shape is identity, position is
  * similarity, and the two are separate axes. Deriving the face from the recipe
  * means it needs no audio, no storage and no node work, it is identical on every
  * device, and it exists at submit time — which is what lets a generating job
@@ -76,7 +76,7 @@ export type FaceRecipe = Readonly<{
   /**
    * True for a song imported from the phone's own files. Its seed comes from
    * its tags (`metadataSeed`) and every lens adds the imported marker to its
-   * identity — see `docs/import/plan.md` § Decisions 1.
+   * identity — see `internal/docs/import/plan.md` § Decisions 1.
    */
   imported?: boolean;
 }>;

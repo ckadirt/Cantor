@@ -11,7 +11,7 @@ import { coverArtOf, type CoverArt } from '../../lenses/cover';
 import { coverPath } from '../../lenses/coverLens';
 import { usePalette } from '../../theme/tokens';
 
-/** KNOBS — covers on the phone's pages (docs/import/flow-plan.md, I7f–I7g). */
+/** KNOBS — covers on the phone's pages (internal/docs/import/flow-plan.md, I7f–I7g). */
 export const PHONE_MARK_KNOBS = {
   /** A folder's cover in the label column. */
   FOLDER_CELLS: 12,

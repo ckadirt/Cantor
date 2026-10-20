@@ -28,7 +28,7 @@ import { font, space, touch, type, usePalette } from '../../theme/tokens';
 
 /**
  * KNOBS — Folio, the one frame every blind is drawn in
- * (`docs/interfacealpha/folio.html#anatomy` and `#measures`).
+ * (`internal/docs/interfacealpha/folio.html#anatomy` and `#measures`).
  *
  * Like `LEDGER_KNOBS`, these are measured from the curtain's content edge,
  * which is already inset by the page margin: the drawing's x = 130 spine is

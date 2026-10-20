@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Synthetic songs whose beats and sections are known, for the motion analysis
-// (docs/interfacealpha/reactive-player-plan.md, M0 and M2).
+// (internal/docs/interfacealpha/reactive-player-plan.md, M0 and M2).
 //
 // Real songs have no ground truth and cannot be committed; these can be made
 // again bit for bit from this file. Each is written as a 16-bit WAV beside a
