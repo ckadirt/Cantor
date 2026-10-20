@@ -16,6 +16,7 @@ import {
 import type { Result } from 'react-native-audio-api/lib/typescript/types';
 import { detectPitch, semitones } from './pitch';
 import { sourceFileInfo, type SourceFileInfo } from './native';
+import { toFileUri } from '../player/audioApiPlayer';
 
 /** KNOBS */
 export const TUNE_RECORDER_KNOBS = {
@@ -136,7 +137,8 @@ export function createTuneRecorder(): TuneRecorderPort {
     },
     async listen(path, onEnd) {
       const context = new AudioContext();
-      const buffer = await context.decodeAudioData(path);
+      // A bare path is read as a bundled asset in a release build.
+      const buffer = await context.decodeAudioData(toFileUri(path));
       const source = context.createBufferSource();
       source.buffer = buffer;
       source.connect(context.destination);
