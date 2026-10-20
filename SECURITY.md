@@ -27,10 +27,10 @@ the project.
 - Availability attacks, traffic analysis, malicious endpoint software, and
   anonymous routing are outside this transport's guarantees.
 
-The wire limits are the transport manifest,
-[`protocol/transport/v1/spec.json`](protocol/transport/v1/spec.json); the
-construction and its rules are in
-[`contributing/hacking-protocol.md`](contributing/hacking-protocol.md).
+The exact construction is recorded in
+[`contributing/transport-security.md`](contributing/transport-security.md); the
+wire limits are the transport manifest,
+[`protocol/transport/v1/spec.json`](protocol/transport/v1/spec.json).
 
 ## Release gate
 
