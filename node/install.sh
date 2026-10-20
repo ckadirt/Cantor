@@ -2,7 +2,7 @@
 
 set -eu
 
-# Published command: curl -fsSL https://cantor.ckadirt.xyz/install.sh | sh
+# Published command: curl -fsSL https://relay.cantorfm.com/install.sh | sh
 # Read prompts from the controlling terminal, independently of script input.
 
 cantor_fail() {
@@ -161,7 +161,7 @@ if [ "$cantor_os" = Linux ] && command -v systemctl >/dev/null 2>&1 &&
   cantor_has_systemd=1
 fi
 
-cantor_relay_url=${CANTOR_RELAY_URL:-wss://cantor.ckadirt.xyz}
+cantor_relay_url=${CANTOR_RELAY_URL:-wss://relay.cantorfm.com}
 cantor_node_name=${CANTOR_NODE_NAME:-$(hostname)}
 cantor_model_dir=${CANTOR_MODEL_DIR:-"$cantor_default_model_dir"}
 cantor_library_dir=${CANTOR_LIBRARY_DIR:-"$cantor_default_library_dir"}

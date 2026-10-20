@@ -78,7 +78,7 @@ jobs:
         run: |
           set -eu
           for attempt in 1 2 3 4 5 6; do
-            if node relay/scripts/smoke.mjs https://cantor.ckadirt.xyz; then
+            if node relay/scripts/smoke.mjs https://relay.cantorfm.com; then
               exit 0
             fi
             echo "relay rooms not answering yet; retrying in 10s (attempt $attempt)"
@@ -95,7 +95,7 @@ jobs:
         run: |
           set -eu
           for attempt in 1 2 3 4 5 6; do
-            curl -fsSL https://cantor.ckadirt.xyz/install.sh -o published-install.sh || true
+            curl -fsSL https://relay.cantorfm.com/install.sh -o published-install.sh || true
             if [ -s published-install.sh ] && diff -q node/install.sh published-install.sh >/dev/null; then
               echo "published install.sh matches node/install.sh (attempt $attempt)"
               exit 0

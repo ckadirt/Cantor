@@ -85,7 +85,7 @@ edited manually.
 
 ## Models
 
-The catalog at `https://cantor.ckadirt.xyz/catalog/v1.json` lists models,
+The catalog at `https://relay.cantorfm.com/catalog/v1.json` lists models,
 variants and their component blobs. It is data: hosting can move and variants
 can be added without touching an installed node.
 
@@ -211,7 +211,7 @@ variant of that model.
 ## Linux and macOS installer
 
 ```sh
-curl -fsSL https://cantor.ckadirt.xyz/install.sh | sh
+curl -fsSL https://relay.cantorfm.com/install.sh | sh
 ```
 
 Run as your normal user. The installer places the command in `~/.local/bin`,

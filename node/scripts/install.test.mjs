@@ -96,7 +96,7 @@ test('piped install prompts on the terminal and continues after detached start',
       ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, CALLS: calls,
       XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.data'),
       CANTOR_NODE_BINARY: join(bin, 'source'), CANTOR_NODE_NAME: 'pipe-test',
-      CANTOR_RELAY_URL: 'wss://cantor.ckadirt.xyz', CANTOR_NON_INTERACTIVE: '0',
+      CANTOR_RELAY_URL: 'wss://relay.cantorfm.com', CANTOR_NON_INTERACTIVE: '0',
       CANTOR_MODEL_DIR: join(home, 'models'), CANTOR_LIBRARY_DIR: join(home, 'library'),
     }});
     assert.equal(result.status, 0, result.stderr);
@@ -133,7 +133,7 @@ exit 0`);
       ...process.env, HOME: home, PATH: `${bin}:${process.env.PATH}`, CALLS: calls,
       XDG_CONFIG_HOME: join(home, '.config'), XDG_DATA_HOME: join(home, '.data'),
       CANTOR_NODE_BINARY: join(bin, 'source'), CANTOR_NODE_NAME: 'backend-test',
-      CANTOR_RELAY_URL: 'wss://cantor.ckadirt.xyz', CANTOR_NON_INTERACTIVE: '0',
+      CANTOR_RELAY_URL: 'wss://relay.cantorfm.com', CANTOR_NON_INTERACTIVE: '0',
       CANTOR_MODEL_DIR: join(home, 'models'), CANTOR_LIBRARY_DIR: join(home, 'library'),
     }});
     assert.equal(result.status, 0, result.stderr);

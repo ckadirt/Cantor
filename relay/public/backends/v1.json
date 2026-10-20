@@ -8,28 +8,28 @@
         {
           "backend": "cpu",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/770cf30f3394/acestep-engine-cpu-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/770cf30f3394/acestep-engine-cpu-x86_64.tar.gz",
           "sha256": "875da8f01feae436a9bba9299061df234af8e8f25764696429c9f1eee1f2e865",
           "bytes": 8164548
         },
         {
           "backend": "cuda12",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/770cf30f3394/acestep-engine-cuda12-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/770cf30f3394/acestep-engine-cuda12-x86_64.tar.gz",
           "sha256": "83b70acd6f9bfe045fdedfa2b89ef775d0b0a6a7661d6e3115895ca75fe0c219",
           "bytes": 118003703
         },
         {
           "backend": "vulkan",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/770cf30f3394/acestep-engine-vulkan-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/770cf30f3394/acestep-engine-vulkan-x86_64.tar.gz",
           "sha256": "36d65f01ec6c4133162aa14f7fd7cdcf85f697c522131c862ccc4878c1721083",
           "bytes": 24069532
         },
         {
           "backend": "cpu",
           "arch": "arm64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/770cf30f3394/acestep-engine-cpu-arm64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/770cf30f3394/acestep-engine-cpu-arm64.tar.gz",
           "sha256": "b2a8df64687782075d8778b63f097cbb28fc76e2e2bfc359d11bd75a6ba8dbb2",
           "bytes": 13889385
         }
@@ -42,21 +42,21 @@
         {
           "backend": "cpu",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/cfd1635beb5a/levo2-engine-cpu-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/cfd1635beb5a/levo2-engine-cpu-x86_64.tar.gz",
           "sha256": "ddc7a353013cb243032f67e9c95c6a0bd08cd4019002129168fbc4d76d2de186",
           "bytes": 6361364
         },
         {
           "backend": "cuda12",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/cfd1635beb5a/levo2-engine-cuda12-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/cfd1635beb5a/levo2-engine-cuda12-x86_64.tar.gz",
           "sha256": "08c59d586a493f5b7c88a8ca96f8e82efd0f68935494768b82dc771f2e86990a",
           "bytes": 101793203
         },
         {
           "backend": "vulkan",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/cfd1635beb5a/levo2-engine-vulkan-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/cfd1635beb5a/levo2-engine-vulkan-x86_64.tar.gz",
           "sha256": "468f7740b89a4730c51254ae8debc146c83519dc1ca98dd80305a7cd4f82eb42",
           "bytes": 22320440
         }
@@ -69,21 +69,21 @@
         {
           "backend": "cpu",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/eb49ef3eb6d0/minimax-music3-engine-cpu-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/eb49ef3eb6d0/minimax-music3-engine-cpu-x86_64.tar.gz",
           "sha256": "9002c3a03970078cc28345fff5863810cc1938987eeaf54b5f6a52b859e23b60",
           "bytes": 7490481
         },
         {
           "backend": "cuda12",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/eb49ef3eb6d0/minimax-music3-engine-cuda12-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/eb49ef3eb6d0/minimax-music3-engine-cuda12-x86_64.tar.gz",
           "sha256": "af3ef7db20f969e3ed81738230beaf210d546a3ae2a5681baffa932336de2fef",
           "bytes": 102719491
         },
         {
           "backend": "vulkan",
           "arch": "x86_64",
-          "url": "https://cantor-ckpts.ckadirt.xyz/backends/eb49ef3eb6d0/minimax-music3-engine-vulkan-x86_64.tar.gz",
+          "url": "https://ckpts.cantorfm.com/backends/eb49ef3eb6d0/minimax-music3-engine-vulkan-x86_64.tar.gz",
           "sha256": "ddc73efef0466eaa6e0931a501331bc71e33e8c03bbae17549d8921c246ade0f",
           "bytes": 23413148
         }

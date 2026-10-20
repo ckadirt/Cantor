@@ -26,6 +26,11 @@
   ],
   "routes": [
     {
+      "pattern": "relay.cantorfm.com",
+      "custom_domain": true
+    },
+    // The old hostname: installed nodes and paired phones still dial it.
+    {
       "pattern": "cantor.ckadirt.xyz",
       "custom_domain": true
     }

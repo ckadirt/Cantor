@@ -20,7 +20,7 @@ use serde_json::Value;
 
 pub const SCHEMA_VERSION: u64 = 1;
 #[cfg(not(target_os = "macos"))]
-pub const DEFAULT_BACKENDS_URL: &str = "https://cantor.ckadirt.xyz/backends/v1.json";
+pub const DEFAULT_BACKENDS_URL: &str = "https://relay.cantorfm.com/backends/v1.json";
 #[cfg(target_os = "macos")]
 pub const DEFAULT_BACKENDS_URL: &str =
     "https://github.com/ckadirt/Cantor/releases/latest/download/backends-macos-v1.json";

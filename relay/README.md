@@ -77,13 +77,19 @@ npm run deploy:dry-run
 
 ## Production
 
-`wrangler.jsonc` binds the Worker to the `cantor.ckadirt.xyz` Custom Domain.
-After the local checks pass, deploy it with:
+`wrangler.jsonc` binds the Worker to two Custom Domains: `relay.cantorfm.com`
+and the older `cantor.ckadirt.xyz`. After the local checks pass, deploy it with:
 
 ```sh
 npx wrangler deploy
 ```
 
-Nodes and apps use `wss://cantor.ckadirt.xyz` as their base relay URL. The
-Worker remains the origin for every path on that hostname; Cloudflare creates
-and manages the DNS record and certificate declared by the Custom Domain.
+Nodes and apps use `wss://relay.cantorfm.com` as their base relay URL. The old
+hostname stays bound for as long as anything still dials it: an installed
+node's `relay_url`, a phone's saved pairing record, and node binaries up to
+v0.2.7, which fetch the catalog and engine manifest from it. Rooms are keyed by
+node public key, not hostname, so a node on one domain and a phone on the other
+meet in the same room. Model weights and engine archives are served from
+`ckpts.cantorfm.com` (and still from `cantor-ckpts.ckadirt.xyz`). The Worker
+remains the origin for every path on its hostnames; Cloudflare creates and
+manages the DNS records and certificates declared by the Custom Domains.
