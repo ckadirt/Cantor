@@ -32,25 +32,32 @@ const agentbox: ComposerTarget = {
   takesUploads: true,
 };
 
-function fakeRecorder(seconds: number) {
-  let hear: ((semitone: number | null, at: number) => void) | null = null;
+function fakeRecorder(...lengths: number[]) {
+  let hear: Parameters<TuneRecorderPort['start']>[0] | null = null;
+  let made = 0;
+  let ended: (() => void) | null = null;
   const recorder: TuneRecorderPort = {
-    start: jest.fn(async onPitch => {
-      hear = onPitch;
+    start: jest.fn(async onFrame => {
+      hear = onFrame;
     }),
     stop: jest.fn(async () => ({
-      path: '/cache/takes/tune-1.wav',
-      seconds,
+      path: `/cache/takes/tune-${++made}.wav`,
+      seconds: lengths[Math.min(made - 1, lengths.length - 1)],
       mediaType: 'audio/wav' as const,
       sha256: 'c'.repeat(64),
       bytes: 480_044,
     })),
     cancel: jest.fn(async () => {}),
-    listen: jest.fn(async () => () => {}),
+    listen: jest.fn(async (_path: string, onEnd: () => void) => {
+      ended = onEnd;
+      return () => onEnd();
+    }),
   };
   return {
     recorder,
-    sing: (semitone: number | null, at: number) => hear?.(semitone, at),
+    sing: (semitone: number | null, at: number) =>
+      hear?.({ at, semitone, level: 0.5 }),
+    finish: () => ended?.(),
   };
 }
 
@@ -114,7 +121,7 @@ describe('Hum a song', () => {
     expect(words()).toEqual(
       expect.arrayContaining([
         'COMPOSE · A TUNE',
-        'PRESS TO RECORD',
+        'RECORD',
         'TEMPO',
         'AS HUMMED',
       ]),
@@ -122,7 +129,7 @@ describe('Hum a song', () => {
     expect(words()).toContain('Record a tune first.');
 
     await press('Record a tune');
-    expect(words()).toContain('COUNTING IN');
+    expect(words()).toContain('COUNTING IN · 96 BPM');
     // Four beats at 96 bpm, then the recorder starts.
     await ReactTestRenderer.act(async () => {
       jest.advanceTimersByTime(4 * 625 + 10);
@@ -136,7 +143,9 @@ describe('Hum a song', () => {
 
     await press('Stop recording');
     expect(recorder.stop).toHaveBeenCalled();
-    expect(words()).toContain('0:10 · PRESS TO LISTEN');
+    expect(words()).toEqual(
+      expect.arrayContaining(['LISTEN', 'RECORD AGAIN', '0:10']),
+    );
 
     await press('Length: a full song');
     expect(words()).not.toContain("the model's choice");
@@ -159,6 +168,61 @@ describe('Hum a song', () => {
       sha256: 'c'.repeat(64),
       bytes: 480_044,
     });
+  });
+
+  it('listens back, and says where it is', async () => {
+    const { recorder, finish } = fakeRecorder(9.5);
+    const { words, press } = render(recorder);
+    await press('Start from a tune');
+    await press('Tempo: free');
+    await press('Record a tune');
+    await press('Stop recording');
+    await press('Listen to the tune');
+    expect(recorder.listen).toHaveBeenCalledWith(
+      '/cache/takes/tune-1.wav',
+      expect.any(Function),
+    );
+    expect(words()).toEqual(
+      expect.arrayContaining(['STOP', 'RECORD AGAIN', '0:00 OF 0:10']),
+    );
+    await ReactTestRenderer.act(async () => {
+      jest.advanceTimersByTime(4000);
+    });
+    expect(words()).toContain('0:04 OF 0:10');
+    await ReactTestRenderer.act(async () => finish());
+    expect(words()).toEqual(expect.arrayContaining(['LISTEN', '0:10']));
+  });
+
+  it('keeps the last take until a new one is kept', async () => {
+    const { recorder } = fakeRecorder(9.5, 1.2, 6);
+    const { words, press, type, onSubmit } = render(recorder);
+    await press('Start from a tune');
+    await press('Tempo: free');
+    await press('Record a tune');
+    await press('Stop recording');
+
+    // Again, but cancelled during the count-in: nothing is lost.
+    await press('Tempo: 96 beats a minute');
+    await press('Record the tune again');
+    expect(words()).toContain('COUNTING IN · 96 BPM');
+    await press('Cancel the count-in');
+    expect(words()).toEqual(expect.arrayContaining(['LISTEN', '0:10']));
+
+    // Again, but too short: the last take comes back.
+    await press('Tempo: free');
+    await press('Record the tune again');
+    await press('Stop recording');
+    expect(words()).toContain('TOO SHORT · KEPT THE LAST ONE');
+
+    // Again, from the middle of listening: the new take replaces it.
+    await press('Listen to the tune');
+    await press('Record the tune again');
+    await press('Stop recording');
+    expect(words()).toContain('0:06');
+
+    await type('Describe the song', 'warm acoustic pop');
+    await press('Make a song');
+    expect(onSubmit.mock.calls[0][3].path).toBe('/cache/takes/tune-3.wav');
   });
 
   it('refuses a take shorter than three seconds', async () => {

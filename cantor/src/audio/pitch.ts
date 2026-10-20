@@ -82,9 +82,102 @@ export function detectPitch(
   return { hz, clarity: 1 - middle };
 }
 
+/** KNOBS — how loud a frame reads, so the measure shows it hears an untuned sound. */
+export const LEVEL_KNOBS = {
+  /** RMS in decibels read as nothing, and as full. */
+  FLOOR_DB: -50,
+  CEILING_DB: -12,
+} as const;
+
+/**
+ * How loud a frame is, 0..1 on a decibel scale: a hum that never settles on a
+ * pitch still shows as sound arriving, so a quiet or wavering voice is not
+ * mistaken for a microphone that is not listening.
+ */
+export function frameLevel(samples: Float32Array): number {
+  const length = samples.length;
+  if (length === 0) return 0;
+  let energy = 0;
+  for (let i = 0; i < length; i += 1) energy += samples[i] * samples[i];
+  const rms = Math.sqrt(energy / length);
+  if (rms <= 0) return 0;
+  const db = 20 * Math.log10(rms);
+  const { FLOOR_DB, CEILING_DB } = LEVEL_KNOBS;
+  return Math.max(0, Math.min(1, (db - FLOOR_DB) / (CEILING_DB - FLOOR_DB)));
+}
+
 /** Semitones above A4 (440 Hz), the unit the line is drawn in. */
 export function semitones(hz: number): number {
   return 12 * Math.log2(hz / 440);
+}
+
+/** KNOBS — reading a take's frames as a line rather than as scattered marks. */
+export const STEADY_KNOBS = {
+  /** Voiced neighbours each side a frame is weighed against. */
+  NEIGHBOURS: 2,
+  /** Further than this from its neighbours' median, a frame is a misread (most often an octave). */
+  OUTLIER_SEMITONES: 5,
+  /** Unvoiced gaps this short between two voiced frames are a dropout, not a breath. */
+  BRIDGE_FRAMES: 2,
+  /** Voiced runs shorter than this are noise, not a note. */
+  MIN_RUN_FRAMES: 3,
+} as const;
+
+/**
+ * A take's pitch frames made fit to draw: a frame far from its neighbours is
+ * pulled to their median (YIN's octave slips), a dropout of a frame or two
+ * between voiced frames is bridged, and a voiced run too short to be a note
+ * is lifted off. Only the drawing reads this; the frames themselves are kept.
+ */
+export function steadyPitch(
+  values: readonly (number | null)[],
+): (number | null)[] {
+  const out = values.slice();
+  const voiced: number[] = [];
+  values.forEach((value, index) => {
+    if (value !== null) voiced.push(index);
+  });
+
+  // Octave slips: compare each voiced frame with its voiced neighbours.
+  voiced.forEach((index, k) => {
+    const near: number[] = [];
+    for (
+      let j = Math.max(0, k - STEADY_KNOBS.NEIGHBOURS);
+      j <= Math.min(voiced.length - 1, k + STEADY_KNOBS.NEIGHBOURS);
+      j += 1
+    ) {
+      near.push(values[voiced[j]] as number);
+    }
+    near.sort((a, b) => a - b);
+    const median = near[Math.floor(near.length / 2)];
+    if (
+      Math.abs((values[index] as number) - median) >
+      STEADY_KNOBS.OUTLIER_SEMITONES
+    )
+      out[index] = median;
+  });
+
+  // Dropouts: a short unvoiced gap between voiced frames is drawn through.
+  for (let k = 1; k < voiced.length; k += 1) {
+    const from = voiced[k - 1];
+    const to = voiced[k];
+    const gap = to - from - 1;
+    if (gap < 1 || gap > STEADY_KNOBS.BRIDGE_FRAMES) continue;
+    const a = out[from] as number;
+    const b = out[to] as number;
+    for (let i = from + 1; i < to; i += 1)
+      out[i] = a + ((b - a) * (i - from)) / (to - from);
+  }
+
+  // Specks: a voiced run too short to be a note.
+  let start = 0;
+  for (let i = 0; i <= out.length; i += 1) {
+    if (i < out.length && out[i] !== null) continue;
+    if (i - start < STEADY_KNOBS.MIN_RUN_FRAMES)
+      for (let j = start; j < i; j += 1) out[j] = null;
+    start = i + 1;
+  }
+  return out;
 }
 
 /**

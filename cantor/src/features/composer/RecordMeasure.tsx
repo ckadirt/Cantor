@@ -7,15 +7,23 @@ import {
   View,
   type LayoutChangeEvent,
 } from 'react-native';
-import { Canvas, Path, Skia } from '@shopify/react-native-skia';
+import Animated, {
+  cancelAnimation,
+  Easing,
+  useDerivedValue,
+  useSharedValue,
+  withTiming,
+} from 'react-native-reanimated';
+import { Canvas, Group, Path, Skia } from '@shopify/react-native-skia';
 import { haptic } from '../../haptics';
-import { medianSemitone } from '../../audio/pitch';
+import { steadyPitch } from '../../audio/pitch';
 import type {
+  TuneFrame,
   TuneRecorderPort,
   MicrophoneAnswer,
 } from '../../audio/tuneRecorder';
 import type { TuneTake } from './draft';
-import { Fermata, LEDGER_NOTE_STYLE } from '../controls';
+import { Fermata, LEDGER_NOTE_STYLE, Underway, useReach } from '../controls';
 import { type, usePalette } from '../../theme/tokens';
 
 /** KNOBS — the record measure (docs/plans/audio-prompting-design.md). */
@@ -27,30 +35,43 @@ export const RECORD_KNOBS = {
   COUNT_IN_BEATS: 4,
   /** The line fills the measure at this length; a longer take compresses. */
   PITCH_WINDOW_MIN_S: 12,
-  /** Vertical span of the measure, centred on the take's median. */
-  PITCH_RANGE_SEMITONES: 24,
+  /** The narrowest pitch span the measure shows; a wider tune widens it. */
+  PITCH_RANGE_SEMITONES: 12,
+  /** Share of the take's pitches either end left out when fitting the span. */
+  PITCH_FIT_QUANTILE: 0.05,
   HEIGHT_PX: 72,
-  STROKE_PX: 1.25,
-  /** A take is discarded by holding the line this long. */
-  HOLD_MS: 900,
+  /** The line keeps this far from the measure's edges, clear of the words below. */
+  INSET_PX: 8,
+  STROKE_PX: 2,
+  /** The loudness band is faint ink at this strength: plainly there, under the line. */
+  BAND_OPACITY: 0.45,
+  /** Frames either side the loudness band is averaged over, so it reads as a swell. */
+  LEVEL_SMOOTH_FRAMES: 2,
+  /** How often the listening clock is redrawn. */
+  CLOCK_MS: 250,
 } as const;
 
-export type PitchPoint = Readonly<{ at: number; semitone: number | null }>;
+/** One frame of a take as the measure draws it. */
+export type PitchPoint = TuneFrame;
 
 type Phase =
   | { kind: 'empty' }
   | { kind: 'refused'; never: boolean }
   | { kind: 'counting'; beat: number }
-  | { kind: 'recording'; since: number }
+  | { kind: 'recording' }
   | { kind: 'saving' }
   | { kind: 'recorded' }
   | { kind: 'listening' };
 
+type Act = Readonly<{ word: string; label: string; run: () => void }>;
+
 /**
- * Where a tune is made. Press the rule: four beats count in (a tick in your
- * hand, never a click the microphone would hear), then the tune draws itself
- * as a pitch line — one stroke where high is high, lifting off where you
- * breathe. Press to stop; press the line to listen; hold it to take again.
+ * Where a tune is made. RECORD counts four beats in (a tick in your hand,
+ * never a click the microphone would hear), then the tune draws itself: a
+ * grey band that swells with whatever the microphone hears, and over it an
+ * ink line where it hears a pitch, high is high. LISTEN plays the take back
+ * with a playhead crossing that line. RECORD AGAIN keeps the take it would
+ * replace until a new one is kept, so trying again can never lose a tune.
  */
 export function RecordMeasure({
   askForMicrophone,
@@ -76,10 +97,15 @@ export function RecordMeasure({
     take?.pitch ?? [],
   );
   const [elapsed, setElapsed] = useState(take?.seconds ?? 0);
+  const [heard, setHeard] = useState(0);
+  const [note, setNote] = useState<string | null>(null);
   const [width, setWidth] = useState(0);
   const timers = useRef<ReturnType<typeof setTimeout>[]>([]);
   const stopListening = useRef<(() => void) | null>(null);
   const collected = useRef<PitchPoint[]>([]);
+  // The take a new recording would replace, kept until the new one is.
+  const previous = useRef<TuneTake | null>(null);
+  const played = useSharedValue(0);
 
   const clearTimers = () => {
     timers.current.forEach(clearTimeout);
@@ -94,16 +120,45 @@ export function RecordMeasure({
     [recorder],
   );
 
+  // The listening clock: the playhead runs on the UI thread, the words here.
+  useEffect(() => {
+    if (phase.kind !== 'listening') return;
+    const since = Date.now();
+    const timer = setInterval(
+      () => setHeard((Date.now() - since) / 1000),
+      RECORD_KNOBS.CLOCK_MS,
+    );
+    return () => clearInterval(timer);
+  }, [phase.kind]);
+
+  /** Put back the take a new recording would have replaced. */
+  const restore = (): boolean => {
+    const kept = previous.current;
+    previous.current = null;
+    if (kept === null) return false;
+    collected.current = [...kept.pitch];
+    setPoints(kept.pitch);
+    setElapsed(kept.seconds);
+    setPhase({ kind: 'recorded' });
+    return true;
+  };
+
   const stop = async () => {
     clearTimers();
     setPhase({ kind: 'saving' });
     try {
       const recorded = await recorder.stop();
+      if (recorded.seconds < RECORD_KNOBS.TAKE_MIN_S && restore()) {
+        setNote('TOO SHORT · KEPT THE LAST ONE');
+        return;
+      }
+      previous.current = null;
       haptic('confirm');
       setPhase({ kind: 'recorded' });
       setElapsed(recorded.seconds);
       onTake({ ...recorded, pitch: collected.current });
     } catch {
+      if (restore()) return;
       setPhase({ kind: 'empty' });
       onTake(null);
     }
@@ -114,17 +169,16 @@ export function RecordMeasure({
     setPoints([]);
     setElapsed(0);
     try {
-      await recorder.start((semitone, at) => {
-        collected.current = [...collected.current, { at, semitone }];
+      await recorder.start(frame => {
+        collected.current = [...collected.current, frame];
         setPoints(collected.current);
-        setElapsed(at);
+        setElapsed(frame.at);
       });
     } catch {
-      setPhase({ kind: 'empty' });
+      if (!restore()) setPhase({ kind: 'empty' });
       return;
     }
-    const since = Date.now();
-    setPhase({ kind: 'recording', since });
+    setPhase({ kind: 'recording' });
     // The beat goes on in the hand while singing.
     if (bpm !== null) {
       const beat = 60_000 / bpm;
@@ -138,8 +192,11 @@ export function RecordMeasure({
   };
 
   const begin = async () => {
+    setNote(null);
+    previous.current = take;
     const answer = await askForMicrophone();
     if (answer !== 'granted') {
+      previous.current = null;
       setPhase({ kind: 'refused', never: answer === 'never' });
       return;
     }
@@ -165,81 +222,114 @@ export function RecordMeasure({
     );
   };
 
-  const press = () => {
-    if (disabled) return;
-    switch (phase.kind) {
-      case 'empty':
-      case 'refused':
-        begin().catch(ignore);
-        return;
-      case 'counting':
-        clearTimers();
-        setPhase({ kind: 'empty' });
-        return;
-      case 'recording':
-        stop().catch(ignore);
-        return;
-      case 'recorded':
-        if (take === null) return;
-        setPhase({ kind: 'listening' });
-        recorder
-          .listen(take.path, () => {
-            stopListening.current = null;
-            setPhase(current =>
-              current.kind === 'listening' ? { kind: 'recorded' } : current,
-            );
-          })
-          .then(stopper => {
-            stopListening.current = stopper;
-          })
-          .catch(() => setPhase({ kind: 'recorded' }));
-        return;
-      case 'listening':
-        stopListening.current?.();
-        return;
-      case 'saving':
-        return;
-    }
+  const cancelCount = () => {
+    clearTimers();
+    if (!restore()) setPhase({ kind: 'empty' });
   };
 
-  const takeAgain = () => {
-    if (disabled || (phase.kind !== 'recorded' && phase.kind !== 'listening'))
-      return;
+  const endListening = () => {
+    stopListening.current = null;
+    cancelAnimation(played);
+    played.value = 0;
+    setHeard(0);
+    setPhase(current =>
+      current.kind === 'listening' ? { kind: 'recorded' } : current,
+    );
+  };
+
+  const listen = () => {
+    if (take === null) return;
+    setNote(null);
+    setHeard(0);
+    setPhase({ kind: 'listening' });
+    recorder
+      .listen(take.path, endListening)
+      .then(stopper => {
+        stopListening.current = stopper;
+        played.value = 0;
+        played.value = withTiming(take.seconds, {
+          duration: take.seconds * 1000,
+          easing: Easing.linear,
+        });
+      })
+      .catch(endListening);
+  };
+
+  const again = () => {
     stopListening.current?.();
-    haptic('confirm');
-    collected.current = [];
-    setPoints([]);
-    setElapsed(0);
-    setPhase({ kind: 'empty' });
-    onTake(null);
+    begin().catch(ignore);
   };
 
-  const line = useMemo(() => pitchPath(points, width), [points, width]);
-  const seconds = elapsed;
-  const left =
+  const acts: readonly Act[] =
     phase.kind === 'empty'
-      ? 'PRESS TO RECORD'
+      ? [
+          {
+            word: 'RECORD',
+            label: 'Record a tune',
+            run: () => begin().catch(ignore),
+          },
+        ]
       : phase.kind === 'counting'
-      ? 'COUNTING IN'
+      ? [{ word: 'CANCEL', label: 'Cancel the count-in', run: cancelCount }]
       : phase.kind === 'recording'
-      ? `${clockOf(seconds)} · PRESS TO STOP`
-      : phase.kind === 'saving'
-      ? 'KEEPING IT'
-      : phase.kind === 'listening'
-      ? 'PRESS TO STOP'
+      ? [
+          {
+            word: 'STOP',
+            label: 'Stop recording',
+            run: () => stop().catch(ignore),
+          },
+        ]
       : phase.kind === 'recorded'
-      ? `${clockOf(seconds)} · PRESS TO LISTEN`
-      : '';
-  const right =
-    phase.kind === 'recorded'
-      ? 'HOLD TO TAKE IT AGAIN'
-      : phase.kind === 'recording'
-      ? `OF ${clockOf(RECORD_KNOBS.TAKE_MAX_S)}`
+      ? [
+          { word: 'LISTEN', label: 'Listen to the tune', run: listen },
+          { word: 'RECORD AGAIN', label: 'Record the tune again', run: again },
+        ]
+      : phase.kind === 'listening'
+      ? [
+          {
+            word: 'STOP',
+            label: 'Stop listening',
+            run: () => stopListening.current?.(),
+          },
+          { word: 'RECORD AGAIN', label: 'Record the tune again', run: again },
+        ]
+      : [];
+
+  const status =
+    note ??
+    (phase.kind === 'empty'
+      ? `${clockOf(RECORD_KNOBS.TAKE_MAX_S)} AT MOST`
       : phase.kind === 'counting'
       ? bpm === null
-        ? ''
-        : `${bpm} BPM`
-      : `${clockOf(RECORD_KNOBS.TAKE_MAX_S)} AT MOST`;
+        ? 'COUNTING IN'
+        : `COUNTING IN · ${bpm} BPM`
+      : phase.kind === 'recording'
+      ? `${clockOf(elapsed)} OF ${clockOf(RECORD_KNOBS.TAKE_MAX_S)}`
+      : phase.kind === 'recorded'
+      ? clockOf(elapsed)
+      : phase.kind === 'listening'
+      ? `${clockOf(Math.min(heard, elapsed))} OF ${clockOf(elapsed)}`
+      : '');
+
+  const across = windowOf(points);
+  const line = useMemo(() => pitchPath(points, width), [points, width]);
+  const band = useMemo(() => levelBand(points, width), [points, width]);
+  const playedClip = useDerivedValue(() =>
+    Skia.XYWHRect(
+      0,
+      0,
+      (played.value / across) * width,
+      RECORD_KNOBS.HEIGHT_PX,
+    ),
+  );
+  const playhead = useDerivedValue(() => {
+    const x = (played.value / across) * width;
+    const builder = Skia.PathBuilder.Make();
+    builder.moveTo(x, 0);
+    builder.lineTo(x, RECORD_KNOBS.HEIGHT_PX);
+    return builder.build();
+  });
+  const listening = phase.kind === 'listening';
 
   if (phase.kind === 'refused') {
     return (
@@ -271,31 +361,17 @@ export function RecordMeasure({
   }
 
   return (
-    <Pressable
-      accessibilityLabel={
-        phase.kind === 'empty'
-          ? 'Record a tune'
-          : phase.kind === 'recording'
-          ? 'Stop recording'
-          : phase.kind === 'recorded'
-          ? 'Listen to the tune'
-          : phase.kind === 'listening'
-          ? 'Stop listening'
-          : 'Cancel the count-in'
-      }
-      accessibilityHint={
-        phase.kind === 'recorded' ? 'Hold to take it again' : undefined
-      }
-      accessibilityRole="button"
-      delayLongPress={RECORD_KNOBS.HOLD_MS}
-      disabled={disabled}
-      onLayout={(event: LayoutChangeEvent) =>
-        setWidth(event.nativeEvent.layout.width)
-      }
-      onLongPress={takeAgain}
-      onPress={press}
-    >
-      <View style={styles.measure}>
+    <View>
+      {/* The measure answers a press with the first act, for a thumb that
+          lands on the line; the words below are the named controls. */}
+      <Pressable
+        accessible={false}
+        onLayout={(event: LayoutChangeEvent) =>
+          setWidth(event.nativeEvent.layout.width)
+        }
+        onPress={disabled ? undefined : acts[0]?.run}
+        style={styles.measure}
+      >
         {width > 0 ? (
           <Canvas style={styles.canvas}>
             <Path
@@ -304,6 +380,14 @@ export function RecordMeasure({
               strokeWidth={1}
               style="stroke"
             />
+            {band !== null ? (
+              <Path
+                color={pal.faint}
+                opacity={RECORD_KNOBS.BAND_OPACITY}
+                path={band}
+                style="fill"
+              />
+            ) : null}
             {phase.kind === 'counting'
               ? beatTicks(width, phase.beat).map((tick, index) => (
                   <Path
@@ -317,7 +401,7 @@ export function RecordMeasure({
               : null}
             {line !== null ? (
               <Path
-                color={pal.ink}
+                color={listening ? pal.faint : pal.ink}
                 path={line}
                 strokeCap="round"
                 strokeJoin="round"
@@ -325,20 +409,67 @@ export function RecordMeasure({
                 style="stroke"
               />
             ) : null}
+            {listening && line !== null ? (
+              <Group clip={playedClip}>
+                <Path
+                  color={pal.ink}
+                  path={line}
+                  strokeCap="round"
+                  strokeJoin="round"
+                  strokeWidth={RECORD_KNOBS.STROKE_PX}
+                  style="stroke"
+                />
+              </Group>
+            ) : null}
+            {listening ? (
+              <Path
+                color={pal.ink}
+                path={playhead}
+                strokeWidth={1}
+                style="stroke"
+              />
+            ) : null}
           </Canvas>
         ) : null}
-      </View>
+      </Pressable>
       <View style={styles.words}>
-        <Text
-          style={[
-            LEDGER_NOTE_STYLE,
-            { color: phase.kind === 'empty' ? pal.faint : pal.ink },
-          ]}
-        >
-          {left}
-        </Text>
-        <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>{right}</Text>
+        <View style={styles.acts}>
+          {phase.kind === 'saving' ? (
+            <View>
+              <Text style={[LEDGER_NOTE_STYLE, { color: pal.ink }]}>
+                KEEPING IT
+              </Text>
+              <Underway
+                charStyle={LEDGER_NOTE_STYLE}
+                label="KEEPING IT"
+                working
+              />
+            </View>
+          ) : (
+            acts.map(act => (
+              <ActWord act={act} disabled={disabled} key={act.word} />
+            ))
+          )}
+        </View>
+        <Text style={[LEDGER_NOTE_STYLE, { color: pal.faint }]}>{status}</Text>
       </View>
+    </View>
+  );
+}
+
+/** One named control under the measure; out of reach, it settles to faint. */
+function ActWord({ act, disabled }: { act: Act; disabled: boolean }) {
+  const { tint } = useReach(disabled);
+  return (
+    <Pressable
+      accessibilityLabel={act.label}
+      accessibilityRole="button"
+      hitSlop={8}
+      onPress={disabled ? undefined : act.run}
+    >
+      <Animated.Text style={[LEDGER_NOTE_STYLE, tint]}>
+        {act.word}
+      </Animated.Text>
     </Pressable>
   );
 }
@@ -372,44 +503,104 @@ function beatTicks(width: number, beats: number) {
   return ticks;
 }
 
+/** Seconds across the measure: the line fills it, a longer take compresses. */
+function windowOf(points: readonly PitchPoint[]): number {
+  const last = points.length === 0 ? 0 : points[points.length - 1].at;
+  return Math.max(RECORD_KNOBS.PITCH_WINDOW_MIN_S, last);
+}
+
+/**
+ * Everything the microphone heard, as a band about the baseline that swells
+ * with loudness. It is drawn whether or not a pitch was found, so a sound
+ * that never settles on a note still shows the measure is listening.
+ */
+export function levelBand(points: readonly PitchPoint[], width: number) {
+  if (width <= 0 || points.length === 0) return null;
+  const across = windowOf(points);
+  const reach = MID - RECORD_KNOBS.INSET_PX;
+  const smooth = RECORD_KNOBS.LEVEL_SMOOTH_FRAMES;
+  const heights = points.map((_, index) => {
+    let sum = 0;
+    let count = 0;
+    for (
+      let j = Math.max(0, index - smooth);
+      j <= Math.min(points.length - 1, index + smooth);
+      j += 1
+    ) {
+      sum += points[j].level;
+      count += 1;
+    }
+    return (sum / count) * reach;
+  });
+  if (heights.every(height => height < 0.5)) return null;
+  const path = Skia.Path.Make();
+  points.forEach((point, index) => {
+    const x = (point.at / across) * width;
+    if (index === 0) path.moveTo(x, MID - heights[index]);
+    else path.lineTo(x, MID - heights[index]);
+  });
+  for (let index = points.length - 1; index >= 0; index -= 1) {
+    path.lineTo((points[index].at / across) * width, MID + heights[index]);
+  }
+  path.close();
+  return path;
+}
+
 /**
  * The tune as one stroke: time across, pitch up. The measure keeps its width,
  * so a take past `PITCH_WINDOW_MIN_S` compresses rather than running off it;
- * an unvoiced frame lifts the pen.
+ * an unvoiced frame lifts the pen. The span is fitted to the tune — at least
+ * `PITCH_RANGE_SEMITONES`, wider if the tune is — and kept `INSET_PX` inside
+ * the measure, so a stray high or low frame never lands on the words.
  */
 export function pitchPath(points: readonly PitchPoint[], width: number) {
   if (width <= 0 || points.length === 0) return null;
-  const centre = medianSemitone(points.map(point => point.semitone));
-  if (centre === null) return null;
-  const last = points[points.length - 1].at;
-  const window = Math.max(RECORD_KNOBS.PITCH_WINDOW_MIN_S, last);
-  const perSemitone =
-    RECORD_KNOBS.HEIGHT_PX / RECORD_KNOBS.PITCH_RANGE_SEMITONES;
+  const steady = steadyPitch(points.map(point => point.semitone));
+  const voiced = steady
+    .filter((s): s is number => s !== null)
+    .sort((a, b) => a - b);
+  if (voiced.length === 0) return null;
+  const q = RECORD_KNOBS.PITCH_FIT_QUANTILE;
+  const low = voiced[Math.floor(q * (voiced.length - 1))];
+  const high = voiced[Math.ceil((1 - q) * (voiced.length - 1))];
+  const centre = (low + high) / 2;
+  const span = Math.max(RECORD_KNOBS.PITCH_RANGE_SEMITONES, high - low);
+  const top = RECORD_KNOBS.INSET_PX;
+  const bottom = RECORD_KNOBS.HEIGHT_PX - RECORD_KNOBS.INSET_PX;
+  const perSemitone = (bottom - top) / span;
+  const across = windowOf(points);
   const path = Skia.Path.Make();
   let down = false;
-  for (const point of points) {
-    if (point.semitone === null) {
+  points.forEach((point, index) => {
+    const semitone = steady[index];
+    if (semitone === null) {
       down = false;
-      continue;
+      return;
     }
-    const x = (point.at / window) * width;
+    const x = (point.at / across) * width;
     const y = Math.max(
-      0,
-      Math.min(
-        RECORD_KNOBS.HEIGHT_PX,
-        MID - (point.semitone - centre) * perSemitone,
-      ),
+      top,
+      Math.min(bottom, MID - (semitone - centre) * perSemitone),
     );
     if (down) path.lineTo(x, y);
     else path.moveTo(x, y);
     down = true;
-  }
+  });
   return path;
 }
 
 const styles = StyleSheet.create({
   measure: { height: RECORD_KNOBS.HEIGHT_PX },
   canvas: { height: RECORD_KNOBS.HEIGHT_PX, width: '100%' },
-  words: { flexDirection: 'row', justifyContent: 'space-between' },
+  // The acts and the clock share the line while they fit; on a narrow phone
+  // the clock drops beneath rather than running into them.
+  words: {
+    columnGap: 16,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 4,
+  },
+  acts: { columnGap: 20, flexDirection: 'row' },
   held: { alignItems: 'center', flexDirection: 'row', gap: 6 },
 });

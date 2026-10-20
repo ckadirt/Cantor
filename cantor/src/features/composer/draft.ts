@@ -48,14 +48,18 @@ export type ComposerTarget = Readonly<{
  */
 export type ComposerSource = SongSource | TuneSource;
 
-/** A take: the recorded file, as sent, and its pitch line as drawn. */
+/** A take: the recorded file, as sent, and its frames as drawn. */
 export type TuneTake = Readonly<{
   path: string;
   seconds: number;
   mediaType: string;
   sha256: string;
   bytes: number;
-  pitch: readonly Readonly<{ at: number; semitone: number | null }>[];
+  pitch: readonly Readonly<{
+    at: number;
+    semitone: number | null;
+    level: number;
+  }>[];
 }>;
 
 /** A tune someone makes into a song (Hum a song). */

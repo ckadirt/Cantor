@@ -1,4 +1,4 @@
-import { detectPitch, medianSemitone, semitones } from '../pitch';
+import { detectPitch, medianSemitone, semitones, steadyPitch } from '../pitch';
 
 const RATE = 16000;
 const FRAME = 1024;
@@ -50,5 +50,41 @@ describe('semitones', () => {
     expect(semitones(880)).toBeCloseTo(12);
     expect(medianSemitone([null, 1, 5, 3, null])).toBe(3);
     expect(medianSemitone([null])).toBeNull();
+  });
+});
+
+describe('steadyPitch', () => {
+  it('pulls an octave slip back to its neighbours', () => {
+    expect(steadyPitch([0, 0.5, 12.2, 1, 1.5])).toEqual([0, 0.5, 1, 1, 1.5]);
+  });
+
+  it('draws through a dropout but lifts at a breath', () => {
+    expect(steadyPitch([0, 0, 0, null, 2, 2, 2])).toEqual([
+      0, 0, 0, 1, 2, 2, 2,
+    ]);
+    expect(steadyPitch([0, 0, 0, null, null, null, 2, 2, 2])).toEqual([
+      0,
+      0,
+      0,
+      null,
+      null,
+      null,
+      2,
+      2,
+      2,
+    ]);
+  });
+
+  it('lifts a speck too short to be a note', () => {
+    expect(steadyPitch([null, 4, null, null, null, 1, 1, 1])).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      1,
+      1,
+      1,
+    ]);
   });
 });

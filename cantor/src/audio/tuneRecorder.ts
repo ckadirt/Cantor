@@ -14,7 +14,7 @@ import {
   FilePreset,
 } from 'react-native-audio-api';
 import type { Result } from 'react-native-audio-api/lib/typescript/types';
-import { detectPitch, semitones } from './pitch';
+import { detectPitch, frameLevel, semitones } from './pitch';
 import { sourceFileInfo, type SourceFileInfo } from './native';
 import { toFileUri } from '../player/audioApiPlayer';
 
@@ -34,11 +34,16 @@ export type Take = Readonly<{
 }> &
   SourceFileInfo;
 
+/** One frame as heard: its pitch, null for unvoiced, and how loud it was, 0..1. */
+export type TuneFrame = Readonly<{
+  at: number;
+  semitone: number | null;
+  level: number;
+}>;
+
 export type TuneRecorderPort = {
-  /** Start recording; `onPitch` hears one value per frame, null for unvoiced. */
-  start(
-    onPitch: (semitone: number | null, atSeconds: number) => void,
-  ): Promise<void>;
+  /** Start recording; `onFrame` hears every frame, voiced or not. */
+  start(onFrame: (frame: TuneFrame) => void): Promise<void>;
   /** Stop and describe the file, hashed and measured. */
   stop(): Promise<Take>;
   /** Stop and throw the take away. */
@@ -76,7 +81,7 @@ export function createTuneRecorder(): TuneRecorderPort {
   };
 
   return {
-    async start(onPitch) {
+    async start(onFrame) {
       recorder = new AudioRecorder();
       check(
         recorder.enableFileOutput({
@@ -102,7 +107,11 @@ export function createTuneRecorder(): TuneRecorderPort {
             const samples = event.buffer.getChannelData(0);
             const frame = detectPitch(samples, rate);
             heard += event.numFrames / rate;
-            onPitch(frame === null ? null : semitones(frame.hz), heard);
+            onFrame({
+              at: heard,
+              semitone: frame === null ? null : semitones(frame.hz),
+              level: frameLevel(samples),
+            });
           },
         ),
         'The recorder could not hand over its sound',
