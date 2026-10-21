@@ -1,0 +1,25 @@
+---
+/** A command to copy: the line itself, and one quiet act beside it. */
+interface Props { text: string }
+const { text } = Astro.props;
+---
+<div class="copy-line">
+  <code>{text}</code>
+  <button type="button" data-copy={text} aria-label="Copy the command">Copy</button>
+</div>
+<script>
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-copy]')) {
+    button.addEventListener('click', async () => {
+      await navigator.clipboard.writeText(button.dataset.copy!);
+      button.textContent = 'Copied';
+      setTimeout(() => (button.textContent = 'Copy'), 1600);
+    });
+  }
+</script>
+<style>
+  .copy-line { display: flex; align-items: stretch; border: 1px solid var(--ink); max-width: 100%; }
+  code { flex: 1; min-width: 0; padding: 18px 20px; font: 14px/1.4 var(--mono); overflow-x: auto; white-space: nowrap; }
+  button { flex: none; border: 0; border-left: 1px solid var(--ink); background: transparent; color: var(--ink); cursor: pointer;
+    padding: 0 20px; font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; min-width: 92px; }
+  button:hover { background: var(--ink); color: var(--paper); }
+</style>

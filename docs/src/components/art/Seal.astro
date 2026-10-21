@@ -3,7 +3,12 @@
  * A page's seal, drawn at build time. `played` (0 to 1) inks the dots heard
  * so far and leaves the rest faint, the lens's grey-then-ink order; a
  * `[data-seal-play]` script can move it later from the dots' `data-k`.
+ * `filled` is the app's downloaded seal: dots grown until they merge into one
+ * glyph, which is what still reads at a few pixels across.
+ *
+ * Colours are `--seal-ink` and `--seal-faint`, so a context can recolour it.
  */
+import { SEAL_FILLED_GROW } from '../../../../cantor/src/lenses/seal';
 import { sealDots } from '../../lib/art';
 
 interface Props {
@@ -13,8 +18,10 @@ interface Props {
   class?: string;
   label?: string;
   play?: boolean;
+  filled?: boolean;
 }
-const { name, depth = 3, played = 1, class: className, label, play = false } = Astro.props;
+const { name, depth = 3, played = 1, class: className, label, play = false, filled = false } = Astro.props;
+const grow = filled ? SEAL_FILLED_GROW : 1;
 const dots = sealDots(name, depth);
 const sounded = Math.round(played * dots.length);
 ---
@@ -26,9 +33,9 @@ const sounded = Math.round(played * dots.length);
   aria-hidden={label ? undefined : 'true'}
   data-seal-play={play ? dots.length : undefined}
 >
-  {dots.map((d) => <circle cx={d.x} cy={d.y} r={d.r} data-k={d.k} class={d.k < sounded ? 'on' : undefined} />)}
+  {dots.map((d) => <circle cx={d.x} cy={d.y} r={+(d.r * grow).toFixed(4)} data-k={d.k} class={d.k < sounded ? 'on' : undefined} />)}
 </svg>
 <style>
-  .seal circle { fill: var(--faint); }
-  .seal circle.on { fill: var(--ink); }
+  .seal circle { fill: var(--seal-faint, var(--faint)); }
+  .seal circle.on { fill: var(--seal-ink, var(--ink)); }
 </style>
