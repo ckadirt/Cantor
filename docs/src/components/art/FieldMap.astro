@@ -1,0 +1,125 @@
+---
+/**
+ * The field, as the app's map shows it: the sample library seated by the
+ * app's own layout, each song a face from its recipe, inked by where it is
+ * (grey outline on the node, black outline cached, filled on the phone) and
+ * an imported file's face pierced by the spindle. Pointing at a song names it.
+ */
+import { NAME_LENS_SPINDLE_RATIO } from '../../lib/marks';
+import { fieldMap, facePathAt } from '../../lib/library';
+
+interface Props { by: 'month' | 'artist'; class?: string; label: string }
+const { by, class: className, label } = Astro.props;
+const map = fieldMap(by);
+/**
+ * One phone pixel at the field level, in world units: marks and labels keep
+ * the app's own sizes (a mark is 7.5 px in radius, `MARK_RADIUS_PX`) against
+ * the app's own spacing.
+ */
+const PX = 1 / map.fitScale;
+const R = 7.5 * PX;
+/** A section (made, imported) starts under a hairline carrying its word, once. */
+const sections = [...new Set(map.groups.map((g) => g.section).filter((x): x is string => !!x))].map((name) => ({
+  name,
+  y: Math.min(...map.groups.filter((g) => g.section === name).map((g) => g.y)) - 50 * PX,
+}));
+const top = sections.length ? Math.min(map.box.y, ...sections.map((x) => x.y - 14 * PX)) : map.box.y;
+const view = `${map.box.x} ${top} ${map.box.w} ${map.box.h + (map.box.y - top)}`;
+const INK = { remote: 'remote', cached: 'cached', downloaded: 'downloaded' } as const;
+const WHERE = { remote: 'on your node', cached: 'cached on your phone', downloaded: 'on your phone' } as const;
+---
+<figure class:list={['field-map', className]} data-field-map style={`--natural:${(map.box.w * map.fitScale).toFixed(0)}px`}>
+  <div class="screen" data-screen tabindex="0" aria-label="The field; scroll to move through it">
+  <svg viewBox={view} role="img" aria-label={label}>
+    {sections.map((x) => (
+      <g class="section-rule">
+        <line x1={map.box.x + 14 * PX} x2={map.box.x + map.box.w - 14 * PX} y1={x.y} y2={x.y} />
+        <text x={map.box.x + 14 * PX} y={x.y - 6 * PX} font-size={9 * PX} letter-spacing={1.8 * PX}>{x.name}</text>
+      </g>
+    ))}
+    {map.groups.map((g) => (
+      <text class="group" x={g.x} y={g.y - 26 * PX} text-anchor="middle" font-size={9.5 * PX} letter-spacing={1.6 * PX}>
+        {g.label}
+      </text>
+    ))}
+    {map.marks.map((m) => {
+      const face = facePathAt(m.recipe, m.x, m.y, R);
+      const hole = m.recipe.imported
+        ? `M${(m.x + R * NAME_LENS_SPINDLE_RATIO).toFixed(2)} ${m.y.toFixed(2)}a${R * NAME_LENS_SPINDLE_RATIO} ${R * NAME_LENS_SPINDLE_RATIO} 0 1 0 ${-2 * R * NAME_LENS_SPINDLE_RATIO} 0a${R * NAME_LENS_SPINDLE_RATIO} ${R * NAME_LENS_SPINDLE_RATIO} 0 1 0 ${2 * R * NAME_LENS_SPINDLE_RATIO} 0Z`
+        : '';
+      return (
+        <g class={`mark ${INK[m.ink]}`} tabindex="0"
+          data-title={m.title}
+          data-byline={m.recipe.imported ? `${m.byline} · imported from your phone` : `made with ${m.byline} · ${WHERE[m.ink]}`}>
+          <path d={face + hole} fill-rule="evenodd" />
+        </g>
+      );
+    })}
+  </svg>
+  </div>
+  <figcaption><span data-caption-title>Point at a song</span><span data-caption-byline></span></figcaption>
+</figure>
+<script>
+  for (const figure of document.querySelectorAll<HTMLElement>('[data-field-map]')) {
+    const title = figure.querySelector<HTMLElement>('[data-caption-title]')!;
+    const byline = figure.querySelector<HTMLElement>('[data-caption-byline]')!;
+    const rest = title.textContent;
+    const show = (mark: SVGGElement | null) => {
+      title.textContent = mark ? `“${mark.dataset.title}”` : rest;
+      byline.textContent = mark ? mark.dataset.byline ?? '' : '';
+    };
+    for (const mark of figure.querySelectorAll<SVGGElement>('.mark')) {
+      mark.addEventListener('pointerenter', () => show(mark));
+      mark.addEventListener('focus', () => show(mark));
+      mark.addEventListener('pointerleave', () => show(null));
+      mark.addEventListener('blur', () => show(null));
+    }
+
+    // The screen drifts through the field on a linear clock, down and back,
+    // until someone takes over. Still when motion is reduced.
+    const screen = figure.querySelector<HTMLElement>('[data-screen]')!;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) continue;
+    let held = false;
+    let visible = false;
+    const take = () => (held = true);
+    for (const kind of ['wheel', 'pointerdown', 'touchstart', 'keydown']) screen.addEventListener(kind, take, { passive: true });
+    new IntersectionObserver(([e]) => (visible = e.isIntersecting)).observe(screen);
+    const SPEED = 0.018; // pixels per millisecond
+    let last = performance.now();
+    let direction = 1;
+    let position = 0;
+    const frame = (now: number) => {
+      requestAnimationFrame(frame);
+      const dt = Math.min(64, now - last);
+      last = now;
+      if (held || !visible) return;
+      const max = screen.scrollHeight - screen.clientHeight;
+      position += direction * SPEED * dt;
+      if (position >= max) { position = max; direction = -1; }
+      if (position <= 0) { position = 0; direction = 1; }
+      screen.scrollTop = position;
+    };
+    requestAnimationFrame(frame);
+  }
+</script>
+<style>
+  .field-map { margin: 0; }
+  /* A phone's screen, at a phone's size: the field as the app shows it. */
+  .screen { width: min(100%, var(--natural)); aspect-ratio: 390 / 760; margin: 0 auto; overflow-y: auto; scrollbar-width: none;
+    border: 1px solid var(--line); background: var(--paper); outline: none; }
+  .screen::-webkit-scrollbar { display: none; }
+  .screen:focus-visible { border-color: var(--ink); }
+  svg { display: block; width: 100%; height: auto; }
+  .group { font-family: var(--mono); fill: var(--muted); text-transform: uppercase; }
+  .section-rule line { stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+  .section-rule text { font-family: var(--mono); fill: var(--ink); text-transform: uppercase; }
+  .mark { cursor: default; outline: none; }
+  .mark path { stroke-width: 1px; vector-effect: non-scaling-stroke; transition: transform 0.25s linear; transform-box: fill-box; transform-origin: center; }
+  .mark.remote path { fill: none; stroke: var(--faint); }
+  .mark.cached path { fill: none; stroke: var(--ink); }
+  .mark.downloaded path { fill: var(--ink); stroke: var(--ink); }
+  .mark:hover path, .mark:focus path { transform: scale(1.6); }
+  figcaption { display: grid; gap: 8px; justify-items: center; text-align: center; min-height: 52px; margin-top: 22px; }
+  [data-caption-title] { font: italic 400 19px/1.2 var(--display); }
+  [data-caption-byline] { font: 10.5px/1 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+</style>

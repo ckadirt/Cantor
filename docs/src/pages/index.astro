@@ -1,8 +1,9 @@
 ---
 /**
- * cantorfm.com. The art leads and the words are its labels: the site's own
- * name marbled as you watch, what Cantor is in one sentence, one song in the
- * app's three lenses, the two marks that pair, and how to begin.
+ * cantorfm.com. What Cantor is, in the order a stranger needs it: a library
+ * that is a map, the shapes it is drawn in, one node shared by many people,
+ * your own music beside what you make, privacy by construction, the source,
+ * and how to begin. The art is the app's own geometry throughout.
  */
 import Site from '../layouts/Site.astro';
 import Seal from '../components/art/Seal.astro';
@@ -10,14 +11,46 @@ import Face from '../components/art/Face.astro';
 import Marbling from '../components/art/Marbling.astro';
 import Station from '../components/art/Station.astro';
 import Phone from '../components/art/Phone.astro';
+import FieldMap from '../components/art/FieldMap.astro';
 import CopyLine from '../components/CopyLine.astro';
+import { facePathAt } from '../lib/library';
+import { recipeOf } from '../lib/art';
+import { hash, mulberry32, metadataSeed } from '../../../cantor/src/lenses/face';
 import { SITE } from '../site';
 
 const NAME = 'cantorfm.com';
 /** The song the lenses draw: any recipe would do; this one reads well. */
 const SONG = 'an empty ballroom';
+
+/** One node, many phones: where each mark stands in the diagram, in percent. */
+const NODES = [
+  { key: 'your desktop', label: 'Your desktop · GPU', x: 56, y: 50, models: 3, big: true },
+  { key: 'your laptop', label: 'Your laptop', x: 10, y: 50, models: 1, big: false },
+];
+const PHONES = [
+  { key: 'your phone', label: 'You', x: 32, y: 16, to: ['your desktop', 'your laptop'] },
+  { key: 'ana', label: 'Ana', x: 32, y: 84, to: ['your desktop'] },
+  { key: 'leo', label: 'Leo', x: 88, y: 18, to: ['your desktop'] },
+  { key: 'mia', label: 'Mia', x: 88, y: 82, to: ['your desktop'] },
+];
+const at = (key: string) => [...NODES, ...PHONES].find((n) => n.key === key)!;
+/** Each phone's own few songs, beside it: nobody else's. */
+const shelf = (owner: string) =>
+  [0, 1, 2].map((i) => ({ ...recipeOf(`${owner} ${i}`), seed: hash(`${owner} ${i}`) }));
+
+/** What the relay carries, drawn as bytes: deterministic, so the page is stable. */
+const bytes = (() => {
+  const random = mulberry32(0x5ea1ed);
+  return Array.from({ length: 10 }, () =>
+    Array.from({ length: 16 }, () => Math.floor(random() * 256).toString(16).padStart(2, '0')).join(' '),
+  );
+})();
+
+const IMPORTED_EXAMPLE = { title: 'Puerto', artist: 'Marisol Vega' };
+const importedRecipe = { seed: metadataSeed(IMPORTED_EXAMPLE.title, IMPORTED_EXAMPLE.artist), id: 'device-0-0', model: 'device', durationMs: 214000, imported: true };
+const madeRecipe = { ...recipeOf('a slow blues, at dusk') };
 ---
-<Site title="Cantor — songs made on your own machine" description="Cantor writes songs on a computer you own and plays them on your phone. Nothing in between can listen.">
+<Site title="Cantor — songs made on your own machine" description="A music library you can make songs for, on a computer you own. Your phone plays it; nothing in between can listen.">
   <nav class="top" data-nav>
     <a class="brand" href="/"><Seal name={NAME} depth={2} filled class="brand-seal" /><span>Cantor</span></a>
     <span class="links">
@@ -41,28 +74,34 @@ const SONG = 'an empty ballroom';
   </header>
 
   <section class="statement">
-    <p class="big">Cantor writes songs on a computer you own, and plays them on your phone. Nothing in between can listen.</p>
-    <dl class="facts">
-      <div>
-        <dt>On your machine</dt>
-        <dd>The models, the songs and your library. Linux or macOS; a GPU makes it quick, a CPU is enough.</dd>
-      </div>
-      <div>
-        <dt>On your phone</dt>
-        <dd>Every song you have, drawn from its own recipe. Ask for a new one, a version, a longer one, or one that starts from your humming.</dd>
-      </div>
-      <div>
-        <dt>In between</dt>
-        <dd>A relay that splices sealed bytes. It sees that two devices talk, never a prompt, a title or a note.</dd>
-      </div>
-    </dl>
+    <p class="big">A music library you can make songs for. The models run on a computer you own, your phone plays what they make, and nothing in between can listen.</p>
   </section>
 
+  <!-- ===== the map ===== -->
+  <section class="map">
+    <div class="inner side-by-side">
+      <div class="words">
+        <span class="lab">Your library</span>
+        <h2>Every song you have, on one map</h2>
+        <p>Not a feed and not a list. Your songs gather by when they arrived, each drawn as its own shape, and you move through them like a place: pinch out to see months, in to open a song.</p>
+        <p>How a mark is inked says where the song is, so you can tell at a glance what will play on a plane.</p>
+        <ul class="legend">
+          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(madeRecipe, 0, 0, 8)} class="l-remote" /></svg>On your node</li>
+          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(madeRecipe, 0, 0, 8)} class="l-cached" /></svg>Cached on your phone</li>
+          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(madeRecipe, 0, 0, 8)} class="l-down" /></svg>Kept on your phone</li>
+          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(importedRecipe, 0, 0, 8) + 'M1.6 0a1.6 1.6 0 1 0 -3.2 0a1.6 1.6 0 1 0 3.2 0Z'} class="l-down" fill-rule="evenodd" /></svg>Your own file</li>
+        </ul>
+      </div>
+      <FieldMap by="month" label="A library of made and imported songs, gathered by month" />
+    </div>
+  </section>
+
+  <!-- ===== the lenses ===== -->
   <section class="inverse lenses">
     <div class="inner">
-      <header>
+      <header class="split">
         <h2>A song is known by its shape</h2>
-        <p>Every song is drawn from its own recipe, three ways. The same song is the same shape on every phone, so you know it before you read its name.</p>
+        <p>Every song is drawn from its own recipe, three ways. The same song is the same shape on every phone, so you know it before you read its name, even before it has finished being made.</p>
       </header>
       <div class="three">
         <figure>
@@ -82,25 +121,131 @@ const SONG = 'an empty ballroom';
     </div>
   </section>
 
-  <section class="pairing">
+  <!-- ===== one node, many people ===== -->
+  <section class="network">
     <div class="inner">
-      <div class="words">
-        <h2>Two marks, one secret</h2>
-        <p>Your phone has a seal and your node a station, each drawn from its own key. Pairing is the two of them agreeing, once. After that every word between them is sealed end to end.</p>
-        <a class="more" href="/docs/start/#pair-your-phone">How pairing works</a>
-      </div>
-      <figure class="pair">
-        <div class="mark"><Phone publicKey="your phone" /><span>Your phone</span></div>
-        <svg class="wires" viewBox="0 0 400 160" preserveAspectRatio="none" aria-hidden="true">
-          <path class="to" d="M0 80 C 110 8, 290 8, 400 80" />
-          <path class="from" d="M400 80 C 290 152, 110 152, 0 80" />
+      <header class="split">
+        <div>
+          <span class="lab">Your compute</span>
+          <h2>One machine, a whole household</h2>
+        </div>
+        <p>A node is the computer that makes the songs. Pair your phone with it, and your friends' phones too: each person gets a library of their own on it, which nobody else sees. And one phone can use several nodes, the desktop with the GPU and the laptop on the road.</p>
+      </header>
+      <figure class="net" aria-label="Four phones paired with one desktop node; one phone also paired with a laptop">
+        <svg class="wires" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+          {PHONES.flatMap((p) => p.to.map((t) => {
+            const n = at(t);
+            return <line x1={p.x} y1={p.y} x2={n.x} y2={n.y} />;
+          }))}
         </svg>
-        <div class="mark"><Station publicKey="your node" models={3} /><span>Your node</span></div>
-        <figcaption>The relay<br /><em>sealed bytes, both ways</em></figcaption>
+        {NODES.map((n) => (
+          <div class:list={['node', { big: n.big }]} style={`left:${n.x}%;top:${n.y}%`}>
+            <Station publicKey={n.key} models={n.models} />
+            <span>{n.label}</span>
+          </div>
+        ))}
+        {PHONES.map((p) => (
+          <div class="person" style={`left:${p.x}%;top:${p.y}%`}>
+            <Phone publicKey={p.key} />
+            <span>{p.label}</span>
+            <svg class="own" viewBox="-30 -10 60 20" aria-hidden="true">
+              {shelf(p.key).map((r, i) => <path d={facePathAt(r, -18 + i * 18, 0, 7)} />)}
+            </svg>
+          </div>
+        ))}
       </figure>
+      <dl class="facts">
+        <div><dt>Pair once</dt><dd>A phone scans a one-time code from <code>cantor pair</code>. Revoke it whenever you like.</dd></div>
+        <div><dt>Separate libraries</dt><dd>Everyone's songs, prompts and uploads are theirs alone, kept apart by the node.</dd></div>
+        <div><dt>Fair turns</dt><dd>The node makes one song at a time, in order, and caps how much each phone can queue.</dd></div>
+      </dl>
     </div>
   </section>
 
+  <!-- ===== your music, beside what you make ===== -->
+  <section class="import">
+    <div class="inner">
+      <header class="split">
+        <div>
+          <span class="lab">Your music</span>
+          <h2>What you own and what you make, side by side</h2>
+        </div>
+        <p>Cantor reads the music already on your phone, with its titles, albums, artwork and lyrics, and puts it in the same field as the songs you make. Sort by artist and your records sit beside the models that sang for you.</p>
+      </header>
+      <div class="side-by-side flip">
+        <FieldMap by="artist" label="The same library by artist: made songs grouped by the model that sang them, imported ones by artist" />
+        <div class="words">
+          <div class="pairing-of-two">
+            <figure>
+              <svg viewBox="-12 -12 24 24" aria-hidden="true"><path d={facePathAt(madeRecipe, 0, 0, 10)} class="l-cached" /></svg>
+              <figcaption><i>“a slow blues, at dusk”</i><span>Made · drawn from its recipe</span></figcaption>
+            </figure>
+            <figure>
+              <svg viewBox="-12 -12 24 24" aria-hidden="true"><path d={facePathAt(importedRecipe, 0, 0, 10) + 'M2 0a2 2 0 1 0 -4 0a2 2 0 1 0 4 0Z'} class="l-down" fill-rule="evenodd" /></svg>
+              <figcaption><i>“{IMPORTED_EXAMPLE.title}”, {IMPORTED_EXAMPLE.artist}</i><span>Imported · drawn from its tags, with a hole for the spindle</span></figcaption>
+            </figure>
+          </div>
+          <p class="aside">And any song, made or imported, can start a new one: a version in another style, a longer cut, or something new from a tune you hum.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== privacy ===== -->
+  <section class="inverse privacy">
+    <div class="inner">
+      <header class="split">
+        <div>
+          <span class="lab">Your privacy</span>
+          <h2>No account. Nothing to sign in to.</h2>
+        </div>
+        <p>Your identity is twelve words made on your phone, not an email on our server. Your phone and your node seal everything between them, end to end. The relay that connects them carries bytes it cannot read.</p>
+      </header>
+      <div class="sees">
+        <figure>
+          <span class="lab">What the relay sees</span>
+          <pre data-bytes>{bytes.join('\n')}</pre>
+          <figcaption>That two devices are talking, when, and how much. Nothing else.</figcaption>
+        </figure>
+        <figure>
+          <span class="lab">What your node reads</span>
+          <div class="clear">
+            <p><b>make a song</b></p>
+            <p>“a slow blues, brushed drums, a voice like smoke”</p>
+            <p class="meta">acestep:1.5-fast · 3:00 · from Ana's phone</p>
+          </div>
+          <figcaption>Only the two ends can open it.</figcaption>
+        </figure>
+      </div>
+      <dl class="facts">
+        <div><dt>Keys, not passwords</dt><dd>Ed25519 identities on both sides, pinned when you pair. The node proves itself before your phone says a word.</dd></div>
+        <div><dt>Sealed end to end</dt><dd>Noise NK on every connection, with fresh keys each time. No plaintext fallback, ever.</dd></div>
+        <div><dt>Nothing reported</dt><dd>The node sends us nothing; its update check goes to GitHub. The app's one other call fetches lyrics for your own files from LRCLIB, which learns a title and an artist, never audio.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <!-- ===== the source ===== -->
+  <section class="source">
+    <div class="inner">
+      <header class="split">
+        <div>
+          <span class="lab">Open source</span>
+          <h2>Read every line</h2>
+        </div>
+        <p>Cantor is Apache-2.0, all of it. You do not have to take our word for anything on this page: the app, the node, the relay and the wire format they share are in one repository.</p>
+      </header>
+      <ul class="tree">
+        <li><a href={`${SITE.github}/tree/main/cantor`}>cantor/</a><span>The Android app: the field, the lenses, the player</span></li>
+        <li><a href={`${SITE.github}/tree/main/node`}>node/</a><span>The node, in Rust: models, generation, your library</span></li>
+        <li><a href={`${SITE.github}/tree/main/relay`}>relay/</a><span>The relay: a Cloudflare Worker that splices sealed bytes</span></li>
+        <li><a href={`${SITE.github}/tree/main/protocol`}>protocol/</a><span>The wire contract, its fixtures, and its generated types</span></li>
+        <li><a href={`${SITE.github}/tree/main/contributing`}>contributing/</a><span>How it fits together, and how to change it</span></li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ===== begin ===== -->
   <section class="inverse begin" id="begin">
     <div class="inner">
       <h2>Begin</h2>
@@ -116,6 +261,11 @@ const SONG = 'an empty ballroom';
           <p>Then <code>cantor pull</code> a model and <code>cantor pair</code> your phone. The installer offers both.</p>
         </div>
       </div>
+      <dl class="needs">
+        <div><dt>A computer that stays on</dt><dd>Linux or macOS. A GPU makes it quick; a CPU is enough, only slower.</dd></div>
+        <div><dt>Room for a model</dt><dd>From about 3 GB for a first model, up to 27 GB for the largest.</dd></div>
+        <div><dt>Open models</dt><dd>Good, and yours. Each comes with its own licence, shown before it downloads.</dd></div>
+      </dl>
       <a class="more" href="/docs/start/">The quick start, step by step</a>
     </div>
   </section>
@@ -134,9 +284,10 @@ const SONG = 'an empty ballroom';
     rootMargin: '-64px 0px 0px 0px',
   }).observe(hero);
 
+  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   // The seal plays its song: one dot after another on a linear clock, a rest
   // when it is all ink, then again. Still when motion is reduced.
-  const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
   for (const seal of document.querySelectorAll<SVGElement>('svg.looping')) {
     const dots = [...seal.querySelectorAll<SVGCircleElement>('circle')];
     const count = dots.length;
@@ -161,6 +312,22 @@ const SONG = 'an empty ballroom';
     };
     requestAnimationFrame(frame);
   }
+
+  // The relay's view keeps moving: a new line of sealed bytes every beat.
+  const pre = document.querySelector<HTMLElement>('[data-bytes]');
+  if (pre && !still) {
+    let visible = false;
+    new IntersectionObserver(([e]) => (visible = e.isIntersecting)).observe(pre);
+    const line = () =>
+      Array.from({ length: 16 }, () => Math.floor(Math.random() * 256).toString(16).padStart(2, '0')).join(' ');
+    setInterval(() => {
+      if (!visible) return;
+      const lines = pre.textContent!.split('\n');
+      lines.shift();
+      lines.push(line());
+      pre.textContent = lines.join('\n');
+    }, 420);
+  }
 </script>
 
 <style>
@@ -168,7 +335,19 @@ const SONG = 'an empty ballroom';
   section { padding: 160px 40px; }
   h2 { font: 400 clamp(38px, 4.2vw, 60px) / 1.05 var(--display); margin: 0; letter-spacing: -0.4px; text-wrap: balance; }
   p { font-size: 19px; line-height: 31px; margin: 0; text-wrap: pretty; }
+  .lab { display: block; font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; color: var(--muted); margin-bottom: 22px; }
   .more { display: inline-block; font: 11px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; text-decoration: none; padding-bottom: 5px; border-bottom: 1px solid currentColor; }
+  code { font-size: 0.86em; }
+
+  /* A section's head: the claim on the left, what it means on the right. */
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 60px; align-items: end; margin-bottom: 88px; }
+  .split p { color: var(--muted); max-width: 46ch; }
+
+  /* Three short facts on one rule. */
+  .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; margin: 88px 0 0; border-top: 1px solid var(--ink); }
+  .facts div { padding-top: 22px; }
+  .facts dt { font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; }
+  .facts dd { margin: 0; font-size: 16.5px; line-height: 26px; color: var(--muted); max-width: 34ch; }
 
   /* ---- the bar ------------------------------------------------------------ */
   .top { position: fixed; z-index: 5; inset: 0 0 auto; height: 64px; display: flex; justify-content: space-between; align-items: center; padding: 0 40px;
@@ -194,16 +373,25 @@ const SONG = 'an empty ballroom';
   .plate-card b { font-weight: 400; color: var(--ink); font-variant-numeric: tabular-nums; }
 
   /* ---- what it is ------------------------------------------------------------ */
-  .statement { max-width: 1320px; margin: 0 auto; padding-top: 180px; }
-  .big { font: 400 clamp(32px, 3.4vw, 50px) / 1.18 var(--display); letter-spacing: -0.2px; max-width: 27ch; text-wrap: balance; }
-  .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; margin: 96px 0 0; border-top: 1px solid var(--ink); }
-  .facts div { padding-top: 22px; }
-  .facts dt { font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; }
-  .facts dd { margin: 0; font-size: 17px; line-height: 27px; color: var(--muted); max-width: 34ch; }
+  .statement { max-width: 1320px; margin: 0 auto; padding-top: 180px; padding-bottom: 60px; }
+  .big { font: 400 clamp(32px, 3.4vw, 50px) / 1.18 var(--display); letter-spacing: -0.2px; max-width: 30ch; text-wrap: balance; }
+
+  /* Words on one side, a phone's screen on the other. */
+  .side-by-side { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 96px; align-items: center; }
+  .side-by-side.flip { grid-template-columns: minmax(0, 420px) minmax(0, 1fr); }
+  .side-by-side .words p { color: var(--muted); max-width: 44ch; margin-top: 24px; }
+  .side-by-side .words h2 { max-width: 14ch; }
+
+  /* ---- the map --------------------------------------------------------------- */
+  .legend { list-style: none; padding: 0; margin: 44px 0 0; display: grid; gap: 16px;
+    font: 10.5px/1 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+  .legend li { display: flex; align-items: center; gap: 12px; }
+  .legend svg { width: 20px; height: 20px; }
+  .l-remote { fill: none; stroke: var(--faint); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+  .l-cached { fill: none; stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+  .l-down { fill: var(--ink); stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
 
   /* ---- the lenses ------------------------------------------------------------ */
-  .lenses header { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 60px; align-items: end; margin-bottom: 100px; }
-  .lenses header p { color: var(--muted); max-width: 44ch; }
   .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; }
   .three figure { margin: 0; }
   .art { aspect-ratio: 1 / 1; display: grid; place-items: center; }
@@ -215,32 +403,58 @@ const SONG = 'an empty ballroom';
   .three figcaption i { display: block; font: italic 400 22px/1.2 var(--display); color: var(--ink); margin-bottom: 6px; }
   .recipe { margin-top: 72px; text-align: center; font: italic 400 20px/1 var(--display); color: var(--muted); }
 
-  /* ---- pairing --------------------------------------------------------------- */
-  .pairing .inner { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 80px; align-items: center; }
-  .pairing .words p { color: var(--muted); margin: 24px 0 34px; max-width: 40ch; }
-  .pair { margin: 0; display: grid; grid-template-columns: 120px minmax(0, 1fr) 120px; align-items: center; position: relative; }
-  .mark { display: grid; justify-items: center; gap: 18px; }
-  .mark :global(svg) { width: 104px; height: 104px; }
-  .mark span { white-space: nowrap; font: 10px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
-  .wires { width: 100%; height: 160px; margin-bottom: 34px; }
-  .wires path { fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-dasharray: 0 11; vector-effect: non-scaling-stroke; animation: flow 1.6s linear infinite; }
-  .wires .from { opacity: 0.45; }
-  @keyframes flow { to { stroke-dashoffset: -11; } }
-  .pair figcaption { position: absolute; left: 50%; top: calc(50% - 17px); transform: translate(-50%, -50%); text-align: center; background: var(--paper); padding: 6px 12px;
-    font: 10px/1.6 var(--mono); letter-spacing: 2px; text-transform: uppercase; }
-  .pair figcaption em { font: italic 400 14px/1.4 var(--display); letter-spacing: 0; text-transform: none; color: var(--muted); }
-  @media (prefers-reduced-motion: reduce) { .wires path { animation: none; } }
+  /* ---- the network ----------------------------------------------------------- */
+  .net { position: relative; margin: 0; aspect-ratio: 2.4 / 1; }
+  .net .wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+  .net .wires line { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-dasharray: 0 9; vector-effect: non-scaling-stroke; animation: flow 1.8s linear infinite; }
+  @keyframes flow { to { stroke-dashoffset: -9; } }
+  .node, .person { position: absolute; transform: translate(-50%, -50%); display: grid; justify-items: center; gap: 12px; background: var(--paper); padding: 10px; }
+  .node :global(svg) { width: 64px; height: 64px; }
+  .node.big :global(svg) { width: 104px; height: 104px; }
+  .person > :global(svg.phone) { width: 52px; height: 52px; }
+  .node span, .person span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  .node.big span { color: var(--ink); }
+  .person .own { width: 66px; height: 22px; }
+  .person .own path { fill: none; stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+  @media (prefers-reduced-motion: reduce) { .net .wires line { animation: none; } }
+
+  /* ---- import ---------------------------------------------------------------- */
+  .pairing-of-two { display: grid; gap: 36px; margin: 0 0 44px; }
+  .pairing-of-two figure { margin: 0; display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 26px; align-items: center; }
+  .pairing-of-two svg { width: 96px; height: 96px; }
+  .pairing-of-two figcaption i { display: block; font: italic 400 22px/1.25 var(--display); }
+  .pairing-of-two figcaption span { display: block; margin-top: 8px; font: 10.5px/1.5 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+  .import .aside { color: var(--muted); max-width: 44ch; }
+
+  /* ---- privacy --------------------------------------------------------------- */
+  .sees { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; }
+  .sees figure { margin: 0; border-top: 1px solid var(--line); padding-top: 22px; }
+  .sees pre { margin: 0; height: 250px; overflow: hidden; font: 13px/25px var(--mono); color: var(--muted); letter-spacing: 0.5px; }
+  .clear { height: 250px; display: grid; align-content: center; gap: 14px; }
+  .clear p { font: 400 26px/1.3 var(--display); }
+  .clear b { font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; font-weight: 400; }
+  .clear .meta { font: 11px/1 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
+  .sees figcaption { margin-top: 18px; font-size: 15.5px; line-height: 24px; color: var(--muted); }
+
+  /* ---- the source ------------------------------------------------------------ */
+  .tree { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--ink); }
+  .tree li { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 24px; align-items: baseline; padding: 20px 0; border-bottom: 1px solid var(--line); }
+  .tree a { font: 15px/1 var(--mono); text-underline-offset: 5px; text-decoration-thickness: 1px; }
+  .tree span { font-size: 17px; color: var(--muted); }
 
   /* ---- begin ----------------------------------------------------------------- */
   .begin h2 { font-size: clamp(64px, 8vw, 128px); line-height: 0.9; letter-spacing: -1px; margin-bottom: 80px; }
   .two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0; border-top: 1px solid var(--ink); }
   .side { padding: 28px 48px 8px 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 22px; min-width: 0; }
   .side + .side { padding-left: 48px; border-left: 1px solid var(--line); }
-  .lab { font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; color: var(--muted); }
+  .side .lab { margin-bottom: 0; }
   .btn { justify-self: start; font: 400 24px/1 var(--display); padding: 20px 30px; background: var(--ink); color: var(--paper); text-decoration: none; transition: opacity 0.2s linear; }
   .btn:hover { opacity: 0.85; }
   .side p { font-size: 15.5px; line-height: 24px; color: var(--muted); }
   .side code { font-size: 13.5px; color: var(--ink); }
+  .needs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; margin: 72px 0 0; }
+  .needs dt { font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 12px; }
+  .needs dd { margin: 0; font-size: 15.5px; line-height: 24px; color: var(--muted); max-width: 32ch; }
   .begin .more { margin-top: 64px; }
 
   footer { display: flex; justify-content: space-between; align-items: center; padding: 26px 40px; font: 10.5px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); }
@@ -255,17 +469,17 @@ const SONG = 'an empty ballroom';
     .title { left: 22px; bottom: 40px; }
     .plate-card { display: none; }
     .statement { padding-top: 120px; }
-    .facts, .three { grid-template-columns: 1fr; gap: 36px; }
-    .facts { margin-top: 64px; }
-    .lenses header, .pairing .inner { grid-template-columns: 1fr; gap: 28px; }
-    .lenses header { margin-bottom: 56px; }
+    .split, .three, .facts, .sees, .two, .needs, .pairing-of-two, .side-by-side, .side-by-side.flip { grid-template-columns: minmax(0, 1fr); gap: 32px; }
+    .side-by-side.flip > :first-child { order: 2; }
+    .split { margin-bottom: 56px; }
+    .facts, .needs { margin-top: 56px; }
     .art :global(.face), .art :global(.looping), .art :global(.marble) { width: 64%; height: 64%; }
-    .pair { grid-template-columns: 84px minmax(0, 1fr) 84px; }
-    .mark span { letter-spacing: 1.2px; }
-    .mark :global(svg) { width: 64px; height: 64px; }
-    .wires { height: 110px; margin-bottom: 30px; }
-    .pair figcaption { position: static; transform: none; grid-column: 1 / -1; margin-top: 28px; background: none; padding: 0; }
-    .two { grid-template-columns: minmax(0, 1fr); }
+    .net { aspect-ratio: 1 / 1.1; }
+    .node.big :global(svg) { width: 72px; height: 72px; }
+    .node :global(svg) { width: 48px; height: 48px; }
+    .person .own { display: none; }
+    .person > :global(svg.phone) { width: 36px; height: 36px; }
+    .tree li { grid-template-columns: minmax(0, 1fr); gap: 8px; }
     .side { padding-right: 0; }
     .side + .side { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); margin-top: 28px; }
     .begin h2 { margin-bottom: 48px; }
