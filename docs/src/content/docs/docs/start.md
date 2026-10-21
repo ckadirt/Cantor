@@ -5,7 +5,16 @@ eyebrow: Start here
 ---
 
 You need a computer that stays on while it works (Linux or macOS), and an
-Android phone.
+Android phone (Android 7 or later).
+
+## Install the app
+
+[Download the APK](https://github.com/ckadirt/Cantor/releases/download/app-v0.1.0/cantor-0.1.0-arm64.apk)
+on your phone and open it. Android asks once to allow installs from your
+browser; allow it, install, and you can turn the permission off again.
+
+The app is not on Google Play yet. Each release is signed with the same key, so
+later versions install over this one and keep your songs.
 
 ## Install a node
 

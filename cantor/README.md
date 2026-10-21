@@ -93,7 +93,34 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 The release build minifies (ProGuard), doesn't need Metro, and ships a self-contained JS bundle.
 
-> ⚠️ **Signing:** `android/app/build.gradle` currently signs `release` with the **debug keystore** (RN template default). Before publishing to Play, generate your own upload keystore and wire it into `signingConfigs.release` — see [Signing your app](https://reactnative.dev/docs/signed-apk-android). Until then a release build is fine for local testing but **not** distributable.
+**Signing.** A published APK is signed with Cantor's release key, which never
+enters the repository. Android only accepts an update signed with the same key
+as the installed app, so losing it means every user reinstalls. Point Gradle at
+a properties file holding `storeFile`, `storePassword`, `keyAlias` and
+`keyPassword`, in `~/.gradle/gradle.properties`:
+
+```properties
+cantorKeystoreProperties=/path/to/keystore.properties
+```
+
+Without it, a release build is signed with the debug key and Gradle warns that
+it must not be published. A phone with a debug-signed build has to uninstall it
+before installing a release-signed one.
+
+**Publishing the APK.** Build arm64 only (nearly every phone; a quarter of the
+size), then attach it to an `app-vX.Y.Z` release that is not marked latest,
+because `cantor upgrade` reads the latest release:
+
+```sh
+cd android
+./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
+gh release create app-v0.1.0 --latest=false --title "Cantor for Android 0.1.0" \
+  cantor-0.1.0-arm64.apk cantor-0.1.0-arm64.apk.sha256
+```
+
+Bump `versionCode` (by one) and `versionName` in `android/app/build.gradle`
+for every published APK; Android refuses an update whose `versionCode` is not
+higher.
 
 **Release APK** (for sideloading / direct install):
 

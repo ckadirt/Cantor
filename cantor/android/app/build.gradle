@@ -72,6 +72,26 @@ def enableProguardInReleaseBuilds = false
  */
 def jscFlavor = 'io.github.react-native-community:jsc-android:2026004.+'
 
+/**
+ * The release signing key. Every published APK must be signed with the same
+ * key, or Android refuses it as an update, so the key never enters the
+ * repository: `cantorKeystoreProperties` (in ~/.gradle/gradle.properties, or
+ * -P on the command line) names a properties file with storeFile,
+ * storePassword, keyAlias and keyPassword. Without it a release build is signed
+ * with the debug key, which is fine for a local build and never for a
+ * published one.
+ */
+def releaseKeystore = null
+def releaseKeystorePath = project.findProperty('cantorKeystoreProperties')
+if (releaseKeystorePath != null) {
+    def file = new File(releaseKeystorePath.toString())
+    if (!file.isFile()) {
+        throw new GradleException("cantorKeystoreProperties points at ${file}, which does not exist")
+    }
+    releaseKeystore = new Properties()
+    file.withInputStream { releaseKeystore.load(it) }
+}
+
 android {
     ndkVersion rootProject.ext.ndkVersion
     buildToolsVersion rootProject.ext.buildToolsVersion
@@ -83,7 +103,7 @@ android {
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
-        versionName "1.0"
+        versionName "0.1.0"
     }
     // React Native's default app CMake plus Cantor's C++ (the FFmpeg-backed
     // audio reduction); see src/main/jni/CMakeLists.txt.
@@ -99,15 +119,26 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        if (releaseKeystore != null) {
+            release {
+                storeFile file(releaseKeystore['storeFile'])
+                storePassword releaseKeystore['storePassword']
+                keyAlias releaseKeystore['keyAlias']
+                keyPassword releaseKeystore['keyPassword']
+            }
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            if (releaseKeystore != null) {
+                signingConfig signingConfigs.release
+            } else {
+                logger.warn('cantorKeystoreProperties is not set: this release build is signed with the debug key and must not be published.')
+                signingConfig signingConfigs.debug
+            }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }
