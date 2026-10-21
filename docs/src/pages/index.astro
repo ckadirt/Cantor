@@ -2,9 +2,8 @@
 /**
  * cantorfm.com. The art leads and the words are its labels: a full-bleed live
  * marbling of the site's own name, a song's three lenses, the two marks that
- * pair, the node's commands as a specimen tray, three steps, and the one act.
+ * pair, three steps, and the one act.
  */
-import { getCollection } from 'astro:content';
 import Site from '../layouts/Site.astro';
 import Seal from '../components/art/Seal.astro';
 import Face from '../components/art/Face.astro';
@@ -12,12 +11,10 @@ import Marbling from '../components/art/Marbling.astro';
 import Station from '../components/art/Station.astro';
 import Phone from '../components/art/Phone.astro';
 import { marbleCaption } from '../lib/art';
-import { COMMANDS, SITE } from '../site';
+import { SITE } from '../site';
 
 const NAME = 'cantorfm.com';
 const cap = marbleCaption(NAME);
-const written = new Set((await getCollection('docs')).map((entry) => entry.id));
-let number = 0;
 ---
 <Site title="Cantor — songs made at home" description="Songs made on your own machine, heard on your phone, and nothing in between can listen.">
   <nav class="top">
@@ -85,37 +82,6 @@ let number = 0;
         <figure><Station publicKey="a node" models={3} /><figcaption>Your node</figcaption></figure>
       </div>
       <p class="wire-label">The relay · sealed bytes only</p>
-    </div>
-  </section>
-
-  <section class="tray">
-    <div class="inner">
-      <header>
-        <h2>The node, in fifteen words</h2>
-        <span class="card">Each command drawn from its own name</span>
-      </header>
-      <div class="families">
-        {COMMANDS.map(([family, commands]) => (
-          <div class="family">
-            <span class="family-name">{family}</span>
-            <div class="specs">
-              {commands.map(([command, line]) => {
-                number += 1;
-                const href = written.has(`docs/node/${command}`) ? `/docs/node/${command}/` : undefined;
-                const Tag = href ? 'a' : 'div';
-                return (
-                  <Tag class="spec" href={href}>
-                    <Seal name={`cantor ${command}`} depth={2} />
-                    <span class="n">No. {String(number).padStart(2, '0')}</span>
-                    <span class="c">{command}</span>
-                    <span class="d">{line}</span>
-                  </Tag>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   </section>
 
@@ -197,18 +163,6 @@ let number = 0;
   .pair figcaption, .wire-label { font: 10px/1.5 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); margin-top: 12px; }
   .wire-label { max-width: 820px; text-align: center; }
 
-  .tray header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid var(--ink); padding-bottom: 16px; margin-bottom: 8px; gap: 24px; flex-wrap: wrap; }
-  .tray header h2 { font-size: 44px; }
-  .family { display: grid; grid-template-columns: 160px minmax(0, 1fr); border-bottom: 1px solid var(--line); }
-  .family-name { font: 10px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; color: var(--muted); padding-top: 34px; }
-  .specs { display: grid; grid-template-columns: repeat(5, 1fr); }
-  .spec { display: block; padding: 28px 18px 24px 0; text-decoration: none; }
-  .spec :global(svg) { width: 76px; height: 76px; display: block; margin-bottom: 20px; transition: transform 0.4s linear; }
-  a.spec:hover :global(svg) { transform: scale(1.12); }
-  .spec .n { display: block; font: 10px/1 var(--mono); letter-spacing: 2px; color: var(--muted); }
-  .spec .c { display: block; font: 400 22px/1.2 var(--display); margin: 8px 0 4px; }
-  a.spec .c { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
-  .spec .d { display: block; font-size: 14px; line-height: 20px; color: var(--muted); }
 
   .steps ol { list-style: none; padding: 0; margin: 40px 0 0; counter-reset: s; max-width: 820px; }
   .steps li { counter-increment: s; display: grid; grid-template-columns: 60px 260px minmax(0, 1fr); align-items: baseline; padding: 22px 0; border-top: 1px solid var(--line); font-size: 17px; }
@@ -239,9 +193,6 @@ let number = 0;
     .hero-card { display: none; }
     .lede, .get .inner { grid-template-columns: 1fr; gap: 32px; }
     .three { grid-template-columns: 1fr; }
-    .family { grid-template-columns: 1fr; }
-    .family-name { padding-top: 24px; }
-    .specs { grid-template-columns: repeat(2, 1fr); }
     .steps li { grid-template-columns: 44px minmax(0, 1fr); row-gap: 8px; }
     .steps li > :last-child { grid-column: 2; overflow-x: auto; }
     .pair { grid-template-columns: 72px minmax(80px, 1fr) 72px; gap: 12px; }
