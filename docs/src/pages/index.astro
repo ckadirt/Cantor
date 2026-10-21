@@ -1,0 +1,251 @@
+---
+/**
+ * cantorfm.com. The art leads and the words are its labels: a full-bleed live
+ * marbling of the site's own name, a song's three lenses, the two marks that
+ * pair, the node's commands as a specimen tray, three steps, and the one act.
+ */
+import { getCollection } from 'astro:content';
+import Site from '../layouts/Site.astro';
+import Seal from '../components/art/Seal.astro';
+import Face from '../components/art/Face.astro';
+import Marbling from '../components/art/Marbling.astro';
+import Station from '../components/art/Station.astro';
+import Phone from '../components/art/Phone.astro';
+import { marbleCaption } from '../lib/art';
+import { COMMANDS, SITE } from '../site';
+
+const NAME = 'cantorfm.com';
+const cap = marbleCaption(NAME);
+const written = new Set((await getCollection('docs')).map((entry) => entry.id));
+let number = 0;
+---
+<Site title="Cantor — songs made at home" description="Songs made on your own machine, heard on your phone, and nothing in between can listen.">
+  <nav class="top">
+    <a class="brand" href="/"><Seal name={NAME} depth={2} class="brand-seal" /> Cantor</a>
+    <span class="links">
+      <a href="/docs/">Docs</a>
+      <a href={SITE.github}>GitHub</a>
+      <a href={SITE.apk} class="get">Download</a>
+    </span>
+  </nav>
+
+  <header class="hero">
+    <Marbling name={NAME} live fit={2} cx={0.66} cy={0.5} class="bath" label="The site's own name, marbled, drop by drop" />
+    <div class="title">
+      <h1>Cantor</h1>
+      <p>Songs made at home, and heard by no one else.</p>
+    </div>
+    <aside class="card hero-card">
+      <span class="no">Plate I</span>
+      <b>cantorfm.com, marbled</b>
+      {cap.drops} drops, {cap.combs} comb{cap.combs > 1 ? 's' : ''}, seed {cap.seed}; bar <span data-bar-for={NAME}>0</span>.<br />
+      Suminagashi, after Jaffer's equations.<br />Ink on paper, drawn as you watch.
+    </aside>
+  </header>
+
+  <section class="lede">
+    <h2>A studio that lives in your own machine.</h2>
+    <div>
+      <p>Cantor writes songs with models that run on your computer, and plays them on your phone. Ask for a song, a version of one, a longer one, or one that begins with your own humming.</p>
+      <p>Your phone and your node meet through a relay that only splices sealed bytes. It never hears a prompt, a title, or a note.</p>
+    </div>
+  </section>
+
+  <section class="inverse lenses">
+    <div class="inner">
+      <h2>A song is known by its shape.</h2>
+      <div class="three">
+        <figure>
+          <div class="art"><Face name={NAME} /></div>
+          <figcaption class="card"><span class="no">Plate II</span><b>The circle</b>One contour from the recipe: its lobes, its turn, its length.</figcaption>
+        </figure>
+        <figure>
+          <div class="art"><Seal name={NAME} depth={3} /></div>
+          <figcaption class="card"><span class="no">Plate III</span><b>The seal</b>Three nested patterns of nine. Each dot is a slice of the song, in order.</figcaption>
+        </figure>
+        <figure>
+          <div class="art"><Marbling name={NAME} /></div>
+          <figcaption class="card"><span class="no">Plate IV</span><b>The marbling</b>Drops of ink and clear water, combed. Nothing is erased.</figcaption>
+        </figure>
+      </div>
+      <p class="aside">The same three drawings the app makes for every song, from the same code. Here the recipe is this page's name.</p>
+    </div>
+  </section>
+
+  <section class="pair-section">
+    <div class="inner">
+      <span class="m">m. 1</span>
+      <h2>Two marks, one secret.</h2>
+      <p>Your phone has a seal and your node a station, each drawn from its own key. Pairing is the two of them agreeing. The relay that joins them only ever carries ciphertext: it sees that they talk, never what they say.</p>
+      <div class="pair">
+        <figure><Phone publicKey="a phone" /><figcaption>Your phone</figcaption></figure>
+        <svg class="wire" viewBox="0 0 400 110" preserveAspectRatio="none" aria-hidden="true">
+          <path d="M0 55 C 120 -10, 280 120, 400 55" fill="none" stroke="currentColor" stroke-width="1" stroke-dasharray="2 7" vector-effect="non-scaling-stroke" />
+        </svg>
+        <figure><Station publicKey="a node" models={3} /><figcaption>Your node</figcaption></figure>
+      </div>
+      <p class="wire-label">The relay · sealed bytes only</p>
+    </div>
+  </section>
+
+  <section class="tray">
+    <div class="inner">
+      <header>
+        <h2>The node, in fifteen words</h2>
+        <span class="card">Each command drawn from its own name</span>
+      </header>
+      <div class="families">
+        {COMMANDS.map(([family, commands]) => (
+          <div class="family">
+            <span class="family-name">{family}</span>
+            <div class="specs">
+              {commands.map(([command, line]) => {
+                number += 1;
+                const href = written.has(`docs/node/${command}`) ? `/docs/node/${command}/` : undefined;
+                const Tag = href ? 'a' : 'div';
+                return (
+                  <Tag class="spec" href={href}>
+                    <Seal name={`cantor ${command}`} depth={2} />
+                    <span class="n">No. {String(number).padStart(2, '0')}</span>
+                    <span class="c">{command}</span>
+                    <span class="d">{line}</span>
+                  </Tag>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </section>
+
+  <section class="steps">
+    <div class="inner">
+      <span class="m">m. 2</span>
+      <h2>Three steps.</h2>
+      <ol>
+        <li><b>Install a node</b><code>{SITE.install}</code></li>
+        <li><b>Pull a model</b><code>cantor pull acestep:1.5-fast</code></li>
+        <li><b>Pair your phone</b><span><code>cantor pair</code>, then scan the code in the app.</span></li>
+      </ol>
+      <a class="more" href="/docs/start/">The quick start, in full</a>
+    </div>
+  </section>
+
+  <section class="inverse get">
+    <div class="inner">
+      <h2>Begin with the phone.</h2>
+      <div class="coda">
+        <a class="btn" href={SITE.apk}>Download for Android <small>APK</small></a>
+        <p>then, on your computer:<br /><code>{SITE.install}</code></p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Cantor · alpha</span>
+    <span><a href="/docs/">Docs</a> · <a href={SITE.github}>Source</a> · Apache-2.0</span>
+  </footer>
+</Site>
+
+<style>
+  .inner { max-width: 1280px; margin: 0 auto; }
+  section { padding: 140px 36px; }
+  h2 { font: 400 clamp(40px, 4.6vw, 68px) / 1.02 var(--display); margin: 0; letter-spacing: -0.5px; }
+  p { font-size: 20px; line-height: 32px; margin: 0 0 18px; max-width: 54ch; }
+  .pair-section h2 { margin-bottom: 24px; }
+  .m { display: block; font: 10px/1 var(--mono); letter-spacing: 2px; color: var(--faint); margin-bottom: 18px; }
+
+  /* The museum card. */
+  .card { font: 10.5px/1.65 var(--mono); letter-spacing: 1.2px; color: var(--muted); max-width: 330px; }
+  .card b { display: block; font: 400 italic 17px/1.3 var(--display); letter-spacing: 0; color: var(--ink); margin-bottom: 6px; }
+  .card .no { display: block; font-size: 10px; letter-spacing: 2.4px; text-transform: uppercase; margin-bottom: 10px; color: var(--ink); }
+
+  /* Difference, so the bar reads over paper, ink and marbling alike. */
+  .top { position: fixed; z-index: 5; inset: 0 0 auto; color: #fff; mix-blend-mode: difference; display: flex; justify-content: space-between; align-items: center; padding: 22px 36px;
+    font: 11px/1 var(--mono); letter-spacing: 2.4px; text-transform: uppercase; }
+  .top a { text-decoration: none; }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .top :global(.brand-seal) { width: 18px; height: 18px; }
+  .top :global(.brand-seal circle) { fill: currentColor; }
+  .links a { margin-left: 26px; opacity: 0.65; }
+  .links a:hover { opacity: 1; }
+  .links .get { opacity: 1; border-bottom: 1px solid currentColor; padding-bottom: 3px; }
+
+  .hero { position: relative; height: 100vh; min-height: 640px; overflow: hidden; }
+  .hero :global(.bath) { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .title { position: absolute; left: 36px; bottom: 40px; }
+  h1 { font: 400 clamp(88px, 15vw, 232px) / 0.82 var(--display); margin: 0; letter-spacing: -2px; }
+  .title p { font: 400 clamp(20px, 2vw, 28px) / 1.3 var(--display); margin: 22px 0 0 6px; max-width: 22ch; color: var(--muted); }
+  .hero-card { position: absolute; right: 36px; bottom: 46px; text-align: right; }
+
+  .lede { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 60px; max-width: 1352px; margin: 0 auto; }
+  .lede p:first-of-type::first-letter { float: left; font: 400 86px/0.8 var(--display); padding: 8px 12px 0 0; }
+
+  .lenses h2 { margin-bottom: 70px; max-width: 16ch; }
+  .three { display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
+  .three figure { margin: 0; }
+  .art { aspect-ratio: 1 / 1; display: flex; align-items: center; justify-content: center; border: 1px solid var(--line); }
+  .art :global(svg), .art :global(canvas) { width: 72%; height: 72%; }
+  .three figcaption { margin-top: 18px; }
+  .lenses .aside { color: var(--muted); font-size: 16px; line-height: 26px; margin-top: 56px; }
+
+  .pair { display: grid; grid-template-columns: 110px minmax(160px, 1fr) 110px; gap: 28px; align-items: center; margin: 56px 0 0; max-width: 820px; }
+  .pair figure { margin: 0; text-align: center; }
+  .pair :global(svg) { width: 110px; height: 110px; }
+  .pair .wire { width: 100%; height: 110px; }
+  .pair figcaption, .wire-label { font: 10px/1.5 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); margin-top: 12px; }
+  .wire-label { max-width: 820px; text-align: center; }
+
+  .tray header { display: flex; justify-content: space-between; align-items: baseline; border-bottom: 1px solid var(--ink); padding-bottom: 16px; margin-bottom: 8px; gap: 24px; flex-wrap: wrap; }
+  .tray header h2 { font-size: 44px; }
+  .family { display: grid; grid-template-columns: 160px minmax(0, 1fr); border-bottom: 1px solid var(--line); }
+  .family-name { font: 10px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; color: var(--muted); padding-top: 34px; }
+  .specs { display: grid; grid-template-columns: repeat(5, 1fr); }
+  .spec { display: block; padding: 28px 18px 24px 0; text-decoration: none; }
+  .spec :global(svg) { width: 76px; height: 76px; display: block; margin-bottom: 20px; transition: transform 0.4s linear; }
+  a.spec:hover :global(svg) { transform: scale(1.12); }
+  .spec .n { display: block; font: 10px/1 var(--mono); letter-spacing: 2px; color: var(--muted); }
+  .spec .c { display: block; font: 400 22px/1.2 var(--display); margin: 8px 0 4px; }
+  a.spec .c { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+  .spec .d { display: block; font-size: 14px; line-height: 20px; color: var(--muted); }
+
+  .steps ol { list-style: none; padding: 0; margin: 40px 0 0; counter-reset: s; max-width: 820px; }
+  .steps li { counter-increment: s; display: grid; grid-template-columns: 60px 260px minmax(0, 1fr); align-items: baseline; padding: 22px 0; border-top: 1px solid var(--line); font-size: 17px; }
+  .steps li::before { content: counter(s, upper-roman); font: 400 24px/1 var(--display); color: var(--muted); }
+  .steps li b { font: 400 24px/1.2 var(--display); }
+  .steps code { font-size: 14px; }
+  .more { display: inline-block; margin-top: 30px; font: 11px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; text-underline-offset: 5px; }
+
+  .get .inner { display: grid; grid-template-columns: 1fr 1fr; gap: 60px; align-items: end; }
+  .get h2 { font-size: clamp(56px, 7vw, 110px); line-height: 0.95; letter-spacing: -1px; }
+  .coda { position: relative; padding-left: 28px; }
+  .coda::before { content: ''; position: absolute; left: 0; top: 0; width: 5px; height: 70px; border-left: 1px solid var(--ink); border-right: 3px solid var(--ink); }
+  .btn { display: inline-block; font: 400 26px/1 var(--display); padding: 22px 34px; background: var(--ink); color: var(--paper); text-decoration: none; }
+  .btn small { font: 11px/1 var(--mono); letter-spacing: 2px; margin-left: 12px; opacity: 0.7; }
+  .coda p { font: 13px/1.8 var(--mono); color: var(--muted); margin: 24px 0 0; }
+  .coda code { color: var(--ink); }
+
+  footer { display: flex; justify-content: space-between; padding: 28px 36px; font: 10.5px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); border-top: 1px solid var(--line); }
+  footer a { text-decoration: none; }
+  footer a:hover { color: var(--ink); }
+
+  @media (max-width: 900px) {
+    section { padding: 96px 22px; }
+    .top { padding: 18px 22px; }
+    .links a { margin-left: 16px; }
+    .links a:not(.get) { display: none; }
+    .title { left: 22px; }
+    .hero-card { display: none; }
+    .lede, .get .inner { grid-template-columns: 1fr; gap: 32px; }
+    .three { grid-template-columns: 1fr; }
+    .family { grid-template-columns: 1fr; }
+    .family-name { padding-top: 24px; }
+    .specs { grid-template-columns: repeat(2, 1fr); }
+    .steps li { grid-template-columns: 44px minmax(0, 1fr); row-gap: 8px; }
+    .steps li > :last-child { grid-column: 2; overflow-x: auto; }
+    .pair { grid-template-columns: 72px minmax(80px, 1fr) 72px; gap: 12px; }
+    .pair :global(svg) { width: 72px; height: 72px; }
+    footer { flex-direction: column; gap: 14px; }
+  }
+</style>

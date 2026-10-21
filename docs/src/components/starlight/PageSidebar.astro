@@ -1,0 +1,76 @@
+---
+/**
+ * The right margin: the page's seal, which plays as you read (the dots heard
+ * so far in ink, the rest faint), a playhead and a clock, then the page's
+ * measures.
+ */
+import MobileTableOfContents from 'virtual:starlight/components/MobileTableOfContents';
+import TableOfContents from 'virtual:starlight/components/TableOfContents';
+import Seal from '../art/Seal.astro';
+import { clock, recipeOf } from '../../lib/art';
+
+const { entry, toc } = Astro.locals.starlightRoute;
+const name = entry.data.mark ?? entry.data.title;
+const seconds = recipeOf(name).durationMs / 1000;
+---
+{
+  toc && (
+    <div class="lg:sl-hidden">
+      <MobileTableOfContents />
+    </div>
+  )
+}
+<div class="right-sidebar-panel sl-hidden lg:sl-block">
+  <div class="sl-container">
+    <div class="listening" data-length={seconds}>
+      <Seal name={name} depth={3} played={0} play label={`${name}, as a seal`} />
+      <div class="rule"><i></i></div>
+      <div class="clock"><span data-now>0:00</span><span>{clock(seconds)}</span></div>
+    </div>
+    {toc && <TableOfContents />}
+  </div>
+</div>
+<script>
+  import { clock } from '../../lib/art';
+
+  // Reading is playing: the scroll is the playhead, on a linear clock.
+  const box = document.querySelector<HTMLElement>('.listening');
+  if (box) {
+    const seal = box.querySelector<SVGElement>('[data-seal-play]')!;
+    const count = Number(seal.dataset.sealPlay);
+    const dots = [...seal.querySelectorAll<SVGCircleElement>('circle')];
+    const bar = box.querySelector<HTMLElement>('.rule i')!;
+    const now = box.querySelector<HTMLElement>('[data-now]')!;
+    const seconds = Number(box.dataset.length);
+    let shown = -1;
+    const read = () => {
+      const max = document.documentElement.scrollHeight - innerHeight;
+      const u = max > 0 ? Math.min(1, Math.max(0, scrollY / max)) : 1;
+      const sounded = Math.round(u * count);
+      if (sounded !== shown) {
+        shown = sounded;
+        for (const dot of dots) dot.classList.toggle('on', Number(dot.dataset.k) < sounded);
+      }
+      bar.style.width = `${u * 100}%`;
+      now.textContent = clock(u * seconds);
+    };
+    addEventListener('scroll', read, { passive: true });
+    addEventListener('resize', read);
+    read();
+  }
+</script>
+<style>
+  .right-sidebar-panel { padding: 2.25rem var(--sl-sidebar-pad-x) 1rem; }
+  .sl-container { width: calc(var(--sl-sidebar-width) - 2 * var(--sl-sidebar-pad-x)); }
+  @media (min-width: 72rem) {
+    .sl-container { max-width: calc(((100vw - var(--sl-sidebar-width) - 2 * var(--sl-content-pad-x) - 2 * var(--sl-sidebar-pad-x)) * 0.25)); }
+  }
+  .listening { margin-bottom: 2.25rem; }
+  .listening :global(svg) { width: 9.5rem; height: 9.5rem; display: block; }
+  .rule { width: 9.5rem; height: 1px; background: var(--spine); margin-top: 0.9rem; position: relative; }
+  .rule i { position: absolute; left: 0; top: -1px; height: 3px; width: 0; background: var(--ink); }
+  .clock { width: 9.5rem; display: flex; justify-content: space-between; margin-top: 0.6rem; font: 400 0.6875rem/1 var(--mono); letter-spacing: 0.06em; color: var(--muted); }
+  .right-sidebar-panel :global(h2) { font: 400 0.6875rem/1 var(--mono); letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.75rem; }
+  .right-sidebar-panel :global(:where(a)) { display: block; font-size: var(--sl-text-xs); text-decoration: none; color: var(--muted); overflow-wrap: anywhere; }
+  .right-sidebar-panel :global(:where(a):hover), .right-sidebar-panel :global(a[aria-current='true']) { color: var(--ink); }
+</style>

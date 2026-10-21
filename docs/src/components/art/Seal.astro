@@ -1,0 +1,34 @@
+---
+/**
+ * A page's seal, drawn at build time. `played` (0 to 1) inks the dots heard
+ * so far and leaves the rest faint, the lens's grey-then-ink order; a
+ * `[data-seal-play]` script can move it later from the dots' `data-k`.
+ */
+import { sealDots } from '../../lib/art';
+
+interface Props {
+  name: string;
+  depth?: 2 | 3;
+  played?: number;
+  class?: string;
+  label?: string;
+  play?: boolean;
+}
+const { name, depth = 3, played = 1, class: className, label, play = false } = Astro.props;
+const dots = sealDots(name, depth);
+const sounded = Math.round(played * dots.length);
+---
+<svg
+  class:list={['seal', className]}
+  viewBox="-0.5 -0.5 1 1"
+  role={label ? 'img' : undefined}
+  aria-label={label}
+  aria-hidden={label ? undefined : 'true'}
+  data-seal-play={play ? dots.length : undefined}
+>
+  {dots.map((d) => <circle cx={d.x} cy={d.y} r={d.r} data-k={d.k} class={d.k < sounded ? 'on' : undefined} />)}
+</svg>
+<style>
+  .seal circle { fill: var(--faint); }
+  .seal circle.on { fill: var(--ink); }
+</style>

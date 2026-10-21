@@ -1,0 +1,202 @@
+/*
+ * Starlight in the app's paper and ink. Its colour slots are mapped onto the
+ * greys of `tokens.css`; the type is the app's; a page's body is a run of
+ * measures on a spine, as the app's sheets are.
+ */
+:root {
+  --sl-color-white: #fff;
+  --sl-color-gray-1: #ededed;
+  --sl-color-gray-2: #c9c9c9;
+  --sl-color-gray-3: #999;
+  --sl-color-gray-4: #595959;
+  --sl-color-gray-5: #2a2a2a;
+  --sl-color-gray-6: #141414;
+  --sl-color-black: #000;
+  --sl-color-accent-low: #1f1f1f;
+  --sl-color-accent: #fff;
+  --sl-color-accent-high: #fff;
+  --sl-color-text: #e6e6e6;
+  --sl-color-text-accent: #fff;
+  --sl-color-text-invert: #000;
+  --sl-color-bg: #000;
+  --sl-color-bg-nav: #000;
+  --sl-color-bg-sidebar: #000;
+  --sl-color-bg-inline-code: #141414;
+  --sl-color-hairline: #1f1f1f;
+  --sl-color-hairline-light: #2a2a2a;
+  --sl-color-hairline-shade: #000;
+  --sl-color-backdrop-overlay: rgba(0, 0, 0, 0.72);
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: none;
+
+  --sl-font: var(--text);
+  --sl-font-mono: var(--mono);
+  --sl-text-h1: 3.25rem;
+  --sl-text-h2: 1.875rem;
+  --sl-text-h3: 1.375rem;
+  --sl-line-height: 1.7;
+  --sl-line-height-headings: 1.15;
+  --sl-content-width: 44rem;
+  --sl-sidebar-width: 17.5rem;
+  --sl-nav-height: 4.25rem;
+}
+:root[data-theme='light'] {
+  --sl-color-white: #000;
+  --sl-color-gray-1: #141414;
+  --sl-color-gray-2: #2a2a2a;
+  --sl-color-gray-3: #666;
+  --sl-color-gray-4: #a6a6a6;
+  --sl-color-gray-5: #d4d4d4;
+  --sl-color-gray-6: #ededed;
+  --sl-color-gray-7: #f6f6f6;
+  --sl-color-black: #fff;
+  --sl-color-accent-low: #ededed;
+  --sl-color-accent: #000;
+  --sl-color-accent-high: #000;
+  --sl-color-text: #1a1a1a;
+  --sl-color-text-accent: #000;
+  --sl-color-text-invert: #fff;
+  --sl-color-bg: #fff;
+  --sl-color-bg-nav: #fff;
+  --sl-color-bg-sidebar: #fff;
+  --sl-color-bg-inline-code: #f2f2f2;
+  --sl-color-hairline: #e6e6e6;
+  --sl-color-hairline-light: #e6e6e6;
+  --sl-color-hairline-shade: #e6e6e6;
+  --sl-color-backdrop-overlay: rgba(255, 255, 255, 0.78);
+}
+
+body { -webkit-font-smoothing: antialiased; }
+::selection { background: var(--ink); color: var(--paper); }
+
+/* ---- the frame: hairlines, no fills ------------------------------------ */
+.header { border-bottom: 1px solid var(--line); }
+.sidebar-pane { border-inline-end: 1px solid var(--line); }
+
+/* ---- the left bar: mono family labels, serif pages ---------------------- */
+.sidebar-content summary .group-label .large,
+.sidebar-content .top-level > li > details > summary .large {
+  font: 400 0.6875rem/1 var(--mono);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.sidebar-content a {
+  font-family: var(--text);
+  font-size: 0.975rem;
+  color: var(--muted);
+  border-radius: 0;
+  padding-block: 0.3rem;
+}
+.sidebar-content a:hover { color: var(--ink); }
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover {
+  background: transparent;
+  color: var(--ink);
+  font-weight: 400;
+  box-shadow: inset 2px 0 0 var(--ink);
+}
+.sidebar-content a[aria-current='page'] * { font-weight: 400; }
+
+/* ---- search: a hairline field --------------------------------------------- */
+site-search button[data-open-modal] {
+  border-radius: 0;
+  border-color: var(--line);
+  background: transparent;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+site-search button[data-open-modal]:hover { border-color: var(--ink); color: var(--ink); }
+site-search dialog { border-radius: 0; }
+site-search kbd { border-radius: 0; font-family: var(--mono); }
+
+/* ---- the page body: measures on a spine ---------------------------------- */
+.sl-markdown-content {
+  counter-reset: measure;
+  position: relative;
+  padding-inline-start: 2.75rem;
+}
+.sl-markdown-content::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 0.4rem;
+  bottom: 0;
+  width: 1px;
+  background: var(--spine);
+}
+.sl-markdown-content :is(h2) {
+  counter-increment: measure;
+  position: relative;
+  font: 400 var(--sl-text-h2) / var(--sl-line-height-headings) var(--display);
+  color: var(--ink);
+  margin-top: 3.25rem;
+}
+.sl-markdown-content :is(h2)::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: -2.75rem;
+  top: 0.7em;
+  width: 0.9rem;
+  height: 1px;
+  background: var(--ink);
+}
+.sl-markdown-content :is(h2)::after {
+  content: 'm. ' counter(measure);
+  position: absolute;
+  inset-inline-start: -2.75rem;
+  top: -1.05rem;
+  font: 400 0.625rem/1 var(--mono);
+  letter-spacing: 0.08em;
+  color: var(--faint);
+}
+.sl-markdown-content :is(h3, h4) {
+  font-family: var(--display);
+  font-weight: 400;
+  color: var(--ink);
+}
+.sl-markdown-content :is(p, li) { font-size: 1.0625rem; }
+.sl-markdown-content strong { font-weight: 600; color: var(--ink); }
+.sl-markdown-content a { color: var(--ink); text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
+.sl-markdown-content code:not(pre code) {
+  font-size: 0.875em;
+  border-radius: 0;
+  padding: 0.1em 0.3em;
+}
+.sl-markdown-content table { font-size: 0.95rem; }
+.sl-markdown-content :is(th) {
+  font: 400 0.625rem/1 var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border-bottom: 1px solid var(--ink);
+}
+.sl-markdown-content :is(td, th) { border-color: var(--line); padding-inline: 0 1.25rem; }
+.sl-markdown-content hr { border-color: var(--line); }
+
+/* A shell block is the command, not a window round it: no empty title bar. */
+.expressive-code .frame.is-terminal .header { display: none; }
+.expressive-code .frame.is-terminal pre { border-top: 1px solid var(--line); }
+
+/* Asides are notes in the margin's voice: a rule, no colour. */
+.starlight-aside {
+  border: 0;
+  border-inline-start: 2px solid var(--ink);
+  background: transparent;
+  padding-block: 0.25rem;
+}
+.starlight-aside--caution, .starlight-aside--danger { border-inline-start-width: 4px; }
+.starlight-aside__title { font: 400 1.1rem/1.3 var(--display); color: var(--ink); }
+.starlight-aside__icon { display: none; }
+
+/* The anchor links Starlight puts beside headings stay out of the ink. */
+.sl-anchor-link { color: var(--faint); }
+
+@media (max-width: 50rem) {
+  .sl-markdown-content { padding-inline-start: 1.75rem; }
+  .sl-markdown-content :is(h2)::before, .sl-markdown-content :is(h2)::after { inset-inline-start: -1.75rem; }
+  .sl-markdown-content :is(h2)::before { width: 0.6rem; }
+}

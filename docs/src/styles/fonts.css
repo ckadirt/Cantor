@@ -1,0 +1,11 @@
+/* The app's two faces, read straight from cantor/assets/fonts (SIL OFL). */
+@font-face {
+  font-family: 'CMU Serif';
+  src: url('../../../cantor/assets/fonts/cmu-serif.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Spectral';
+  src: url('../../../cantor/assets/fonts/spectral.ttf') format('truetype');
+  font-display: swap;
+}

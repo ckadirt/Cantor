@@ -1,0 +1,40 @@
+---
+/**
+ * A page's header: its eyebrow, its title (a command's `cantor` in the faint
+ * ink, the verb in the full one), its description as the lead, and its
+ * marbling as a small plate.
+ */
+// Starlight's skip link and table of contents point at this id.
+const PAGE_TITLE_ID = '_top';
+import Marbling from '../art/Marbling.astro';
+
+const { entry } = Astro.locals.starlightRoute;
+const { title, description, eyebrow, mark } = entry.data;
+const name = mark ?? title;
+const command = title.startsWith('cantor ') ? title.slice('cantor '.length) : null;
+---
+<header class="page-head">
+  <div class="words">
+    {eyebrow && <p class="eyebrow">{eyebrow}</p>}
+    <h1 id={PAGE_TITLE_ID}>
+      {command ? <><span class="faint">cantor</span> {command}</> : title}
+    </h1>
+    {description && <p class="lead">{description}</p>}
+  </div>
+  <figure class="plate">
+    <Marbling name={name} />
+  </figure>
+</header>
+<style>
+  .page-head { display: grid; grid-template-columns: minmax(0, 1fr) 7.5rem; gap: 2rem; align-items: end; margin-top: 1.5rem; }
+  .eyebrow { font: 400 0.6875rem/1 var(--mono); letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted); margin: 0 0 1.1rem; }
+  h1 { font: 400 var(--sl-text-h1) / 1 var(--display); color: var(--ink); margin: 0; letter-spacing: -0.01em; }
+  .faint { color: var(--faint); }
+  .lead { font: 400 1.4rem/1.35 var(--display); color: var(--muted); margin: 1rem 0 0; max-width: 32ch; }
+  .plate { margin: 0; }
+  .plate :global(canvas) { width: 7.5rem; height: 7.5rem; }
+  @media (max-width: 50rem) {
+    .page-head { grid-template-columns: minmax(0, 1fr) 4.5rem; gap: 1rem; }
+    .plate :global(canvas) { width: 4.5rem; height: 4.5rem; }
+  }
+</style>

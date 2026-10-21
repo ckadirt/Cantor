@@ -1,0 +1,40 @@
+---
+/**
+ * A page's marbling in a canvas: `live` grows it bar by bar, otherwise the
+ * identity alone, still. The ink is the canvas's CSS `color`.
+ */
+interface Props { name: string; live?: boolean; fit?: number; cx?: number; cy?: number; class?: string; label?: string }
+const { name, live = false, fit, cx, cy, class: className, label } = Astro.props;
+---
+<canvas
+  class:list={['marbling', className]}
+  data-marbling={name}
+  data-live={live ? '' : undefined}
+  data-fit={fit}
+  data-cx={cx}
+  data-cy={cy}
+  role="img"
+  aria-label={label ?? `${name}, marbled`}
+></canvas>
+<script>
+  import { drawMarbleStill, startBath } from '../../scripts/bath';
+
+  for (const canvas of document.querySelectorAll<HTMLCanvasElement>('canvas[data-marbling]')) {
+    const name = canvas.dataset.marbling!;
+    const num = (key: string) => (canvas.dataset[key] ? Number(canvas.dataset[key]) : undefined);
+    if (canvas.dataset.live !== undefined) {
+      const bar = document.querySelector(`[data-bar-for="${name}"]`);
+      startBath(canvas, name, {
+        fit: num('fit'),
+        cx: num('cx'),
+        cy: num('cy'),
+        onBar: (n) => { if (bar) bar.textContent = String(n + 1); },
+      });
+    } else {
+      drawMarbleStill(canvas, name);
+    }
+  }
+</script>
+<style>
+  .marbling { display: block; color: var(--ink); }
+</style>

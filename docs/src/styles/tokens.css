@@ -1,0 +1,60 @@
+/*
+ * The app's paper and ink (cantor/src/theme/tokens.ts): black on white, white
+ * on black, greys only for hierarchy, no hue anywhere. The docs choose a
+ * theme with `data-theme`; the landing follows the system.
+ */
+:root {
+  --paper: #fff;
+  --ink: #000;
+  --muted: #666;
+  --faint: #a6a6a6;
+  --line: #e6e6e6;
+  --spine: #d4d4d4;
+  --display: 'CMU Serif', Georgia, serif;
+  --text: 'Spectral', Georgia, serif;
+  --mono: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+:root[data-theme='dark'] {
+  --paper: #000;
+  --ink: #fff;
+  --muted: #999;
+  --faint: #595959;
+  --line: #1f1f1f;
+  --spine: #2a2a2a;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --paper: #000;
+    --ink: #fff;
+    --muted: #999;
+    --faint: #595959;
+    --line: #1f1f1f;
+    --spine: #2a2a2a;
+  }
+}
+/* A section printed the other way round: ink for paper. */
+.inverse {
+  --paper: #000;
+  --ink: #fff;
+  --muted: #8c8c8c;
+  --faint: #4a4a4a;
+  --line: #222;
+  background: var(--paper);
+  color: var(--ink);
+}
+:root[data-theme='dark'] .inverse {
+  --paper: #fff;
+  --ink: #000;
+  --muted: #666;
+  --faint: #bdbdbd;
+  --line: #e6e6e6;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .inverse {
+    --paper: #fff;
+    --ink: #000;
+    --muted: #666;
+    --faint: #bdbdbd;
+    --line: #e6e6e6;
+  }
+}

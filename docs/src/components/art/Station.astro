@@ -1,0 +1,12 @@
+---
+/** A node's mark, the station: a polygon from its key, a dot per model. */
+import { stationMark } from '../../lib/art';
+
+interface Props { publicKey: string; models?: number; class?: string }
+const { publicKey, models = 3, class: className } = Astro.props;
+const s = stationMark(publicKey, models);
+---
+<svg class:list={['station', className]} viewBox="-1.15 -1.15 2.3 2.3" aria-hidden="true">
+  <path d={s.outline} fill="none" stroke="currentColor" stroke-width="1.2" vector-effect="non-scaling-stroke" stroke-linejoin="round" stroke-linecap="round" />
+  {s.dots.map((d) => <circle cx={d.x} cy={d.y} r="0.09" fill="currentColor" />)}
+</svg>

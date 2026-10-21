@@ -1,0 +1,14 @@
+---
+/** The site's name beside its seal, which is the landing page's too. */
+import Seal from '../art/Seal.astro';
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+---
+<a href={siteTitleHref} class="site-title">
+  <Seal name="cantorfm.com" depth={2} class="mark" />
+  <span translate="no">{siteTitle}</span>
+</a>
+<style>
+  .site-title { display: flex; align-items: center; gap: 0.7rem; text-decoration: none; color: var(--ink); white-space: nowrap; }
+  .site-title span { font: 400 1.5rem/1 var(--display); letter-spacing: 0.01em; }
+  .site-title :global(.mark) { width: 1.35rem; height: 1.35rem; }
+</style>

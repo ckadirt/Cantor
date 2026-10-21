@@ -9,6 +9,7 @@ Three programs and one shared wire contract.
 | `relay/` | the Cloudflare Worker that splices opaque bytes between them |
 | `protocol/` | the transport manifest, shared fixtures, and generated wire types |
 | `contributing/` | the architecture map and the contributor guides |
+| `docs/` | cantorfm.com: the landing and the user docs (Astro + Starlight); see `docs/README.md` |
 
 `internal/` holds private plans, logs, prototypes, and reports. It is ignored:
 read it from disk and never commit it. Code comments may cite it; tracked docs
