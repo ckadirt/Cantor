@@ -173,3 +173,56 @@ export function facePathAt(recipe: FaceRecipe, cx: number, cy: number, r: number
     .join('');
   return `${d}Z`;
 }
+
+export type StageMark = SampleSong & { x: number; y: number; group: number };
+export type StageGroup = { label: string; x: number; y: number };
+export type StageMap = {
+  marks: StageMark[];
+  groups: StageGroup[];
+  box: { x: number; y: number; w: number; h: number };
+  /** A mark's radius in world units: the app's 7.5 px at the field level. */
+  markRadius: number;
+};
+
+/**
+ * The library for a wide stage. Inside each cluster the songs sit exactly
+ * where the app's layout packs them; the clusters themselves are seated
+ * `columns` across, because the app's grid is two columns for a phone.
+ */
+export function stageMap(columns: number, songs = sampleLibrary()): StageMap {
+  const arrangement: Arrangement = { ...byDate('month'), key: 'time' };
+  const layout = layoutField({
+    entities: songs.map((song) => song.entity),
+    arrangement,
+    viewport: { width: 390, height: 844 },
+  });
+  const byKey = new Map(songs.map((song) => [song.entity.key, song]));
+  const markRadius = 7.5 / layout.fitScale;
+  // Each cluster as the map blooms it, measured from its own centre.
+  const offsets = layout.groups.map((g) => {
+    const members = layout.placements
+      .filter((p) => p.groupKey === g.key)
+      .map((p) => ({ song: byKey.get(p.entityKey)!, x: p.targetX + p.targetBloomX, y: p.targetY + p.targetBloomY }));
+    const mx = members.reduce((a, m) => a + m.x, 0) / Math.max(1, members.length);
+    const my = members.reduce((a, m) => a + m.y, 0) / Math.max(1, members.length);
+    return members.map((m) => ({ song: m.song, dx: m.x - mx, dy: m.y - my }));
+  });
+  const reach = Math.max(...offsets.flat().map((o) => Math.hypot(o.dx, o.dy))) + markRadius * 2;
+  const cell = reach * 2.35;
+  const marks: StageMark[] = [];
+  const groups: StageGroup[] = [];
+  layout.groups.forEach((g, i) => {
+    const cx = (i % columns) * cell;
+    const cy = Math.floor(i / columns) * cell * 1.05;
+    groups.push({ label: groupLabel(arrangement, g.key, g.label), x: cx, y: cy - reach - markRadius * 1.5 });
+    for (const o of offsets[i]) marks.push({ ...o.song, x: cx + o.dx, y: cy + o.dy, group: i });
+  });
+  const xs = marks.map((m) => m.x);
+  const ys = [...marks.map((m) => m.y), ...groups.map((g) => g.y)];
+  return {
+    marks,
+    groups,
+    markRadius,
+    box: { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) },
+  };
+}
