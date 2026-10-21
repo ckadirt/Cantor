@@ -37,8 +37,8 @@ sidebar:
   keep its seal.
 
 Every `##` is a measure: it is numbered and ticked on the page's spine on its
-own. Pages in `node/` join the sidebar's "The node" group automatically; other
-groups are listed in `astro.config.mjs`. Asides use Starlight's syntax
+own. Then list the page in its sidebar group in `astro.config.mjs`; the node's
+commands are grouped by family there. Asides use Starlight's syntax
 (`:::note`, `:::caution`).
 
 ## The art

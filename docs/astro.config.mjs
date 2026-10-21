@@ -27,7 +27,27 @@ export default defineConfig({
             { slug: 'docs/start' },
           ],
         },
-        { label: 'The node', items: [{ autogenerate: { directory: 'docs/node' } }] },
+        {
+          label: 'The node',
+          items: [
+            { slug: 'docs/node', label: 'Overview' },
+            {
+              label: 'Running',
+              items: ['status', 'start', 'stop', 'restart', 'logs', 'run'].map((c) => `docs/node/${c}`),
+            },
+            {
+              label: 'Models',
+              items: ['pull', 'list', 'rm', 'backends'].map((c) => `docs/node/${c}`),
+            },
+            {
+              label: 'Phones',
+              items: ['pair', 'pairings', 'revoke', 'rename'].map((c) => `docs/node/${c}`),
+            },
+            { label: 'Making', items: ['docs/node/generate'] },
+            { label: 'Updating', items: ['docs/node/upgrade'] },
+            { slug: 'docs/node/files' },
+          ],
+        },
       ],
     }),
   ],
