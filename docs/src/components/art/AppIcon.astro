@@ -1,0 +1,14 @@
+---
+/**
+ * The app's launcher icon as a mark: its ink alone, cropped to what it fills
+ * and drawn in the current colour, so it sits in a header on paper or ink.
+ */
+import { appIcon } from '../../lib/app-icon.mjs';
+
+interface Props { class?: string }
+const { class: className } = Astro.props;
+const { paths, ink } = appIcon();
+---
+<svg class:list={['app-icon', className]} viewBox={`${ink.x} ${ink.y} ${ink.w} ${ink.h}`} aria-hidden="true">
+  {paths.map(({ d }) => <path d={d} fill="currentColor" />)}
+</svg>

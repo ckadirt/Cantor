@@ -52,11 +52,12 @@ for that recipe. Do not copy the geometry here; import it.
 | --- | --- | --- |
 | `art/Seal.astro` | the seal, at mark depth (2) or player depth (3) | build time, SVG |
 | `art/Face.astro` | the circle | build time, SVG |
+| `art/AppIcon.astro` | the app's launcher icon, read from its vector drawable; also the favicon | build time, SVG |
 | `art/Device.astro` | a phone, laptop, desktop or the relay's cloud, its screen carrying the app's mark for it | build time, SVG |
 | `art/Marbling.astro` | the marbling, still or `live` | in the browser, canvas |
 
 Starlight's own pieces that are replaced live in `components/starlight/`:
-the site title (with the site's seal), the page title (with the page's
+the site title (with the app's icon), the page title (with the page's
 marbling plate), the right margin (the page's seal, which plays as you read),
 and prev/next (the coda). The palette and type are `styles/tokens.css` and
 `styles/theme.css`: black and white, greys for hierarchy, no hue.

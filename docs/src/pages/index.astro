@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import Site from '../layouts/Site.astro';
-import Seal from '../components/art/Seal.astro';
+import AppIcon from '../components/art/AppIcon.astro';
 import Device from '../components/art/Device.astro';
 import Pulse from '../components/art/Pulse.astro';
 import CopyLine from '../components/CopyLine.astro';
@@ -28,7 +28,6 @@ import { PRIVACY, PRIVACY_RUN_VH } from '../scripts/privacy-stage';
 import type { Scene } from '../scripts/network-stage';
 import { SITE } from '../site';
 
-const NAME = 'cantorfm.com';
 /** The song the story follows: it opens the page and the camera falls into it. */
 const HERO = 'an empty ballroom';
 /** The repository, from the site's root: the build runs from docs/. */
@@ -141,7 +140,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
 ---
 <Site title="Cantor: songs made on your computer, kept on your phone" description="Make songs on a computer you own and keep them on your phone, beside the music you already love. No account, and nothing in between can listen.">
   <nav class="top" data-nav>
-    <a class="brand" href="/"><Seal name={NAME} depth={2} filled class="brand-seal" /><span>Cantor</span></a>
+    <a class="brand" href="/"><AppIcon class="brand-mark" /><span>Cantor</span></a>
     <span class="links">
       <a href="/docs/">Docs</a>
       <a href={SITE.github}>Source</a>
@@ -335,7 +334,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   </section>
 
   <footer>
-    <span class="brand"><Seal name={NAME} depth={2} filled class="brand-seal" />Cantor · alpha</span>
+    <span class="brand"><AppIcon class="brand-mark" />Cantor · alpha</span>
     <span><a href="/docs/">Docs</a><a href={SITE.github}>Source</a><span>Apache-2.0</span></span>
   </footer>
 </Site>
@@ -488,7 +487,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .top.on-ink .links .get { border-color: currentColor; opacity: 1; }
   .top a { text-decoration: none; }
   .brand { display: flex; align-items: center; gap: 10px; }
-  .brand :global(.brand-seal) { width: 19px; height: 19px; --seal-ink: currentColor; }
+  .brand :global(.brand-mark) { width: 18px; height: 18px; }
   .links a { margin-left: 28px; color: var(--muted); transition: color 0.2s linear; }
   .links a:hover { color: var(--ink); }
   .links .get { color: var(--ink); border-bottom: 1px solid var(--ink); padding-bottom: 4px; }

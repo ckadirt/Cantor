@@ -1,10 +1,10 @@
 ---
-/** The site's name beside its seal, which is the landing page's too. */
-import Seal from '../art/Seal.astro';
+/** The site's name beside the app's icon, as on the landing. */
+import AppIcon from '../art/AppIcon.astro';
 const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
 ---
 <a href={siteTitleHref} class="site-title">
-  <Seal name="cantorfm.com" depth={2} filled class="mark" />
+  <AppIcon class="mark" />
   <span translate="no">{siteTitle}</span>
 </a>
 <style>
