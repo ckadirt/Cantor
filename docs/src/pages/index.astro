@@ -456,6 +456,12 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     requestAnimationFrame(chrome);
   };
   requestAnimationFrame(chrome);
+
+  // ---- shown: once every scene has been seated and the fonts are in (or
+  // a moment has passed without them), the page fades in.
+  const seated = new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)));
+  const lettered = Promise.race([document.fonts.ready, new Promise((done) => setTimeout(done, 1200))]);
+  Promise.all([seated, lettered]).then(() => document.documentElement.classList.add('ready'));
 </script>
 
 <style is:global>
@@ -530,6 +536,8 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .specimen .spec-lines { animation: fade 1s linear 1.4s both; }
   @keyframes rise { from { opacity: 0; transform: translateY(0.45em); } to { opacity: 1; transform: none; } }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+  /* The intro waits for the page to be shown, so it plays whole. */
+  :global(html.js:not(.ready)) h1 > span, :global(html.js:not(.ready)) .hero-beat > p, :global(html.js:not(.ready)) .cta { animation-play-state: paused; }
   @media (prefers-reduced-motion: reduce) { h1 span, .hero-beat > p, .cta, .specimen .spec-lines { animation: none; } }
   .cue { left: 50%; bottom: 26px; transform: translateX(-50%); font: 10px/1 var(--mono); letter-spacing: 2.4px; text-transform: uppercase; color: var(--muted); }
 

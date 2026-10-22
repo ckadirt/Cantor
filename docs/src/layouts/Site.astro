@@ -3,6 +3,9 @@
 import '../styles/fonts.css';
 import '../styles/tokens.css';
 import { faviconHref } from '../lib/app-icon.mjs';
+import AppIcon from '../components/art/AppIcon.astro';
+import cmuSerif from '../../../cantor/assets/fonts/cmu-serif.ttf?url';
+import spectral from '../../../cantor/assets/fonts/spectral.ttf?url';
 
 interface Props { title: string; description: string }
 const { title, description } = Astro.props;
@@ -18,8 +21,21 @@ const { title, description } = Astro.props;
     <meta property="og:description" content={description} />
     <meta name="color-scheme" content="light dark" />
     <link rel="icon" href={faviconHref()} type="image/svg+xml" />
+    <link rel="preload" href={cmuSerif} as="font" type="font/ttf" crossorigin />
+    <link rel="preload" href={spectral} as="font" type="font/ttf" crossorigin />
+    <!--
+      The page is drawn by its script: until it has seated its scenes (and the
+      fonts have come), it stays hidden, so nothing paints stacked or reflows.
+      The page adds `ready` (index.astro); this only guards against a script
+      that never runs.
+    -->
+    <script is:inline>
+      document.documentElement.classList.add('js');
+      setTimeout(() => document.documentElement.classList.add('ready'), 4000);
+    </script>
   </head>
   <body>
+    <div class="loader" aria-hidden="true"><AppIcon /></div>
     <slot />
   </body>
 </html>
@@ -30,4 +46,15 @@ const { title, description } = Astro.props;
   a { color: inherit; }
   code, pre { font-family: var(--mono); }
   ::selection { background: var(--ink); color: var(--paper); }
+
+  /* Hidden until the page's script is ready, then faded in. */
+  body > :not(.loader) { transition: opacity 0.45s linear; }
+  html.js:not(.ready) body > :not(.loader) { opacity: 0; }
+  /* The loader only shows on a slow load: it waits half a second to appear. */
+  .loader { position: fixed; inset: 0; display: grid; place-items: center; pointer-events: none; z-index: 10; opacity: 0; color: var(--ink); }
+  .loader svg { width: 28px; height: 28px; }
+  html.js:not(.ready) .loader { animation: loader-in 0.3s linear 0.5s forwards, loader-breathe 1.4s ease-in-out 0.8s infinite; }
+  @keyframes loader-in { to { opacity: 1; } }
+  @keyframes loader-breathe { 50% { transform: scale(0.88); } }
+  html.ready .loader { display: none; }
 </style>
