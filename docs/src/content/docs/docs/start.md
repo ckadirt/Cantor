@@ -36,9 +36,10 @@ line it printed.
 cantor pull
 ```
 
-With no argument it opens a chooser. `acestep:1.5-fast` is a good first model:
-about 3.3 GB, and quick on a CPU. See [`cantor pull`](/docs/node/pull/) for the
-whole catalog.
+With no argument it opens a chooser. `acestep:1.5-quality` is the one we
+recommend: about 8.1 GB, and the best songs ACE-Step makes. On a smaller disk or
+a CPU-only machine, `acestep:1.5-fast` is about 3.3 GB and quicker. See
+[`cantor pull`](/docs/node/pull/) for the whole catalog.
 
 ## Pair your phone
 

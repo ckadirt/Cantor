@@ -16,7 +16,9 @@ use serde_json::Value;
 
 /// Bumped only for a breaking change. A node ignores any other schema entirely.
 pub const SCHEMA_VERSION: u64 = 1;
-pub const DEFAULT_CATALOG_URL: &str = "https://relay.cantorfm.com/catalog/v1.json";
+/// Served by cantorfm.com. The relay serves the same file for nodes built
+/// before it moved there, and must go on doing so while any of them run.
+pub const DEFAULT_CATALOG_URL: &str = "https://cantorfm.com/catalog/v1.json";
 const CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
 /// A blob digest is `sha256:` followed by 64 hex characters.
 const DIGEST_PREFIX: &str = "sha256:";

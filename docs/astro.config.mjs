@@ -1,13 +1,27 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { writeFileSync } from 'node:fs';
 import { faviconHref } from './src/lib/app-icon.mjs';
+import { REDIRECTS } from './src/site.ts';
+
+/** Writes the short addresses (src/site.ts) as the host's `_redirects`. */
+const redirects = {
+  name: 'cantor-redirects',
+  hooks: {
+    'astro:build:done': ({ dir }) => {
+      const lines = Object.entries(REDIRECTS).map(([from, to]) => `${from} ${to} 302`);
+      writeFileSync(new URL('_redirects', dir), `${lines.join('\n')}\n`);
+    },
+  },
+};
 
 // cantorfm.com: the landing (src/pages/index.astro) and the docs under /docs,
 // which Starlight renders from Markdown in src/content/docs/docs/.
 export default defineConfig({
   site: 'https://cantorfm.com',
   integrations: [
+    redirects,
     starlight({
       title: 'Cantor',
       description: 'Songs made on your own computer, kept on your phone.',

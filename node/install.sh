@@ -2,7 +2,8 @@
 
 set -eu
 
-# Published command: curl -fsSL https://relay.cantorfm.com/install.sh | sh
+# Published command: curl -fsSL https://cantorfm.com/install.sh | sh
+# (the relay still serves this file too, for older instructions)
 # Read prompts from the controlling terminal, independently of script input.
 
 cantor_fail() {

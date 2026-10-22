@@ -8,7 +8,7 @@ eyebrow: The node · Models
 
 ```sh
 cantor pull                     # choose from the catalog
-cantor pull acestep:1.5-fast    # or name it
+cantor pull acestep:1.5-quality    # or name it
 ```
 
 With no argument, `pull` opens a chooser: arrow keys to move, Enter to take
@@ -38,7 +38,8 @@ weights again.
 | `levo2` | `1.0-fast` · `1.0-balanced` · `1.0-quality` | 2.6 – 10.1 GB | Tencent SongGeneration License: academic, research and education only |
 | `minimax-music3` | `1.0-fast` · `1.0-balanced` · `1.0-quality` | 7.6 – 26.6 GB | MiniMax Music 3 Community License |
 
-`acestep:1.5-fast` is a good first model. [`cantor list --all`](/docs/node/list/)
+`acestep:1.5-quality` is the one we recommend. `acestep:1.5-fast` is the
+lightest, for a small disk or a CPU. [`cantor list --all`](/docs/node/list/)
 shows the live catalog, with what fits your node and what each model can do.
 
 :::note[Licences]
@@ -76,4 +77,4 @@ names the backend it looked for. Pick another with
 [`cantor backends --use cpu`](/docs/node/backends/).
 
 **Nothing to choose.** The chooser needs a terminal. In a script, name the
-model: `cantor pull acestep:1.5-fast`.
+model: `cantor pull acestep:1.5-quality`.

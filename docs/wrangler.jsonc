@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  // cantorfm.com: the landing, the docs, and the files a node and its
+  // installer fetch. A Worker with static assets only: everything is the
+  // built site in dist/ (`npm run build`), including `_redirects`.
+  "name": "cantor-site",
+  "compatibility_date": "2026-07-20",
+  "assets": {
+    "directory": "./dist",
+    // Starlight builds a 404 page; unknown paths get it, with a 404 status.
+    "not_found_handling": "404-page"
+  },
+  "routes": [
+    {
+      "pattern": "cantorfm.com",
+      "custom_domain": true
+    }
+  ]
+}

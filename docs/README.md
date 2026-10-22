@@ -64,6 +64,30 @@ and prev/next (the coda). The palette and type are `styles/tokens.css` and
 
 ## Links
 
-The install line and the APK link live in `src/site.ts`. `public/_redirects`
-sends `/install.sh` to the relay's copy, so the published command is
-`curl -fsSL https://cantorfm.com/install.sh | sh` once the site is deployed.
+The install line, the APK link and the short addresses (`/download`, `/source`,
+`/releases`, `/start`) live in `src/site.ts`; the build writes the short ones to
+`dist/_redirects`.
+
+The site also serves what a node and its installer fetch. `public/` links to
+them rather than copying them, so each still has one home:
+
+| Path | The file |
+| --- | --- |
+| `/install.sh` | `node/install.sh` |
+| `/catalog/v1.json` | `relay/public/catalog/v1.json` |
+| `/backends/v1.json` | `relay/public/backends/v1.json` |
+
+Nodes from the release after 0.2.8 fetch the catalog and backends here; older
+ones fetch the same files from `relay.cantorfm.com`, which must keep serving
+them.
+
+## Deploy
+
+`wrangler.jsonc` makes the site a Worker with static assets on `cantorfm.com`.
+`.github/workflows/deploy-site.yml` builds and deploys it on every push to
+`main` that changes the site or a file it serves, then checks the published
+files match the commit. By hand:
+
+```sh
+npm run deploy
+```
