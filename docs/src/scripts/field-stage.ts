@@ -628,7 +628,7 @@ function parse(hex: string) {
 
 /**
  * The title's "o" on the canvas: its centre, the radius a face needs to stand
- * in it, and a line about half as heavy as the letters' strokes, so it reads as an accent.
+ * in it, and a hairline next to the letters' strokes, so it reads as an accent.
  */
 function slotted(slot: HTMLElement, canvas: HTMLCanvasElement, dpr: number) {
   const s = slot.getBoundingClientRect();
@@ -638,6 +638,6 @@ function slotted(slot: HTMLElement, canvas: HTMLCanvasElement, dpr: number) {
     x: (s.left + s.width / 2 - c.left) * dpr,
     y: (s.top + s.height / 2 - c.top) * dpr,
     r: (s.height / 2) * 1.02 * dpr,
-    weight: size * 0.032 * dpr,
+    weight: size * 0.018 * dpr,
   };
 }
