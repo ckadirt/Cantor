@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import { faviconHref } from './src/lib/app-icon.mjs';
 
 // cantorfm.com: the landing (src/pages/index.astro) and the docs under /docs,
 // which Starlight renders from Markdown in src/content/docs/docs/.
@@ -9,7 +10,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Cantor',
-      description: 'Songs made on your own machine, heard on your phone.',
+      description: 'Songs made on your own computer, kept on your phone.',
+      favicon: faviconHref(),
       customCss: ['./src/styles/fonts.css', './src/styles/tokens.css', './src/styles/theme.css'],
       components: {
         SiteTitle: './src/components/starlight/SiteTitle.astro',

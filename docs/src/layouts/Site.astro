@@ -2,6 +2,7 @@
 /** The landing's frame: the app's paper and ink, following the system theme. */
 import '../styles/fonts.css';
 import '../styles/tokens.css';
+import { faviconHref } from '../lib/app-icon.mjs';
 
 interface Props { title: string; description: string }
 const { title, description } = Astro.props;
@@ -16,7 +17,7 @@ const { title, description } = Astro.props;
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta name="color-scheme" content="light dark" />
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href={faviconHref()} type="image/svg+xml" />
   </head>
   <body>
     <slot />
