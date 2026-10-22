@@ -3,11 +3,11 @@
  * while one song's shape stands large, morphing from song to song; the
  * floating songs gather into the map, which then plays on its own —
  * regathering by month, playlist and artist, changing lens, its inks filling
- * as songs come down — until the camera falls into the first song.
+ * as songs come down — until the next section slides up over it.
  *
  * Every shape is the app's geometry (cantor/src/lenses). The scroll only says
  * which scene is showing; everything inside a scene plays on time, so the
- * page can be scrolled on at any moment. Only the final dive is scrubbed.
+ * page can be scrolled on at any moment.
  */
 import { FACE_MAX_EXTENT, faceClockPoints, facePoints, mulberry32 } from '../../../cantor/src/lenses/face';
 import { SEAL_FILLED_GROW, SEAL_KNOBS, sealModel } from '../../../cantor/src/lenses/seal';
@@ -31,10 +31,11 @@ const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 /**
  * How much scroll each scene is given, in screen heights. Inside a scene the
- * motion runs on time, so a scene only needs room to be read in; the dive is
- * the one the scroll scrubs, so it gets the most.
+ * motion runs on time, so a scene only needs room to be read in. The last,
+ * `cover`, is the screen's worth in which the next section slides up over
+ * the map (the page overlaps the two by a screen).
  */
-const SCENES_VH = { hero: 25, shape: 90, map: 90, dive: 60, rest: 10 } as const;
+const SCENES_VH = { hero: 25, shape: 90, map: 90, cover: 100 } as const;
 /** The stage's scroll run: its height is this plus the screen it is pinned in. */
 export const FIELD_RUN_VH = Object.values(SCENES_VH).reduce((a, b) => a + b, 0);
 const at = (vh: number) => vh / FIELD_RUN_VH;
@@ -45,7 +46,8 @@ export const BEATS = {
   shape: at(SCENES_VH.hero),
   /** From here the library is a map; before it, it floats. */
   gather: at(SCENES_VH.hero + SCENES_VH.shape),
-  dive: [at(SCENES_VH.hero + SCENES_VH.shape + SCENES_VH.map), at(FIELD_RUN_VH - SCENES_VH.rest)],
+  /** From here the next section covers the map. */
+  cover: at(SCENES_VH.hero + SCENES_VH.shape + SCENES_VH.map),
 } as const;
 
 /** The songs the large shape morphs through; the first is the one the story follows. */
@@ -67,7 +69,7 @@ const GATHER_MS = 1900;
  * numbers (`.specimen`).
  */
 export const HERO_AT = {
-  wide: { x: 0.62, y: 0.43, then: 0.43, r: 0.27 },
+  wide: { x: 0.585, y: 0.37, then: 0.39, r: 0.25 },
   tall: { x: 0.5, y: 0.25, then: 0.55, r: 0.25 },
 } as const;
 
@@ -299,16 +301,13 @@ export function startFieldStage(
     onSpecimen({ index: specimen.index, from: specimen.from, t: ease(clamp((now - specimen.at) / MORPH_MS)) });
 
     // The tour runs while the map is the map; before it, the map rests on its
-    // first step; in the dive, it holds where it is.
+    // first step.
     if (queued && now - movedAt >= MOVE_MS * 1.35) {
       const q = queued;
       queued = null;
       go(q, now);
     }
-    if (p >= BEATS.dive[0] - 0.02) {
-      // The camera falls into ink: the song it lands in is marbled.
-      if (mode.lens !== 2) go({ ...mode, lens: 2 }, now);
-    } else if (!mapped || gathered < 1) {
+    if (!mapped || gathered < 1) {
       tour = 0;
       if (mode.axis || mode.lens || mode.step) go({ axis: 0, lens: 0, step: 0 }, now);
     } else if (!still && now > pausedUntil && now - movedAt > HOLD_MS) {
@@ -367,16 +366,9 @@ export function startFieldStage(
     const gather = gathered;
     const morph = ease(clamp((now - specimen.at) / MORPH_MS));
 
-    // The dive: a camera that falls into the hero until it fills the screen.
-    const dive = ease(span(p, ...BEATS.dive));
-    const hp = placed(hero);
-    const zoom = lerp(1, (Math.min(w, h) * 0.42) / Math.max(1, hp.r * 1.15), dive * dive);
-    const cx = lerp(hp.x, w / 2, dive);
-    const cy = lerp(hp.y, h / 2, dive);
-    const camera = (x: number, y: number, r: number) => ({ x: (x - hp.x) * zoom + cx, y: (y - hp.y) * zoom + cy, r: r * zoom });
 
     // Group names, crossfading between the axes as the map regathers.
-    const labels = clamp((gather - 0.5) / 0.5) * (1 - span(p, BEATS.dive[0], BEATS.dive[0] + 0.03));
+    const labels = clamp((gather - 0.5) / 0.5);
     if (labels > 0) {
       ctx.fillStyle = c.muted;
       ctx.font = `${(wide ? 10 : 9) * dpr}px ui-monospace, Menlo, monospace`;
@@ -388,15 +380,13 @@ export function startFieldStage(
         if (a <= 0) continue;
         ctx.globalAlpha = labels * a;
         for (const g of axes[axis].groups) {
-          const q = camera(g.x * f.scale + f.ox, g.y * f.scale + f.oy, 0);
-          ctx.fillText(spaced(g.label.toUpperCase()), q.x, q.y);
+          ctx.fillText(spaced(g.label.toUpperCase()), g.x * f.scale + f.ox, g.y * f.scale + f.oy);
         }
       }
       ctx.globalAlpha = 1;
     }
 
     const levelAt = (m: Mark, step: number) => (m.fillsAt > 0 && step >= m.fillsAt ? Math.min(2, m.level + 1) : m.level);
-    const others = 1 - span(p, BEATS.dive[0], BEATS.dive[0] + 0.06);
     const seen: { m: Mark; x: number; y: number; r: number }[] = [];
 
     for (const m of marks) {
@@ -404,7 +394,7 @@ export function startFieldStage(
       let x: number;
       let y: number;
       let radius: number;
-      let alpha = m.hero ? 1 : others;
+      let alpha = 1;
       let level = lerp(levelAt(m, was.step), levelAt(m, mode.step), q.t);
       let contour = m.contour;
       let lensFrom = was.lens;
@@ -450,7 +440,7 @@ export function startFieldStage(
         lensT = 1;
       }
       if (alpha <= 0) continue;
-      const v = camera(x, y, radius);
+      const v = { x, y, r: radius };
       seen.push({ m, ...v });
 
       // The ink says where a song is: grey on the node, ink once cached,
@@ -475,7 +465,7 @@ export function startFieldStage(
 
     // Pointing at a song names it, while the map is a map.
     let near: Mark | null = null;
-    if (pointer && gather >= 1 && p < BEATS.dive[0]) {
+    if (pointer && gather >= 1 && p < BEATS.cover) {
       const px = pointer.x * dpr;
       const py = pointer.y * dpr;
       let best = Infinity;
@@ -496,7 +486,7 @@ export function startFieldStage(
           tip.querySelector('i')!.textContent = `“${near.title}”`;
           tip.querySelector('span')!.textContent = near.recipe.imported
             ? `${near.byline} · your own file`
-            : `made with ${near.byline} · ${lvl === 0 ? 'on your node' : lvl === 1 ? 'cached on your phone' : 'kept on your phone'}`;
+            : `made with ${near.byline} · ${lvl === 0 ? 'on your computer' : lvl === 1 ? 'cached on your phone' : 'kept on your phone'}`;
         }
       }
       canvas.parentElement!.style.cursor = near ? 'pointer' : '';

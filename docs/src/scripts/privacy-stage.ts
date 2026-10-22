@@ -2,16 +2,18 @@
  * The landing's privacy stage, in ink. First the twelve words a phone makes
  * for itself, revealed as the app reveals them (`IdentityPanel.tsx`): every
  * word written on as the 11 bits it encodes, then each bit string morphing
- * into its word. Then the wire: a phone, the relay and a node, the traffic
- * between them sealed the whole way, and the household one node can serve.
+ * into its word, once the form an account would need has struck itself out.
+ * Then how it works (`network-stage.ts`): a phone, the relay and a computer,
+ * a friend's phone, and a whole network.
  *
  * The scroll says which scene is showing; inside it everything runs on time.
  */
 import { writePhase, writeSubAlpha } from '../../../cantor/src/motion/text';
 import type { PhraseSlot } from '../lib/phrase';
+import { startNetworkStage, type Scene } from './network-stage';
+import { phoneMark } from '../lib/art';
 
 const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v));
-const span = (p: number, a: number, b: number) => clamp((p - a) / (b - a));
 /** The motion engine's one easing: manim's smooth, 10t³ − 15t⁴ + 6t⁵ (`motion/geometry.ts`). */
 const smoother = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
 
@@ -19,7 +21,7 @@ const smoother = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
  * How much scroll each scene is given, in screen heights: about a screen
  * each, since everything inside a scene plays on time.
  */
-const SCENES_VH = { words: 85, sealed: 95, household: 80, roaming: 80 } as const;
+const SCENES_VH = { words: 85, how: 110, share: 85, network: 100 } as const;
 /** The stage's scroll run: its height is this plus the screen it is pinned in. */
 export const PRIVACY_RUN_VH = Object.values(SCENES_VH).reduce((a, b) => a + b, 0);
 const at = (vh: number) => vh / PRIVACY_RUN_VH;
@@ -29,12 +31,19 @@ export const PRIVACY = {
   words: [0, at(SCENES_VH.words)],
   /** The wire holds to the end of the stage: past 1, so it never lifts out while pinned. */
   wire: [at(SCENES_VH.words), 1.01],
-  household: at(SCENES_VH.words + SCENES_VH.sealed),
-  roaming: at(SCENES_VH.words + SCENES_VH.sealed + SCENES_VH.household),
+  share: at(SCENES_VH.words + SCENES_VH.how),
+  network: at(SCENES_VH.words + SCENES_VH.how + SCENES_VH.share),
 } as const;
 
-/** The prompt's trip, once the wire is on screen: typed, sealed across the relay, read. */
-const TRIP = { TYPE_MS: [300, 1900], CROSS_MS: [1500, 2900], READ_MS: [2600, 4200] } as const;
+const sceneAt = (p: number): Scene | null =>
+  p < PRIVACY.wire[0] ? null : p < PRIVACY.share ? 'how' : p < PRIVACY.network ? 'share' : 'network';
+
+/**
+ * Before the words: the form an account would need, drawn field by field,
+ * struck through, and gone.
+ */
+const FORM = { STAGGER_MS: 140, APPEAR_MS: 400, STRIKE_AT_MS: 1500, STRIKE_MS: 380, GONE_AT_MS: 2500, GONE_MS: 450 } as const;
+const FORM_MS = FORM.GONE_AT_MS + FORM.GONE_MS;
 
 /** The reveal's clock, as the app's identity panel keeps it (`IdentityPanel.tsx`). */
 const REVEAL = {
@@ -45,8 +54,17 @@ const REVEAL = {
   MORPH_MS: 480,
 } as const;
 const COLUMNS = 3;
+/** On a wide screen the words take this much of the sheet; the phones they unlock stand in the rest. */
+const GRID_SHARE = 0.62;
 
-const HEX = '0123456789abcdef';
+/**
+ * After the words: they flow into your phone and draw its mark, which is
+ * you; then a new phone appears, the same words flow into it, and the same
+ * mark draws. Times from the moment the last word settles.
+ */
+const KEYS = { FIRST_AT_MS: 700, SECOND_AT_MS: 3300, FLY_MS: 950, FLY_STAGGER_MS: 75, NOTE_AT_MS: 4300 } as const;
+const WORDS_DONE_MS =
+  REVEAL.PREPARE_MS + REVEAL.BITS_WRITE_MS + REVEAL.BITS_HOLD_MS + 11 * REVEAL.MORPH_STAGGER_MS + REVEAL.MORPH_MS;
 
 export function startPrivacyStage(stage: HTMLElement, progress: () => number) {
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -56,29 +74,24 @@ export function startPrivacyStage(stage: HTMLElement, progress: () => number) {
   const slots = JSON.parse(phrase.querySelector('script')!.textContent!) as PhraseSlot[];
   const words = phrase.querySelector<HTMLCanvasElement>('canvas')!;
   const wctx = words.getContext('2d')!;
+  const fields = [...phrase.querySelectorAll<HTMLElement>('[data-signup] li')];
+  const keys = [...phrase.querySelectorAll<HTMLElement>('[data-key]')];
+  const note = phrase.querySelector<HTMLElement>('figcaption')!;
+  /** Where each word sits on the canvas once settled, for the flight to the phones. */
+  const anchors: { x: number; y: number }[] = [];
+  const spokes = phoneMark('your phone');
   /** When the reveal began; null until the words are on screen. */
   let revealedAt: number | null = null;
-  /** When the wire came on screen, for the prompt's trip; null while it is not. */
-  let wiredAt: number | null = null;
 
-  // ---- the wire
-  const figure = stage.querySelector<HTMLElement>('[data-wire]')!;
-  const canvas = figure.querySelector<HTMLCanvasElement>('canvas')!;
-  const ctx = canvas.getContext('2d')!;
-  const ends = new Map([...figure.querySelectorAll<HTMLElement>('[data-end]')].map((el) => [el.dataset.end!, el]));
-  const links = JSON.parse(figure.dataset.links ?? '[]') as [string, string, number][];
-  const plain = figure.querySelector<HTMLElement>('[data-plain]')!;
-  const sealed = figure.querySelector<HTMLElement>('[data-sealed]')!;
-  const read = figure.querySelector<HTMLElement>('[data-read]')!;
-  const prompt = plain.dataset.plain!;
-  const cipher = [...prompt].map((ch, i) => (ch === ' ' ? ' ' : HEX[(i * 7 + ch.charCodeAt(0) * 13) % 16])).join('');
+  // ---- how it works
+  const network = startNetworkStage(stage.querySelector<HTMLElement>('[data-wire]')!);
 
   const frame = (now: number) => {
     requestAnimationFrame(frame);
     const r = stage.getBoundingClientRect();
     if (r.bottom < 0 || r.top > innerHeight) {
       revealedAt = null;
-      wiredAt = null;
+      network.update(null, now);
       return;
     }
     const p = progress();
@@ -86,12 +99,24 @@ export function startPrivacyStage(stage: HTMLElement, progress: () => number) {
     const showing = p < PRIVACY.words[1] && r.top < innerHeight * 0.4;
     if (!showing) revealedAt = null;
     else if (revealedAt === null) revealedAt = now;
-    if (p < PRIVACY.words[1] + 0.02) drawWords(revealedAt === null ? 0 : now - revealedAt);
-    // The prompt makes its trip each time the wire comes into view.
-    if (p < PRIVACY.wire[0]) wiredAt = null;
-    else if (wiredAt === null) wiredAt = now;
-    trip(p, still ? Infinity : wiredAt === null ? 0 : now - wiredAt);
-    drawWire(p, now);
+    if (p < PRIVACY.words[1] + 0.02) {
+      const ms = still ? Infinity : revealedAt === null ? 0 : now - revealedAt;
+      form(ms);
+      drawWords(ms - FORM_MS);
+      drawKeys(ms - FORM_MS - WORDS_DONE_MS);
+    }
+    network.update(sceneAt(p), now);
+  };
+
+  const form = (ms: number) => {
+    fields.forEach((li, k) => {
+      const shown = clamp((ms - k * FORM.STAGGER_MS) / FORM.APPEAR_MS);
+      const struck = smoother(clamp((ms - FORM.STRIKE_AT_MS - k * FORM.STAGGER_MS) / FORM.STRIKE_MS));
+      const gone = clamp((ms - FORM.GONE_AT_MS - k * 60) / FORM.GONE_MS);
+      li.style.opacity = String(shown * (1 - gone));
+      li.style.transform = `translateY(${(1 - shown) * 8 - gone * 10}px)`;
+      li.querySelector<HTMLElement>('b')!.style.transform = `scaleX(${struck})`;
+    });
   };
 
   const drawWords = (ms: number) => {
@@ -109,7 +134,8 @@ export function startPrivacyStage(stage: HTMLElement, progress: () => number) {
     // bits nor the words ever move a slot.
     const gap = 18 * dpr;
     const number = 30 * dpr;
-    const column = (w - gap * (COLUMNS - 1)) / COLUMNS;
+    const wide = keys.length > 0 && words.clientWidth > 640;
+    const column = ((wide ? w * GRID_SHARE : w) - gap * (COLUMNS - 1)) / COLUMNS;
     const rows = Math.ceil(slots.length / COLUMNS);
     const widest = Math.max(...slots.map((slot) => Math.max(slot.bitsWidth, slot.wordWidth)));
     const em = Math.min((column - number) / widest, h / rows / 1.7);
@@ -120,11 +146,15 @@ export function startPrivacyStage(stage: HTMLElement, progress: () => number) {
       const x = (k % COLUMNS) * (column + gap);
       const base = Math.floor(k / COLUMNS) * row + row / 2 + em * 0.34;
       const ox = x + number;
+      // The slots' numbers arrive with the bits, once the form has gone.
+      wctx.globalAlpha = clamp(t / 300);
       wctx.fillStyle = faint;
       wctx.font = `${10 * dpr}px ui-monospace, Menlo, monospace`;
       wctx.textAlign = 'left';
       wctx.fillText(String(k + 1).padStart(2, '0'), x, base);
+      wctx.globalAlpha = 1;
       const at = (pts: number[], i: number) => [ox + pts[i] * em, base + pts[i + 1] * em];
+      anchors[k] = { x: ox + (slot.wordWidth * em) / 2, y: base - em * 0.3 };
 
       const start = REVEAL.BITS_WRITE_MS + REVEAL.BITS_HOLD_MS + k * REVEAL.MORPH_STAGGER_MS;
       const morph = smoother(clamp((t - start) / REVEAL.MORPH_MS));
@@ -178,6 +208,67 @@ export function startPrivacyStage(stage: HTMLElement, progress: () => number) {
     });
   };
 
+  /** The words flowing into a phone, and the phone's mark drawing as they land. */
+  const drawKeys = (ms: number) => {
+    const settled = still ? Infinity : ms;
+    keys.forEach((key, n) => {
+      const at = n === 0 ? KEYS.FIRST_AT_MS : KEYS.SECOND_AT_MS;
+      key.style.opacity = String(clamp((settled - at + 500) / 500));
+    });
+    note.classList.toggle('free', settled >= KEYS.NOTE_AT_MS);
+    if (!keys.length || words.clientWidth <= 640) return;
+    const dpr = Math.min(2, devicePixelRatio || 1);
+    const box = words.getBoundingClientRect();
+    const ink = getComputedStyle(phrase).getPropertyValue('--ink').trim();
+    keys.forEach((key, n) => {
+      const at = n === 0 ? KEYS.FIRST_AT_MS : KEYS.SECOND_AT_MS;
+      const u = settled - at;
+      if (u < 0) return;
+      const b = key.querySelector('svg')!.getBoundingClientRect();
+      const cx = (b.left - box.left + b.width * 0.5) * dpr;
+      const cy = (b.top - box.top + b.height * 0.49) * dpr;
+      const r = b.width * 0.22 * dpr;
+      let landed = 0;
+      anchors.forEach((a, k) => {
+        const f = clamp((u - k * KEYS.FLY_STAGGER_MS) / KEYS.FLY_MS);
+        if (f >= 1) {
+          landed += 1;
+          return;
+        }
+        if (f <= 0) return;
+        const e = smoother(f);
+        // Each word leaves as a point of light and arcs into the phone.
+        const x = a.x + (cx - a.x) * e;
+        const y = a.y + (cy - a.y) * e - Math.sin(Math.PI * e) * 40 * dpr;
+        wctx.globalAlpha = 0.35 + 0.65 * (1 - Math.abs(0.5 - e) * 2);
+        wctx.fillStyle = ink;
+        wctx.beginPath();
+        wctx.arc(x, y, 2.4 * dpr, 0, Math.PI * 2);
+        wctx.fill();
+      });
+      wctx.globalAlpha = 1;
+      // The phone's mark, drawn from its key: the same words, the same mark.
+      const drawn = landed / anchors.length;
+      wctx.strokeStyle = ink;
+      wctx.lineWidth = 1.3 * dpr;
+      wctx.lineCap = 'round';
+      spokes.forEach((sp, i) => {
+        const g = clamp(drawn * spokes.length - i);
+        if (g <= 0) return;
+        wctx.beginPath();
+        wctx.moveTo(cx + sp.x1 * r, cy + sp.y1 * r);
+        wctx.lineTo(cx + (sp.x1 + (sp.x2 - sp.x1) * g) * r, cy + (sp.y1 + (sp.y2 - sp.y1) * g) * r);
+        wctx.stroke();
+      });
+      if (drawn > 0) {
+        wctx.fillStyle = ink;
+        wctx.beginPath();
+        wctx.arc(cx, cy, 2 * dpr, 0, Math.PI * 2);
+        wctx.fill();
+      }
+    });
+  };
+
   function trace(pts: number[], at: (pts: number[], i: number) => number[]) {
     for (let i = 0; i < pts.length; i += 2) {
       const [px, py] = at(pts, i);
@@ -186,111 +277,6 @@ export function startPrivacyStage(stage: HTMLElement, progress: () => number) {
     }
     wctx.closePath();
   }
-
-  const drawWire = (p: number, now: number) => {
-    const dpr = Math.min(2, devicePixelRatio || 1);
-    const w = Math.round(canvas.clientWidth * dpr);
-    const h = Math.round(canvas.clientHeight * dpr);
-    if (canvas.width !== w) canvas.width = w;
-    if (canvas.height !== h) canvas.height = h;
-    ctx.clearRect(0, 0, w, h);
-    const shown = span(p, PRIVACY.wire[0], PRIVACY.wire[0] + 0.03);
-    if (shown <= 0) return;
-    const s = getComputedStyle(figure);
-    const ink = s.getPropertyValue('--ink').trim();
-    const muted = s.getPropertyValue('--muted').trim();
-    const box = canvas.getBoundingClientRect();
-    /** A device's drawing on the canvas: its centre and half its size. */
-    const place = (key: string) => {
-      const b = ends.get(key)!.querySelector('svg')!.getBoundingClientRect();
-      return { x: (b.left + b.width / 2 - box.left) * dpr, y: (b.top + b.height / 2 - box.top) * dpr, hw: (b.width / 2) * dpr, hh: (b.height / 2) * dpr };
-    };
-    const relay = place('relay');
-
-    links.forEach(([from, to, step], lane) => {
-      const on = step === 0 ? 1 : span(p, step === 1 ? PRIVACY.household : PRIVACY.roaming, (step === 1 ? PRIVACY.household : PRIVACY.roaming) + 0.03);
-      if (on <= 0) return;
-      const a = place(from);
-      const b = place(to);
-      // Phone to the relay's near side, through it, and on to the node, in
-      // two soft curves that leave each drawing clear.
-      const pad = 14 * dpr;
-      const a0 = { x: a.x + a.hw + pad, y: a.y };
-      // Each connection keeps its own lane through the relay, so its bytes never overprint another's.
-      const ly = relay.y + relay.hh * 0.2 + (lane - (links.length - 1) / 2) * 11 * dpr;
-      const r0 = { x: relay.x - relay.hw * 0.86, y: ly };
-      const r1 = { x: relay.x + relay.hw * 0.86, y: ly };
-      const b0 = { x: b.x - b.hw - pad, y: b.y };
-      const curve = (q0: { x: number; y: number }, q1: { x: number; y: number }) => {
-        const k = (q1.x - q0.x) * 0.5;
-        const pts = [];
-        for (let i = 0; i <= 40; i += 1) {
-          const t = i / 40;
-          const u = 1 - t;
-          pts.push({
-            x: u * u * u * q0.x + 3 * u * u * t * (q0.x + k) + 3 * u * t * t * (q1.x - k) + t * t * t * q1.x,
-            y: u * u * u * q0.y + 3 * u * u * t * q0.y + 3 * u * t * t * q1.y + t * t * t * q1.y,
-          });
-        }
-        return pts;
-      };
-      const pts = [...curve(a0, r0), ...curve(r1, b0)];
-      const lens = [0];
-      for (let i = 1; i < pts.length; i += 1) lens.push(lens[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y));
-      // The hop through the relay is drawn by the relay, not the wire.
-      const inside = (q: { x: number }) => q.x > r0.x + 1 && q.x < r1.x - 1;
-      const total = lens[lens.length - 1];
-      const along = (d: number) => {
-        let i = 1;
-        while (i < lens.length - 1 && lens[i] < d) i += 1;
-        const t = (d - lens[i - 1]) / Math.max(1e-6, lens[i] - lens[i - 1]);
-        return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t };
-      };
-
-      ctx.globalAlpha = shown * on;
-      ctx.strokeStyle = muted;
-      ctx.lineWidth = dpr;
-      ctx.setLineDash([1 * dpr, 5 * dpr]);
-      ctx.beginPath();
-      pts.forEach((q, i) => (i && !inside(q) && !inside(pts[i - 1]) ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y)));
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // The traffic: asks one way, songs the other, sealed the whole way. In
-      // the relay a packet is all the relay has: a couple of hex digits.
-      const seed = from.length * 7 + to.length * 3;
-      for (let k = 0; k < 6; k += 1) {
-        const back = k % 2 === 1;
-        const u = still ? (k + 0.5) / 6 : (now * 0.00012 * (back ? 0.8 : 1) + k / 6 + seed * 0.13) % 1;
-        const q = along((back ? 1 - u : u) * total);
-        ctx.fillStyle = ink;
-        if (inside(q)) {
-          ctx.font = `${10 * dpr}px ui-monospace, Menlo, monospace`;
-          ctx.textAlign = 'center';
-          ctx.fillText(HEX[(k * 5 + seed) % 16] + HEX[(k * 11 + seed * 3) % 16], q.x, q.y + 3 * dpr);
-        } else {
-          ctx.beginPath();
-          ctx.arc(q.x, q.y, (back ? 3 : 2.2) * dpr, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-    });
-    ctx.globalAlpha = 1;
-  };
-
-  /** The prompt as each end of the first wire holds it, `ms` into its trip. */
-  const trip = (p: number, ms: number) => {
-    const typed = span(ms, ...TRIP.TYPE_MS);
-    const crossed = span(ms, ...TRIP.CROSS_MS);
-    const arrived = span(ms, ...TRIP.READ_MS);
-    const n = Math.round(typed * prompt.length);
-    plain.textContent = prompt.slice(0, n);
-    plain.classList.toggle('typing', n < prompt.length && n > 0);
-    sealed.textContent = cipher.slice(0, Math.round(crossed * cipher.length));
-    read.textContent = prompt.slice(0, Math.round(arrived * prompt.length));
-    figure.classList.toggle('household', p >= PRIVACY.household);
-    figure.classList.toggle('roaming', p >= PRIVACY.roaming);
-  };
 
   requestAnimationFrame(frame);
 }

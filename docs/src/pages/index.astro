@@ -2,13 +2,13 @@
 /**
  * cantorfm.com, told as one scroll. A song's shape, which morphs as the song
  * changes; the library that floats round it gathers into a map, and the map
- * plays — regathering, changing lens, its inks filling; the camera falls into
- * a song and the page goes to ink: twelve words instead of an account, then
- * the wire from a phone through the relay to a node, sealed, and the
- * household one node can serve; then the source, and how to begin.
+ * plays: regathering, changing lens, its inks filling. The camera falls into a
+ * song and the page goes to ink: twelve words instead of an account, then how
+ * it works, a phone asking a computer for a song through the relay, a friend
+ * sharing the computer, a whole network; then the source, and how to begin.
  *
- * The stages are `scripts/field-stage.ts` and `scripts/privacy-stage.ts`;
- * every shape is the app's.
+ * The stages are `scripts/field-stage.ts`, `scripts/privacy-stage.ts` and
+ * `scripts/network-stage.ts`; every shape is the app's.
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -17,13 +17,15 @@ import { resolve } from 'node:path';
 import Site from '../layouts/Site.astro';
 import Seal from '../components/art/Seal.astro';
 import Device from '../components/art/Device.astro';
+import Pulse from '../components/art/Pulse.astro';
 import CopyLine from '../components/CopyLine.astro';
 import { facePathAt, sampleLibrary } from '../lib/library';
-import { recipeOf, clock } from '../lib/art';
+import { clock } from '../lib/art';
 import { phraseGeometry } from '../lib/phrase';
-import { hash, mulberry32 } from '../../../cantor/src/lenses/face';
+import { mulberry32 } from '../../../cantor/src/lenses/face';
 import { AXES, BEATS, FIELD_RUN_VH, LENSES, SPECIMENS } from '../scripts/field-stage';
 import { PRIVACY, PRIVACY_RUN_VH } from '../scripts/privacy-stage';
+import type { Scene } from '../scripts/network-stage';
 import { SITE } from '../site';
 
 const NAME = 'cantorfm.com';
@@ -70,21 +72,33 @@ const slots = phraseGeometry(
   words.map((word) => ({ word, bits: WORDLIST.indexOf(word).toString(2).padStart(11, '0') })),
 );
 
-const PROMPT = 'a slow blues, brushed drums, a voice like smoke';
-
-/** The wire, in percent of its figure; the relay stands in the middle. */
-const NODES = [
-  { key: 'desktop', label: 'Your desktop · GPU', x: 88, y: 50, models: 3, step: 0 },
-  { key: 'laptop', label: 'Your laptop', x: 88, y: 13, models: 1, step: 2 },
-] as const;
-const PHONES = [
-  { key: 'you', label: 'Your phone', x: 8, y: 50, step: 0 },
-  { key: 'ana', label: 'Ana’s phone', x: 8, y: 13, step: 1 },
-  { key: 'leo', label: 'Leo’s phone', x: 8, y: 87, step: 1 },
+/**
+ * How it works, as devices and who pairs with whom. `at` seats a device in
+ * each scene it is in, in percent of the figure; the relay stands between.
+ */
+type End = { key: string; kind: 'phone' | 'laptop' | 'desktop' | 'server' | 'cloud'; label: string; role?: string; models?: number; at: Partial<Record<Scene, [number, number]>> };
+const ENDS: End[] = [
+  { key: 'you', kind: 'phone', label: 'Your phone', role: 'Where your music lives, and plays.', at: { how: [10, 50], share: [10, 28], network: [7, 13] } },
+  { key: 'relay', kind: 'cloud', label: 'The relay', role: 'Carries sealed messages between them. It can’t read a byte.', at: { how: [50, 50], share: [50, 50], network: [43, 50] } },
+  { key: 'desktop', kind: 'desktop', label: 'Your computer', role: 'Runs Cantor’s node: it makes the songs and keeps your library.', models: 3, at: { how: [88, 50], share: [88, 50], network: [74, 28] } },
+  { key: 'ana', kind: 'phone', label: 'Ana’s phone', at: { share: [10, 74], network: [7, 39] } },
+  { key: 'leo', kind: 'phone', label: 'Leo’s phone', at: { network: [7, 65] } },
+  { key: 'mia', kind: 'phone', label: 'Mia’s phone', at: { network: [7, 91] } },
+  { key: 'laptop', kind: 'laptop', label: 'Your laptop', models: 1, at: { network: [93, 9] } },
+  { key: 'server', kind: 'server', label: 'Your server', at: { network: [93, 55] } },
+  { key: 'anas', kind: 'desktop', label: 'Ana’s computer', models: 2, at: { network: [74, 84] } },
 ];
-/** Who talks to whom, and from which step: 0 sealed, 1 the household, 2 roaming. */
-const LINKS: [string, string, number][] = [['you', 'desktop', 0], ['ana', 'desktop', 1], ['leo', 'desktop', 1], ['you', 'laptop', 2]];
-const shelf = (owner: string) => [0, 1, 2].map((i) => ({ ...recipeOf(`${owner} ${i}`), seed: hash(`${owner} ${i}`) }));
+/** Who is paired with whom, and in which scenes the pairing shows. */
+const LINKS: [string, string, Scene[]][] = [
+  ['you', 'desktop', ['how', 'share', 'network']],
+  ['ana', 'desktop', ['share', 'network']],
+  ['you', 'laptop', ['network']],
+  ['ana', 'anas', ['network']],
+  ['leo', 'anas', ['network']],
+  ['you', 'server', ['network']],
+  ['leo', 'desktop', ['network']],
+  ['mia', 'anas', ['network']],
+];
 
 /** Each part of the repository, and the languages git says it is written in. */
 const LANGS: Record<string, string> = { ts: 'TypeScript', tsx: 'TypeScript', kt: 'Kotlin', java: 'Java', rs: 'Rust', mjs: 'JavaScript', md: 'Markdown', sh: 'Shell', py: 'Python' };
@@ -125,7 +139,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   note: NOTES.find(([re]) => re.test(text.trim()))?.[1],
 }));
 ---
-<Site title="Cantor: songs made on your own machine" description="A music library you can make songs for, on a computer you own. Your phone plays it; nothing in between can listen.">
+<Site title="Cantor: songs made on your computer, kept on your phone" description="Make songs on a computer you own and keep them on your phone, beside the music you already love. No account, and nothing in between can listen.">
   <nav class="top" data-nav>
     <a class="brand" href="/"><Seal name={NAME} depth={2} filled class="brand-seal" /><span>Cantor</span></a>
     <span class="links">
@@ -137,8 +151,8 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
 
   <ol class="rail" aria-label="Chapters">
     <li><a href="#field" data-chapter="field">The field</a></li>
-    <li><a href="#privacy" data-chapter="privacy">Privacy</a></li>
-    <li><a href="#network" data-chapter="network">Sharing</a></li>
+    <li><a href="#privacy" data-chapter="privacy">No account</a></li>
+    <li><a href="#network" data-chapter="network">How it works</a></li>
     <li><a href="#source" data-chapter="source">Source</a></li>
     <li><a href="#begin" data-chapter="begin">Begin</a></li>
   </ol>
@@ -151,7 +165,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
 
       <div class="beat hero-beat" data-beat={`0 ${BEATS.shape - 0.01}`}>
         <h1 aria-label="Cantor">{[...'Cantor'].map((ch, i) => <span style={`--i:${i}`} aria-hidden="true">{ch}</span>)}</h1>
-        <p class="rise">Songs made on your own machine,<br />heard on your phone.</p>
+        <p class="rise">Songs made on your own computer.<br />Kept on your phone, with all your music.</p>
         <div class="cta">
           <a class="btn" href={SITE.apk}>Download for Android</a>
           <div class="cta-node">
@@ -176,85 +190,82 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
       <p class="cue beat" data-beat={`0 ${BEATS.shape / 2}`}>Scroll</p>
 
       <div class="beat words" data-beat={`${BEATS.shape} ${BEATS.gather}`}>
-        <span class="lab">01 · A song</span>
+        <Pulse seed="shape" />
         <h2>Every song has a shape.</h2>
-        <p>Drawn from its recipe: its seed, its model, its length. The same on every phone, before the song has even finished being made.</p>
+        <p>Drawn from its recipe. The same on every phone.</p>
       </div>
-      <div class="beat words" data-beat={`${BEATS.gather} ${BEATS.dive[0]}`}>
-        <span class="lab">02 · A library</span>
+      <div class="beat words" data-beat={`${BEATS.gather} 1.01`}>
+        <Pulse seed="map" />
         <h2>Together, they make a map.</h2>
-        <p>What your node makes and the music already on your phone, in one field.</p>
+        <p>The music you love and the songs you make, together in one field.</p>
         <div class="controls">
           <div><span>Gather by</span>{AXES.map((a, i) => <button type="button" data-axis={i}>{a}</button>)}</div>
           <div><span>Lens</span>{LENSES.map((l, i) => <button type="button" data-lens={i}>{l}</button>)}</div>
         </div>
       </div>
-      <div class="beat words dive-words" data-beat={`${BEATS.dive[0] + 0.02} ${BEATS.dive[1]}`}>
-        <span class="lab">03 · Yours</span>
-        <h2>Made on a machine you own.</h2>
-      </div>
 
-      <div class="night" data-night aria-hidden="true"></div>
       <div class="progress" aria-hidden="true"><i data-field-progress></i></div>
     </div>
   </section>
 
   <!-- ===== privacy and sharing: pinned, in ink ===== -->
   <section class="stage inverse privacy" id="privacy" data-stage="privacy" style={`height:${PRIVACY_RUN_VH + 100}vh`}>
-    <span class="anchor" id="network" aria-hidden="true" style={`top:${(PRIVACY.household + 0.01) * PRIVACY_RUN_VH}vh`}></span>
+    <span class="anchor" id="network" aria-hidden="true" style={`top:${(PRIVACY.wire[0] + 0.01) * PRIVACY_RUN_VH}vh`}></span>
     <div class="pin">
       <div class="beat words" data-beat={`0 ${PRIVACY.words[1]}`}>
-        <span class="lab">04 · No account</span>
-        <h2>Nothing to sign in to.</h2>
-        <p>Your identity is twelve words your phone makes for itself. No email, no password, nothing of yours on our side.</p>
+        <Pulse seed="account" />
+        <h2>No account. No ties.</h2>
+        <p>Your identity is twelve words, made on your phone and secured by cryptography. No email, no password, no personal data. Nothing anyone can lock you out of.</p>
       </div>
       <figure class="phrase beat" data-beat={`0 ${PRIVACY.words[1]}`} data-phrase aria-label={`Twelve words: ${words.join(' ')}`}>
-        <canvas aria-hidden="true"></canvas>
+        <div class="sheet">
+          <canvas aria-hidden="true"></canvas>
+          <ol class="signup" data-signup aria-hidden="true">
+            {['Email', 'Password', 'Confirm password', 'Phone number', 'Date of birth'].map((field) => (
+              <li><span>{field}</span><i></i><b></b></li>
+            ))}
+          </ol>
+          <div class="keys" aria-hidden="true">
+            <div class="key" data-key><Device kind="phone" publicKey="your phone" /><span>Your phone</span></div>
+            <div class="key" data-key><Device kind="phone" publicKey="your phone" /><span>Any new phone</span></div>
+          </div>
+        </div>
         <script is:inline type="application/json" set:html={JSON.stringify(slots)}></script>
-        <figcaption>Each word is the 11 bits it stands for: 128 drawn at random on your phone, and 4 that check them.</figcaption>
+        <figcaption>
+          <span>Each word is the 11 bits it stands for: 128 drawn at random on your phone, and 4 that check them.</span>
+          <span>Lose the phone, keep the words, and you are back. Nobody can lock you out.</span>
+        </figcaption>
       </figure>
 
-      <div class="beat words" data-beat={`${PRIVACY.wire[0]} ${PRIVACY.household}`}>
-        <span class="lab">05 · End to end</span>
-        <h2>Sealed, the whole way.</h2>
-        <p>Your phone and your node meet through a relay. It carries bytes it cannot open: it sees that two devices talk, never what they say.</p>
+      <div class="beat words" data-beat={`${PRIVACY.wire[0]} ${PRIVACY.share}`}>
+        <Pulse seed="how" />
+        <h2>How it works.</h2>
+        <p>Your phone asks for a song. Your computer makes it. Everything between them travels sealed.</p>
       </div>
-      <div class="beat words" data-beat={`${PRIVACY.household} ${PRIVACY.roaming}`}>
-        <span class="lab">06 · Your compute</span>
-        <h2>One machine, a whole household.</h2>
-        <p>The computer with the GPU makes the songs, for your phone and your friends'. Each keeps a library of its own on the node, which nobody else sees.</p>
+      <div class="beat words" data-beat={`${PRIVACY.share} ${PRIVACY.network}`}>
+        <Pulse seed="share" />
+        <h2>Share your computer.</h2>
+        <p>Pair a friend’s phone and your computer makes their songs too. Every library stays its owner’s.</p>
       </div>
-      <div class="beat words" data-beat={`${PRIVACY.roaming} ${PRIVACY.wire[1]}`}>
-        <span class="lab">07 · And back</span>
-        <h2>One phone, many nodes.</h2>
-        <p>The desktop at home, the laptop on the road. Pair with any of them; revoke any of them whenever you like.</p>
+      <div class="beat words" data-beat={`${PRIVACY.network} ${PRIVACY.wire[1]}`}>
+        <Pulse seed="network" />
+        <h2>A whole network.</h2>
+        <p>Pair with as many computers as you like: a desktop, a laptop, a server. Use a friend’s, and let your friends use yours.</p>
       </div>
 
       <figure class="wire beat" data-beat={`${PRIVACY.wire[0]} ${PRIVACY.wire[1]}`} data-wire data-links={JSON.stringify(LINKS)}
-        aria-label="A phone talks to a node through the relay, which sees only sealed bytes; then two more phones share the node, and the first phone pairs with a laptop too">
+        aria-label="A phone asks a computer for a song through the relay, which carries it sealed; a friend's phone shares the computer; then more phones and computers join">
         <canvas aria-hidden="true"></canvas>
-        <div class="end relay" data-end="relay" style="left:50%;top:50%">
-          <Device kind="cloud" />
-          <span>The relay</span>
-        </div>
-        {NODES.map((n) => (
-          <div class="end node" data-end={n.key} data-step={n.step} style={`left:${n.x}%;top:${n.y}%`}>
-            <Device kind={n.key} publicKey={`your ${n.key}`} models={n.models} />
-            <span>{n.label}</span>
-          </div>
-        ))}
-        {PHONES.map((p) => (
-          <div class="end person" data-end={p.key} data-step={p.step} style={`left:${p.x}%;top:${p.y}%`}>
-            <Device kind="phone" publicKey={p.key === 'you' ? 'your phone' : p.key} />
-            <span>{p.label}</span>
-            <svg class="own" viewBox="-30 -10 60 20" aria-hidden="true">
-              {shelf(p.key).map((r, i) => <path d={facePathAt(r, -18 + i * 18, 0, 7)} />)}
-            </svg>
-          </div>
-        ))}
-        <p class="say say-plain"><span>Your phone writes</span><i data-plain={PROMPT}></i></p>
-        <p class="say say-sealed"><span>The relay sees</span><code data-sealed></code></p>
-        <p class="say say-read"><span>Your node reads</span><i data-read></i></p>
+        {ENDS.map((e) => {
+          const first = e.at.how ?? e.at.share ?? e.at.network!;
+          return (
+            <div class:list={['end', e.kind]} data-end={e.key} data-kind={e.kind} data-at={JSON.stringify(e.at)} style={`left:${first[0]}%;top:${first[1]}%`}>
+              <Device kind={e.kind} publicKey={e.key === 'you' ? 'your phone' : e.key} models={e.models} />
+              <span class="name">{e.label}</span>
+              {e.role && <span class="role">{e.role}</span>}
+            </div>
+          );
+        })}
       </figure>
     </div>
   </section>
@@ -264,10 +275,10 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     <div class="inner">
       <header class="split">
         <div>
-          <span class="lab">08 · Open source</span>
-          <h2>Read every line.</h2>
+          <Pulse seed="open" />
+          <h2>Fully open.</h2>
         </div>
-        <p>Cantor is Apache-2.0, all of it. You do not have to take our word for anything on this page: the app, the node, the relay and the wire format they share are in one repository.</p>
+        <p>Cantor is Apache-2.0, all of it: the app, the software on your computer, and the relay between them. Change it, build on it, send your changes back. It stays open.</p>
       </header>
       <div class="trace" data-trace>
         <figure class="listing">
@@ -332,6 +343,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   import { startFieldStage, BEATS } from '../scripts/field-stage';
   import { startPrivacyStage } from '../scripts/privacy-stage';
   import { startSourceStage } from '../scripts/source-stage';
+  import { startPulses } from '../scripts/pulse';
 
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const clamp = (v: number) => Math.min(1, Math.max(0, v));
@@ -361,7 +373,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
 
   // ---- the field
   const field = document.querySelector<HTMLElement>('[data-stage="field"]')!;
-  const night = field.querySelector<HTMLElement>('[data-night]')!;
+  const fieldPin = field.querySelector<HTMLElement>('.pin')!;
   const bar = field.querySelector<HTMLElement>('[data-field-progress]')!;
   const specimen = field.querySelector<HTMLElement>('[data-specimen]')!;
   const specLines = [...specimen.querySelectorAll<HTMLElement>('[data-spec]')];
@@ -374,9 +386,10 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     'an empty ballroom',
     (p) => {
       beats(field, p);
-      // The page goes to ink as the dive ends.
-      const dusk = BEATS.dive[1] - 0.04;
-      night.style.opacity = String(clamp((p - dusk) / (1 - dusk)));
+      // As the next section slides up over it, the map drifts up more slowly: parallax.
+      const covered = clamp((p - BEATS.cover) / (1 - BEATS.cover));
+      fieldPin.style.translate = `0 ${-covered * 22}vh`;
+      fieldPin.style.opacity = String(1 - covered * 0.35);
       bar.style.transform = `scaleX(${p})`;
       specimen.classList.toggle('strip-on', p > BEATS.shape - 0.01);
     },
@@ -410,6 +423,9 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   };
   requestAnimationFrame(frame);
 
+  // ---- the marks that head each section
+  startPulses();
+
   // ---- the source: its own function, drawing
   startSourceStage(document.querySelector<HTMLElement>('#source')!);
 
@@ -422,7 +438,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
       return r.top < 32 && r.bottom > 32;
     };
     const fieldR = field.getBoundingClientRect();
-    const dark = onInk(privacy) || onInk(document.getElementById('begin')!) || (fieldR.bottom > 32 && progressOf(field) > BEATS.dive[1] - 0.02);
+    const dark = onInk(privacy) || onInk(document.getElementById('begin')!);
     nav.classList.toggle('on-ink', dark);
     nav.classList.toggle('solid', !dark && !(fieldR.top <= 0 && fieldR.bottom > innerHeight));
     let current = links[0];
@@ -490,7 +506,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
 
   /* ---- the hero --------------------------------------------------------------- */
   .hero-beat { left: max(40px, 7vw); bottom: 56px; }
-  h1 { font: 400 clamp(96px, 14vw, 220px) / 0.8 var(--display); margin: 0 0 0 -0.04em; letter-spacing: -0.02em; }
+  h1 { font: 400 clamp(96px, 12vw, 200px) / 0.8 var(--display); margin: 0 0 0 -0.04em; letter-spacing: -0.02em; }
   .hero-beat > p { font: 400 clamp(20px, 1.8vw, 26px) / 1.3 var(--display); color: var(--muted); margin: 26px 0 0; }
   .cta { display: flex; align-items: flex-end; gap: 28px; margin-top: 36px; }
   .cta .btn { font-size: 20px; padding: 17px 26px; }
@@ -508,7 +524,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .cue { left: 50%; bottom: 26px; transform: translateX(-50%); font: 10px/1 var(--mono); letter-spacing: 2.4px; text-transform: uppercase; color: var(--muted); }
 
   /* The specimen's card, under the large shape: HERO_AT in field-stage.ts. */
-  .specimen { left: 62vw; top: calc(43svh + min(100vw, 100svh) * 0.27 * 1.12); transform: translateX(-50%); display: grid; justify-items: center; gap: 22px; width: 420px; }
+  .specimen { left: 58.5vw; top: calc(37svh + min(100vw, 100svh) * 0.25 * 1.12); transform: translateX(-50%); display: grid; justify-items: center; gap: 22px; width: 420px; }
   .spec-lines { display: grid; }
   .spec-lines p { grid-area: 1 / 1; display: grid; justify-items: center; gap: 8px; text-align: center; }
   .spec-lines i { font: italic 400 21px/1.2 var(--display); }
@@ -524,11 +540,8 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .tip[hidden] { display: none; }
   .tip i { font: italic 400 16px/1.2 var(--display); }
   .tip span { font: 10px/1 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
-  .night { position: absolute; inset: 0; background: var(--ink); opacity: 0; pointer-events: none; }
   .progress { position: absolute; left: 40px; right: 40px; bottom: 18px; height: 1px; background: var(--line); }
   .progress i { position: absolute; inset: 0; background: var(--ink); transform-origin: left; transform: scaleX(0); }
-  .dive-words h2, .dive-words .lab { color: #fff; }
-  .dive-words { mix-blend-mode: difference; }
 
   /* The map's own controls: they follow its tour, and take it over when pressed. */
   .controls { margin-top: 40px; display: grid; gap: 14px; }
@@ -540,36 +553,54 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .controls button[aria-pressed='true'] { color: var(--ink); border-bottom-color: var(--ink); }
 
   /* ---- privacy: the twelve words ------------------------------------------- */
-  .privacy { background: var(--paper); }
+  /* It slides up over the map's last screen (field-stage.ts, `cover`). */
+  .privacy { background: var(--paper); margin-top: -100vh; z-index: 2; }
   .phrase { left: calc(max(40px, 7vw) + 400px); right: 170px; top: 50%; transform: translateY(-50%); margin: 0; display: grid; gap: 28px; }
+  .phrase .sheet { position: relative; }
   .phrase canvas { width: 100%; height: min(52svh, 30vw); display: block; }
+  /* The account form there isn't: drawn, struck through, gone (privacy-stage.ts). */
+  .signup { position: absolute; inset: 0; list-style: none; margin: 0; padding: 0; display: grid; align-content: center; gap: 22px; max-width: 420px; }
+  .signup li { position: relative; display: grid; gap: 10px; opacity: 0; }
+  .signup span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); }
+  .signup i { display: block; height: 30px; border-bottom: 1px solid var(--faint); }
+  .signup b { position: absolute; left: -6px; right: -6px; top: 52%; height: 1.5px; background: var(--ink); transform-origin: left; transform: scaleX(0); }
   .phrase script { display: none; }
-  .phrase figcaption { font: 10px/1.6 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); border-top: 1px solid var(--line); padding-top: 18px; max-width: 70ch; }
+  .phrase figcaption { display: grid; font: 10px/1.6 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); border-top: 1px solid var(--line); padding-top: 18px; }
+  .phrase figcaption span { grid-area: 1 / 1; max-width: 70ch; transition: opacity 0.6s linear; }
+  .phrase figcaption span + span { opacity: 0; color: var(--ink); }
+  .phrase figcaption.free span:first-child { opacity: 0; }
+  .phrase figcaption.free span + span { opacity: 1; }
+  /* The phones the words unlock: the canvas draws their marks (privacy-stage.ts). */
+  .keys { position: absolute; left: 66%; right: 0; top: 0; bottom: 0; display: flex; align-items: center; justify-content: space-around; }
+  .key { display: grid; justify-items: center; gap: 12px; opacity: 0; }
+  .key :global(.device) { width: 84px; }
+  .key :global(.mark), .key :global(.mark-dot) { opacity: 0; }
+  .key span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
 
-  /* ---- privacy: the wire ------------------------------------------------------ */
-  .wire { left: calc(max(40px, 7vw) + 360px); right: 150px; top: 15svh; bottom: 13svh; margin: 0; }
+  /* ---- how it works ---------------------------------------------------------- */
+  .wire { left: calc(max(40px, 7vw) + 440px); right: 200px; top: 14svh; bottom: 14svh; margin: 0; }
   .wire canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-  .end { position: absolute; translate: -50% -50%; display: grid; justify-items: center; gap: 12px; transition: opacity 0.6s linear, scale 0.6s cubic-bezier(.2,.7,.2,1); }
-  .end > span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  /* Devices glide to their seat in each scene (network-stage.ts sets left/top). */
+  .end { position: absolute; translate: -50% -50%; display: grid; justify-items: center; gap: 10px; opacity: 0; scale: 0.85;
+    transition: left 0.9s cubic-bezier(.2,.7,.2,1), top 0.9s cubic-bezier(.2,.7,.2,1), opacity 0.5s linear, scale 0.9s cubic-bezier(.2,.7,.2,1); }
+  .end.on { opacity: 1; scale: 1; }
+  .wire[data-scene='how'] .end.on { scale: 1.2; }
+  .wire[data-scene='network'] .end.on { scale: 0.8; }
+  .end .name { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  .end .role { position: absolute; top: calc(100% + 12px); width: 190px; text-align: center; font-size: 14.5px; line-height: 21px; color: var(--muted); transition: opacity 0.4s linear; }
+  .wire:not([data-scene='how']) .role { opacity: 0; }
   .end :global(.device.phone) { width: 44px; }
   .end :global(.device.laptop) { width: 92px; }
-  .end :global(.device.desktop) { width: 124px; }
+  .end :global(.device.desktop) { width: 120px; }
+  .end :global(.device.server) { width: 76px; }
   .end :global(.device.cloud) { width: 150px; }
-  .end[data-end='desktop'] > span { color: var(--ink); }
-  .end[data-step='1'], .end[data-step='2'] { opacity: 0; scale: 0.85; }
-  .wire.household .end[data-step='1'], .wire.roaming .end[data-step='2'] { opacity: 1; scale: 1; }
-  .person .own { width: 66px; height: 22px; opacity: 0; transition: opacity 0.6s linear; }
-  .wire.household .person .own { opacity: 1; }
-  .person .own path { fill: none; stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
-  .say { position: absolute; top: 17%; display: grid; gap: 10px; width: 28%; transition: opacity 0.5s linear; }
-  .say span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); }
-  .say i { font: italic 400 clamp(18px, 1.6vw, 24px) / 1.25 var(--display); min-height: 2.5em; }
-  .say-plain i.typing::after { content: '▍'; font-style: normal; margin-left: 2px; }
-  .say-plain { left: 0; }
-  .say-read { right: 0; text-align: right; justify-items: end; }
-  .say-sealed { left: 50%; translate: -50% 0; width: 16%; min-width: 150px; text-align: center; justify-items: center; background: var(--paper); padding: 10px 0; }
-  .say-sealed code { font: 13px/1.5 var(--mono); word-break: break-all; color: var(--ink); min-height: 3em; }
-  .wire.household .say { opacity: 0; }
+  /* Working: the GPU's fan turns, a server's lights blink; the screen gives way to the song. */
+  .end.busy :global(.light) { animation: blink 0.45s steps(1) infinite; }
+  .end.busy :global(.light:nth-of-type(even)) { animation-delay: 0.22s; }
+  .end :global(.mark), .end :global(.mark-dot) { transition: opacity 0.4s linear; }
+  .end.busy :global(.mark), .end.busy :global(.mark-dot), .end.playing :global(.mark), .end.playing :global(.mark-dot) { opacity: 0; }
+  @keyframes blink { 50% { fill: currentColor; } }
+  @media (prefers-reduced-motion: reduce) { .end.busy :global(.light) { animation: none; } }
 
   /* ---- the source ------------------------------------------------------------- */
   .trace { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); border-top: 1px solid var(--ink); border-bottom: 1px solid var(--line); }
@@ -637,14 +668,15 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     .progress { left: 22px; right: 22px; }
     .phrase { left: 22px; right: 22px; top: auto; bottom: 7svh; transform: none; gap: 16px; }
     .phrase canvas { height: 34svh; }
-    .end > span { white-space: normal; text-align: center; width: 76px; font-size: 9px; letter-spacing: 1.2px; line-height: 1.4; }
+    .keys { display: none; }
+    .end .name { white-space: normal; text-align: center; width: 76px; font-size: 9px; letter-spacing: 1.2px; line-height: 1.4; }
     .wire { left: 22px; right: 22px; top: 46svh; bottom: 8svh; }
-    .say { display: none; }
+    .end .role { display: none; }
     .end :global(.device.phone) { width: 24px; }
     .end :global(.device.laptop) { width: 52px; }
     .end :global(.device.desktop) { width: 66px; }
     .end :global(.device.cloud) { width: 80px; }
-    .person .own { display: none; }
+    .end :global(.device.server) { width: 44px; }
           .listing pre { font-size: 11.5px; }
     .listing figcaption span { display: none; }
     .drawing canvas { min-height: 300px; }

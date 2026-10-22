@@ -1,14 +1,14 @@
 ---
 /**
  * A device as people know it, drawn in hairline: a phone, a laptop, a desktop
- * with its tower, the relay as a cloud. A phone's screen carries the phone's
+ * with its tower, a server, the relay as a cloud. A phone's screen carries the phone's
  * mark and a computer's screen its node's station, the app's own marks for
  * them (`cantor/src/marks`), so the drawing still says which one it is.
  */
 import { phoneMark, stationMark } from '../../lib/art';
 
 interface Props {
-  kind: 'phone' | 'laptop' | 'desktop' | 'cloud';
+  kind: 'phone' | 'laptop' | 'desktop' | 'server' | 'cloud';
   /** The key the mark on its screen is drawn from. */
   publicKey?: string;
   /** How many models a node's station shows. */
@@ -19,8 +19,8 @@ const { kind, publicKey = kind, models = 1, class: className } = Astro.props;
 const spokes = kind === 'phone' ? phoneMark(publicKey) : [];
 const station = kind === 'laptop' || kind === 'desktop' ? stationMark(publicKey, models) : null;
 /** Where each kind's screen is, and how large its mark sits there: [cx, cy, r]. */
-const screen = { phone: [30, 49, 11], laptop: [50, 31, 12], desktop: [36, 29, 12], cloud: [0, 0, 0] }[kind];
-const views = { phone: '0 0 60 100', laptop: '0 0 100 72', desktop: '0 0 104 80', cloud: '0 0 120 76' };
+const screen = { phone: [30, 49, 11], laptop: [50, 31, 12], desktop: [36, 29, 12], server: [0, 0, 0], cloud: [0, 0, 0] }[kind];
+const views = { phone: '0 0 60 100', laptop: '0 0 100 72', desktop: '0 0 104 80', server: '0 0 84 80', cloud: '0 0 120 76' };
 /** A point of a unit mark, placed on the screen. */
 const px = (x: number) => +(screen[0] + x * screen[2]).toFixed(2);
 const py = (y: number) => +(screen[1] + y * screen[2]).toFixed(2);
@@ -51,8 +51,20 @@ const py = (y: number) => +(screen[1] + y * screen[2]).toFixed(2);
         <rect x="76" y="10" width="25" height="58" rx="2.5" />
         <path d="M81 17H96M81 21H96M81 25H96" />
         <circle cx="88.5" cy="48" r="8" />
-        <path d="M88.5 40.5C92 44 92 52 88.5 55.5M81 48C84.5 44.5 92.5 44.5 96 48" class="fan" />
+        <g class="rotor"><path d="M88.5 40.5C92 44 92 52 88.5 55.5M81 48C84.5 44.5 92.5 44.5 96 48" class="fan" /></g>
         <circle cx="88.5" cy="48" r="1.4" />
+      </>
+    )}
+    {kind === 'server' && (
+      <>
+        {[6, 30, 54].map((y) => (
+          <>
+            <rect x="6" y={y} width="72" height="20" rx="2.5" />
+            <path d={`M13 ${y + 7}H35M13 ${y + 13}H35`} />
+            <circle cx="64" cy={y + 10} r="2" class="light" />
+            <circle cx="71" cy={y + 10} r="2" class="light" />
+          </>
+        ))}
       </>
     )}
     {kind === 'cloud' && (
@@ -74,6 +86,9 @@ const py = (y: number) => +(screen[1] + y * screen[2]).toFixed(2);
   .body :global(*) { fill: none; stroke: currentColor; stroke-width: 1.3px; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
   .body .screen { stroke: var(--faint, currentColor); }
   .body .fan { stroke: var(--muted, currentColor); }
+  /* The fan turns about its hub, in the drawing's own units. */
+  .body .rotor { transform-origin: 88.5px 48px; }
+  .body .light { fill: none; }
   .mark { fill: none; stroke: currentColor; stroke-width: 1.1px; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
   .mark-dot { fill: currentColor; }
 </style>

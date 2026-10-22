@@ -1,0 +1,19 @@
+---
+/**
+ * A small living mark that heads a section: a few rows of characters where
+ * notes are born, live and die by Conway's rules while a playhead sweeps
+ * across them like a sequencer's (`scripts/pulse.ts`). `seed` makes each
+ * section's its own.
+ */
+interface Props { seed: string }
+const { seed } = Astro.props;
+---
+<pre class="pulse" data-pulse={seed} aria-hidden="true"></pre>
+
+<style>
+  .pulse { margin: 0 0 24px; font: 12px/14px var(--mono); color: var(--line); white-space: pre; user-select: none; height: 56px; }
+  .pulse :global(i) { font-style: normal; display: inline-block; width: 1.3ch; text-align: center; transition: color 0.12s linear; }
+  .pulse :global(i.fading) { color: var(--faint); }
+  .pulse :global(i.live) { color: var(--muted); }
+  .pulse :global(i.head) { color: var(--ink); }
+</style>
