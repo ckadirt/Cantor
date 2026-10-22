@@ -1,14 +1,14 @@
 ---
 /**
  * A small living mark that heads a section: a few rows of characters where
- * notes are born, live and die by Conway's rules while a playhead sweeps
- * across them like a sequencer's (`scripts/pulse.ts`). `seed` makes each
- * section's its own.
+ * cells are born, live and die by a life-like rule while a playhead sweeps
+ * across them like a sequencer's (`scripts/pulse.ts`). `voice` names the
+ * section's own rule, tempo and glyphs.
  */
-interface Props { seed: string }
-const { seed } = Astro.props;
+interface Props { voice: 'shape' | 'map' | 'account' | 'how' | 'share' | 'network' | 'open' }
+const { voice } = Astro.props;
 ---
-<pre class="pulse" data-pulse={seed} aria-hidden="true"></pre>
+<pre class="pulse" data-pulse={voice} aria-hidden="true"></pre>
 
 <style>
   .pulse { margin: 0 0 24px; font: 12px/14px var(--mono); color: var(--line); white-space: pre; user-select: none; height: 56px; }

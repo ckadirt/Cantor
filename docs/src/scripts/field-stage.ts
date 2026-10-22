@@ -63,14 +63,13 @@ const MORPH_MS = 1100;
 const GATHER_MS = 1900;
 
 /**
- * Where the large shape stands, as fractions of the stage: `y` beside the
- * title, `then` once the words of the first beat arrive (a phone has no room
- * beside them). The page's CSS seats the specimen's caption from the same
- * numbers (`.specimen`).
+ * Where the large shape stands once it has left the title, as fractions of
+ * the stage. Before that it is the title's "o" (`[data-o-slot]`). The page's
+ * CSS seats the specimen's caption from the same numbers (`.specimen`).
  */
 export const HERO_AT = {
-  wide: { x: 0.585, y: 0.37, then: 0.39, r: 0.25 },
-  tall: { x: 0.5, y: 0.25, then: 0.55, r: 0.25 },
+  wide: { x: 0.62, y: 0.43, r: 0.26 },
+  tall: { x: 0.5, y: 0.55, r: 0.25 },
 } as const;
 
 export const AXES: readonly StageAxis[] = ['month', 'playlist', 'artist'];
@@ -193,20 +192,19 @@ export function startFieldStage(
     // large shape are not.
     const at = wide ? HERO_AT.wide : HERO_AT.tall;
     const hx = w * at.x;
-    const hy = h * at.then;
+    const hy = h * at.y;
     const hr = Math.min(w, h) * at.r;
+    // The title and its buttons, the bar, the rail, the specimen's caption.
     const keepOut = wide
       ? [
-          [0, 0.46, 0.52, 1],
+          [0, 0.18, 0.6, 0.9],
           [0, 0, 1, 0.1],
           [0.88, 0.3, 1, 0.7],
-          [0.44, 0.68, 0.82, 1],
-          [0, 0.22, 0.34, 0.78],
+          [0.46, 0.72, 0.8, 1],
         ]
       : [
-          [0, 0.72, 1, 1],
+          [0, 0.5, 1, 1],
           [0, 0, 1, 0.34],
-          [0.05, 0.8, 0.95, 0.92],
         ];
     const free = (x: number, y: number) =>
       Math.hypot(x - hx, y - hy) > hr * 1.25 &&
@@ -276,6 +274,8 @@ export function startFieldStage(
   });
   canvas.parentElement!.addEventListener('pointerleave', () => (pointer = null));
 
+  /** The title's "o": the hero stands in it before it lifts out. */
+  const slot = stage.querySelector<HTMLElement>('[data-o-slot]');
   let lastP = -1;
   const frame = (now: number) => {
     requestAnimationFrame(frame);
@@ -386,6 +386,7 @@ export function startFieldStage(
       ctx.globalAlpha = 1;
     }
 
+    let heroWeight = dpr;
     const levelAt = (m: Mark, step: number) => (m.fillsAt > 0 && step >= m.fillsAt ? Math.min(2, m.level + 1) : m.level);
     const seen: { m: Mark; x: number; y: number; r: number }[] = [];
 
@@ -402,12 +403,17 @@ export function startFieldStage(
       let lensT = q.t;
 
       if (m.hero) {
-        // Large, beside the title; then it flies to its place in the map.
+        // The title's "o"; it lifts out of the word and grows large as the
+        // first beat arrives; then it flies to its place in the map.
+        const leave = ease(span(p, 0.004, BEATS.shape));
         const fly = ease(gather);
         const big = Math.min(w, h) * at.r * (1 + breath);
-        x = lerp(w * at.x, q.x, fly);
-        y = lerp(h * lerp(at.y, at.then, ease(span(p, 0.015, BEATS.shape))), q.y, fly);
-        radius = lerp(big, q.r, fly);
+        const home = { x: w * at.x, y: h * at.y, r: big, weight: dpr };
+        const o = slot ? slotted(slot, canvas, dpr) : home;
+        x = lerp(lerp(o.x, home.x, leave), q.x, fly);
+        y = lerp(lerp(o.y, home.y, leave), q.y, fly);
+        radius = lerp(lerp(o.r, big, leave), q.r, fly);
+        heroWeight = lerp(o.weight, Math.max(1, radius / (60 * dpr)) * dpr, Math.max(leave, fly));
         level = lerp(1, level, fly);
         if (gather < 1 || specimen.index !== 0 || morph < 1) {
           const a = specimens[specimen.from];
@@ -447,7 +453,7 @@ export function startFieldStage(
       // solid once kept.
       const colour = mix(c.faint, c.ink, clamp(level));
       const fill = clamp(level - 1);
-      const weight = m.hero ? Math.max(1, v.r / (60 * dpr)) * dpr : dpr;
+      const weight = m.hero ? heroWeight : dpr;
       const draw = (lens: number, amount: number, a: number) => {
         if (a <= 0.001) return;
         ctx.globalAlpha = alpha * a;
@@ -618,4 +624,20 @@ function parse(hex: string) {
   if (!m) return null;
   const s = m[1].length === 3 ? m[1].split('').map((ch) => ch + ch).join('') : m[1];
   return [0, 2, 4].map((i) => parseInt(s.slice(i, i + 2), 16));
+}
+
+/**
+ * The title's "o" on the canvas: its centre, the radius a face needs to stand
+ * in it, and a line about half as heavy as the letters' strokes, so it reads as an accent.
+ */
+function slotted(slot: HTMLElement, canvas: HTMLCanvasElement, dpr: number) {
+  const s = slot.getBoundingClientRect();
+  const c = canvas.getBoundingClientRect();
+  const size = parseFloat(getComputedStyle(slot).fontSize);
+  return {
+    x: (s.left + s.width / 2 - c.left) * dpr,
+    y: (s.top + s.height / 2 - c.top) * dpr,
+    r: (s.height / 2) * 1.02 * dpr,
+    weight: size * 0.032 * dpr,
+  };
 }

@@ -164,7 +164,9 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
       <div class="tip" data-stage-tip hidden><i></i><span></span></div>
 
       <div class="beat hero-beat" data-beat={`0 ${BEATS.shape - 0.01}`}>
-        <h1 aria-label="Cantor">{[...'Cantor'].map((ch, i) => <span style={`--i:${i}`} aria-hidden="true">{ch}</span>)}</h1>
+        <h1 aria-label="Cantor">
+          {[...'Cant'].map((ch, i) => <span style={`--i:${i}`} aria-hidden="true">{ch}</span>)}<span class="o-slot" data-o-slot style="--i:4" aria-hidden="true"><em class="o-note" data-o-note>“{HERO}”</em></span><span style="--i:5" aria-hidden="true">r</span>
+        </h1>
         <p class="rise">Songs made on your own computer.<br />Kept on your phone, with all your music.</p>
         <div class="cta">
           <a class="btn" href={SITE.apk}>Download for Android</a>
@@ -175,7 +177,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
         </div>
       </div>
 
-      <div class="specimen beat" data-beat={`0 ${BEATS.gather}`} data-specimen>
+      <div class="specimen beat" data-beat={`${BEATS.shape} ${BEATS.gather}`} data-specimen>
         <div class="spec-lines">
           {specimens.map((s, i) => (
             <p data-spec={i}><i>“{s.title}”</i><span>{s.length} · {s.model} · seed {s.seed}</span></p>
@@ -190,12 +192,12 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
       <p class="cue beat" data-beat={`0 ${BEATS.shape / 2}`}>Scroll</p>
 
       <div class="beat words" data-beat={`${BEATS.shape} ${BEATS.gather}`}>
-        <Pulse seed="shape" />
+        <Pulse voice="shape" />
         <h2>Every song has a shape.</h2>
         <p>Drawn from its recipe. The same on every phone.</p>
       </div>
       <div class="beat words" data-beat={`${BEATS.gather} 1.01`}>
-        <Pulse seed="map" />
+        <Pulse voice="map" />
         <h2>Together, they make a map.</h2>
         <p>The music you love and the songs you make, together in one field.</p>
         <div class="controls">
@@ -213,7 +215,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     <span class="anchor" id="network" aria-hidden="true" style={`top:${(PRIVACY.wire[0] + 0.01) * PRIVACY_RUN_VH}vh`}></span>
     <div class="pin">
       <div class="beat words" data-beat={`0 ${PRIVACY.words[1]}`}>
-        <Pulse seed="account" />
+        <Pulse voice="account" />
         <h2>No account. No ties.</h2>
         <p>Your identity is twelve words, made on your phone and secured by cryptography. No email, no password, no personal data. Nothing anyone can lock you out of.</p>
       </div>
@@ -238,17 +240,17 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
       </figure>
 
       <div class="beat words" data-beat={`${PRIVACY.wire[0]} ${PRIVACY.share}`}>
-        <Pulse seed="how" />
+        <Pulse voice="how" />
         <h2>How it works.</h2>
         <p>Your phone asks for a song. Your computer makes it. Everything between them travels sealed.</p>
       </div>
       <div class="beat words" data-beat={`${PRIVACY.share} ${PRIVACY.network}`}>
-        <Pulse seed="share" />
-        <h2>Share your computer.</h2>
+        <Pulse voice="share" />
+        <h2>Share your compute.</h2>
         <p>Pair a friend’s phone and your computer makes their songs too. Every library stays its owner’s.</p>
       </div>
       <div class="beat words" data-beat={`${PRIVACY.network} ${PRIVACY.wire[1]}`}>
-        <Pulse seed="network" />
+        <Pulse voice="network" />
         <h2>A whole network.</h2>
         <p>Pair with as many computers as you like: a desktop, a laptop, a server. Use a friend’s, and let your friends use yours.</p>
       </div>
@@ -275,7 +277,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     <div class="inner">
       <header class="split">
         <div>
-          <Pulse seed="open" />
+          <Pulse voice="open" />
           <h2>Fully open.</h2>
         </div>
         <p>Cantor is Apache-2.0, all of it: the app, the software on your computer, and the relay between them. Change it, build on it, send your changes back. It stays open.</p>
@@ -378,6 +380,8 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   const specimen = field.querySelector<HTMLElement>('[data-specimen]')!;
   const specLines = [...specimen.querySelectorAll<HTMLElement>('[data-spec]')];
   const thumbs = [...specimen.querySelectorAll<HTMLButtonElement>('[data-thumb]')];
+  const oNote = field.querySelector<HTMLElement>('[data-o-note]')!;
+  const titles = specLines.map((el) => el.querySelector('i')!.textContent!);
   const axisButtons = [...field.querySelectorAll<HTMLButtonElement>('[data-axis]')];
   const lensButtons = [...field.querySelectorAll<HTMLButtonElement>('[data-lens]')];
   const stage = startFieldStage(
@@ -391,7 +395,6 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
       fieldPin.style.translate = `0 ${-covered * 22}vh`;
       fieldPin.style.opacity = String(1 - covered * 0.35);
       bar.style.transform = `scaleX(${p})`;
-      specimen.classList.toggle('strip-on', p > BEATS.shape - 0.01);
     },
     (mode) => {
       axisButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(i === mode.axis)));
@@ -408,6 +411,10 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
         el.style.translate = `0 ${k === index ? (1 - inn) * 8 : k === from ? -out * 8 : 0}px`;
       });
       thumbs.forEach((el, k) => el.setAttribute('aria-pressed', String(k === (t < 0.5 && !settled ? from : index))));
+      // The title's "o" says which song it is, swapping name halfway through its morph.
+      const named = titles[t < 0.5 && !settled ? from : index];
+      if (oNote.textContent !== named) oNote.textContent = named;
+      oNote.style.opacity = String(settled ? 1 : Math.abs(t - 0.5) * 2);
     },
   );
   thumbs.forEach((b, i) => b.addEventListener('click', () => stage.setSpecimen(i)));
@@ -505,8 +512,12 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .words h2 { max-width: 12ch; }
 
   /* ---- the hero --------------------------------------------------------------- */
-  .hero-beat { left: max(40px, 7vw); bottom: 56px; }
-  h1 { font: 400 clamp(96px, 12vw, 200px) / 0.8 var(--display); margin: 0 0 0 -0.04em; letter-spacing: -0.02em; }
+  .hero-beat { left: max(40px, 7vw); top: 54%; transform: translateY(-50%); }
+  h1 { font: 400 clamp(110px, 15vw, 240px) / 0.8 var(--display); margin: 0 0 0 -0.04em; letter-spacing: -0.02em; white-space: nowrap; }
+  /* The "o" is the song: the canvas draws its shape here (field-stage.ts, `slotted`). */
+  .o-slot { position: relative; width: 0.5em; height: 0.44em; margin: 0 0.02em; }
+  .o-note { position: absolute; left: 50%; bottom: calc(100% + 0.7em); font: italic 400 19px/1 var(--display); letter-spacing: 0; color: var(--muted); white-space: nowrap; transition: opacity 0.4s linear; }
+  .o-note::after { content: ''; position: absolute; left: 0; top: calc(100% + 8px); width: 1px; height: 28px; background: var(--faint); }
   .hero-beat > p { font: 400 clamp(20px, 1.8vw, 26px) / 1.3 var(--display); color: var(--muted); margin: 26px 0 0; }
   .cta { display: flex; align-items: flex-end; gap: 28px; margin-top: 36px; }
   .cta .btn { font-size: 20px; padding: 17px 26px; }
@@ -514,7 +525,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .cta-node .lab { margin-bottom: 10px; }
   .cta-node :global(code) { padding: 14px 16px; font-size: 12.5px; }
   /* The intro: the title's letters rise one after another, then the rest. */
-  h1 span { display: inline-block; animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) both; animation-delay: calc(0.35s + var(--i) * 0.07s); }
+  h1 > span { display: inline-block; animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) both; animation-delay: calc(0.35s + var(--i) * 0.07s); }
   .hero-beat > p { animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) 0.9s both; }
   .cta { animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) 1.1s both; }
   .specimen .spec-lines { animation: fade 1s linear 1.4s both; }
@@ -524,7 +535,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .cue { left: 50%; bottom: 26px; transform: translateX(-50%); font: 10px/1 var(--mono); letter-spacing: 2.4px; text-transform: uppercase; color: var(--muted); }
 
   /* The specimen's card, under the large shape: HERO_AT in field-stage.ts. */
-  .specimen { left: 58.5vw; top: calc(37svh + min(100vw, 100svh) * 0.25 * 1.12); transform: translateX(-50%); display: grid; justify-items: center; gap: 22px; width: 420px; }
+  .specimen { left: 62vw; top: calc(43svh + min(100vw, 100svh) * 0.26 * 1.12); transform: translateX(-50%); display: grid; justify-items: center; gap: 22px; width: 420px; }
   .spec-lines { display: grid; }
   .spec-lines p { grid-area: 1 / 1; display: grid; justify-items: center; gap: 8px; text-align: center; }
   .spec-lines i { font: italic 400 21px/1.2 var(--display); }
@@ -658,12 +669,13 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     .words h2 { font-size: 36px; }
     .words p { font-size: 16px; line-height: 25px; margin-top: 14px; }
     .controls { margin-top: 18px; gap: 8px; }
-    .hero-beat { left: 22px; right: 22px; bottom: 40px; }
+    .hero-beat { left: 22px; right: 22px; top: auto; bottom: 40px; transform: none; }
+    h1 { font-size: 27vw; }
+    .o-note { display: none; }
     .cta { flex-direction: column; align-items: stretch; gap: 18px; }
     .cta .btn { text-align: center; }
     .cta-node { width: auto; }
-    .specimen { left: 50vw; top: calc(25svh + min(100vw, 100svh) * 0.25 * 1.1); width: 90vw; gap: 14px; transition: top 0.5s cubic-bezier(.2,.7,.2,1); }
-    .specimen.strip-on { top: calc(55svh + min(100vw, 100svh) * 0.25 * 1.1); }
+    .specimen { left: 50vw; top: calc(55svh + min(100vw, 100svh) * 0.25 * 1.1); width: 90vw; gap: 14px; }
     .cue { display: none; }
     .progress { left: 22px; right: 22px; }
     .phrase { left: 22px; right: 22px; top: auto; bottom: 7svh; transform: none; gap: 16px; }
