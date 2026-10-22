@@ -1,59 +1,131 @@
 ---
 /**
- * cantorfm.com, told as one scroll. A song's shape becomes a library; the
- * library changes lens; the camera falls into a song and the page goes to
- * ink, where privacy is shown rather than promised; then one node is shared
- * by a household; then the source, and how to begin.
+ * cantorfm.com, told as one scroll. A song's shape, which morphs as the song
+ * changes; the library that floats round it gathers into a map, and the map
+ * plays — regathering, changing lens, its inks filling; the camera falls into
+ * a song and the page goes to ink: twelve words instead of an account, then
+ * the wire from a phone through the relay to a node, sealed, and the
+ * household one node can serve; then the source, and how to begin.
  *
- * The field stage is `scripts/field-stage.ts`; every shape is the app's.
+ * The stages are `scripts/field-stage.ts` and `scripts/privacy-stage.ts`;
+ * every shape is the app's.
  */
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import Site from '../layouts/Site.astro';
 import Seal from '../components/art/Seal.astro';
-import Station from '../components/art/Station.astro';
-import Phone from '../components/art/Phone.astro';
+import Device from '../components/art/Device.astro';
 import CopyLine from '../components/CopyLine.astro';
-import { facePathAt } from '../lib/library';
-import { recipeOf } from '../lib/art';
-import { hash, metadataSeed, mulberry32 } from '../../../cantor/src/lenses/face';
+import { facePathAt, sampleLibrary } from '../lib/library';
+import { recipeOf, clock } from '../lib/art';
+import { phraseGeometry } from '../lib/phrase';
+import { hash, mulberry32 } from '../../../cantor/src/lenses/face';
+import { AXES, BEATS, FIELD_RUN_VH, LENSES, SPECIMENS } from '../scripts/field-stage';
+import { PRIVACY, PRIVACY_RUN_VH } from '../scripts/privacy-stage';
 import { SITE } from '../site';
 
 const NAME = 'cantorfm.com';
 /** The song the story follows: it opens the page and the camera falls into it. */
 const HERO = 'an empty ballroom';
+/** The repository, from the site's root: the build runs from docs/. */
+const REPO = resolve(process.cwd(), '..');
 
-/** Twelve real BIP39 words, the kind of phrase the app makes; not anyone's. */
+const songs = sampleLibrary();
+const songOf = (title: string) => songs.find((s) => s.title === title)!;
+/** The shapes the first beat morphs through, each with what its card prints. */
+const specimens = SPECIMENS.map((title) => {
+  const s = songOf(title);
+  return {
+    title,
+    model: s.byline,
+    length: clock(s.recipe.durationMs / 1000),
+    seed: (s.recipe.seed ?? 0).toString(16).padStart(8, '0'),
+    thumb: facePathAt(s.recipe, 0, 0, 9),
+  };
+});
+
+/**
+ * A real BIP39 phrase, the kind the app mints, from fixed entropy so it is
+ * nobody's: 128 bits, then the first 4 bits of their SHA-256, read as twelve
+ * 11-bit indexes into the wordlist.
+ */
 const WORDLIST: string[] = (
-  /`([^`]*)`/.exec(
-    // Resolved from the site's root: the build runs from docs/.
-    readFileSync(resolve(process.cwd(), '../cantor/node_modules/@scure/bip39/wordlists/english.js'), 'utf8'),
-  )?.[1] ?? ''
+  /`([^`]*)`/.exec(readFileSync(resolve(REPO, 'cantor/node_modules/@scure/bip39/wordlists/english.js'), 'utf8'))?.[1] ?? ''
 ).split('\n').map((w) => w.trim()).filter(Boolean);
 const words = (() => {
   const random = mulberry32(0xb1739);
-  return Array.from({ length: 12 }, () => WORDLIST[Math.floor(random() * WORDLIST.length)] ?? '');
+  const entropy = Buffer.from(Array.from({ length: 16 }, () => Math.floor(random() * 256)));
+  const check = createHash('sha256').update(entropy).digest()[0] >> 4;
+  const bits = [...entropy].map((b) => b.toString(2).padStart(8, '0')).join('') + check.toString(2).padStart(4, '0');
+  return Array.from({ length: 12 }, (_, i) => WORDLIST[parseInt(bits.slice(i * 11, i * 11 + 11), 2)]);
 })();
+/**
+ * The reveal's glyphs: each word as the 11 bits it encodes, its index in the
+ * wordlist (the app's `wordBits`), and as itself, in the site's display face.
+ */
+const slots = phraseGeometry(
+  resolve(REPO, 'cantor/assets/fonts/cmu-serif.ttf'),
+  words.map((word) => ({ word, bits: WORDLIST.indexOf(word).toString(2).padStart(11, '0') })),
+);
 
 const PROMPT = 'a slow blues, brushed drums, a voice like smoke';
 
-/** The household: where each mark stands in the diagram, in percent, and when it pairs. */
+/** The wire, in percent of its figure; the relay stands in the middle. */
 const NODES = [
-  { key: 'your desktop', label: 'Your desktop · GPU', x: 56, y: 50, models: 3, big: true, step: 0 },
-  { key: 'your laptop', label: 'Your laptop', x: 10, y: 50, models: 1, big: false, step: 5 },
-];
-const PHONES = [
-  { key: 'your phone', label: 'You', x: 32, y: 16, to: [['your desktop', 1], ['your laptop', 5]] },
-  { key: 'ana', label: 'Ana', x: 32, y: 84, to: [['your desktop', 2]] },
-  { key: 'leo', label: 'Leo', x: 88, y: 18, to: [['your desktop', 3]] },
-  { key: 'mia', label: 'Mia', x: 88, y: 82, to: [['your desktop', 4]] },
+  { key: 'desktop', label: 'Your desktop · GPU', x: 88, y: 50, models: 3, step: 0 },
+  { key: 'laptop', label: 'Your laptop', x: 88, y: 13, models: 1, step: 2 },
 ] as const;
-const at = (key: string) => [...NODES, ...PHONES].find((n) => n.key === key)!;
+const PHONES = [
+  { key: 'you', label: 'Your phone', x: 8, y: 50, step: 0 },
+  { key: 'ana', label: 'Ana’s phone', x: 8, y: 13, step: 1 },
+  { key: 'leo', label: 'Leo’s phone', x: 8, y: 87, step: 1 },
+];
+/** Who talks to whom, and from which step: 0 sealed, 1 the household, 2 roaming. */
+const LINKS: [string, string, number][] = [['you', 'desktop', 0], ['ana', 'desktop', 1], ['leo', 'desktop', 1], ['you', 'laptop', 2]];
 const shelf = (owner: string) => [0, 1, 2].map((i) => ({ ...recipeOf(`${owner} ${i}`), seed: hash(`${owner} ${i}`) }));
-const madeRecipe = recipeOf('a slow blues, at dusk');
-const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'device-0-0', model: 'device', durationMs: 214000, imported: true };
+
+/** Each part of the repository, and the languages git says it is written in. */
+const LANGS: Record<string, string> = { ts: 'TypeScript', tsx: 'TypeScript', kt: 'Kotlin', java: 'Java', rs: 'Rust', mjs: 'JavaScript', md: 'Markdown', sh: 'Shell', py: 'Python' };
+function languages(dir: string) {
+  try {
+    const files = execFileSync('git', ['ls-files', dir], { cwd: REPO, encoding: 'utf8' }).split('\n').filter(Boolean);
+    const by = new Map<string, number>();
+    for (const file of files) {
+      const lang = LANGS[file.split('.').pop() ?? ''];
+      if (lang) by.set(lang, (by.get(lang) ?? 0) + readFileSync(resolve(REPO, file), 'utf8').split('\n').length);
+    }
+    return [...by].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([l]) => l);
+  } catch {
+    // Built outside a checkout: the folders still read, without their languages.
+    return [];
+  }
+}
+const TREE = [
+  ['cantor', 'The Android app: the field, the lenses, the player'],
+  ['node', 'The node: models, generation, your library'],
+  ['relay', 'The relay: it passes sealed bytes between phone and node'],
+  ['protocol', 'The wire contract, its fixtures, its generated types'],
+  ['contributing', 'How it fits together, and how to change it'],
+].map(([dir, what]) => ({ dir, what, langs: languages(dir) }));
+
+/**
+ * The function that draws every circle on this page, quoted from the app, and
+ * the lines the live trace writes its values beside.
+ */
+const FACE_FILE = 'cantor/src/lenses/face.ts';
+const faceLines = readFileSync(resolve(REPO, FACE_FILE), 'utf8').split('\n');
+const quoteFrom = faceLines.findIndex((l) => l.startsWith('function contourPoint'));
+const quoteTo = faceLines.findIndex((l, i) => i > quoteFrom && l === '}');
+const NOTES: [RegExp, string][] = [[/^function contourPoint/, 'angle'], [/= params;$/, 'params'], [/\+ 1\.1\);$/, 'radius'], [/x: Math\.cos/, 'x'], [/y: \(Math\.sin/, 'y']];
+const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
+  n: quoteFrom + i + 1,
+  text,
+  note: NOTES.find(([re]) => re.test(text.trim()))?.[1],
+}));
 ---
-<Site title="Cantor — songs made on your own machine" description="A music library you can make songs for, on a computer you own. Your phone plays it; nothing in between can listen.">
+<Site title="Cantor: songs made on your own machine" description="A music library you can make songs for, on a computer you own. Your phone plays it; nothing in between can listen.">
   <nav class="top" data-nav>
     <a class="brand" href="/"><Seal name={NAME} depth={2} filled class="brand-seal" /><span>Cantor</span></a>
     <span class="links">
@@ -72,52 +144,53 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
   </ol>
 
   <!-- ===== the field: one pinned stage ===== -->
-  <section class="stage field" id="field" data-stage="field">
+  <section class="stage field" id="field" data-stage="field" style={`height:${FIELD_RUN_VH + 100}vh`}>
     <div class="pin">
       <canvas class="canvas" data-field-canvas aria-hidden="true"></canvas>
       <div class="tip" data-stage-tip hidden><i></i><span></span></div>
 
-      <div class="beat hero-beat" data-beat="0 0.05">
+      <div class="beat hero-beat" data-beat={`0 ${BEATS.shape - 0.01}`}>
         <h1 aria-label="Cantor">{[...'Cantor'].map((ch, i) => <span style={`--i:${i}`} aria-hidden="true">{ch}</span>)}</h1>
         <p class="rise">Songs made on your own machine,<br />heard on your phone.</p>
+        <div class="cta">
+          <a class="btn" href={SITE.apk}>Download for Android</a>
+          <div class="cta-node">
+            <span class="lab">Then, on your computer</span>
+            <CopyLine text={SITE.install} />
+          </div>
+        </div>
       </div>
-      <div class="hero-card beat" data-beat="0 0.05">
-        <span>Plate I</span><i>“{HERO}”</i><span>made with acestep:1.5-fast</span>
-      </div>
-      <p class="cue beat" data-beat="0 0.03">Scroll</p>
 
-      <div class="beat words" data-beat="0.07 0.2">
+      <div class="specimen beat" data-beat={`0 ${BEATS.gather}`} data-specimen>
+        <div class="spec-lines">
+          {specimens.map((s, i) => (
+            <p data-spec={i}><i>“{s.title}”</i><span>{s.length} · {s.model} · seed {s.seed}</span></p>
+          ))}
+        </div>
+        <ol class="strip" aria-label="Songs">
+          {specimens.map((s, i) => (
+            <li><button type="button" data-thumb={i} aria-label={`“${s.title}”`}><svg viewBox="-10 -10 20 20" aria-hidden="true"><path d={s.thumb} /></svg></button></li>
+          ))}
+        </ol>
+      </div>
+      <p class="cue beat" data-beat={`0 ${BEATS.shape / 2}`}>Scroll</p>
+
+      <div class="beat words" data-beat={`${BEATS.shape} ${BEATS.gather}`}>
         <span class="lab">01 · A song</span>
         <h2>Every song has a shape.</h2>
-        <p>Drawn from its recipe, the same on every phone, before the song has even finished being made. This one is “{HERO}”.</p>
+        <p>Drawn from its recipe: its seed, its model, its length. The same on every phone, before the song has even finished being made.</p>
       </div>
-      <div class="beat words" data-beat="0.2 0.36">
+      <div class="beat words" data-beat={`${BEATS.gather} ${BEATS.dive[0]}`}>
         <span class="lab">02 · A library</span>
         <h2>Together, they make a map.</h2>
-        <p>The songs your node makes and the music already on your phone, gathered by when they arrived, in one field. A song with a hole is one you owned before.</p>
+        <p>What your node makes and the music already on your phone, in one field.</p>
+        <div class="controls">
+          <div><span>Gather by</span>{AXES.map((a, i) => <button type="button" data-axis={i}>{a}</button>)}</div>
+          <div><span>Lens</span>{LENSES.map((l, i) => <button type="button" data-lens={i}>{l}</button>)}</div>
+        </div>
       </div>
-      <div class="beat words" data-beat="0.36 0.45">
-        <span class="lab">03 · Where it is</span>
-        <h2>The ink says where.</h2>
-        <ul class="legend">
-          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(madeRecipe, 0, 0, 8)} class="l-remote" /></svg>Still on your node</li>
-          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(madeRecipe, 0, 0, 8)} class="l-cached" /></svg>Cached on your phone</li>
-          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(madeRecipe, 0, 0, 8)} class="l-down" /></svg>Kept: plays on a plane</li>
-          <li><svg viewBox="-10 -10 20 20"><path d={facePathAt(importedRecipe, 0, 0, 8) + 'M1.6 0a1.6 1.6 0 1 0 -3.2 0a1.6 1.6 0 1 0 3.2 0Z'} class="l-down" fill-rule="evenodd" /></svg>Your own file</li>
-        </ul>
-      </div>
-      <div class="beat words" data-beat="0.46 0.61">
-        <span class="lab">04 · Another lens</span>
-        <h2>The seal.</h2>
-        <p>Each dot a moment of the song, threaded in the order it plays. They leave the circle where their moment stands on its clock.</p>
-      </div>
-      <div class="beat words" data-beat="0.63 0.8">
-        <span class="lab">05 · And another</span>
-        <h2>Marbling.</h2>
-        <p>Drops of ink and clear water, combed, the way paper has been marbled for centuries. Nothing is erased: every song keeps its own bath.</p>
-      </div>
-      <div class="beat words dive-words" data-beat="0.84 0.97">
-        <span class="lab">06 · Yours</span>
+      <div class="beat words dive-words" data-beat={`${BEATS.dive[0] + 0.02} ${BEATS.dive[1]}`}>
+        <span class="lab">03 · Yours</span>
         <h2>Made on a machine you own.</h2>
       </div>
 
@@ -126,76 +199,62 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
     </div>
   </section>
 
-  <!-- ===== privacy: pinned, in ink ===== -->
-  <section class="stage inverse privacy" id="privacy" data-stage="privacy">
+  <!-- ===== privacy and sharing: pinned, in ink ===== -->
+  <section class="stage inverse privacy" id="privacy" data-stage="privacy" style={`height:${PRIVACY_RUN_VH + 100}vh`}>
+    <span class="anchor" id="network" aria-hidden="true" style={`top:${(PRIVACY.household + 0.01) * PRIVACY_RUN_VH}vh`}></span>
     <div class="pin">
-      <div class="beat words" data-beat="0 0.34">
-        <span class="lab">07 · No account</span>
+      <div class="beat words" data-beat={`0 ${PRIVACY.words[1]}`}>
+        <span class="lab">04 · No account</span>
         <h2>Nothing to sign in to.</h2>
         <p>Your identity is twelve words your phone makes for itself. No email, no password, nothing of yours on our side.</p>
       </div>
-      <ol class="phrase beat" data-beat="0.02 0.34">
-        {words.map((w, i) => <li><span>{String(i + 1).padStart(2, '0')}</span>{w}</li>)}
-      </ol>
+      <figure class="phrase beat" data-beat={`0 ${PRIVACY.words[1]}`} data-phrase aria-label={`Twelve words: ${words.join(' ')}`}>
+        <canvas aria-hidden="true"></canvas>
+        <script is:inline type="application/json" set:html={JSON.stringify(slots)}></script>
+        <figcaption>Each word is the 11 bits it stands for: 128 drawn at random on your phone, and 4 that check them.</figcaption>
+      </figure>
 
-      <div class="beat words" data-beat="0.36 0.82">
-        <span class="lab" data-cipher-label>08 · What your node reads</span>
-        <h2>Sealed, end to end.</h2>
-        <p>Between your phone and your node, everything is encrypted. The relay that joins them carries bytes it cannot open: it sees that two devices talk, never what they say.</p>
+      <div class="beat words" data-beat={`${PRIVACY.wire[0]} ${PRIVACY.household}`}>
+        <span class="lab">05 · End to end</span>
+        <h2>Sealed, the whole way.</h2>
+        <p>Your phone and your node meet through a relay. It carries bytes it cannot open: it sees that two devices talk, never what they say.</p>
       </div>
-      <p class="cipher beat" data-beat="0.36 0.82" data-cipher={PROMPT} aria-label={`"${PROMPT}", encrypted as the relay sees it`}>{PROMPT}</p>
-
-      <div class="beat facts-beat" data-beat="0.82 1.01">
-        <dl class="facts">
-          <div><dt>Keys, not passwords</dt><dd>Ed25519 on both sides, pinned the moment you pair. The node proves itself before your phone says a word.</dd></div>
-          <div><dt>Noise, every time</dt><dd>A fresh handshake on every connection, and no plaintext fallback. Ever.</dd></div>
-          <div><dt>Nothing reported</dt><dd>The node sends us nothing. The app's one other call fetches lyrics for your own files from LRCLIB, which learns a title and an artist, never audio.</dd></div>
-        </dl>
-      </div>
-    </div>
-  </section>
-
-  <!-- ===== sharing: pinned ===== -->
-  <section class="stage network" id="network" data-stage="network">
-    <div class="pin">
-      <div class="beat words" data-beat="0 0.42">
-        <span class="lab">09 · Your compute</span>
+      <div class="beat words" data-beat={`${PRIVACY.household} ${PRIVACY.roaming}`}>
+        <span class="lab">06 · Your compute</span>
         <h2>One machine, a whole household.</h2>
-        <p>The computer with the GPU makes the songs. Pair your phone with it, then your friends' phones.</p>
+        <p>The computer with the GPU makes the songs, for your phone and your friends'. Each keeps a library of its own on the node, which nobody else sees.</p>
       </div>
-      <div class="beat words" data-beat="0.42 0.72">
-        <span class="lab">10 · Apart</span>
-        <h2>Everyone keeps their own.</h2>
-        <p>Each phone gets a library of its own on the node, which nobody else sees. The node makes one song at a time, and nobody can fill the queue.</p>
-      </div>
-      <div class="beat words" data-beat="0.72 1.01">
-        <span class="lab">11 · And back</span>
+      <div class="beat words" data-beat={`${PRIVACY.roaming} ${PRIVACY.wire[1]}`}>
+        <span class="lab">07 · And back</span>
         <h2>One phone, many nodes.</h2>
-        <p>Your phone can pair with more than one: the desktop at home, the laptop on the road. Revoke any of them whenever you like.</p>
+        <p>The desktop at home, the laptop on the road. Pair with any of them; revoke any of them whenever you like.</p>
       </div>
 
-      <figure class="net" aria-label="Four phones pair with one desktop node, one after another; one phone also pairs with a laptop">
-        <svg class="wires" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-          {PHONES.flatMap((p) => p.to.map(([t, step]) => {
-            const n = at(t);
-            return <line x1={p.x} y1={p.y} x2={n.x} y2={n.y} data-step={step} />;
-          }))}
-        </svg>
+      <figure class="wire beat" data-beat={`${PRIVACY.wire[0]} ${PRIVACY.wire[1]}`} data-wire data-links={JSON.stringify(LINKS)}
+        aria-label="A phone talks to a node through the relay, which sees only sealed bytes; then two more phones share the node, and the first phone pairs with a laptop too">
+        <canvas aria-hidden="true"></canvas>
+        <div class="end relay" data-end="relay" style="left:50%;top:50%">
+          <Device kind="cloud" />
+          <span>The relay</span>
+        </div>
         {NODES.map((n) => (
-          <div class:list={['node', { big: n.big }]} style={`left:${n.x}%;top:${n.y}%`} data-step={n.step}>
-            <Station publicKey={n.key} models={n.models} />
+          <div class="end node" data-end={n.key} data-step={n.step} style={`left:${n.x}%;top:${n.y}%`}>
+            <Device kind={n.key} publicKey={`your ${n.key}`} models={n.models} />
             <span>{n.label}</span>
           </div>
         ))}
         {PHONES.map((p) => (
-          <div class="person" style={`left:${p.x}%;top:${p.y}%`} data-step={p.to[0][1]}>
-            <Phone publicKey={p.key} />
+          <div class="end person" data-end={p.key} data-step={p.step} style={`left:${p.x}%;top:${p.y}%`}>
+            <Device kind="phone" publicKey={p.key === 'you' ? 'your phone' : p.key} />
             <span>{p.label}</span>
             <svg class="own" viewBox="-30 -10 60 20" aria-hidden="true">
               {shelf(p.key).map((r, i) => <path d={facePathAt(r, -18 + i * 18, 0, 7)} />)}
             </svg>
           </div>
         ))}
+        <p class="say say-plain"><span>Your phone writes</span><i data-plain={PROMPT}></i></p>
+        <p class="say say-sealed"><span>The relay sees</span><code data-sealed></code></p>
+        <p class="say say-read"><span>Your node reads</span><i data-read></i></p>
       </figure>
     </div>
   </section>
@@ -205,17 +264,34 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
     <div class="inner">
       <header class="split">
         <div>
-          <span class="lab">12 · Open source</span>
+          <span class="lab">08 · Open source</span>
           <h2>Read every line.</h2>
         </div>
         <p>Cantor is Apache-2.0, all of it. You do not have to take our word for anything on this page: the app, the node, the relay and the wire format they share are in one repository.</p>
       </header>
-      <ul class="tree">
-        <li><a href={`${SITE.github}/tree/main/cantor`}>cantor/</a><span>The Android app: the field, the lenses, the player</span></li>
-        <li><a href={`${SITE.github}/tree/main/node`}>node/</a><span>The node, in Rust: models, generation, your library</span></li>
-        <li><a href={`${SITE.github}/tree/main/relay`}>relay/</a><span>The relay: a Cloudflare Worker that splices sealed bytes</span></li>
-        <li><a href={`${SITE.github}/tree/main/protocol`}>protocol/</a><span>The wire contract, its fixtures, and its generated types</span></li>
-        <li><a href={`${SITE.github}/tree/main/contributing`}>contributing/</a><span>How it fits together, and how to change it</span></li>
+      <div class="trace" data-trace>
+        <figure class="listing">
+          <figcaption>
+            <a href={`${SITE.github}/blob/main/${FACE_FILE}#L${quoted[0].n}-L${quoted[quoted.length - 1].n}`}>{FACE_FILE}</a>
+            <span>Every circle on this page</span>
+          </figcaption>
+          <pre>{quoted.map((l) => (
+            <span class:list={['ln', { live: l.note }]}><b>{l.n}</b>{l.text}{l.note && (l.text.length > 56 ? <>{'\n'}<em class="below" data-note={l.note}></em></> : <em data-note={l.note}></em>)}{'\n'}</span>
+          ))}</pre>
+        </figure>
+        <figure class="drawing">
+          <canvas aria-hidden="true"></canvas>
+          <figcaption><i data-trace-title>“{HERO}”</i></figcaption>
+        </figure>
+      </div>
+      <ul class="repo">
+        {TREE.map((t) => (
+          <li>
+            <a href={`${SITE.github}/tree/main/${t.dir}`}>{t.dir}/</a>
+            <span>{t.what}</span>
+            {t.langs.length > 0 && <small>{t.langs.join(' · ')}</small>}
+          </li>
+        ))}
       </ul>
     </div>
   </section>
@@ -253,7 +329,9 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
 
 <script>
   import Lenis from 'lenis';
-  import { startFieldStage } from '../scripts/field-stage';
+  import { startFieldStage, BEATS } from '../scripts/field-stage';
+  import { startPrivacyStage } from '../scripts/privacy-stage';
+  import { startSourceStage } from '../scripts/source-stage';
 
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const clamp = (v: number) => Math.min(1, Math.max(0, v));
@@ -285,55 +363,55 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
   const field = document.querySelector<HTMLElement>('[data-stage="field"]')!;
   const night = field.querySelector<HTMLElement>('[data-night]')!;
   const bar = field.querySelector<HTMLElement>('[data-field-progress]')!;
-  startFieldStage(field.querySelector('[data-field-canvas]')!, field, 'an empty ballroom', (p) => {
-    beats(field, p);
-    night.style.opacity = String(clamp((p - 0.93) / 0.07));
-    bar.style.transform = `scaleX(${p})`;
-  });
+  const specimen = field.querySelector<HTMLElement>('[data-specimen]')!;
+  const specLines = [...specimen.querySelectorAll<HTMLElement>('[data-spec]')];
+  const thumbs = [...specimen.querySelectorAll<HTMLButtonElement>('[data-thumb]')];
+  const axisButtons = [...field.querySelectorAll<HTMLButtonElement>('[data-axis]')];
+  const lensButtons = [...field.querySelectorAll<HTMLButtonElement>('[data-lens]')];
+  const stage = startFieldStage(
+    field.querySelector('[data-field-canvas]')!,
+    field,
+    'an empty ballroom',
+    (p) => {
+      beats(field, p);
+      // The page goes to ink as the dive ends.
+      const dusk = BEATS.dive[1] - 0.04;
+      night.style.opacity = String(clamp((p - dusk) / (1 - dusk)));
+      bar.style.transform = `scaleX(${p})`;
+      specimen.classList.toggle('strip-on', p > BEATS.shape - 0.01);
+    },
+    (mode) => {
+      axisButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(i === mode.axis)));
+      lensButtons.forEach((b, i) => b.setAttribute('aria-pressed', String(i === mode.lens)));
+    },
+    ({ index, from, t }) => {
+      // The card under the shape names whichever song it is becoming.
+      // One name leaves before the next arrives, so they never overprint.
+      const settled = t >= 1 || from === index;
+      const out = settled ? 1 : Math.min(1, t * 2);
+      const inn = settled ? 1 : Math.max(0, t * 2 - 1);
+      specLines.forEach((el, k) => {
+        el.style.opacity = String(k === index ? inn : k === from ? 1 - out : 0);
+        el.style.translate = `0 ${k === index ? (1 - inn) * 8 : k === from ? -out * 8 : 0}px`;
+      });
+      thumbs.forEach((el, k) => el.setAttribute('aria-pressed', String(k === (t < 0.5 && !settled ? from : index))));
+    },
+  );
+  thumbs.forEach((b, i) => b.addEventListener('click', () => stage.setSpecimen(i)));
+  axisButtons.forEach((b, i) => b.addEventListener('click', () => stage.setAxis(i)));
+  lensButtons.forEach((b, i) => b.addEventListener('click', () => stage.setLens(i)));
 
-  // ---- privacy: the prompt dissolves into what the relay sees
+  // ---- privacy and sharing
   const privacy = document.querySelector<HTMLElement>('[data-stage="privacy"]')!;
-  const cipher = privacy.querySelector<HTMLElement>('[data-cipher]')!;
-  const label = privacy.querySelector<HTMLElement>('[data-cipher-label]')!;
-  const text = cipher.dataset.cipher!;
-  cipher.textContent = '';
-  const HEX = '0123456789abcdef';
-  const letters = [...text].map((ch, i) => {
-    const span = document.createElement('span');
-    span.textContent = ch;
-    span.dataset.plain = ch;
-    span.dataset.sealed = ch === ' ' ? ' ' : HEX[(i * 7 + ch.charCodeAt(0) * 13) % 16];
-    cipher.appendChild(span);
-    return span;
-  });
-  const sealAt = (p: number) => clamp((p - 0.46) / 0.26);
-
-  // ---- sharing: people pair, one after another
-  const network = document.querySelector<HTMLElement>('[data-stage="network"]')!;
-  const steps = [...network.querySelectorAll<HTMLElement | SVGElement>('[data-step]')];
-  const stepAt = (p: number) => (p < 0.08 ? 0 : p < 0.72 ? 1 + Math.floor(((p - 0.08) / 0.64) * 4) : 5);
-
+  startPrivacyStage(privacy, () => progressOf(privacy));
   const frame = () => {
     requestAnimationFrame(frame);
-    const pp = progressOf(privacy);
-    beats(privacy, pp);
-    const k = Math.round(sealAt(pp) * letters.length);
-    letters.forEach((s, i) => {
-      const sealed = i < k;
-      if (s.classList.contains('sealed') !== sealed) {
-        s.classList.toggle('sealed', sealed);
-        s.textContent = sealed ? s.dataset.sealed! : s.dataset.plain!;
-      }
-    });
-    label.textContent = k >= letters.length * 0.5 ? '08 · What the relay sees' : '08 · What your node reads';
-
-    const np = progressOf(network);
-    beats(network, np);
-    const step = stepAt(np);
-    for (const el of steps) el.classList.toggle('on', Number(el.dataset.step) <= step);
-    network.classList.toggle('apart', np > 0.42);
+    beats(privacy, progressOf(privacy));
   };
   requestAnimationFrame(frame);
+
+  // ---- the source: its own function, drawing
+  startSourceStage(document.querySelector<HTMLElement>('#source')!);
 
   // ---- the bar and the rail
   const nav = document.querySelector<HTMLElement>('[data-nav]')!;
@@ -344,9 +422,9 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
       return r.top < 32 && r.bottom > 32;
     };
     const fieldR = field.getBoundingClientRect();
-    const dark = onInk(privacy) || onInk(document.getElementById('begin')!) || (fieldR.bottom > 32 && progressOf(field) > 0.95);
+    const dark = onInk(privacy) || onInk(document.getElementById('begin')!) || (fieldR.bottom > 32 && progressOf(field) > BEATS.dive[1] - 0.02);
     nav.classList.toggle('on-ink', dark);
-    nav.classList.toggle('solid', !dark && !(fieldR.top <= 0 && fieldR.bottom > innerHeight) && !onInk(network));
+    nav.classList.toggle('solid', !dark && !(fieldR.top <= 0 && fieldR.bottom > innerHeight));
     let current = links[0];
     for (const a of links) {
       const target = document.getElementById(a.dataset.chapter!);
@@ -364,7 +442,8 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
 </style>
 
 <style>
-  .inner { max-width: 1240px; margin: 0 auto; }
+  /* Clear of the chapter rail on the right. */
+  .inner { max-width: min(1240px, calc(100vw - 320px)); margin: 0 auto; }
   section { padding: 160px 40px; }
   h2 { font: 400 clamp(40px, 4.6vw, 68px) / 1.02 var(--display); margin: 0; letter-spacing: -0.5px; text-wrap: balance; }
   p { font-size: 19px; line-height: 31px; margin: 0; text-wrap: pretty; }
@@ -373,10 +452,8 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
   code { font-size: 0.86em; }
   .split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 60px; align-items: end; margin-bottom: 88px; }
   .split p { color: var(--muted); max-width: 46ch; }
-  .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; margin: 0; border-top: 1px solid var(--ink); }
-  .facts div { padding-top: 22px; }
-  .facts dt { font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; }
-  .facts dd { margin: 0; font-size: 16.5px; line-height: 26px; color: var(--muted); max-width: 34ch; }
+  .btn { justify-self: start; font: 400 24px/1 var(--display); padding: 20px 30px; background: var(--ink); color: var(--paper); text-decoration: none; transition: opacity 0.2s linear; white-space: nowrap; }
+  .btn:hover { opacity: 0.85; }
 
   /* ---- the bar and the rail ----------------------------------------------- */
   .top { position: fixed; z-index: 6; inset: 0 0 auto; height: 64px; display: flex; justify-content: space-between; align-items: center; padding: 0 40px;
@@ -402,82 +479,118 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
   /* ---- a pinned stage --------------------------------------------------------- */
   .stage { padding: 0; position: relative; }
   .pin { position: sticky; top: 0; height: 100svh; overflow: hidden; }
-  .field { height: 820vh; }
-  .privacy { height: 360vh; }
-  .network { height: 380vh; }
+  /* The stages' heights come from their scenes (field-stage.ts, privacy-stage.ts). */
+  /* Where "Sharing" lands: the household's scene, set inline from the same numbers. */
+  .anchor { position: absolute; }
   .canvas { position: absolute; inset: 0; width: 100%; height: 100%; color: var(--ink); }
   .beat { position: absolute; will-change: opacity, translate; }
-  .words { left: 40px; top: 50%; translate: 0 0; margin-top: -150px; width: min(30vw, 440px); min-width: 340px; }
+  .words { left: max(40px, 7vw); top: 50%; translate: 0 0; margin-top: -160px; width: min(28vw, 430px); min-width: 330px; }
   .words p { color: var(--muted); margin-top: 26px; max-width: 34ch; }
   .words h2 { max-width: 12ch; }
 
-  .hero-beat { left: 40px; bottom: 48px; }
-  h1 { font: 400 clamp(96px, 15.5vw, 240px) / 0.8 var(--display); margin: 0 0 0 -0.04em; letter-spacing: -0.02em; }
-  .hero-beat p { font: 400 clamp(20px, 1.9vw, 27px) / 1.3 var(--display); color: var(--muted); margin: 28px 0 0; }
-  /* The intro: the title's letters rise one after another, then the line. */
+  /* ---- the hero --------------------------------------------------------------- */
+  .hero-beat { left: max(40px, 7vw); bottom: 56px; }
+  h1 { font: 400 clamp(96px, 14vw, 220px) / 0.8 var(--display); margin: 0 0 0 -0.04em; letter-spacing: -0.02em; }
+  .hero-beat > p { font: 400 clamp(20px, 1.8vw, 26px) / 1.3 var(--display); color: var(--muted); margin: 26px 0 0; }
+  .cta { display: flex; align-items: flex-end; gap: 28px; margin-top: 36px; }
+  .cta .btn { font-size: 20px; padding: 17px 26px; }
+  .cta-node { width: min(480px, 36vw); }
+  .cta-node .lab { margin-bottom: 10px; }
+  .cta-node :global(code) { padding: 14px 16px; font-size: 12.5px; }
+  /* The intro: the title's letters rise one after another, then the rest. */
   h1 span { display: inline-block; animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) both; animation-delay: calc(0.35s + var(--i) * 0.07s); }
-  .rise { animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) 0.9s both; }
-  .hero-card { animation: fade 1s linear 1.4s both; }
+  .hero-beat > p { animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) 0.9s both; }
+  .cta { animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) 1.1s both; }
+  .specimen .spec-lines { animation: fade 1s linear 1.4s both; }
   @keyframes rise { from { opacity: 0; transform: translateY(0.45em); } to { opacity: 1; transform: none; } }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-  @media (prefers-reduced-motion: reduce) { h1 span, .rise, .hero-card { animation: none; } }
+  @media (prefers-reduced-motion: reduce) { h1 span, .hero-beat > p, .cta, .specimen .spec-lines { animation: none; } }
+  .cue { left: 50%; bottom: 26px; transform: translateX(-50%); font: 10px/1 var(--mono); letter-spacing: 2.4px; text-transform: uppercase; color: var(--muted); }
+
+  /* The specimen's card, under the large shape: HERO_AT in field-stage.ts. */
+  .specimen { left: 62vw; top: calc(43svh + min(100vw, 100svh) * 0.27 * 1.12); transform: translateX(-50%); display: grid; justify-items: center; gap: 22px; width: 420px; }
+  .spec-lines { display: grid; }
+  .spec-lines p { grid-area: 1 / 1; display: grid; justify-items: center; gap: 8px; text-align: center; }
+  .spec-lines i { font: italic 400 21px/1.2 var(--display); }
+  .spec-lines span { font: 10px/1.4 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); }
+  .strip { list-style: none; margin: 0; padding: 0; display: flex; gap: 6px; }
+  .strip button { background: none; border: 0; padding: 4px; cursor: pointer; }
+  .strip svg { width: 22px; height: 22px; display: block; }
+  .strip button:hover path { stroke: var(--ink); }
+  .strip path { fill: none; stroke: var(--faint); stroke-width: 1px; vector-effect: non-scaling-stroke; transition: stroke 0.3s linear, fill 0.3s linear; }
+  .strip button[aria-pressed='true'] path { stroke: var(--ink); fill: var(--ink); }
+
   .tip { position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none; display: grid; gap: 6px; padding: 10px 12px; background: var(--paper); border: 1px solid var(--ink); }
   .tip[hidden] { display: none; }
   .tip i { font: italic 400 16px/1.2 var(--display); }
   .tip span { font: 10px/1 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
-  .hero-card { right: 120px; bottom: 52px; display: grid; justify-items: end; gap: 7px; text-align: right;
-    font: 10px/1.4 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); }
-  .hero-card i { font: italic 400 19px/1.2 var(--display); letter-spacing: 0; text-transform: none; color: var(--ink); }
-  .cue { left: 50%; bottom: 30px; transform: translateX(-50%); font: 10px/1 var(--mono); letter-spacing: 2.4px; text-transform: uppercase; color: var(--muted); }
   .night { position: absolute; inset: 0; background: var(--ink); opacity: 0; pointer-events: none; }
   .progress { position: absolute; left: 40px; right: 40px; bottom: 18px; height: 1px; background: var(--line); }
   .progress i { position: absolute; inset: 0; background: var(--ink); transform-origin: left; transform: scaleX(0); }
   .dive-words h2, .dive-words .lab { color: #fff; }
   .dive-words { mix-blend-mode: difference; }
 
-  .legend { list-style: none; padding: 0; margin: 36px 0 0; display: grid; gap: 16px;
-    font: 10.5px/1 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--muted); }
-  .legend li { display: flex; align-items: center; gap: 12px; }
-  .legend svg { width: 20px; height: 20px; }
-  .l-remote { fill: none; stroke: var(--faint); stroke-width: 1px; vector-effect: non-scaling-stroke; }
-  .l-cached { fill: none; stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
-  .l-down { fill: var(--ink); stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+  /* The map's own controls: they follow its tour, and take it over when pressed. */
+  .controls { margin-top: 40px; display: grid; gap: 14px; }
+  .controls div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; }
+  .controls span { width: 82px; font: 10px/1 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--faint); }
+  .controls button { font: 10.5px/1 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); background: none; border: 0; padding: 6px 0 5px; cursor: pointer;
+    border-bottom: 1px solid transparent; transition: color 0.3s linear, border-color 0.3s linear; }
+  .controls button:hover { color: var(--ink); }
+  .controls button[aria-pressed='true'] { color: var(--ink); border-bottom-color: var(--ink); }
 
-  /* ---- privacy ---------------------------------------------------------------- */
+  /* ---- privacy: the twelve words ------------------------------------------- */
   .privacy { background: var(--paper); }
-  .phrase { right: 12vw; top: 50%; translate: 0 0; margin-top: -120px; list-style: none; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 30px 56px; }
-  .phrase li { font: 400 clamp(22px, 2.2vw, 32px) / 1 var(--display); display: grid; gap: 10px; }
-  .phrase span { font: 10px/1 var(--mono); letter-spacing: 1.6px; color: var(--muted); }
-  .cipher { right: 8vw; top: 50%; width: 44vw; margin-top: -1.2em; font: 400 clamp(34px, 4vw, 60px) / 1.15 var(--display); letter-spacing: -0.2px; }
-  .cipher :global(span.sealed) { font-family: var(--mono); color: var(--muted); letter-spacing: 0; }
-  .facts-beat { left: 40px; right: 40px; top: 50%; margin-top: -70px; }
-  .facts-beat .facts { max-width: 1240px; margin: 0 auto; }
+  .phrase { left: calc(max(40px, 7vw) + 400px); right: 170px; top: 50%; transform: translateY(-50%); margin: 0; display: grid; gap: 28px; }
+  .phrase canvas { width: 100%; height: min(52svh, 30vw); display: block; }
+  .phrase script { display: none; }
+  .phrase figcaption { font: 10px/1.6 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); border-top: 1px solid var(--line); padding-top: 18px; max-width: 70ch; }
 
-  /* ---- sharing ---------------------------------------------------------------- */
-  .net { position: absolute; right: 7vw; top: 50%; translate: 0 -50%; width: 54vw; aspect-ratio: 1.7 / 1; margin: 0; }
-  .net .wires { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
-  .net .wires line { stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-dasharray: 0 9; vector-effect: non-scaling-stroke; animation: flow 1.8s linear infinite;
-    opacity: 0; transition: opacity 0.5s linear; }
-  .net .wires line.on { opacity: 1; }
-  @keyframes flow { to { stroke-dashoffset: -9; } }
-  .node, .person { position: absolute; translate: -50% -50%; scale: 0.85; display: grid; justify-items: center; gap: 12px; background: var(--paper); padding: 10px;
-    opacity: 0; transition: opacity 0.5s linear, scale 0.5s cubic-bezier(.2,.7,.2,1); }
-  .node.on, .person.on { opacity: 1; scale: 1; }
-  .node :global(svg) { width: 64px; height: 64px; }
-  .node.big :global(svg) { width: 112px; height: 112px; }
-  .person > :global(svg.phone) { width: 52px; height: 52px; }
-  .node span, .person span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
-  .node.big span { color: var(--ink); }
+  /* ---- privacy: the wire ------------------------------------------------------ */
+  .wire { left: calc(max(40px, 7vw) + 360px); right: 150px; top: 15svh; bottom: 13svh; margin: 0; }
+  .wire canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .end { position: absolute; translate: -50% -50%; display: grid; justify-items: center; gap: 12px; transition: opacity 0.6s linear, scale 0.6s cubic-bezier(.2,.7,.2,1); }
+  .end > span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); white-space: nowrap; }
+  .end :global(.device.phone) { width: 44px; }
+  .end :global(.device.laptop) { width: 92px; }
+  .end :global(.device.desktop) { width: 124px; }
+  .end :global(.device.cloud) { width: 150px; }
+  .end[data-end='desktop'] > span { color: var(--ink); }
+  .end[data-step='1'], .end[data-step='2'] { opacity: 0; scale: 0.85; }
+  .wire.household .end[data-step='1'], .wire.roaming .end[data-step='2'] { opacity: 1; scale: 1; }
   .person .own { width: 66px; height: 22px; opacity: 0; transition: opacity 0.6s linear; }
-  .network.apart .person.on .own { opacity: 1; }
+  .wire.household .person .own { opacity: 1; }
   .person .own path { fill: none; stroke: var(--ink); stroke-width: 1px; vector-effect: non-scaling-stroke; }
-  @media (prefers-reduced-motion: reduce) { .net .wires line { animation: none; } }
+  .say { position: absolute; top: 17%; display: grid; gap: 10px; width: 28%; transition: opacity 0.5s linear; }
+  .say span { font: 10px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); }
+  .say i { font: italic 400 clamp(18px, 1.6vw, 24px) / 1.25 var(--display); min-height: 2.5em; }
+  .say-plain i.typing::after { content: '▍'; font-style: normal; margin-left: 2px; }
+  .say-plain { left: 0; }
+  .say-read { right: 0; text-align: right; justify-items: end; }
+  .say-sealed { left: 50%; translate: -50% 0; width: 16%; min-width: 150px; text-align: center; justify-items: center; background: var(--paper); padding: 10px 0; }
+  .say-sealed code { font: 13px/1.5 var(--mono); word-break: break-all; color: var(--ink); min-height: 3em; }
+  .wire.household .say { opacity: 0; }
 
   /* ---- the source ------------------------------------------------------------- */
-  .tree { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--ink); }
-  .tree li { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 24px; align-items: baseline; padding: 20px 0; border-bottom: 1px solid var(--line); }
-  .tree a { font: 15px/1 var(--mono); text-underline-offset: 5px; text-decoration-thickness: 1px; }
-  .tree span { font-size: 17px; color: var(--muted); }
+  .trace { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); border-top: 1px solid var(--ink); border-bottom: 1px solid var(--line); }
+  .listing { margin: 0; padding: 28px 40px 32px 0; border-right: 1px solid var(--line); min-width: 0; }
+  .listing figcaption { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 26px; }
+  .listing figcaption a { font: 12px/1 var(--mono); text-underline-offset: 4px; text-decoration-thickness: 1px; }
+  .listing figcaption span { font: 10px/1 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); }
+  .listing pre { margin: 0; font: 12.5px/1.9 var(--mono); color: var(--muted); overflow-x: auto; }
+  .listing pre b { display: inline-block; width: 3.2em; color: var(--faint); font-weight: 400; user-select: none; }
+  .listing pre .live { color: var(--ink); }
+  .listing pre em { font-style: normal; color: var(--muted); margin-left: 1.2em; white-space: pre; }
+  /* A long line's value goes on the line under it, so nothing runs off. */
+  .listing pre em.below { margin-left: 3.2em; }
+  .drawing { margin: 0; display: grid; grid-template-rows: 1fr auto; justify-items: center; padding: 28px 0 28px 40px; }
+  .drawing canvas { width: 100%; height: 100%; min-height: 380px; display: block; }
+  .drawing i { font: italic 400 21px/1.2 var(--display); }
+  .repo { list-style: none; margin: 72px 0 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 32px; }
+  .repo li { display: grid; gap: 12px; align-content: start; }
+  .repo a { font: 14px/1 var(--mono); text-underline-offset: 5px; text-decoration-thickness: 1px; }
+  .repo span { font-size: 15px; line-height: 23px; color: var(--muted); }
+  .repo small { font: 9.5px/1 var(--mono); letter-spacing: 1.4px; text-transform: uppercase; color: var(--faint); }
 
   /* ---- begin ------------------------------------------------------------------ */
   .begin h2 { font-size: clamp(64px, 8vw, 128px); line-height: 0.9; letter-spacing: -1px; margin-bottom: 80px; }
@@ -485,8 +598,6 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
   .side { padding: 28px 48px 8px 0; display: grid; grid-template-columns: minmax(0, 1fr); align-content: start; gap: 22px; min-width: 0; }
   .side + .side { padding-left: 48px; border-left: 1px solid var(--line); }
   .side .lab { margin-bottom: 0; }
-  .btn { justify-self: start; font: 400 24px/1 var(--display); padding: 20px 30px; background: var(--ink); color: var(--paper); text-decoration: none; transition: opacity 0.2s linear; }
-  .btn:hover { opacity: 0.85; }
   .side p { font-size: 15.5px; line-height: 24px; color: var(--muted); }
   .side code { font-size: 13.5px; color: var(--ink); }
   .needs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 48px; margin: 72px 0 0; }
@@ -498,8 +609,15 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
   footer a, footer span span { margin-left: 24px; text-decoration: none; }
   footer a:hover { color: var(--ink); }
 
+  @media (max-width: 1100px) {
+    .trace { grid-template-columns: minmax(0, 1fr); }
+    .listing { padding-right: 0; border-right: 0; border-bottom: 1px solid var(--line); }
+    .drawing { padding-left: 0; }
+    .repo { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  }
   @media (max-width: 900px) {
     section { padding: 110px 22px; }
+    .inner { max-width: none; }
     .stage { padding: 0; }
     .top { padding: 0 22px; }
     .links a { margin-left: 18px; }
@@ -508,21 +626,29 @@ const importedRecipe = { seed: metadataSeed('Puerto', 'Marisol Vega'), id: 'devi
     .words { left: 22px; right: 22px; top: 84px; margin-top: 0; width: auto; min-width: 0; }
     .words h2 { font-size: 36px; }
     .words p { font-size: 16px; line-height: 25px; margin-top: 14px; }
-    .hero-beat { left: 22px; bottom: 40px; }
-    .hero-card, .cue { display: none; }
-    .legend { grid-template-columns: 1fr 1fr; gap: 12px 16px; margin-top: 22px; font-size: 9.5px; }
+    .controls { margin-top: 18px; gap: 8px; }
+    .hero-beat { left: 22px; right: 22px; bottom: 40px; }
+    .cta { flex-direction: column; align-items: stretch; gap: 18px; }
+    .cta .btn { text-align: center; }
+    .cta-node { width: auto; }
+    .specimen { left: 50vw; top: calc(25svh + min(100vw, 100svh) * 0.25 * 1.1); width: 90vw; gap: 14px; transition: top 0.5s cubic-bezier(.2,.7,.2,1); }
+    .specimen.strip-on { top: calc(55svh + min(100vw, 100svh) * 0.25 * 1.1); }
+    .cue { display: none; }
     .progress { left: 22px; right: 22px; }
-    .phrase { left: 22px; right: 22px; top: auto; bottom: 48px; margin: 0; gap: 18px 20px; }
-    .phrase li { font-size: 19px; }
-    .cipher { left: 22px; right: 22px; width: auto; top: auto; bottom: 64px; margin: 0; font-size: 30px; }
-    .facts-beat { left: 22px; right: 22px; top: 84px; margin-top: 0; }
-    .facts, .split, .two, .needs { grid-template-columns: minmax(0, 1fr); gap: 28px; }
-    .net { left: 4vw; right: 4vw; width: auto; top: auto; bottom: 40px; translate: 0 0; aspect-ratio: 1 / 1.05; }
-    .node.big :global(svg) { width: 72px; height: 72px; }
-    .node :global(svg) { width: 44px; height: 44px; }
-    .person > :global(svg.phone) { width: 34px; height: 34px; }
+    .phrase { left: 22px; right: 22px; top: auto; bottom: 7svh; transform: none; gap: 16px; }
+    .phrase canvas { height: 34svh; }
+    .end > span { white-space: normal; text-align: center; width: 76px; font-size: 9px; letter-spacing: 1.2px; line-height: 1.4; }
+    .wire { left: 22px; right: 22px; top: 46svh; bottom: 8svh; }
+    .say { display: none; }
+    .end :global(.device.phone) { width: 24px; }
+    .end :global(.device.laptop) { width: 52px; }
+    .end :global(.device.desktop) { width: 66px; }
+    .end :global(.device.cloud) { width: 80px; }
     .person .own { display: none; }
-    .tree li { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+          .listing pre { font-size: 11.5px; }
+    .listing figcaption span { display: none; }
+    .drawing canvas { min-height: 300px; }
+    .repo { grid-template-columns: minmax(0, 1fr); gap: 24px; margin-top: 48px; }
     .side { padding-right: 0; }
     .side + .side { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); margin-top: 28px; }
     .begin h2 { margin-bottom: 48px; }

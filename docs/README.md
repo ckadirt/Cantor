@@ -52,7 +52,7 @@ for that recipe. Do not copy the geometry here; import it.
 | --- | --- | --- |
 | `art/Seal.astro` | the seal, at mark depth (2) or player depth (3) | build time, SVG |
 | `art/Face.astro` | the circle | build time, SVG |
-| `art/Station.astro`, `art/Phone.astro` | a node's and a phone's marks | build time, SVG |
+| `art/Device.astro` | a phone, laptop, desktop or the relay's cloud, its screen carrying the app's mark for it | build time, SVG |
 | `art/Marbling.astro` | the marbling, still or `live` | in the browser, canvas |
 
 Starlight's own pieces that are replaced live in `components/starlight/`:

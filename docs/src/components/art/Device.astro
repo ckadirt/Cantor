@@ -1,0 +1,79 @@
+---
+/**
+ * A device as people know it, drawn in hairline: a phone, a laptop, a desktop
+ * with its tower, the relay as a cloud. A phone's screen carries the phone's
+ * mark and a computer's screen its node's station, the app's own marks for
+ * them (`cantor/src/marks`), so the drawing still says which one it is.
+ */
+import { phoneMark, stationMark } from '../../lib/art';
+
+interface Props {
+  kind: 'phone' | 'laptop' | 'desktop' | 'cloud';
+  /** The key the mark on its screen is drawn from. */
+  publicKey?: string;
+  /** How many models a node's station shows. */
+  models?: number;
+  class?: string;
+}
+const { kind, publicKey = kind, models = 1, class: className } = Astro.props;
+const spokes = kind === 'phone' ? phoneMark(publicKey) : [];
+const station = kind === 'laptop' || kind === 'desktop' ? stationMark(publicKey, models) : null;
+/** Where each kind's screen is, and how large its mark sits there: [cx, cy, r]. */
+const screen = { phone: [30, 49, 11], laptop: [50, 31, 12], desktop: [36, 29, 12], cloud: [0, 0, 0] }[kind];
+const views = { phone: '0 0 60 100', laptop: '0 0 100 72', desktop: '0 0 104 80', cloud: '0 0 120 76' };
+/** A point of a unit mark, placed on the screen. */
+const px = (x: number) => +(screen[0] + x * screen[2]).toFixed(2);
+const py = (y: number) => +(screen[1] + y * screen[2]).toFixed(2);
+---
+<svg class:list={['device', kind, className]} viewBox={views[kind]} aria-hidden="true">
+  <g class="body">
+    {kind === 'phone' && (
+      <>
+        <rect x="8" y="3" width="44" height="94" rx="8" />
+        <path d="M24 9H36" />
+        <rect x="12.5" y="15" width="35" height="68" rx="1.5" class="screen" />
+        <circle cx="30" cy="90" r="2.2" />
+      </>
+    )}
+    {kind === 'laptop' && (
+      <>
+        <rect x="15" y="6" width="70" height="50" rx="3" />
+        <rect x="20" y="11" width="60" height="40" rx="1" class="screen" />
+        <path d="M4 60H96L91 67H9Z" />
+        <path d="M43 63H57" />
+      </>
+    )}
+    {kind === 'desktop' && (
+      <>
+        <rect x="3" y="6" width="66" height="46" rx="3" />
+        <rect x="7.5" y="10.5" width="57" height="37" rx="1" class="screen" />
+        <path d="M31 52L29 64H43L41 52M22 66H50" />
+        <rect x="76" y="10" width="25" height="58" rx="2.5" />
+        <path d="M81 17H96M81 21H96M81 25H96" />
+        <circle cx="88.5" cy="48" r="8" />
+        <path d="M88.5 40.5C92 44 92 52 88.5 55.5M81 48C84.5 44.5 92.5 44.5 96 48" class="fan" />
+        <circle cx="88.5" cy="48" r="1.4" />
+      </>
+    )}
+    {kind === 'cloud' && (
+      <path d="M30 66C17 66 8 58 8 47C8 36 17 29 28 30C30 17 41 9 55 9C68 9 78 17 81 28C83 27.5 85 27 87 27C101 27 112 37 112 48C112 58 103 66 91 66Z" />
+    )}
+  </g>
+  {spokes.map((s) => <line class="mark" x1={px(s.x1)} y1={py(s.y1)} x2={px(s.x2)} y2={py(s.y2)} />)}
+  {kind === 'phone' && <circle class="mark-dot" cx={screen[0]} cy={screen[1]} r="1.1" />}
+  {station && (
+    <>
+      <path class="mark" d={station.outline.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, (_, x, y) => `${px(+x)} ${py(+y)}`)} />
+      {station.dots.map((d) => <circle class="mark-dot" cx={px(d.x)} cy={py(d.y)} r="1.1" />)}
+    </>
+  )}
+</svg>
+
+<style>
+  .device { display: block; overflow: visible; }
+  .body :global(*) { fill: none; stroke: currentColor; stroke-width: 1.3px; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+  .body .screen { stroke: var(--faint, currentColor); }
+  .body .fan { stroke: var(--muted, currentColor); }
+  .mark { fill: none; stroke: currentColor; stroke-width: 1.1px; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+  .mark-dot { fill: currentColor; }
+</style>

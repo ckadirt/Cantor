@@ -1,12 +1,13 @@
 /**
- * The landing's field stage: one canvas, driven by how far the stage has been
- * scrolled. A song's face, large; it flies to its place as the rest of the
- * library arrives from different depths; the inks say where each song is;
- * then every mark changes lens, circle to seal to marbling, as the app's
- * picker does; then the camera falls into the first song.
+ * The landing's field stage: one canvas. The library floats round the page
+ * while one song's shape stands large, morphing from song to song; the
+ * floating songs gather into the map, which then plays on its own —
+ * regathering by month, playlist and artist, changing lens, its inks filling
+ * as songs come down — until the camera falls into the first song.
  *
- * Every shape is the app's geometry (cantor/src/lenses). The scroll is the
- * clock, so nothing here plays on its own except the hero's slow breath.
+ * Every shape is the app's geometry (cantor/src/lenses). The scroll only says
+ * which scene is showing; everything inside a scene plays on time, so the
+ * page can be scrolled on at any moment. Only the final dive is scrubbed.
  */
 import { FACE_MAX_EXTENT, faceClockPoints, facePoints, mulberry32 } from '../../../cantor/src/lenses/face';
 import { SEAL_FILLED_GROW, SEAL_KNOBS, sealModel } from '../../../cantor/src/lenses/seal';
@@ -20,7 +21,7 @@ import {
   type MarbleOp,
   type MarbleSurface,
 } from '../../../cantor/src/lenses/marble';
-import { stageMap, type StageMark } from '../lib/library';
+import { sampleLibrary, stageMap, type SampleSong, type StageAxis, type StageGroup } from '../lib/library';
 import { NAME_LENS_SPINDLE_RATIO } from '../lib/marks';
 
 const clamp = (v: number, a = 0, b = 1) => Math.min(b, Math.max(a, v));
@@ -28,42 +29,91 @@ const span = (p: number, a: number, b: number) => clamp((p - a) / (b - a));
 const ease = (t: number) => (t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2);
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
+/**
+ * How much scroll each scene is given, in screen heights. Inside a scene the
+ * motion runs on time, so a scene only needs room to be read in; the dive is
+ * the one the scroll scrubs, so it gets the most.
+ */
+const SCENES_VH = { hero: 25, shape: 90, map: 90, dive: 60, rest: 10 } as const;
+/** The stage's scroll run: its height is this plus the screen it is pinned in. */
+export const FIELD_RUN_VH = Object.values(SCENES_VH).reduce((a, b) => a + b, 0);
+const at = (vh: number) => vh / FIELD_RUN_VH;
+
 /** The windows of the story, in stage progress. */
 export const BEATS = {
-  heroFly: [0.05, 0.2],
-  arrive: [0.08, 0.3],
-  labels: [0.27, 0.33],
-  inks: [0.3, 0.38],
-  seal: [0.45, 0.57],
-  marble: [0.63, 0.75],
-  dive: [0.84, 0.97],
+  /** The first beat's words arrive (a phone moves the shape down for them). */
+  shape: at(SCENES_VH.hero),
+  /** From here the library is a map; before it, it floats. */
+  gather: at(SCENES_VH.hero + SCENES_VH.shape),
+  dive: [at(SCENES_VH.hero + SCENES_VH.shape + SCENES_VH.map), at(FIELD_RUN_VH - SCENES_VH.rest)],
 } as const;
 
-type Mark = StageMark & {
-  /** Depth: near marks start further out and larger, and arrive later. */
-  depth: number;
-  from: [number, number];
-  arriveAt: number;
-  /** The face's contour and the seal's dots, in unit face space. */
+/** The songs the large shape morphs through; the first is the one the story follows. */
+export const SPECIMENS = [
+  'an empty ballroom',
+  'rain on a tin roof',
+  'cumbia under the bridge',
+  'a lullaby in D',
+  'two guitars arguing',
+] as const;
+const SPECIMEN_HOLD_MS = 2600;
+const MORPH_MS = 1100;
+const GATHER_MS = 1900;
+
+/**
+ * Where the large shape stands, as fractions of the stage: `y` beside the
+ * title, `then` once the words of the first beat arrive (a phone has no room
+ * beside them). The page's CSS seats the specimen's caption from the same
+ * numbers (`.specimen`).
+ */
+export const HERO_AT = {
+  wide: { x: 0.62, y: 0.43, then: 0.43, r: 0.27 },
+  tall: { x: 0.5, y: 0.25, then: 0.55, r: 0.25 },
+} as const;
+
+export const AXES: readonly StageAxis[] = ['month', 'playlist', 'artist'];
+export const LENSES = ['circle', 'seal', 'marbling'] as const;
+/** The map's own tour: [axis, lens] pairs, each a step its inks can fill on. */
+const TOUR: readonly (readonly [number, number])[] = [
+  [0, 0], [0, 1], [1, 1], [1, 2], [2, 2], [2, 0], [1, 0],
+];
+const HOLD_MS = 3400;
+const MOVE_MS = 1500;
+
+export type Mode = { axis: number; lens: number; step: number };
+
+type Mark = SampleSong & {
+  hero: boolean;
+  /** Where it floats before the map gathers, in screen pixels, and its size there. */
+  idle: { x: number; y: number; r: number };
+  phase: number;
+  delay: number;
+  /** Its place on each axis, in that axis's world units. */
+  pos: Record<StageAxis, { x: number; y: number }>;
+  /** 0 on the node, 1 cached, 2 kept; and the tour step it comes down on, if any. */
+  level: number;
+  fillsAt: number;
+  wave: number;
   contour: { x: number; y: number }[];
+  ring: { x: number; y: number }[];
   clock: { x: number; y: number }[];
   dots: { x: number; y: number }[];
-  /** The marbling: one landed surface per op count, and its ops. */
   ops: MarbleOp[];
   landed: MarbleSurface[];
   reach: number;
-  wave: number;
 };
 
-function prepare(m: StageMark, random: () => number, hero: boolean): Mark {
-  const depth = 0.25 + random() * 0.75;
-  const angle = random() * Math.PI * 2;
-  const far = 1.2 + (1 - depth) * 2.4;
-  const model = sealModel(m.recipe);
+type Axis = { groups: StageGroup[]; box: { x: number; y: number; w: number; h: number }; R: number };
+
+const RING = 120;
+const unit = (pts: readonly { x: number; y: number }[]) => pts.map((p) => ({ x: p.x / FACE_MAX_EXTENT, y: p.y / FACE_MAX_EXTENT }));
+
+function prepare(song: SampleSong, random: () => number, hero: boolean): Mark {
+  const model = sealModel(song.recipe);
   const level = model.levels[SEAL_KNOBS.MARK_DEPTH];
   const dots = level.x.map((x, i) => ({ x, y: level.y[i] }));
-  const ops = marbleIdentityOpsFrom(marbleRandom(m.recipe), MARBLE_KNOBS.MARK_POINTS);
-  if (m.recipe.imported) {
+  const ops = marbleIdentityOpsFrom(marbleRandom(song.recipe), MARBLE_KNOBS.MARK_POINTS);
+  if (song.recipe.imported) {
     // The imported marker in marbling's own form: a clear drop at the centre.
     ops.push({ kind: 'drop', x: 0, y: 0, r: 0.12, ink: false, points: MARBLE_KNOBS.MARK_POINTS });
   }
@@ -73,52 +123,109 @@ function prepare(m: StageMark, random: () => number, hero: boolean): Mark {
     applyMarbleOp(next, op, 1);
     landed.push(next);
   }
+  const base = song.recipe.imported || hero ? 2 : song.ink === 'remote' ? 0 : song.ink === 'cached' ? 1 : 2;
   return {
-    ...m,
-    // The song the camera falls into is one you have kept: solid ink.
-    ink: hero ? 'downloaded' : m.ink,
-    depth,
-    from: [Math.cos(angle) * far, Math.sin(angle) * far],
-    arriveAt: hero ? 0 : BEATS.arrive[0] + (1 - depth) * 0.08 + random() * 0.07,
-    contour: facePoints(m.recipe, 72).map((p) => ({ x: p.x / FACE_MAX_EXTENT, y: p.y / FACE_MAX_EXTENT })),
-    clock: faceClockPoints(m.recipe, dots.length).map((p) => ({ x: p.x / FACE_MAX_EXTENT, y: p.y / FACE_MAX_EXTENT })),
+    ...song,
+    hero,
+    idle: { x: 0, y: 0, r: 0 },
+    phase: random() * Math.PI * 2,
+    delay: random() * 0.45,
+    pos: { month: { x: 0, y: 0 }, playlist: { x: 0, y: 0 }, artist: { x: 0, y: 0 } },
+    level: base,
+    // About a third of what is not kept comes down while the map plays.
+    fillsAt: base < 2 && random() < 0.4 ? 1 + Math.floor(random() * (TOUR.length - 1)) : -1,
+    wave: 0,
+    contour: unit(facePoints(song.recipe, 72)),
+    ring: unit(faceClockPoints(song.recipe, RING)),
+    clock: unit(faceClockPoints(song.recipe, dots.length)),
     dots,
     ops,
     landed,
     reach: Math.max(0.01, surfaceReach(landed[landed.length - 1])),
-    wave: 0,
   };
 }
 
-export function startFieldStage(canvas: HTMLCanvasElement, stage: HTMLElement, heroTitle: string, onProgress: (p: number) => void) {
+export type FieldStage = { setAxis(axis: number): void; setLens(lens: number): void; setSpecimen(index: number): void };
+/** The large shape: the specimen it is becoming, the one it leaves, and how far between. */
+export type Specimen = { index: number; from: number; t: number };
+
+export function startFieldStage(
+  canvas: HTMLCanvasElement,
+  stage: HTMLElement,
+  heroTitle: string,
+  onProgress: (p: number) => void,
+  onMode: (mode: Mode) => void,
+  onSpecimen: (specimen: Specimen) => void,
+): FieldStage {
   const ctx = canvas.getContext('2d')!;
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  let columns = 0;
-  let marks: Mark[] = [];
-  let hero: Mark | undefined;
-  let groups: { label: string; x: number; y: number }[] = [];
-  let box = { x: 0, y: 0, w: 1, h: 1 };
-  let R = 1;
+  const songs = sampleLibrary();
+  const random = mulberry32(0x57a6e);
+  const marks = songs.map((s) => prepare(s, random, s.title === heroTitle));
+  const hero = marks.find((m) => m.hero)!;
+  const specimens = SPECIMENS.map((title) => unit(faceClockPoints(songs.find((s) => s.title === title)!.recipe, RING)));
+  const axes = {} as Record<StageAxis, Axis>;
+  let built = '';
 
-  const build = () => {
-    const wide = innerWidth / innerHeight > 1.15;
-    const want = wide ? 4 : 2;
-    if (want === columns) return;
-    columns = want;
-    const map = stageMap(columns);
-    const random = mulberry32(0x57a6e);
-    marks = map.marks.map((m) => prepare(m, random, m.title === heroTitle));
-    hero = marks.find((m) => m.title === heroTitle);
-    groups = map.groups;
-    box = map.box;
-    R = map.markRadius;
-    const minX = box.x;
-    for (const m of marks) m.wave = (m.x - minX) / box.w;
+  /** Seat every axis for this screen: as many columns as fill the map's area best. */
+  const build = (w: number, h: number, area: { w: number; h: number }, wide: boolean, dpr: number) => {
+    const key = `${w}x${h}`;
+    if (key === built) return;
+    built = key;
+    for (const axis of AXES) {
+      let best: { map: ReturnType<typeof stageMap>; fit: number } | null = null;
+      for (const columns of wide ? [3, 4, 5] : [2, 3]) {
+        const map = stageMap(columns, axis, songs);
+        const fit = Math.min(area.w / (map.box.w + map.markRadius * 4), area.h / (map.box.h + map.markRadius * 4));
+        if (!best || fit > best.fit) best = { map, fit };
+      }
+      const map = best!.map;
+      axes[axis] = { groups: map.groups, box: map.box, R: map.markRadius };
+      for (const m of map.marks) {
+        const mark = marks.find((k) => k.entity.key === m.entity.key);
+        if (mark) mark.pos[axis] = { x: m.x, y: m.y };
+      }
+      if (axis === 'month') for (const m of marks) m.wave = (m.pos.month.x - map.box.x) / map.box.w;
+    }
+    // Where the library floats before it gathers: anywhere the words and the
+    // large shape are not.
+    const at = wide ? HERO_AT.wide : HERO_AT.tall;
+    const hx = w * at.x;
+    const hy = h * at.then;
+    const hr = Math.min(w, h) * at.r;
+    const keepOut = wide
+      ? [
+          [0, 0.46, 0.52, 1],
+          [0, 0, 1, 0.1],
+          [0.88, 0.3, 1, 0.7],
+          [0.44, 0.68, 0.82, 1],
+          [0, 0.22, 0.34, 0.78],
+        ]
+      : [
+          [0, 0.72, 1, 1],
+          [0, 0, 1, 0.34],
+          [0.05, 0.8, 0.95, 0.92],
+        ];
+    const free = (x: number, y: number) =>
+      Math.hypot(x - hx, y - hy) > hr * 1.25 &&
+      !keepOut.some(([a, b, c, d]) => x > a * w && x < c * w && y > b * h && y < d * h);
+    const place = mulberry32(0x1d1e);
+    for (const m of marks) {
+      if (m.hero) continue;
+      let x = 0;
+      let y = 0;
+      for (let tries = 0; tries < 60; tries += 1) {
+        x = place() * w;
+        y = place() * h;
+        if (free(x, y)) break;
+      }
+      m.idle = { x, y, r: (wide ? 5 : 3.5) * dpr * (0.6 + place() * 1.1) };
+    }
   };
 
   const colours = () => {
     const s = getComputedStyle(stage);
-    return { ink: s.getPropertyValue('--ink').trim(), faint: s.getPropertyValue('--faint').trim(), muted: s.getPropertyValue('--muted').trim(), paper: s.getPropertyValue('--paper').trim() };
+    return { ink: s.getPropertyValue('--ink').trim(), faint: s.getPropertyValue('--faint').trim(), muted: s.getPropertyValue('--muted').trim() };
   };
 
   const progress = () => {
@@ -126,166 +233,257 @@ export function startFieldStage(canvas: HTMLCanvasElement, stage: HTMLElement, h
     return clamp(-r.top / Math.max(1, r.height - innerHeight));
   };
 
-  let last = -1;
-  let breath = 0;
-  const born = performance.now();
-  /** The intro: the hero's contour drawing itself, once, on a linear clock. */
-  let intro = still ? 1 : 0;
+  // ---- the map's own play
+  let tour = 0;
+  let mode: Mode = { axis: 0, lens: 0, step: 0 };
+  let was: Mode = mode;
+  let movedAt = -Infinity;
+  let pausedUntil = 0;
+  let queued: Mode | null = null;
+  const go = (next: Mode, now: number) => {
+    if (next.axis === mode.axis && next.lens === mode.lens && next.step === mode.step) return;
+    if (now - movedAt < MOVE_MS * 1.35 && !still) {
+      queued = next;
+      return;
+    }
+    was = mode;
+    mode = next;
+    movedAt = still ? -Infinity : now;
+    onMode(mode);
+  };
+
+  // ---- the large shape's own play, and the gathering
+  let specimen = { index: 0, from: 0, at: -Infinity };
+  let specimenPausedUntil = 0;
+  const become = (index: number, now: number) => {
+    if (index === specimen.index) return;
+    // A morph cut short leaves from the song it was becoming.
+    specimen = { index, from: specimen.index, at: still ? -Infinity : now };
+  };
+  /** 0 floating, 1 a map; it runs on its own clock towards where the scroll is. */
+  let gathered = 0;
+  let lastNow = performance.now();
+
+  let born = performance.now();
   let pointer: { x: number; y: number } | null = null;
   let named: Mark | null = null;
   const tip = stage.querySelector<HTMLElement>('[data-stage-tip]');
   canvas.parentElement!.addEventListener('pointermove', (e) => {
     const r = canvas.getBoundingClientRect();
     pointer = { x: e.clientX - r.left, y: e.clientY - r.top };
-    last = -1;
   });
-  canvas.parentElement!.addEventListener('pointerleave', () => {
-    pointer = null;
-    last = -1;
-  });
+  canvas.parentElement!.addEventListener('pointerleave', () => (pointer = null));
+
+  let lastP = -1;
   const frame = (now: number) => {
     requestAnimationFrame(frame);
     const r = stage.getBoundingClientRect();
-    if (r.bottom < 0 || r.top > innerHeight) return;
+    if (r.bottom < 0 || r.top > innerHeight) {
+      born = Math.min(born, now - 2000);
+      return;
+    }
     const p = progress();
-    intro = still ? 1 : clamp((now - born - 250) / 1500);
-    breath = still ? 0 : Math.sin(now / 1600) * 0.012 * (1 - span(p, 0, BEATS.heroFly[0]));
-    if (p === last && breath === 0 && intro >= 1) return;
-    last = p;
-    onProgress(p);
-    draw(p);
+    if (p !== lastP) onProgress(p);
+    lastP = p;
+    const dt = Math.min(100, now - lastNow);
+    lastNow = now;
+    const mapped = p >= BEATS.gather;
+    gathered = still ? Number(mapped) : clamp(gathered + (mapped ? dt : -dt) / GATHER_MS);
+
+    // The shape turns from song to song while it stands alone, and comes home
+    // to the one the story follows when the map gathers.
+    if (mapped || gathered > 0) become(0, now);
+    else if (!still && now > specimenPausedUntil && now - born > 2400 && now - specimen.at > SPECIMEN_HOLD_MS) {
+      become((specimen.index + 1) % SPECIMENS.length, now);
+    }
+    onSpecimen({ index: specimen.index, from: specimen.from, t: ease(clamp((now - specimen.at) / MORPH_MS)) });
+
+    // The tour runs while the map is the map; before it, the map rests on its
+    // first step; in the dive, it holds where it is.
+    if (queued && now - movedAt >= MOVE_MS * 1.35) {
+      const q = queued;
+      queued = null;
+      go(q, now);
+    }
+    if (p >= BEATS.dive[0] - 0.02) {
+      // The camera falls into ink: the song it lands in is marbled.
+      if (mode.lens !== 2) go({ ...mode, lens: 2 }, now);
+    } else if (!mapped || gathered < 1) {
+      tour = 0;
+      if (mode.axis || mode.lens || mode.step) go({ axis: 0, lens: 0, step: 0 }, now);
+    } else if (!still && now > pausedUntil && now - movedAt > HOLD_MS) {
+      tour = (tour + 1) % TOUR.length;
+      go({ axis: TOUR[tour][0], lens: TOUR[tour][1], step: tour }, now);
+    }
+    draw(p, now);
   };
 
-  const draw = (p: number) => {
-    build();
+  const draw = (p: number, now: number) => {
     const dpr = Math.min(2, devicePixelRatio || 1);
     const w = Math.round(canvas.clientWidth * dpr);
     const h = Math.round(canvas.clientHeight * dpr);
     if (canvas.width !== w) canvas.width = w;
     if (canvas.height !== h) canvas.height = h;
+    const wide = w / h > 1.15;
+    // The map sits in the right of a wide screen, the bottom of a tall one.
+    const area = wide
+      ? { x: w * 0.38, y: h * 0.13, w: w * 0.5, h: h * 0.76 }
+      : { x: w * 0.04, y: h * 0.44, w: w * 0.92, h: h * 0.5 };
+    build(w, h, area, wide, dpr);
     const c = colours();
     ctx.clearRect(0, 0, w, h);
 
-    // The map sits in the right of a wide screen, the bottom of a tall one.
-    const wide = columns === 4;
-    const area = wide
-      ? { x: w * 0.36, y: h * 0.16, w: w * 0.52, h: h * 0.72 }
-      : { x: w * 0.06, y: h * 0.47, w: w * 0.88, h: h * 0.48 };
-    let scale = Math.min(area.w / (box.w + R * 4), area.h / (box.h + R * 4));
-    let ox = area.x + area.w / 2 - (box.x + box.w / 2) * scale;
-    let oy = area.y + area.h / 2 - (box.y + box.h / 2) * scale;
+    const fit = (axis: StageAxis) => {
+      const a = axes[axis];
+      const scale = Math.min(area.w / (a.box.w + a.R * 4), area.h / (a.box.h + a.R * 4));
+      return {
+        scale,
+        ox: area.x + area.w / 2 - (a.box.x + a.box.w / 2) * scale,
+        oy: area.y + area.h / 2 - (a.box.y + a.box.h / 2) * scale,
+        r: a.R * scale,
+      };
+    };
+    const from = AXES[was.axis];
+    const to = AXES[mode.axis];
+    const fFrom = fit(from);
+    const fTo = fit(to);
+    const moved = clamp((now - movedAt) / MOVE_MS);
+    /** Each mark leaves in a wave across the map, as the app's re-cut does. */
+    const moveOf = (m: Mark) => ease(clamp((moved - m.wave * 0.3) / 0.7));
+    const placed = (m: Mark) => {
+      const t = moveOf(m);
+      const ax = m.pos[from].x * fFrom.scale + fFrom.ox;
+      const ay = m.pos[from].y * fFrom.scale + fFrom.oy;
+      const bx = m.pos[to].x * fTo.scale + fTo.ox;
+      const by = m.pos[to].y * fTo.scale + fTo.oy;
+      // A little arc, so a regathering reads as travel rather than a slide.
+      const bend = Math.sin(Math.PI * t) * 0.12 * (Math.cos(m.phase) > 0 ? 1 : -1);
+      return { x: lerp(ax, bx, t) - (by - ay) * bend, y: lerp(ay, by, t) + (bx - ax) * bend, r: lerp(fFrom.r, fTo.r, t), t };
+    };
 
-    // The dive: the camera falls into the hero until it fills the screen.
+    const at = wide ? HERO_AT.wide : HERO_AT.tall;
+    const intro = still ? 1 : clamp((now - born - 250) / 1500);
+    const breath = still ? 0 : Math.sin(now / 1600) * 0.012 * (1 - gathered);
+    const gather = gathered;
+    const morph = ease(clamp((now - specimen.at) / MORPH_MS));
+
+    // The dive: a camera that falls into the hero until it fills the screen.
     const dive = ease(span(p, ...BEATS.dive));
-    if (hero && dive > 0) {
-      const target = (Math.min(w, h) * 0.42) / (R * 1.15);
-      const z = lerp(scale, target, dive * dive);
-      const hx = hero.x * scale + ox;
-      const hy = hero.y * scale + oy;
-      const cx = lerp(hx, w / 2, dive);
-      const cy = lerp(hy, h / 2, dive);
-      ox = cx - hero.x * z;
-      oy = cy - hero.y * z;
-      scale = z;
-    }
+    const hp = placed(hero);
+    const zoom = lerp(1, (Math.min(w, h) * 0.42) / Math.max(1, hp.r * 1.15), dive * dive);
+    const cx = lerp(hp.x, w / 2, dive);
+    const cy = lerp(hp.y, h / 2, dive);
+    const camera = (x: number, y: number, r: number) => ({ x: (x - hp.x) * zoom + cx, y: (y - hp.y) * zoom + cy, r: r * zoom });
 
-    const rPx = R * scale;
-    const labels = span(p, ...BEATS.labels) * (1 - span(p, BEATS.dive[0], BEATS.dive[0] + 0.04));
+    // Group names, crossfading between the axes as the map regathers.
+    const labels = clamp((gather - 0.5) / 0.5) * (1 - span(p, BEATS.dive[0], BEATS.dive[0] + 0.03));
     if (labels > 0) {
       ctx.fillStyle = c.muted;
-      ctx.globalAlpha = labels;
       ctx.font = `${(wide ? 10 : 9) * dpr}px ui-monospace, Menlo, monospace`;
       ctx.textAlign = 'center';
-      for (const g of groups) ctx.fillText(wide ? spaced(g.label) : g.label, g.x * scale + ox, g.y * scale + oy);
+      const fade = ease(moved);
+      const sets: [StageAxis, ReturnType<typeof fit>, number][] =
+        from === to ? [[to, fTo, 1]] : [[from, fFrom, 1 - fade], [to, fTo, fade]];
+      for (const [axis, f, a] of sets) {
+        if (a <= 0) continue;
+        ctx.globalAlpha = labels * a;
+        for (const g of axes[axis].groups) {
+          const q = camera(g.x * f.scale + f.ox, g.y * f.scale + f.oy, 0);
+          ctx.fillText(spaced(g.label.toUpperCase()), q.x, q.y);
+        }
+      }
       ctx.globalAlpha = 1;
     }
 
-    const inks = span(p, ...BEATS.inks);
-    const toSeal = (m: Mark) => ease(span(p, BEATS.seal[0] + m.wave * 0.05, BEATS.seal[1] - 0.05 + m.wave * 0.05));
-    const toMarble = (m: Mark) => ease(span(p, BEATS.marble[0] + m.wave * 0.05, BEATS.marble[1] - 0.05 + m.wave * 0.05));
+    const levelAt = (m: Mark, step: number) => (m.fillsAt > 0 && step >= m.fillsAt ? Math.min(2, m.level + 1) : m.level);
     const others = 1 - span(p, BEATS.dive[0], BEATS.dive[0] + 0.06);
-
     const seen: { m: Mark; x: number; y: number; r: number }[] = [];
-    for (const m of marks) {
-      const isHero = m === hero;
-      let x = m.x * scale + ox;
-      let y = m.y * scale + oy;
-      let radius = rPx;
-      let alpha = isHero ? 1 : others;
 
-      if (isHero) {
-        // From the middle of the screen, large, to its place in the map.
-        const fly = ease(span(p, ...BEATS.heroFly));
-        const big = Math.min(w, h) * (wide ? 0.3 : 0.26) * (1 + breath);
-        const hx = wide ? w * 0.66 : w * 0.5;
-        const hy = wide ? h * 0.5 : h * 0.4;
-        x = lerp(hx, x, fly);
-        y = lerp(hy, y, fly);
-        radius = lerp(big, rPx, fly);
-      } else {
-        const u = span(p, m.arriveAt, m.arriveAt + 0.12);
-        if (u <= 0) continue;
-        if (!still) {
-          const e = ease(u);
-          const k = (1 - e) * Math.max(w, h) * 0.45;
-          x += m.from[0] * k;
-          y += m.from[1] * k;
-          radius *= lerp(1 + (1 - m.depth) * 4, 1, e);
+    for (const m of marks) {
+      const q = placed(m);
+      let x: number;
+      let y: number;
+      let radius: number;
+      let alpha = m.hero ? 1 : others;
+      let level = lerp(levelAt(m, was.step), levelAt(m, mode.step), q.t);
+      let contour = m.contour;
+      let lensFrom = was.lens;
+      let lensTo = mode.lens;
+      let lensT = q.t;
+
+      if (m.hero) {
+        // Large, beside the title; then it flies to its place in the map.
+        const fly = ease(gather);
+        const big = Math.min(w, h) * at.r * (1 + breath);
+        x = lerp(w * at.x, q.x, fly);
+        y = lerp(h * lerp(at.y, at.then, ease(span(p, 0.015, BEATS.shape))), q.y, fly);
+        radius = lerp(big, q.r, fly);
+        level = lerp(1, level, fly);
+        if (gather < 1 || specimen.index !== 0 || morph < 1) {
+          const a = specimens[specimen.from];
+          const b = specimens[specimen.index];
+          contour = a.map((pa, k) => ({ x: lerp(pa.x, b[k].x, morph), y: lerp(pa.y, b[k].y, morph) }));
         }
-        alpha *= Math.min(1, u * 1.6);
+      } else {
+        // Floating, faint and small; gathered, in its place and its ink.
+        const u = still ? gather : ease(clamp((gather - m.delay) / 0.55));
+        if (u <= 0) {
+          const d = still ? 0 : 1;
+          x = m.idle.x + Math.sin(now / 2600 + m.phase) * 7 * dpr * d;
+          y = m.idle.y + Math.cos(now / 3100 + m.phase * 1.3) * 7 * dpr * d;
+          radius = m.idle.r;
+          level = 0;
+          alpha *= 0.75 * clamp((now - born - 900) / 1200);
+        } else {
+          const ix = m.idle.x + Math.sin(now / 2600 + m.phase) * 7 * dpr;
+          const iy = m.idle.y + Math.cos(now / 3100 + m.phase * 1.3) * 7 * dpr;
+          x = lerp(ix, q.x, u);
+          y = lerp(iy, q.y, u);
+          radius = lerp(m.idle.r, q.r, u);
+          level *= u;
+          alpha *= lerp(0.75, 1, u);
+        }
+      }
+      if (gather < 1) {
+        lensFrom = 0;
+        lensTo = 0;
+        lensT = 1;
       }
       if (alpha <= 0) continue;
-      seen.push({ m, x, y, r: radius });
+      const v = camera(x, y, radius);
+      seen.push({ m, ...v });
 
-      // Ink: everything arrives as a black outline; then the field says where
-      // each song is. Remote fades to grey, kept fills in.
-      const kept = m.ink === 'downloaded' || m.recipe.imported === true;
-      const inkColour = m.ink === 'remote' && !isHero ? mix(c.ink, c.faint, inks) : c.ink;
-      const fill = kept ? inks : 0;
-      const sealT = toSeal(m);
-      const marbleT = toMarble(m);
-      ctx.globalAlpha = alpha;
-
-      if (marbleT > 0) drawMarble(m, x, y, radius, marbleT, inkColour, fill, c.paper);
-      if (marbleT < 1 && sealT > 0) drawSeal(m, x, y, radius, sealT, 1 - marbleT, inkColour, kept ? inks : 0);
-      if (sealT < 1) drawFace(m, x, y, radius, 1 - Math.min(1, sealT * 1.8), inkColour, fill, isHero ? Math.max(1, radius / 60) : 1, dpr, isHero ? intro : 1);
+      // The ink says where a song is: grey on the node, ink once cached,
+      // solid once kept.
+      const colour = mix(c.faint, c.ink, clamp(level));
+      const fill = clamp(level - 1);
+      const weight = m.hero ? Math.max(1, v.r / (60 * dpr)) * dpr : dpr;
+      const draw = (lens: number, amount: number, a: number) => {
+        if (a <= 0.001) return;
+        ctx.globalAlpha = alpha * a;
+        if (lens === 0) drawFace(m, v.x, v.y, v.r, colour, fill, weight, contour, m.hero ? intro * amount : amount);
+        else if (lens === 1) drawSeal(m, v.x, v.y, v.r, amount, colour, fill);
+        else drawMarble(m, v.x, v.y, v.r, amount, colour, fill);
+      };
+      if (lensFrom === lensTo || lensT >= 1) draw(lensTo, 1, 1);
+      else {
+        draw(lensFrom, 1, 1 - lensT);
+        draw(lensTo, lensT, Math.min(1, lensT * 2.5));
+      }
     }
     ctx.globalAlpha = 1;
 
-    // The song the story follows keeps its name in the map, on a hairline.
-    const hs = seen.find((v) => v.m === hero);
-    const follow = span(p, BEATS.heroFly[1] - 0.02, BEATS.heroFly[1] + 0.02) * (1 - span(p, BEATS.seal[0] - 0.04, BEATS.seal[0]));
-    if (hs && follow > 0) {
-      ctx.font = `italic ${15 * dpr}px "CMU Serif", Georgia, serif`;
-      const text = `“${hero!.title}”`;
-      // The label leans away from the nearer edge, so it never leaves the screen.
-      const leftward = hs.x + 46 * dpr + ctx.measureText(text).width > w - 16 * dpr;
-      const lx = leftward ? hs.x - 46 * dpr - ctx.measureText(text).width : hs.x + 46 * dpr;
-      const ly = hs.y - 38 * dpr;
-      ctx.globalAlpha = follow;
-      ctx.strokeStyle = c.ink;
-      ctx.lineWidth = dpr;
-      ctx.beginPath();
-      ctx.moveTo(hs.x + (leftward ? -1 : 1) * hs.r * 1.2, hs.y - hs.r * 1.2);
-      ctx.lineTo(leftward ? lx + ctx.measureText(text).width + 6 * dpr : lx - 6 * dpr, ly + 4 * dpr);
-      ctx.stroke();
-      ctx.fillStyle = c.ink;
-      ctx.textAlign = 'left';
-      ctx.fillText(text, lx, ly);
-      ctx.globalAlpha = 1;
-    }
-
     // Pointing at a song names it, while the map is a map.
     let near: Mark | null = null;
-    if (pointer && p > BEATS.labels[0] && p < BEATS.dive[0]) {
+    if (pointer && gather >= 1 && p < BEATS.dive[0]) {
       const px = pointer.x * dpr;
       const py = pointer.y * dpr;
       let best = Infinity;
-      for (const v of seen) {
-        const d = Math.hypot(v.x - px, v.y - py);
-        if (d < Math.max(v.r * 1.6, 12 * dpr) && d < best) {
+      for (const s of seen) {
+        const d = Math.hypot(s.x - px, s.y - py);
+        if (d < Math.max(s.r * 1.6, 12 * dpr) && d < best) {
           best = d;
-          near = v.m;
+          near = s.m;
         }
       }
     }
@@ -294,10 +492,11 @@ export function startFieldStage(canvas: HTMLCanvasElement, stage: HTMLElement, h
       if (tip) {
         tip.hidden = !near;
         if (near) {
+          const lvl = levelAt(near, mode.step);
           tip.querySelector('i')!.textContent = `“${near.title}”`;
           tip.querySelector('span')!.textContent = near.recipe.imported
             ? `${near.byline} · your own file`
-            : `made with ${near.byline} · ${near.ink === 'remote' ? 'on your node' : near.ink === 'cached' ? 'cached on your phone' : 'kept on your phone'}`;
+            : `made with ${near.byline} · ${lvl === 0 ? 'on your node' : lvl === 1 ? 'cached on your phone' : 'kept on your phone'}`;
         }
       }
       canvas.parentElement!.style.cursor = near ? 'pointer' : '';
@@ -305,23 +504,20 @@ export function startFieldStage(canvas: HTMLCanvasElement, stage: HTMLElement, h
     if (tip && near && pointer) tip.style.translate = `${pointer.x + 18}px ${pointer.y + 14}px`;
   };
 
-  function drawFace(m: Mark, x: number, y: number, r: number, a: number, ink: string, fill: number, weight: number, dpr: number, drawn = 1) {
-    if (a <= 0 || drawn <= 0) return;
-    const prev = ctx.globalAlpha;
-    ctx.globalAlpha = prev * a;
+  function drawFace(m: Mark, x: number, y: number, r: number, ink: string, fill: number, weight: number, contour: { x: number; y: number }[], drawn: number) {
+    if (drawn <= 0) return;
     ctx.beginPath();
     // `drawn` < 1 draws only the start of the contour: the pen still moving.
-    const n = drawn >= 1 ? m.contour.length : Math.max(2, Math.floor(ease(drawn) * m.contour.length));
+    const n = drawn >= 1 ? contour.length : Math.max(2, Math.floor(ease(drawn) * contour.length));
     for (let i = 0; i < n; i += 1) {
-      const p = m.contour[i];
+      const p = contour[i];
       if (i) ctx.lineTo(x + p.x * r, y + p.y * r);
       else ctx.moveTo(x + p.x * r, y + p.y * r);
     }
+    ctx.strokeStyle = ink;
+    ctx.lineWidth = weight;
     if (drawn < 1) {
-      ctx.strokeStyle = ink;
-      ctx.lineWidth = weight * dpr;
       ctx.stroke();
-      ctx.globalAlpha = prev;
       return;
     }
     ctx.closePath();
@@ -331,45 +527,39 @@ export function startFieldStage(canvas: HTMLCanvasElement, stage: HTMLElement, h
       ctx.arc(x, y, s, 0, Math.PI * 2, true);
     }
     if (fill > 0) {
-      ctx.globalAlpha = prev * a * fill;
+      const prev = ctx.globalAlpha;
+      ctx.globalAlpha = prev * fill;
       ctx.fillStyle = ink;
       ctx.fill('evenodd');
-      ctx.globalAlpha = prev * a;
+      ctx.globalAlpha = prev;
     }
-    ctx.strokeStyle = ink;
-    ctx.lineWidth = weight * dpr;
     ctx.stroke();
-    ctx.globalAlpha = prev;
   }
 
-  function drawSeal(m: Mark, x: number, y: number, r: number, t: number, a: number, ink: string, filled: number) {
+  function drawSeal(m: Mark, x: number, y: number, r: number, t: number, ink: string, filled: number) {
     // The app's arrival: each dot leaves the circle where its moment stands
-    // on the clock and travels to its place in the seal.
-    // The seal's side is SIDE_RATIO of the face's base radius, which is the
-    // reach (r) over FACE_MAX_EXTENT: so the seal stands where the face stood.
+    // on the clock and travels to its place in the seal. The seal's side is
+    // SIDE_RATIO of the face's base radius, so it stands where the face stood.
     const side = (SEAL_KNOBS.SIDE_RATIO * r) / FACE_MAX_EXTENT;
     const cell = side / 3 ** SEAL_KNOBS.MARK_DEPTH;
     const dot = (cell * SEAL_KNOBS.DOT_FILL * lerp(1, SEAL_FILLED_GROW, filled)) / 2;
-    const prev = ctx.globalAlpha;
-    ctx.globalAlpha = prev * a;
     ctx.fillStyle = ink;
     ctx.beginPath();
     const n = m.dots.length;
     for (let i = 0; i < n; i += 1) {
-      const u = clamp((t - (i / n) * 0.4) / 0.6);
-      const from = m.clock[i];
-      const to = m.dots[i];
-      const px = x + lerp(from.x * r, to.x * side, u);
-      const py = y + lerp(from.y * r, to.y * side, u);
+      const u = ease(clamp((t - (i / n) * 0.4) / 0.6));
+      const a = m.clock[i];
+      const b = m.dots[i];
+      const px = x + lerp(a.x * r, b.x * side, u);
+      const py = y + lerp(a.y * r, b.y * side, u);
       const rr = dot * lerp(0.35, 1, u);
       ctx.moveTo(px + rr, py);
       ctx.arc(px, py, rr, 0, Math.PI * 2);
     }
     ctx.fill();
-    ctx.globalAlpha = prev;
   }
 
-  function drawMarble(m: Mark, x: number, y: number, r: number, t: number, ink: string, fill: number, paper: string) {
+  function drawMarble(m: Mark, x: number, y: number, r: number, t: number, ink: string, fill: number) {
     // The drops land one after another, each growing as √fraction, as the
     // app's bath does.
     const n = m.ops.length;
@@ -401,12 +591,24 @@ export function startFieldStage(canvas: HTMLCanvasElement, stage: HTMLElement, h
     ctx.globalAlpha = prev * (1 - fill * 0.85);
     ctx.stroke();
     ctx.globalAlpha = prev;
-    void paper;
   }
 
-  addEventListener('resize', () => (last = -1));
-  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => (last = -1));
+  addEventListener('resize', () => (built = ''));
   requestAnimationFrame(frame);
+  onMode(mode);
+
+  const pick = (next: Mode) => {
+    pausedUntil = performance.now() + 9000;
+    go(next, performance.now());
+  };
+  return {
+    setAxis: (axis) => pick({ ...mode, axis }),
+    setLens: (lens) => pick({ ...mode, lens }),
+    setSpecimen: (index) => {
+      specimenPausedUntil = performance.now() + 9000;
+      become(index, performance.now());
+    },
+  };
 }
 
 function spaced(label: string) {

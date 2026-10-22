@@ -9,6 +9,7 @@ import { facePoints, FACE_MAX_EXTENT, metadataSeed, mulberry32, type FaceRecipe 
 import { layoutField } from '../../../cantor/src/field/layout';
 import { byDate } from '../../../cantor/src/field/arrangements/byTime';
 import { byArtist } from '../../../cantor/src/field/arrangements/byRecord';
+import { byPlaylist } from '../../../cantor/src/field/arrangements/byPlaylist';
 import type { Arrangement, FieldEntity } from '../../../cantor/src/field/types';
 
 /** How a song's mark is inked: the circle's availability order. */
@@ -56,6 +57,13 @@ const RECORDS: readonly (readonly [string, string, readonly string[]])[] = [
   ['Lucía Arce', 'Sierra', ['Cumbre', 'Niebla', 'Pino', 'Ríos']],
 ];
 
+/**
+ * Invented playlists, as `p/` tags (`cantor/src/playlists`). One each at most,
+ * so every song has one mark on the playlist axis and can travel to it.
+ */
+const PLAYLISTS = ['Late night', 'Road trip', 'Sunday', 'Focus', 'For Ana'];
+const playlistTag = (n: number) => (n % 5 === 4 ? [] : [`p/${PLAYLISTS[(n * 3 + (n >> 2)) % PLAYLISTS.length]}`]);
+
 const DAY = 86_400_000;
 const START = Date.UTC(2026, 6, 6);
 
@@ -68,7 +76,7 @@ function made(index: number, random: () => number): SampleSong {
   const id = `made-${index}`;
   const roll = random();
   return {
-    entity: { key: `node:${id}`, nodePublicKey: 'node', entityId: id, kind: 'song', createdAtMs, durationMs, tags: [], model },
+    entity: { key: `node:${id}`, nodePublicKey: 'node', entityId: id, kind: 'song', createdAtMs, durationMs, tags: playlistTag(index), model },
     recipe: { seed, id, model, durationMs },
     title,
     byline: model,
@@ -91,7 +99,7 @@ function imported(): SampleSong[] {
           kind: 'song',
           createdAtMs: arrivedMs + t * 1000,
           durationMs,
-          tags: [],
+          tags: playlistTag(r * 7 + t + 1),
           record: { albumKey: `${artist}/${album}`, album, artist, track: t + 1, arrivedMs },
         },
         // As the app draws an imported song: from its tags, marked imported.
@@ -176,6 +184,8 @@ export function facePathAt(recipe: FaceRecipe, cx: number, cy: number, r: number
 
 export type StageMark = SampleSong & { x: number; y: number; group: number };
 export type StageGroup = { label: string; x: number; y: number };
+/** The axes the landing's map moves between, as the app's arrange control does. */
+export type StageAxis = 'month' | 'playlist' | 'artist';
 export type StageMap = {
   marks: StageMark[];
   groups: StageGroup[];
@@ -186,11 +196,13 @@ export type StageMap = {
 
 /**
  * The library for a wide stage. Inside each cluster the songs sit exactly
- * where the app's layout packs them; the clusters themselves are seated
- * `columns` across, because the app's grid is two columns for a phone.
+ * where the app's layout packs them; the clusters themselves flow in rows
+ * about `columns` of the largest wide, because the app's grid is two columns
+ * for a phone.
  */
-export function stageMap(columns: number, songs = sampleLibrary()): StageMap {
-  const arrangement: Arrangement = { ...byDate('month'), key: 'time' };
+export function stageMap(columns: number, by: StageAxis = 'month', songs = sampleLibrary()): StageMap {
+  const arrangement: Arrangement =
+    by === 'month' ? { ...byDate('month'), key: 'time' } : by === 'playlist' ? byPlaylist : byArtist;
   const layout = layoutField({
     entities: songs.map((song) => song.entity),
     arrangement,
@@ -207,16 +219,41 @@ export function stageMap(columns: number, songs = sampleLibrary()): StageMap {
     const my = members.reduce((a, m) => a + m.y, 0) / Math.max(1, members.length);
     return members.map((m) => ({ song: m.song, dx: m.x - mx, dy: m.y - my }));
   });
-  const reach = Math.max(...offsets.flat().map((o) => Math.hypot(o.dx, o.dy))) + markRadius * 2;
-  const cell = reach * 2.35;
+  // Each cluster takes the room its own reach and its name need, and the
+  // clusters flow in rows: a month of forty songs beside an artist of three.
+  const cells = layout.groups.map((g, i) => {
+    const label = groupLabel(arrangement, g.key, g.label);
+    const reach = Math.max(markRadius, ...offsets[i].map((o) => Math.hypot(o.dx, o.dy))) + markRadius * 2;
+    return { label, reach, width: Math.max(reach * 2.5, label.length * markRadius * 1.45 + markRadius * 4) };
+  });
+  const widest = Math.max(...cells.map((c) => c.reach)) * 2.5;
+  const rowWidth = Math.max(widest, columns * widest * 0.92);
+  const rows: (typeof cells[number] & { i: number })[][] = [[]];
+  let used = 0;
+  cells.forEach((c, i) => {
+    if (used + c.width > rowWidth && rows[rows.length - 1].length > 0) {
+      rows.push([]);
+      used = 0;
+    }
+    rows[rows.length - 1].push({ ...c, i });
+    used += c.width;
+  });
   const marks: StageMark[] = [];
   const groups: StageGroup[] = [];
-  layout.groups.forEach((g, i) => {
-    const cx = (i % columns) * cell;
-    const cy = Math.floor(i / columns) * cell * 1.05;
-    groups.push({ label: groupLabel(arrangement, g.key, g.label), x: cx, y: cy - reach - markRadius * 1.5 });
-    for (const o of offsets[i]) marks.push({ ...o.song, x: cx + o.dx, y: cy + o.dy, group: i });
-  });
+  let top = 0;
+  for (const row of rows) {
+    const tall = Math.max(...row.map((c) => c.reach));
+    const width = row.reduce((a, c) => a + c.width, 0);
+    let x = (rowWidth - width) / 2;
+    const cy = top + markRadius * 4 + tall;
+    for (const c of row) {
+      const cx = x + c.width / 2;
+      groups.push({ label: c.label, x: cx, y: cy - tall - markRadius * 1.5 });
+      for (const o of offsets[c.i]) marks.push({ ...o.song, x: cx + o.dx, y: cy + o.dy, group: c.i });
+      x += c.width;
+    }
+    top = cy + tall + markRadius * 2.5;
+  }
   const xs = marks.map((m) => m.x);
   const ys = [...marks.map((m) => m.y), ...groups.map((g) => g.y)];
   return {
