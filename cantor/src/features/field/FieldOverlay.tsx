@@ -1338,6 +1338,8 @@ function EdgeTab({
   );
   const word = (
     <View key="word" style={styles.tabWord}>
+      {/* A clear twin on the left keeps the word centred with the dot beside it. */}
+      {mark !== undefined ? <View style={styles.tabMark} /> : null}
       <Text style={[styles.tabLabel, { color: colour }]}>{label}</Text>
       {mark !== undefined ? (
         <View pointerEvents="none" style={[styles.tabMark, { backgroundColor: mark }]} />
@@ -1503,14 +1505,20 @@ const styles = StyleSheet.create({
     letterSpacing: OVERLAY_KNOBS.TAB_LABEL_TRACKING_PX,
     textAlign: 'center',
   },
-  /** The word centred as before; the dot hangs after it without moving it. */
-  tabWord: { alignItems: 'center', justifyContent: 'center' },
+  /**
+   * The word in a row with the dot after it, and a clear twin before it, so
+   * the word stays centred whether or not the dot is there. (An absolutely
+   * placed dot at `left: 100%` landed far from the word on Android.)
+   */
+  tabWord: {
+    alignItems: 'center',
+    flexDirection: 'row',
+    gap: OVERLAY_KNOBS.TAB_MARK_GAP_PX,
+    justifyContent: 'center',
+  },
   tabMark: {
     borderRadius: OVERLAY_KNOBS.TAB_MARK_PX / 2,
     height: OVERLAY_KNOBS.TAB_MARK_PX,
-    left: '100%',
-    marginLeft: OVERLAY_KNOBS.TAB_MARK_GAP_PX,
-    position: 'absolute',
     width: OVERLAY_KNOBS.TAB_MARK_PX,
   },
 });
