@@ -46,6 +46,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | `src/player/` | the player contract, the react-native-audio-api player and its fake, `PlayerHost` (the one player for the app's life), scrub sessions, output latency and sync offsets, the visual clock, and what happens after a song ends (`afterSong.ts`) |
 | `src/playlists/` | playlists as the `p/` tag namespace on songs, and every operation on it |
 | `src/network/` | whether the phone has a connection at all, from `CantorNetworkModule.kt` |
+| `src/update/` | updating Cantor from inside Cantor: the `cantorfm.com/app/latest.json` decoder (`manifest.ts`), the controller and its persisted marks (`appUpdate.ts`), and `native.ts`, the bridge to `CantorUpdateModule.kt` (download, verify, install through `PackageInstaller`). See "Releasing the app" |
 | `src/haptics/` | the rationed haptics (`tick`, `click`, `confirm`), backed by `CantorHapticsModule.kt`; nothing else buzzes |
 | `src/marks/` | identity marks drawn from public keys: the phone's seal and a node's station |
 | `src/field/` | the field's pure geometry: layout and arrangements, camera levels and bands, bloom and gather, filter, glide, rail, shelf queue, hit testing |
@@ -414,6 +415,87 @@ playing).
 the outgoing waveform keeps its ink while camera opacity fades it, and resets
 only after it is hidden. Playhead mappers must include the position shared
 value in their dependencies so loading a track replaces the idle clock.
+
+## Releasing the app
+
+### Two apps on one phone
+
+Only a published release is **Cantor** (`com.cantor.app`, signed with
+Cantor's release key). Every build made for development is **Cantor Dev**
+(`com.cantor.app.dev`, the debug key), so the two install side by side and
+keep separate data:
+
+| Build type | App | For |
+| --- | --- | --- |
+| `debug` | Cantor Dev | everyday work, JS from Metro |
+| `preview` | Cantor Dev | device passes: the release bundle, no Metro (`./gradlew assemblePreview -PreactNativeArchitectures=arm64-v8a`) |
+| `release` | Cantor | publishing, by the script below only |
+
+A device pass installs Cantor Dev, never Cantor: a phone's Cantor is its
+owner's app.
+
+### Publishing a version
+
+On the machine that holds the release key (`cantor/README.md`, "Signing"),
+from a terminal:
+
+```sh
+cd cantor
+npm run release:apk -- patch --notes "Songs you cancel no longer come back"
+```
+
+`patch`, `minor`, `major` or an exact `X.Y.Z`; `--dry-run` builds and
+verifies without publishing. `scripts/release-apk.mjs`:
+
+1. Checks it is on `main`, clean and level with `origin`; `gh` is signed in;
+   the keystore's certificate is Cantor's; the tag is free; the notes are
+   one line under 90 characters with no long dashes.
+2. Bumps `versionCode` (+1) and `versionName` in `android/app/build.gradle`.
+3. Builds the arm64 release APK and verifies it: Cantor's certificate,
+   `com.cantor.app`, the new `versionCode`.
+4. **Asks for the version to be typed back.** Nothing before this is public;
+   everything after it is.
+5. Commits the bump with the site's `APP` record (`docs/src/site.ts`), tags
+   `app-vX.Y.Z`, publishes the GitHub release **not marked latest** (`cantor
+   upgrade` reads GitHub's latest release for the node), and pushes `main`.
+6. `deploy-site` redeploys cantorfm.com: `/download` and `/app/latest.json`
+   move to the new APK, and the workflow checks the manifest and the APK's
+   size.
+
+Within minutes every installed Cantor offers the update.
+
+### How an installed Cantor updates
+
+`src/update/` reads `/app/latest.json` on launch, on return to the
+foreground (at most every 6 hours) and whenever Settings opens. A newer
+`versionCode` for `com.cantor.app` shows as:
+
+1. A dot after **NODES** on the field (until the offer is seen).
+2. `UPDATE READY · X.Y.Z` on the Settings door, in ink.
+3. The **Version** row in Settings: `Update to X.Y.Z`, the release's notes
+   under it.
+
+Pressing it downloads the APK (resumable) and `CantorUpdateModule.kt` proves
+it before Android sees it: its size and SHA-256 against the manifest, then its
+package, a higher `versionCode` and **the same signing certificate as the
+running app**. Then a `PackageInstaller` session; Android asks the user to
+allow installs once, and to confirm every time. The first launch on the new
+version says `Updated` with the notes, once. Cantor Dev never offers updates.
+
+### The rules
+
+- **Never lose or regenerate the release key.** Android only updates an app
+  signed with the same key; without it every user reinstalls and loses their
+  data on the phone. A backup lives off the build machine.
+- **`versionCode` only goes up**, one per published APK, and a published
+  version is never reused or rolled back (Android refuses a lower one). A bad
+  release is fixed by the next release.
+- **The first build with the updater is installed by hand**; every version
+  after it updates from inside the app.
+- **Never test the script's guards against the real command.** Use
+  `--dry-run`. (0.1.1 was published by such a test.)
+- The notes follow the site's copy rules: what changed, for the person who
+  installed the app, in one line.
 
 ## Tests
 

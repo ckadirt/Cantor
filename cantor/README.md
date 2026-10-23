@@ -137,7 +137,7 @@ it must not be published. (A `com.cantor.app` installed from a debug-signed
 build, as phones carried before Cantor Dev existed, has to be uninstalled
 before a release-signed Cantor can go on.)
 
-**Publishing the APK.** One command, on the machine that holds the key:
+**Publishing the APK.** One command, on the machine that holds the key (the whole process, how an installed Cantor updates and the rules: [`contributing/hacking-app.md`](../contributing/hacking-app.md), "Releasing the app"):
 
 ```sh
 npm run release:apk -- patch --notes "Songs you cancel no longer come back"
