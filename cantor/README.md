@@ -58,9 +58,27 @@ adb reverse tcp:8081 tcp:8081
 
 ---
 
+## Two apps: Cantor and Cantor Dev
+
+Every build made for development installs as **Cantor Dev**
+(`com.cantor.app.dev`); only a published release is **Cantor**
+(`com.cantor.app`). They install side by side and keep separate data, so a
+phone can carry the real app and the one being worked on. Restore your twelve
+words in each to share an identity (and so your nodes' libraries).
+
+| Build type | App | JS | Signed with | For |
+| --- | --- | --- | --- | --- |
+| `debug` | Cantor Dev | from Metro | debug key | everyday work, hot reload |
+| `preview` | Cantor Dev | bundled, minified | debug key | device passes: real speed, no Metro |
+| `release` | Cantor | bundled, minified | Cantor's key | publishing only |
+
+---
+
 ## Debug build
 
-A debug APK is signed with the bundled `debug.keystore` and loads its JS from Metro (hot reload works).
+A debug APK is signed with the bundled `debug.keystore` and loads its JS from Metro (hot reload works). It installs as Cantor Dev.
+
+**Launch it by hand:** `adb shell monkey -p com.cantor.app.dev 1`.
 
 **One command (build + install + launch)** — Metro must be running:
 
@@ -74,6 +92,17 @@ npm run android
 cd android
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
+```
+
+## Preview build (Cantor Dev, at release speed)
+
+What a device pass should run: the release JS bundle and minification, no
+Metro, signed with the debug key, installed as Cantor Dev beside Cantor.
+
+```sh
+cd android
+./gradlew assemblePreview -PreactNativeArchitectures=arm64-v8a
+adb install -r app/build/outputs/apk/preview/app-preview.apk
 ```
 
 > First Gradle build is slow (~16 min); it's cached after that. Adding new native dependencies forces a full rebuild (~8–9 min) — pair it with `--reset-cache` on Metro.
@@ -104,25 +133,28 @@ cantorKeystoreProperties=/path/to/keystore.properties
 ```
 
 Without it, a release build is signed with the debug key and Gradle warns that
-it must not be published. A phone with a debug-signed build has to uninstall it
-before installing a release-signed one.
+it must not be published. (A `com.cantor.app` installed from a debug-signed
+build, as phones carried before Cantor Dev existed, has to be uninstalled
+before a release-signed Cantor can go on.)
 
-**Publishing the APK.** Build arm64 only (nearly every phone; a quarter of the
-size), then attach it to an `app-vX.Y.Z` release that is not marked latest,
-because `cantor upgrade` reads the latest release:
+**Publishing the APK.** One command, on the machine that holds the key:
 
 ```sh
-cd android
-./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
-gh release create app-v0.1.0 --latest=false --title "Cantor for Android 0.1.0" \
-  cantor-0.1.0-arm64.apk cantor-0.1.0-arm64.apk.sha256
+npm run release:apk -- patch --notes "Songs you cancel no longer come back"
 ```
 
-Bump `versionCode` (by one) and `versionName` in `android/app/build.gradle`
-for every published APK; Android refuses an update whose `versionCode` is not
-higher.
+`patch`, `minor`, `major` or an exact `X.Y.Z`. The notes are one line, under 90
+characters, without long dashes: installed apps show them under Update. The
+script (`scripts/release-apk.mjs`) checks it is on a clean `main` level with
+`origin` and that the keystore is Cantor's; bumps `versionCode` and
+`versionName`; builds the arm64 APK; verifies its signer, package and version;
+commits the bump with the site's `APP` record (`docs/src/site.ts`); tags
+`app-vX.Y.Z`; publishes the GitHub release (not marked latest, because
+`cantor upgrade` reads the latest release); and pushes `main`, which redeploys
+cantorfm.com so `/download` and `/app/latest.json` move to the new APK.
+`--dry-run` builds and verifies without publishing anything.
 
-**Release APK** (for sideloading / direct install):
+**Release APK** (the real Cantor; for a device pass use `preview` instead):
 
 ```sh
 cd android
@@ -138,13 +170,13 @@ cd android
 # output: android/app/build/outputs/bundle/release/app-release.aab
 ```
 
-Run a release build directly on a device:
+Run a preview build directly on a device:
 
 ```sh
-npm run android -- --mode=release
+npm run android -- --mode=preview
 ```
 
-Version is set in `android/app/build.gradle` (`versionCode` / `versionName`) — bump both before a release.
+Version is set in `android/app/build.gradle` (`versionCode` / `versionName`); the release script bumps both.
 
 ---
 

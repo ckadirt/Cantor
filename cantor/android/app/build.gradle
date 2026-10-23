@@ -128,11 +128,22 @@ android {
             }
         }
     }
+    /*
+     * Two apps, side by side. Only `release`, signed with Cantor's key, is
+     * Cantor (com.cantor.app), the app people install and update. Every build
+     * made for development is Cantor Dev (com.cantor.app.dev): `debug` loads
+     * its JS from Metro; `preview` is a release build (JS bundled, minified)
+     * signed with the debug key, for device passes. Cantor Dev and Cantor
+     * install together and keep separate data, so a phone can run both.
+     */
     buildTypes {
         debug {
+            applicationIdSuffix ".dev"
+            resValue "string", "app_name", "Cantor Dev"
             signingConfig signingConfigs.debug
         }
         release {
+            resValue "string", "app_name", "Cantor"
             if (releaseKeystore != null) {
                 signingConfig signingConfigs.release
             } else {
@@ -141,6 +152,17 @@ android {
             }
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+        }
+        preview {
+            initWith release
+            applicationIdSuffix ".dev"
+            resValue "string", "app_name", "Cantor Dev"
+            signingConfig signingConfigs.debug
+            // React Native's plugin fills this only for debug and release; as
+            // a release-like build, no cleartext traffic.
+            manifestPlaceholders = [usesCleartextTraffic: "false"]
+            // Libraries publish debug and release only; build them as release.
+            matchingFallbacks = ['release']
         }
     }
 }

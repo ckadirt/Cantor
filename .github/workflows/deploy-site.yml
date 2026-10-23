@@ -81,3 +81,18 @@ jobs:
           check install.sh node/install.sh
           check catalog/v1.json relay/public/catalog/v1.json
           check backends/v1.json relay/public/backends/v1.json
+          check app/latest.json docs/dist/app/latest.json
+
+      # Every installed app reads this to offer an update: its APK must exist,
+      # at the size it claims.
+      - name: the app manifest points at a real APK
+        run: |
+          set -eu
+          url=$(node -p "require('./docs/dist/app/latest.json').url")
+          bytes=$(node -p "require('./docs/dist/app/latest.json').bytes")
+          got=$(curl -fsSL --head "$url" | tr -d '\r' | awk 'tolower($1)=="content-length:" {n=$2} END {print n}')
+          if [ "$got" != "$bytes" ]; then
+            echo "latest.json says $bytes bytes; $url answers $got" >&2
+            exit 1
+          fi
+          echo "the APK at $url is $got bytes, as the manifest says"

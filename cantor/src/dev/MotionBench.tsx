@@ -4,9 +4,10 @@
  * The reactive player's M2 exit (internal/docs/interfacealpha/reactive-player-log.md):
  * the native motion track timed on the phone, release build, median of five,
  * decode and analysis apart. Reads `<len>-<rate>.<ext>` from the app's own
- * external files directory, which `adb push` can reach on the test phone:
+ * external files directory, which `adb push` can reach on the test phone
+ * (a bench only ever runs in Cantor Dev, `com.cantor.app.dev`):
  *
- *   adb push bench/ /sdcard/Android/data/com.cantor.app/files/motion/
+ *   adb push bench/ /sdcard/Android/data/com.cantor.app.dev/files/motion/
  *
  * Results on screen and through console.warn (`adb logcat -s ReactNativeJS`).
  */
@@ -16,7 +17,7 @@ import { measureNativeMotion } from '../audio/native';
 import { unpackMotionTrack } from '../lenses/motion/motionTrack';
 import { type } from '../theme/tokens';
 
-const DIR = '/storage/emulated/0/Android/data/com.cantor.app/files/motion';
+const DIR = '/storage/emulated/0/Android/data/com.cantor.app.dev/files/motion';
 const LENGTHS = ['3min', '4min', '9min'];
 const RATES = ['44k', '48k'];
 const FORMATS = ['mp3', 'm4a', 'flac'];

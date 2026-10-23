@@ -1,17 +1,22 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { faviconHref } from './src/lib/app-icon.mjs';
-import { REDIRECTS } from './src/site.ts';
+import { REDIRECTS, appManifest } from './src/site.ts';
 
-/** Writes the short addresses (src/site.ts) as the host's `_redirects`. */
-const redirects = {
-  name: 'cantor-redirects',
+/**
+ * Files written from src/site.ts at build: the short addresses as the host's
+ * `_redirects`, and the newest app as `/app/latest.json`.
+ */
+const generated = {
+  name: 'cantor-generated',
   hooks: {
     'astro:build:done': ({ dir }) => {
       const lines = Object.entries(REDIRECTS).map(([from, to]) => `${from} ${to} 302`);
       writeFileSync(new URL('_redirects', dir), `${lines.join('\n')}\n`);
+      mkdirSync(new URL('app/', dir), { recursive: true });
+      writeFileSync(new URL('app/latest.json', dir), `${JSON.stringify(appManifest(), null, 2)}\n`);
     },
   },
 };
@@ -21,7 +26,7 @@ const redirects = {
 export default defineConfig({
   site: 'https://cantorfm.com',
   integrations: [
-    redirects,
+    generated,
     starlight({
       title: 'Cantor',
       description: 'Songs made on your own computer, kept on your phone.',
