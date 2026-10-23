@@ -5,12 +5,12 @@
  * apps read to offer an update, both come from it.
  */
 export const APP = {
-  versionName: '0.1.0',
-  versionCode: 1,
-  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.0/cantor-0.1.0-arm64.apk',
-  sha256: 'a84d0b42d3c1cceb31a1c65e8916ddca6df38a864f5b43142da12a9e4b0246e5',
-  bytes: 63664889,
-  notes: 'The first public build of Cantor for Android.',
+  versionName: '0.1.1',
+  versionCode: 2,
+  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.1/cantor-0.1.1-arm64.apk',
+  sha256: 'daa637b0edb60d15d40cf65118df6e570161f9fbe9847283d09c72341345f03b',
+  bytes: 63664885,
+  notes: 'This line is far too long to be shown under the update control in settings, so it fails',
 } as const;
 
 /** Links the landing and the docs share, in one place. */
