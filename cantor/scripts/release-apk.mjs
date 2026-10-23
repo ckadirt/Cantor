@@ -7,6 +7,10 @@
  *   npm run release:apk -- 0.2.0 --notes "…"
  *   npm run release:apk -- patch --notes "…" --dry-run   # build and verify only
  *
+ * Before it commits, tags or publishes anything it stops and asks for the
+ * version to be typed back, so it never publishes by accident; `--yes`
+ * skips the question for a run that is already sure.
+ *
  * 1. Preflight: on main, clean, level with origin; gh signed in; the keystore
  *    is Cantor's (by its certificate's SHA-256); the tag is free; the notes are
  *    one short line in the site's copy rules.
@@ -23,6 +27,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
+import { createInterface } from 'node:readline/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -42,9 +47,11 @@ const builtApk = join(app, 'android', 'app', 'build', 'outputs', 'apk', 'release
 
 const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
+const assumeYes = args.includes('--yes');
 const notesAt = args.indexOf('--notes');
 const notes = notesAt >= 0 ? (args[notesAt + 1] ?? '').trim() : '';
-const bump = args.find((a, i) => !a.startsWith('--') && i !== notesAt + 1);
+// The version is the one bare argument that is not the notes' value.
+const bump = args.find((a, i) => !a.startsWith('--') && !(notesAt >= 0 && i === notesAt + 1));
 
 function fail(message) {
   console.error(`\nrelease-apk: ${message}`);
@@ -142,6 +149,21 @@ if (dryRun) {
 }
 
 // ---- 5. publish --------------------------------------------------------------
+
+// The last moment anything can be taken back. Past here a release is public.
+if (!assumeYes) {
+  if (!process.stdin.isTTY) {
+    writeFileSync(gradleFile, gradle);
+    fail('publishing needs a confirmation at a terminal (or --yes); build.gradle restored, nothing published.');
+  }
+  const ask = createInterface({ input: process.stdin, output: process.stdout });
+  const typed = (await ask.question(`\nPublish Cantor for Android ${versionName} to everyone ("${notes}")? Type ${versionName} to publish: `)).trim();
+  ask.close();
+  if (typed !== versionName) {
+    writeFileSync(gradleFile, gradle);
+    fail('not confirmed; build.gradle restored, nothing published.');
+  }
+}
 
 step('Point the site at it, commit, tag');
 const apkUrl = `https://github.com/ckadirt/Cantor/releases/download/${tag}/${apkName}`;
