@@ -10,7 +10,7 @@ export const APP = {
   apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.1/cantor-0.1.1-arm64.apk',
   sha256: 'daa637b0edb60d15d40cf65118df6e570161f9fbe9847283d09c72341345f03b',
   bytes: 63664885,
-  notes: 'This line is far too long to be shown under the update control in settings, so it fails',
+  notes: 'The same app as 0.1.0, published by the new release script.',
 } as const;
 
 /** Links the landing and the docs share, in one place. */
