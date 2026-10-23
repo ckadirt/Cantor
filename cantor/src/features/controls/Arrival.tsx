@@ -1,6 +1,8 @@
-import React, { createContext, useContext, useEffect } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import Animated, {
   Easing,
+  runOnJS,
+  useAnimatedReaction,
   useAnimatedStyle,
   useDerivedValue,
   useReducedMotion,
@@ -74,6 +76,34 @@ export function useArrivalClock(): SharedValue<number> {
 }
 
 /**
+ * Whether an arrival on `clock` has finished: the clock stands at 1.
+ *
+ * An animated style keeps its live values on the UI thread, but React keeps
+ * the ones it computed on the first frame, and for an arrival that is nothing
+ * shown (opacity 0, a spine not yet drawn). Any later React commit to the view
+ * sends those back. Revealing the recovery words re-renders Settings just as
+ * Cantor returns from the device-lock screen, and the finished page went blank
+ * under its head (internal/docs/plans/app-updates-log.md, 2026-10-23).
+ *
+ * So a finished arrival hands its final look to a plain style, which a commit
+ * can only repeat; the animation itself is untouched, and the hand-over happens
+ * after it has ended, on the same pixels. The animated style takes over again
+ * the moment the clock leaves 1, so a blind being closed still fades its
+ * content with the pull.
+ */
+export function useSettled(clock: SharedValue<number>): boolean {
+  const [settled, setSettled] = useState(false);
+  useAnimatedReaction(
+    () => clock.value >= 1,
+    (now, previous) => {
+      if (now !== previous) runOnJS(setSettled)(now);
+    },
+    [clock],
+  );
+  return settled;
+}
+
+/**
  * A page's own sentence inside a blind that is already down. Mount it keyed by
  * the page: a page that replaces another (`fresh`) starts its clock at 0 on
  * its first frame — set at creation, not by an effect, so it never shows a
@@ -121,11 +151,20 @@ export function Arrive({
 }) {
   const clock = useArrivalClock();
   const reducedMotion = useReducedMotion();
+  const settled = useSettled(clock);
   const landed = useAnimatedStyle(() => {
     const local = windowed(clock.value, from, to);
     return reducedMotion
       ? { opacity: local }
       : { opacity: local, transform: [{ translateY: (1 - local) * rise }] };
   }, [from, reducedMotion, rise, to]);
-  return <Animated.View style={[style, landed]}>{children}</Animated.View>;
+  // Arrived: the final look as a plain style (`useSettled`).
+  return (
+    <Animated.View style={[style, settled ? LANDED : landed]}>
+      {children}
+    </Animated.View>
+  );
 }
+
+/** Where every arrival ends: shown, at its place. */
+export const LANDED = { opacity: 1, transform: [{ translateY: 0 }] } as const;

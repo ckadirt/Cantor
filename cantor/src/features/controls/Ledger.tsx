@@ -18,6 +18,8 @@ import {
   StaveHeight,
   useArrivalClock,
   windowed,
+  LANDED,
+  useSettled,
 } from './Arrival';
 import { Caret } from './Caret';
 import { PanelPressable } from './PanelPressable';
@@ -154,6 +156,10 @@ export function Ledger({
     );
   });
   const reducedMotion = useReducedMotion();
+  // Arrived: final looks as plain styles, so a later commit cannot send back
+  // the first frame's (`useSettled`).
+  const settled = useSettled(clock);
+  const spineSettled = useSettled(arrival ?? clock);
   const landed = useAnimatedStyle(() => {
     if (arrival !== undefined) return {};
     const local = windowed(
@@ -181,12 +187,14 @@ export function Ledger({
       }}
       style={[styles.ledger, style]}
     >
-      <Spine arrival={grown} colour={pal.spine} />
+      <Spine arrival={grown} colour={pal.spine} settled={spineSettled} />
       {/*
         The facts land as the spine reaches them — as one block per measure,
         not a mapper per row: a row each cost frames on the phone (F10 notes).
       */}
-      <Animated.View style={landed}>{children}</Animated.View>
+      <Animated.View style={arrival === undefined && settled ? LANDED : landed}>
+        {children}
+      </Animated.View>
     </View>
   );
 }
@@ -195,9 +203,12 @@ export function Ledger({
 function Spine({
   arrival,
   colour,
+  settled,
 }: {
   arrival: SharedValue<number> | undefined;
   colour: string;
+  /** Drawn all the way: whole, as a plain style. */
+  settled: boolean;
 }) {
   const drawn = useAnimatedStyle(() =>
     arrival === undefined ? {} : { transform: [{ scaleY: arrival.value }] },
@@ -208,7 +219,7 @@ function Spine({
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
       pointerEvents="none"
-      style={[styles.spine, { backgroundColor: colour }, drawn]}
+      style={[styles.spine, { backgroundColor: colour }, settled ? DRAWN : drawn]}
     />
   );
 }
@@ -412,6 +423,9 @@ export const Measure = Ledger;
 export function Rest() {
   return <View style={styles.rest} />;
 }
+
+/** A spine drawn all the way. */
+const DRAWN = { transform: [{ scaleY: 1 }] } as const;
 
 const styles = StyleSheet.create({
   ledger: { position: 'relative' },

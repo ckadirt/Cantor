@@ -20,6 +20,7 @@ import {
   Arrive,
   StaveHeight,
   useArrivalClock,
+  useSettled,
   windowed,
 } from './Arrival';
 import { LEDGER_KNOBS } from './Ledger';
@@ -171,6 +172,7 @@ export function FolioHead({
 }: HeadProps) {
   const pal = usePalette();
   const clock = useArrivalClock();
+  const settled = useSettled(clock);
   // The head's own stretch of spine grows out of the clef, first of all.
   const headSpine = useAnimatedStyle(() => ({
     transform: [
@@ -189,7 +191,7 @@ export function FolioHead({
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
         pointerEvents="none"
-        style={[styles.headSpine, { backgroundColor: pal.spine }, headSpine]}
+        style={[styles.headSpine, { backgroundColor: pal.spine }, settled ? WHOLE_Y : headSpine]}
       />
       <View
         accessibilityElementsHidden={!clefAccessible}
@@ -314,6 +316,7 @@ function TitleWrite({
 }) {
   const pal = usePalette();
   const clock = useArrivalClock();
+  const settled = useSettled(clock);
   const reducedMotion = useReducedMotion();
   const width = useSharedValue(0);
   const cover = useAnimatedStyle(() => {
@@ -337,7 +340,8 @@ function TitleWrite({
       style={styles.title}
     >
       {children}
-      {skip ? null : (
+      {/* Written: the cover is gone, rather than an animated style a commit could reset. */}
+      {skip || settled ? null : (
         <Animated.View
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
@@ -437,6 +441,7 @@ export function Coda({
 }) {
   const pal = usePalette();
   const clock = useArrivalClock();
+  const settled = useSettled(clock);
   const bare = children === undefined || children === null;
   const hasWhy = why !== undefined && why !== null && why !== false;
   // The double bar draws out of the spine, last, and then the act appears.
@@ -457,7 +462,7 @@ export function Coda({
         accessibilityElementsHidden
         importantForAccessibility="no-hide-descendants"
         pointerEvents="none"
-        style={[styles.bar, { borderColor: pal.ink }, drawn]}
+        style={[styles.bar, { borderColor: pal.ink }, settled ? WHOLE_X : drawn]}
       />
       {hasWhy ? (
         <Arrive
@@ -513,6 +518,10 @@ export function Folio({
     </View>
   );
 }
+
+/** A hairline drawn all the way, down or across: a finished arrival (`useSettled`). */
+const WHOLE_Y = { transform: [{ scaleY: 1 }] } as const;
+const WHOLE_X = { transform: [{ scaleX: 1 }] } as const;
 
 const styles = StyleSheet.create({
   folio: { flex: 1 },
