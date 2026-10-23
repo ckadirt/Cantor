@@ -5,12 +5,12 @@
  * apps read to offer an update, both come from it.
  */
 export const APP = {
-  versionName: '0.1.1',
-  versionCode: 2,
-  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.1/cantor-0.1.1-arm64.apk',
-  sha256: 'daa637b0edb60d15d40cf65118df6e570161f9fbe9847283d09c72341345f03b',
-  bytes: 63664885,
-  notes: 'The same app as 0.1.0, published by the new release script.',
+  versionName: '0.1.2',
+  versionCode: 3,
+  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.2/cantor-0.1.2-arm64.apk',
+  sha256: '3472079fc0854b5bd65c80a2a6d86482cb0aae4e449985131a8a126eea6af1ec',
+  bytes: 63683265,
+  notes: 'Cantor can now update itself from Settings',
 } as const;
 
 /** Links the landing and the docs share, in one place. */
