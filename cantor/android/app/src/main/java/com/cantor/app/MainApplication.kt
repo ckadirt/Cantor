@@ -11,6 +11,7 @@ import com.cantor.app.audio.CantorPlaybackPackage
 import com.cantor.app.audio.PlaybackSurface
 import com.cantor.app.haptics.CantorHapticsPackage
 import com.cantor.app.network.CantorNetworkPackage
+import com.cantor.app.update.CantorUpdatePackage
 import com.cantor.app.media.CantorMediaPackage
 import com.cantor.app.security.CantorSecurePackage
 
@@ -30,6 +31,7 @@ class MainApplication : Application(), ReactApplication {
           add(CantorSecurePackage())
           add(CantorHapticsPackage())
           add(CantorNetworkPackage())
+          add(CantorUpdatePackage())
         },
     )
   }

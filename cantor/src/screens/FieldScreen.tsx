@@ -30,6 +30,7 @@ import { nativeMedia } from '../device/native';
 import { createDeviceRepository } from '../device/repository';
 import { EnginesSheet, nodeStateOfPhase } from '../features/engines';
 import { followNetwork, network } from '../network';
+import { appUpdate, followAppUpdate, updateWaiting } from '../update';
 import {
   codeOf,
   followFailures,
@@ -407,6 +408,9 @@ export function FieldScreen({ identity }: Props) {
   const backends = useStore(runtime.store, state => state.backends);
   const phoneOnline = useStore(network, state => state);
   useEffect(() => followNetwork(), []);
+  // What is installed and whether a newer Cantor exists (src/update).
+  useEffect(() => followAppUpdate(), []);
+  const appUpdateWaiting = useStore(appUpdate.store, updateWaiting);
   // Connection errors and failed jobs arrive as state; Diagnostics keeps them.
   useEffect(() => followFailures(runtime.store), [runtime.store]);
   /** A paired node's name, for words that say which node a failure is about. */
@@ -3229,6 +3233,7 @@ export function FieldScreen({ identity }: Props) {
           arrived={arrived}
           onOpenComposer={openComposer}
           onOpenEngines={openEnginesFromField}
+          updateWaiting={appUpdateWaiting}
           onChangeOrder={chooseOrder}
           onShelfAction={downloadShelf}
           nowPlaying={nowPlaying}

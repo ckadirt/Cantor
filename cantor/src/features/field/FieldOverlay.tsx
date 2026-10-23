@@ -81,6 +81,8 @@ type Props = {
    */
   arrived?: number | null;
   onOpenEngines: () => void;
+  /** An app update is waiting and has not been seen: the NODES tab carries a dot. */
+  updateWaiting?: boolean;
   onOpenComposer: () => void;
   /** How the field is grouped, and the control that changes it. */
   arrangementKey: string;
@@ -201,6 +203,9 @@ export const OVERLAY_KNOBS = {
    */
   TAB_LABEL_SIZE_PX: 9,
   TAB_LABEL_TRACKING_PX: 1.4,
+  /** The quiet mark after the NODES tab's word: an update is waiting. */
+  TAB_MARK_PX: 5,
+  TAB_MARK_GAP_PX: 5,
   /** Clear of the tab, which now reaches `TAB_REACH_PX` up from the same edge. */
   FOOT_INSET_PX: 72,
   /**
@@ -469,6 +474,7 @@ function FieldOverlayImpl({
   playableHere = 0,
   arrived = null,
   onOpenEngines,
+  updateWaiting = false,
   onOpenComposer,
   arrangementKey,
   onChangeArrangement,
@@ -1116,10 +1122,11 @@ function FieldOverlayImpl({
         </View>
       </Animated.View>
       <EdgeTab
-        accessibilityLabel="Open nodes"
+        accessibilityLabel={updateWaiting ? 'Open nodes, an update is available' : 'Open nodes'}
         colour={pal.faint}
         edge="bottom"
         label="NODES"
+        mark={updateWaiting ? pal.ink : undefined}
         onPress={onOpenEngines}
       />
     </MorphHost>
@@ -1298,6 +1305,7 @@ function EdgeTab({
   colour,
   edge,
   label,
+  mark,
   onPress,
 }: {
   accessibilityLabel: string;
@@ -1305,6 +1313,11 @@ function EdgeTab({
   edge: 'top' | 'bottom';
   /** The word beside the slats: what pulling this edge actually opens. */
   label: string;
+  /**
+   * A small dot after the word, in this colour: something new behind this
+   * edge (an app update), until it has been seen.
+   */
+  mark?: string;
   onPress: () => void;
 }) {
   // Widest slat outermost, so the taper always points the way the blind
@@ -1324,9 +1337,12 @@ function EdgeTab({
     </View>
   );
   const word = (
-    <Text key="word" style={[styles.tabLabel, { color: colour }]}>
-      {label}
-    </Text>
+    <View key="word" style={styles.tabWord}>
+      <Text style={[styles.tabLabel, { color: colour }]}>{label}</Text>
+      {mark !== undefined ? (
+        <View pointerEvents="none" style={[styles.tabMark, { backgroundColor: mark }]} />
+      ) : null}
+    </View>
   );
   return (
     <Pressable
@@ -1486,6 +1502,16 @@ const styles = StyleSheet.create({
     fontSize: OVERLAY_KNOBS.TAB_LABEL_SIZE_PX,
     letterSpacing: OVERLAY_KNOBS.TAB_LABEL_TRACKING_PX,
     textAlign: 'center',
+  },
+  /** The word centred as before; the dot hangs after it without moving it. */
+  tabWord: { alignItems: 'center', justifyContent: 'center' },
+  tabMark: {
+    borderRadius: OVERLAY_KNOBS.TAB_MARK_PX / 2,
+    height: OVERLAY_KNOBS.TAB_MARK_PX,
+    left: '100%',
+    marginLeft: OVERLAY_KNOBS.TAB_MARK_GAP_PX,
+    position: 'absolute',
+    width: OVERLAY_KNOBS.TAB_MARK_PX,
   },
 });
 

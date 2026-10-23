@@ -27,6 +27,8 @@ import { authenticateRecovery, protectRecoveryScreen } from '../../identity/reco
 import { loadStoredPhrase } from '../../identity/secureIdentity';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 import { SyncRow, type SyncSong } from './SyncRow';
+import { useStore } from '../../core/useStore';
+import { appUpdate, RELEASE_ID, updateAvailable, updateBusy, type AppUpdateState } from '../../update';
 
 /** KNOBS */
 const SETTINGS_KNOBS = {
@@ -185,6 +187,7 @@ export function SettingsSheet({
         </Measure>
         <Rest />
         <Measure>
+          <VersionRow />
           <Row label="Diagnostics" control>
             <Door
               accessibilityLabel="Open diagnostics"
@@ -209,12 +212,127 @@ export function SettingsSheet({
   );
 }
 
-/** The version the settings head names; the app has no build-time source yet. */
-export const APP_VERSION_LABEL = '1.0 ALPHA';
+/** The version the settings head names before the app has said which it is (Jest, an old build). */
+export const APP_VERSION_LABEL = 'ALPHA';
 
-/** `KEY 9F2C · 41AB · 1.0 ALPHA`: the settings head's meta line. */
-export function settingsMeta(publicKey: string): string {
-  return `KEY ${fingerprint(publicKey)} · ${APP_VERSION_LABEL}`;
+/** `KEY 9F2C · 41AB · 0.1.2 ALPHA`: the settings head's meta line. */
+export function settingsMeta(publicKey: string, version: string | null = null): string {
+  return `KEY ${fingerprint(publicKey)} · ${version === null ? APP_VERSION_LABEL : `${version} ${APP_VERSION_LABEL}`}`;
+}
+
+/**
+ * The app's version, and its update (internal/docs/plans/app-updates-plan.md,
+ * U6). The control has the panel's states: it morphs between what it will do
+ * (`Update to 0.1.3`), what is happening (`Downloading`, `Checking the file`,
+ * `Confirm on device`) and `Try again`; the sine rule runs under it while it
+ * works. Under it, the release's one line of what changed. On the first open
+ * after an update the row says `Updated`, with that line, once.
+ */
+function VersionRow() {
+  const pal = usePalette();
+  const state = useStore(appUpdate.store, current => current);
+  // Opening Settings asks again; the row having been seen ends the quiet mark
+  // and the once-after-updating line (which this open still shows).
+  const [announced] = useState(() => state.justUpdated);
+  useEffect(() => {
+    appUpdate.check(true).catch(() => {});
+  }, []);
+  const latestCode = state.latest?.versionCode ?? 0;
+  useEffect(() => {
+    appUpdate.markSeen();
+  }, [latestCode, state.justUpdated]);
+
+  const installed = state.installed;
+  if (installed === null) {
+    return (
+      <Row label="Version">
+        <Text style={[type.body, { color: pal.ink }]}>{APP_VERSION_LABEL.toLowerCase()}</Text>
+      </Row>
+    );
+  }
+  if (installed.applicationId !== RELEASE_ID) {
+    return (
+      <Row label="Version" note="Cantor Dev">
+        <Text style={[type.body, { color: pal.ink }]}>{installed.versionName}</Text>
+      </Row>
+    );
+  }
+  if (!updateAvailable(state)) {
+    const justUpdated = announced || state.justUpdated;
+    const notes = justUpdated && state.latest?.versionCode === installed.versionCode ? state.latest.notes : '';
+    return (
+      <Row label="Version" note={versionNote(state, justUpdated)}>
+        <Text style={[type.body, { color: pal.ink }]}>{installed.versionName}</Text>
+        {notes !== '' ? (
+          <Text numberOfLines={1} style={[type.small, { color: pal.muted }]}>
+            {notes}
+          </Text>
+        ) : null}
+      </Row>
+    );
+  }
+
+  const latest = state.latest!;
+  const phase = state.phase;
+  const busy = updateBusy(state);
+  const label =
+    phase.kind === 'downloading'
+      ? 'Downloading'
+      : phase.kind === 'verifying'
+      ? 'Checking the file'
+      : phase.kind === 'installing'
+      ? 'Confirm on device'
+      : phase.kind === 'allowing'
+      ? 'Allow installs'
+      : phase.kind === 'failed'
+      ? 'Try again'
+      : `Update to ${latest.versionName}`;
+  const progress =
+    phase.kind === 'downloading'
+      ? `${megabytes(phase.received)} of ${megabytes(phase.total)}`
+      : `${installed.versionName} now · ${megabytes(latest.bytes)}`;
+  return (
+    <Row label="Version" control>
+      <Pressable
+        accessibilityLabel={label}
+        accessibilityRole="button"
+        accessibilityState={{ busy }}
+        onPress={busy ? undefined : () => appUpdate.start().catch(() => {})}
+        style={styles.recoveryAct}
+      >
+        <View>
+          <TransformText
+            charStyle={type.body}
+            color={pal.ink}
+            duration={SETTINGS_KNOBS.ACT_MS}
+            style={styles.recoverySlot}
+            text={label}
+          />
+          <Underway charStyle={type.body} label={label} working={busy} />
+        </View>
+      </Pressable>
+      <Text style={[styles.updateMeta, { color: pal.faint }]}>{progress.toUpperCase()}</Text>
+      {phase.kind === 'failed' ? (
+        <Text style={[type.small, { color: pal.muted }]}>{phase.message}</Text>
+      ) : latest.notes !== '' ? (
+        <Text numberOfLines={1} style={[type.small, { color: pal.muted }]}>
+          {latest.notes}
+        </Text>
+      ) : null}
+    </Row>
+  );
+}
+
+/** The state under an up-to-date version: only what is known. */
+function versionNote(state: AppUpdateState, justUpdated: boolean): string {
+  if (justUpdated) return 'Updated';
+  if (state.latest !== null) return state.checkFailed ? 'Up to date when last checked' : 'Up to date';
+  if (state.checkFailed) return 'Could not check';
+  return 'Checking';
+}
+
+function megabytes(bytes: number): string {
+  return `${Math.round(bytes / 1e6)} MB`;
 }
 
 /**
@@ -467,4 +585,5 @@ const styles = StyleSheet.create({
   rulerValue: { justifyContent: 'center', paddingTop: 13 },
   recoverySlot: { height: SETTINGS_KNOBS.ACT_SLOT_PX },
   recoveryGrid: { marginBottom: space.sm, marginTop: space.xs },
+  updateMeta: { ...type.eyebrow, fontSize: SETTINGS_KNOBS.META_PX, letterSpacing: 0.7, lineHeight: 19 },
 });

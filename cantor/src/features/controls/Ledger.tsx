@@ -226,6 +226,7 @@ export function Row({
   label,
   mark,
   note,
+  noteInk = false,
   control = false,
 }: {
   children: React.ReactNode;
@@ -239,6 +240,8 @@ export function Row({
   control?: boolean;
   /** The line under a value: a state in mono, or a sentence in Spectral. */
   note?: string;
+  /** The note is news (an update waiting), so it is set in ink, not faint. */
+  noteInk?: boolean;
 }) {
   const pal = usePalette();
   const named = (label !== undefined && label !== '') || mark !== undefined;
@@ -282,11 +285,11 @@ export function Row({
         ) : null}
         {children}
         {note === undefined ? null : isState(note) ? (
-          <Text style={[styles.note, { color: pal.faint }]}>
+          <Text style={[styles.note, { color: noteInk ? pal.ink : pal.faint }]}>
             {note.toUpperCase()}
           </Text>
         ) : (
-          <Text style={[type.small, styles.sentence, { color: pal.muted }]}>
+          <Text style={[type.small, styles.sentence, { color: noteInk ? pal.ink : pal.muted }]}>
             {note}
           </Text>
         )}

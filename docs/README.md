@@ -76,6 +76,7 @@ them rather than copying them, so each still has one home:
 | `/install.sh` | `node/install.sh` |
 | `/catalog/v1.json` | `relay/public/catalog/v1.json` |
 | `/backends/v1.json` | `relay/public/backends/v1.json` |
+| `/app/latest.json` | the `APP` record in `src/site.ts`: the newest app, which installed apps read to offer an update (written by `cantor/scripts/release-apk.mjs`) |
 
 Nodes from the release after 0.2.8 fetch the catalog and backends here; older
 ones fetch the same files from `relay.cantorfm.com`, which must keep serving

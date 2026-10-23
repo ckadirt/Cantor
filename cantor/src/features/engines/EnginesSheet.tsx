@@ -28,6 +28,7 @@ import type { DeviceLibraryState } from '../../device/deviceLibrary';
 import { DiagnosticsSheet } from './DiagnosticsSheet';
 import { diagnostics } from '../../runtime/diagnostics';
 import { useStore } from '../../core/useStore';
+import { appUpdate, updateWaiting } from '../../update';
 import { knownModels, nodeState, nodeStateWord } from './nodeState';
 import { capitalised, countWord } from './phoneState';
 import {
@@ -133,6 +134,10 @@ function EnginesSheetImpl({
 
   const known = useMemo(() => knownModels(backends), [backends]);
   const failures = useStore(diagnostics, state => state);
+  // The quiet mark's second step: the Settings door says an update is ready.
+  const waiting = useStore(appUpdate.store, updateWaiting);
+  const latestName = useStore(appUpdate.store, state => state.latest?.versionName ?? null);
+  const version = useStore(appUpdate.store, state => state.installed?.versionName ?? null);
   const selectedBackend =
     'node' in page
       ? backends?.find(backend => backend.nodePubkey === page.node)
@@ -193,6 +198,7 @@ function EnginesSheetImpl({
     footprints,
     selected: selectedBackend,
     publicKey,
+    version,
   });
   const nav: FolioNav = isHome
     ? { label: 'CLOSE', accessibilityLabel: 'Close nodes', onPress: close }
@@ -357,7 +363,14 @@ function EnginesSheetImpl({
                 </Measure>
                 <Rest />
                 <Measure>
-                  <Row note="Your key · storage · sync · about">
+                  <Row
+                    note={
+                      waiting && latestName !== null
+                        ? `Update ready · ${latestName}`
+                        : 'Your key · storage · sync · about'
+                    }
+                    noteInk={waiting}
+                  >
                     <Door
                       label="Settings"
                       onPress={() => setPage({ kind: 'settings' })}
@@ -506,12 +519,15 @@ function headOf(
     footprints,
     selected,
     publicKey,
+    version,
   }: {
     backends: readonly BackendRecord[] | null;
     snapshots: Readonly<Record<string, ConnectionSnapshot>>;
     footprints: Readonly<Record<string, BackendFootprint>>;
     selected: BackendRecord | undefined;
     publicKey: string;
+    /** The running app's version, once known. */
+    version: string | null;
   },
 ): { eyebrow: string; title: string; meta: string } {
   switch (page.kind) {
@@ -531,7 +547,7 @@ function headOf(
       return {
         eyebrow: 'SETTINGS',
         title: 'This phone',
-        meta: settingsMeta(publicKey),
+        meta: settingsMeta(publicKey, version),
       };
     case 'node': {
       if (selected === undefined)
