@@ -9,7 +9,13 @@
  * Flicker law notes: every source and destination is installed in one sequence
  * canvas before its shared UI clock starts. There are no text swaps, width
  * commits, or ownership hand-offs through React during the cascade. The only
- * later commit reveals Continue after the canvas paints its terminal frame.
+ * later commit reveals the keeping row and Continue after the canvas paints
+ * its terminal frame.
+ *
+ * Keeping the words lives here, under the words themselves: copy them, say
+ * they are saved, and Continue unlocks. Soft confirmation, not a quiz. A panel
+ * after this one that showed the phrase again asked people to save words they
+ * had already watched being written.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Pressable, StyleSheet, Text, View, type TextStyle } from 'react-native';
@@ -28,7 +34,8 @@ import {
   useMorphFont,
   type MorphTextSequenceItem,
 } from '../../motion';
-import { Button, PanelBody } from './kit';
+import Clipboard from '@react-native-clipboard/clipboard';
+import { Button, Checkbox, PanelBody } from './kit';
 import { getIdentityPhrase, wordBits } from '../../identity/mnemonic';
 import { SIGILS } from '../sigils';
 import { space, type, usePalette } from '../../theme/tokens';
@@ -65,6 +72,9 @@ const NUMBER_W = 16;
 const NUMBER_SLOT_GAP = 4;
 const NUMBER_LINE_H = 13;
 const CONTINUE_SLOT_H = 48;
+/** The copy mark: two offset squares sharing one corner. */
+const MARK = 14;
+const MARK_SQUARE = 10;
 
 /** Reference style: real metrics are measured at this size, then scaled. */
 const WORD_STYLE: TextStyle = {
@@ -77,6 +87,8 @@ function Body({ onNext }: PanelBodyProps) {
   const reduced = useReducedMotion();
   const [open, setOpen] = useState(false);
   const [ready, setReady] = useState(reduced);
+  const [saved, setSaved] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [phraseWidth, setPhraseWidth] = useState(0);
   const clock = useSharedValue(reduced ? 1 : 0);
   const words = getIdentityPhrase();
@@ -199,6 +211,10 @@ function Body({ onNext }: PanelBodyProps) {
   }, [clock, phraseWidth, reduced, revealContinue, timelineMs]);
 
   const toggle = () => setOpen(o => !o);
+  const copy = () => {
+    Clipboard.setString(words.join(' '));
+    setCopied(true);
+  };
 
   return (
     <PanelBody
@@ -206,7 +222,7 @@ function Body({ onNext }: PanelBodyProps) {
         <View style={styles.continueSlot}>
           {ready && (
             <Animated.View entering={FadeIn.duration(BUTTON_REVEAL_MS)}>
-              <Button label="Continue" onPress={onNext} />
+              <Button label="Continue" onPress={onNext} disabled={!saved} />
             </Animated.View>
           )}
         </View>
@@ -253,6 +269,42 @@ function Body({ onNext }: PanelBodyProps) {
           />
         )}
       </View>
+
+      {ready && (
+        <Animated.View entering={FadeIn.duration(BUTTON_REVEAL_MS)}>
+          <Pressable
+            onPress={copy}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={copied ? 'Copied' : 'Copy the words'}
+            style={styles.copy}>
+            {copied ? (
+              <Text style={[styles.copiedTick, { color: pal.muted }]}>✓</Text>
+            ) : (
+              <View style={styles.mark}>
+                <View
+                  style={[styles.markSquare, styles.markBack, { borderColor: pal.muted }]}
+                />
+                <View
+                  style={[
+                    styles.markSquare,
+                    styles.markFront,
+                    { borderColor: pal.muted, backgroundColor: pal.bg },
+                  ]}
+                />
+              </View>
+            )}
+            <Text style={[type.eyebrow, { color: pal.muted }]}>
+              {copied ? 'COPIED' : 'COPY THE WORDS'}
+            </Text>
+          </Pressable>
+          <Checkbox
+            checked={saved}
+            onToggle={() => setSaved(s => !s)}
+            label="I’ve saved my words. Cantor can’t recover them."
+          />
+        </Animated.View>
+      )}
 
       <Pressable onPress={toggle} style={styles.howHead} hitSlop={8}>
         <Text style={[type.eyebrow, { color: pal.muted }]}>
@@ -314,6 +366,30 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: space.sm,
   },
+  copy: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: space.sm,
+    marginTop: space.md,
+    marginBottom: space.sm,
+    minHeight: 32,
+  },
+  copiedTick: {
+    width: MARK,
+    fontFamily: type.mono.fontFamily,
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  mark: { width: MARK, height: MARK },
+  markSquare: {
+    position: 'absolute',
+    width: MARK_SQUARE,
+    height: MARK_SQUARE,
+    borderWidth: 1,
+  },
+  markBack: { top: 0, right: 0 },
+  markFront: { bottom: 0, left: 0 },
   howHead: { marginTop: space.xl },
   howBody: { marginTop: space.sm },
   continueSlot: { minHeight: CONTINUE_SLOT_H },

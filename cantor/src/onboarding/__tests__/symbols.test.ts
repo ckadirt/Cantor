@@ -27,7 +27,6 @@ describe('onboarding symbol selection', () => {
       SIGILS.what,
       SIGILS.backends,
       SIGILS.identity,
-      SIGILS.backup,
     ]) {
       expect(constellation.has(sigil)).toBe(false);
       expect(Skia.Path.MakeFromSVGString(sigil.artwork.d)).not.toBeNull();

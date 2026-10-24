@@ -12,8 +12,6 @@ export const SIGILS = {
   backends: SYMBOL_LIBRARY.interchange,
   /** ⊛ — one distinct identity held inside its own boundary. */
   identity: SYMBOL_LIBRARY.identityMark,
-  /** ⟲ — the recovery phrase brings an identity back. */
-  backup: SYMBOL_LIBRARY.restore,
   /** ∞ — Cantor's paradise, the threshold into the app. */
   threshold: SYMBOL_LIBRARY.infinity,
 } satisfies Record<string, SymbolPrimitive>;

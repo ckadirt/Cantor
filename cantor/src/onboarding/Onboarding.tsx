@@ -20,19 +20,17 @@ import { MorphShape, TransformText } from '../motion';
 import { whatPanel } from './panels/WhatPanel';
 import { backendsPanel } from './panels/BackendsPanel';
 import { identityPanel } from './panels/IdentityPanel';
-import { backupPanel } from './panels/BackupPanel';
 import { thresholdPanel } from './panels/ThresholdPanel';
 import type { PanelDef } from './panels/types';
 import { RestoreSheet } from './RestoreSheet';
 import type { AppIdentity } from '../identity/derive';
 import { space, type, usePalette } from '../theme/tokens';
 
-// Flow order: orient → engines → identity → backup → threshold.
+// Flow order: orient → engines → identity (and keeping it) → threshold.
 const PANELS: PanelDef[] = [
   whatPanel,
   backendsPanel,
   identityPanel,
-  backupPanel,
   thresholdPanel,
 ];
 

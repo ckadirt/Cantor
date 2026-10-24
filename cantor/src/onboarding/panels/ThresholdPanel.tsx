@@ -1,5 +1,5 @@
 /**
- * Panel 5 — the threshold. Hilbert's defence of Cantor's set theory, read here
+ * Panel 4 — the threshold. Hilbert's defence of Cantor's set theory, read here
  * as the benediction into the app: you've been given your keys, now cross over.
  * No eyebrow, no title — the frame's letters morph away and the quote writes
  * itself alone under the lemniscate (Manim's Write, from the motion engine).
