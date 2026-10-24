@@ -161,7 +161,6 @@ export function drawMarbleMorph(
 export const marbleLens: Lens = {
   key: 'marble',
   label: 'Marbling',
-  preview: true,
   identity: marbleMarkOf,
   player: marblePlayerOf,
   bake: bakeMarble,

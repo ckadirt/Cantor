@@ -108,10 +108,10 @@ describe('marbling as a mark', () => {
     expect(marbleLens.touch.seekAt(0, 120, radius)).toBeCloseTo(0.5, 9);
   });
 
-  it('is registered, but not offered while it is a preview', () => {
+  it('is registered and offered', () => {
     expect(LENSES).toContain(marbleLens);
-    expect(lensOffered(marbleLens)).toBe(false);
-    expect(LENSES.filter(lens => lens !== marbleLens).every(lensOffered)).toBe(true);
+    expect(lensOffered(marbleLens)).toBe(true);
+    expect(LENSES.every(lensOffered)).toBe(true);
   });
 
   it('builds a song in well under a millisecond or two', () => {
