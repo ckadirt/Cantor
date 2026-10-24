@@ -190,12 +190,12 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
       </div>
       <p class="cue beat" data-beat={`0 ${BEATS.shape / 2}`}>Scroll</p>
 
-      <div class="beat words" data-beat={`${BEATS.shape} ${BEATS.gather}`}>
+      <div class="beat words" data-beat={`${BEATS.shape} ${BEATS.gather}`} data-shape-words>
         <Pulse voice="shape" />
         <h2>Every song has a shape.</h2>
         <p>Drawn from its recipe. The same on every phone.</p>
       </div>
-      <div class="beat words" data-beat={`${BEATS.gather} 1.01`}>
+      <div class="beat words" data-beat={`${BEATS.gather} 1.01`} data-map-words>
         <Pulse voice="map" />
         <h2>Together, they make a map.</h2>
         <p>The music you love and the songs you make, together in one field.</p>
@@ -688,6 +688,9 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     .phrase { left: 22px; right: 22px; top: auto; bottom: 7svh; transform: none; gap: 16px; }
     .phrase canvas { height: 34svh; }
     .keys { display: none; }
+    .signup { gap: 12px; }
+    .signup li { gap: 6px; }
+    .signup i { height: 22px; }
     .end .name { white-space: normal; text-align: center; width: 76px; font-size: 9px; letter-spacing: 1.2px; line-height: 1.4; }
     .wire { left: 22px; right: 22px; top: 46svh; bottom: 8svh; }
     .end .role { display: none; }
@@ -696,14 +699,29 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     .end :global(.device.desktop) { width: 66px; }
     .end :global(.device.cloud) { width: 80px; }
     .end :global(.device.server) { width: 44px; }
-          .listing pre { font-size: 11.5px; }
+    .split { grid-template-columns: minmax(0, 1fr); gap: 28px; margin-bottom: 56px; }
+    .split p { font-size: 17px; line-height: 27px; }
+    .listing pre { font-size: 11.5px; }
     .listing figcaption span { display: none; }
     .drawing canvas { min-height: 300px; }
     .repo { grid-template-columns: minmax(0, 1fr); gap: 24px; margin-top: 48px; }
+    .two { grid-template-columns: minmax(0, 1fr); }
     .side { padding-right: 0; }
+    .side .btn { justify-self: stretch; text-align: center; }
     .side + .side { padding-left: 0; border-left: 0; border-top: 1px solid var(--line); margin-top: 28px; }
     .begin h2 { margin-bottom: 48px; }
+    .needs { grid-template-columns: minmax(0, 1fr); gap: 28px; margin-top: 56px; }
+    .begin .more { margin-top: 48px; }
     footer { flex-direction: column; gap: 16px; align-items: flex-start; }
     footer a:first-child { margin-left: 0; }
+  }
+  /* A short phone: the pinned scenes' words make room for their drawings. */
+  @media (max-width: 900px) and (max-height: 780px) {
+    .words { top: 76px; }
+    .words h2 { font-size: 30px; }
+    .words p { font-size: 15px; line-height: 23px; margin-top: 10px; }
+    .controls { margin-top: 12px; }
+    .wire { top: 50svh; bottom: 6svh; }
+    .phrase { bottom: 5svh; }
   }
 </style>

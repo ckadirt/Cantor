@@ -169,8 +169,8 @@ export function startFieldStage(
   let built = '';
 
   /** Seat every axis for this screen: as many columns as fill the map's area best. */
-  const build = (w: number, h: number, area: { w: number; h: number }, wide: boolean, dpr: number) => {
-    const key = `${w}x${h}`;
+  const build = (w: number, h: number, area: { y: number; w: number; h: number }, wide: boolean, dpr: number, wordsEnd: number) => {
+    const key = `${w}x${h}x${Math.round(area.y)}x${Math.round(wordsEnd)}`;
     if (key === built) return;
     built = key;
     for (const axis of AXES) {
@@ -204,7 +204,7 @@ export function startFieldStage(
         ]
       : [
           [0, 0.5, 1, 1],
-          [0, 0, 1, 0.34],
+          [0, 0, 1, Math.max(0.34, wordsEnd / h)],
         ];
     const free = (x: number, y: number) =>
       Math.hypot(x - hx, y - hy) > hr * 1.25 &&
@@ -274,6 +274,13 @@ export function startFieldStage(
   });
   canvas.parentElement!.addEventListener('pointerleave', () => (pointer = null));
 
+  // On a tall screen the words sit above the drawing, and how far down they
+  // reach depends on the phone's width and height.
+  const shapeWords = stage.querySelector<HTMLElement>('[data-shape-words]');
+  const mapWords = stage.querySelector<HTMLElement>('[data-map-words]');
+  /** Where a block of words ends, in canvas pixels; layout only, so its rise doesn't move it. */
+  const below = (el: HTMLElement | null, dpr: number) => (el ? (el.offsetTop + el.offsetHeight) * dpr : 0);
+
   /** The title's "o": the hero stands in it before it lifts out. */
   const slot = stage.querySelector<HTMLElement>('[data-o-slot]');
   let lastP = -1;
@@ -325,10 +332,11 @@ export function startFieldStage(
     if (canvas.height !== h) canvas.height = h;
     const wide = w / h > 1.15;
     // The map sits in the right of a wide screen, the bottom of a tall one.
+    const top = wide ? 0 : Math.max(h * 0.44, below(mapWords, dpr) + 24 * dpr);
     const area = wide
       ? { x: w * 0.38, y: h * 0.13, w: w * 0.5, h: h * 0.76 }
-      : { x: w * 0.04, y: h * 0.44, w: w * 0.92, h: h * 0.5 };
-    build(w, h, area, wide, dpr);
+      : { x: w * 0.04, y: top, w: w * 0.92, h: h * 0.94 - top };
+    build(w, h, area, wide, dpr, wide ? 0 : below(shapeWords, dpr) + 16 * dpr);
     const c = colours();
     ctx.clearRect(0, 0, w, h);
 
