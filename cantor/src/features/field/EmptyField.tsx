@@ -8,7 +8,7 @@ import { emptyFilterSentence } from './filterWords';
 /** KNOBS — the field with nothing in it (`flow.html#f-empty`, I7i). */
 export const EMPTY_FIELD_KNOBS = {
   /** The doors' column, centred under the sentence. */
-  WIDTH_PX: 236,
+  WIDTH_PX: 300,
   /** Between the seal, the sentence and the doors. */
   GAP_PX: 22,
   DOOR_NAME_PX: 20,
@@ -44,11 +44,11 @@ export function EmptyField({
           spindle
         />
         <Text style={[type.body, styles.sentence, { color: pal.ink }]}>
-          Your music is already on this phone. Cantor can play it where it lies.
+          Nothing here yet. Start with the music already on this phone.
         </Text>
         <View style={[styles.doors, { borderColor: pal.line }]}>
-          <EmptyDoor label="Bring it in" onPress={onBringIn} />
-          <EmptyDoor label="Pair a node" muted onPress={onPair} />
+          <EmptyDoor label="Play music from this phone" onPress={onBringIn} />
+          <EmptyDoor label="Make songs on your computer" muted onPress={onPair} />
         </View>
       </View>
     </View>

@@ -26,9 +26,9 @@ describe('the empty field', () => {
       ),
     ];
     expect(words).toEqual([
-      'Your music is already on this phone. Cantor can play it where it lies.',
-      'Bring it in',
-      'Pair a node',
+      'Nothing here yet. Start with the music already on this phone.',
+      'Play music from this phone',
+      'Make songs on your computer',
     ]);
     const door = (label: string) =>
       tree.root.find(
@@ -37,8 +37,8 @@ describe('the empty field', () => {
           node.props.accessibilityLabel === label &&
           typeof node.props.onPress === 'function',
       );
-    Renderer.act(() => door('Bring it in').props.onPress());
-    Renderer.act(() => door('Pair a node').props.onPress());
+    Renderer.act(() => door('Play music from this phone').props.onPress());
+    Renderer.act(() => door('Make songs on your computer').props.onPress());
     expect(onBringIn).toHaveBeenCalledTimes(1);
     expect(onPair).toHaveBeenCalledTimes(1);
   });
