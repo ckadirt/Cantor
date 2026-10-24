@@ -1,5 +1,5 @@
 diff --git a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt
-index 086e348..cdb9443 100644
+index 086e348..19e779f 100644
 --- a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt
 +++ b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/CentralizedForegroundService.kt
 @@ -49,14 +49,13 @@ class CentralizedForegroundService : Service() {
@@ -42,16 +42,97 @@ index 086e348..cdb9443 100644
    private fun findExistingNotification(): Pair<Int, Notification>? {
      // Check for playback notification first (priority)
      NotificationRegistry.getBuiltNotification(PlaybackNotification.ID)?.let {
+@@ -106,6 +116,15 @@ class CentralizedForegroundService : Service() {
+     }
+   }
+ 
++  override fun onTaskRemoved(rootIntent: Intent?) {
++    NotificationRegistry.releaseForRemovedTask()
++    if (ForegroundServiceManager.getSubscriberCount() == 0) {
++      stopForeground(STOP_FOREGROUND_REMOVE)
++      stopSelf()
++    }
++    super.onTaskRemoved(rootIntent)
++  }
++
+   override fun onDestroy() {
+     Log.d(TAG, "Centralized foreground service destroyed")
+     super.onDestroy()
+diff --git a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/BaseNotification.kt b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/BaseNotification.kt
+index f60a865..a3f7084 100644
+--- a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/BaseNotification.kt
++++ b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/BaseNotification.kt
+@@ -36,4 +36,10 @@ interface BaseNotification {
+    * Required for Android O+ notification channels.
+    */
+   fun getChannelId(): String
++
++  /**
++   * Whether this notification keeps the foreground service alive after the
++   * user swipes the app away. Recording keeps going; paused playback does not.
++   */
++  fun outlivesTask(): Boolean = true
+ }
+diff --git a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/NotificationRegistry.kt b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/NotificationRegistry.kt
+index 0ab2955..1500659 100644
+--- a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/NotificationRegistry.kt
++++ b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/NotificationRegistry.kt
+@@ -24,6 +24,27 @@ class NotificationRegistry(
+     private val builtNotifications = mutableMapOf<Int, Notification>()
+ 
+     fun getBuiltNotification(notificationId: Int): Notification? = builtNotifications[notificationId]
++
++    private var current: WeakReference<NotificationRegistry>? = null
++
++    /** The app was swiped away: hide what should not outlive it. */
++    fun releaseForRemovedTask() {
++      current?.get()?.releaseForRemovedTaskInternal()
++    }
++  }
++
++  init {
++    current = WeakReference(this)
++  }
++
++  @Synchronized
++  private fun releaseForRemovedTaskInternal() {
++    activeNotifications.filterValues { it }.keys.toList().forEach { key ->
++      if (notifications[key]?.outlivesTask() == false) {
++        Log.d(TAG, "Task removed: releasing $key")
++        hideNotification(key)
++      }
++    }
+   }
+ 
+   private val notifications = mutableMapOf<String, BaseNotification>()
 diff --git a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt
+index 3364c7a..d707044 100644
 --- a/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt
 +++ b/node_modules/react-native-audio-api/android/src/main/java/com/swmansion/audioapi/system/notification/PlaybackNotification.kt
-@@ -123,2 +123,4 @@
+@@ -121,6 +121,8 @@ class PlaybackNotification(
+             onFastForward()
+           } else if (action == "SkipBackward") {
              onRewind()
 +          } else if (action == "Stop") {
 +            onStop()
            }
-@@ -346,2 +348,9 @@
-
+         }
+       },
+@@ -194,6 +196,10 @@ class PlaybackNotification(
+ 
+   override fun getChannelId(): String = channelId
+ 
++  // Paused playback is let go with the app, as music players do; playing
++  // music keeps going.
++  override fun outlivesTask(): Boolean = isPlaying
++
+   private fun updateInternal(info: ReadableMap) {
+     if (info.hasKey("control") && info.hasKey("enabled")) {
+       enableControl(info.getString("control"), info.getBoolean("enabled"))
+@@ -344,6 +350,13 @@ class PlaybackNotification(
+       )
+     }
+ 
 +    // Android 13+ derives extra media buttons from custom playback actions.
 +    if (hasControl(PlaybackStateCompat.ACTION_STOP)) {
 +      builder.addCustomAction(
@@ -60,15 +141,21 @@ diff --git a/node_modules/react-native-audio-api/android/src/main/java/com/swman
 +    }
 +
      pb = builder
-@@ -413,2 +422,11 @@
-         createAction("nextTrack", "Next track", android.R.drawable.ic_media_next, PlaybackStateCompat.ACTION_SKIP_TO_NEXT),
-+      )
-+      actionsList.add(index++)
-+    }
-+
+   }
+ 
+@@ -415,6 +428,15 @@ class PlaybackNotification(
+       actionsList.add(index++)
+     }
+ 
 +    // Stop is independent of Pause. Keep the three transport buttons in the
 +    // compact view and offer Stop as the fourth action when expanded.
 +    if (hasControl(PlaybackStateCompat.ACTION_STOP) && hasControl(PlaybackStateCompat.ACTION_PAUSE)) {
 +      notificationBuilder?.addAction(
 +        createAction("stop", "Stop", R.drawable.stop, PlaybackStateCompat.ACTION_STOP),
-       )
++      )
++      actionsList.add(index++)
++    }
++
+     if (actionsList.size > 3) {
+       style.setShowActionsInCompactView(actionsList[0], actionsList[1], actionsList[2])
+     } else {
