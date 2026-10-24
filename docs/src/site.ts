@@ -5,12 +5,12 @@
  * apps read to offer an update, both come from it.
  */
 export const APP = {
-  versionName: '0.1.5',
-  versionCode: 6,
-  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.5/cantor-0.1.5-arm64.apk',
-  sha256: 'ba8b4792a119b09f6adecd7807e5bf147f4ac14a93a5cdfa4d714704bd790f80',
+  versionName: '0.1.6',
+  versionCode: 7,
+  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.6/cantor-0.1.6-arm64.apk',
+  sha256: '633afcbdb4af5410bdae6f3e958fbb03d4bb9c39aa1a72b731bc92e432b5c91d',
   bytes: 63683025,
-  notes: 'Clearer first steps, and paused music now closes with the app',
+  notes: 'Marbling joins the lenses',
 } as const;
 
 /** Links the landing and the docs share, in one place. */
