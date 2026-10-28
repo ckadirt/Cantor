@@ -22,6 +22,17 @@ describe('shelf labels', () => {
     expect(shelfLabel('2026-W31', NOW).primary).toBe('Jul 27 – Aug 2');
   });
 
+  it('names the year of a week from another year, as months do', () => {
+    expect(shelfLabel('1996-W29', NOW).primary).toBe('Jul 15 – 21, 1996');
+    expect(shelfLabel('2025-W29', NOW).primary).toBe('Jul 14 – 20, 2025');
+    // A week across New Year names each end's year that is not this one.
+    expect(shelfLabel('2026-W53', NOW).primary).toBe('Dec 28 – Jan 3, 2027');
+    expect(shelfLabel('2026-W53', new Date(2027, 5, 1, 12).getTime()).primary).toBe(
+      'Dec 28, 2026 – Jan 3',
+    );
+    expect(shelfLabel('2025-W01', NOW).primary).toBe('Dec 30, 2024 – Jan 5, 2025');
+  });
+
   it('keeps the axis key underneath, so the grouping is never a mystery', () => {
     expect(shelfLabel('2026-W35', NOW).secondary).toBe('2026-W35');
     expect(shelfLabel('2026-08', NOW).secondary).toBe('2026-08');

@@ -93,7 +93,8 @@ export function shelfLabel(label: string, nowMs: number): ShelfLabel {
 /**
  * A week reads relatively while that is still useful and as a date range after.
  * "THIS WEEK" is worth more than a date; "AUG 11 – 17" is worth more than
- * "3 WEEKS AGO", which nobody can convert into anything.
+ * "3 WEEKS AGO", which nobody can convert into anything. A week from another
+ * year says which: "JUL 15 – 21, 1996".
  */
 function weekLabel(
   key: string,
@@ -107,8 +108,21 @@ function weekLabel(
   const relative = SHELF_LABEL_KNOBS.RELATIVE_WEEKS[weeksAgo];
   if (relative !== undefined) return { primary: relative, secondary: key };
 
+  // Past this year, each end names its year (as months do), so a long
+  // history does not read July, July, July.
   const sunday = monday + DAY_MS * 6;
-  return { primary: `${day(monday)} – ${day(sunday, monday)}`, secondary: key };
+  const thisYear = new Date(nowMs).getFullYear();
+  const yearOf = (ms: number) => new Date(ms).getUTCFullYear();
+  const straddles = yearOf(monday) !== yearOf(sunday);
+  const start =
+    straddles && yearOf(monday) !== thisYear
+      ? `${day(monday)}, ${yearOf(monday)}`
+      : day(monday);
+  const end =
+    yearOf(sunday) !== thisYear
+      ? `${day(sunday, monday)}, ${yearOf(sunday)}`
+      : day(sunday, monday);
+  return { primary: `${start} – ${end}`, secondary: key };
 }
 
 /** `AUG 11`, or bare `17` when the closing day shares the opening month. */
