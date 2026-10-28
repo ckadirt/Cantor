@@ -74,6 +74,21 @@ export function isUnder(path: string, folder: string): boolean {
   return path.startsWith(folder.endsWith('/') ? folder : `${folder}/`);
 }
 
+/**
+ * True when a file's folder — the row it is listed under (`folderOf`) — is
+ * one the user left out. Matched on the row, not by prefix: `Music` lists only
+ * the files loose in the root, so leaving it out must not take `Music/<album
+ * folder>` with it.
+ */
+export function inExcludedFolder(
+  path: string,
+  excluded: readonly string[],
+): boolean {
+  if (excluded.length === 0) return false;
+  const folder = folderOf(path);
+  return excluded.some(item => trimSlash(item) === folder);
+}
+
 /** True when a folder's own words say it holds messages or recordings. */
 export function looksLikeVoiceNotes(folder: string): boolean {
   return VOICE_NOTE_WORDS.test(labelOf(folder).toLowerCase());
@@ -107,7 +122,7 @@ export function summarize(
 
   const summaries = [...byFolder.entries()].map(([path, members]) => {
     const status: FolderStatus = library.excludedFolders.some(
-      folder => folder === path || isUnder(path, folder),
+      folder => trimSlash(folder) === path,
     )
       ? 'excluded'
       : stored.has(path)

@@ -1,7 +1,7 @@
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { createStore, type Store } from '../core/store';
-import { folderOf, isUnder, summarize, type FolderSummary } from './folders';
+import { folderOf, inExcludedFolder, summarize, type FolderSummary } from './folders';
 import type { MediaInspection, MediaRow, nativeMedia } from './native';
 import {
   afterCheck,
@@ -413,7 +413,7 @@ export class DeviceLibraryService {
       .filter(
         row =>
           taken.has(folderOf(row.path)) &&
-          !stored.excludedFolders.some(folder => isUnder(row.path, folder)),
+          !inExcludedFolder(row.path, stored.excludedFolders),
       )
       .slice()
       .sort(

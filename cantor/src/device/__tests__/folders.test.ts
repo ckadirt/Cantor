@@ -1,5 +1,6 @@
 import {
   folderOf,
+  inExcludedFolder,
   isUnder,
   looksLikeVoiceNotes,
   songsKept,
@@ -240,5 +241,34 @@ describe('summarize', () => {
     const leftOut = new Set(summary.filter(f => !f.keep).map(f => f.path));
     expect(songsKept(summary, leftOut)).toBe(7);
     expect(songsKept(summary, new Set())).toBe(11);
+  });
+
+  it('leaves out the loose files in a music root without its album folders', () => {
+    // A phone with loose recordings in Music/ and albums in Music/<folder>:
+    // leaving the loose row out must not take the album folders with it.
+    const music = `${ROOT}/Music`;
+    const summary = summarize(
+      [
+        row(`${music}/request00.mp3`),
+        row(`${music}/favorites/a.flac`, 'A'),
+        row(`${music}/clasic/b.flac`, 'B'),
+      ],
+      library([], [music]),
+    );
+    const status = new Map(summary.map(f => [f.path, f.status]));
+    expect(status.get(music)).toBe('excluded');
+    expect(status.get(`${music}/favorites`)).toBe('new');
+    expect(status.get(`${music}/clasic`)).toBe('new');
+  });
+});
+
+describe('inExcludedFolder', () => {
+  it('matches the row a file is listed under, not every folder above it', () => {
+    const music = `${ROOT}/Music`;
+    expect(inExcludedFolder(`${music}/request00.mp3`, [music])).toBe(true);
+    expect(inExcludedFolder(`${music}/favorites/a.flac`, [music])).toBe(false);
+    expect(inExcludedFolder(`${music}/favorites/extras/b.flac`, [`${music}/favorites`])).toBe(true);
+    expect(inExcludedFolder(`${WHATSAPP}/x.opus`, [WHATSAPP])).toBe(true);
+    expect(inExcludedFolder(`${ROOT}/Download/x.flac`, [])).toBe(false);
   });
 });

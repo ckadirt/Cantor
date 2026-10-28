@@ -1,4 +1,5 @@
 import type { MediaInspection, MediaRow } from './native';
+import { inExcludedFolder } from './folders';
 import {
   deviceSongId,
   type DeviceAlbum,
@@ -345,9 +346,7 @@ function leadingYear(value: string | null): number | null {
 }
 
 function isExcluded(path: string, folders: readonly string[]): boolean {
-  return folders.some(folder =>
-    path.startsWith(folder.endsWith('/') ? folder : `${folder}/`),
-  );
+  return inExcludedFolder(path, folders);
 }
 
 function fingerprint(size: number, headSha256: string): string {
