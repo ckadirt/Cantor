@@ -11,7 +11,10 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import {
   Coda,
   Door,
+  FOLIO_ACT_STYLE,
+  FOLIO_NOTE_STYLE,
   Measure,
+  PanelPressable,
   Rest,
   Reveal,
   Row,
@@ -50,6 +53,10 @@ const SETTINGS_KNOBS = {
   ACT_SLOT_PX: 22,
   /** Two body lines for a storage/settings failure, beside the budget. */
   STORAGE_ERROR_SLOT_PX: 44,
+  /** The save act's seat: the folio act's own line, as `Bring in` takes it. */
+  SAVE_SLOT_PX: 28,
+  /** The least time `Saving` shows, so a quick save still reads as one. */
+  SAVE_MIN_MS: 600,
 } as const;
 
 /** What this phone is holding, counted the way the design counts it. */
@@ -102,6 +109,42 @@ export function SettingsSheet({
   sync = null,
 }: Props) {
   const pal = usePalette();
+  // The rulers move drafts; nothing changes until Save, so exploring the
+  // choices cannot drop the cache or re-date the field by accident.
+  const savedDating = useStore(importDating, state => state);
+  const [draftBudget, setDraftBudget] = useState(budgetBytes);
+  const [draftDating, setDraftDating] = useState<ImportDating>(savedDating);
+  const [saving, setSaving] = useState(false);
+  // Leaving Settings without saving lets the drafts go.
+  useEffect(() => {
+    if (visible) return;
+    setDraftBudget(budgetBytes);
+    setDraftDating(savedDating);
+  }, [visible, budgetBytes, savedDating]);
+  const dirty = draftBudget !== budgetBytes || draftDating !== savedDating;
+  const save = async () => {
+    if (!dirty || saving) return;
+    setSaving(true);
+    const started = Date.now();
+    // Let the wave start before the work: re-dating a large field holds the
+    // JS thread for a moment.
+    await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
+    try {
+      if (draftBudget !== budgetBytes) onChangeBudget(draftBudget);
+      if (draftDating !== savedDating) {
+        await chooseImportDating(draftDating);
+        // Hold the wave until the field has drawn the new dates: these frames
+        // only come once the re-cut has let go of the JS thread.
+        for (let frame = 0; frame < 2; frame += 1) {
+          await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+        }
+      }
+    } finally {
+      const left = SETTINGS_KNOBS.SAVE_MIN_MS - (Date.now() - started);
+      if (left > 0) await new Promise<void>(resolve => setTimeout(resolve, left));
+      setSaving(false);
+    }
+  };
   if (!visible) return null;
 
   const total = storage.downloadedBytes + storage.cachedBytes;
@@ -168,12 +211,12 @@ export function SettingsSheet({
             {/* The value in words above the line it is chosen along. */}
             <View style={styles.rulerValue}>
               <Text style={[type.body, { color: pal.ink }]}>
-                {formatBytes(budgetBytes)}
+                {formatBytes(draftBudget)}
               </Text>
             </View>
             <Ruler
-              activeKey={String(budgetBytes)}
-              onSelect={key => onChangeBudget(Number(key))}
+              activeKey={String(draftBudget)}
+              onSelect={key => setDraftBudget(Number(key))}
               stops={BUDGET_CHOICES.map(choice => ({
                 key: String(choice),
                 label: formatBytes(choice)
@@ -189,7 +232,7 @@ export function SettingsSheet({
         </Measure>
         <Rest />
         <Measure>
-          <ImportDatingRow />
+          <ImportDatingRow value={draftDating} onChange={setDraftDating} />
         </Measure>
         <Rest />
         <Measure>
@@ -216,8 +259,18 @@ export function SettingsSheet({
           </Row>
         </Measure>
       </Stave>
-      {/* No act: settings ends on the bar alone. */}
-      <Coda />
+      <Coda>
+        <SaveAct
+          dirty={dirty}
+          saving={saving}
+          onPress={() => {
+            save().catch(() => setSaving(false));
+          }}
+        />
+        <Text style={[FOLIO_NOTE_STYLE, { color: pal.faint }]}>
+          {dirty || saving ? 'APPLIED ON SAVE' : 'NOTHING TO SAVE'}
+        </Text>
+      </Coda>
     </>
   );
 }
@@ -241,17 +294,22 @@ export function settingsMeta(publicKey: string, version: string | null = null): 
 /** Each dating's stop on the ruler, and the value above it in words. */
 const DATING_WORDS: Readonly<Record<ImportDating, { stop: string; value: string }>> = {
   arrived: { stop: 'Phone', value: 'When the file reached this phone' },
-  released: { stop: 'Release', value: 'When the song came out' },
+  released: { stop: 'Song', value: 'When the song came out' },
   imported: { stop: 'Cantor', value: 'When Cantor brought it in' },
 };
 
 /**
- * Which date an imported song stands at on the time axes. Changes the field
- * at once; the files are never written.
+ * Which date an imported song stands at on the time axes. A draft until Save;
+ * the files are never written.
  */
-function ImportDatingRow() {
+function ImportDatingRow({
+  value: dating,
+  onChange,
+}: {
+  value: ImportDating;
+  onChange: (choice: ImportDating) => void;
+}) {
   const pal = usePalette();
-  const dating = useStore(importDating, state => state);
   return (
     <Row label="Imports" control>
       <View style={styles.rulerValue}>
@@ -259,9 +317,7 @@ function ImportDatingRow() {
       </View>
       <Ruler
         activeKey={dating}
-        onSelect={key => {
-          chooseImportDating(key as ImportDating).catch(() => {});
-        }}
+        onSelect={key => onChange(key as ImportDating)}
         stops={IMPORT_DATINGS.map(choice => ({
           key: choice,
           label: DATING_WORDS[choice].stop,
@@ -269,9 +325,45 @@ function ImportDatingRow() {
         }))}
       />
       <Text style={[type.small, { color: pal.muted }]}>
-        Where your own songs stand by date. Release reads the date in their tags.
+        Where your own songs stand by date. Song reads the date in their tags.
       </Text>
     </Row>
+  );
+}
+
+/** Settings' one act: apply the drafts, with the wave while it works. */
+function SaveAct({
+  dirty,
+  saving,
+  onPress,
+}: {
+  dirty: boolean;
+  saving: boolean;
+  onPress: () => void;
+}) {
+  const disabled = !dirty && !saving;
+  const { colour } = useReach(disabled);
+  const label = saving ? 'Saving' : dirty ? 'Save' : 'Saved';
+  return (
+    <PanelPressable
+      accessibilityLabel={label}
+      accessibilityRole="button"
+      accessibilityState={{ disabled, busy: saving }}
+      disabled={disabled}
+      onPress={saving ? undefined : onPress}
+      style={styles.saveAct}
+    >
+      <View>
+        <TransformText
+          charStyle={FOLIO_ACT_STYLE}
+          color={colour}
+          duration={SETTINGS_KNOBS.ACT_MS}
+          style={styles.saveSlot}
+          text={label}
+        />
+        <Underway charStyle={FOLIO_ACT_STYLE} label={label} working={saving} />
+      </View>
+    </PanelPressable>
   );
 }
 
@@ -631,6 +723,8 @@ const styles = StyleSheet.create({
   recoveryAct: { justifyContent: 'center', minHeight: touch.min },
   rulerValue: { justifyContent: 'center', paddingTop: 13 },
   recoverySlot: { height: SETTINGS_KNOBS.ACT_SLOT_PX },
+  saveAct: { justifyContent: 'center', minHeight: touch.min },
+  saveSlot: { height: SETTINGS_KNOBS.SAVE_SLOT_PX },
   recoveryGrid: { marginBottom: space.sm, marginTop: space.xs },
   updateMeta: { ...type.eyebrow, fontSize: SETTINGS_KNOBS.META_PX, letterSpacing: 0.7, lineHeight: 19 },
 });

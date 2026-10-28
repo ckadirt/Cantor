@@ -230,7 +230,7 @@ describe('Ledger engine pages', () => {
     expect(words()).toContain('Pair a node');
   });
 
-  it('changes only the cache budget from settings and returns', () => {
+  it('changes only the cache budget from settings, on Save, and returns', async () => {
     const { press, words, labels, onChangeBudget, onForget, tree } = render();
     press('Settings');
     expect(words()).toEqual(
@@ -250,10 +250,24 @@ describe('Ledger engine pages', () => {
         nativeEvent: { actionName: 'increment' },
       }),
     );
+    // Moving the ruler is a draft: nothing is applied until Save.
+    expect(onChangeBudget).not.toHaveBeenCalled();
+    expect(labels()).toContain('Save');
+    press('Save');
+    for (let waited = 0; waited < 3000 && (waited === 0 || labels().includes('Saving')); waited += 100) {
+      await Renderer.act(async () => {
+        await new Promise<void>(resolve => setTimeout(resolve, 100));
+      });
+    }
     expect(onChangeBudget).toHaveBeenCalledWith(2 * 1024 ** 3);
+    expect(labels()).not.toContain('Saving');
     expect(onForget).not.toHaveBeenCalled();
     press('Back to nodes');
+    await Renderer.act(async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 600));
+    });
     expect(labels()).toContain('NODES');
+    Renderer.act(() => tree.unmount());
   });
 
   it('puts the phone first, and asks before reading', async () => {
