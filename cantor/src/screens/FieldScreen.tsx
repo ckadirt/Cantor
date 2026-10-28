@@ -48,6 +48,7 @@ import {
   useFieldCamera,
 } from '../features/field';
 import { loadLegendSeen, saveLegendSeen } from '../features/field/legendSeen';
+import { importDating, loadImportDating } from '../device/importDating';
 import type { NowPlaying } from '../features/field/NowPlaying';
 import {
   createFieldControllerStore,
@@ -781,8 +782,12 @@ export function FieldScreen({ identity }: Props) {
     }),
   );
   const [controllerStore] = useState(() =>
-    createFieldControllerStore(runtime.store, deviceLibrary.store, network),
+    createFieldControllerStore(runtime.store, deviceLibrary.store, network, importDating),
   );
+  // The saved choice of date for imported songs; the field follows the store.
+  useEffect(() => {
+    loadImportDating();
+  }, []);
   /**
    * An album the phone's folder page asked for (internal/docs/import/flow-plan.md,
    * I7h): the blind closes, the field takes the ALBUM arrangement, and once

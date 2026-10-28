@@ -1,4 +1,5 @@
 import { createStore, type Store } from '../../core/store';
+import type { ImportDating } from '../../device/importDating';
 import type { DeviceLibrary } from '../../device/repository';
 import type { BackendRuntimeState } from '../../runtime/backendRuntime';
 import {
@@ -35,21 +36,26 @@ export function createFieldControllerStore(
   >,
   /** Whether the phone is online (`network`); a row waiting says for what. */
   online?: Pick<Store<boolean | null>, 'get' | 'subscribe'>,
+  /** Which date an imported song stands at (`device/importDating.ts`). */
+  dating?: Pick<Store<ImportDating>, 'get' | 'subscribe'>,
 ): FieldControllerStore {
   let read = runtime.get();
   let deviceRead = device?.get().library;
   let onlineRead = online?.get() ?? null;
+  let datingRead = dating?.get();
   const store = createStore(
     buildFieldController({
       ...read,
       device: deviceRead,
       noConnection: onlineRead === false,
+      importDating: datingRead,
     }),
   );
   const follow = (force = false) => {
     const next = runtime.get();
     const nextDevice = device?.get().library;
     const nextOnline = online?.get() ?? null;
+    const nextDating = dating?.get();
     const same =
       !force &&
       next.backends === read.backends &&
@@ -61,17 +67,24 @@ export function createFieldControllerStore(
       next.downloading === read.downloading &&
       next.waiting === read.waiting &&
       nextDevice === deviceRead &&
-      nextOnline === onlineRead;
+      nextOnline === onlineRead &&
+      nextDating === datingRead;
     read = next;
     deviceRead = nextDevice;
     onlineRead = nextOnline;
+    datingRead = nextDating;
     // Pairing and errors are not the field's business.
     if (same) return;
     // `buildFieldController` hands back the controller it was given when
     // nothing it holds changed, and the store tells nobody about that.
     store.set(previous =>
       buildFieldController(
-        { ...next, device: nextDevice, noConnection: nextOnline === false },
+        {
+          ...next,
+          device: nextDevice,
+          noConnection: nextOnline === false,
+          importDating: nextDating,
+        },
         previous,
       ),
     );
@@ -84,10 +97,12 @@ export function createFieldControllerStore(
       const stopRuntime = runtime.subscribe(() => follow());
       const stopDevice = device?.subscribe(() => follow());
       const stopOnline = online?.subscribe(() => follow());
+      const stopDating = dating?.subscribe(() => follow());
       return () => {
         stopRuntime();
         stopDevice?.();
         stopOnline?.();
+        stopDating?.();
       };
     },
   };

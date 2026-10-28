@@ -11,6 +11,7 @@ import type { JobView } from '../../core/protocol';
 import type { StageName } from '../../core/protocol';
 import type { FieldEntity, FieldRecord } from '../../field';
 import { metadataSeed, type FaceRecipe } from '../../lenses/face';
+import { importedSongDateMs, type ImportDating } from '../../device/importDating';
 import type {
   DeviceAlbum,
   DeviceLibrary,
@@ -223,6 +224,8 @@ type FieldRuntimeState = Pick<
     device?: DeviceLibrary;
     /** The phone has no connection at all. */
     noConnection?: boolean;
+    /** Which date an imported song stands at (`device/importDating.ts`). */
+    importDating?: ImportDating;
   }>;
 
 const REMOTE_AUDIO: LocalAudio = { state: 'remote', bytes: 0 };
@@ -326,7 +329,7 @@ export function buildFieldController(
     }
   }
   if (state.device !== undefined) {
-    addDeviceSongs(state.device, previous, presentations);
+    addDeviceSongs(state.device, previous, presentations, state.importDating ?? 'arrived');
   }
   const jobs = new Map<string, JobPresentation>();
   const works = deriveWork(
@@ -411,6 +414,7 @@ function addDeviceSongs(
   library: DeviceLibrary,
   previous: FieldController | null,
   presentations: Map<string, FieldPresentation>,
+  dating: ImportDating,
 ): void {
   const albums = new Map(library.albums.map(album => [album.key, album]));
   const albumArrived = new Map<string, number>();
@@ -432,7 +436,7 @@ function addDeviceSongs(
       nodePublicKey: DEVICE_NODE_KEY,
       entityId: device.id,
       kind: 'song',
-      createdAtMs: device.addedAtMs,
+      createdAtMs: importedSongDateMs(device, dating),
       durationMs: device.durationMs,
       tags,
       record: {

@@ -28,6 +28,12 @@ import { loadStoredPhrase } from '../../identity/secureIdentity';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 import { SyncRow, type SyncSong } from './SyncRow';
 import { useStore } from '../../core/useStore';
+import {
+  chooseImportDating,
+  importDating,
+  IMPORT_DATINGS,
+  type ImportDating,
+} from '../../device/importDating';
 import { appUpdate, RELEASE_ID, updateAvailable, updateBusy, type AppUpdateState } from '../../update';
 
 /** KNOBS */
@@ -183,6 +189,10 @@ export function SettingsSheet({
         </Measure>
         <Rest />
         <Measure>
+          <ImportDatingRow />
+        </Measure>
+        <Rest />
+        <Measure>
           <SyncRow song={sync} />
         </Measure>
         <Rest />
@@ -228,6 +238,43 @@ export function settingsMeta(publicKey: string, version: string | null = null): 
  * works. Under it, the release's one line of what changed. On the first open
  * after an update the row says `Updated`, with that line, once.
  */
+/** Each dating's stop on the ruler, and the value above it in words. */
+const DATING_WORDS: Readonly<Record<ImportDating, { stop: string; value: string }>> = {
+  arrived: { stop: 'Phone', value: 'When the file reached this phone' },
+  released: { stop: 'Release', value: 'When the song came out' },
+  imported: { stop: 'Cantor', value: 'When Cantor brought it in' },
+};
+
+/**
+ * Which date an imported song stands at on the time axes. Changes the field
+ * at once; the files are never written.
+ */
+function ImportDatingRow() {
+  const pal = usePalette();
+  const dating = useStore(importDating, state => state);
+  return (
+    <Row label="Imports" control>
+      <View style={styles.rulerValue}>
+        <Text style={[type.body, { color: pal.ink }]}>{DATING_WORDS[dating].value}</Text>
+      </View>
+      <Ruler
+        activeKey={dating}
+        onSelect={key => {
+          chooseImportDating(key as ImportDating).catch(() => {});
+        }}
+        stops={IMPORT_DATINGS.map(choice => ({
+          key: choice,
+          label: DATING_WORDS[choice].stop,
+          accessibilityLabel: `Date imported songs: ${DATING_WORDS[choice].value}`,
+        }))}
+      />
+      <Text style={[type.small, { color: pal.muted }]}>
+        Where your own songs stand by date. Release reads the date in their tags.
+      </Text>
+    </Row>
+  );
+}
+
 function VersionRow() {
   const pal = usePalette();
   const state = useStore(appUpdate.store, current => current);

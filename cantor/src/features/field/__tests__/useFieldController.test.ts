@@ -365,6 +365,16 @@ describe('device songs', () => {
     });
   });
 
+  it('stands an imported song at the date the dating names', () => {
+    const at = (importDating?: 'arrived' | 'released' | 'imported') =>
+      buildFieldController({ ...empty, device: library([deviceSong]), importDating })
+        .presentations.get(`device:${deviceSong.id}`)?.entity.createdAtMs;
+    expect(at()).toBe(deviceSong.addedAtMs);
+    expect(at('arrived')).toBe(deviceSong.addedAtMs);
+    expect(at('imported')).toBe(deviceSong.importedAtMs);
+    expect(at('released')).toBe(Date.UTC(2019, 0, 1, 12));
+  });
+
   it('leaves a missing file’s song out', () => {
     const model = buildFieldController({
       ...empty,
