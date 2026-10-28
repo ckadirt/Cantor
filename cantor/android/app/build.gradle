@@ -102,8 +102,8 @@ android {
         applicationId "com.cantor.app"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 7
-        versionName "0.1.6"
+        versionCode 8
+        versionName "0.1.7"
     }
     // React Native's default app CMake plus Cantor's C++ (the FFmpeg-backed
     // audio reduction); see src/main/jni/CMakeLists.txt.

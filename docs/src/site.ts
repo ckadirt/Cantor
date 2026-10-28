@@ -5,12 +5,12 @@
  * apps read to offer an update, both come from it.
  */
 export const APP = {
-  versionName: '0.1.6',
-  versionCode: 7,
-  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.6/cantor-0.1.6-arm64.apk',
-  sha256: '633afcbdb4af5410bdae6f3e958fbb03d4bb9c39aa1a72b731bc92e432b5c91d',
-  bytes: 63683025,
-  notes: 'Marbling joins the lenses',
+  versionName: '0.1.7',
+  versionCode: 8,
+  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.7/cantor-0.1.7-arm64.apk',
+  sha256: 'c9aab8c29b6f1f7f216f8ad24a481623f5a5b7575ea799ba0c43d3753aee65ae',
+  bytes: 63691385,
+  notes: 'Settings apply on Save, imports can be dated by song, and weeks name their year',
 } as const;
 
 /** Links the landing and the docs share, in one place. */
