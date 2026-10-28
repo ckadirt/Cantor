@@ -210,9 +210,13 @@ export function SettingsSheet({
           <Row label="Budget" control>
             {/* The value in words above the line it is chosen along. */}
             <View style={styles.rulerValue}>
-              <Text style={[type.body, { color: pal.ink }]}>
-                {formatBytes(draftBudget)}
-              </Text>
+              <TransformText
+                charStyle={type.body}
+                color={pal.ink}
+                duration={SETTINGS_KNOBS.ACT_MS}
+                style={styles.valueSlot}
+                text={formatBytes(draftBudget)}
+              />
             </View>
             <Ruler
               activeKey={String(draftBudget)}
@@ -313,7 +317,13 @@ function ImportDatingRow({
   return (
     <Row label="Imports" control>
       <View style={styles.rulerValue}>
-        <Text style={[type.body, { color: pal.ink }]}>{DATING_WORDS[dating].value}</Text>
+        <TransformText
+          charStyle={type.body}
+          color={pal.ink}
+          duration={SETTINGS_KNOBS.ACT_MS}
+          style={styles.valueSlot}
+          text={DATING_WORDS[dating].value}
+        />
       </View>
       <Ruler
         activeKey={dating}
@@ -722,6 +732,8 @@ const styles = StyleSheet.create({
   fill: { height: SETTINGS_KNOBS.BAR_HEIGHT_PX },
   recoveryAct: { justifyContent: 'center', minHeight: touch.min },
   rulerValue: { justifyContent: 'center', paddingTop: 13 },
+  /** A ruler's value morphs in place, on the body's own line. */
+  valueSlot: { height: SETTINGS_KNOBS.ACT_SLOT_PX },
   recoverySlot: { height: SETTINGS_KNOBS.ACT_SLOT_PX },
   saveAct: { justifyContent: 'center', minHeight: touch.min },
   saveSlot: { height: SETTINGS_KNOBS.SAVE_SLOT_PX },

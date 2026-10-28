@@ -6,6 +6,7 @@ import Animated, {
   type SharedValue,
 } from 'react-native-reanimated';
 import { Row, Ruler } from '../controls';
+import { TransformText } from '../../motion';
 import { useStore } from '../../core/useStore';
 import { smootherstep } from '../../lenses/motion/motionFrame';
 import { outputLatencySeconds, type OutputRoute } from '../../player/outputLatency';
@@ -114,7 +115,13 @@ export function SyncRow({ song }: { song: SyncSong | null }) {
   return (
     <Row label="Sync" control>
       <View style={styles.value}>
-        <Text style={[type.body, { color: pal.ink }]}>{`${signed(offset)} ms`}</Text>
+        <TransformText
+          charStyle={type.body}
+          color={pal.ink}
+          duration={SYNC_VALUE_MS}
+          style={styles.valueSlot}
+          text={`${signed(offset)} ms`}
+        />
         <Animated.View
           accessibilityElementsHidden
           importantForAccessibility="no-hide-descendants"
@@ -131,9 +138,15 @@ export function SyncRow({ song }: { song: SyncSong | null }) {
   );
 }
 
+/** The value morphs as the ruler steps; quicker than an act, as it is dragged. */
+const SYNC_VALUE_MS = 260;
+
 const styles = StyleSheet.create({
   // The value in words above the line it is chosen along, as the budget's.
   value: { alignItems: 'center', flexDirection: 'row', gap: 12, paddingTop: 13 },
+  // A fixed seat, wide enough for `−150 ms`: the morph draws on a canvas, so
+  // a row gives it no width of its own.
+  valueSlot: { height: 22, width: 54 },
   dot: {
     borderRadius: SYNC_ROW_KNOBS.DOT_PX / 2,
     height: SYNC_ROW_KNOBS.DOT_PX,

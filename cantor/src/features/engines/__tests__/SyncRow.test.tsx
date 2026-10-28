@@ -19,10 +19,14 @@ function render(song: SyncSong | null) {
 }
 
 function words(tree: Renderer.ReactTestRenderer): string {
-  return tree.root
+  const text = tree.root
     .findAllByType(Text)
-    .map(node => [node.props.children].flat().join(''))
-    .join(' | ');
+    .map(node => [node.props.children].flat().join(''));
+  // The value morphs on a canvas; its words are its label.
+  const labels = tree.root
+    .findAll(node => typeof node.type === 'string' && typeof node.props.accessibilityLabel === 'string')
+    .map(node => node.props.accessibilityLabel as string);
+  return [...text, ...labels].join(' | ');
 }
 
 const position = { value: 10 } as SharedValue<number>;
