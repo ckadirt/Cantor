@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::super::wire::{CONTROL_VERSION, write_value_line as write_line};
+use crate::jobs::operator::Placement;
 use crate::principal::PrincipalId;
 use crate::runtime::SharedState;
 use crate::store::Store;
@@ -35,6 +36,10 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
         .map(PathBuf::from);
     let detach = request
         .get("detach")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let next = request
+        .get("next")
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let principal = PrincipalId::local_operator();
@@ -96,6 +101,9 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
                 bail!("the source is not a committed upload or song of this node's operator")
             }
         };
+        if next {
+            crate::jobs::operator::place(&mut locked, &job.id, &Placement::Next)?;
+        }
         (job, Arc::clone(&locked.job_notify))
     };
     notify.notify_one();

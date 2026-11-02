@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::{StopReason, request_stop};
 use crate::config::NodeConfig;
-use crate::library::{ControlResult, JobControl, QueuedJob};
+use crate::library::{ControlResult, ForgetResult, JobControl, QueuedJob};
 use crate::principal::PrincipalId;
 use crate::runtime::NodeState;
 
@@ -75,6 +75,128 @@ pub struct Cancellation {
     pub outcome: CancelOutcome,
     /// The change to tell the job's owner about, if anything changed.
     pub update: Option<(PrincipalId, JobView)>,
+}
+
+/// Where to put a job in the queue.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Placement {
+    /// Runs next, and stays above new arrivals.
+    Next,
+    /// Runs last, and stays below new arrivals.
+    Last,
+    Before(String),
+    After(String),
+}
+
+/// The priority changes that put `job` where `placement` says.
+///
+/// `priority` is the whole order: `claim_next` already sorts by it, a new job
+/// arrives at 0, and a tie falls to age. So every gap made here is strict, or
+/// age would quietly undo the move. Pure, so the order can be proved alone.
+pub fn reorder(
+    queue: &[(String, i64)],
+    job: &str,
+    placement: &Placement,
+) -> Result<Vec<(String, i64)>> {
+    if !queue.iter().any(|(id, _)| id == job) {
+        bail!("only a waiting job can be moved");
+    }
+    let rest = queue.iter().filter(|(id, _)| id != job).collect::<Vec<_>>();
+    let index_of = |target: &str| {
+        if target == job {
+            bail!("a job cannot be moved next to itself");
+        }
+        rest.iter()
+            .position(|(id, _)| id == target)
+            .with_context(|| format!("{target} is not waiting"))
+    };
+    let at = |index: usize, change: &mut Vec<(String, i64)>| {
+        // Everything ahead keeps its order and clears the job by at least one.
+        let below = rest[index].1;
+        change.extend(
+            rest[..index]
+                .iter()
+                .map(|(id, priority)| (id.clone(), priority + 2)),
+        );
+        change.push((job.to_owned(), below + 1));
+    };
+    let mut changes = Vec::new();
+    match placement {
+        Placement::Next => {
+            let top = rest.first().map_or(0, |(_, priority)| priority + 1);
+            changes.push((job.to_owned(), top));
+        }
+        Placement::Last => {
+            let bottom = rest.last().map_or(0, |(_, priority)| priority - 1);
+            changes.push((job.to_owned(), bottom));
+        }
+        Placement::Before(target) => at(index_of(target)?, &mut changes),
+        Placement::After(target) => {
+            let index = index_of(target)?;
+            if index + 1 < rest.len() {
+                at(index + 1, &mut changes);
+            } else {
+                changes.push((job.to_owned(), rest[index].1 - 1));
+            }
+        }
+    }
+    Ok(changes)
+}
+
+/// Put a named job somewhere in the queue.
+pub fn place(state: &mut NodeState, job: &str, placement: &Placement) -> Result<QueueItem> {
+    let items = queue(state)?;
+    let moved = items[find(&items, job)?].job.id.clone();
+    let resolve = |name: &str| Ok::<_, anyhow::Error>(items[find(&items, name)?].job.id.clone());
+    let placement = match placement {
+        Placement::Before(other) => Placement::Before(resolve(other)?),
+        Placement::After(other) => Placement::After(resolve(other)?),
+        other => other.clone(),
+    };
+    let order = state.library.queue_order()?;
+    let changes = reorder(&order, &moved, &placement)?;
+    state.library.set_queue_order(&changes)?;
+    let items = queue(state)?;
+    items
+        .into_iter()
+        .find(|item| item.job.id == moved)
+        .context("the moved job disappeared")
+}
+
+/// Jobs `queue clear` would erase, optionally only one pairing's.
+pub fn stopped(state: &NodeState, from: Option<&str>) -> Result<Vec<QueueItem>> {
+    let from = from
+        .map(|from| owner_named(&state.config, from))
+        .transpose()?;
+    Ok(state
+        .library
+        .stopped_jobs()?
+        .into_iter()
+        .filter(|job| from.is_none_or(|from| job.principal_id == from))
+        .map(|QueuedJob { principal_id, job }| QueueItem {
+            owner: owner_name(&state.config, principal_id),
+            position: None,
+            principal_id,
+            job,
+        })
+        .collect())
+}
+
+/// Erase stopped jobs, returning who to tell. Refusals are skipped, not errors:
+/// `forget_job` keeps its own rule that a published song is never erased.
+pub fn forget(state: &mut NodeState, jobs: &[QueueItem]) -> Result<Vec<(PrincipalId, String)>> {
+    let mut forgotten = Vec::new();
+    for item in jobs {
+        if matches!(
+            state
+                .library
+                .forget_job(item.principal_id, &item.job.id, None)?,
+            ForgetResult::Forgotten
+        ) {
+            forgotten.push((item.principal_id, item.job.id.clone()));
+        }
+    }
+    Ok(forgotten)
 }
 
 /// The queue in run order, with what a person needs to recognise each job.
@@ -251,7 +373,108 @@ fn owner_name(config: &NodeConfig, principal: PrincipalId) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::model_matches;
+    use super::{Placement, model_matches, reorder};
+
+    fn job(name: &str, priority: i64) -> (String, i64) {
+        (name.to_owned(), priority)
+    }
+
+    /// Apply changes the way SQLite would read them back. Ties fall to age, and
+    /// a job's age is its place in `ages`, oldest first.
+    fn order(jobs: &[(String, i64)], changes: &[(String, i64)], ages: &[&str]) -> Vec<String> {
+        let mut after = jobs.to_vec();
+        for (id, priority) in changes {
+            after.iter_mut().find(|job| &job.0 == id).unwrap().1 = *priority;
+        }
+        let age = |id: &str| ages.iter().position(|name| *name == id).unwrap();
+        after.sort_by_key(|(id, priority)| (-priority, age(id)));
+        after.into_iter().map(|(id, _)| id).collect()
+    }
+
+    const AGES: [&str; 5] = ["a", "b", "c", "d", "e"];
+
+    fn flat() -> Vec<(String, i64)> {
+        AGES.iter().map(|name| job(name, 0)).collect()
+    }
+
+    #[test]
+    fn every_placement_lands_exactly_there_across_tied_priorities() {
+        let cases = [
+            ("e", Placement::Next, ["e", "a", "b", "c", "d"]),
+            ("a", Placement::Last, ["b", "c", "d", "e", "a"]),
+            (
+                "e",
+                Placement::Before("c".into()),
+                ["a", "b", "e", "c", "d"],
+            ),
+            (
+                "a",
+                Placement::Before("d".into()),
+                ["b", "c", "a", "d", "e"],
+            ),
+            ("a", Placement::After("c".into()), ["b", "c", "a", "d", "e"]),
+            ("e", Placement::After("a".into()), ["a", "e", "b", "c", "d"]),
+            ("b", Placement::After("e".into()), ["a", "c", "d", "e", "b"]),
+            (
+                "e",
+                Placement::Before("a".into()),
+                ["e", "a", "b", "c", "d"],
+            ),
+        ];
+        for (moved, placement, expected) in cases {
+            let changes = reorder(&flat(), moved, &placement).unwrap();
+            assert_eq!(order(&flat(), &changes, &AGES), expected, "{placement:?}");
+        }
+    }
+
+    #[test]
+    fn moves_compose() {
+        let mut jobs = flat();
+        for (moved, placement) in [
+            ("e", Placement::Next),
+            ("a", Placement::Last),
+            ("d", Placement::Before("b".into())),
+            ("a", Placement::After("e".into())),
+            ("c", Placement::Before("a".into())),
+        ] {
+            let changes = reorder(&jobs, moved, &placement).unwrap();
+            let names = order(&jobs, &changes, &AGES);
+            for (id, priority) in changes {
+                jobs.iter_mut().find(|job| job.0 == id).unwrap().1 = priority;
+            }
+            jobs.sort_by_key(|(id, priority)| {
+                (-priority, names.iter().position(|name| name == id).unwrap())
+            });
+            assert_eq!(
+                jobs.iter().map(|job| job.0.clone()).collect::<Vec<_>>(),
+                names
+            );
+        }
+        let names = jobs.iter().map(|job| job.0.as_str()).collect::<Vec<_>>();
+        assert_eq!(names, ["e", "c", "a", "d", "b"]);
+    }
+
+    #[test]
+    fn a_job_placed_last_stays_below_what_arrives_later() {
+        let jobs = [job("a", 0), job("b", 0)];
+        let changes = reorder(&jobs, "a", &Placement::Last).unwrap();
+        assert_eq!(changes, [job("a", -1)]);
+        // An arrival is at 0: above -1, wherever age would have put it.
+        assert!(changes[0].1 < 0);
+    }
+
+    #[test]
+    fn a_job_placed_next_stays_above_what_arrives_later() {
+        let changes = reorder(&flat(), "e", &Placement::Next).unwrap();
+        assert_eq!(changes, [job("e", 1)]);
+    }
+
+    #[test]
+    fn only_a_waiting_job_moves_and_never_next_to_itself() {
+        assert!(reorder(&flat(), "z", &Placement::Next).is_err());
+        assert!(reorder(&flat(), "a", &Placement::Before("a".into())).is_err());
+        assert!(reorder(&flat(), "a", &Placement::After("z".into())).is_err());
+    }
 
     #[test]
     fn a_model_filter_means_the_model_or_one_exact_tag() {

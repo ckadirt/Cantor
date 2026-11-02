@@ -62,7 +62,7 @@ Usage:
   cantor rm        <model:tag>
   cantor backends  [--install] [--use cpu|cuda12|metal|vulkan] [--keep-loaded on|off]
                    [--update]   # fetch the published engine builds; they run after a restart
-  cantor generate  <caption> [--model model:tag] [-o out.wav] [--detach]
+  cantor generate  <caption> [--model model:tag] [-o out.wav] [--detach] [--next]
                    [--lyrics TEXT] [--duration SECONDS] [--steps N] [--cfg N] [--seed N]
                    [--version-of SONG [--closeness 0..1] [--keep-voice]]
                    [--longer SONG --add SECONDS [--at start|end]]
@@ -70,6 +70,9 @@ Usage:
   cantor queue     [--json]        # what is running and what waits, from every app
   cantor queue     show <job>...
   cantor queue     cancel <job>... | --all | --from <petname|local> | --model <model> [--yes]
+  cantor queue     next|last <job>
+  cantor queue     move <job> --before <other> | --after <other>
+  cantor queue     clear [--from <petname|local>] [--yes]  # forget failed and cancelled jobs
   cantor upgrade   [--check] [--no-engines]
 
 Options common to every command:
@@ -139,6 +142,9 @@ struct Cli {
     json: bool,
     from: Option<String>,
     yes: bool,
+    next: bool,
+    before: Option<String>,
+    after: Option<String>,
     positional: Vec<String>,
 }
 
@@ -212,6 +218,9 @@ impl Cli {
             json: false,
             from: None,
             yes: false,
+            next: false,
+            before: None,
+            after: None,
             positional: Vec::new(),
         };
         while let Some(option) = args.next() {
@@ -291,6 +300,9 @@ impl Cli {
                 Some("--json") => cli.json = true,
                 Some("--from") => cli.from = Some(next_utf8_value(&mut args, "--from")?),
                 Some("--yes") | Some("-y") => cli.yes = true,
+                Some("--next") => cli.next = true,
+                Some("--before") => cli.before = Some(next_utf8_value(&mut args, "--before")?),
+                Some("--after") => cli.after = Some(next_utf8_value(&mut args, "--after")?),
                 Some("--version") | Some("-V") => {
                     println!("cantor {}", update::CURRENT_VERSION);
                     std::process::exit(0);
@@ -363,6 +375,8 @@ async fn main() -> Result<()> {
                     yes: cli.yes,
                     from: cli.from,
                     model: cli.model,
+                    before: cli.before,
+                    after: cli.after,
                 },
             )
             .await
@@ -594,7 +608,7 @@ async fn streaming_command(cli: Cli) -> Result<()> {
             });
             let (audio, source_file) = cli_audio_prompt(&cli)?;
             json!({"v": 1, "id": id, "t": "generate", "caption": caption,
-                   "model": cli.model, "output": output, "detach": cli.detach,
+                   "model": cli.model, "output": output, "detach": cli.detach, "next": cli.next,
                    "lyrics": cli.lyrics, "duration": cli.duration, "steps": cli.steps,
                    "cfg": cli.cfg, "seed": cli.seed, "audio": audio,
                    "source_file": source_file})

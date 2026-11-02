@@ -24,6 +24,8 @@ pub struct Options {
     pub yes: bool,
     pub from: Option<String>,
     pub model: Option<String>,
+    pub before: Option<String>,
+    pub after: Option<String>,
 }
 
 pub async fn run(socket: &Path, options: Options) -> Result<()> {
@@ -56,6 +58,23 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
             Ok(())
         }
         Some("cancel") => cancel(socket, jobs, &options).await,
+        Some(place @ ("next" | "last")) => {
+            let [job] = jobs else {
+                bail!("queue {place} needs one job");
+            };
+            move_job(socket, job, place, None).await
+        }
+        Some("move") => {
+            let [job] = jobs else {
+                bail!("queue move needs one job");
+            };
+            match (&options.before, &options.after) {
+                (Some(other), None) => move_job(socket, job, "before", Some(other)).await,
+                (None, Some(other)) => move_job(socket, job, "after", Some(other)).await,
+                _ => bail!("queue move needs --before <job> or --after <job>"),
+            }
+        }
+        Some("clear") => clear(socket, &options).await,
         Some(other) => bail!("queue has no command {other}; see `cantor --help`"),
     }
 }
@@ -74,7 +93,7 @@ async fn cancel(socket: &Path, jobs: &[String], options: &Options) -> Result<()>
         println!("nothing to cancel");
         return Ok(());
     }
-    if filtered && !options.yes && !confirm(chosen.len())? {
+    if filtered && !options.yes && !confirm(&format!("Cancel {} jobs", chosen.len()))? {
         println!("nothing was cancelled");
         return Ok(());
     }
@@ -107,11 +126,49 @@ async fn cancel(socket: &Path, jobs: &[String], options: &Options) -> Result<()>
     Ok(())
 }
 
-fn confirm(count: usize) -> Result<bool> {
-    if !std::io::stdin().is_terminal() {
-        bail!("this would cancel {count} jobs; pass --yes to do it without a prompt");
+async fn move_job(socket: &Path, job: &str, place: &str, other: Option<&str>) -> Result<()> {
+    let request = json!({"v": 1, "id": "1", "t": "queue-place", "job": job,
+                         "place": place, "other": other});
+    let answer = control::request_streaming(socket, &request, |_| {}).await?;
+    let moved = answer.get("job").cloned().unwrap_or_default();
+    println!(
+        "{}  now {} in the queue",
+        short(string(&moved, "id")),
+        moved
+            .get("position")
+            .and_then(Value::as_u64)
+            .unwrap_or_default()
+    );
+    Ok(())
+}
+
+async fn clear(socket: &Path, options: &Options) -> Result<()> {
+    let count_request = json!({"v": 1, "id": "1", "t": "queue-clear",
+                               "from": options.from, "count_only": true});
+    let answer = control::request_streaming(socket, &count_request, |_| {}).await?;
+    let count = answer.get("count").and_then(Value::as_u64).unwrap_or(0);
+    if count == 0 {
+        println!("nothing to clear");
+        return Ok(());
     }
-    print!("Cancel {count} jobs? This cannot be undone. [y/N] ");
+    if !options.yes && !confirm(&format!("Forget {count} failed and cancelled jobs"))? {
+        println!("nothing was cleared");
+        return Ok(());
+    }
+    let request = json!({"v": 1, "id": "1", "t": "queue-clear", "from": options.from});
+    let answer = control::request_streaming(socket, &request, |_| {}).await?;
+    println!(
+        "forgot {} jobs",
+        answer.get("count").and_then(Value::as_u64).unwrap_or(0)
+    );
+    Ok(())
+}
+
+fn confirm(what: &str) -> Result<bool> {
+    if !std::io::stdin().is_terminal() {
+        bail!("{what}? Pass --yes to do it without a prompt");
+    }
+    print!("{what}? This cannot be undone. [y/N] ");
     std::io::stdout().flush()?;
     let mut answer = String::new();
     std::io::stdin().lock().read_line(&mut answer)?;

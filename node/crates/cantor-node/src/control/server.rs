@@ -64,10 +64,8 @@ pub(super) async fn serve_connection(
         // A pull runs for minutes and reports as it goes, so it writes many
         // lines rather than one. Everything else is request/response.
         if let Some(kind) = frame_kind(&line)
-            && matches!(
-                kind.as_str(),
-                "pull" | "catalog" | "backends" | "generate" | "queue" | "queue-cancel"
-            )
+            && (kind.starts_with("queue")
+                || matches!(kind.as_str(), "pull" | "catalog" | "backends" | "generate"))
         {
             stream_long_request(&line, &state, &events, &mut writer, &kind).await?;
             continue;

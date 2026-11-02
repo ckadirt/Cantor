@@ -6,12 +6,12 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::super::wire::{CONTROL_VERSION, reject_version, write_value_line as write_line};
-use crate::jobs::operator::{self, CANCEL_CHUNK, CancelOutcome, Selection};
+use crate::jobs::operator::{self, CANCEL_CHUNK, CancelOutcome, Placement, Selection};
 use crate::runtime::{NodeEvent, SharedState};
 
 /// How long a full event channel may hold up a bulk cancel. The relay drains it
@@ -120,6 +120,88 @@ pub(super) async fn run_cancel<W: tokio::io::AsyncWrite + Unpin>(
     .await
 }
 
+pub(super) async fn run_place<W: tokio::io::AsyncWrite + Unpin>(
+    request: &Value,
+    state: &SharedState,
+    writer: &mut W,
+    id: &str,
+) -> Result<()> {
+    version(request, id)?;
+    let job = text(request, "job").context("queue-place needs a job")?;
+    let other = text(request, "other");
+    let placement = match (text(request, "place").as_deref(), other) {
+        (Some("next"), None) => Placement::Next,
+        (Some("last"), None) => Placement::Last,
+        (Some("before"), Some(other)) => Placement::Before(other),
+        (Some("after"), Some(other)) => Placement::After(other),
+        _ => bail!("queue-place needs next, last, or before or after another job"),
+    };
+    let item = {
+        let mut locked = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+        operator::place(&mut locked, &job, &placement)?
+    };
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "job": item}),
+    )
+    .await
+}
+
+/// `queue clear`: with `count_only`, what it would erase; otherwise erase it,
+/// in chunks, telling each job's owner it is gone.
+pub(super) async fn run_clear<W: tokio::io::AsyncWrite + Unpin>(
+    request: &Value,
+    state: &SharedState,
+    events: &mpsc::Sender<NodeEvent>,
+    writer: &mut W,
+    id: &str,
+) -> Result<()> {
+    version(request, id)?;
+    let from = text(request, "from");
+    let stopped = {
+        let locked = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+        operator::stopped(&locked, from.as_deref())?
+    };
+    if request.get("count_only").and_then(Value::as_bool) == Some(true) {
+        return write_line(
+            writer,
+            &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "count": stopped.len()}),
+        )
+        .await;
+    }
+    let mut cleared = 0;
+    let mut stalled = false;
+    for chunk in stopped.chunks(CANCEL_CHUNK) {
+        let forgotten = {
+            let mut locked = state
+                .lock()
+                .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+            operator::forget(&mut locked, chunk)?
+        };
+        for (principal_id, job_id) in forgotten {
+            cleared += 1;
+            publish(
+                events,
+                NodeEvent::JobForgotten {
+                    principal_id,
+                    job_id,
+                },
+                &mut stalled,
+            )
+            .await;
+        }
+    }
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "count": cleared}),
+    )
+    .await
+}
+
 fn outcome_name(outcome: CancelOutcome) -> Result<String> {
     serde_json::to_value(outcome)?
         .as_str()
@@ -147,9 +229,9 @@ mod tests {
 
     use super::super::generate::run_generate;
     use super::super::generate::tests::state as node_state;
-    use super::{run_cancel, run_list};
+    use super::{run_cancel, run_clear, run_list, run_place};
     use crate::application::admit_job;
-    use crate::library::{Submission, SubmitResult};
+    use crate::library::{JobControl, Submission, SubmitResult};
     use crate::principal::PrincipalId;
     use crate::runtime::{ActiveJobControl, NodeEvent, SharedState};
     use crate::store::Store;
@@ -203,6 +285,13 @@ mod tests {
         String::from_utf8_lossy(output)
             .lines()
             .map(|line| serde_json::from_str(line).expect("JSON frame"))
+            .collect()
+    }
+
+    async fn frames_order(state: &SharedState) -> Vec<String> {
+        captions(&frames(json!({"v": 1, "t": "queue"}), state).await)
+            .into_iter()
+            .map(str::to_owned)
             .collect()
     }
 
@@ -312,6 +401,126 @@ mod tests {
                 other => panic!("unexpected event: {other:?}"),
             }
         }
+    }
+
+    async fn place(state: &SharedState, job: &str, place: &str, other: Option<&str>) {
+        let mut output = Vec::new();
+        run_place(
+            &json!({"v": 1, "t": "queue-place", "job": job, "place": place, "other": other}),
+            state,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect("place");
+    }
+
+    fn run_order(state: &SharedState) -> Vec<String> {
+        let mut locked = state.lock().expect("state");
+        let mut claimed = Vec::new();
+        while let Some((work, _)) = locked.library.claim_next().expect("claim") {
+            claimed.push(work.generation.caption.clone());
+            locked
+                .library
+                .finish_cancelled(&work)
+                .expect("worker lets go");
+        }
+        claimed
+    }
+
+    #[tokio::test]
+    async fn the_worker_claims_what_the_operator_ordered_and_arrivals_respect_it() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let a = app_job(&state, key, "a");
+        let b = app_job(&state, key, "b");
+        let c = app_job(&state, key, "c");
+        let d = app_job(&state, key, "d");
+        place(&state, &d[..8], "next", None).await;
+        place(&state, &a, "last", None).await;
+        place(&state, &c, "before", Some(&b)).await;
+        app_job(&state, key, "arrived later");
+
+        assert_eq!(
+            frames_order(&state).await,
+            ["d", "c", "b", "arrived later", "a"]
+        );
+        assert_eq!(run_order(&state), ["d", "c", "b", "arrived later", "a"]);
+    }
+
+    #[tokio::test]
+    async fn an_order_survives_a_pause_and_a_resume() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let principal = PrincipalId::from_client_public_key(&key);
+        let a = app_job(&state, key, "a");
+        let b = app_job(&state, key, "b");
+        place(&state, &b, "next", None).await;
+        {
+            let mut locked = state.lock().expect("state");
+            for control in [JobControl::Pause, JobControl::Resume] {
+                locked
+                    .library
+                    .control_job(principal, &b, None, control)
+                    .expect("control");
+            }
+        }
+        let _ = a;
+        assert_eq!(frames_order(&state).await, ["b", "a"]);
+    }
+
+    #[tokio::test]
+    async fn clear_erases_stopped_jobs_and_tells_their_owners() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let stopped = app_job(&state, key, "stopped");
+        let waiting = app_job(&state, key, "waiting");
+        let (events, mut received) = mpsc::channel(8);
+        let mut output = Vec::new();
+        run_cancel(
+            &json!({"v": 1, "t": "queue-cancel", "jobs": [&stopped]}),
+            &state,
+            &events,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect("cancel");
+        let _ = received.try_recv();
+
+        let mut output = Vec::new();
+        run_clear(
+            &json!({"v": 1, "t": "queue-clear", "count_only": true}),
+            &state,
+            &events,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect("count");
+        assert_eq!(parse(&output)[0]["count"], 1);
+        assert!(received.try_recv().is_err());
+
+        let mut output = Vec::new();
+        run_clear(
+            &json!({"v": 1, "t": "queue-clear"}),
+            &state,
+            &events,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect("clear");
+        assert_eq!(parse(&output)[0]["count"], 1);
+        match received.try_recv().expect("owner told") {
+            NodeEvent::JobForgotten { job_id, .. } => assert_eq!(job_id, stopped),
+            other => panic!("unexpected event: {other:?}"),
+        }
+        assert_eq!(frames_order(&state).await, ["waiting"]);
+        let _ = waiting;
     }
 
     /// The relay needs the state mutex to handle each event. A bulk cancel that
