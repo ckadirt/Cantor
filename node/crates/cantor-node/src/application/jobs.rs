@@ -1233,6 +1233,17 @@ mod audio_admission_tests {
                 .record_heard_caption(&work, "something else")
                 .unwrap()
         );
+
+        // Interrupted after listening, it is claimed again rather than refused
+        // for no longer matching the empty caption it was accepted with.
+        let attempt = work.attempt;
+        library
+            .finish_shutdown(&work, None, Diffuse, "shutdown")
+            .unwrap();
+        let (work, _) = library.claim_next().unwrap().expect("the job resumes");
+        assert_eq!(work.attempt, attempt + 1);
+        assert_eq!(work.generation.caption, "funk rock, rap");
+
         let request: serde_json::Value = serde_json::from_str(
             &library
                 .connection_for_test()

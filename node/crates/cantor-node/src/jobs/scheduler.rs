@@ -43,6 +43,11 @@ pub async fn run(state: SharedState, events: mpsc::Sender<NodeEvent>) {
             Ok(mut locked) => locked.library.claim_next(),
             Err(_) => return,
         };
+        if let Ok(mut locked) = state.lock() {
+            for (principal_id, job) in locked.library.take_set_aside() {
+                emit(&events, principal_id, job);
+            }
+        }
         let claim = match claim {
             Ok(claim) => claim,
             Err(error) => {

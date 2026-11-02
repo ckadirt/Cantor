@@ -820,6 +820,38 @@ mod tests {
         assert_eq!(found, [(first.as_str(), 1), (second.as_str(), 3)]);
     }
 
+    /// A damaged job once stayed first in line and stopped the node for good.
+    #[tokio::test]
+    async fn a_damaged_job_fails_and_the_queue_moves_on() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let damaged = app_job(&state, key, "damaged");
+        let healthy = app_job(&state, key, "healthy");
+        let mut locked = state.lock().expect("state");
+        let principal = PrincipalId::from_client_public_key(&key);
+        std::fs::write(
+            locked
+                .library
+                .root()
+                .join("jobs")
+                .join(principal.to_string())
+                .join(&damaged)
+                .join("request.json"),
+            "{}",
+        )
+        .expect("damage");
+
+        let (work, _) = locked.library.claim_next().expect("claim").expect("work");
+        assert_eq!(work.id, healthy);
+        let set_aside = locked.library.take_set_aside();
+        assert_eq!(set_aside.len(), 1);
+        assert_eq!(set_aside[0].0, principal);
+        assert_eq!(set_aside[0].1.id, damaged);
+        assert_eq!(set_aside[0].1.state, JobState::Failed);
+        assert!(locked.library.take_set_aside().is_empty());
+    }
+
     async fn place(state: &SharedState, job: &str, place: &str, other: Option<&str>) {
         let (events, _received) = mpsc::channel(4);
         let mut output = Vec::new();

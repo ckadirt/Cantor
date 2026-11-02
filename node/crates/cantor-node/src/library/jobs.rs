@@ -122,6 +122,45 @@ pub enum SubmitResult {
     Closed,
 }
 
+enum Claim {
+    Work(Box<WorkItem>, JobView),
+    Empty,
+    Unreadable { id: String, cause: anyhow::Error },
+}
+
+/// The stored request, checked against what was accepted on disk. The caption
+/// is the one field that may differ: an empty one is filled in by what the model
+/// heard (`record_heard_caption`), and a job resumed after that must still run.
+fn accepted_request(
+    artifact_directory: &Path,
+    id: &str,
+    principal: &str,
+    model: &str,
+    request_json: &str,
+) -> Result<(GenerationRequest, AcceptedRequestSidecar)> {
+    let generation: GenerationRequest = serde_json::from_str(request_json)
+        .context("accepted generation request is not valid JSON")?;
+    let sidecar_path = artifact_directory
+        .parent()
+        .context("artifact directory has no job parent")?
+        .join("request.json");
+    let sidecar: AcceptedRequestSidecar = serde_json::from_reader(File::open(&sidecar_path)?)
+        .with_context(|| format!("failed to read {}", sidecar_path.display()))?;
+    let mut accepted = sidecar.generation.clone();
+    if accepted.caption.trim().is_empty() {
+        accepted.caption.clone_from(&generation.caption);
+    }
+    if sidecar.schema != 1
+        || sidecar.job_id != id
+        || sidecar.principal_id != principal
+        || sidecar.model.selector != model
+        || accepted != generation
+    {
+        bail!("accepted request sidecar does not match its database row");
+    }
+    Ok((generation, sidecar))
+}
+
 impl Library {
     #[allow(clippy::too_many_arguments)]
     pub fn submit(
@@ -578,7 +617,45 @@ impl Library {
 
     /// Atomically claims the oldest eligible job. With one manager this also
     /// documents the global single-worker invariant in the database boundary.
+    ///
+    /// A job whose accepted request cannot be trusted fails here and the next
+    /// one is claimed. It would otherwise stay first in line and stop the node
+    /// from ever running anything again.
     pub fn claim_next(&mut self) -> Result<Option<(WorkItem, JobView)>> {
+        loop {
+            match self.try_claim()? {
+                Claim::Work(work, job) => return Ok(Some((*work, job))),
+                Claim::Empty => return Ok(None),
+                Claim::Unreadable { id, cause } => self.set_aside(&id, &cause)?,
+            }
+        }
+    }
+
+    /// Jobs `claim_next` failed since this was last asked, to tell their owners.
+    pub fn take_set_aside(&mut self) -> Vec<(PrincipalId, JobView)> {
+        std::mem::take(&mut self.set_aside)
+    }
+
+    fn set_aside(&mut self, id: &str, cause: &anyhow::Error) -> Result<()> {
+        eprintln!("job.set_aside job={id} cause={cause:#}");
+        self.connection.execute(
+            "UPDATE jobs SET state='failed',stage=NULL,error_code='internal',error_message=?2,
+             error_retryable=0,revision=revision+1,updated_at=?3
+             WHERE id=?1 AND state='queued'",
+            params![
+                id,
+                "The saved request for this job is damaged.",
+                now_rfc3339()
+            ],
+        )?;
+        let job = self.job_by_id(id)?.context("failed job disappeared")?;
+        if let Some(principal) = self.job_owner(id)? {
+            self.set_aside.push((principal, job));
+        }
+        Ok(())
+    }
+
+    fn try_claim(&mut self) -> Result<Claim> {
         let transaction = self
             .connection
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -612,7 +689,27 @@ impl Library {
             candidate
         else {
             transaction.commit()?;
-            return Ok(None);
+            return Ok(Claim::Empty);
+        };
+        let artifact_directory = self
+            .root
+            .join("jobs")
+            .join(&principal_hex)
+            .join(&id)
+            .join("artifacts");
+        let accepted = accepted_request(
+            &artifact_directory,
+            &id,
+            &principal_hex,
+            &model,
+            &request_json,
+        );
+        let (generation, sidecar) = match accepted {
+            Ok(accepted) => accepted,
+            Err(cause) => {
+                transaction.rollback()?;
+                return Ok(Claim::Unreadable { id, cause });
+            }
         };
         let attempt = previous_attempt + 1;
         let now = now_rfc3339();
@@ -627,7 +724,7 @@ impl Library {
         )?;
         if changed != 1 {
             transaction.rollback()?;
-            return Ok(None);
+            return Ok(Claim::Empty);
         }
         let job = transaction.query_row(
             &format!("SELECT {JOB_VIEW_COLUMNS} FROM jobs WHERE id=?1"),
@@ -635,33 +732,10 @@ impl Library {
             |row| job_from_row(row, 0),
         )?;
         let principal_id = principal_hex.parse::<PrincipalId>()?;
-        let generation = serde_json::from_str(&request_json)
-            .context("accepted generation request is not valid JSON")?;
-        let artifact_directory = self
-            .root
-            .join("jobs")
-            .join(&principal_hex)
-            .join(&id)
-            .join("artifacts");
-        let sidecar_path = artifact_directory
-            .parent()
-            .context("artifact directory has no job parent")?
-            .join("request.json");
-        let sidecar: AcceptedRequestSidecar =
-            serde_json::from_reader(File::open(&sidecar_path)?)
-                .with_context(|| format!("failed to read {}", sidecar_path.display()))?;
-        if sidecar.schema != 1
-            || sidecar.job_id != id
-            || sidecar.principal_id != principal_hex
-            || sidecar.model.selector != model
-            || sidecar.generation != generation
-        {
-            bail!("accepted request sidecar does not match its database row");
-        }
         write_status(&artifact_directory, &job, attempt)?;
         transaction.commit()?;
-        Ok(Some((
-            WorkItem {
+        Ok(Claim::Work(
+            Box::new(WorkItem {
                 id,
                 principal_id,
                 model,
@@ -671,9 +745,9 @@ impl Library {
                 request_hash,
                 attempt,
                 artifact_directory,
-            },
+            }),
             job,
-        )))
+        ))
     }
 
     /// Persists one already-throttled engine callback. The expected attempt

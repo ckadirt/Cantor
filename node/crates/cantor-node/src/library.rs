@@ -41,7 +41,6 @@ pub use self::songs::{
     ChangePage, ChangePageResult, MutationResult, PresenceMutation, SongPage, SongPageResult,
 };
 pub use self::uploads::{MAX_UPLOAD_BYTES, UploadChunk, UploadCommit, UploadOpen};
-#[cfg(test)]
 use crate::principal::PrincipalId;
 #[cfg(test)]
 use crate::store::InstalledVariant;
@@ -58,6 +57,8 @@ pub struct Library {
     cursor_key: [u8; 32],
     /// Uploads with slices written but not yet synced, by upload id.
     upload_tails: std::collections::HashMap<String, uploads::UploadTail>,
+    /// Jobs `claim_next` failed, until the scheduler tells their owners.
+    set_aside: Vec<(PrincipalId, cantor_proto::JobView)>,
 }
 
 impl Library {
@@ -79,6 +80,7 @@ impl Library {
             connection,
             cursor_key,
             upload_tails: std::collections::HashMap::new(),
+            set_aside: Vec::new(),
         };
         library.reconcile_startup()?;
         library.recover_interrupted_jobs()?;
