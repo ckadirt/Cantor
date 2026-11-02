@@ -5,12 +5,12 @@
  * apps read to offer an update, both come from it.
  */
 export const APP = {
-  versionName: '0.1.7',
-  versionCode: 8,
-  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.7/cantor-0.1.7-arm64.apk',
-  sha256: 'c9aab8c29b6f1f7f216f8ad24a481623f5a5b7575ea799ba0c43d3753aee65ae',
-  bytes: 63691385,
-  notes: 'Settings apply on Save, imports can be dated by song, and weeks name their year',
+  versionName: '0.1.8',
+  versionCode: 9,
+  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.8/cantor-0.1.8-arm64.apk',
+  sha256: '904fb11fd21f771fdaecd36a2e6d626a3f496b3e7f804dc3f941314fb0c5c659',
+  bytes: 63707449,
+  notes: 'Songs download and upload far faster, and pick up where they stopped',
 } as const;
 
 /** Links the landing and the docs share, in one place. */
