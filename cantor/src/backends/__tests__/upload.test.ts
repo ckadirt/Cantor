@@ -53,6 +53,26 @@ describe('runUpload', () => {
     expect(progress).toEqual([0, 4, 8, 10]);
   });
 
+  it('sends slices ahead of their answers, in order', async () => {
+    const offsets: number[] = [];
+    const answers: ((next: number) => void)[] = [];
+    const run = runUpload(
+      {
+        ...fakeNode().port,
+        chunk: (_id, offset) => {
+          offsets.push(offset);
+          return new Promise(resolve => answers.push(resolve));
+        },
+      },
+      { ...source, bytes: 8 },
+    );
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
+    expect(offsets).toEqual([0, 4]);
+    answers[0]?.(4);
+    answers[1]?.(8);
+    await expect(run).resolves.toMatchObject({ uploadId: 'u' });
+  });
+
   it('resumes from what the node already has', async () => {
     const node = fakeNode(2);
     await expect(runUpload(node.port, source)).rejects.toThrow('socket closed');

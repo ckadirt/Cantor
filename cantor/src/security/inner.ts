@@ -1,5 +1,5 @@
-import { base64 } from '@scure/base';
 import { utf8ToBytes } from '@noble/hashes/utils.js';
+import { encodeBase64 } from '../core/base64';
 import { APPLICATION_PROTOCOL_VERSION } from '../core/protocol';
 import {
   ARTIFACT_CHUNK_BYTES,
@@ -103,7 +103,7 @@ function decodeArtifactChunk(inner: Uint8Array): Record<string, unknown> {
     id: requestId,
     transfer_id: transferId,
     offset,
-    data: base64.encode(inner.subarray(cursor)),
+    data: encodeBase64(inner.subarray(cursor)),
   };
 }
 

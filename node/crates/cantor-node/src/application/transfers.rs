@@ -376,6 +376,43 @@ mod tests {
         ));
     }
 
+    /// The app sends acknowledgements ahead of the chunks they answer, and
+    /// every deployed node has to keep serving that stream in order.
+    #[test]
+    fn acknowledgements_sent_ahead_are_served_in_order_to_completion() {
+        let temporary = tempdir().expect("temporary directory");
+        let path = temporary.path().join("large.opus");
+        let chunk = ARTIFACT_CHUNK_BYTES as usize;
+        std::fs::write(&path, vec![7_u8; chunk * 2 + 17]).expect("artifact fixture");
+        let principal_id = PrincipalId::from_client_public_key(&[1_u8; 32]);
+        let mut active = transfer(path, principal_id);
+        active.byte_length = (chunk * 2 + 17) as u64;
+        let byte_length = active.byte_length;
+        let mut session = ArtifactTransferSession {
+            active: Some(active),
+        };
+        let mut ack = |next_offset| {
+            session.handle_ack(
+                PROTOCOL_VERSION,
+                format!("ack-{next_offset}"),
+                "active-transfer".into(),
+                next_offset,
+                Some(principal_id),
+            )
+        };
+
+        for offset in [0, chunk as u64, chunk as u64 * 2] {
+            assert!(matches!(
+                ack(offset),
+                NodeMessage::ArtifactChunk { offset: sent, .. } if sent == offset
+            ));
+        }
+        assert!(matches!(
+            ack(byte_length),
+            NodeMessage::ArtifactComplete { .. }
+        ));
+    }
+
     #[test]
     fn duplicate_ack_retransmits_exactly_one_bounded_chunk() {
         let temporary = tempdir().expect("temporary directory");

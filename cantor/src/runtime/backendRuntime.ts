@@ -82,8 +82,12 @@ export const DEFAULT_BACKEND_SNAPSHOT: ConnectionSnapshot = {
  */
 export type AudioAction = 'download' | 'keep' | 'pin' | 'unpin' | 'remove';
 
-/** The floor between two published download-progress samples. */
-const ARRIVING_SAMPLE_MS = 100;
+/**
+ * The floor between two published transfer-progress samples. Each one reaches
+ * every field subscriber on the thread that is also framing the transfer: at
+ * 100 ms the Xiaomi lost a third of a download to it and froze for 1.5 s.
+ */
+const ARRIVING_SAMPLE_MS = 400;
 
 export type BackendRuntimeConnection = Pick<
   BackendConnection,
@@ -571,10 +575,17 @@ export class BackendRuntime {
     source: LocalSource,
   ): Promise<OutboxEntry> {
     const id = entry.clientRequestId;
-    const progress = (sent: number, total: number) =>
+    // Sampled like a download's progress: a report per slice is a store update
+    // per 48 KiB, on the thread that is also framing the slices.
+    let lastSampleMs = 0;
+    const progress = (sent: number, total: number) => {
+      const now = Date.now();
+      if (sent !== total && now - lastSampleMs < ARRIVING_SAMPLE_MS) return;
+      lastSampleMs = now;
       this.update({
         sending: { ...this.state.sending, [id]: { sent, total } },
       });
+    };
     progress(0, source.bytes);
     try {
       const committed = await runUpload(
@@ -1151,8 +1162,7 @@ export class BackendRuntime {
           /*
            * Progress is sampled, not forwarded.
            *
-           * The node answers one acknowledgement per 64 KiB, so a song reports
-           * progress sixty-odd times. The arriving arc does not need sixty
+           * Every 64 KiB reports, so a song reports progress sixty-odd times. The arriving arc does not need sixty
            * samples — it needs a number often enough to glide between, which
            * `ARRIVING_SAMPLE_MS` gives it. The last report is never dropped:
            * it is the one that says the song is here.

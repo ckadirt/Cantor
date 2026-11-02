@@ -466,7 +466,7 @@ describe('BackendRuntime', () => {
       expect(f.markSourceSent).toHaveBeenCalledWith('request-tune', 'up-1');
       const sent = (f.connection.createJob as jest.Mock).mock.calls[0][2];
       expect(sent.audio.source).toEqual({ kind: 'upload', upload_id: 'up-1' });
-      expect(seen.some(sending => sending['request-tune']?.sent === 8)).toBe(true);
+      expect(seen.some(sending => sending['request-tune']?.sent === 10)).toBe(true);
       expect(f.runtime.store.get().sending).toEqual({});
     });
   });

@@ -1,5 +1,5 @@
 import { NativeModules } from 'react-native';
-import { base64 } from '@scure/base';
+import { decodeBase64, encodeBase64 } from '../core/base64';
 
 type NativeSecureModule = {
   begin: (
@@ -35,7 +35,7 @@ export const createNativeSecureChannel: SecureChannelFactory = sessionId => {
   };
   return {
     begin: (remotePublicKey, prologue) =>
-      live().begin(sessionId, remotePublicKey, base64.encode(prologue)),
+      live().begin(sessionId, remotePublicKey, encodeBase64(prologue)),
     finish: encodedMessage => {
       if (!live().finish(sessionId, encodedMessage)) {
         throw new Error('Secure handshake did not finish.');
@@ -43,7 +43,7 @@ export const createNativeSecureChannel: SecureChannelFactory = sessionId => {
     },
     encrypt: inner => {
       const parsed: unknown = JSON.parse(
-        live().encrypt(sessionId, base64.encode(inner)),
+        live().encrypt(sessionId, encodeBase64(inner)),
       );
       if (
         !Array.isArray(parsed) ||
@@ -52,11 +52,11 @@ export const createNativeSecureChannel: SecureChannelFactory = sessionId => {
       ) {
         throw new Error('Native secure transport returned invalid ciphertext.');
       }
-      return parsed.map(value => base64.decode(value));
+      return parsed.map(value => decodeBase64(value));
     },
     decrypt: ciphertext => {
-      const value = live().decrypt(sessionId, base64.encode(ciphertext));
-      return value === null ? null : base64.decode(value);
+      const value = live().decrypt(sessionId, encodeBase64(ciphertext));
+      return value === null ? null : decodeBase64(value);
     },
     destroy: () => {
       if (!destroyed) {

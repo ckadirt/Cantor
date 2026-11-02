@@ -52,6 +52,7 @@ import {
   type ArtifactInfo,
   type ArtifactPart,
 } from './applicationResponses';
+import { TransferPace } from './transferPace';
 import type { UploadCommitted, UploadPort, UploadReady } from './upload';
 import {
   RequestRegistry,
@@ -825,25 +826,30 @@ export class BackendConnection {
     onProgress?.(offset, artifact.byte_length);
 
     /*
-     * The write is chained, not awaited.
+     * Acknowledgements are sent ahead, and writes are chained, not awaited.
      *
-     * The node sends one chunk per acknowledgement and waits (`window_chunks`
-     * is 1), so every 64 KiB costs a full round trip. Awaiting `sink.append`
-     * inside the loop put the whole local write — the bridge hop, the base64
-     * decode, the file write — *in series* with that round trip, and the node
-     * sat idle for the duration of it. Nothing about the next acknowledgement
-     * depends on the write landing: the node's next offset is `offset + length`
-     * whatever the disk does, and `length` is readable from the chunk itself.
-     * So the acknowledgement goes out first and the write runs underneath it,
-     * which makes a chunk cost `max(round trip, write)` instead of their sum.
+     * The node answers each acknowledgement with one chunk, the moment it
+     * arrives, and a chunk's length is known from `chunk_bytes`. So the next
+     * offset never has to wait for the last chunk: `TransferPace` decides how
+     * many may be out, and a download costs its bandwidth, not a round trip per
+     * 64 KiB. Answers come back in request order and are read in that order.
      *
-     * The chain is what keeps the writer's contract: native `appendChunk`
-     * refuses anything but a strictly sequential offset, so the appends must
-     * still land in order even though nothing waits for them here.
+     * A chunk holds its place in the window until it is on disk, not merely
+     * received, so a phone slower than its connection slows the node down
+     * instead of queueing audio in memory. The chain keeps the writer's
+     * contract: native `appendChunk` refuses anything but a strictly sequential
+     * offset.
      */
+    const pace = new TransferPace(info.chunkBytes);
+    const answers: Promise<ArtifactPart>[] = [];
+    let asked = offset;
+    let askedLast = false;
+    let unwritten = 0;
+    let wakeOnWrite: (() => void) | null = null;
     let written: Promise<number> = Promise.resolve(offset);
     let writeError: unknown = null;
     const enqueueWrite = (at: number, data: string, expected: number) => {
+      unwritten += 1;
       written = written.then(async previous => {
         if (previous !== at) {
           throw new Error('Native artifact writer fell out of step.');
@@ -856,14 +862,39 @@ export class BackendConnection {
       });
       // Claim the rejection here so a failed write is never an unhandled one;
       // the chain itself still rejects, which is what the loop reads.
-      written.catch(error => {
-        writeError ??= error;
-      });
+      written
+        .then(
+          () => pace.settled(expected - at),
+          error => {
+            writeError ??= error;
+          },
+        )
+        .finally(() => {
+          unwritten -= 1;
+          wakeOnWrite?.();
+          wakeOnWrite = null;
+        });
     };
 
     try {
       while (true) {
-        const part = await this.ackArtifact(info.transferId, offset);
+        while (!askedLast && answers.length + unwritten < pace.window) {
+          const answer = this.ackArtifact(info.transferId, asked);
+          // Claimed here: a refusal is read in order, or dropped with its window.
+          answer.catch(() => undefined);
+          answers.push(answer);
+          askedLast = asked === artifact.byte_length;
+          asked = Math.min(asked + info.chunkBytes, artifact.byte_length);
+        }
+        const answer = answers.shift();
+        if (answer === undefined) {
+          await new Promise<void>(resolve => {
+            wakeOnWrite = resolve;
+          });
+          if (writeError !== null) throw writeError;
+          continue;
+        }
+        const part = await answer;
         // A write that failed while this round trip was in flight invalidates
         // everything after it, so it is reported before the chunk it raced.
         if (writeError !== null) throw writeError;
@@ -891,7 +922,10 @@ export class BackendConnection {
         }
         const length = base64ByteLength(part.data);
         const next = offset + length;
-        if (length <= 0 || next > artifact.byte_length) {
+        if (
+          length <= 0 ||
+          next !== Math.min(offset + info.chunkBytes, artifact.byte_length)
+        ) {
           throw new Error('Node artifact chunk is outside the artifact.');
         }
         enqueueWrite(offset, part.data, next);
@@ -899,10 +933,11 @@ export class BackendConnection {
         onProgress?.(offset, artifact.byte_length);
       }
     } catch (error) {
-      // Let the outstanding writes settle before unwinding. Abandoning them
+      // Let the outstanding work settle before unwinding. Abandoning writes
       // mid-flight would leave native appending to a partial this download has
       // already given up on, and the next attempt would resume from an offset
       // that moved under it.
+      await Promise.all(answers.map(answer => answer.catch(() => undefined)));
       await written.catch(() => undefined);
       throw error;
     }
@@ -1341,9 +1376,9 @@ function truncateToBytes(value: string, maxBytes: number): string {
  * How many bytes a padded base64 string carries, without decoding it.
  *
  * The download loop needs the chunk's length before the chunk has been written,
- * so it can acknowledge the next one while this one is still on its way to
- * disk. Decoding here to measure would reintroduce exactly the work the
- * acknowledgement is trying to get ahead of. Returns 0 for anything that is not
+ * so it can keep reading answers while this one is still on its way to disk.
+ * Decoding here to measure would reintroduce exactly the work the window is
+ * trying to get ahead of. Returns 0 for anything that is not
  * well-formed padded base64, which the caller treats as a malformed chunk.
  */
 export function base64ByteLength(data: string): number {

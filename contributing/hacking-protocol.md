@@ -185,6 +185,17 @@ false, and existing jobs retain their stored ids on resubmission. The shared
 `protocol/fixtures/v2/derived-job-id.json` vectors include UTF-8 and are asserted
 in Rust; the app must assert the same file in TypeScript.
 
+## Transfer windows
+
+`artifact.ack` and `upload.chunk` are answered one for one, in arrival order, the
+moment they arrive, so the client may send them ahead of their answers, as SFTP
+does. The window lives in the app (`backends/transferPace.ts`); no message
+changes and a node keeps no state for it, so every deployed node already serves
+one. `window_chunks: 1` still means what it says: one chunk per acknowledgement.
+Any node change here must keep that order and that one-for-one answer: a batched
+or reordered reply breaks every app in the field. An acknowledgement sent ahead
+promises nothing about the disk; a resume starts from what the file holds.
+
 ## Model lyric capabilities
 
 `ModelView.lyrics` is an optional additive declaration (`can_generate`,

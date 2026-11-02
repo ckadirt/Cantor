@@ -1095,8 +1095,10 @@ describe('BackendConnection', () => {
       },
     });
     await Promise.resolve();
-    const firstAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    const firstAck = JSON.parse(socket.sent.at(-2) ?? '{}').payload;
     expect(firstAck).toMatchObject({ t: 'artifact.ack', next_offset: 0 });
+    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
     socket.receive({
       v: 1,
       t: 'tunnel',
@@ -1112,8 +1114,6 @@ describe('BackendConnection', () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(append).toHaveBeenCalledWith(0, 'YWJj');
-    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
-    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
     socket.receive({
       v: 1,
       t: 'tunnel',
@@ -1131,12 +1131,9 @@ describe('BackendConnection', () => {
   });
 
   /**
-   * The node sends one chunk per acknowledgement and then waits, so a download
-   * costs one round trip per 64 KiB. Anything this loop does before
-   * acknowledging is added to every one of them. The write is therefore started
-   * and not awaited, and this is the test that says so: the acknowledgement for
-   * the second chunk has to be on the wire while the first chunk is still on
-   * its way to disk.
+   * The window is what makes a download cost its bandwidth rather than a round
+   * trip per 64 KiB, so nothing may wait for an answer or for the disk while
+   * there is room in it.
    */
   it('acknowledges the next chunk without waiting for the last one to land', async () => {
     const { socket, connection } = connect();
@@ -1204,12 +1201,18 @@ describe('BackendConnection', () => {
         song_id: open.song_id,
         artifact,
         accepted_offset: 0,
-        chunk_bytes: 65_536,
+        chunk_bytes: 3,
         window_chunks: 1,
       },
     });
     await Promise.resolve();
-    const firstAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    // Every offset the file needs is asked for before any chunk has arrived.
+    const [firstAck, secondAck, finalAck] = socket.sent
+      .slice(-3)
+      .map(sent => JSON.parse(sent).payload);
+    expect(firstAck).toMatchObject({ t: 'artifact.ack', next_offset: 0 });
+    expect(secondAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
+    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
     socket.receive({
       v: 1,
       t: 'tunnel',
@@ -1225,11 +1228,7 @@ describe('BackendConnection', () => {
     await Promise.resolve();
     await Promise.resolve();
 
-    // The disk has not answered, and the next 64 KiB has already been asked for
-    // at the offset the chunk's own length implies.
     expect(append).toHaveBeenCalledWith(0, 'YWJj');
-    const secondAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
-    expect(secondAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
 
     socket.receive({
       v: 1,
@@ -1255,8 +1254,6 @@ describe('BackendConnection', () => {
     for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
     expect(appended).toEqual([0, 3]);
 
-    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
-    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
     socket.receive({
       v: 1,
       t: 'tunnel',
@@ -1352,7 +1349,7 @@ describe('BackendConnection', () => {
           song_id: open.song_id,
           artifact,
           accepted_offset: expectedOffset,
-          chunk_bytes: 65_536,
+          chunk_bytes: 3,
           window_chunks: 1,
         },
       });
@@ -1360,8 +1357,11 @@ describe('BackendConnection', () => {
       await Promise.resolve();
     };
 
+    const acks = (count: number) =>
+      socket.sent.slice(-count).map(sent => JSON.parse(sent).payload);
+
     await openArtifact(0);
-    const firstAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    const [firstAck, staleAck, lastStaleAck] = acks(3);
     socket.receive({
       v: 1,
       t: 'tunnel',
@@ -1376,27 +1376,30 @@ describe('BackendConnection', () => {
     });
     for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
 
-    // The reconnect happens here: the node has forgotten the transfer.
-    const staleAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    // The reconnect happens here: the node has forgotten the transfer, and every
+    // acknowledgement already in flight is refused.
     expect(staleAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'error',
-        id: staleAck.id,
-        code: 'transfer_expired',
-        message: 'Open the delivery artifact again to resume.',
-        retryable: true,
-      },
-    });
+    for (const ack of [staleAck, lastStaleAck]) {
+      socket.receive({
+        v: 1,
+        t: 'tunnel',
+        payload: {
+          v: 2,
+          t: 'error',
+          id: ack.id,
+          code: 'transfer_expired',
+          message: 'Open the delivery artifact again to resume.',
+          retryable: true,
+        },
+      });
+    }
     for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
 
     // Reopened from the three bytes already on disk rather than from zero.
     await openArtifact(3);
-    const resumedAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    const [resumedAck, finalAck] = acks(2);
     expect(resumedAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
+    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
     socket.receive({
       v: 1,
       t: 'tunnel',
@@ -1411,8 +1414,6 @@ describe('BackendConnection', () => {
     });
     for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
 
-    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
-    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
     socket.receive({
       v: 1,
       t: 'tunnel',
