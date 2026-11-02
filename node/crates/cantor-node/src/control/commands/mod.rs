@@ -49,8 +49,8 @@ pub(in crate::control) async fn stream_long_request<W: tokio::io::AsyncWrite + U
         "queue-cancel" | "queue-hold" | "queue-release" => {
             queue::run_act(&request, state, events, writer, &id).await
         }
-        "queue-place" => queue::run_place(&request, state, writer, &id).await,
-        "queue-now" => queue::run_now(&request, state, writer, &id).await,
+        "queue-place" => queue::run_place(&request, state, events, writer, &id).await,
+        "queue-now" => queue::run_now(&request, state, events, writer, &id).await,
         "queue-gate" => queue::run_gate(&request, state, events, writer, &id).await,
         "queue-clear" => queue::run_clear(&request, state, events, writer, &id).await,
         "backends" => async {

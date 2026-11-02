@@ -94,6 +94,7 @@ pub(crate) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             audio_sources: true,
             uploads: true,
             binary_uploads: true,
+            queue_position: true,
         },
         installable,
     }

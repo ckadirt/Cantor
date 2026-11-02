@@ -194,6 +194,9 @@ pub(super) fn handle(
             session.authenticated(),
             library,
         ),
+        ClientMessage::QueuePosition { v, id } => {
+            jobs::queue_position(v, id, session.authenticated(), library)
+        }
         ClientMessage::LibraryList {
             v,
             id,

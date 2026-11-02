@@ -25,4 +25,8 @@ uploads: boolean,
  * Additive: a client may send upload slices as binary inner frames. A node
  * that predates them refuses the frame, so it must not see one.
  */
-binary_uploads: boolean, };
+binary_uploads: boolean, 
+/**
+ * Additive: `queue.position`.
+ */
+queue_position: boolean, };

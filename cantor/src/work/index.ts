@@ -8,6 +8,7 @@ export { derivedJobId, submissionJobId } from './derivedJobId';
 
 export type WorkPhase =
   | { kind: 'waiting' }
+  | { kind: 'closed' }
   | { kind: 'sending'; sent: number; total: number }
   | { kind: 'submitted' }
   | { kind: 'job' };
@@ -19,6 +20,8 @@ export type Work = Readonly<{
   clientRequestId: string | null;
   phase: WorkPhase;
   job: JobView | null;
+  /** How many jobs run before this one, while it waits and the node says. */
+  ahead: number | null;
   request: GenerationRequest | null;
   caption: string | null;
   model: string;
@@ -97,6 +100,8 @@ export function deriveWork(
           ? { kind: 'sending', ...sending }
           : snapshot?.phase !== 'ready'
           ? { kind: 'waiting' }
+          : backend.lastNodeInfo?.load.unavailable_reason === 'closed'
+          ? { kind: 'closed' }
           : { kind: 'submitted' };
       const request = entry?.generation ?? null;
       const model = job?.model ?? entry!.model;
@@ -108,6 +113,8 @@ export function deriveWork(
         clientRequestId: entry?.clientRequestId ?? null,
         phase,
         job,
+        ahead:
+          job?.state === 'queued' ? snapshot?.ahead?.[job.id] ?? null : null,
         request,
         caption: job?.caption ?? request?.caption ?? null,
         model,
@@ -157,6 +164,7 @@ function fallbackPlan(
 function sameWork(left: Work, right: Work): boolean {
   return (
     left.job === right.job &&
+    left.ahead === right.ahead &&
     left.request === right.request &&
     left.clientRequestId === right.clientRequestId &&
     left.caption === right.caption &&

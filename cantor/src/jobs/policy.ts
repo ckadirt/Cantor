@@ -52,11 +52,14 @@ export function jobStateLabel(
   job: JobView | null,
   phase: WorkPhase = { kind: 'job' },
   node = 'node',
+  ahead: number | null = null,
 ): string {
   if (job === null) {
     switch (phase.kind) {
       case 'waiting':
         return `Waiting for ${node}`;
+      case 'closed':
+        return `${node} is closed for now`;
       case 'sending':
         return 'Sending the source';
       default:
@@ -88,6 +91,8 @@ export function jobStateLabel(
   }
   switch (job.state) {
     case 'queued':
+      if (ahead === 0) return 'Next in the queue';
+      if (ahead !== null) return `${ahead} ahead in the queue`;
       return 'Waiting on node';
     case 'preparing':
       return 'Preparing model';

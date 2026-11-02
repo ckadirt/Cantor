@@ -111,6 +111,25 @@ it('writes sending bytes in MB while tile and step counts keep their units', () 
   expect(jobProgressLabel({ kind: 'indeterminate' }, phase)).toBe('');
 });
 
+describe('where a waiting job stands', () => {
+  it('counts what is ahead, and says so when nothing is', () => {
+    const phase = { kind: 'job' } as const;
+    expect(jobStateLabel(job('queued'), phase, 'node', 3)).toBe(
+      '3 ahead in the queue',
+    );
+    expect(jobStateLabel(job('queued'), phase, 'node', 0)).toBe(
+      'Next in the queue',
+    );
+    expect(jobStateLabel(job('queued'))).toBe('Waiting on node');
+  });
+
+  it('says a request is waiting because its node is closed', () => {
+    expect(jobStateLabel(null, { kind: 'closed' }, 'Agentbox')).toBe(
+      'Agentbox is closed for now',
+    );
+  });
+});
+
 describe('a job the node owner holds', () => {
   it('offers only a cancel, and says who holds it', () => {
     const held: JobView = { ...job('paused'), by_node_owner: true };

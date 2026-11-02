@@ -20,6 +20,7 @@ mod pairing;
 mod principal;
 mod process_lock;
 mod queue_cli;
+mod queue_panel;
 mod relay;
 mod runtime;
 mod secure;
@@ -67,7 +68,7 @@ Usage:
                    [--version-of SONG [--closeness 0..1] [--keep-voice]]
                    [--longer SONG --add SECONDS [--at start|end]]
                    [--source FILE [--tune] [--tile SECONDS] [--closeness 0..1]]
-  cantor queue     [--json]        # what is running and what waits, from every app
+  cantor queue     [--json | --watch | -i]  # what runs and what waits, from every app
   cantor queue     show <job>...
   cantor queue     cancel <job>... | --all | --from <petname|local> | --model <model> [--yes]
   cantor queue     hold|release <job>... | --all | --from <petname|local> | --model <model>
@@ -146,6 +147,8 @@ struct Cli {
     json: bool,
     from: Option<String>,
     yes: bool,
+    watch: bool,
+    interactive: bool,
     next: bool,
     before: Option<String>,
     after: Option<String>,
@@ -222,6 +225,8 @@ impl Cli {
             json: false,
             from: None,
             yes: false,
+            watch: false,
+            interactive: false,
             next: false,
             before: None,
             after: None,
@@ -305,6 +310,8 @@ impl Cli {
                 Some("--from") => cli.from = Some(next_utf8_value(&mut args, "--from")?),
                 Some("--yes") | Some("-y") => cli.yes = true,
                 Some("--next") => cli.next = true,
+                Some("--watch") => cli.watch = true,
+                Some("--interactive") | Some("-i") => cli.interactive = true,
                 Some("--before") => cli.before = Some(next_utf8_value(&mut args, "--before")?),
                 Some("--after") => cli.after = Some(next_utf8_value(&mut args, "--after")?),
                 Some("--version") | Some("-V") => {
@@ -379,6 +386,8 @@ async fn main() -> Result<()> {
                     yes: cli.yes,
                     from: cli.from,
                     model: cli.model,
+                    watch: cli.watch,
+                    interactive: cli.interactive,
                     before: cli.before,
                     after: cli.after,
                 },

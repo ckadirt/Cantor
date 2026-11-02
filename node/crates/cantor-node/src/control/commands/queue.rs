@@ -136,6 +136,7 @@ pub(super) async fn run_act<W: tokio::io::AsyncWrite + Unpin>(
 pub(super) async fn run_place<W: tokio::io::AsyncWrite + Unpin>(
     request: &Value,
     state: &SharedState,
+    events: &mpsc::Sender<NodeEvent>,
     writer: &mut W,
     id: &str,
 ) -> Result<()> {
@@ -155,6 +156,7 @@ pub(super) async fn run_place<W: tokio::io::AsyncWrite + Unpin>(
             .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
         operator::place(&mut locked, &job, &placement)?
     };
+    nudge(events).await;
     write_line(
         writer,
         &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "job": item}),
@@ -165,6 +167,7 @@ pub(super) async fn run_place<W: tokio::io::AsyncWrite + Unpin>(
 pub(super) async fn run_now<W: tokio::io::AsyncWrite + Unpin>(
     request: &Value,
     state: &SharedState,
+    events: &mpsc::Sender<NodeEvent>,
     writer: &mut W,
     id: &str,
 ) -> Result<()> {
@@ -178,6 +181,7 @@ pub(super) async fn run_now<W: tokio::io::AsyncWrite + Unpin>(
         locked.job_notify.notify_one();
         moved
     };
+    nudge(events).await;
     write_line(
         writer,
         &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "job": item, "displaced": displaced}),
@@ -210,9 +214,7 @@ pub(super) async fn run_gate<W: tokio::io::AsyncWrite + Unpin>(
         locked.job_notify.notify_one();
         (locked.config.jobs.paused, locked.config.jobs.closed)
     };
-    let _ = events
-        .send_timeout(NodeEvent::NodeInfoChanged, EVENT_WAIT)
-        .await;
+    nudge(events).await;
     write_line(
         writer,
         &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "paused": paused, "closed": closed}),
@@ -278,6 +280,14 @@ fn outcome_name(outcome: ActOutcome) -> Result<String> {
         .as_str()
         .map(str::to_owned)
         .context("an outcome is a string")
+}
+
+/// A reorder changes no job's revision, so nothing else tells a waiting app.
+/// `node.info` is what its queue positions refresh on.
+async fn nudge(events: &mpsc::Sender<NodeEvent>) {
+    let _ = events
+        .send_timeout(NodeEvent::NodeInfoChanged, EVENT_WAIT)
+        .await;
 }
 
 async fn publish(events: &mpsc::Sender<NodeEvent>, event: NodeEvent, stalled: &mut bool) {
@@ -756,10 +766,12 @@ mod tests {
             (work, signal)
         };
 
+        let (events, _received) = mpsc::channel(4);
         let mut output = Vec::new();
         run_now(
             &json!({"v": 1, "t": "queue-now", "job": &wanted}),
             &state,
+            &events,
             &mut output,
             "1",
         )
@@ -786,11 +798,35 @@ mod tests {
         let _ = running;
     }
 
+    #[tokio::test]
+    async fn a_client_learns_its_own_place_and_only_a_count_of_the_rest() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let (mine, theirs) = ([7; 32], [8; 32]);
+        app_job(&state, theirs, "running");
+        let first = app_job(&state, mine, "first");
+        app_job(&state, theirs, "between");
+        let second = app_job(&state, mine, "second");
+        let mut locked = state.lock().expect("state");
+        locked.library.claim_next().expect("claim").expect("work");
+        let positions = locked
+            .library
+            .queue_positions(PrincipalId::from_client_public_key(&mine))
+            .expect("positions");
+        let found = positions
+            .iter()
+            .map(|place| (place.job_id.as_str(), place.ahead))
+            .collect::<Vec<_>>();
+        assert_eq!(found, [(first.as_str(), 1), (second.as_str(), 3)]);
+    }
+
     async fn place(state: &SharedState, job: &str, place: &str, other: Option<&str>) {
+        let (events, _received) = mpsc::channel(4);
         let mut output = Vec::new();
         run_place(
             &json!({"v": 1, "t": "queue-place", "job": job, "place": place, "other": other}),
             state,
+            &events,
             &mut output,
             "1",
         )

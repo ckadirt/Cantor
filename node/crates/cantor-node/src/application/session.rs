@@ -253,6 +253,7 @@ mod tests {
                 audio_sources: false,
                 uploads: false,
                 binary_uploads: false,
+                queue_position: false,
             },
             installable: None,
         }

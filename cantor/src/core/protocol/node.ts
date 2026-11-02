@@ -138,6 +138,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       audio_sources: features.audio_sources === true,
       uploads: features.uploads === true,
       binary_uploads: features.binary_uploads === true,
+      queue_position: features.queue_position === true,
       derived_job_ids: features.derived_job_ids === true,
     },
     ...(installable === undefined ? {} : { installable }),

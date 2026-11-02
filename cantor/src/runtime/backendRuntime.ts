@@ -525,6 +525,9 @@ export class BackendRuntime {
     entry: OutboxEntry,
   ): Promise<void> {
     if (this.outboxInFlight.has(entry.clientRequestId)) return;
+    // Its owner closed it. The request keeps here until it opens, and
+    // `rememberNodeInfo` sends it then; asking now only earns a refusal.
+    if (this.nodeClosed(entry.nodePublicKey)) return;
     this.outboxInFlight.add(entry.clientRequestId);
     try {
       if (entry.source !== undefined) {
@@ -612,9 +615,19 @@ export class BackendRuntime {
     }
   }
 
+  private nodeClosed(nodePublicKey: string): boolean {
+    return (
+      this.state.backends?.find(item => item.nodePubkey === nodePublicKey)
+        ?.lastNodeInfo?.load.unavailable_reason === 'closed'
+    );
+  }
+
   private rememberNodeInfo(nodePublicKey: string, info: NodeInfo): void {
     const current = this.state.backends ?? [];
     const existing = current.find(item => item.nodePubkey === nodePublicKey);
+    const opened =
+      this.nodeClosed(nodePublicKey) &&
+      info.load.unavailable_reason !== 'closed';
     if (
       existing &&
       JSON.stringify(existing.lastNodeInfo) === JSON.stringify(info)
@@ -628,6 +641,26 @@ export class BackendRuntime {
           : item,
       ),
     );
+    if (opened) this.flushOutbox(nodePublicKey);
+  }
+
+  private flushOutbox(nodePublicKey: string): void {
+    const connection = this.connections.get(nodePublicKey)?.connection;
+    if (!connection) return;
+    this.deps
+      .loadOutbox()
+      .then(entries =>
+        Promise.all(
+          entries
+            .filter(
+              entry =>
+                entry.nodePublicKey === nodePublicKey &&
+                entry.state === 'pending',
+            )
+            .map(entry => this.sendOutbox(connection, entry)),
+        ),
+      )
+      .catch(this.reportError);
   }
 
   private rememberTransport(

@@ -101,6 +101,7 @@ describe('job marks and the accessibility mirror', () => {
           clientRequestId: null,
           phase: { kind: 'job' },
           job: null,
+          ahead: null,
           request: null,
           caption: 'working',
           model: 'light',

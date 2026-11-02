@@ -38,6 +38,7 @@ import type { BackendRecord, ConnectionSnapshot } from './types';
 import {
   decodeArtifactInfo,
   decodeForgottenJob,
+  decodeQueuePositions,
   decodeJobResponse,
   decodeJobsPage,
   decodeLibraryChanges,
@@ -59,6 +60,7 @@ import {
 import { RelaySocket } from './relaySocket';
 
 const REQUEST_TIMEOUT_MS = 15_000;
+const QUEUE_POSITION_DELAY_MS = 1_000;
 /**
  * How many times a download may reopen after the node drops its transfer.
  *
@@ -115,6 +117,8 @@ export class BackendConnection {
   private handshakeId: string | null = null;
   private requestSequence = 0;
   private readonly requests: RequestRegistry;
+  private queuePositions = false;
+  private queuePositionTimer: ReturnType<typeof setTimeout> | null = null;
   private snapshot: ConnectionSnapshot = {
     phase: 'disconnected',
     error: null,
@@ -177,6 +181,8 @@ export class BackendConnection {
   }
 
   stop(): void {
+    if (this.queuePositionTimer !== null) clearTimeout(this.queuePositionTimer);
+    this.queuePositionTimer = null;
     this.relay.stop();
     this.resetSecure();
     this.clearPending('The connection to the node stopped.');
@@ -334,6 +340,7 @@ export class BackendConnection {
         return;
       }
       this.handshakeId = null;
+      this.queuePositions = nodeInfo.features.queue_position;
       this.relay.resetReconnectAttempt();
       if (this.pairToken !== undefined) {
         this.pairToken = undefined;
@@ -368,6 +375,7 @@ export class BackendConnection {
               ...this.snapshot,
               jobs: mergeJobViews(this.snapshot.jobs, result.jobs),
             });
+            this.scheduleQueuePositions();
           },
           reject: () => {},
         },
@@ -387,8 +395,14 @@ export class BackendConnection {
     if (payload.t === 'node.info') {
       const nodeInfo = parseNodeInfo(payload.node);
       if (nodeInfo !== null) {
+        this.queuePositions = nodeInfo.features.queue_position;
         this.callbacks.onNodeInfo(nodeInfo);
+        this.scheduleQueuePositions();
       }
+      return;
+    }
+    if (payload.t === 'queue.position' && typeof payload.id === 'string') {
+      this.requests.deliver(payload.id, 'queue.position', payload);
       return;
     }
     if (payload.t === 'jobs.page' && typeof payload.id === 'string') {
@@ -429,6 +443,7 @@ export class BackendConnection {
           ...this.snapshot.jobs.filter(job => job.id !== updated.id),
         ],
       });
+      this.scheduleQueuePositions();
       return;
     }
     if (payload.t === 'library.page' && typeof payload.id === 'string') {
@@ -698,6 +713,52 @@ export class BackendConnection {
         job_id: jobId,
         expected_revision: expectedRevision,
       });
+    });
+  }
+
+  /**
+   * Refresh where this phone's jobs stand, once things have settled.
+   *
+   * Called on what can move a job: a change to one of ours, and `node.info`,
+   * which the node sends when its load changes or its owner reorders. Progress
+   * ticks land here too, so the timer is the rate limit.
+   */
+  private scheduleQueuePositions(): void {
+    if (!this.queuePositions || this.snapshot.phase !== 'ready') return;
+    if (!this.snapshot.jobs.some(job => job.state === 'queued')) {
+      if (Object.keys(this.snapshot.ahead ?? {}).length > 0) {
+        this.setSnapshot({ ...this.snapshot, ahead: {} });
+      }
+      return;
+    }
+    if (this.queuePositionTimer !== null) return;
+    this.queuePositionTimer = setTimeout(() => {
+      this.queuePositionTimer = null;
+      this.requestQueuePositions();
+    }, QUEUE_POSITION_DELAY_MS);
+  }
+
+  private requestQueuePositions(): void {
+    if (this.snapshot.phase !== 'ready') return;
+    const id = this.requests.register(
+      'queue-position',
+      {
+        expected: 'queue.position',
+        decode: message => {
+          const ahead = decodeQueuePositions(message);
+          return ahead === null ? ignoreResponse() : resolveResponse(ahead);
+        },
+      },
+      {
+        resolve: ahead => this.setSnapshot({ ...this.snapshot, ahead }),
+        // A place in a queue is a nicety; the job's state still says waiting.
+        reject: () => {},
+      },
+    );
+    this.sendApplication({
+      t: 'queue.position',
+      v: APPLICATION_PROTOCOL_VERSION,
+      id,
     });
   }
 

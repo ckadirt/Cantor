@@ -180,7 +180,12 @@ export function JobSheet({
   const failure = pending.job?.error;
   const node = pending.nodeLabels[0] ?? pending.backend.petname;
   const made = new Date(pending.work.createdAtMs);
-  const stateLabel = jobStateLabel(pending.job, pending.phase, node);
+  const stateLabel = jobStateLabel(
+    pending.job,
+    pending.phase,
+    node,
+    pending.work.ahead,
+  );
   const progressNote = pending.phase.kind === 'job'
     ? arcNote(model, stages, pending.work.plan)
     : model.progress.kind === 'determinate'

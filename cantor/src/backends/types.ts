@@ -51,6 +51,8 @@ export type ConnectionSnapshot = {
   phase: ConnectionPhase;
   error: string | null;
   jobs: JobView[];
+  /** How many jobs run before each waiting job, by job id, where the node says. */
+  ahead?: Record<string, number>;
   songs: SongHeader[];
   libraryRevision: number | null;
   librarySyncing: boolean;

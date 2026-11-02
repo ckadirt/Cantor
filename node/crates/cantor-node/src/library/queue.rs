@@ -2,10 +2,11 @@
 //!
 //! Everything else in the library is scoped by `PrincipalId`. These queries
 //! exist for the local control socket and must never be reachable from
-//! `application/`: an app sees its own jobs and nobody else's.
+//! `application/`: an app sees its own jobs and nobody else's. The exception is
+//! `queue_positions`, which gives a client its own ids and bare counts.
 
 use anyhow::Result;
-use cantor_proto::JobView;
+use cantor_proto::{JobView, QueuePosition};
 use rusqlite::{OptionalExtension, params};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
@@ -56,6 +57,28 @@ impl Library {
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    /// A principal's waiting jobs and how many jobs run before each. The rest
+    /// of the queue leaves this function as a number and nothing else.
+    pub fn queue_positions(&self, principal: PrincipalId) -> Result<Vec<QueuePosition>> {
+        let active = self.active_count()?;
+        let mut statement = self.connection.prepare(
+            "SELECT id,principal_id FROM jobs WHERE state='queued'
+             ORDER BY priority DESC,created_at ASC,rowid ASC",
+        )?;
+        let owner = principal.to_string();
+        let order = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(order
+            .into_iter()
+            .zip(active..)
+            .filter(|((_, job_owner), _)| *job_owner == owner)
+            .map(|((job_id, _), ahead)| QueuePosition { job_id, ahead })
+            .collect())
     }
 
     /// Reordering is not a change to a job: `JobView` carries no position, so

@@ -510,6 +510,18 @@ pub struct NodeFeatures {
     /// that predates them refuses the frame, so it must not see one.
     #[serde(default)]
     pub binary_uploads: bool,
+    /// Additive: `queue.position`.
+    #[serde(default)]
+    pub queue_position: bool,
+}
+
+/// One of a client's waiting jobs, and how much stands in front of it.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
+#[ts(export)]
+pub struct QueuePosition {
+    pub job_id: String,
+    /// The jobs that run first, whoever they belong to, and only their number.
+    pub ahead: u32,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
@@ -1038,6 +1050,10 @@ pub enum ClientMessage {
         #[ts(optional)]
         expected_revision: Option<u32>,
     },
+    /// Where this client's waiting jobs stand. Never says whose the rest are.
+    #[serde(rename = "queue.position")]
+    #[ts(rename = "queue.position")]
+    QueuePosition { v: u8, id: String },
     #[serde(rename = "library.list")]
     #[ts(rename = "library.list")]
     LibraryList {
@@ -1173,6 +1189,13 @@ pub enum NodeMessage {
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
         next_cursor: Option<String>,
+    },
+    #[serde(rename = "queue.position")]
+    #[ts(rename = "queue.position")]
+    QueuePosition {
+        v: u8,
+        id: String,
+        positions: Vec<QueuePosition>,
     },
     #[serde(rename = "job.detail")]
     #[ts(rename = "job.detail")]
@@ -1405,6 +1428,7 @@ mod tests {
             include_str!("../../../../protocol/fixtures/v2/upload-open.json"),
             include_str!("../../../../protocol/fixtures/v2/upload-chunk.json"),
             include_str!("../../../../protocol/fixtures/v2/upload-commit.json"),
+            include_str!("../../../../protocol/fixtures/v2/queue-position-request.json"),
         ];
         for fixture in client {
             serde_json::from_str::<ClientMessage>(fixture).expect("valid client fixture");
@@ -1419,6 +1443,7 @@ mod tests {
             include_str!("../../../../protocol/fixtures/v2/jobs-page.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page-plan.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page-held.json"),
+            include_str!("../../../../protocol/fixtures/v2/queue-position.json"),
             include_str!("../../../../protocol/fixtures/v2/job-forgotten.json"),
             include_str!("../../../../protocol/fixtures/v2/library-page.json"),
             include_str!("../../../../protocol/fixtures/v2/error.json"),

@@ -51,13 +51,13 @@ fn moved(index: usize, len: usize, key: Key) -> usize {
 
 /// Restores the terminal however this function is left, including on a panic
 /// on the way out of the caller.
-struct RawMode {
+pub(crate) struct RawMode {
     fd: i32,
     saved: libc::termios,
 }
 
 impl RawMode {
-    fn enter(fd: i32) -> Result<Self> {
+    pub(crate) fn enter(fd: i32) -> Result<Self> {
         // SAFETY: `fd` is an open terminal for the lifetime of this value, and
         // both calls only read or write the `termios` passed to them.
         unsafe {

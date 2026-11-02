@@ -56,6 +56,25 @@ export function decodeForgottenJob(message: unknown): string | null {
     : null;
 }
 
+export function decodeQueuePositions(
+  message: unknown,
+): Record<string, number> | null {
+  if (!isRecord(message) || !Array.isArray(message.positions)) return null;
+  const ahead: Record<string, number> = {};
+  for (const place of message.positions) {
+    if (
+      !isRecord(place) ||
+      typeof place.job_id !== 'string' ||
+      !Number.isSafeInteger(place.ahead) ||
+      (place.ahead as number) < 0
+    ) {
+      return null;
+    }
+    ahead[place.job_id] = place.ahead as number;
+  }
+  return ahead;
+}
+
 export function decodeSongResponse(message: unknown): SongHeader | null {
   return isRecord(message) ? parseSong(message.song) : null;
 }

@@ -261,6 +261,27 @@ pub(super) fn control(
     )
 }
 
+/// Where this client's waiting jobs stand. Other owners' jobs reach it only as
+/// a count.
+pub(super) fn queue_position(
+    version: u8,
+    id: String,
+    authentication: Option<&AuthenticatedSession>,
+    library: &Library,
+) -> Result<NodeMessage> {
+    if version != PROTOCOL_VERSION {
+        return Ok(NodeMessage::unsupported_version(Some(id)));
+    }
+    let Some(context) = authentication else {
+        return Ok(unauthenticated(id, "jobs"));
+    };
+    Ok(NodeMessage::QueuePosition {
+        v: PROTOCOL_VERSION,
+        id,
+        positions: library.queue_positions(context.principal_id)?,
+    })
+}
+
 /// Delete a stopped job outright, on the node and therefore everywhere.
 ///
 /// The node keeps no tombstone: a forgotten job is gone from `jobs.list`, so a

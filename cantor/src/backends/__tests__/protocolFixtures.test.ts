@@ -5,10 +5,14 @@ import {
   parseNodeInfo,
   parseSong,
 } from '../../core/protocol';
-import { decodeForgottenJob } from '../applicationResponses';
+import {
+  decodeForgottenJob,
+  decodeQueuePositions,
+} from '../applicationResponses';
 
 const nodeInfo = require('../../../../protocol/fixtures/v2/node-info.json');
 const jobsPlan = require('../../../../protocol/fixtures/v2/jobs-page-plan.json');
+const queuePosition = require('../../../../protocol/fixtures/v2/queue-position.json');
 const jobsHeld = require('../../../../protocol/fixtures/v2/jobs-page-held.json');
 const jobsPage = require('../../../../protocol/fixtures/v2/jobs-page.json');
 const forgotten = require('../../../../protocol/fixtures/v2/job-forgotten.json');
@@ -28,6 +32,15 @@ describe('shared protocol v2 fixtures', () => {
       stage: 'diffuse',
       revision: 3,
     });
+  });
+
+  it('reads where a job stands, and refuses a malformed place', () => {
+    expect(decodeQueuePositions(queuePosition)).toEqual({
+      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb21': 3,
+    });
+    expect(
+      decodeQueuePositions({ positions: [{ job_id: 'a', ahead: -1 }] }),
+    ).toBeNull();
   });
 
   it('keeps who stopped a job, and tolerates a node that does not say', () => {

@@ -15,6 +15,7 @@ const CANCEL_BATCH: usize = 500;
 /// Past this a bulk cancel reports its tally, not every job.
 const LISTED_OUTCOMES: usize = 20;
 const CAPTION_WIDTH: usize = 48;
+const WATCH_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub struct Options {
     /// The subcommand, then its jobs.
@@ -24,6 +25,8 @@ pub struct Options {
     pub yes: bool,
     pub from: Option<String>,
     pub model: Option<String>,
+    pub watch: bool,
+    pub interactive: bool,
     pub before: Option<String>,
     pub after: Option<String>,
 }
@@ -33,6 +36,12 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
         Some((action, jobs)) => (Some(action.as_str()), jobs),
         None => (None, &[][..]),
     };
+    if options.interactive {
+        return crate::queue_panel::run(socket).await;
+    }
+    if options.watch {
+        return watch(socket).await;
+    }
     match action {
         None => {
             let (jobs, facts) = fetch(socket, &json!({})).await?;
@@ -83,6 +92,20 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
         }
         Some(gate @ ("pause" | "resume" | "close" | "open")) => set_gate(socket, gate).await,
         Some(other) => bail!("queue has no command {other}; see `cantor --help`"),
+    }
+}
+
+/// A fresh connection each time: a control connection carries a bounded number
+/// of request bytes, so one held open would end.
+async fn watch(socket: &Path) -> Result<()> {
+    loop {
+        let (jobs, facts) = fetch(socket, &json!({})).await?;
+        print!(
+            "\x1b[2J\x1b[H{}",
+            render(&jobs, &facts, OffsetDateTime::now_utc())
+        );
+        std::io::stdout().flush()?;
+        tokio::time::sleep(WATCH_EVERY).await;
     }
 }
 
@@ -218,7 +241,7 @@ fn confirm(what: &str) -> Result<bool> {
 }
 
 /// The jobs, and the closing frame's facts about the queue as a whole.
-async fn fetch(socket: &Path, selector: &Value) -> Result<(Vec<Value>, Value)> {
+pub(crate) async fn fetch(socket: &Path, selector: &Value) -> Result<(Vec<Value>, Value)> {
     let mut request = selector.clone();
     request["v"] = json!(1);
     request["id"] = json!("1");
@@ -292,7 +315,7 @@ fn outcome_words(outcome: &str) -> &'static str {
 }
 
 /// Whole-queue state goes first: it explains everything below it.
-fn banner(facts: &Value) -> String {
+pub(crate) fn banner(facts: &Value) -> String {
     let flag = |key: &str| facts.get(key).and_then(Value::as_bool) == Some(true);
     let mut output = String::new();
     if flag("paused") {
@@ -371,7 +394,7 @@ fn activity(job: &Value) -> String {
     }
 }
 
-fn row(lead: &str, job: &Value, now: OffsetDateTime) -> String {
+pub(crate) fn row(lead: &str, job: &Value, now: OffsetDateTime) -> String {
     format!(
         "{lead:>14}  {}  {:<12}  {:<20}  {:>4}  {}\n",
         short(string(job, "id")),
@@ -419,7 +442,7 @@ fn rough_duration(seconds: u64) -> String {
     }
 }
 
-fn short(id: &str) -> &str {
+pub(crate) fn short(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
 
@@ -435,7 +458,7 @@ fn clipped(text: &str, width: usize) -> String {
     format!("{kept}…")
 }
 
-fn string<'a>(value: &'a Value, key: &str) -> &'a str {
+pub(crate) fn string<'a>(value: &'a Value, key: &str) -> &'a str {
     value.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
