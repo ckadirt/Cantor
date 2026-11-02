@@ -51,6 +51,7 @@ const nodeInfo: NodeInfo = {
     job_forget: true,
     audio_sources: false,
     uploads: false,
+    binary_uploads: false,
     derived_job_ids: false,
   },
 };
@@ -137,7 +138,6 @@ type Fixture = {
   markAccepted: jest.Mock;
   markRejected: jest.Mock;
   inspectAudio: jest.Mock;
-  appendAudioChunk: jest.Mock;
   finalizeAudio: jest.Mock;
   pinAudio: jest.Mock;
   unpinAudio: jest.Mock;
@@ -202,7 +202,6 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
   const inspectAudioMock = jest
     .fn()
     .mockResolvedValue({ state: 'pinned', bytes: 10 });
-  const appendAudioChunkMock = jest.fn().mockResolvedValue(10);
   const finalizeAudioMock = jest.fn().mockResolvedValue(undefined);
   const pinAudioMock = jest
     .fn()
@@ -228,14 +227,6 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
         );
         return local.state === 'partial' ? local.bytes : 0;
       },
-      append: (offset, encoded) =>
-        appendAudioChunkMock(
-          ref.nodeKey,
-          ref.songId,
-          ref.digest,
-          offset,
-          encoded,
-        ),
       finalize: byteLength =>
         finalizeAudioMock(ref.nodeKey, ref.songId, ref.digest, byteLength),
     }),
@@ -281,7 +272,6 @@ function fixture(backends: BackendRecord[] = [backend]): Fixture {
     markAccepted: markAcceptedMock,
     markRejected: markRejectedMock,
     inspectAudio: inspectAudioMock,
-    appendAudioChunk: appendAudioChunkMock,
     finalizeAudio: finalizeAudioMock,
     pinAudio: pinAudioMock,
     unpinAudio: unpinAudioMock,
@@ -582,14 +572,12 @@ describe('useBackendRuntime', () => {
         _artifact: ArtifactView,
         sink: {
           offset: () => Promise<number>;
-          append: (offset: number, data: string) => Promise<number>;
           finalize: (bytes: number) => Promise<void>;
         },
         progress: (bytes: number, total: number) => void,
       ) => {
         expect(await sink.offset()).toBe(4);
         progress(4, 10);
-        expect(await sink.append(4, 'encoded')).toBe(10);
         progress(10, 10);
         await sink.finalize(10);
       },
@@ -600,13 +588,6 @@ describe('useBackendRuntime', () => {
         .commands.audio('node-a', song(), artifact, 'download');
     });
 
-    expect(f.appendAudioChunk).toHaveBeenCalledWith(
-      'node-a',
-      'song-a',
-      artifact.sha256,
-      4,
-      'encoded',
-    );
     expect(f.finalizeAudio).toHaveBeenCalledWith(
       'node-a',
       'song-a',

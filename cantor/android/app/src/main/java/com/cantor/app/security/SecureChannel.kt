@@ -1,6 +1,5 @@
 package com.cantor.app.security
 
-import android.util.Base64
 import com.cantor.app.transport.GeneratedTransport.EXPECTED_PROLOGUE_BYTES
 import com.cantor.app.transport.GeneratedTransport.MAX_FRAGMENT_DATA_BYTES
 import com.cantor.app.transport.GeneratedTransport.MAX_HANDSHAKE_MESSAGE_BYTES
@@ -92,14 +91,20 @@ internal class SecureChannel private constructor(private var handshake: Handshak
     handshake.destroy()
   }
 
-  /** Fragments and encrypts one inner message into base64 carrier records. */
-  fun encrypt(inner: ByteArray): List<String> {
+  /**
+   * Fragments and encrypts one inner message into ciphertext records.
+   *
+   * Noise nonces count every record, so the caller must put these on the wire
+   * in this order, before any later message's records.
+   */
+  @Synchronized
+  fun encrypt(inner: ByteArray): List<ByteArray> {
     require(inner.isNotEmpty() && inner.size <= MAX_LOGICAL_INNER_BYTES) {
       "Secure inner message is outside its bound."
     }
     require(sendMessageId <= 0xffff_ffffL) { "Secure send message id is exhausted; reconnect." }
     val fragmentCount = FragmentCodec.fragmentCount(inner.size)
-    val output = mutableListOf<String>()
+    val output = ArrayList<ByteArray>(fragmentCount)
     var offset = 0
     for (index in 0 until fragmentCount) {
       val fragmentLength = minOf(MAX_FRAGMENT_DATA_BYTES, inner.size - offset)
@@ -123,10 +128,9 @@ internal class SecureChannel private constructor(private var handshake: Handshak
         }
         sentRecords += 1
         sentBytes += length
-        output.add(Base64.encodeToString(ciphertext, 0, length, Base64.NO_WRAP))
+        output.add(ciphertext)
       } finally {
         record.fill(0)
-        ciphertext.fill(0)
       }
       offset += fragmentLength
     }
@@ -134,30 +138,28 @@ internal class SecureChannel private constructor(private var handshake: Handshak
     return output
   }
 
-  /** Returns a complete inner message as base64, or null while reassembling. */
-  fun decrypt(ciphertext: ByteArray): String? {
-    require(
-        ciphertext.size in (NOISE_AUTHENTICATION_TAG_BYTES + 1)..MAX_SECURE_CIPHERTEXT_BYTES,
-    ) { "Noise ciphertext is outside the carrier bound." }
-    checkReceiveLimit(ciphertext.size)
-    val plaintext = ByteArray(ciphertext.size)
+  /**
+   * Returns a complete inner message, or null while reassembling. The caller
+   * owns the returned bytes. Only the socket's reader calls this, so it never
+   * contends with [encrypt], whose cipher state is a separate one.
+   */
+  fun decrypt(ciphertext: ByteArray, offset: Int, size: Int): ByteArray? {
+    require(size in (NOISE_AUTHENTICATION_TAG_BYTES + 1)..MAX_SECURE_CIPHERTEXT_BYTES) {
+      "Noise ciphertext is outside the carrier bound."
+    }
+    checkReceiveLimit(size)
+    val plaintext = ByteArray(size)
     try {
-      val length =
-          requireCiphers().receiver.decryptWithAd(null, ciphertext, 0, plaintext, 0, ciphertext.size)
+      val length = requireCiphers().receiver.decryptWithAd(null, ciphertext, offset, plaintext, 0, size)
       receivedRecords += 1
-      receivedBytes += ciphertext.size
-      return reassembler.accept(plaintext, length)?.let {
-        try {
-          Base64.encodeToString(it, Base64.NO_WRAP)
-        } finally {
-          it.fill(0)
-        }
-      }
+      receivedBytes += size
+      return reassembler.accept(plaintext, length)
     } finally {
       plaintext.fill(0)
     }
   }
 
+  @Synchronized
   fun destroy() {
     handshake?.destroy()
     ciphers?.destroy()

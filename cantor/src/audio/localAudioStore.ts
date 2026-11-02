@@ -10,7 +10,6 @@ export type AudioRef = Readonly<{
 /** Sequential sink consumed by the existing artifact-transfer client. */
 export type LocalAudioSink = {
   offset: () => Promise<number>;
-  append: (offset: number, encoded: string) => Promise<number>;
   finalize: (byteLength: number) => Promise<void>;
 };
 

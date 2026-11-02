@@ -11,12 +11,11 @@ import {
 } from '../connection';
 import { deriveIdentity } from '../../identity/derive';
 import type { BackendRecord, ConnectionSnapshot, NodeInfo } from '../types';
-import type { SecureChannel } from '../../security/native';
-import {
-  encodeClientCarrier,
-  parseClientCarrier,
-} from '../../security/carrier';
-import { decodeNodeInner, encodeControlInner } from '../../security/inner';
+import type {
+  NativeDownload,
+  NativeUpload,
+  SecureChannel,
+} from '../../security/native';
 
 const PHRASE =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
@@ -45,6 +44,15 @@ const TRANSPORT_DESCRIPTOR = {
   ),
 };
 
+const nativeDownload = jest.fn<
+  Promise<void>,
+  [NativeDownload, (bytes: number) => void]
+>();
+const nativeUpload = jest.fn<
+  Promise<void>,
+  [NativeUpload, (bytes: number) => void]
+>();
+
 function fakeSecureChannel(): SecureChannel {
   let live = true;
   return {
@@ -57,14 +65,15 @@ function fakeSecureChannel(): SecureChannel {
         throw new Error('bad fake handshake');
       }
     },
-    encrypt: inner => {
+    attach: () => {},
+    send: json => {
       if (!live) throw new Error('destroyed');
-      return [Uint8Array.from(inner)];
+      FakeSocket.instances.at(-1)?.sent.push(
+        JSON.stringify({ payload: JSON.parse(json) }),
+      );
     },
-    decrypt: ciphertext => {
-      if (!live) throw new Error('destroyed');
-      return Uint8Array.from(ciphertext);
-    },
+    download: nativeDownload,
+    upload: nativeUpload,
     destroy: () => {
       live = false;
     },
@@ -104,20 +113,16 @@ class FakeSocket {
       (frame as { t?: unknown }).t === 'tunnel' &&
       'payload' in frame
     ) {
-      this.receiveInner(
-        encodeControlInner(
-          (frame as { payload: Record<string, unknown> }).payload,
-        ),
-      );
+      this.onmessage?.({
+        data: {
+          secure: JSON.stringify((frame as { payload: unknown }).payload),
+        },
+      });
       return;
     }
     this.onmessage?.({
       data: typeof frame === 'string' ? frame : JSON.stringify(frame),
     });
-  }
-
-  receiveInner(inner: Uint8Array): void {
-    this.onmessage?.({ data: encodeClientCarrier(inner) });
   }
 
   receivePlainTunnel(payload: Record<string, unknown>): void {
@@ -128,11 +133,7 @@ class FakeSocket {
 
   send(data: string | ArrayBuffer): void {
     this.rawSent.push(data);
-    if (data instanceof ArrayBuffer) {
-      const inner = parseClientCarrier(data);
-      this.sent.push(JSON.stringify({ payload: decodeNodeInner(inner) }));
-      return;
-    }
+    if (typeof data !== 'string') return;
     this.sent.push(data);
     let frame: unknown;
     try {
@@ -383,7 +384,7 @@ describe('BackendConnection', () => {
     const { socket } = connect();
     socket.receive({ v: 1, t: 'relay.presence', online: true });
 
-    expect(socket.rawSent).toHaveLength(3);
+    expect(socket.rawSent).toHaveLength(2);
     expect(socket.rawSent[0]).toEqual(
       expect.stringContaining('"t":"secure.init"'),
     );
@@ -393,7 +394,6 @@ describe('BackendConnection', () => {
     expect(socket.rawSent[0]).not.toEqual(
       expect.stringContaining(deriveIdentity(PHRASE).publicKey),
     );
-    expect(socket.rawSent[2]).toBeInstanceOf(ArrayBuffer);
   });
 
   it('rejects plaintext application data after the secure channel opens', () => {
@@ -1027,169 +1027,40 @@ describe('BackendConnection', () => {
     );
   });
 
-  it('writes every artifact chunk through to the durable sink in order', async () => {
-    const { socket, connection } = connect();
-    socket.receive({ v: 1, t: 'relay.presence', online: true });
-    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'challenge',
-        id: hello.payload.id,
-        nonce: 'A'.repeat(43),
-        node_pubkey: NODE_PUBKEY,
-      },
-    });
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'welcome',
-        id: hello.payload.id,
-        node: nodeInfoFixture('node'),
-      },
-    });
-    const digest = 'd'.repeat(64);
-    const append = jest.fn(async () => 3);
-    const finalize = jest.fn(async () => undefined);
-    const download = connection.downloadArtifact(
-      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
-      {
-        kind: 'delivery',
-        profile: 'opus-stereo-160k-v1',
-        media_type: 'audio/ogg; codecs=opus',
-        byte_length: 3,
-        sha256: digest,
-        sample_rate: 48_000,
-        channels: 2,
-      },
-      { offset: async () => 0, append, finalize },
-    );
-    await Promise.resolve();
-    const open = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
-    expect(open).toMatchObject({ t: 'artifact.open', offset: 0 });
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.info',
-        id: open.id,
-        transfer_id: 'transfer-1',
-        song_id: open.song_id,
-        artifact: {
-          kind: 'delivery',
-          profile: 'opus-stereo-160k-v1',
-          media_type: 'audio/ogg; codecs=opus',
-          byte_length: 3,
-          sha256: digest,
-          sample_rate: 48_000,
-          channels: 2,
-        },
-        accepted_offset: 0,
-        chunk_bytes: 65_536,
-        window_chunks: 1,
-      },
-    });
-    await Promise.resolve();
-    const firstAck = JSON.parse(socket.sent.at(-2) ?? '{}').payload;
-    expect(firstAck).toMatchObject({ t: 'artifact.ack', next_offset: 0 });
-    const finalAck = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
-    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.chunk',
-        id: firstAck.id,
-        transfer_id: 'transfer-1',
-        offset: 0,
-        data: 'YWJj',
-      },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(append).toHaveBeenCalledWith(0, 'YWJj');
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.complete',
-        id: finalAck.id,
-        transfer_id: 'transfer-1',
-        byte_length: 3,
-        sha256: digest,
-      },
-    });
-    await expect(download).resolves.toBeUndefined();
-    expect(finalize).toHaveBeenCalledWith(3);
-  });
+  const SONG_ID = '00000000-0000-4000-8000-000000000001';
+  const delivery = {
+    kind: 'delivery',
+    profile: 'opus-stereo-160k-v1',
+    media_type: 'audio/ogg; codecs=opus',
+    byte_length: 6,
+    sha256: 'c'.repeat(64),
+    sample_rate: 48_000,
+    channels: 2,
+  };
 
-  /**
-   * The window is what makes a download cost its bandwidth rather than a round
-   * trip per 64 KiB, so nothing may wait for an answer or for the disk while
-   * there is room in it.
-   */
-  it('acknowledges the next chunk without waiting for the last one to land', async () => {
-    const { socket, connection } = connect();
+  function readyConnection() {
+    const session = connect();
+    const { socket } = session;
     socket.receive({ v: 1, t: 'relay.presence', online: true });
     const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
     socket.receive({
       v: 1,
       t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'challenge',
-        id: hello.payload.id,
-        nonce: 'A'.repeat(43),
-        node_pubkey: NODE_PUBKEY,
-      },
+      payload: { v: 2, t: 'challenge', id: hello.payload.id, nonce: 'A'.repeat(43) },
     });
+    const auth = JSON.parse(socket.sent.at(-1) ?? '{}');
     socket.receive({
       v: 1,
       t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'welcome',
-        id: hello.payload.id,
-        node: nodeInfoFixture('node'),
-      },
+      payload: { v: 2, t: 'welcome', id: auth.payload.id, node: nodeInfoFixture('node') },
     });
-    const digest = 'd'.repeat(64);
-    const artifact = {
-      kind: 'delivery' as const,
-      profile: 'opus-stereo-160k-v1',
-      media_type: 'audio/ogg; codecs=opus',
-      byte_length: 6,
-      sha256: digest,
-      sample_rate: 48_000,
-      channels: 2,
-    };
-    // The first append never settles during this test, standing in for a slow
-    // phone: nothing downstream of it may block.
-    let releaseFirstAppend = (_offset: number) => {};
-    const appended: number[] = [];
-    const append = jest.fn((offset: number) => {
-      appended.push(offset);
-      return offset === 0
-        ? new Promise<number>(resolve => {
-            releaseFirstAppend = resolve;
-          })
-        : Promise.resolve(offset + 3);
-    });
-    const finalize = jest.fn(async () => undefined);
-    const download = connection.downloadArtifact(
-      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
-      artifact,
-      { offset: async () => 0, append, finalize },
-    );
-    await Promise.resolve();
+    return session;
+  }
+
+  const answerOpen = async (socket: FakeSocket, offset: number) => {
+    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
     const open = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
+    expect(open).toMatchObject({ t: 'artifact.open', offset });
     socket.receive({
       v: 1,
       t: 'tunnel',
@@ -1197,237 +1068,90 @@ describe('BackendConnection', () => {
         v: 2,
         t: 'artifact.info',
         id: open.id,
-        transfer_id: 'transfer-1',
+        transfer_id: `transfer-${offset}`,
         song_id: open.song_id,
-        artifact,
-        accepted_offset: 0,
+        artifact: delivery,
+        accepted_offset: offset,
         chunk_bytes: 3,
         window_chunks: 1,
       },
     });
-    await Promise.resolve();
-    // Every offset the file needs is asked for before any chunk has arrived.
-    const [firstAck, secondAck, finalAck] = socket.sent
-      .slice(-3)
-      .map(sent => JSON.parse(sent).payload);
-    expect(firstAck).toMatchObject({ t: 'artifact.ack', next_offset: 0 });
-    expect(secondAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
-    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.chunk',
-        id: firstAck.id,
-        transfer_id: 'transfer-1',
-        offset: 0,
-        data: 'YWJj',
-      },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(append).toHaveBeenCalledWith(0, 'YWJj');
-
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.chunk',
-        id: secondAck.id,
-        transfer_id: 'transfer-1',
-        offset: 3,
-        data: 'ZGVm',
-      },
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    // Ordering still holds: native refuses a non-sequential offset, so the
-    // second append waits behind the first however far ahead the wire runs.
-    expect(appended).toEqual([0]);
-    releaseFirstAppend(3);
-    // The queued write is several links down a promise chain; drain the
-    // microtask queue rather than guess at how many turns that is.
     for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
-    expect(appended).toEqual([0, 3]);
+  };
 
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.complete',
-        id: finalAck.id,
-        transfer_id: 'transfer-1',
-        byte_length: 6,
-        sha256: digest,
-      },
+  it('hands a transfer to the native pump and finalizes what it wrote', async () => {
+    const { socket, connection } = readyConnection();
+    const finalize = jest.fn().mockResolvedValue(undefined);
+    const progress: number[] = [];
+    nativeDownload.mockImplementationOnce(async (_options, onBytes) => {
+      onBytes(3);
     });
+
+    const download = connection.downloadArtifact(
+      SONG_ID,
+      delivery as never,
+      { offset: async () => 0, nodeKey: NODE_PUBKEY, finalize },
+      bytes => progress.push(bytes),
+    );
+    await answerOpen(socket, 0);
     await expect(download).resolves.toBeUndefined();
-    // Finalize still waits for the last byte to be on disk.
+
+    expect(nativeDownload.mock.calls.at(-1)?.[0]).toMatchObject({
+      songId: SONG_ID,
+      transferId: 'transfer-0',
+      nodeKey: NODE_PUBKEY,
+      digest: delivery.sha256,
+      offset: 0,
+      byteLength: 6,
+      chunkBytes: 3,
+    });
     expect(finalize).toHaveBeenCalledWith(6);
+    expect(progress).toEqual([0, 3, 6]);
   });
 
   /**
    * The node keeps one transfer per session and drops it on any
-   * re-authentication, so a reconnect mid-download leaves the next
-   * acknowledgement naming a transfer that is gone. The bytes on disk are still
-   * good and the node will take any resume offset, so this must not reach the
-   * person who pressed play.
+   * re-authentication. The bytes on disk are still good and the node will take
+   * any resume offset, so this must not reach the person who pressed play.
    */
-  it('reopens and resumes when the node drops the transfer', async () => {
-    const { socket, connection } = connect();
-    socket.receive({ v: 1, t: 'relay.presence', online: true });
-    const hello = JSON.parse(socket.sent.at(-1) ?? '{}');
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'challenge',
-        id: hello.payload.id,
-        nonce: 'A'.repeat(43),
-        node_pubkey: NODE_PUBKEY,
-      },
-    });
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'welcome',
-        id: hello.payload.id,
-        node: nodeInfoFixture('node'),
-      },
-    });
-    const digest = 'd'.repeat(64);
-    const artifact = {
-      kind: 'delivery' as const,
-      profile: 'opus-stereo-160k-v1',
-      media_type: 'audio/ogg; codecs=opus',
-      byte_length: 6,
-      sha256: digest,
-      sample_rate: 48_000,
-      channels: 2,
-    };
-    // The sink is the disk: it keeps the three bytes the first session landed,
-    // and that is where the second session has to pick up.
+  it('reopens from the disk when the node drops the transfer', async () => {
+    const { socket, connection } = readyConnection();
+    const finalize = jest.fn().mockResolvedValue(undefined);
     let onDisk = 0;
-    const finalize = jest.fn(async () => undefined);
-    const download = connection.downloadArtifact(
-      '019c8f7e-5f2b-7a21-9ee0-8efb630bcb17',
-      artifact,
-      {
-        offset: async () => onDisk,
-        append: async (at: number, data: string) => {
-          onDisk = at + (data === 'YWJj' ? 3 : 3);
-          return onDisk;
-        },
-        finalize,
-      },
+    nativeDownload.mockImplementationOnce(async () => {
+      onDisk = 3;
+      throw Object.assign(new Error('Open again'), { code: 'transfer_expired' });
+    });
+    nativeDownload.mockResolvedValueOnce(undefined);
+
+    const download = connection.downloadArtifact(SONG_ID, delivery as never, {
+      offset: async () => onDisk,
+      nodeKey: NODE_PUBKEY,
+      finalize,
+    });
+    await answerOpen(socket, 0);
+    await answerOpen(socket, 3);
+    await expect(download).resolves.toBeUndefined();
+
+    expect(nativeDownload.mock.calls.at(-1)?.[0]).toMatchObject({ offset: 3 });
+    expect(finalize).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not finalize, or resume, a transfer that really failed', async () => {
+    const { socket, connection } = readyConnection();
+    const finalize = jest.fn();
+    nativeDownload.mockRejectedValueOnce(
+      Object.assign(new Error('Changed'), { code: 'artifact_changed' }),
     );
 
-    const openArtifact = async (expectedOffset: number) => {
-      await Promise.resolve();
-      await Promise.resolve();
-      const open = JSON.parse(socket.sent.at(-1) ?? '{}').payload;
-      expect(open).toMatchObject({
-        t: 'artifact.open',
-        offset: expectedOffset,
-      });
-      socket.receive({
-        v: 1,
-        t: 'tunnel',
-        payload: {
-          v: 2,
-          t: 'artifact.info',
-          id: open.id,
-          transfer_id: `transfer-${expectedOffset}`,
-          song_id: open.song_id,
-          artifact,
-          accepted_offset: expectedOffset,
-          chunk_bytes: 3,
-          window_chunks: 1,
-        },
-      });
-      await Promise.resolve();
-      await Promise.resolve();
-    };
-
-    const acks = (count: number) =>
-      socket.sent.slice(-count).map(sent => JSON.parse(sent).payload);
-
-    await openArtifact(0);
-    const [firstAck, staleAck, lastStaleAck] = acks(3);
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.chunk',
-        id: firstAck.id,
-        transfer_id: 'transfer-0',
-        offset: 0,
-        data: 'YWJj',
-      },
+    const download = connection.downloadArtifact(SONG_ID, delivery as never, {
+      offset: async () => 0,
+      nodeKey: NODE_PUBKEY,
+      finalize,
     });
-    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
-
-    // The reconnect happens here: the node has forgotten the transfer, and every
-    // acknowledgement already in flight is refused.
-    expect(staleAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
-    for (const ack of [staleAck, lastStaleAck]) {
-      socket.receive({
-        v: 1,
-        t: 'tunnel',
-        payload: {
-          v: 2,
-          t: 'error',
-          id: ack.id,
-          code: 'transfer_expired',
-          message: 'Open the delivery artifact again to resume.',
-          retryable: true,
-        },
-      });
-    }
-    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
-
-    // Reopened from the three bytes already on disk rather than from zero.
-    await openArtifact(3);
-    const [resumedAck, finalAck] = acks(2);
-    expect(resumedAck).toMatchObject({ t: 'artifact.ack', next_offset: 3 });
-    expect(finalAck).toMatchObject({ t: 'artifact.ack', next_offset: 6 });
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.chunk',
-        id: resumedAck.id,
-        transfer_id: 'transfer-3',
-        offset: 3,
-        data: 'ZGVm',
-      },
-    });
-    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
-
-    socket.receive({
-      v: 1,
-      t: 'tunnel',
-      payload: {
-        v: 2,
-        t: 'artifact.complete',
-        id: finalAck.id,
-        transfer_id: 'transfer-3',
-        byte_length: 6,
-        sha256: digest,
-      },
-    });
-    await expect(download).resolves.toBeUndefined();
-    expect(finalize).toHaveBeenCalledWith(6);
+    await answerOpen(socket, 0);
+    await expect(download).rejects.toMatchObject({ code: 'artifact_changed' });
+    expect(finalize).not.toHaveBeenCalled();
   });
 
   // The one case that should still give up: an explicit authorization refusal.

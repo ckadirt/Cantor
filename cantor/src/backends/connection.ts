@@ -37,7 +37,6 @@ import { SecureTunnel } from '../security/secureTunnel';
 import type { BackendRecord, ConnectionSnapshot } from './types';
 import {
   decodeArtifactInfo,
-  decodeArtifactPart,
   decodeForgottenJob,
   decodeJobResponse,
   decodeJobsPage,
@@ -45,14 +44,11 @@ import {
   decodeLibraryPage,
   decodeSongDetailResponse,
   decodeSongResponse,
-  decodeUploadAck,
   decodeUploadCommitted,
   decodeUploadReady,
   isSafeRevision,
   type ArtifactInfo,
-  type ArtifactPart,
 } from './applicationResponses';
-import { TransferPace } from './transferPace';
 import type { UploadCommitted, UploadPort, UploadReady } from './upload';
 import {
   RequestRegistry,
@@ -87,8 +83,10 @@ type ConnectionCallbacks = {
 };
 
 export type ArtifactSink = {
+  /** Where the partial file ends, which native appends to directly. */
   offset: () => Promise<number>;
-  append: (offset: number, encoded: string) => Promise<number>;
+  /** The node key this file is kept under; the song and digest come along. */
+  nodeKey: string;
   finalize: (byteLength: number) => Promise<void>;
 };
 
@@ -142,9 +140,7 @@ export class BackendConnection {
       secureFactory,
       {
         sendText: payload => this.sendSecureText(payload),
-        sendBinary: frame => {
-          this.relay.send(frame);
-        },
+        linkId: () => this.relay.linkId(),
         onApplicationMessage: payload => this.handleNodeMessage(payload),
         onReady: () => this.beginApplicationHandshake(),
         onTransportConfirmed: descriptor =>
@@ -190,8 +186,12 @@ export class BackendConnection {
   // an error. A frame type added by a newer relay must not be able to take a
   // deployed app offline permanently.
   private handleRelayMessage(data: unknown): void {
-    if (data instanceof ArrayBuffer) {
-      this.secure.handleBinary(data);
+    if (isRecord(data)) {
+      if (typeof data.secure === 'string') {
+        this.secure.handleSecureMessage(data.secure);
+      } else if (typeof data.secureFailure === 'string') {
+        this.fail(data.secureFailure, false);
+      }
       return;
     }
     if (typeof data !== 'string') {
@@ -451,20 +451,8 @@ export class BackendConnection {
       this.requests.deliver(payload.id, 'artifact.info', payload);
       return;
     }
-    if (payload.t === 'artifact.chunk' && typeof payload.id === 'string') {
-      this.requests.deliver(payload.id, 'artifact.part', payload);
-      return;
-    }
-    if (payload.t === 'artifact.complete' && typeof payload.id === 'string') {
-      this.requests.deliver(payload.id, 'artifact.part', payload);
-      return;
-    }
     if (payload.t === 'upload.ready' && typeof payload.id === 'string') {
       this.requests.deliver(payload.id, 'upload.ready', payload);
-      return;
-    }
-    if (payload.t === 'upload.ack' && typeof payload.id === 'string') {
-      this.requests.deliver(payload.id, 'upload.ack', payload);
       return;
     }
     if (payload.t === 'upload.committed' && typeof payload.id === 'string') {
@@ -825,122 +813,31 @@ export class BackendConnection {
     }
     onProgress?.(offset, artifact.byte_length);
 
-    /*
-     * Acknowledgements are sent ahead, and writes are chained, not awaited.
-     *
-     * The node answers each acknowledgement with one chunk, the moment it
-     * arrives, and a chunk's length is known from `chunk_bytes`. So the next
-     * offset never has to wait for the last chunk: `TransferPace` decides how
-     * many may be out, and a download costs its bandwidth, not a round trip per
-     * 64 KiB. Answers come back in request order and are read in that order.
-     *
-     * A chunk holds its place in the window until it is on disk, not merely
-     * received, so a phone slower than its connection slows the node down
-     * instead of queueing audio in memory. The chain keeps the writer's
-     * contract: native `appendChunk` refuses anything but a strictly sequential
-     * offset.
-     */
-    const pace = new TransferPace(info.chunkBytes);
-    const answers: Promise<ArtifactPart>[] = [];
-    let asked = offset;
-    let askedLast = false;
-    let unwritten = 0;
-    let wakeOnWrite: (() => void) | null = null;
-    let written: Promise<number> = Promise.resolve(offset);
-    let writeError: unknown = null;
-    const enqueueWrite = (at: number, data: string, expected: number) => {
-      unwritten += 1;
-      written = written.then(async previous => {
-        if (previous !== at) {
-          throw new Error('Native artifact writer fell out of step.');
-        }
-        const next = await sink.append(at, data);
-        if (next !== expected) {
-          throw new Error('Native artifact writer returned an invalid offset.');
-        }
-        return next;
-      });
-      // Claim the rejection here so a failed write is never an unhandled one;
-      // the chain itself still rejects, which is what the loop reads.
-      written
-        .then(
-          () => pace.settled(expected - at),
-          error => {
-            writeError ??= error;
-          },
-        )
-        .finally(() => {
-          unwritten -= 1;
-          wakeOnWrite?.();
-          wakeOnWrite = null;
-        });
-    };
-
-    try {
-      while (true) {
-        while (!askedLast && answers.length + unwritten < pace.window) {
-          const answer = this.ackArtifact(info.transferId, asked);
-          // Claimed here: a refusal is read in order, or dropped with its window.
-          answer.catch(() => undefined);
-          answers.push(answer);
-          askedLast = asked === artifact.byte_length;
-          asked = Math.min(asked + info.chunkBytes, artifact.byte_length);
-        }
-        const answer = answers.shift();
-        if (answer === undefined) {
-          await new Promise<void>(resolve => {
-            wakeOnWrite = resolve;
-          });
-          if (writeError !== null) throw writeError;
-          continue;
-        }
-        const part = await answer;
-        // A write that failed while this round trip was in flight invalidates
-        // everything after it, so it is reported before the chunk it raced.
-        if (writeError !== null) throw writeError;
-        if (part.transferId !== info.transferId) {
-          throw new Error('Node switched artifact transfer sessions.');
-        }
-        if (part.kind === 'complete') {
-          const settled = await written;
-          if (
-            part.byteLength !== artifact.byte_length ||
-            part.sha256 !== artifact.sha256 ||
-            settled !== artifact.byte_length ||
-            offset !== artifact.byte_length
-          ) {
-            throw new Error(
-              'Node artifact completion does not match the download.',
-            );
-          }
-          await sink.finalize(part.byteLength);
-          onProgress?.(part.byteLength, part.byteLength);
-          return;
-        }
-        if (part.offset !== offset) {
-          throw new Error('Node artifact chunk is out of order.');
-        }
-        const length = base64ByteLength(part.data);
-        const next = offset + length;
-        if (
-          length <= 0 ||
-          next !== Math.min(offset + info.chunkBytes, artifact.byte_length)
-        ) {
-          throw new Error('Node artifact chunk is outside the artifact.');
-        }
-        enqueueWrite(offset, part.data, next);
-        offset = next;
-        onProgress?.(offset, artifact.byte_length);
-      }
-    } catch (error) {
-      // Let the outstanding work settle before unwinding. Abandoning writes
-      // mid-flight would leave native appending to a partial this download has
-      // already given up on, and the next attempt would resume from an offset
-      // that moved under it.
-      await Promise.all(answers.map(answer => answer.catch(() => undefined)));
-      await written.catch(() => undefined);
-      throw error;
+    if (info.chunkBytes <= 0) {
+      throw new Error('Node artifact transfer limits are invalid.');
     }
+    // The pump lives natively, beside the socket: it reads, decrypts and writes
+    // without a byte coming to JS, so the transfer is not held to this thread's
+    // pace and this thread is not held to the transfer's.
+    try {
+      await this.secure.download(
+        {
+          songId,
+          transferId: info.transferId,
+          nodeKey: sink.nodeKey,
+          digest: artifact.sha256,
+          offset,
+          byteLength: artifact.byte_length,
+          chunkBytes: info.chunkBytes,
+          protocolVersion: APPLICATION_PROTOCOL_VERSION,
+        },
+        bytes => onProgress?.(bytes, artifact.byte_length),
+      );
+    } catch (error) {
+      throw transferError(error);
+    }
+    await sink.finalize(artifact.byte_length);
+    onProgress?.(artifact.byte_length, artifact.byte_length);
   }
 
   trashSong(songId: string, expectedRevision: number): Promise<SongHeader> {
@@ -957,12 +854,12 @@ export class BackendConnection {
   }
 
   /**
-   * The node's three upload requests as a port for `runUpload`. Each is one
-   * registered request; a refusal arrives as a `NodeRequestError` carrying
-   * the node's code, which is how `invalid_offset` tells the loop to re-read
-   * its place.
+   * The node's upload requests as a port for `runUpload`. Open and commit are
+   * registered requests; the bytes go natively. A refusal arrives as a
+   * `NodeRequestError` carrying the node's code, which is how `invalid_offset`
+   * tells the loop to re-read its place.
    */
-  uploadPort(): UploadPort {
+  uploadPort(path: string, byteLength: number, binary: boolean): UploadPort {
     return {
       open: (sha256, bytes, mediaType) =>
         this.uploadRequest<UploadReady>(
@@ -979,21 +876,27 @@ export class BackendConnection {
             media_type: mediaType,
           }),
         ),
-      chunk: (uploadId, offset, data) =>
-        this.uploadRequest<number>(
-          'upload-chunk',
-          'upload.ack',
-          decodeUploadAck,
-          'Sending timed out. It is safe to retry.',
-          id => ({
-            t: 'upload.chunk',
-            v: APPLICATION_PROTOCOL_VERSION,
-            id,
-            upload_id: uploadId,
-            offset,
-            data,
-          }),
-        ),
+      send: async (ready, offset, onSent) => {
+        if (this.snapshot.phase !== 'ready') {
+          throw new Error('The node is not ready.');
+        }
+        try {
+          await this.secure.upload(
+            {
+              uploadId: ready.uploadId,
+              path,
+              offset,
+              byteLength,
+              chunkBytes: ready.chunkBytes,
+              protocolVersion: APPLICATION_PROTOCOL_VERSION,
+              binary,
+            },
+            onSent,
+          );
+        } catch (error) {
+          throw transferError(error);
+        }
+      },
       commit: uploadId =>
         this.uploadRequest<UploadCommitted>(
           'upload-commit',
@@ -1012,7 +915,7 @@ export class BackendConnection {
 
   private uploadRequest<T>(
     kind: string,
-    expected: 'upload.ready' | 'upload.ack' | 'upload.committed',
+    expected: 'upload.ready' | 'upload.committed',
     decode: (message: unknown) => T | null,
     timeoutMessage: string,
     message: (id: string) => ClientMessage,
@@ -1078,39 +981,6 @@ export class BackendConnection {
       profile,
       offset,
       expected_sha256: expectedSha256,
-    });
-    return request.promise;
-  }
-
-  private ackArtifact(
-    transferId: string,
-    nextOffset: number,
-  ): Promise<ArtifactPart> {
-    const request = this.requests.request<ArtifactPart>('artifact-ack', {
-      expected: 'artifact.part',
-      decode: message => {
-        const part = decodeArtifactPart(message);
-        if (part === null) {
-          const invalidMessage =
-            isRecord(message) && message.t === 'artifact.complete'
-              ? 'Node artifact completion is invalid.'
-              : 'Node artifact chunk is invalid.';
-          return rejectResponse(new Error(invalidMessage));
-        }
-        return resolveResponse(part);
-      },
-      timeout: {
-        afterMs: REQUEST_TIMEOUT_MS,
-        error: () =>
-          new Error('Audio transfer timed out. It is safe to retry.'),
-      },
-    });
-    this.sendApplication({
-      t: 'artifact.ack',
-      v: APPLICATION_PROTOCOL_VERSION,
-      id: request.id,
-      transfer_id: transferId,
-      next_offset: nextOffset,
     });
     return request.promise;
   }
@@ -1372,17 +1242,10 @@ function truncateToBytes(value: string, maxBytes: number): string {
   return '';
 }
 
-/**
- * How many bytes a padded base64 string carries, without decoding it.
- *
- * The download loop needs the chunk's length before the chunk has been written,
- * so it can keep reading answers while this one is still on its way to disk.
- * Decoding here to measure would reintroduce exactly the work the window is
- * trying to get ahead of. Returns 0 for anything that is not
- * well-formed padded base64, which the caller treats as a malformed chunk.
- */
-export function base64ByteLength(data: string): number {
-  if (data.length === 0 || data.length % 4 !== 0) return 0;
-  const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
-  return (data.length / 4) * 3 - padding;
+/** A native transfer's refusal, as the error the rest of the app reads. */
+function transferError(error: unknown): unknown {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && code !== 'internal'
+    ? new NodeRequestError(readError(error), code, code === 'transfer_expired')
+    : error;
 }

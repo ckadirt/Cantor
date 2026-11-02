@@ -1,110 +1,86 @@
 import { runUpload, type UploadPort } from '../upload';
 
-/** A node that keeps bytes, and forgets the last slice once to mimic a drop. */
-function fakeNode(dropAfter = -1) {
-  let received = '';
-  let slices = 0;
+/** A node that keeps bytes; `send` stands for the native pump. */
+function fakeNode(send?: UploadPort['send']) {
+  let received = 0;
+  const opens: number[] = [];
   const port: UploadPort = {
-    open: async () => ({
-      uploadId: 'u',
-      acceptedOffset: received.length,
-      chunkBytes: 4,
-    }),
-    chunk: async (_id, offset, data) => {
-      if (offset !== received.length) {
-        throw Object.assign(new Error('wrong offset'), {
-          code: 'invalid_offset',
-        });
-      }
-      slices += 1;
-      if (slices === dropAfter)
-        throw Object.assign(new Error('socket closed'), { code: 'internal' });
-      received += data;
-      return received.length;
+    open: async () => {
+      opens.push(received);
+      return { uploadId: 'u', acceptedOffset: received, chunkBytes: 4 };
     },
-    commit: async () => ({
-      uploadId: 'u',
-      sha256: 'h',
-      bytes: received.length,
-      seconds: 1,
-    }),
+    send:
+      send ??
+      (async (_ready, offset, onSent) => {
+        expect(offset).toBe(received);
+        received = 10;
+        onSent(received);
+      }),
+    commit: async () => ({ uploadId: 'u', sha256: 'h', bytes: received, seconds: 1 }),
   };
-  return { port, received: () => received };
+  return {
+    port,
+    opens,
+    set received(value: number) {
+      received = value;
+    },
+  };
 }
 
-const text = 'abcdefghij';
-const source = {
-  sha256: 'h',
-  bytes: text.length,
-  mediaType: 'audio/wav',
-  read: async (offset: number, length: number) =>
-    text.slice(offset, offset + length),
-};
+const source = { sha256: 'h', bytes: 10, mediaType: 'audio/wav' };
+
+const wrongOffset = () =>
+  Object.assign(new Error('wrong offset'), { code: 'invalid_offset' });
 
 describe('runUpload', () => {
-  it('sends every byte in order and commits', async () => {
+  it('opens, sends, and commits', async () => {
     const node = fakeNode();
     const progress: number[] = [];
     const committed = await runUpload(node.port, source, sent =>
       progress.push(sent),
     );
-    expect(node.received()).toBe(text);
     expect(committed.bytes).toBe(10);
-    expect(progress).toEqual([0, 4, 8, 10]);
+    expect(progress).toEqual([0, 10, 10]);
   });
 
-  it('sends slices ahead of their answers, in order', async () => {
-    const offsets: number[] = [];
-    const answers: ((next: number) => void)[] = [];
-    const run = runUpload(
-      {
-        ...fakeNode().port,
-        chunk: (_id, offset) => {
-          offsets.push(offset);
-          return new Promise(resolve => answers.push(resolve));
-        },
-      },
-      { ...source, bytes: 8 },
-    );
-    for (let turn = 0; turn < 8; turn += 1) await Promise.resolve();
-    expect(offsets).toEqual([0, 4]);
-    answers[0]?.(4);
-    answers[1]?.(8);
-    await expect(run).resolves.toMatchObject({ uploadId: 'u' });
-  });
-
-  it('resumes from what the node already has', async () => {
-    const node = fakeNode(2);
-    await expect(runUpload(node.port, source)).rejects.toThrow('socket closed');
-    expect(node.received()).toBe('abcd');
-    // A second run, as after a reconnect, continues rather than restarting.
-    const reads: number[] = [];
-    await runUpload(node.port, {
-      ...source,
-      read: async (o, l) => {
-        reads.push(o);
-        return text.slice(o, o + l);
-      },
-    });
-    expect(node.received()).toBe(text);
-    expect(reads[0]).toBe(4);
-  });
-
-  it('re-reads its place when the node refuses an offset', async () => {
+  it('continues from what the node already has', async () => {
     const node = fakeNode();
-    let first = true;
-    const skewed: UploadPort = {
-      ...node.port,
-      open: async () => {
-        const ready = await node.port.open('h', 10, 'audio/wav');
-        if (first) {
-          first = false;
-          return { ...ready, acceptedOffset: 6 };
-        }
-        return ready;
-      },
-    };
-    await runUpload(skewed, source);
-    expect(node.received()).toBe(text);
+    node.received = 4;
+    await runUpload(node.port, source);
+    expect(node.opens).toEqual([4]);
+  });
+
+  it('sends nothing for a file the node already holds', async () => {
+    const send = jest.fn();
+    const node = fakeNode(send);
+    node.received = 10;
+    await runUpload(node.port, source);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it('asks the node where it stands after a wrong offset', async () => {
+    const send = jest
+      .fn<ReturnType<UploadPort['send']>, Parameters<UploadPort['send']>>()
+      .mockRejectedValueOnce(wrongOffset())
+      .mockResolvedValueOnce(undefined);
+    const node = fakeNode(send);
+    await runUpload(node.port, source);
+    expect(node.opens).toHaveLength(2);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+
+  it('gives up after repeated wrong offsets', async () => {
+    const node = fakeNode(async () => {
+      throw wrongOffset();
+    });
+    await expect(runUpload(node.port, source)).rejects.toThrow('wrong offset');
+  });
+
+  it('does not retry any other failure', async () => {
+    const node = fakeNode(async () => {
+      throw new Error('socket closed');
+    });
+    await expect(runUpload(node.port, source)).rejects.toThrow('socket closed');
+    expect(node.opens).toHaveLength(1);
   });
 });

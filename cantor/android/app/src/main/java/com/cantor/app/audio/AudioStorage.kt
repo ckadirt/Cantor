@@ -21,7 +21,7 @@ private const val MAX_CHUNK_BYTES = 64 * 1024
  * audio, and [finalizeDownload] rejects a torn file by digest before it can ever
  * be promoted or played.
  */
-private const val SYNC_INTERVAL_BYTES = 1024 * 1024
+private const val SYNC_INTERVAL_BYTES = 8 * 1024 * 1024
 
 private val SHA256 = Regex("^[0-9a-f]{64}$")
 
@@ -58,21 +58,32 @@ internal class AudioStorage(
   ): Double {
     val offset = exactLong(expectedOffset, "expected offset")
     val bytes = Base64.decode(encoded, Base64.DEFAULT)
-    require(bytes.isNotEmpty() && bytes.size <= MAX_CHUNK_BYTES) {
-      "Artifact chunk is outside the 1–64 KiB bound."
-    }
+    return appendBytes(nodeKey, songId, digest, offset, bytes, 0, bytes.size).toDouble()
+  }
+
+  /** Append [length] bytes of [bytes] at exactly [offset]; returns the new end. */
+  fun appendBytes(
+      nodeKey: String,
+      songId: String,
+      digest: String,
+      offset: Long,
+      bytes: ByteArray,
+      from: Int,
+      length: Int,
+  ): Long {
+    require(length in 1..MAX_CHUNK_BYTES) { "Artifact chunk is outside the 1–64 KiB bound." }
     val path = paths(nodeKey, songId, digest).partial
     path.parentFile?.mkdirs()
     val output = openPartial(path)
     require(output.length() == offset) { "Partial artifact offset changed." }
     output.seek(offset)
-    output.write(bytes)
-    unsyncedBytes += bytes.size
+    output.write(bytes, from, length)
+    unsyncedBytes += length
     if (unsyncedBytes >= SYNC_INTERVAL_BYTES) {
       output.fd.sync()
       unsyncedBytes = 0
     }
-    return (offset + bytes.size).toDouble()
+    return offset + length
   }
 
   /**

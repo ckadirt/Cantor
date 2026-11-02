@@ -134,9 +134,6 @@ function setup() {
     createdAt: '2026-10-14T00:00:00Z',
     updatedAt: '2026-10-14T00:00:00Z',
   }));
-  const readSourceSlice = jest.fn(async (_path: string, offset: number, length: number) =>
-    'x'.repeat(Math.min(length, 10 - offset)),
-  );
   // The waiting queue, in memory: the real one is AsyncStorage.
   let queue: WaitingQueue = {};
   const putWaiting = jest.fn(async (entry: WaitingDownload) => {
@@ -172,7 +169,6 @@ function setup() {
     markAccepted,
     markRejected,
     markSourceSent,
-    readSourceSlice,
     audioStore,
   });
   return {
@@ -187,7 +183,6 @@ function setup() {
     commitLibrary,
     loadOutbox,
     markSourceSent,
-    readSourceSlice,
     putPending,
     markAccepted,
     markRejected,
@@ -446,13 +441,9 @@ describe('BackendRuntime', () => {
       f.loadOutbox.mockResolvedValue([pending]);
       const seen: Array<Record<string, { sent: number; total: number }>> = [];
       f.runtime.store.subscribe(() => seen.push(f.runtime.store.get().sending));
-      let received = 0;
       (f.connection.uploadPort as jest.Mock).mockReturnValue({
-        open: async () => ({ uploadId: 'up-1', acceptedOffset: received, chunkBytes: 4 }),
-        chunk: async (_id: string, offset: number, data: string) => {
-          received = offset + data.length;
-          return received;
-        },
+        open: async () => ({ uploadId: 'up-1', acceptedOffset: 0, chunkBytes: 4 }),
+        send: async () => undefined,
         commit: async () => ({ uploadId: 'up-1', sha256: 'a'.repeat(64), bytes: 10, seconds: 9.5 }),
       });
       (f.connection.createJob as jest.Mock).mockResolvedValue(job(1));
@@ -462,7 +453,7 @@ describe('BackendRuntime', () => {
       await flush();
       await flush();
 
-      expect(f.readSourceSlice).toHaveBeenCalledWith('/takes/tune.wav', 0, 4);
+      expect(f.connection.uploadPort).toHaveBeenCalledWith('/takes/tune.wav', 10, false);
       expect(f.markSourceSent).toHaveBeenCalledWith('request-tune', 'up-1');
       const sent = (f.connection.createJob as jest.Mock).mock.calls[0][2];
       expect(sent.audio.source).toEqual({ kind: 'upload', upload_id: 'up-1' });

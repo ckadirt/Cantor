@@ -1,6 +1,5 @@
 import {
   decodeArtifactInfo,
-  decodeArtifactPart,
   decodeJobResponse,
   decodeLibraryChanges,
   decodeLibraryPage,
@@ -59,32 +58,6 @@ describe('application response decoders', () => {
         window_chunks: 1,
       }),
     ).toBeNull();
-    expect(
-      decodeArtifactPart({
-        t: 'artifact.chunk',
-        transfer_id: 'transfer-a',
-        offset: 0,
-        data: 'encoded',
-      }),
-    ).toEqual({
-      kind: 'chunk',
-      transferId: 'transfer-a',
-      offset: 0,
-      data: 'encoded',
-    });
-    expect(
-      decodeArtifactPart({
-        t: 'artifact.complete',
-        transfer_id: 'transfer-a',
-        byte_length: 10,
-        sha256: artifact.sha256,
-      }),
-    ).toEqual({
-      kind: 'complete',
-      transferId: 'transfer-a',
-      byteLength: 10,
-      sha256: artifact.sha256,
-    });
   });
 
   it('retains page cursor, tombstone, and incremental batch shapes', () => {

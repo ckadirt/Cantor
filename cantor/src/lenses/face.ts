@@ -18,7 +18,7 @@
 
 /*
  * eslint-disable no-bitwise -- a hash and a PRNG are bit fields by definition,
- * the same exemption `src/motion/geometry.ts` and `src/security/inner.ts` take.
+ * the same exemption `src/motion/geometry.ts` takes.
  * `motion/geometry.ts` exports an identical mulberry32, but `lenses/` sits
  * beside `motion/` rather than above it in the layering that `structure.md`
  * draws, so this keeps the face free of a sideways import.

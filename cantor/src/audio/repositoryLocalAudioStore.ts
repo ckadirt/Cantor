@@ -1,5 +1,4 @@
 import {
-  appendAudioChunk,
   finalizeAudio,
   inspectAudio,
   localAudioPath,
@@ -26,8 +25,6 @@ export class RepositoryLocalAudioStore implements LocalAudioStore {
         const local = await inspectAudio(nodeKey, songId, digest);
         return local.state === 'partial' ? local.bytes : 0;
       },
-      append: (offset, encoded) =>
-        appendAudioChunk(nodeKey, songId, digest, offset, encoded),
       finalize: byteLength =>
         finalizeAudio(nodeKey, songId, digest, byteLength),
     };

@@ -31,29 +31,19 @@ class TransportFixtureTest {
     val channel = openChannel(identity, "fixture-roundtrip")
     try {
       val inner = fromHex(fragment.getString("inner_hex"))
-      val encodedCiphertexts = channel.module.encrypt(
-          channel.sessionId,
-          Base64.getEncoder().encodeToString(inner),
-      )
-      val ciphertexts = org.json.JSONArray(encodedCiphertexts)
-      assertEquals(1, ciphertexts.length())
-      val outboundCiphertext = Base64.getDecoder().decode(ciphertexts.getString(0))
+      val secure = channel.module.requireChannel(channel.sessionId)
+      val ciphertexts = secure.encrypt(inner)
+      assertEquals(1, ciphertexts.size)
       assertArrayEquals(
           fromHex(fragment.getString("record_hex")),
-          decrypt(channel.ciphers.receiver, outboundCiphertext),
+          decrypt(channel.ciphers.receiver, ciphertexts[0]),
       )
 
       val inboundCiphertext = encrypt(
           channel.ciphers.sender,
           fromHex(fragment.getString("record_hex")),
       )
-      assertEquals(
-          Base64.getEncoder().encodeToString(inner),
-          channel.module.decrypt(
-              channel.sessionId,
-              Base64.getEncoder().encodeToString(inboundCiphertext),
-          ),
-      )
+      assertArrayEquals(inner, secure.decrypt(inboundCiphertext, 0, inboundCiphertext.size))
     } finally {
       channel.destroy()
     }
@@ -73,10 +63,7 @@ class TransportFixtureTest {
             fromHex(vector.getString("record_hex")),
         )
         assertThrows("fixture ${vector.getString("id")}", RuntimeException::class.java) {
-          channel.module.decrypt(
-              channel.sessionId,
-              Base64.getEncoder().encodeToString(ciphertext),
-          )
+          channel.module.requireChannel(channel.sessionId).decrypt(ciphertext, 0, ciphertext.size)
         }
       } finally {
         channel.destroy()

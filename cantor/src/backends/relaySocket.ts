@@ -1,4 +1,5 @@
 import { readError } from '../core/errors';
+import { hasNativeLink, NativeLink } from '../security/native';
 
 export const RELAY_KEEPALIVE_INTERVAL_MS = 25_000;
 export const RELAY_KEEPALIVE_PING = 'ping';
@@ -45,7 +46,9 @@ function createDefaultTimers(): RelaySocketTimers {
 }
 
 function createDefaultSocket(url: string): RelayWebSocket {
-  return new WebSocket(url) as unknown as RelayWebSocket;
+  return hasNativeLink()
+    ? new NativeLink(url)
+    : (new WebSocket(url) as unknown as RelayWebSocket);
 }
 
 /** Owns only the raw relay socket, keepalive, and reconnect lifecycle. */
@@ -88,6 +91,12 @@ export class RelaySocket {
     if (socket?.readyState === SOCKET_OPEN) {
       socket.close(1000, 'backend-stopped');
     }
+  }
+
+  /** The native socket under this connection, when there is one. */
+  linkId(): number | null {
+    const socket = this.socket;
+    return socket instanceof NativeLink ? socket.id : null;
   }
 
   isOpen(): boolean {

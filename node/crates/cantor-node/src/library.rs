@@ -54,6 +54,8 @@ pub struct Library {
     root: PathBuf,
     connection: Connection,
     cursor_key: [u8; 32],
+    /// Uploads with slices written but not yet synced, by upload id.
+    upload_tails: std::collections::HashMap<String, uploads::UploadTail>,
 }
 
 impl Library {
@@ -74,6 +76,7 @@ impl Library {
             root,
             connection,
             cursor_key,
+            upload_tails: std::collections::HashMap::new(),
         };
         library.reconcile_startup()?;
         library.recover_interrupted_jobs()?;

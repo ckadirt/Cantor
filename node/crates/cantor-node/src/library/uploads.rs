@@ -111,6 +111,17 @@ fn extension_for(media_type: &str) -> &'static str {
     }
 }
 
+/// How much of an upload may be acknowledged ahead of a sync. A crash costs at
+/// most this much, resent; a sync per slice would cost the whole transfer's pace.
+const UPLOAD_SYNC_BYTES: u64 = 4 << 20;
+
+/// Slices of an upload past what `uploads.received` records.
+#[derive(Clone, Copy)]
+pub(super) struct UploadTail {
+    received: u64,
+    unsynced: u64,
+}
+
 impl Library {
     fn upload_directory(&self, principal: &str, id: &str) -> PathBuf {
         self.root.join("uploads").join(principal).join(id)
@@ -158,6 +169,9 @@ impl Library {
                 "UPDATE uploads SET expires_at=?3 WHERE principal_id=?1 AND id=?2 AND expires_at IS NOT NULL",
                 params![principal, id, now + UNUSED_UPLOAD_SECONDS],
             )?;
+            let received = self
+                .settle_upload_tail(&principal, &id)?
+                .unwrap_or(received);
             return Ok(UploadOpen::Ready { id, received });
         }
 
@@ -215,6 +229,8 @@ impl Library {
                 UploadChunk::WrongOffset { expected: bytes }
             });
         }
+        let tail = self.upload_tails.get(id).copied();
+        let received = tail.map_or(received, |tail| tail.received);
         if offset != received {
             return Ok(UploadChunk::WrongOffset { expected: received });
         }
@@ -227,17 +243,48 @@ impl Library {
             .write(true)
             .open(&path)
             .with_context(|| format!("failed to open {}", path.display()))?;
-        // Anything past `received` is a slice that was written but never
-        // acknowledged; it is overwritten, not appended after.
-        file.set_len(received)?;
+        // With no tail, anything past `received` is a slice written but never
+        // recorded, as after a crash; it is overwritten, not appended after.
+        if tail.is_none() {
+            file.set_len(received)?;
+        }
         file.seek(SeekFrom::Start(received))?;
         file.write_all(data)?;
-        file.sync_data()?;
+        let unsynced = tail.map_or(0, |tail| tail.unsynced) + data.len() as u64;
+        if next == bytes || unsynced >= UPLOAD_SYNC_BYTES {
+            file.sync_data()?;
+            self.upload_tails.remove(id);
+            self.record_upload_received(&principal, id, next)?;
+        } else {
+            self.upload_tails.insert(
+                id.to_owned(),
+                UploadTail {
+                    received: next,
+                    unsynced,
+                },
+            );
+        }
+        Ok(UploadChunk::Ack { next })
+    }
+
+    fn record_upload_received(&self, principal: &str, id: &str, received: u64) -> Result<()> {
         self.connection.execute(
             "UPDATE uploads SET received=?3,expires_at=?4 WHERE principal_id=?1 AND id=?2 AND state='receiving'",
-            params![principal, id, next, unix_now() + UNUSED_UPLOAD_SECONDS],
+            params![principal, id, received, unix_now() + UNUSED_UPLOAD_SECONDS],
         )?;
-        Ok(UploadChunk::Ack { next })
+        Ok(())
+    }
+
+    /// Make an open upload's position durable, so what an open reports is what
+    /// a crash a moment later would keep.
+    fn settle_upload_tail(&mut self, principal: &str, id: &str) -> Result<Option<u64>> {
+        let Some(tail) = self.upload_tails.remove(id) else {
+            return Ok(None);
+        };
+        let path = self.upload_directory(principal, id).join(RECEIVING_FILE);
+        OpenOptions::new().write(true).open(path)?.sync_data()?;
+        self.record_upload_received(principal, id, tail.received)?;
+        Ok(Some(tail.received))
     }
 
     /// Verify and keep a fully received upload. `measure` reads the file as

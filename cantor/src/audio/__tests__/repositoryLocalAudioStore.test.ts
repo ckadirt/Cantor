@@ -1,5 +1,4 @@
 import {
-  appendAudioChunk,
   finalizeAudio,
   inspectAudio,
   pinAudio,
@@ -10,7 +9,6 @@ import type { AudioRef } from '../localAudioStore';
 import { RepositoryLocalAudioStore } from '../repositoryLocalAudioStore';
 
 jest.mock('../repository', () => ({
-  appendAudioChunk: jest.fn(),
   finalizeAudio: jest.fn(),
   inspectAudio: jest.fn(),
   pinAudio: jest.fn(),
@@ -20,7 +18,6 @@ jest.mock('../repository', () => ({
 }));
 
 const inspect = inspectAudio as jest.MockedFunction<typeof inspectAudio>;
-const append = appendAudioChunk as jest.MockedFunction<typeof appendAudioChunk>;
 const finalize = finalizeAudio as jest.MockedFunction<typeof finalizeAudio>;
 const pin = pinAudio as jest.MockedFunction<typeof pinAudio>;
 const unpin = unpinAudio as jest.MockedFunction<typeof unpinAudio>;
@@ -38,7 +35,6 @@ describe('RepositoryLocalAudioStore', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     inspect.mockResolvedValue({ state: 'remote', bytes: 0 });
-    append.mockResolvedValue(0);
     finalize.mockResolvedValue();
     pin.mockResolvedValue({ state: 'pinned', bytes: 10 });
     unpin.mockResolvedValue({ state: 'cached', bytes: 10 });
@@ -77,21 +73,12 @@ describe('RepositoryLocalAudioStore', () => {
     inspect
       .mockResolvedValueOnce({ state: 'partial', bytes: 4 })
       .mockResolvedValueOnce({ state: 'cached', bytes: 10 });
-    append.mockResolvedValue(10);
     const sink = store.createSink(ref);
 
     await expect(sink.offset()).resolves.toBe(4);
     await expect(sink.offset()).resolves.toBe(0);
-    await expect(sink.append(4, 'encoded')).resolves.toBe(10);
     await expect(sink.finalize(10)).resolves.toBeUndefined();
 
-    expect(append).toHaveBeenCalledWith(
-      ref.nodeKey,
-      ref.songId,
-      ref.digest,
-      4,
-      'encoded',
-    );
     expect(finalize).toHaveBeenCalledWith(
       ref.nodeKey,
       ref.songId,

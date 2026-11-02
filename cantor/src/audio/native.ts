@@ -42,7 +42,6 @@ type CantorAudioNative = {
   ): Promise<unknown>;
   motionTrack(path: string): Promise<unknown>;
   sourceInfo(path: string): Promise<unknown>;
-  readSlice(path: string, offset: number, length: number): Promise<unknown>;
 };
 
 function module(): CantorAudioNative {
@@ -97,6 +96,7 @@ export async function resolveNativeAudioPath(
 }
 
 export const nativeAudio = {
+  /** Songs arrive natively; this is how the sync check stores its click track. */
   appendChunk: (
     nodeKey: string,
     songId: string,
@@ -169,15 +169,3 @@ export async function sourceFileInfo(path: string): Promise<SourceFileInfo> {
   return { bytes: value.bytes, sha256: value.sha256 };
 }
 
-/** `length` bytes of a local file from `offset`, as base64. */
-export async function readSourceSlice(
-  path: string,
-  offset: number,
-  length: number,
-): Promise<string> {
-  const value = await module().readSlice(path, offset, length);
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error('Native source slice is invalid.');
-  }
-  return value;
-}

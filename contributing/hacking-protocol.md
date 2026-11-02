@@ -38,7 +38,7 @@ identifiers, header sizes, key sizes, and bounds.
 | `node/crates/cantor-node/src/transport/generated.rs` | `crate::transport::*` in the node |
 | `cantor/src/core/transport/generated.ts` | `core/transport` in the app |
 | `relay/src/generated/transport.ts` | `relay/src/frames.ts` |
-| `cantor/android/.../transport/GeneratedTransport.kt` | `CantorSecureModule` and friends |
+| `cantor/android/.../transport/GeneratedTransport.kt` | `SecureChannel`, `InnerCodec` and friends |
 
 The integration client does not get a sixth copy: `node/scripts/lib/manifest.mjs`
 reads `spec.json` directly.
@@ -67,9 +67,9 @@ Who consumes what today:
 
 | Fixture | Rust | App | Relay | Kotlin | CLI |
 | --- | --- | --- | --- | --- | --- |
-| `carrier.json` | `relay/carrier.rs` | `security/__tests__/carrier.test.ts` | `relay/test/frames.fixtures.test.ts` | — | `scripts/lib/transport.test.mjs` |
+| `carrier.json` | `relay/carrier.rs` | — | `relay/test/frames.fixtures.test.ts` | — | `scripts/lib/transport.test.mjs` |
 | `fragment.json` | `secure/fragment.rs` | — | — | `FragmentCodecTest` | `transport.test.mjs` |
-| `inner.json` | `secure/inner.rs` | `security/__tests__/inner.test.ts` | — | — | `transport.test.mjs` |
+| `inner.json` | `secure/inner.rs` | — | — | `InnerCodecTest` | `transport.test.mjs` |
 | `identity.json` | `secure.rs` | `security/__tests__/descriptor.test.ts` | — | `TransportFixtureTest` | `transport.test.mjs` |
 | `negotiation.json` | `secure.rs`, `secure/negotiation.rs` | `security/__tests__/descriptor.test.ts` | — | — | — |
 
@@ -185,16 +185,30 @@ false, and existing jobs retain their stored ids on resubmission. The shared
 `protocol/fixtures/v2/derived-job-id.json` vectors include UTF-8 and are asserted
 in Rust; the app must assert the same file in TypeScript.
 
-## Transfer windows
+## Transfers
+
+Audio does not cross into JS. The relay socket, the Noise channel, and both
+transfer pumps live in Kotlin (`RelayLink`, `SecureChannel`, `TransferPumps`);
+JS opens and commits a transfer and hears progress. Control messages reach it as
+finished JSON.
 
 `artifact.ack` and `upload.chunk` are answered one for one, in arrival order, the
-moment they arrive, so the client may send them ahead of their answers, as SFTP
-does. The window lives in the app (`backends/transferPace.ts`); no message
-changes and a node keeps no state for it, so every deployed node already serves
-one. `window_chunks: 1` still means what it says: one chunk per acknowledgement.
-Any node change here must keep that order and that one-for-one answer: a batched
-or reordered reply breaks every app in the field. An acknowledgement sent ahead
+moment they arrive, so a client sends them ahead of their answers, as SFTP does.
+The window lives in the app (`TransferPace.kt`); no message changed for it and a
+node keeps no state for it, so every deployed node already serves one.
+`window_chunks: 1` still means what it says: one chunk per acknowledgement. Any
+node change here must keep that order and that one-for-one answer: a batched or
+reordered reply breaks every app in the field. An acknowledgement sent ahead
 promises nothing about the disk; a resume starts from what the file holds.
+
+The requests a pump sends carry an id starting `xd-<n>-` or `xu-<n>-`, and
+`RelayLink` keeps their answers from JS.
+
+`upload.chunk` has a binary form, inner kind `upload_chunk_inner`, laid out like
+an artifact chunk. It saves base64's third and the second record each slice would
+need. Send it only to a node with `NodeFeatures.binary_uploads`: an older node
+refuses the frame. A node acknowledges slices ahead of its sync, at most 4 MiB;
+`upload.open` makes the position it reports durable.
 
 ## Model lyric capabilities
 

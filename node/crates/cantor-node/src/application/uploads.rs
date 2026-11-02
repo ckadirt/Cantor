@@ -209,7 +209,7 @@ mod tests {
     use super::{chunk, commit, open};
     use crate::application::auth::AuthenticatedSession;
     use crate::audio::pcm::{Pcm, write_wav16};
-    use crate::library::Library;
+    use crate::library::{Library, UploadChunk, UploadOpen};
     use crate::principal::PrincipalId;
 
     fn session_for(key: [u8; 32]) -> AuthenticatedSession {
@@ -370,6 +370,50 @@ mod tests {
             .expect("query")
             .expect("committed");
         assert!(committed.path.is_file());
+    }
+
+    /// Slices are acknowledged ahead of a sync, so an open has to make the
+    /// position it reports durable, and a restart may lose only unsynced slices.
+    #[test]
+    fn an_open_settles_the_unsynced_tail_and_a_restart_resumes_from_the_last_sync() {
+        let temporary = tempdir().expect("temporary directory");
+        let root = temporary.path().join("library");
+        let mut library = Library::open(&root).expect("library");
+        let key = [1_u8; 32];
+        let principal = PrincipalId::from_client_public_key(&key);
+        let bytes = wav_bytes(1);
+        let digest = sha(&bytes);
+        let open = |library: &mut Library| match library
+            .open_upload(principal, &key, &digest, bytes.len() as u64, "audio/wav")
+            .expect("open")
+        {
+            UploadOpen::Ready { id, received } => (id, received),
+            _ => panic!("upload refused"),
+        };
+        let (id, received) = open(&mut library);
+        assert_eq!(received, 0);
+        for (index, slice) in bytes.chunks(1_000).take(3).enumerate() {
+            assert!(matches!(
+                library
+                    .write_upload_chunk(principal, &id, index as u64 * 1_000, slice)
+                    .expect("slice"),
+                UploadChunk::Ack { .. }
+            ));
+        }
+        assert_eq!(open(&mut library), (id.clone(), 3_000));
+
+        library
+            .write_upload_chunk(principal, &id, 3_000, &bytes[3_000..4_000])
+            .expect("slice after a settled open");
+        drop(library);
+        let mut restarted = Library::open(&root).expect("library");
+        assert_eq!(open(&mut restarted), (id.clone(), 3_000));
+        assert!(matches!(
+            restarted
+                .write_upload_chunk(principal, &id, 3_000, &bytes[3_000..])
+                .expect("resent tail"),
+            UploadChunk::Ack { next } if next == bytes.len() as u64
+        ));
     }
 
     #[test]

@@ -6,8 +6,6 @@ import type { ClientMessage } from '../../../../protocol/ClientMessage';
 import type { SecureChannel } from '../native';
 import { SecureTunnel, type SecureTunnelCallbacks } from '../secureTunnel';
 import type { TransportDescriptor } from '../types';
-import { encodeClientCarrier, parseClientCarrier } from '../carrier';
-import { decodeNodeInner, encodeControlInner } from '../inner';
 
 const NODE_SECRET = new Uint8Array(32).fill(3);
 const NODE_KEY_BYTES = ed.getPublicKey(NODE_SECRET);
@@ -41,7 +39,7 @@ type Harness = {
   channel: SecureChannel;
   sendText: jest.Mock<void, [Record<string, unknown>]>;
   text: Array<Record<string, unknown>>;
-  binary: ArrayBuffer[];
+  sent: string[];
   application: unknown[];
   events: string[];
   failures: Array<{ message: string; fatal: boolean }>;
@@ -49,7 +47,7 @@ type Harness = {
 
 function harness(confirmed?: TransportDescriptor): Harness {
   const text: Array<Record<string, unknown>> = [];
-  const binary: ArrayBuffer[] = [];
+  const sent: string[] = [];
   const application: unknown[] = [];
   const events: string[] = [];
   const failures: Array<{ message: string; fatal: boolean }> = [];
@@ -59,13 +57,17 @@ function harness(confirmed?: TransportDescriptor): Harness {
   const channel: SecureChannel = {
     begin: jest.fn(() => 'first-message'),
     finish: jest.fn(),
-    encrypt: jest.fn(inner => [inner]),
-    decrypt: jest.fn(ciphertext => ciphertext),
+    attach: jest.fn(),
+    send: jest.fn(json => {
+      sent.push(json);
+    }),
+    download: jest.fn(),
+    upload: jest.fn(),
     destroy: jest.fn(),
   };
   const callbacks: SecureTunnelCallbacks = {
     sendText,
-    sendBinary: frame => binary.push(frame),
+    linkId: () => 7,
     onApplicationMessage: payload => application.push(payload),
     onReady: () => events.push('ready'),
     onTransportConfirmed: () => events.push('transport-confirmed'),
@@ -81,7 +83,7 @@ function harness(confirmed?: TransportDescriptor): Harness {
     channel,
     sendText,
     text,
-    binary,
+    sent,
     application,
     events,
     failures,
@@ -135,14 +137,11 @@ describe('SecureTunnel', () => {
     const message: ClientMessage = { t: 'status', v: 2, id: 'status-1' };
 
     subject.tunnel.sendApplication(message);
-    expect(decodeNodeInner(parseClientCarrier(subject.binary[0]))).toEqual(
-      message,
-    );
+    expect(subject.channel.attach).toHaveBeenCalledWith(7);
+    expect(JSON.parse(subject.sent[0] ?? '')).toEqual(message);
 
     const inbound = { t: 'node.info', v: 2, node: { name: 'test' } };
-    subject.tunnel.handleBinary(
-      encodeClientCarrier(encodeControlInner(inbound)),
-    );
+    subject.tunnel.handleSecureMessage(JSON.stringify(inbound));
     expect(subject.application).toEqual([inbound]);
   });
 
@@ -178,7 +177,7 @@ describe('SecureTunnel', () => {
 
   it('rejects early ciphertext and destroys native state on reset', () => {
     const subject = harness();
-    subject.tunnel.handleBinary(new ArrayBuffer(0));
+    subject.tunnel.handleSecureMessage('{}');
     expect(subject.failures).toEqual([
       {
         message: 'Node sent encrypted data before the secure channel opened.',
@@ -210,7 +209,7 @@ describe('SecureTunnel', () => {
     expect(subject.channel.destroy).not.toHaveBeenCalled();
 
     subject.tunnel.sendApplication({ t: 'status', v: 2, id: 'still-ready' });
-    expect(subject.binary).toHaveLength(1);
+    expect(subject.sent).toHaveLength(1);
   });
 
   it('uses phase-dependent fatal fallthrough for malformed and unknown negotiation', () => {
@@ -365,7 +364,7 @@ describe('SecureTunnel', () => {
 
     const failedEncrypt = harness(descriptor(4));
     establish(failedEncrypt);
-    (failedEncrypt.channel.encrypt as jest.Mock).mockImplementationOnce(() => {
+    (failedEncrypt.channel.send as jest.Mock).mockImplementationOnce(() => {
       throw new Error('encrypt exploded');
     });
     failedEncrypt.tunnel.sendApplication({

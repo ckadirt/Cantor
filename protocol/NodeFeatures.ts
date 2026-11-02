@@ -20,4 +20,9 @@ audio_sources: boolean,
 /**
  * Additive: `upload.open`, `upload.chunk` and `upload.commit`.
  */
-uploads: boolean, };
+uploads: boolean, 
+/**
+ * Additive: a client may send upload slices as binary inner frames. A node
+ * that predates them refuses the frame, so it must not see one.
+ */
+binary_uploads: boolean, };

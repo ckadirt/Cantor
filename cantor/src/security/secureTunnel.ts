@@ -9,14 +9,17 @@ import {
   TRANSPORT_SUITE,
   verifyTransportDescriptor,
 } from './descriptor';
-import type { SecureChannel, SecureChannelFactory } from './native';
+import type {
+  NativeDownload,
+  NativeUpload,
+  SecureChannel,
+  SecureChannelFactory,
+} from './native';
 import type { TransportDescriptor } from './types';
-import { encodeClientCarrier, parseClientCarrier } from './carrier';
-import { decodeNodeInner, encodeControlInner } from './inner';
 
 export type SecureTunnelCallbacks = {
   sendText: (payload: Record<string, unknown>) => void;
-  sendBinary: (frame: ArrayBuffer) => void;
+  linkId: () => number | null;
   onApplicationMessage: (payload: unknown) => void;
   onReady: () => void;
   onTransportConfirmed: (descriptor: TransportDescriptor) => void;
@@ -128,6 +131,7 @@ export class SecureTunnel {
     ) {
       try {
         this.channel.finish(payload.data);
+        this.channel.attach(this.callbacks.linkId());
         this.ready = true;
         const descriptor = this.pendingTransport;
         this.pendingTransport = null;
@@ -155,7 +159,8 @@ export class SecureTunnel {
     );
   }
 
-  handleBinary(frame: ArrayBuffer): void {
+  /** One finished application message, decrypted natively. */
+  handleSecureMessage(json: string): void {
     if (!this.ready || this.channel === null) {
       this.callbacks.onFailure(
         'Node sent encrypted data before the secure channel opened.',
@@ -163,18 +168,18 @@ export class SecureTunnel {
       );
       return;
     }
+    let payload: unknown;
     try {
-      const ciphertext = parseClientCarrier(frame);
-      const inner = this.channel.decrypt(ciphertext);
-      if (inner !== null) {
-        this.callbacks.onApplicationMessage(decodeNodeInner(inner));
-      }
-    } catch (error) {
-      this.callbacks.onFailure(
-        `Secure channel failed: ${readError(error)}`,
-        false,
-      );
+      payload = JSON.parse(json);
+    } catch {
+      this.callbacks.onFailure('Secure control message is not valid JSON.', false);
+      return;
     }
+    if (!isRecord(payload)) {
+      this.callbacks.onFailure('Secure control message is invalid.', false);
+      return;
+    }
+    this.callbacks.onApplicationMessage(payload);
   }
 
   sendApplication(payload: ClientMessage): void {
@@ -183,17 +188,34 @@ export class SecureTunnel {
       return;
     }
     try {
-      for (const ciphertext of this.channel.encrypt(
-        encodeControlInner(payload),
-      )) {
-        this.callbacks.sendBinary(encodeClientCarrier(ciphertext));
-      }
+      this.channel.send(JSON.stringify(payload));
     } catch (error) {
       this.callbacks.onFailure(
         `Secure channel failed: ${readError(error)}`,
         false,
       );
     }
+  }
+
+  download(
+    options: NativeDownload,
+    onProgress: (bytes: number) => void,
+  ): Promise<void> {
+    return this.requireChannel().download(options, onProgress);
+  }
+
+  upload(
+    options: NativeUpload,
+    onProgress: (bytes: number) => void,
+  ): Promise<void> {
+    return this.requireChannel().upload(options, onProgress);
+  }
+
+  private requireChannel(): SecureChannel {
+    if (!this.ready || this.channel === null) {
+      throw new Error('Secure transport is not ready.');
+    }
+    return this.channel;
   }
 
   reset(): void {

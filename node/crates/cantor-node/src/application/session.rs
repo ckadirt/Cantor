@@ -252,6 +252,7 @@ mod tests {
                 job_forget: false,
                 audio_sources: false,
                 uploads: false,
+                binary_uploads: false,
             },
             installable: None,
         }

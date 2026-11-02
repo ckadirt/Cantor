@@ -19,6 +19,7 @@ pub(crate) const SECURE_CARRIER_KIND: u8 = 1;
 pub(crate) const FRAGMENT_RECORD_KIND: u8 = 1;
 pub(crate) const CONTROL_INNER_KIND: u8 = 1;
 pub(crate) const ARTIFACT_CHUNK_INNER_KIND: u8 = 2;
+pub(crate) const UPLOAD_CHUNK_INNER_KIND: u8 = 3;
 
 pub(crate) const CLIENT_CARRIER_HEADER_BYTES: usize = 6;
 pub(crate) const NODE_CARRIER_FIXED_HEADER_BYTES: usize = 8;

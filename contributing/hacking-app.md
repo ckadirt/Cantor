@@ -28,7 +28,7 @@ The core must not import a screen, a WebSocket, or a React Native bridge type.
 | Path | Owns |
 | --- | --- |
 | `src/core/` | `errors`, `text`, `validation`, `protocol` decoders and constants, `storage` primitives (including `storage/sql.ts`, the SQL port and migration runner; tests bind it to Node's SQLite with `jest/nodeSqlite.ts`), `transport` (the generated manifest constants), `store`/`useStore` (the external store every shared state lives in) |
-| `src/security/` | `descriptor` verification, `carrier` and `inner` codecs, `secureTunnel` orchestration, `native` channel factory, `types` |
+| `src/security/` | `descriptor` verification, `secureTunnel` orchestration, `native` channel factory and socket, `types` |
 | `src/backends/` | `BackendConnection` façade, `relaySocket` lifecycle, `requestRegistry`, `applicationResponses` decoders, `pairing`, `storage` |
 | `src/runtime/` | `BackendRuntime` — a plain object publishing one store: backend records, connection lifecycles, snapshots, cache hydration, persistence, outbox flush, audio inspection, feature commands. `useBackendRuntime` starts it for a component's life |
 | `src/features/` | `field/` (the canvas, camera, controller, overlays), `find/` (the tags blind, set as an index), `song/` (player surface and sheet), `composer/`, `engines/`, `curtain/`, `controls/` |
@@ -229,7 +229,9 @@ callbacks; they do not call the connection.
 The Kotlin side lives under `cantor/android/app/src/main/java/com/cantor/app/`.
 `CantorSecureModule` is only the bridge: session registry plus the canonical
 base64 boundary. `SecureChannel` owns Noise and session limits, `FragmentCodec`
-and `FragmentReassembler` own record framing. Add JVM tests before moving any
+and `FragmentReassembler` own record framing, `InnerCodec` owns inner frames,
+`RelayLink` owns the relay socket, and `TransferPumps` move audio with no byte
+crossing into JS. Add JVM tests before moving any
 of it; the React Native method names, arguments, return shapes, and error text
 are the contract.
 

@@ -59,6 +59,7 @@ const KIND_KEYS = [
   'fragment_record',
   'control_inner',
   'artifact_chunk_inner',
+  'upload_chunk_inner',
 ];
 
 const HEADER_KEYS = [
@@ -167,7 +168,13 @@ export function validateSpec(spec) {
   for (const key of KIND_KEYS) {
     integer(spec.kinds[key], `spec.kinds.${key}`, 0xff);
   }
-  if (spec.kinds.control_inner === spec.kinds.artifact_chunk_inner) {
+  if (
+    new Set([
+      spec.kinds.control_inner,
+      spec.kinds.artifact_chunk_inner,
+      spec.kinds.upload_chunk_inner,
+    ]).size !== 3
+  ) {
     fail('spec.kinds', 'inner kind identifiers must be distinct');
   }
 
@@ -324,6 +331,7 @@ pub(crate) const SECURE_CARRIER_KIND: u8 = ${k.secure_carrier};
 pub(crate) const FRAGMENT_RECORD_KIND: u8 = ${k.fragment_record};
 pub(crate) const CONTROL_INNER_KIND: u8 = ${k.control_inner};
 pub(crate) const ARTIFACT_CHUNK_INNER_KIND: u8 = ${k.artifact_chunk_inner};
+pub(crate) const UPLOAD_CHUNK_INNER_KIND: u8 = ${k.upload_chunk_inner};
 
 pub(crate) const CLIENT_CARRIER_HEADER_BYTES: usize = ${rustNumber(h.client_carrier_bytes)};
 pub(crate) const NODE_CARRIER_FIXED_HEADER_BYTES: usize = ${rustNumber(h.node_carrier_fixed_bytes)};
@@ -443,17 +451,27 @@ function renderAndroidKotlin(spec, derived) {
 
 ${generatedHeader('//')}\
 internal object GeneratedTransport {
+  const val SECURE_CARRIER_VERSION: Byte = ${v.secure_carrier}
   const val SECURE_RECORD_VERSION: Byte = ${v.secure_record}
+  const val SECURE_INNER_VERSION: Byte = ${v.secure_inner}
   const val NOISE_PROTOCOL_NAME: String = ${JSON.stringify(n.protocol_name)}
   const val NOISE_AUTHENTICATION_TAG_BYTES: Int = ${kotlinNumber(n.authentication_tag_bytes)}
+  const val SECURE_CARRIER_KIND: Byte = ${k.secure_carrier}
   const val FRAGMENT_RECORD_KIND: Byte = ${k.fragment_record}
+  const val CONTROL_INNER_KIND: Byte = ${k.control_inner}
+  const val ARTIFACT_CHUNK_INNER_KIND: Byte = ${k.artifact_chunk_inner}
+  const val UPLOAD_CHUNK_INNER_KIND: Byte = ${k.upload_chunk_inner}
+  const val CLIENT_CARRIER_HEADER_BYTES: Int = ${kotlinNumber(h.client_carrier_bytes)}
   const val FRAGMENT_RECORD_HEADER_BYTES: Int = ${kotlinNumber(h.fragment_record_bytes)}
+  const val CONTROL_INNER_HEADER_BYTES: Int = ${kotlinNumber(h.control_inner_bytes)}
+  const val ARTIFACT_INNER_FIXED_HEADER_BYTES: Int = ${kotlinNumber(h.artifact_inner_fixed_bytes)}
   const val X25519_KEY_BYTES: Int = ${kotlinNumber(s.x25519_key_bytes)}
   const val MAX_HANDSHAKE_MESSAGE_BYTES: Int = ${kotlinNumber(b.handshake_message_bytes)}
   const val MAX_NOISE_PLAINTEXT_BYTES: Int = ${kotlinNumber(b.noise_plaintext_bytes)}
   const val MAX_SECURE_CIPHERTEXT_BYTES: Int = ${kotlinNumber(b.secure_ciphertext_bytes)}
   const val MAX_LOGICAL_INNER_BYTES: Int = ${kotlinNumber(b.logical_inner_bytes)}
   const val ARTIFACT_CHUNK_BYTES: Int = ${kotlinNumber(b.artifact_chunk_bytes)}
+  const val MAX_ARTIFACT_IDENTIFIER_UTF8_BYTES: Int = ${kotlinNumber(b.artifact_identifier_utf8_bytes)}
   const val MAX_SESSION_RECORDS_PER_DIRECTION: Long = ${kotlinNumber(b.session_records_per_direction, 'L')}
   const val MAX_SESSION_CIPHERTEXT_BYTES_PER_DIRECTION: Long = ${kotlinNumber(b.session_ciphertext_bytes_per_direction, 'L')}
   const val MAX_FRAGMENT_DATA_BYTES: Int = ${kotlinNumber(derived.maxFragmentDataBytes)}

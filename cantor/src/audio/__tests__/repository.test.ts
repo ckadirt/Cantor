@@ -2,7 +2,6 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { inspectNativeAudio, nativeAudio, type LocalAudio } from '../native';
 import {
   DEFAULT_AUDIO_CACHE_BYTES,
-  appendAudioChunk,
   audioKey,
   finalizeAudio,
   inspectAudio,
@@ -65,7 +64,6 @@ describe('local audio repository characterization', () => {
     jest.clearAllMocks();
     await AsyncStorage.clear();
     inspectNative.mockResolvedValue({ state: 'remote', bytes: 0 });
-    native.appendChunk.mockResolvedValue(0);
     native.finalize.mockResolvedValue(true);
     native.pin.mockResolvedValue(true);
     native.unpin.mockResolvedValue(true);
@@ -101,27 +99,6 @@ describe('local audio repository characterization', () => {
     expect(await storedIndex()).toMatchObject({
       [audioKey(NODE, SONG, DIGEST)]: expectedRecord('pinned', 1_024),
     });
-  });
-
-  it('appends through to native and leaves the advisory index untouched', async () => {
-    native.appendChunk.mockResolvedValue(65_537);
-
-    await expect(
-      appendAudioChunk(NODE, SONG, DIGEST, 1, 'encoded-chunk'),
-    ).resolves.toBe(65_537);
-
-    expect(native.appendChunk).toHaveBeenCalledWith(
-      NODE,
-      SONG,
-      DIGEST,
-      1,
-      'encoded-chunk',
-    );
-    // Writing the index here would be a full read-modify-write of every
-    // artifact on the phone per 64 KiB, inside the download loop, to record a
-    // number no one reads: the resume offset comes from the file on disk and
-    // `inspectAudio` refreshes the index from native anyway.
-    expect(await storedIndex()).toEqual({});
   });
 
   it('marks finalize as cached and preserves the currently ignored eviction result', async () => {

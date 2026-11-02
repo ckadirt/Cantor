@@ -27,7 +27,8 @@
     "secure_carrier": 1,
     "fragment_record": 1,
     "control_inner": 1,
-    "artifact_chunk_inner": 2
+    "artifact_chunk_inner": 2,
+    "upload_chunk_inner": 3
   },
   "headers": {
     "client_carrier_bytes": 6,

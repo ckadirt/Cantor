@@ -8,7 +8,7 @@ import type { SongDetail } from '../../../protocol/SongDetail';
 import type { SongHeader } from '../../../protocol/SongHeader';
 import type { SongPatch } from '../../../protocol/SongPatch';
 import { audioKey } from '../audio/repository';
-import { readSourceSlice, type LocalAudio } from '../audio/native';
+import type { LocalAudio } from '../audio/native';
 import { runUpload } from '../backends/upload';
 import type { AudioRef, LocalAudioStore } from '../audio/localAudioStore';
 import { repositoryLocalAudioStore } from '../audio/repositoryLocalAudioStore';
@@ -134,7 +134,6 @@ type RuntimeDependencies = {
   markAccepted: typeof markAccepted;
   markRejected: typeof markRejected;
   markSourceSent: typeof markSourceSent;
-  readSourceSlice: typeof readSourceSlice;
   audioStore: LocalAudioStore;
   loadWaiting: typeof loadWaiting;
   putWaiting: typeof putWaiting;
@@ -282,7 +281,6 @@ const defaultDependencies: RuntimeDependencies = {
   markAccepted,
   markRejected,
   markSourceSent,
-  readSourceSlice,
   audioStore: repositoryLocalAudioStore,
   loadWaiting,
   putWaiting,
@@ -589,13 +587,17 @@ export class BackendRuntime {
     progress(0, source.bytes);
     try {
       const committed = await runUpload(
-        connection.uploadPort(),
+        connection.uploadPort(
+          source.path,
+          source.bytes,
+          this.state.backends?.find(
+            item => item.nodePubkey === entry.nodePublicKey,
+          )?.lastNodeInfo?.features.binary_uploads === true,
+        ),
         {
           sha256: source.sha256,
           bytes: source.bytes,
           mediaType: source.mediaType,
-          read: (offset, length) =>
-            this.deps.readSourceSlice(source.path, offset, length),
         },
         progress,
       );
@@ -1156,7 +1158,10 @@ export class BackendRuntime {
       }
       const connection = this.live(nodeKey, 'Song node is not connected.');
       if (before.state !== 'cached' && before.state !== 'pinned') {
-        const sink: ArtifactSink = this.deps.audioStore.createSink(ref);
+        const sink: ArtifactSink = {
+          ...this.deps.audioStore.createSink(ref),
+          nodeKey,
+        };
         this.markDownloading(key, true);
         try {
           /*

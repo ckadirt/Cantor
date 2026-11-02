@@ -18,8 +18,8 @@ class CantorAudioModule(
 
   /**
    * Where reductions run. Its own thread, because a decode takes hundreds of
-   * milliseconds and every other method here — `appendChunk` during a
-   * download — would otherwise wait behind it on the module's queue. One
+   * milliseconds and every other method here would otherwise wait behind it
+   * on the module's queue. One
    * thread, so two reductions never compete for the decoder and the CPU.
    */
   private val reducer = Executors.newSingleThreadExecutor { runnable ->
@@ -168,12 +168,6 @@ class CantorAudioModule(
         }
       }
     }
-  }
-
-  /** One slice of a source file, base64, for an upload chunk. */
-  @ReactMethod
-  fun readSlice(path: String, offset: Double, length: Double, promise: Promise) {
-    runPromise(promise) { SourceFiles.slice(path, offset.toLong(), length.toInt()) }
   }
 
   private fun floats(values: FloatArray): WritableNativeArray =

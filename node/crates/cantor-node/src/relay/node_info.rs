@@ -89,6 +89,7 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
             job_forget: true,
             audio_sources: true,
             uploads: true,
+            binary_uploads: true,
         },
         installable,
     }

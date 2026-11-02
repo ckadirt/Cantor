@@ -506,6 +506,10 @@ pub struct NodeFeatures {
     /// Additive: `upload.open`, `upload.chunk` and `upload.commit`.
     #[serde(default)]
     pub uploads: bool,
+    /// Additive: a client may send upload slices as binary inner frames. A node
+    /// that predates them refuses the frame, so it must not see one.
+    #[serde(default)]
+    pub binary_uploads: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, TS)]
