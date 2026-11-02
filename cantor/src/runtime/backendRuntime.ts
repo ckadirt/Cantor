@@ -1340,7 +1340,7 @@ export class BackendRuntime {
  * Merges build fresh arrays around the same song and job objects, so the
  * comparison is by member identity, not by value.
  */
-function keepSnapshot(
+export function keepSnapshot(
   previous: ConnectionSnapshot | undefined,
   next: ConnectionSnapshot,
 ): ConnectionSnapshot {
@@ -1354,6 +1354,7 @@ function keepSnapshot(
   if (
     songs === previous.songs &&
     jobs === previous.jobs &&
+    sameAhead(previous.ahead, next.ahead) &&
     previous.phase === next.phase &&
     previous.error === next.error &&
     previous.libraryRevision === next.libraryRevision &&
@@ -1364,6 +1365,18 @@ function keepSnapshot(
   return songs === next.songs && jobs === next.jobs
     ? next
     : { ...next, songs, jobs };
+}
+
+/** Each answer from the node is a new object, usually saying the same thing. */
+function sameAhead(
+  left: Readonly<Record<string, number>> = {},
+  right: Readonly<Record<string, number>> = {},
+): boolean {
+  const ids = Object.keys(left);
+  return (
+    ids.length === Object.keys(right).length &&
+    ids.every(id => left[id] === right[id])
+  );
 }
 
 function sameMembers<T>(left: readonly T[], right: readonly T[]): boolean {
