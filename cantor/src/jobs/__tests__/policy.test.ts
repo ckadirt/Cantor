@@ -110,3 +110,11 @@ it('writes sending bytes in MB while tile and step counts keep their units', () 
   ).toBe(' 3/12');
   expect(jobProgressLabel({ kind: 'indeterminate' }, phase)).toBe('');
 });
+
+describe('a job the node owner holds', () => {
+  it('offers only a cancel, and says who holds it', () => {
+    const held: JobView = { ...job('paused'), by_node_owner: true };
+    expect(jobControls(held)).toEqual(['cancel']);
+    expect(jobStateLabel(held)).toBe('Held by the node owner');
+  });
+});

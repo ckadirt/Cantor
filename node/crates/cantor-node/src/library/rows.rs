@@ -5,7 +5,11 @@ use cantor_proto::{ErrorCode, JobError, JobProgress, JobView};
 use serde::{Deserialize, Serialize};
 
 pub(super) const JOB_VIEW_COLUMNS: &str = "id,revision,state,stage,progress_completed,progress_total,progress_unit,\
-     model_selector,created_at,updated_at,error_code,error_message,error_retryable,request_json,client_request_id,plan_json";
+     model_selector,created_at,updated_at,error_code,error_message,error_retryable,request_json,client_request_id,plan_json,stop_reason";
+
+/// `stop_reason` values that say the node's owner acted, not the job's client.
+pub(super) const STOP_HOLD: &str = "hold";
+pub(super) const STOP_OWNER_CANCEL: &str = "owner_cancel";
 
 /// Just the caption out of a stored request.
 ///
@@ -68,6 +72,10 @@ pub(super) fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::
         progress,
         model: row.get(offset + 7)?,
         caption,
+        by_node_owner: row
+            .get::<_, Option<String>>(offset + 16)?
+            .is_some_and(|reason| matches!(reason.as_str(), STOP_HOLD | STOP_OWNER_CANCEL))
+            .then_some(true),
         created_at: row.get(offset + 8)?,
         updated_at: row.get(offset + 9)?,
         error,

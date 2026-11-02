@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc;
 
 use super::super::wire::{CONTROL_VERSION, reject_version, write_value_line as write_line};
-use crate::jobs::operator::{self, CANCEL_CHUNK, CancelOutcome, Placement, Selection};
+use crate::jobs::operator::{self, ACT_CHUNK, Act, ActOutcome, Placement, Selection};
 use crate::runtime::{NodeEvent, SharedState};
 
 /// How long a full event channel may hold up a bulk cancel. The relay drains it
@@ -76,7 +76,7 @@ pub(super) async fn run_list<W: tokio::io::AsyncWrite + Unpin>(
     .await
 }
 
-pub(super) async fn run_cancel<W: tokio::io::AsyncWrite + Unpin>(
+pub(super) async fn run_act<W: tokio::io::AsyncWrite + Unpin>(
     request: &Value,
     state: &SharedState,
     events: &mpsc::Sender<NodeEvent>,
@@ -84,26 +84,32 @@ pub(super) async fn run_cancel<W: tokio::io::AsyncWrite + Unpin>(
     id: &str,
 ) -> Result<()> {
     version(request, id)?;
+    let act = match text(request, "t").as_deref() {
+        Some("queue-cancel") => Act::Cancel,
+        Some("queue-hold") => Act::Hold,
+        Some("queue-release") => Act::Release,
+        other => bail!("unknown queue action {other:?}"),
+    };
     let jobs = job_names(request);
     let mut tally = BTreeMap::<String, u32>::new();
     let mut stalled = false;
-    for chunk in jobs.chunks(CANCEL_CHUNK) {
-        let cancelled = {
+    for chunk in jobs.chunks(ACT_CHUNK) {
+        let results = {
             let mut locked = state
                 .lock()
                 .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
-            operator::cancel(&mut locked, chunk)?
+            operator::act(&mut locked, act, chunk)?
         };
-        for cancellation in cancelled {
-            let outcome = outcome_name(cancellation.outcome)?;
+        for result in results {
+            let outcome = outcome_name(result.outcome)?;
             write_line(
                 writer,
-                &json!({"v": CONTROL_VERSION, "id": id, "t": "queue-cancelled",
-                        "job_id": cancellation.job_id, "outcome": outcome}),
+                &json!({"v": CONTROL_VERSION, "id": id, "t": "queue-acted",
+                        "job_id": result.job_id, "outcome": outcome}),
             )
             .await?;
             *tally.entry(outcome).or_default() += 1;
-            if let Some((principal_id, job)) = cancellation.update {
+            if let Some((principal_id, job)) = result.update {
                 publish(
                     events,
                     NodeEvent::JobUpdated { principal_id, job },
@@ -175,7 +181,7 @@ pub(super) async fn run_clear<W: tokio::io::AsyncWrite + Unpin>(
     }
     let mut cleared = 0;
     let mut stalled = false;
-    for chunk in stopped.chunks(CANCEL_CHUNK) {
+    for chunk in stopped.chunks(ACT_CHUNK) {
         let forgotten = {
             let mut locked = state
                 .lock()
@@ -202,11 +208,11 @@ pub(super) async fn run_clear<W: tokio::io::AsyncWrite + Unpin>(
     .await
 }
 
-fn outcome_name(outcome: CancelOutcome) -> Result<String> {
+fn outcome_name(outcome: ActOutcome) -> Result<String> {
     serde_json::to_value(outcome)?
         .as_str()
         .map(str::to_owned)
-        .context("a cancel outcome is a string")
+        .context("an outcome is a string")
 }
 
 async fn publish(events: &mpsc::Sender<NodeEvent>, event: NodeEvent, stalled: &mut bool) {
@@ -229,9 +235,9 @@ mod tests {
 
     use super::super::generate::run_generate;
     use super::super::generate::tests::state as node_state;
-    use super::{run_cancel, run_clear, run_list, run_place};
+    use super::{run_act, run_clear, run_list, run_place};
     use crate::application::admit_job;
-    use crate::library::{JobControl, Submission, SubmitResult};
+    use crate::library::{ControlResult, JobControl, Submission, SubmitResult};
     use crate::principal::PrincipalId;
     use crate::runtime::{ActiveJobControl, NodeEvent, SharedState};
     use crate::store::Store;
@@ -373,7 +379,7 @@ mod tests {
 
         let (events, mut received) = mpsc::channel(8);
         let mut output = Vec::new();
-        run_cancel(
+        run_act(
             &json!({"v": 1, "t": "queue-cancel", "jobs": [&running, &waiting, "gone"]}),
             &state,
             &events,
@@ -401,6 +407,178 @@ mod tests {
                 other => panic!("unexpected event: {other:?}"),
             }
         }
+    }
+
+    async fn act(state: &SharedState, t: &str, jobs: &[&str]) -> Vec<Value> {
+        let (events, _received) = mpsc::channel(64);
+        let mut output = Vec::new();
+        run_act(
+            &json!({"v": 1, "t": t, "jobs": jobs}),
+            state,
+            &events,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect("act");
+        parse(&output)
+    }
+
+    fn app_control(
+        state: &SharedState,
+        key: [u8; 32],
+        id: &str,
+        control: JobControl,
+    ) -> ControlResult {
+        state
+            .lock()
+            .expect("state")
+            .library
+            .control_job(PrincipalId::from_client_public_key(&key), id, None, control)
+            .expect("control")
+    }
+
+    #[tokio::test]
+    async fn a_hold_outranks_the_app_until_the_owner_releases_it() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let first = app_job(&state, key, "first");
+        let held = app_job(&state, key, "held");
+        place(&state, &held, "next", None).await;
+
+        assert_eq!(
+            act(&state, "queue-hold", &[&held]).await[0]["outcome"],
+            "held"
+        );
+        assert_eq!(
+            act(&state, "queue-hold", &[&held]).await[0]["outcome"],
+            "unchanged"
+        );
+        assert!(matches!(
+            app_control(&state, key, &held, JobControl::Resume),
+            ControlResult::InvalidTransition(_)
+        ));
+        match app_control(&state, key, &held, JobControl::Pause) {
+            ControlResult::Updated(job) => {
+                assert_eq!(job.state, JobState::Paused);
+                assert_eq!(job.by_node_owner, Some(true));
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+        let listed = frames(json!({"v": 1, "t": "queue"}), &state).await;
+        assert_eq!(listed[1]["job"]["by_node_owner"], true);
+
+        assert_eq!(
+            act(&state, "queue-release", &[&held]).await[0]["outcome"],
+            "released"
+        );
+        // It comes back in the place it was given.
+        assert_eq!(frames_order(&state).await, ["held", "first"]);
+        let _ = first;
+    }
+
+    #[tokio::test]
+    async fn a_hold_outlives_a_restart_and_a_revocation() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let held = app_job(&state, key, "held");
+        act(&state, "queue-hold", &[&held]).await;
+        let principal = PrincipalId::from_client_public_key(&key);
+        state
+            .lock()
+            .expect("state")
+            .library
+            .hold_principal_jobs(principal)
+            .expect("revocation");
+
+        drop(state);
+        let library = crate::library::Library::open(temporary.path().join("library"))
+            .expect("the library reopens");
+        let mut library = library;
+        let job = library.get(principal, &held).unwrap().unwrap();
+        assert_eq!(job.state, JobState::Paused);
+        assert_eq!(job.by_node_owner, Some(true));
+        assert!(library.claim_next().expect("claim").is_none());
+        assert!(matches!(
+            library
+                .control_job(principal, &held, None, JobControl::Resume)
+                .expect("control"),
+            ControlResult::InvalidTransition(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_app_may_cancel_its_own_held_job() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let held = app_job(&state, key, "held");
+        act(&state, "queue-hold", &[&held]).await;
+        match app_control(&state, key, &held, JobControl::Cancel) {
+            ControlResult::Updated(job) => {
+                assert_eq!(job.state, JobState::Cancelled);
+                assert_eq!(job.by_node_owner, None);
+            }
+            other => panic!("unexpected result: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn holding_a_running_job_stops_it_as_held_even_if_the_stop_says_pause() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let running = app_job(&state, key, "running");
+        let (work, signal) = {
+            let mut locked = state.lock().expect("state");
+            let (work, _) = locked.library.claim_next().expect("claim").expect("work");
+            let signal = Arc::new(std::sync::atomic::AtomicU8::new(0));
+            locked.active_job = Some(ActiveJobControl {
+                job_id: work.id.clone(),
+                principal_id: work.principal_id,
+                signal: Arc::clone(&signal),
+            });
+            (work, signal)
+        };
+        assert_eq!(
+            act(&state, "queue-hold", &[&running]).await[0]["outcome"],
+            "stopping"
+        );
+        assert_eq!(
+            crate::jobs::StopReason::load(&signal),
+            crate::jobs::StopReason::Hold
+        );
+        // The scheduler's gap: it read `pause_requested` and asked for a pause.
+        let job = state
+            .lock()
+            .expect("state")
+            .library
+            .finish_paused(&work, None, cantor_proto::GenerationStage::Plan, "pause")
+            .expect("paused")
+            .expect("job");
+        assert_eq!(job.by_node_owner, Some(true));
+        assert!(matches!(
+            app_control(&state, key, &running, JobControl::Resume),
+            ControlResult::InvalidTransition(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_owner_cancel_says_so_and_an_app_cancel_does_not() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let owners = app_job(&state, key, "owners");
+        let apps = app_job(&state, key, "apps");
+        act(&state, "queue-cancel", &[&owners]).await;
+        app_control(&state, key, &apps, JobControl::Cancel);
+        let locked = state.lock().expect("state");
+        let principal = PrincipalId::from_client_public_key(&key);
+        let job = |id: &str| locked.library.get(principal, id).unwrap().unwrap();
+        assert_eq!(job(&owners).by_node_owner, Some(true));
+        assert_eq!(job(&apps).by_node_owner, None);
     }
 
     async fn place(state: &SharedState, job: &str, place: &str, other: Option<&str>) {
@@ -480,7 +658,7 @@ mod tests {
         let waiting = app_job(&state, key, "waiting");
         let (events, mut received) = mpsc::channel(8);
         let mut output = Vec::new();
-        run_cancel(
+        run_act(
             &json!({"v": 1, "t": "queue-cancel", "jobs": [&stopped]}),
             &state,
             &events,
@@ -555,7 +733,7 @@ mod tests {
         });
 
         let mut output = Vec::new();
-        run_cancel(
+        run_act(
             &json!({"v": 1, "t": "queue-cancel", "jobs": ids}),
             &state,
             &events,

@@ -345,7 +345,10 @@ fn run_generation(
                     Err(error)
                         if matches!(
                             StopReason::load(signal),
-                            StopReason::Pause | StopReason::Revoked | StopReason::Shutdown
+                            StopReason::Pause
+                                | StopReason::Hold
+                                | StopReason::Revoked
+                                | StopReason::Shutdown
                         ) =>
                     {
                         eprintln!(
@@ -525,16 +528,16 @@ pub(crate) fn settle_standing_stop(
             .library
             .finish_cancelled(work)
             .map_err(WorkerFailure::from_internal)?,
-        StopReason::Pause | StopReason::Revoked => locked
+        StopReason::Pause | StopReason::Hold | StopReason::Revoked => locked
             .library
             .finish_paused(
                 work,
                 reference,
                 checkpoints::protocol_stage(stage),
-                if reason == StopReason::Revoked {
-                    "revoked"
-                } else {
-                    "pause"
+                match reason {
+                    StopReason::Revoked => "revoked",
+                    StopReason::Hold => "hold",
+                    _ => "pause",
                 },
             )
             .map_err(WorkerFailure::from_internal)?,

@@ -70,6 +70,7 @@ Usage:
   cantor queue     [--json]        # what is running and what waits, from every app
   cantor queue     show <job>...
   cantor queue     cancel <job>... | --all | --from <petname|local> | --model <model> [--yes]
+  cantor queue     hold|release <job>... | --all | --from <petname|local> | --model <model>
   cantor queue     next|last <job>
   cantor queue     move <job> --before <other> | --after <other>
   cantor queue     clear [--from <petname|local>] [--yes]  # forget failed and cancelled jobs

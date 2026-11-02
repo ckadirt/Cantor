@@ -13,11 +13,11 @@ use crate::library::{ControlResult, ForgetResult, JobControl, QueuedJob};
 use crate::principal::PrincipalId;
 use crate::runtime::NodeState;
 
-/// Jobs cancelled per hold of the state mutex. Each one commits and fsyncs, and
-/// the relay and the worker wait on the same mutex, so a bulk cancel lets go
+/// Jobs acted on per hold of the state mutex. Each one commits and fsyncs, and
+/// the relay and the worker wait on the same mutex, so bulk work lets go
 /// between chunks. Its events are published in the gaps, because the relay
 /// needs this mutex to drain them.
-pub const CANCEL_CHUNK: usize = 25;
+pub const ACT_CHUNK: usize = 25;
 
 /// Which jobs a command means. Either named, or filtered; never both.
 #[derive(Clone, Debug, Default)]
@@ -54,25 +54,37 @@ pub struct QueueItem {
     pub principal_id: PrincipalId,
 }
 
+/// What the owner can do to a job already on the node.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Act {
+    Cancel,
+    Hold,
+    Release,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CancelOutcome {
+pub enum ActOutcome {
     /// It had not started, or was paused. It is over.
     Cancelled,
+    /// It stays pending until the owner releases it.
+    Held,
+    /// It is back in the queue, in the place it had.
+    Released,
     /// It was running, and stops at the next safe point.
     Stopping,
-    /// Its song is being saved. It is past cancelling and will complete.
+    /// Its song is being saved. It is past stopping and will complete.
     Finishing,
-    /// It ended before this reached it.
-    Finished,
+    /// Nothing about it had to change, or could.
+    Unchanged,
     /// It no longer exists.
     Gone,
 }
 
 #[derive(Debug)]
-pub struct Cancellation {
+pub struct ActResult {
     pub job_id: String,
-    pub outcome: CancelOutcome,
+    pub outcome: ActOutcome,
     /// The change to tell the job's owner about, if anything changed.
     pub update: Option<(PrincipalId, JobView)>,
 }
@@ -260,52 +272,74 @@ pub fn select(state: &NodeState, selection: &Selection) -> Result<Vec<QueueItem>
         .collect())
 }
 
-/// Cancel these jobs, at most `CANCEL_CHUNK` at a time from the caller, which
+/// Act on these jobs, at most `ACT_CHUNK` at a time from the caller, which
 /// publishes the updates once the mutex is released.
-pub fn cancel(state: &mut NodeState, ids: &[String]) -> Result<Vec<Cancellation>> {
-    ids.iter().map(|id| cancel_one(state, id)).collect()
+pub fn act(state: &mut NodeState, act: Act, ids: &[String]) -> Result<Vec<ActResult>> {
+    let results = ids
+        .iter()
+        .map(|id| act_on(state, act, id))
+        .collect::<Result<Vec<_>>>()?;
+    if results
+        .iter()
+        .any(|result| result.outcome == ActOutcome::Released)
+    {
+        state.job_notify.notify_one();
+    }
+    Ok(results)
 }
 
-fn cancel_one(state: &mut NodeState, id: &str) -> Result<Cancellation> {
-    let gone = || Cancellation {
+fn act_on(state: &mut NodeState, act: Act, id: &str) -> Result<ActResult> {
+    let gone = || ActResult {
         job_id: id.to_owned(),
-        outcome: CancelOutcome::Gone,
+        outcome: ActOutcome::Gone,
         update: None,
     };
     let Some(principal_id) = state.library.job_owner(id)? else {
         return Ok(gone());
     };
-    let result = state
-        .library
-        .control_job(principal_id, id, None, JobControl::Cancel)?;
+    let control = match act {
+        Act::Cancel => JobControl::OwnerCancel,
+        Act::Hold => JobControl::Hold,
+        Act::Release => JobControl::Release,
+    };
+    let before = state.library.get(principal_id, id)?;
+    let result = state.library.control_job(principal_id, id, None, control)?;
     let (outcome, update) = match result {
         ControlResult::NotFound => return Ok(gone()),
         ControlResult::Updated(job) => {
-            if job.state == JobState::CancelRequested
+            let stop = match job.state {
+                JobState::CancelRequested => Some(StopReason::Cancel),
+                JobState::PauseRequested => Some(StopReason::Hold),
+                _ => None,
+            };
+            if let Some(stop) = stop
                 && let Some(active) = state
                     .active_job
                     .as_ref()
                     .filter(|active| active.job_id == id)
             {
-                request_stop(&active.signal, StopReason::Cancel);
+                request_stop(&active.signal, stop);
             }
-            let outcome = if job.state == JobState::Cancelled {
-                CancelOutcome::Cancelled
-            } else {
-                CancelOutcome::Stopping
+            let changed = before.is_none_or(|before| before.revision != job.revision);
+            let outcome = match job.state {
+                _ if !changed => ActOutcome::Unchanged,
+                JobState::Cancelled => ActOutcome::Cancelled,
+                JobState::Paused => ActOutcome::Held,
+                JobState::Queued => ActOutcome::Released,
+                _ => ActOutcome::Stopping,
             };
-            (outcome, Some((principal_id, job)))
+            (outcome, changed.then_some((principal_id, job)))
         }
         ControlResult::Conflict(job) | ControlResult::InvalidTransition(job) => {
             let outcome = if job.state == JobState::Finalizing {
-                CancelOutcome::Finishing
+                ActOutcome::Finishing
             } else {
-                CancelOutcome::Finished
+                ActOutcome::Unchanged
             };
             (outcome, None)
         }
     };
-    Ok(Cancellation {
+    Ok(ActResult {
         job_id: id.to_owned(),
         outcome,
         update,

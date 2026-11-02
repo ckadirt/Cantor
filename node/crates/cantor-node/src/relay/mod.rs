@@ -710,6 +710,7 @@ mod tests {
                         progress: None,
                         model: "model:tag".into(),
                         caption: Some("a caption".into()),
+                        by_node_owner: None,
                         created_at: "now".into(),
                         updated_at: "now".into(),
                         error: None,

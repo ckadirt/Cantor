@@ -26,4 +26,12 @@ plan?: Array<PlanStage>, progress?: JobProgress, model: string,
  * device but the one that typed it, since the submission itself never
  * leaves that phone. Bounded by `MAX_CAPTION_BYTES` at admission.
  */
-caption?: string, created_at: string, updated_at: string, error?: JobError, };
+caption?: string, 
+/**
+ * True when the node's owner, not this client, held or cancelled the job.
+ * A held job is `paused`, and only the owner can release it.
+ *
+ * Additive, and deliberately not a `JobState`: an older app reads an
+ * unknown state as running. It reads this as an ordinary pause.
+ */
+by_node_owner?: boolean, created_at: string, updated_at: string, error?: JobError, };

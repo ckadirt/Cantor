@@ -634,6 +634,14 @@ pub struct JobView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub caption: Option<String>,
+    /// True when the node's owner, not this client, held or cancelled the job.
+    /// A held job is `paused`, and only the owner can release it.
+    ///
+    /// Additive, and deliberately not a `JobState`: an older app reads an
+    /// unknown state as running. It reads this as an ordinary pause.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub by_node_owner: Option<bool>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1410,6 +1418,7 @@ mod tests {
             include_str!("../../../../protocol/fixtures/v2/upload-committed.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page.json"),
             include_str!("../../../../protocol/fixtures/v2/jobs-page-plan.json"),
+            include_str!("../../../../protocol/fixtures/v2/jobs-page-held.json"),
             include_str!("../../../../protocol/fixtures/v2/job-forgotten.json"),
             include_str!("../../../../protocol/fixtures/v2/library-page.json"),
             include_str!("../../../../protocol/fixtures/v2/error.json"),

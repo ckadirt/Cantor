@@ -161,9 +161,11 @@ impl Library {
                 self.connection.execute(
                     "UPDATE jobs SET state='cancelled',stage=NULL,progress_completed=NULL,
                      progress_total=NULL,progress_unit=NULL,error_code=NULL,error_message=NULL,
-                     error_retryable=0,stop_reason='cancel',revision=revision+1,updated_at=?2
+                     error_retryable=0,
+                     stop_reason=CASE WHEN stop_reason=?3 THEN stop_reason ELSE 'cancel' END,
+                     revision=revision+1,updated_at=?2
                      WHERE id=?1 AND state='cancel_requested'",
-                    params![id, now_rfc3339()],
+                    params![id, now_rfc3339(), super::rows::STOP_OWNER_CANCEL],
                 )?;
                 let job = self
                     .job_by_id(&id)?

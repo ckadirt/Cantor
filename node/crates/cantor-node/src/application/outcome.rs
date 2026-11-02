@@ -103,6 +103,7 @@ mod tests {
             progress: None,
             model: "model:variant".into(),
             caption: Some("a caption".into()),
+            by_node_owner: None,
             created_at: "created".into(),
             updated_at: "updated".into(),
             error: None,

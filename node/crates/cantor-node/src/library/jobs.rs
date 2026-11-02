@@ -20,7 +20,7 @@ use crate::store::InstalledVariant;
 use super::Library;
 use super::artifacts::hex;
 use super::durable_fs::{prepare_real_directory, write_json_atomic};
-use super::rows::{JOB_VIEW_COLUMNS, enum_text, job_from_row};
+use super::rows::{JOB_VIEW_COLUMNS, STOP_HOLD, STOP_OWNER_CANCEL, enum_text, job_from_row};
 use super::sidecars::{
     AcceptedModel, AcceptedRequestSidecar, RequestSidecar, accepted_sidecar_for, write_status,
 };
@@ -78,6 +78,10 @@ pub enum JobControl {
     Resume,
     Cancel,
     Retry,
+    /// Below: the node's owner only. The application router never builds these.
+    Hold,
+    Release,
+    OwnerCancel,
 }
 
 /// What happened to a request to forget a job outright.
@@ -231,6 +235,7 @@ impl Library {
             progress: None,
             model: submission.model.clone(),
             caption: Some(submission.generation.caption.clone()),
+            by_node_owner: None,
             created_at: now.clone(),
             updated_at: now,
             error: None,
@@ -282,6 +287,11 @@ impl Library {
         )?;
 
         let now = now_rfc3339();
+        let cancel_reason = if control == JobControl::OwnerCancel {
+            STOP_OWNER_CANCEL
+        } else {
+            "cancel"
+        };
         let changed = match control {
             JobControl::Pause => match current.state {
                 JobState::Paused | JobState::PauseRequested => {
@@ -301,14 +311,35 @@ impl Library {
                 )?,
                 _ => return Ok(ControlResult::InvalidTransition(current)),
             },
-            JobControl::Cancel => match current.state {
+            JobControl::Hold => match current.state {
+                JobState::Paused if stop_reason.as_deref() == Some(STOP_HOLD) => {
+                    return Ok(ControlResult::Updated(current));
+                }
+                JobState::Queued | JobState::Paused => self.connection.execute(
+                    "UPDATE jobs SET state='paused',stop_reason=?4,
+                     control_requested_at=?3,revision=revision+1,updated_at=?3
+                     WHERE principal_id=?1 AND id=?2 AND state IN ('queued','paused')",
+                    params![principal_hex, id, now, STOP_HOLD],
+                )?,
+                JobState::Preparing | JobState::Running | JobState::PauseRequested => {
+                    self.connection.execute(
+                        "UPDATE jobs SET state='pause_requested',stop_reason=?4,
+                         control_requested_at=?3,revision=revision+1,updated_at=?3
+                         WHERE principal_id=?1 AND id=?2 AND state IN
+                           ('preparing','running','pause_requested')",
+                        params![principal_hex, id, now, STOP_HOLD],
+                    )?
+                }
+                _ => return Ok(ControlResult::InvalidTransition(current)),
+            },
+            JobControl::Cancel | JobControl::OwnerCancel => match current.state {
                 JobState::Cancelled => return Ok(ControlResult::Updated(current)),
                 JobState::Queued | JobState::Paused => self.connection.execute(
-                    "UPDATE jobs SET state='cancelled',stage=NULL,stop_reason='cancel',
+                    "UPDATE jobs SET state='cancelled',stage=NULL,stop_reason=?4,
                      control_requested_at=?3,error_code=NULL,error_message=NULL,
                      error_retryable=0,revision=revision+1,updated_at=?3
                      WHERE principal_id=?1 AND id=?2 AND state IN ('queued','paused')",
-                    params![principal_hex, id, now],
+                    params![principal_hex, id, now, cancel_reason],
                 )?,
                 JobState::Preparing
                 | JobState::Running
@@ -318,16 +349,23 @@ impl Library {
                         return Ok(ControlResult::Updated(current));
                     }
                     self.connection.execute(
-                        "UPDATE jobs SET state='cancel_requested',stop_reason='cancel',
+                        "UPDATE jobs SET state='cancel_requested',stop_reason=?4,
                          control_requested_at=?3,revision=revision+1,updated_at=?3
                          WHERE principal_id=?1 AND id=?2 AND state IN
                            ('preparing','running','pause_requested')",
-                        params![principal_hex, id, now],
+                        params![principal_hex, id, now, cancel_reason],
                     )?
                 }
                 _ => return Ok(ControlResult::InvalidTransition(current)),
             },
-            JobControl::Resume => match current.state {
+            JobControl::Resume | JobControl::Release => match current.state {
+                // The owner's hold outranks the client that sent the job.
+                JobState::Paused
+                    if control == JobControl::Resume
+                        && stop_reason.as_deref() == Some(STOP_HOLD) =>
+                {
+                    return Ok(ControlResult::InvalidTransition(current));
+                }
                 JobState::Paused => {
                     let sidecar = accepted_sidecar_for(&self.root, &principal_hex, id)?;
                     let request_hash: String = self.connection.query_row(
@@ -779,12 +817,22 @@ impl Library {
             .transpose()?;
         let changed = self.connection.execute(
             "UPDATE jobs SET state='paused',stage=?3,active_checkpoint=COALESCE(?4,active_checkpoint),
-             checkpoint_outcome=COALESCE(?5,checkpoint_outcome),stop_reason=?6,
+             checkpoint_outcome=COALESCE(?5,checkpoint_outcome),
+             stop_reason=CASE WHEN stop_reason=?8 THEN stop_reason ELSE ?6 END,
              progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
              revision=revision+1,updated_at=?7
              WHERE id=?1 AND attempt=?2 AND state IN
                ('preparing','running','pause_requested')",
-            params![work.id, work.attempt, stage, checkpoint, outcome, reason, now],
+            params![
+                work.id,
+                work.attempt,
+                stage,
+                checkpoint,
+                outcome,
+                reason,
+                now,
+                STOP_HOLD
+            ],
         )?;
         if changed != 1 {
             return Ok(None);
@@ -801,10 +849,12 @@ impl Library {
         let changed = self.connection.execute(
             "UPDATE jobs SET state='cancelled',stage=NULL,progress_completed=NULL,
              progress_total=NULL,progress_unit=NULL,error_code=NULL,error_message=NULL,
-             error_retryable=0,stop_reason='cancel',revision=revision+1,updated_at=?3
+             error_retryable=0,
+             stop_reason=CASE WHEN stop_reason=?4 THEN stop_reason ELSE 'cancel' END,
+             revision=revision+1,updated_at=?3
              WHERE id=?1 AND attempt=?2 AND state IN
                ('preparing','running','pause_requested','cancel_requested')",
-            params![work.id, work.attempt, now],
+            params![work.id, work.attempt, now, STOP_OWNER_CANCEL],
         )?;
         if changed != 1 {
             return Ok(None);

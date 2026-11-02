@@ -9,6 +9,7 @@ import { decodeForgottenJob } from '../applicationResponses';
 
 const nodeInfo = require('../../../../protocol/fixtures/v2/node-info.json');
 const jobsPlan = require('../../../../protocol/fixtures/v2/jobs-page-plan.json');
+const jobsHeld = require('../../../../protocol/fixtures/v2/jobs-page-held.json');
 const jobsPage = require('../../../../protocol/fixtures/v2/jobs-page.json');
 const forgotten = require('../../../../protocol/fixtures/v2/job-forgotten.json');
 const invalidState = require('../../../../protocol/fixtures/v2/malformed/invalid-state.json');
@@ -27,6 +28,14 @@ describe('shared protocol v2 fixtures', () => {
       stage: 'diffuse',
       revision: 3,
     });
+  });
+
+  it('keeps who stopped a job, and tolerates a node that does not say', () => {
+    expect(parseJobs(jobsHeld.jobs)?.[0]).toMatchObject({
+      state: 'paused',
+      by_node_owner: true,
+    });
+    expect(parseJobs(jobsPage.jobs)?.[0].by_node_owner).toBeUndefined();
   });
 
   it('keeps the words a stopped job was asked for, and tolerates their absence', () => {

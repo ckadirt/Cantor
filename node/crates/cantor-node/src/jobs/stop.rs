@@ -15,7 +15,8 @@ pub enum StopReason {
     Shutdown = 1,
     Pause = 2,
     Revoked = 3,
-    Cancel = 4,
+    Hold = 4,
+    Cancel = 5,
 }
 
 impl StopReason {
@@ -24,7 +25,8 @@ impl StopReason {
             1 => Self::Shutdown,
             2 => Self::Pause,
             3 => Self::Revoked,
-            4 => Self::Cancel,
+            4 => Self::Hold,
+            5 => Self::Cancel,
             _ => Self::None,
         }
     }
@@ -87,6 +89,12 @@ mod tests {
 
         request_stop(&signal, StopReason::Pause);
         assert_eq!(StopReason::load(&signal), StopReason::Revoked);
+
+        request_stop(&signal, StopReason::Hold);
+        assert_eq!(StopReason::load(&signal), StopReason::Hold);
+
+        request_stop(&signal, StopReason::Revoked);
+        assert_eq!(StopReason::load(&signal), StopReason::Hold);
 
         request_stop(&signal, StopReason::Cancel);
         assert_eq!(StopReason::load(&signal), StopReason::Cancel);

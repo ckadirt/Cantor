@@ -57,7 +57,7 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
             }
             Ok(())
         }
-        Some("cancel") => cancel(socket, jobs, &options).await,
+        Some(action @ ("cancel" | "hold" | "release")) => act(socket, action, jobs, &options).await,
         Some(place @ ("next" | "last")) => {
             let [job] = jobs else {
                 bail!("queue {place} needs one job");
@@ -81,19 +81,24 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
 
 /// Select first, then confirm, then cancel exactly the ids that were confirmed:
 /// a job arriving at the prompt is not one you agreed to lose.
-async fn cancel(socket: &Path, jobs: &[String], options: &Options) -> Result<()> {
+async fn act(socket: &Path, action: &str, jobs: &[String], options: &Options) -> Result<()> {
     let filtered = options.all || options.from.is_some() || options.model.is_some();
     if jobs.is_empty() && !filtered {
-        bail!("queue cancel needs jobs, or --all, --from or --model");
+        bail!("queue {action} needs jobs, or --all, --from or --model");
     }
     let selector = json!({"jobs": jobs, "all": options.all,
                           "from": options.from, "model": options.model});
     let chosen = fetch(socket, &selector).await?;
     if chosen.is_empty() {
-        println!("nothing to cancel");
+        println!("nothing to {action}");
         return Ok(());
     }
-    if filtered && !options.yes && !confirm(&format!("Cancel {} jobs", chosen.len()))? {
+    // Only a cancel is final; a hold and a release undo each other.
+    if action == "cancel"
+        && filtered
+        && !options.yes
+        && !confirm(&format!("Cancel {} jobs", chosen.len()))?
+    {
         println!("nothing was cancelled");
         return Ok(());
     }
@@ -103,9 +108,9 @@ async fn cancel(socket: &Path, jobs: &[String], options: &Options) -> Result<()>
         .collect::<Vec<_>>();
     let mut tally = Tally::default();
     for batch in ids.chunks(CANCEL_BATCH) {
-        let request = json!({"v": 1, "id": "1", "t": "queue-cancel", "jobs": batch});
+        let request = json!({"v": 1, "id": "1", "t": format!("queue-{action}"), "jobs": batch});
         control::request_streaming(socket, &request, |frame| {
-            if frame.get("t").and_then(Value::as_str) != Some("queue-cancelled") {
+            if frame.get("t").and_then(Value::as_str) != Some("queue-acted") {
                 return;
             }
             let outcome = string(frame, "outcome");
@@ -121,7 +126,7 @@ async fn cancel(socket: &Path, jobs: &[String], options: &Options) -> Result<()>
         .await?;
     }
     if ids.len() > LISTED_OUTCOMES {
-        println!("{}", tally.summary());
+        println!("{}", tally.summary(action));
     }
     Ok(())
 }
@@ -195,30 +200,28 @@ async fn fetch(socket: &Path, selector: &Value) -> Result<Vec<Value>> {
 
 #[derive(Default)]
 struct Tally {
-    cancelled: u32,
+    done: u32,
     stopping: u32,
     finishing: u32,
-    finished: u32,
-    gone: u32,
+    other: u32,
 }
 
 impl Tally {
     fn count(&mut self, outcome: &str) {
         match outcome {
-            "cancelled" => self.cancelled += 1,
+            "cancelled" | "held" | "released" => self.done += 1,
             "stopping" => self.stopping += 1,
             "finishing" => self.finishing += 1,
-            "finished" => self.finished += 1,
-            _ => self.gone += 1,
+            _ => self.other += 1,
         }
     }
 
-    fn summary(&self) -> String {
-        let mut parts = vec![format!("{} cancelled", self.cancelled)];
+    fn summary(&self, action: &str) -> String {
+        let mut parts = vec![format!("{} {}", self.done, past_tense(action))];
         let others = [
             (self.stopping, "stopping"),
             (self.finishing, "too late, saving its song"),
-            (self.finished + self.gone, "already over"),
+            (self.other, "unchanged"),
         ];
         parts.extend(
             others
@@ -230,12 +233,23 @@ impl Tally {
     }
 }
 
+fn past_tense(action: &str) -> &'static str {
+    match action {
+        "hold" => "held",
+        "release" => "released",
+        _ => "cancelled",
+    }
+}
+
 fn outcome_words(outcome: &str) -> &'static str {
     match outcome {
         "cancelled" => "cancelled",
+        "held" => "held until you release it",
+        "released" => "back in the queue",
         "stopping" => "stopping at the next safe point",
         "finishing" => "too late: its song is being saved",
-        _ => "already over",
+        "gone" => "gone",
+        _ => "unchanged",
     }
 }
 
@@ -249,7 +263,9 @@ fn render(jobs: &[Value], now: OffsetDateTime) -> String {
             .collect::<Vec<_>>()
     };
     let queued = in_state(&["queued"]);
-    let paused = in_state(&["paused"]);
+    let (held, paused): (Vec<_>, Vec<_>) = in_state(&["paused"])
+        .into_iter()
+        .partition(|job| job.get("by_node_owner").and_then(Value::as_bool) == Some(true));
     let active = jobs
         .iter()
         .filter(|job| !matches!(string(job, "state"), "queued" | "paused"))
@@ -266,10 +282,12 @@ fn render(jobs: &[Value], now: OffsetDateTime) -> String {
             output.push_str(&row(&position.to_string(), job, now));
         }
     }
-    if !paused.is_empty() {
-        output.push_str(&format!("\npaused ({})\n", paused.len()));
-        for job in &paused {
-            output.push_str(&row("-", job, now));
+    for (name, jobs) in [("held", &held), ("paused", &paused)] {
+        if !jobs.is_empty() {
+            output.push_str(&format!("\n{name} ({})\n", jobs.len()));
+            for job in jobs {
+                output.push_str(&row("-", job, now));
+            }
         }
     }
     output
@@ -378,6 +396,9 @@ mod tests {
             json!({"id": "cccccccc-3", "state": "paused", "stage": "plan", "owner": "bo",
                    "model": "levo:2", "created_at": "2026-10-30T12:00:00Z",
                    "caption": "parked"}),
+            json!({"id": "dddddddd-4", "state": "paused", "owner": "bo", "by_node_owner": true,
+                   "model": "levo:2", "created_at": "2026-10-30T12:00:00Z",
+                   "caption": "kept"}),
         ];
         let text = render(&jobs, now());
         let lines = text.lines().collect::<Vec<_>>();
@@ -388,6 +409,7 @@ mod tests {
         assert!(text.contains("waiting (1)"), "{text}");
         assert!(text.contains("2h"), "{text}");
         assert!(text.contains("paused (1)"), "{text}");
+        assert!(text.contains("held (1)"), "{text}");
         assert!(text.contains("3d"), "{text}");
         // A parked job that never ran has no stage to report.
         assert!(!text.contains("plan"), "{text}");
@@ -407,12 +429,12 @@ mod tests {
     #[test]
     fn a_tally_leads_with_cancellations_and_omits_what_did_not_happen() {
         let mut tally = Tally::default();
-        for outcome in ["cancelled", "cancelled", "finishing", "gone"] {
+        for outcome in ["held", "held", "finishing", "gone"] {
             tally.count(outcome);
         }
         assert_eq!(
-            tally.summary(),
-            "2 cancelled, 1 too late, saving its song, 1 already over"
+            tally.summary("hold"),
+            "2 held, 1 too late, saving its song, 1 unchanged"
         );
     }
 }

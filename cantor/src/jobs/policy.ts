@@ -25,7 +25,9 @@ export function jobControls(job: JobView | null): JobControl[] {
     case 'pause_requested':
       return ['cancel'];
     case 'paused':
-      return ['resume', 'cancel'];
+      // The node's owner holds it; only they can let it go. It is still yours
+      // to cancel.
+      return job.by_node_owner ? ['cancel'] : ['resume', 'cancel'];
     case 'failed':
       return job.error?.retryable ? ['retry'] : [];
     default:
@@ -94,11 +96,14 @@ export function jobStateLabel(
     case 'pause_requested':
       return 'Pausing at a safe point';
     case 'paused':
+      if (job.by_node_owner) return 'Held by the node owner';
       return `Paused${job.stage ? ` during ${job.stage}` : ''}`;
     case 'cancel_requested':
       return 'Cancelling at a safe point';
     case 'cancelled':
-      return 'Generation cancelled';
+      return job.by_node_owner
+        ? 'Cancelled by the node owner'
+        : 'Generation cancelled';
     case 'completed':
       return 'Generation complete';
     case 'failed':

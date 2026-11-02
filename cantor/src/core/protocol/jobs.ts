@@ -142,6 +142,7 @@ export function parseJob(value: unknown): JobView | null {
     ...(progress === undefined ? {} : { progress }),
     model: value.model,
     ...(value.caption === undefined ? {} : { caption: value.caption }),
+    ...(value.by_node_owner === true ? { by_node_owner: true } : {}),
     created_at: value.created_at,
     updated_at: value.updated_at,
     ...(error === undefined ? {} : { error }),
