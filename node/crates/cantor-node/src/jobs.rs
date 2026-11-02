@@ -1,5 +1,6 @@
 //! Durable job scheduler compatibility facade.
 
+pub mod operator;
 mod scheduler;
 mod stop;
 

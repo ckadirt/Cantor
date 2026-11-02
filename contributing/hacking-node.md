@@ -36,6 +36,7 @@ An adapter may depend on the core. The core may never depend on an adapter. If
 | `application/` | the router, per-topic services, and `ApplicationOutcome` |
 | `library.rs` + `library/` | one `Library` façade over schema, jobs, songs, artifacts, recovery, sidecars, rows, durable filesystem |
 | `jobs/`, `generation/` | scheduler, stop reasons, planning, the dedicated native worker, runner, failure policy |
+| `jobs/operator.rs`, `library/queue.rs`, `control/commands/queue.rs`, `queue_cli.rs` | `cantor queue`: the owner's hand on every app's jobs. `library/queue.rs` holds the only job queries that cross owners; nothing under `application/` may reach them |
 | `delivery/` | delivery repository, bounded worker, Opus encoder |
 | `service.rs`, `process_lock.rs` | systemd/launchd adapters, detached lifecycle, config/socket lifetime locks |
 | `runtime/` | `NodeState`, `SharedState`, and `NodeEvent` |
@@ -77,7 +78,13 @@ rejection, temp files, fsync, and rename. Reuse it rather than calling
 `std::fs` directly from a new call site.
 
 **Owner isolation is explicit.** Every query is scoped by `PrincipalId`, which
-rejects non-canonical (uppercase) hex at every durable boundary.
+rejects non-canonical (uppercase) hex at every durable boundary. The operator
+queue is the one named exception, and it stays on the local socket.
+
+**Bulk work lets go of the mutex.** The relay needs the state mutex to drain the
+event channel, and most publishers `try_send`. Holding it across a large batch
+freezes the node and loses updates, so work in chunks and publish between them
+(`jobs::operator::CANCEL_CHUNK`).
 
 ## Recipes
 

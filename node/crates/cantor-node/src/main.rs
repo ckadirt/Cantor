@@ -19,6 +19,7 @@ mod menu;
 mod pairing;
 mod principal;
 mod process_lock;
+mod queue_cli;
 mod relay;
 mod runtime;
 mod secure;
@@ -66,6 +67,9 @@ Usage:
                    [--version-of SONG [--closeness 0..1] [--keep-voice]]
                    [--longer SONG --add SECONDS [--at start|end]]
                    [--source FILE [--tune] [--tile SECONDS] [--closeness 0..1]]
+  cantor queue     [--json]        # what is running and what waits, from every app
+  cantor queue     show <job>...
+  cantor queue     cancel <job>... | --all | --from <petname|local> | --model <model> [--yes]
   cantor upgrade   [--check] [--no-engines]
 
 Options common to every command:
@@ -93,6 +97,7 @@ enum Command_ {
     Remove,
     Backends,
     Generate,
+    Queue,
 }
 
 #[derive(Debug)]
@@ -131,6 +136,9 @@ struct Cli {
     closeness: Option<f32>,
     keep_voice: bool,
     can: Option<String>,
+    json: bool,
+    from: Option<String>,
+    yes: bool,
     positional: Vec<String>,
 }
 
@@ -154,6 +162,7 @@ impl Cli {
             Some(value) if value == OsStr::new("rm") => Command_::Remove,
             Some(value) if value == OsStr::new("backends") => Command_::Backends,
             Some(value) if value == OsStr::new("generate") => Command_::Generate,
+            Some(value) if value == OsStr::new("queue") => Command_::Queue,
             Some(value) if value == OsStr::new("--version") || value == OsStr::new("-V") => {
                 println!("cantor {}", update::CURRENT_VERSION);
                 std::process::exit(0);
@@ -200,6 +209,9 @@ impl Cli {
             closeness: None,
             keep_voice: false,
             can: None,
+            json: false,
+            from: None,
+            yes: false,
             positional: Vec::new(),
         };
         while let Some(option) = args.next() {
@@ -276,6 +288,9 @@ impl Cli {
                 }
                 Some("--keep-voice") => cli.keep_voice = true,
                 Some("--can") => cli.can = Some(next_utf8_value(&mut args, "--can")?),
+                Some("--json") => cli.json = true,
+                Some("--from") => cli.from = Some(next_utf8_value(&mut args, "--from")?),
+                Some("--yes") | Some("-y") => cli.yes = true,
                 Some("--version") | Some("-V") => {
                     println!("cantor {}", update::CURRENT_VERSION);
                     std::process::exit(0);
@@ -337,6 +352,21 @@ async fn main() -> Result<()> {
         Command_::Pull => streaming_command(cli).await,
         Command_::List if cli.all => streaming_command(cli).await,
         Command_::Backends | Command_::Generate => streaming_command(cli).await,
+        Command_::Queue => {
+            let socket = cli.connect_path()?;
+            queue_cli::run(
+                &socket,
+                queue_cli::Options {
+                    positional: cli.positional,
+                    all: cli.all,
+                    json: cli.json,
+                    yes: cli.yes,
+                    from: cli.from,
+                    model: cli.model,
+                },
+            )
+            .await
+        }
         Command_::Start | Command_::Stop | Command_::Restart | Command_::Logs => {
             let result = lifecycle(&cli).await;
             update::print_notice_if_stale().await;
@@ -1053,6 +1083,12 @@ fn print_response(command: Command_, response: &Value, can: Option<&str>) -> Res
                     .and_then(Value::as_u64)
                     .unwrap_or_default()
             );
+            if let (Some(active), Some(queued)) = (
+                response.get("active_jobs").and_then(Value::as_u64),
+                response.get("queued_jobs").and_then(Value::as_u64),
+            ) {
+                println!("queue      {active} running, {queued} waiting");
+            }
             if let Some(expires_in) = response.get("pair_expires_in").and_then(Value::as_u64) {
                 println!("pairing    open, expires in {expires_in}s");
             }

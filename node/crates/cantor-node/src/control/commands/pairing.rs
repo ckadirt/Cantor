@@ -23,6 +23,8 @@ pub(super) fn status(state: &mut NodeState, v: u8, id: String) -> Result<Respons
         relay_url: state.config.relay_url.clone(),
         connected: state.connected,
         pairings: state.config.pairings.len(),
+        active_jobs: state.library.active_count()?,
+        queued_jobs: state.library.queued_count()?,
         pair_expires_in: state
             .pair_offer
             .as_ref()
@@ -72,11 +74,7 @@ pub(super) fn revoke(
 ) -> Result<Response> {
     reject_version(v, &id)?;
     let key = state.config.resolve_pairing(&selector)?;
-    let principal_id = bs58::decode(&key)
-        .into_vec()
-        .ok()
-        .and_then(|decoded| <[u8; 32]>::try_from(decoded).ok())
-        .map(|key_bytes| PrincipalId::from_client_public_key(&key_bytes));
+    let principal_id = PrincipalId::from_pairing_key(&key);
     let config_path = state.config_path.clone();
     if !state.config.revoke_key(&config_path, &key)? {
         bail!("no pairing matches {selector}");

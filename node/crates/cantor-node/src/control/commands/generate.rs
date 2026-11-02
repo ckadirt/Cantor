@@ -166,6 +166,7 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
                 )
                 .await;
             }
+            cantor_proto::JobState::Cancelled => bail!("job {} was cancelled", job.id),
             cantor_proto::JobState::Failed => {
                 bail!(
                     "job {} failed: {}",
@@ -250,7 +251,7 @@ async fn upload_local_file(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::path::Path;
     use std::time::Duration;
 
@@ -268,7 +269,10 @@ mod tests {
     use crate::secure::TransportIdentity;
     use crate::store::Store;
 
-    fn state(path: &Path, installed: &[(&str, &str)]) -> SharedState {
+    pub(in crate::control::commands) fn state(
+        path: &Path,
+        installed: &[(&str, &str)],
+    ) -> SharedState {
         let paths = NodePaths::resolve(Some(path.join("cantor"))).expect("paths");
         paths.prepare_directory().expect("directory");
         let (mut config, _) =
@@ -338,6 +342,49 @@ mod tests {
             .await
             .expect_err("generation must fail")
             .to_string()
+    }
+
+    /// A cancel from `cantor queue` must end the command that is following it.
+    #[tokio::test]
+    async fn following_a_job_ends_when_it_is_cancelled() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = state(temporary.path(), &[("adapter", "fast")]);
+        let (writer, reader) = tokio::io::duplex(4096);
+        let follower = {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let mut writer = writer;
+                run_generate(
+                    &json!({"caption": "doomed"}),
+                    &state,
+                    &mut writer,
+                    "request",
+                )
+                .await
+            })
+        };
+        let mut lines = BufReader::new(reader).lines();
+        let generating = next_frame(&mut lines).await;
+        let job_id = generating["job_id"].as_str().expect("job id");
+        state
+            .lock()
+            .expect("state")
+            .library
+            .control_job(
+                PrincipalId::local_operator(),
+                job_id,
+                None,
+                crate::library::JobControl::Cancel,
+            )
+            .expect("cancel");
+        tokio::spawn(async move { while let Ok(Some(_)) = lines.next_line().await {} });
+
+        let error = tokio::time::timeout(Duration::from_secs(5), follower)
+            .await
+            .expect("the follower must not hang")
+            .expect("task")
+            .expect_err("a cancelled job is not a success");
+        assert!(error.to_string().contains("was cancelled"));
     }
 
     #[tokio::test]

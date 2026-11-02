@@ -9,6 +9,7 @@ mod backends;
 mod generate;
 mod models;
 mod pairing;
+mod queue;
 
 pub(in crate::control) async fn stream_long_request<W: tokio::io::AsyncWrite + Unpin>(
     line: &str,
@@ -44,6 +45,8 @@ pub(in crate::control) async fn stream_long_request<W: tokio::io::AsyncWrite + U
             models::run_pull(&selector, state, events, writer, &id).await
         }
         "generate" => generate::run_generate(&request, state, writer, &id).await,
+        "queue" => queue::run_list(&request, state, writer, &id).await,
+        "queue-cancel" => queue::run_cancel(&request, state, events, writer, &id).await,
         "backends" => async {
             if let Some(value) = request.get("keep_loaded").filter(|v| !v.is_null()) {
                 let keep = value

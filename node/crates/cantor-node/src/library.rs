@@ -7,6 +7,7 @@
 mod artifacts;
 mod durable_fs;
 mod jobs;
+mod queue;
 mod recovery;
 mod rows;
 mod schema;
@@ -34,6 +35,7 @@ use self::jobs::MAX_ATTEMPTS;
 pub use self::jobs::{
     ControlResult, FinishResult, ForgetResult, JobControl, Submission, SubmitResult, WorkItem,
 };
+pub use self::queue::QueuedJob;
 #[allow(unused_imports)]
 pub use self::songs::{
     ChangePage, ChangePageResult, MutationResult, PresenceMutation, SongPage, SongPageResult,

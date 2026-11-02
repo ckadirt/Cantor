@@ -33,7 +33,7 @@ sha2 = "0.10.9"
 symphonia = { version = "0.6.1", default-features = false, features = ["aac", "adpcm", "aiff", "alac", "caf", "flac", "isomp4", "mkv", "mp3", "ogg", "pcm", "vorbis", "wav"] }
 snow = "0.10.0"
 tempfile = "3.27.0"
-time = { version = "0.3.44", features = ["formatting"] }
+time = { version = "0.3.44", features = ["formatting", "parsing"] }
 tokio = { version = "1.53.0", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots", "url"] }
 toml = "1.1.3"

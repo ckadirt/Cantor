@@ -54,6 +54,8 @@ pub enum Response {
         relay_url: String,
         connected: bool,
         pairings: usize,
+        active_jobs: u32,
+        queued_jobs: u32,
         pair_expires_in: Option<u64>,
     },
     #[serde(rename = "pair")]

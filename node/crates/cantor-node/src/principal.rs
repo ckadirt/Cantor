@@ -22,6 +22,12 @@ impl PrincipalId {
         Self(Sha256::digest(public_key).into())
     }
 
+    /// The principal of a pairing record's base58 client key.
+    pub(crate) fn from_pairing_key(key: &str) -> Option<Self> {
+        let bytes = bs58::decode(key).into_vec().ok()?;
+        Some(Self::from_client_public_key(&bytes.try_into().ok()?))
+    }
+
     pub fn as_bytes(&self) -> &[u8; PRINCIPAL_BYTES] {
         &self.0
     }
