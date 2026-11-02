@@ -19,6 +19,9 @@ use crate::runtime::NodeState;
 /// needs this mutex to drain them.
 pub const ACT_CHUNK: usize = 25;
 
+/// An empty or tiny prefix matches anything, so it is never allowed to.
+const MIN_PREFIX: usize = 4;
+
 /// Which jobs a command means. Either named, or filtered; never both.
 #[derive(Clone, Debug, Default)]
 pub struct Selection {
@@ -391,6 +394,9 @@ fn act_on(state: &mut NodeState, act: Act, id: &str) -> Result<ActResult> {
 
 fn find(items: &[QueueItem], name: &str) -> Result<usize> {
     let name = name.to_ascii_lowercase();
+    if name.len() < MIN_PREFIX {
+        bail!("{name:?} is too short to name a job; use at least {MIN_PREFIX} characters");
+    }
     let mut matches = items
         .iter()
         .enumerate()

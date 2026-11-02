@@ -64,7 +64,7 @@ export default defineConfig({
               label: 'Phones',
               items: ['pair', 'pairings', 'revoke', 'rename'].map((c) => `docs/node/${c}`),
             },
-            { label: 'Making', items: ['docs/node/generate'] },
+            { label: 'Making', items: ['docs/node/generate', 'docs/node/queue'] },
             { label: 'Updating', items: ['docs/node/upgrade'] },
             { slug: 'docs/node/files' },
           ],

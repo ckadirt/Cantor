@@ -21,6 +21,7 @@ The caption is the song you are asking for. Everything else is optional.
 | `--seed N` | The same seed and caption make the same song again |
 | `--steps N`, `--cfg N` | The model's own sampling controls; leave them for the model's defaults |
 | `--detach` | Queue it and return at once |
+| `--next` | Put it at the front of the queue |
 
 ## What it does
 

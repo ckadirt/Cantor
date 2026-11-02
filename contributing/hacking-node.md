@@ -81,10 +81,28 @@ rejection, temp files, fsync, and rename. Reuse it rather than calling
 rejects non-canonical (uppercase) hex at every durable boundary. The operator
 queue is the one named exception, and it stays on the local socket.
 
+**The queue's order is `jobs.priority`, and nothing else.** A new job arrives at
+0, ties fall to age, and an app has no way to set it. `jobs::operator::reorder`
+is a pure function that leaves strict gaps, because a tie would let age undo a
+move. Reordering bumps no `revision`, since `JobView` carries no position; it
+nudges apps with `node.info` instead, and they re-read `queue.position`.
+
+**A hold is `paused` with `stop_reason='hold'`, not a state.** An older app reads
+an unknown `JobState` as running. `control_job` refuses an app's resume on it,
+`JobControl::Release` is the owner's way out, and the router never builds
+`Hold`, `Release` or `OwnerCancel`. Writers that finish a stop keep an owner's
+reason (`finish_paused`, `finish_cancelled`, recovery), because a stop already
+under way may name a lesser one.
+
+**`claim_next` must never stay stuck on a job.** It sets aside a job whose
+accepted request cannot be trusted, failing it and moving on. The request row
+and `request.json` may differ in one field: a caption `record_heard_caption`
+filled in.
+
 **Bulk work lets go of the mutex.** The relay needs the state mutex to drain the
 event channel, and most publishers `try_send`. Holding it across a large batch
 freezes the node and loses updates, so work in chunks and publish between them
-(`jobs::operator::CANCEL_CHUNK`).
+(`jobs::operator::ACT_CHUNK`).
 
 ## Recipes
 

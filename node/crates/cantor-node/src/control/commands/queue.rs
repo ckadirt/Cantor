@@ -412,7 +412,7 @@ mod tests {
 
         let mut output = Vec::new();
         let error = run_list(
-            &json!({"v": 1, "t": "queue", "jobs": ["zz"]}),
+            &json!({"v": 1, "t": "queue", "jobs": ["zzzz"]}),
             &state,
             &mut output,
             "1",
@@ -420,6 +420,16 @@ mod tests {
         .await
         .expect_err("no such job");
         assert!(error.to_string().contains("no job in the queue"));
+
+        let error = run_list(
+            &json!({"v": 1, "t": "queue", "jobs": [""]}),
+            &state,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect_err("an empty name matches nothing, even with one job queued");
+        assert!(error.to_string().contains("too short"));
 
         let error = run_list(
             &json!({"v": 1, "t": "queue", "jobs": [&id[..8]], "all": true}),

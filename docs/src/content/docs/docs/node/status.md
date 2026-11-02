@@ -18,6 +18,7 @@ key        8JY4wq6V2sN…
 relay      wss://relay.cantorfm.com
 relay link connected
 pairings   2
+queue      1 running, 3 waiting
 ```
 
 - **name** is what your phone shows for this node. Change it with
@@ -27,6 +28,9 @@ pairings   2
 - **relay link** is `connected` when phones can reach the node right now.
 - **pairings** is how many phones it trusts; [`cantor pairings`](/docs/node/pairings/)
   lists them.
+
+- **queue** counts the songs on the node, and says when it is paused or closed.
+  [`cantor queue`](/docs/node/queue/) shows them.
 
 While a pairing code is open, one more line says how long it has left:
 

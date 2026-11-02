@@ -6486,6 +6486,7 @@ export function drawJobMark(
       pending.job,
       pending.phase,
       pending.nodeLabels[0] ?? pending.backend.petname,
+      pending.work.ahead,
     );
     const line = `${label}${jobProgressLabel(model.progress, pending.phase)}`;
     request.paints.muted.setAlphaf(alpha.row * quiet);
