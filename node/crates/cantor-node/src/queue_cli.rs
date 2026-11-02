@@ -260,7 +260,7 @@ pub(crate) async fn fetch(socket: &Path, selector: &Value) -> Result<(Vec<Value>
 }
 
 #[derive(Default)]
-struct Tally {
+pub(crate) struct Tally {
     done: u32,
     stopping: u32,
     finishing: u32,
@@ -268,7 +268,7 @@ struct Tally {
 }
 
 impl Tally {
-    fn count(&mut self, outcome: &str) {
+    pub(crate) fn count(&mut self, outcome: &str) {
         match outcome {
             "cancelled" | "held" | "released" => self.done += 1,
             "stopping" => self.stopping += 1,
@@ -277,7 +277,7 @@ impl Tally {
         }
     }
 
-    fn summary(&self, action: &str) -> String {
+    pub(crate) fn summary(&self, action: &str) -> String {
         let mut parts = vec![format!("{} {}", self.done, past_tense(action))];
         let others = [
             (self.stopping, "stopping"),

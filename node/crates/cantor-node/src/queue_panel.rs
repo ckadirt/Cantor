@@ -17,7 +17,7 @@ use time::OffsetDateTime;
 
 use crate::control;
 use crate::menu::RawMode;
-use crate::queue_cli::{banner, fetch, row, short, string};
+use crate::queue_cli::{Tally, banner, fetch, row, short, string};
 
 const REFRESH: Duration = Duration::from_secs(2);
 const HELP: &str = "↑/↓ move  space mark  n next  l last  J/K shift  ! now  h hold  r release  d cancel  p pause  q quit";
@@ -263,9 +263,15 @@ async fn perform(socket: &Path, op: &Op) -> Result<String> {
     let mut request = request;
     request["v"] = json!(1);
     request["id"] = json!("1");
-    control::request_streaming(socket, &request, |_| {}).await?;
+    let mut tally = Tally::default();
+    control::request_streaming(socket, &request, |frame| {
+        if frame.get("t").and_then(Value::as_str) == Some("queue-acted") {
+            tally.count(string(frame, "outcome"));
+        }
+    })
+    .await?;
     Ok(match op {
-        Op::Act(action, ids) => format!("{action}: {} job(s)", ids.len()),
+        Op::Act(action, _) => tally.summary(action),
         Op::Place { job, place, .. } => format!("{} moved {place}", short(job)),
         Op::Now(job) => format!("{} runs next", short(job)),
         Op::Gate(gate) => format!("queue {gate}"),

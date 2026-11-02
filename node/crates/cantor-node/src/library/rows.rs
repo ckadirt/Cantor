@@ -1,7 +1,7 @@
 //! Stable SQLite row and protocol-enum codecs used by library queries.
 
 use anyhow::{Result, bail};
-use cantor_proto::{ErrorCode, JobError, JobProgress, JobView};
+use cantor_proto::{ErrorCode, JobError, JobProgress, JobState, JobView};
 use serde::{Deserialize, Serialize};
 
 pub(super) const JOB_VIEW_COLUMNS: &str = "id,revision,state,stage,progress_completed,progress_total,progress_unit,\
@@ -10,6 +10,19 @@ pub(super) const JOB_VIEW_COLUMNS: &str = "id,revision,state,stage,progress_comp
 /// `stop_reason` values that say the node's owner acted, not the job's client.
 pub(super) const STOP_HOLD: &str = "hold";
 pub(super) const STOP_OWNER_CANCEL: &str = "owner_cancel";
+
+/// Whether the owner's stop took. A job can finish before a stop reaches it, and
+/// keeps the reason it was given; it was not held, it completed.
+fn stopped_by_owner(state: JobState, reason: Option<String>) -> bool {
+    matches!(
+        (state, reason.as_deref()),
+        (JobState::Paused | JobState::PauseRequested, Some(STOP_HOLD))
+            | (
+                JobState::Cancelled | JobState::CancelRequested,
+                Some(STOP_OWNER_CANCEL)
+            )
+    )
+}
 
 /// Just the caption out of a stored request.
 ///
@@ -72,9 +85,7 @@ pub(super) fn job_from_row(row: &rusqlite::Row<'_>, offset: usize) -> rusqlite::
         progress,
         model: row.get(offset + 7)?,
         caption,
-        by_node_owner: row
-            .get::<_, Option<String>>(offset + 16)?
-            .is_some_and(|reason| matches!(reason.as_str(), STOP_HOLD | STOP_OWNER_CANCEL))
+        by_node_owner: stopped_by_owner(state, row.get::<_, Option<String>>(offset + 16)?)
             .then_some(true),
         created_at: row.get(offset + 8)?,
         updated_at: row.get(offset + 9)?,
@@ -100,4 +111,25 @@ fn enum_from_sql<T: serde::de::DeserializeOwned>(
             Box::new(error),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use cantor_proto::JobState;
+
+    use super::{STOP_HOLD, STOP_OWNER_CANCEL, stopped_by_owner};
+
+    #[test]
+    fn only_a_stop_that_took_says_the_owner_acted() {
+        let hold = || Some(STOP_HOLD.to_owned());
+        let cancel = || Some(STOP_OWNER_CANCEL.to_owned());
+        assert!(stopped_by_owner(JobState::Paused, hold()));
+        assert!(stopped_by_owner(JobState::Cancelled, cancel()));
+        // It finished before the hold reached it.
+        assert!(!stopped_by_owner(JobState::Completed, hold()));
+        assert!(!stopped_by_owner(
+            JobState::Paused,
+            Some("pause".to_owned())
+        ));
+    }
 }
