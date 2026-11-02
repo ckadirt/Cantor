@@ -35,11 +35,11 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
     };
     match action {
         None => {
-            let jobs = fetch(socket, &json!({})).await?;
+            let (jobs, facts) = fetch(socket, &json!({})).await?;
             if options.json {
                 println!("{}", serde_json::to_string_pretty(&jobs)?);
             } else {
-                print!("{}", render(&jobs, OffsetDateTime::now_utc()));
+                print!("{}", render(&jobs, &facts, OffsetDateTime::now_utc()));
             }
             Ok(())
         }
@@ -47,7 +47,7 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
             if jobs.is_empty() {
                 bail!("queue show needs a job, like `cantor queue show 3f2a91c0`");
             }
-            let found = fetch(socket, &json!({"jobs": jobs})).await?;
+            let (found, _) = fetch(socket, &json!({"jobs": jobs})).await?;
             if options.json {
                 println!("{}", serde_json::to_string_pretty(&found)?);
             } else {
@@ -75,6 +75,13 @@ pub async fn run(socket: &Path, options: Options) -> Result<()> {
             }
         }
         Some("clear") => clear(socket, &options).await,
+        Some("now") => {
+            let [job] = jobs else {
+                bail!("queue now needs one job");
+            };
+            run_now(socket, job).await
+        }
+        Some(gate @ ("pause" | "resume" | "close" | "open")) => set_gate(socket, gate).await,
         Some(other) => bail!("queue has no command {other}; see `cantor --help`"),
     }
 }
@@ -88,7 +95,7 @@ async fn act(socket: &Path, action: &str, jobs: &[String], options: &Options) ->
     }
     let selector = json!({"jobs": jobs, "all": options.all,
                           "from": options.from, "model": options.model});
-    let chosen = fetch(socket, &selector).await?;
+    let (chosen, _) = fetch(socket, &selector).await?;
     if chosen.is_empty() {
         println!("nothing to {action}");
         return Ok(());
@@ -147,6 +154,36 @@ async fn move_job(socket: &Path, job: &str, place: &str, other: Option<&str>) ->
     Ok(())
 }
 
+async fn run_now(socket: &Path, job: &str) -> Result<()> {
+    let request = json!({"v": 1, "id": "1", "t": "queue-now", "job": job});
+    let answer = control::request_streaming(socket, &request, |_| {}).await?;
+    let moved = answer.get("job").cloned().unwrap_or_default();
+    match answer.get("displaced").and_then(Value::as_str) {
+        Some(displaced) => println!(
+            "{} runs next. {} stops at its next safe point and goes back in right after it",
+            short(string(&moved, "id")),
+            short(displaced)
+        ),
+        None => println!("{} runs next", short(string(&moved, "id"))),
+    }
+    Ok(())
+}
+
+async fn set_gate(socket: &Path, gate: &str) -> Result<()> {
+    let request = json!({"v": 1, "id": "1", "t": "queue-gate", "gate": gate});
+    control::request_streaming(socket, &request, |_| {}).await?;
+    println!(
+        "{}",
+        match gate {
+            "pause" => "paused: what is running finishes, nothing new starts",
+            "resume" => "running again",
+            "close" => "closed: new requests wait on the phones that sent them",
+            _ => "open: apps can send requests again",
+        }
+    );
+    Ok(())
+}
+
 async fn clear(socket: &Path, options: &Options) -> Result<()> {
     let count_request = json!({"v": 1, "id": "1", "t": "queue-clear",
                                "from": options.from, "count_only": true});
@@ -180,13 +217,14 @@ fn confirm(what: &str) -> Result<bool> {
     Ok(matches!(answer.trim(), "y" | "Y" | "yes"))
 }
 
-async fn fetch(socket: &Path, selector: &Value) -> Result<Vec<Value>> {
+/// The jobs, and the closing frame's facts about the queue as a whole.
+async fn fetch(socket: &Path, selector: &Value) -> Result<(Vec<Value>, Value)> {
     let mut request = selector.clone();
     request["v"] = json!(1);
     request["id"] = json!("1");
     request["t"] = json!("queue");
     let mut jobs = Vec::new();
-    control::request_streaming(socket, &request, |frame| {
+    let facts = control::request_streaming(socket, &request, |frame| {
         if frame.get("t").and_then(Value::as_str) == Some("queue-job")
             && let Some(job) = frame.get("job")
         {
@@ -195,7 +233,7 @@ async fn fetch(socket: &Path, selector: &Value) -> Result<Vec<Value>> {
     })
     .await
     .context("could not read the queue")?;
-    Ok(jobs)
+    Ok((jobs, facts))
 }
 
 #[derive(Default)]
@@ -253,9 +291,24 @@ fn outcome_words(outcome: &str) -> &'static str {
     }
 }
 
-fn render(jobs: &[Value], now: OffsetDateTime) -> String {
+/// Whole-queue state goes first: it explains everything below it.
+fn banner(facts: &Value) -> String {
+    let flag = |key: &str| facts.get(key).and_then(Value::as_bool) == Some(true);
+    let mut output = String::new();
+    if flag("paused") {
+        output.push_str("paused: nothing new starts until `cantor queue resume`\n");
+    }
+    if flag("closed") {
+        output.push_str("closed to apps: their requests wait until `cantor queue open`\n");
+    }
+    output
+}
+
+fn render(jobs: &[Value], facts: &Value, now: OffsetDateTime) -> String {
+    let mut output = banner(facts);
     if jobs.is_empty() {
-        return "the queue is empty\n".to_owned();
+        output.push_str("the queue is empty\n");
+        return output;
     }
     let in_state = |wanted: &[&str]| {
         jobs.iter()
@@ -271,12 +324,19 @@ fn render(jobs: &[Value], now: OffsetDateTime) -> String {
         .filter(|job| !matches!(string(job, "state"), "queued" | "paused"))
         .collect::<Vec<_>>();
 
-    let mut output = String::new();
     for job in &active {
         output.push_str(&row(&activity(job), job, now));
     }
     if !queued.is_empty() {
-        output.push_str(&format!("\nwaiting ({})\n", queued.len()));
+        let left = facts
+            .get("job_seconds")
+            .and_then(Value::as_u64)
+            .map(|seconds| {
+                let total = seconds.saturating_mul(queued.len() as u64);
+                format!(", about {}", rough_duration(total))
+            })
+            .unwrap_or_default();
+        output.push_str(&format!("\nwaiting ({}{left})\n", queued.len()));
         for job in &queued {
             let position = job.get("position").and_then(Value::as_u64).unwrap_or(0);
             output.push_str(&row(&position.to_string(), job, now));
@@ -351,6 +411,14 @@ fn age(created_at: &str, now: OffsetDateTime) -> String {
     }
 }
 
+fn rough_duration(seconds: u64) -> String {
+    match seconds {
+        0..3_600 => format!("{}m", (seconds / 60).max(1)),
+        3_600..86_400 => format!("{}h {}m", seconds / 3_600, seconds % 3_600 / 60),
+        _ => format!("{}d {}h", seconds / 86_400, seconds % 86_400 / 3_600),
+    }
+}
+
 fn short(id: &str) -> &str {
     id.get(..8).unwrap_or(id)
 }
@@ -400,13 +468,15 @@ mod tests {
                    "model": "levo:2", "created_at": "2026-10-30T12:00:00Z",
                    "caption": "kept"}),
         ];
-        let text = render(&jobs, now());
+        let facts = json!({"paused": true, "closed": false, "job_seconds": 90});
+        let text = render(&jobs, &facts, now());
         let lines = text.lines().collect::<Vec<_>>();
-        assert!(lines[0].contains("diffuse 12/50"), "{text}");
-        assert!(lines[0].contains("aaaaaaaa"), "{text}");
-        assert!(lines[0].contains("2m"), "{text}");
-        assert!(lines[0].contains("a slow blues"), "{text}");
-        assert!(text.contains("waiting (1)"), "{text}");
+        assert!(lines[0].starts_with("paused:"), "{text}");
+        assert!(lines[1].contains("diffuse 12/50"), "{text}");
+        assert!(lines[1].contains("aaaaaaaa"), "{text}");
+        assert!(lines[1].contains("2m"), "{text}");
+        assert!(lines[1].contains("a slow blues"), "{text}");
+        assert!(text.contains("waiting (1, about 1m)"), "{text}");
         assert!(text.contains("2h"), "{text}");
         assert!(text.contains("paused (1)"), "{text}");
         assert!(text.contains("held (1)"), "{text}");
@@ -417,7 +487,7 @@ mod tests {
 
     #[test]
     fn an_empty_queue_says_so() {
-        assert_eq!(render(&[], now()), "the queue is empty\n");
+        assert_eq!(render(&[], &json!({}), now()), "the queue is empty\n");
     }
 
     #[test]

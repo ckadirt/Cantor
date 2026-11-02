@@ -56,6 +56,8 @@ pub enum Response {
         pairings: usize,
         active_jobs: u32,
         queued_jobs: u32,
+        queue_paused: bool,
+        queue_closed: bool,
         pair_expires_in: Option<u64>,
     },
     #[serde(rename = "pair")]

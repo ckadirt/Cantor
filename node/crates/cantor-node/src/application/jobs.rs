@@ -174,6 +174,13 @@ pub(super) fn create(
             true,
         )),
         SubmitResult::SourceUnavailable => Ok(invalid_field(id, "audio.source")),
+        // Retryable: the request stays in the phone's outbox until the node opens.
+        SubmitResult::Closed => Ok(NodeMessage::error(
+            Some(id),
+            ErrorCode::TemporarilyUnavailable,
+            "The node's owner is not taking requests just now.",
+            true,
+        )),
     }
 }
 

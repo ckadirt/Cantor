@@ -175,6 +175,49 @@ pub fn place(state: &mut NodeState, job: &str, placement: &Placement) -> Result<
         .context("the moved job disappeared")
 }
 
+/// Run this job now. The running job, if any, checkpoints and goes back in the
+/// queue directly below it. Returns the job displaced, which may yet finish
+/// first: a job saving its song is past stopping.
+pub fn run_now(state: &mut NodeState, job: &str) -> Result<(QueueItem, Option<String>)> {
+    let items = queue(state)?;
+    let wanted = items[find(&items, job)?].job.id.clone();
+    let order = state.library.queue_order()?;
+    if !order.iter().any(|(id, _)| *id == wanted) {
+        bail!("only a waiting job can run now");
+    }
+    let top = order
+        .iter()
+        .filter(|(id, _)| *id != wanted)
+        .map(|(_, priority)| *priority)
+        .max()
+        .unwrap_or(0);
+    let mut changes = vec![(wanted.clone(), top + 2)];
+    let running = items
+        .iter()
+        .find(|item| matches!(item.job.state, JobState::Preparing | JobState::Running))
+        .map(|item| item.job.id.clone());
+    let displaced = running.filter(|id| {
+        state
+            .active_job
+            .as_ref()
+            .is_some_and(|active| active.job_id == *id)
+    });
+    if let Some(id) = &displaced {
+        changes.push((id.clone(), top + 1));
+    }
+    state.library.set_queue_order(&changes)?;
+    if let Some(active) = &state.active_job
+        && displaced.is_some()
+    {
+        request_stop(&active.signal, StopReason::Yield);
+    }
+    let moved = queue(state)?
+        .into_iter()
+        .find(|item| item.job.id == wanted)
+        .context("the job disappeared")?;
+    Ok((moved, displaced))
+}
+
 /// Jobs `queue clear` would erase, optionally only one pairing's.
 pub fn stopped(state: &NodeState, from: Option<&str>) -> Result<Vec<QueueItem>> {
     let from = from

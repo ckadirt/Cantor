@@ -52,15 +52,21 @@ pub(super) async fn run_list<W: tokio::io::AsyncWrite + Unpin>(
         from: text(request, "from"),
         model: text(request, "model"),
     };
-    let items = {
+    let (items, paused, closed, job_seconds) = {
         let locked = state
             .lock()
             .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
-        if selection.is_empty() {
+        let items = if selection.is_empty() {
             operator::queue(&locked)?
         } else {
             operator::select(&locked, &selection)?
-        }
+        };
+        (
+            items,
+            locked.config.jobs.paused,
+            locked.config.jobs.closed,
+            locked.library.typical_job_seconds()?,
+        )
     };
     for item in &items {
         write_line(
@@ -71,7 +77,8 @@ pub(super) async fn run_list<W: tokio::io::AsyncWrite + Unpin>(
     }
     write_line(
         writer,
-        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "count": items.len()}),
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "count": items.len(),
+                "paused": paused, "closed": closed, "job_seconds": job_seconds}),
     )
     .await
 }
@@ -151,6 +158,64 @@ pub(super) async fn run_place<W: tokio::io::AsyncWrite + Unpin>(
     write_line(
         writer,
         &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "job": item}),
+    )
+    .await
+}
+
+pub(super) async fn run_now<W: tokio::io::AsyncWrite + Unpin>(
+    request: &Value,
+    state: &SharedState,
+    writer: &mut W,
+    id: &str,
+) -> Result<()> {
+    version(request, id)?;
+    let job = text(request, "job").context("queue-now needs a job")?;
+    let (item, displaced) = {
+        let mut locked = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+        let moved = operator::run_now(&mut locked, &job)?;
+        locked.job_notify.notify_one();
+        moved
+    };
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "job": item, "displaced": displaced}),
+    )
+    .await
+}
+
+/// `queue pause`, `resume`, `close`, `open`. The daemon owns `node.toml`.
+pub(super) async fn run_gate<W: tokio::io::AsyncWrite + Unpin>(
+    request: &Value,
+    state: &SharedState,
+    events: &mpsc::Sender<NodeEvent>,
+    writer: &mut W,
+    id: &str,
+) -> Result<()> {
+    version(request, id)?;
+    let (paused, closed) = match text(request, "gate").as_deref() {
+        Some("pause") => (Some(true), None),
+        Some("resume") => (Some(false), None),
+        Some("close") => (None, Some(true)),
+        Some("open") => (None, Some(false)),
+        other => bail!("unknown queue gate {other:?}"),
+    };
+    let (paused, closed) = {
+        let mut locked = state
+            .lock()
+            .map_err(|_| anyhow::anyhow!("node state is poisoned"))?;
+        let path = locked.config_path.clone();
+        locked.config.set_queue_gates(&path, paused, closed)?;
+        locked.job_notify.notify_one();
+        (locked.config.jobs.paused, locked.config.jobs.closed)
+    };
+    let _ = events
+        .send_timeout(NodeEvent::NodeInfoChanged, EVENT_WAIT)
+        .await;
+    write_line(
+        writer,
+        &json!({"v": CONTROL_VERSION, "id": id, "t": "ok", "paused": paused, "closed": closed}),
     )
     .await
 }
@@ -235,7 +300,7 @@ mod tests {
 
     use super::super::generate::run_generate;
     use super::super::generate::tests::state as node_state;
-    use super::{run_act, run_clear, run_list, run_place};
+    use super::{run_act, run_clear, run_gate, run_list, run_now, run_place};
     use crate::application::admit_job;
     use crate::library::{ControlResult, JobControl, Submission, SubmitResult};
     use crate::principal::PrincipalId;
@@ -579,6 +644,146 @@ mod tests {
         let job = |id: &str| locked.library.get(principal, id).unwrap().unwrap();
         assert_eq!(job(&owners).by_node_owner, Some(true));
         assert_eq!(job(&apps).by_node_owner, None);
+    }
+
+    async fn gate(state: &SharedState, gate: &str) {
+        let (events, _received) = mpsc::channel(4);
+        let mut output = Vec::new();
+        run_gate(
+            &json!({"v": 1, "t": "queue-gate", "gate": gate}),
+            state,
+            &events,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect("gate");
+    }
+
+    #[tokio::test]
+    async fn pausing_stops_claims_durably_and_resuming_starts_them() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        app_job(&state, [7; 32], "waits");
+        gate(&state, "pause").await;
+
+        let path = state.lock().expect("state").config_path.clone();
+        let saved = std::fs::read_to_string(&path).expect("config");
+        assert!(saved.contains("paused = true"), "{saved}");
+
+        let (events, mut received) = mpsc::channel(8);
+        let worker = tokio::spawn(crate::jobs::run(state.clone(), events));
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert_eq!(frames_order(&state).await, ["waits"]);
+        assert_eq!(
+            frames(json!({"v": 1, "t": "queue"}), &state).await[0]["job"]["state"],
+            "queued"
+        );
+        assert!(received.try_recv().is_err());
+
+        gate(&state, "resume").await;
+        let event = tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+            .await
+            .expect("the worker woke")
+            .expect("event");
+        assert!(matches!(event, NodeEvent::JobUpdated { .. }));
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn a_closed_node_refuses_apps_but_not_its_owner_or_a_repeat() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let principal = PrincipalId::from_client_public_key(&key);
+        const EARLIER: &str = "019c8f7e-5f2b-7a21-9ee0-8efb630bcb30";
+        const LATER: &str = "019c8f7e-5f2b-7a21-9ee0-8efb630bcb31";
+        let submission = |id: &str| Submission {
+            client_request_id: id.to_owned(),
+            model: "adapter:fast".to_owned(),
+            generation: serde_json::from_value(json!({"caption": "song"})).expect("generation"),
+        };
+        let admit = |id: &str| {
+            let mut locked = state.lock().expect("state");
+            let locked = &mut *locked;
+            let variant = Store::new(locked.config.model_root()).installed().remove(0);
+            admit_job(
+                &mut locked.library,
+                &locked.config,
+                principal,
+                &key,
+                &submission(id),
+                &variant,
+            )
+            .expect("admission")
+        };
+        assert!(matches!(admit(EARLIER), SubmitResult::Accepted(_)));
+
+        gate(&state, "close").await;
+        assert!(matches!(admit(LATER), SubmitResult::Closed));
+        assert!(matches!(admit(EARLIER), SubmitResult::Accepted(_)));
+        local_job(&state, "the owner's own").await;
+        {
+            let locked = state.lock().expect("state");
+            let info = crate::relay::static_node_info(&locked.config, &locked.library);
+            assert!(!info.load.accepting_jobs);
+            assert_eq!(info.load.unavailable_reason.as_deref(), Some("closed"));
+        }
+
+        gate(&state, "open").await;
+        assert!(matches!(admit(LATER), SubmitResult::Accepted(_)));
+    }
+
+    #[tokio::test]
+    async fn now_puts_the_job_first_and_the_running_one_straight_after_it() {
+        let temporary = tempdir().expect("temporary directory");
+        let state = node_state(temporary.path(), &[("adapter", "fast")]);
+        let key = [7; 32];
+        let running = app_job(&state, key, "running");
+        let other = app_job(&state, key, "other");
+        let wanted = app_job(&state, key, "wanted");
+        place(&state, &other, "next", None).await;
+        let (work, signal) = {
+            let mut locked = state.lock().expect("state");
+            let (work, _) = locked.library.claim_next().expect("claim").expect("work");
+            assert_eq!(work.id, other);
+            let signal = Arc::new(std::sync::atomic::AtomicU8::new(0));
+            locked.active_job = Some(ActiveJobControl {
+                job_id: work.id.clone(),
+                principal_id: work.principal_id,
+                signal: Arc::clone(&signal),
+            });
+            (work, signal)
+        };
+
+        let mut output = Vec::new();
+        run_now(
+            &json!({"v": 1, "t": "queue-now", "job": &wanted}),
+            &state,
+            &mut output,
+            "1",
+        )
+        .await
+        .expect("now");
+        assert_eq!(parse(&output)[0]["displaced"], work.id);
+        assert_eq!(
+            crate::jobs::StopReason::load(&signal),
+            crate::jobs::StopReason::Yield
+        );
+
+        // What the runner does when the signal lands.
+        let job = state
+            .lock()
+            .expect("state")
+            .library
+            .finish_shutdown(&work, None, cantor_proto::GenerationStage::Diffuse, "yield")
+            .expect("yield")
+            .expect("job");
+        assert_eq!(job.state, JobState::Queued);
+        assert_eq!(job.stage, Some(cantor_proto::GenerationStage::Diffuse));
+
+        assert_eq!(run_order(&state), ["wanted", "other", "running"]);
+        let _ = running;
     }
 
     async fn place(state: &SharedState, job: &str, place: &str, other: Option<&str>) {

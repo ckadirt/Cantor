@@ -319,7 +319,7 @@ mod tests {
             SubmitResult::Accepted(updated)
         );
         library
-            .finish_shutdown(&work, None, GenerationStage::Codes)
+            .finish_shutdown(&work, None, GenerationStage::Codes, "shutdown")
             .unwrap();
         drop(library);
         let reopened = Library::open(temporary.path()).unwrap();

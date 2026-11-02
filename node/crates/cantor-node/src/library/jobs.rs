@@ -118,6 +118,8 @@ pub enum SubmitResult {
     /// The upload the request starts from is not a committed upload of this
     /// principal. Checked inside the admission transaction, where it is pinned.
     SourceUnavailable,
+    /// The node's owner is not taking requests from apps just now.
+    Closed,
 }
 
 impl Library {
@@ -240,6 +242,17 @@ impl Library {
             updated_at: now,
             error: None,
         }))
+    }
+
+    /// Whether this principal already submitted this request.
+    pub fn knows_request(&self, principal: PrincipalId, client_request_id: &str) -> Result<bool> {
+        self.connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM jobs WHERE principal_id=?1 AND client_request_id=?2)",
+                params![principal.to_string(), client_request_id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     pub fn list(&self, principal: PrincipalId, limit: u32) -> Result<Vec<JobView>> {
@@ -866,11 +879,13 @@ impl Library {
         Ok(Some(job))
     }
 
+    /// Back in the queue with its checkpoint: for a shutdown, or to give way.
     pub fn finish_shutdown(
         &mut self,
         work: &WorkItem,
         reference: Option<&crate::checkpoints::CheckpointReference>,
         stage: GenerationStage,
+        reason: &str,
     ) -> Result<Option<JobView>> {
         let now = now_rfc3339();
         let stage = enum_text(stage)?;
@@ -880,11 +895,11 @@ impl Library {
             .transpose()?;
         let changed = self.connection.execute(
             "UPDATE jobs SET state='queued',stage=?3,active_checkpoint=COALESCE(?4,active_checkpoint),
-             checkpoint_outcome=COALESCE(?5,checkpoint_outcome),stop_reason='shutdown',
+             checkpoint_outcome=COALESCE(?5,checkpoint_outcome),stop_reason=?7,
              progress_completed=NULL,progress_total=NULL,progress_unit=NULL,
              revision=revision+1,updated_at=?6
              WHERE id=?1 AND attempt=?2 AND state IN ('preparing','running')",
-            params![work.id, work.attempt, stage, checkpoint, outcome, now],
+            params![work.id, work.attempt, stage, checkpoint, outcome, now, reason],
         )?;
         if changed != 1 {
             return Ok(None);

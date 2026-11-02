@@ -18,7 +18,7 @@ use crate::session::ClientSession;
 
 use self::carrier::RELAY_VERSION;
 use self::effects::execute_application_effects;
-use self::node_info::static_node_info;
+pub(crate) use self::node_info::static_node_info;
 
 pub use self::client::run_forever;
 

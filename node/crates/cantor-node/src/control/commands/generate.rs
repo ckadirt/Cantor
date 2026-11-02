@@ -97,6 +97,9 @@ pub(super) async fn run_generate<W: tokio::io::AsyncWrite + Unpin>(
             crate::library::SubmitResult::Conflict => {
                 bail!("the generated local submission ID conflicted")
             }
+            crate::library::SubmitResult::Closed => {
+                bail!("the node is closed, and that never applies to its owner")
+            }
             crate::library::SubmitResult::SourceUnavailable => {
                 bail!("the source is not a committed upload or song of this node's operator")
             }

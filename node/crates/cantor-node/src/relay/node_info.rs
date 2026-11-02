@@ -12,7 +12,7 @@ use crate::library::Library;
 use crate::library::MAX_UPLOAD_BYTES;
 use crate::store::Store;
 
-pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeInfo {
+pub(crate) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeInfo {
     let model_root = config.model_root();
     let catalog = capabilities::cached_catalog(&model_root);
     let installed = Store::new(&model_root).installed();
@@ -76,8 +76,12 @@ pub(super) fn static_node_info(config: &NodeConfig, library: &Library) -> NodeIn
         load: NodeLoad {
             active_jobs: library.active_count().unwrap_or(0),
             queued_jobs: library.queued_count().unwrap_or(0),
-            accepting_jobs: has_disk,
-            unavailable_reason: (!has_disk).then(|| "insufficient_disk".to_owned()),
+            accepting_jobs: has_disk && !config.jobs.closed,
+            unavailable_reason: if config.jobs.closed {
+                Some("closed".to_owned())
+            } else {
+                (!has_disk).then(|| "insufficient_disk".to_owned())
+            },
         },
         features: NodeFeatures {
             jobs_create: true,

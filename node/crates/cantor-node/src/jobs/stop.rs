@@ -12,21 +12,24 @@ const SHUTDOWN_CHECKPOINT_WAIT: Duration = Duration::from_secs(20);
 #[repr(u8)]
 pub enum StopReason {
     None = 0,
-    Shutdown = 1,
-    Pause = 2,
-    Revoked = 3,
-    Hold = 4,
-    Cancel = 5,
+    /// Give way to a job the owner wants now, and go back in the queue.
+    Yield = 1,
+    Shutdown = 2,
+    Pause = 3,
+    Revoked = 4,
+    Hold = 5,
+    Cancel = 6,
 }
 
 impl StopReason {
     pub(crate) fn load(signal: &AtomicU8) -> Self {
         match signal.load(Ordering::Acquire) {
-            1 => Self::Shutdown,
-            2 => Self::Pause,
-            3 => Self::Revoked,
-            4 => Self::Hold,
-            5 => Self::Cancel,
+            1 => Self::Yield,
+            2 => Self::Shutdown,
+            3 => Self::Pause,
+            4 => Self::Revoked,
+            5 => Self::Hold,
+            6 => Self::Cancel,
             _ => Self::None,
         }
     }
@@ -78,7 +81,13 @@ mod tests {
     fn stop_requests_escalate_but_never_downgrade() {
         let signal = AtomicU8::new(StopReason::None as u8);
 
+        request_stop(&signal, StopReason::Yield);
+        assert_eq!(StopReason::load(&signal), StopReason::Yield);
+
         request_stop(&signal, StopReason::Pause);
+        assert_eq!(StopReason::load(&signal), StopReason::Pause);
+
+        request_stop(&signal, StopReason::Yield);
         assert_eq!(StopReason::load(&signal), StopReason::Pause);
 
         request_stop(&signal, StopReason::Shutdown);

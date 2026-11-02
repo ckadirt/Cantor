@@ -7,6 +7,8 @@
 use anyhow::Result;
 use cantor_proto::JobView;
 use rusqlite::{OptionalExtension, params};
+use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 
 use super::Library;
 use super::rows::{JOB_VIEW_COLUMNS, job_from_row};
@@ -91,6 +93,25 @@ impl Library {
             .collect()
     }
 
+    /// How long a job takes here, in seconds, from what has finished lately.
+    /// `None` until there is enough to say anything honest.
+    pub fn typical_job_seconds(&self) -> Result<Option<u64>> {
+        let mut statement = self.connection.prepare(
+            "SELECT created_at,updated_at FROM jobs WHERE state='completed'
+             ORDER BY updated_at DESC LIMIT 30",
+        )?;
+        let mut finished = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .iter()
+            .filter_map(|(created, ended)| Some((seconds(created)?, seconds(ended)?)))
+            .collect::<Vec<_>>();
+        finished.reverse();
+        Ok(typical_duration(&finished))
+    }
+
     /// Who a job belongs to, whoever that is.
     pub fn job_owner(&self, id: &str) -> Result<Option<PrincipalId>> {
         let owner: Option<String> = self
@@ -102,5 +123,49 @@ impl Library {
             )
             .optional()?;
         Ok(owner.map(|owner| owner.parse()).transpose()?)
+    }
+}
+
+fn seconds(rfc3339: &str) -> Option<i64> {
+    OffsetDateTime::parse(rfc3339, &Rfc3339)
+        .ok()
+        .map(OffsetDateTime::unix_timestamp)
+}
+
+/// The median run of jobs given as `(created, finished)`, oldest first.
+///
+/// A job's start is not stored, so a duration is only known where the worker
+/// went straight from one job to the next: the job was already waiting when the
+/// one before it finished. Anything else would count idle time as work.
+fn typical_duration(finished: &[(i64, i64)]) -> Option<u64> {
+    const ENOUGH: usize = 3;
+    let mut runs = finished
+        .windows(2)
+        .filter(|pair| pair[1].0 <= pair[0].1)
+        .map(|pair| u64::try_from(pair[1].1 - pair[0].1).unwrap_or(0))
+        .filter(|seconds| *seconds > 0)
+        .collect::<Vec<_>>();
+    if runs.len() < ENOUGH {
+        return None;
+    }
+    runs.sort_unstable();
+    Some(runs[runs.len() / 2])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::typical_duration;
+
+    #[test]
+    fn a_duration_counts_only_jobs_that_were_already_waiting() {
+        // Three back-to-back runs of 100, 100, 300; then an hour idle, which
+        // must not count, because the last job arrived after it.
+        let finished = [(0, 50), (10, 150), (20, 250), (30, 550), (4_000, 4_100)];
+        assert_eq!(typical_duration(&finished), Some(100));
+    }
+
+    #[test]
+    fn too_little_history_says_nothing() {
+        assert_eq!(typical_duration(&[(0, 50), (10, 150), (20, 250)]), None);
     }
 }

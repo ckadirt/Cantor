@@ -48,6 +48,14 @@ pub(crate) fn admit_job(
     ) {
         bail!("invalid audio prompt: {field}");
     }
+    // A closed node still answers a submission it already took, and its owner
+    // still has the run of it.
+    if config.jobs.closed
+        && principal_id != PrincipalId::local_operator()
+        && !library.knows_request(principal_id, &submission.client_request_id)?
+    {
+        return Ok(SubmitResult::Closed);
+    }
     let plan = provisional_plan(submission, variant, &config.model_root());
     library.submit(
         principal_id,

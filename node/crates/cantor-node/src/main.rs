@@ -72,6 +72,9 @@ Usage:
   cantor queue     cancel <job>... | --all | --from <petname|local> | --model <model> [--yes]
   cantor queue     hold|release <job>... | --all | --from <petname|local> | --model <model>
   cantor queue     next|last <job>
+  cantor queue     now <job>       # checkpoint what is running and run this
+  cantor queue     pause|resume    # stop or restart the worker; what runs finishes
+  cantor queue     close|open      # refuse or accept requests from apps
   cantor queue     move <job> --before <other> | --after <other>
   cantor queue     clear [--from <petname|local>] [--yes]  # forget failed and cancelled jobs
   cantor upgrade   [--check] [--no-engines]
@@ -1102,7 +1105,14 @@ fn print_response(command: Command_, response: &Value, can: Option<&str>) -> Res
                 response.get("active_jobs").and_then(Value::as_u64),
                 response.get("queued_jobs").and_then(Value::as_u64),
             ) {
-                println!("queue      {active} running, {queued} waiting");
+                let flag = |key: &str| response.get(key).and_then(Value::as_bool) == Some(true);
+                let paused = if flag("queue_paused") { ", paused" } else { "" };
+                let closed = if flag("queue_closed") {
+                    ", closed to apps"
+                } else {
+                    ""
+                };
+                println!("queue      {active} running, {queued} waiting{paused}{closed}");
             }
             if let Some(expires_in) = response.get("pair_expires_in").and_then(Value::as_u64) {
                 println!("pairing    open, expires in {expires_in}s");

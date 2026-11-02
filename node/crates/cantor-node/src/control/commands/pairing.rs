@@ -25,6 +25,8 @@ pub(super) fn status(state: &mut NodeState, v: u8, id: String) -> Result<Respons
         pairings: state.config.pairings.len(),
         active_jobs: state.library.active_count()?,
         queued_jobs: state.library.queued_count()?,
+        queue_paused: state.config.jobs.paused,
+        queue_closed: state.config.jobs.closed,
         pair_expires_in: state
             .pair_offer
             .as_ref()

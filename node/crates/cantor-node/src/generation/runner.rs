@@ -346,6 +346,7 @@ fn run_generation(
                         if matches!(
                             StopReason::load(signal),
                             StopReason::Pause
+                                | StopReason::Yield
                                 | StopReason::Hold
                                 | StopReason::Revoked
                                 | StopReason::Shutdown
@@ -541,9 +542,18 @@ pub(crate) fn settle_standing_stop(
                 },
             )
             .map_err(WorkerFailure::from_internal)?,
-        StopReason::Shutdown => locked
+        StopReason::Shutdown | StopReason::Yield => locked
             .library
-            .finish_shutdown(work, reference, checkpoints::protocol_stage(stage))
+            .finish_shutdown(
+                work,
+                reference,
+                checkpoints::protocol_stage(stage),
+                if reason == StopReason::Yield {
+                    "yield"
+                } else {
+                    "shutdown"
+                },
+            )
             .map_err(WorkerFailure::from_internal)?,
     };
     if let Some(job) = job {

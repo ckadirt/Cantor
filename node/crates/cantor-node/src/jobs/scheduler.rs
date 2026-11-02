@@ -38,6 +38,8 @@ pub async fn run(state: SharedState, events: mpsc::Sender<NodeEvent>) {
         tokio::pin!(notified);
         let claim = match state.lock() {
             Ok(locked) if locked.shutting_down => return,
+            // Paused: nothing is claimed, and resuming wakes this same wait.
+            Ok(locked) if locked.config.jobs.paused => Ok(None),
             Ok(mut locked) => locked.library.claim_next(),
             Err(_) => return,
         };

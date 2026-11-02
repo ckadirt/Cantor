@@ -159,6 +159,12 @@ pub struct JobsConfig {
     pub max_queued_per_principal: u32,
     #[serde(default = "default_minimum_free_bytes")]
     pub minimum_free_bytes: u64,
+    /// The worker starts nothing new. What is running finishes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub paused: bool,
+    /// Apps are refused new requests. Their phones keep them until it opens.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub closed: bool,
 }
 
 impl Default for JobsConfig {
@@ -166,6 +172,8 @@ impl Default for JobsConfig {
         Self {
             max_queued_per_principal: DEFAULT_MAX_QUEUED_PER_PRINCIPAL,
             minimum_free_bytes: DEFAULT_MINIMUM_FREE_BYTES,
+            paused: false,
+            closed: false,
         }
     }
 }
@@ -427,6 +435,23 @@ impl NodeConfig {
         let previous = std::mem::replace(&mut self.engine.keep_loaded, keep_loaded);
         if let Err(error) = self.save_atomically(path) {
             self.engine.keep_loaded = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Persists the queue's gates; a value left out keeps its setting.
+    pub fn set_queue_gates(
+        &mut self,
+        path: &Path,
+        paused: Option<bool>,
+        closed: Option<bool>,
+    ) -> Result<()> {
+        let previous = (self.jobs.paused, self.jobs.closed);
+        self.jobs.paused = paused.unwrap_or(previous.0);
+        self.jobs.closed = closed.unwrap_or(previous.1);
+        if let Err(error) = self.save_atomically(path) {
+            (self.jobs.paused, self.jobs.closed) = previous;
             return Err(error);
         }
         Ok(())
