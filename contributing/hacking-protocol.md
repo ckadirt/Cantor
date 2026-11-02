@@ -210,6 +210,20 @@ need. Send it only to a node with `NodeFeatures.binary_uploads`: an older node
 refuses the frame. A node acknowledges slices ahead of its sync, at most 4 MiB;
 `upload.open` makes the position it reports durable.
 
+### Open: upload stops short of the link
+
+On a Xiaomi on 2.4 GHz (November 2026), through the relay to a node in Montréal,
+downloads reach about 100% of what plain `curl` gets on the same phone. Uploads
+reach about 70% (1.79 MB/s against 2.5). The app is not the limit: of a 9.8 MB
+upload's 13.7 s of sending, it spent 0.02 s reading, 0.76 s encrypting and
+sending, and 12.8 s waiting for acknowledgements, and the last slices took 2 to
+11 s to be answered. So the queue is past the app: the Wi-Fi, the relay, or the
+node. A wired client through the relay stopped near 80% of raw in a test without
+Noise or the node's real upload path, so the relay path is the first suspect, unproven.
+
+To continue, time `upload.chunk` arrival to `upload.ack` on the node, then compare
+a direct wired upload to a node against the same upload through the relay.
+
 ## Model lyric capabilities
 
 `ModelView.lyrics` is an optional additive declaration (`can_generate`,
