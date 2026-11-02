@@ -612,6 +612,7 @@ export class BackendConnection {
                 ...this.snapshot.jobs.filter(item => item.id !== job.id),
               ],
             });
+            this.scheduleQueuePositions();
           },
           reject,
         },
@@ -655,6 +656,7 @@ export class BackendConnection {
           resolve: job => {
             resolve(job);
             this.mergeCanonicalJob(job);
+            this.scheduleQueuePositions();
           },
           reject,
         },
