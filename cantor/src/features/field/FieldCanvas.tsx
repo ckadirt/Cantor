@@ -5,6 +5,7 @@ import {
   drawNativeLabels,
   heldLabelText,
 } from './nativeLabels';
+import { timedPicture } from '../../dev/perfProbe';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 import {
   flightOnScreen,
@@ -28,6 +29,12 @@ import {
   type FaceStamping,
   type StampPool,
 } from './faceAtlas';
+import {
+  buildFlightIndex,
+  queryFlightIndex,
+  viewRect,
+  type FlightIndex,
+} from './flightIndex';
 import {
   joinFaces,
   joinJobs,
@@ -413,6 +420,11 @@ const LAYER_ARRIVED = 0.999;
 /** KNOBS — screen-space culling and row dimensions from the HTML prototype. */
 const FIELD_CANVAS_KNOBS = {
   OVERSCAN_PX: 260,
+  /**
+   * Room past every margin the culls already allow, for what the position
+   * index (`flightIndex.ts`) cannot see: a face drawn a little off its seat.
+   */
+  INDEX_SLACK_PX: 48,
   ROW_WIDTH_PX: 240,
   ROW_HEIGHT_PX: 30,
   SHELF_LABEL_GAP_PX: 32,
@@ -918,6 +930,7 @@ function FieldCanvasImpl({
   const fieldStepClock = useRef(fieldStepClockCandidate).current;
   const sceneCandidate: LivingScene = {
     cut: useSharedValue<NativeCut | null>(null),
+    cutHead: useSharedValue<CutHead | null>(null),
     clock: cutClockShared ?? ownClock,
     songs: useSharedValue<Readonly<Record<string, SongDraw>>>({}),
     focus: focusShared,
@@ -1205,11 +1218,13 @@ function FieldCanvasImpl({
    * would take the canvas back to it.
    */
   const sceneCut = scene.cut;
+  const sceneCutHead = scene.cutHead;
   const sceneClock = scene.clock;
   /** Put a cut on the canvas and start (or land) its clock. */
   const applyCut = (cutData: NativeCut, restart: boolean) => {
     'worklet';
     sceneCut.value = cutData;
+    sceneCutHead.value = { generation: cutData.generation, recut: cutData.recut };
     if (!restart) return;
     // A camera that follows its song has nowhere to travel: it is where the
     // cut puts the song, from the cut's first frame. Set with the cut, so no
@@ -2606,7 +2621,7 @@ function PlayerMotionLayerImpl({
   const stepForm = useStepForm(focus, layerClock, motionIn);
   const radius = playerRadiusPx(viewport.width);
   const picture = useDerivedValue(() =>
-    createPicture(
+    timedPicture('pic.canvas:2620', 
       canvas => {
         const now = layer.draw.value;
         const morphing = now !== null && now.morphFrom != null;
@@ -2926,7 +2941,7 @@ function nativeFitScale(
 // mappers once for the scene's life, rather than once per placement.
 function useNativeCameraMotion(
   clock: SharedValue<number>,
-  cut: SharedValue<NativeCut | null>,
+  cut: SharedValue<CutHead | null>,
   cameraShared: SharedValue<Camera>,
   fitScaleShared: SharedValue<number>,
   viewport: Viewport,
@@ -3059,6 +3074,15 @@ export type FieldOpening = Readonly<{
  */
 type LivingScene = Readonly<{
   cut: SharedValue<NativeCut | null>;
+  /**
+   * The cut's generation and cameras, small enough to read anywhere: what a
+   * worklet that may run on the JS thread reads instead of `cut`. A derived
+   * value's first run is on the JS thread, at mount, and there Reanimated
+   * copies a shared value the UI thread has changed whole: reading `cut`, every
+   * flight and label, held each player layer's mount ~70 ms on the Xiaomi, and
+   * the descent's first frame behind it.
+   */
+  cutHead: SharedValue<CutHead | null>;
   /** Eased 0 → 1 across the cut on the canvas; restarted with it. */
   clock: SharedValue<number>;
   songs: SharedValue<Readonly<Record<string, SongDraw>>>;
@@ -3084,6 +3108,8 @@ type LivingScene = Readonly<{
   stepMorph: SharedValue<StepMorph | null>;
   stepClock: DerivedValue<number> | SharedValue<number>;
 }>;
+
+type CutHead = Readonly<{ generation: number; recut: NativeRecut }>;
 
 /**
  * The focused song's flight, player and detail: the one part of the scene
@@ -3459,6 +3485,8 @@ export function drawFieldFaces(
    * draws it held (`PlayerLayer.frozen`) until the morph takes it.
    */
   holdLayer = false,
+  /** The faces filed by where they can stand; see `flightIndex.ts`. */
+  faceIndex: FlightIndex | null = null,
 ): void {
   'worklet';
   /*
@@ -4085,7 +4113,31 @@ export function drawFieldFaces(
   };
 
   if (mapCam === null) {
-    for (let index = 0; index < faces.length; index++) drawOne(faces[index]);
+    if (faceIndex !== null && faceIndex.source === faces && cameraScale > 0) {
+      // Only the faces that can be on the screen: the exact cull below is
+      // the one `drawOne` makes, widened by the pose and the widest bow.
+      const rect = viewRect(
+        cameraX,
+        cameraY,
+        cameraScale,
+        viewport.width,
+        viewport.height,
+        FIELD_CANVAS_KNOBS.OVERSCAN_PX +
+          Math.max(Math.abs(markPose.x), Math.abs(markPose.y)) +
+          faceIndex.bowPx / 2 +
+          FIELD_CANVAS_KNOBS.INDEX_SLACK_PX,
+      );
+      const visible = queryFlightIndex(
+        faceIndex,
+        rect.minX,
+        rect.minY,
+        rect.maxX,
+        rect.maxY,
+      );
+      for (let k = 0; k < visible.length; k++) drawOne(faces[visible[k]]);
+    } else {
+      for (let index = 0; index < faces.length; index++) drawOne(faces[index]);
+    }
     flushStamps(batch);
     releaseLayer();
     return;
@@ -4945,7 +4997,7 @@ function NativeSongDetail({
     },
   );
   const picture = useDerivedValue(() =>
-    createPicture(
+    timedPicture('pic.canvas:4985', 
       canvas => {
         if (model === null) {
           if (layer !== null && layer.detail.value !== null) layer.detail.value = null;
@@ -5102,7 +5154,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   // captures an interrupted gather from it.
   useAnimatedReaction(
     () => ({
-      generation: cutShared.value === null ? 0 : cutShared.value.generation,
+      generation:
+        scene.cutHead.value === null ? 0 : scene.cutHead.value.generation,
       eased: clock.value,
     }),
     drawn => {
@@ -5111,7 +5164,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   );
   const motion = useNativeCameraMotion(
     clock,
-    cutShared,
+    scene.cutHead,
     cameraShared,
     fitScaleShared,
     viewport,
@@ -5159,6 +5212,15 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     uiSpan('ui.joinFaces', probeStart);
     return joined;
   });
+  // Re-filed when the join changes, never per frame.
+  const faceIndex = useDerivedValue(() =>
+    buildFlightIndex(
+      faceFlights.value,
+      face => face,
+      face => (face.timing === null ? 0 : face.timing.bowPx),
+      face => face.isPlayer || face.players !== undefined,
+    ),
+  );
   /*
    * A player's sound waits for the descent, as the circle's ring does.
    *
@@ -5263,7 +5325,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   const mapPaints = useMemo(() => createMapPaints(palette), [palette]);
   const facePicture = useDerivedValue(() => {
     const probeStart = probeNow();
-    const picture = createPicture(
+    const picture = timedPicture('pic.canvas:5312', 
       canvas => {
         const cut = cutShared.value;
         if (cut === null) return;
@@ -5345,6 +5407,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             focusDraw.value === null ? null : focusDraw.value.placementKey,
           ),
           stepHolds(stepMorph.value, layer, focusDraw.value),
+          faceIndex.value,
         );
       },
       { width: viewport.width, height: viewport.height },
@@ -5378,6 +5441,14 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     uiSpan('ui.joinRows', probeStart);
     return joined;
   });
+  const rowIndex = useDerivedValue(() =>
+    buildFlightIndex(
+      rows.value,
+      row => row.flight,
+      row => (row.flight.timing === undefined ? 0 : row.flight.timing.bowPx),
+      () => false,
+    ),
+  );
   const rowPaints = useMemo(
     () =>
       createRowPaints(
@@ -5426,7 +5497,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             recede === null ? p : linearOfEased(p),
           );
     const probeStart = probeNow();
-    const picture = createPicture(canvas => {
+    const picture = timedPicture('pic.canvas:5484', canvas => {
       const fit = nativeFitScale(p, nativeRecut, fitScaleShared);
       drawSections(
         canvas,
@@ -5538,6 +5609,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             ),
         // A step's two rows are the player's while it morphs.
         stepMorph.value,
+        rowIndex.value,
       );
       // The found shelf's last row, in the meta's face at the title's
       // column, present as much as the gather is.
@@ -5599,7 +5671,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       drawnGather === null
         ? 1
         : 1 - recededAt(recede, recede === null ? p : linearOfEased(p));
-    return createPicture(canvas => {
+    return timedPicture('pic.canvas:5658', canvas => {
       if (jobsLeft <= 0) return;
       if (jobsLeft < 1) {
         jobFade.setAlphaf(jobsLeft);
@@ -5689,7 +5761,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
  * 5, kept for the one part of the scene that still mounts per focus).
  */
 function useFocusClock(scene: LivingScene, generation: number) {
-  const cut = scene.cut;
+  const cut = scene.cutHead;
   const clock = scene.clock;
   // And held at its start until its own cut is on the canvas. React mounts a
   // layer before the UI thread installs the cut it was built for; read as

@@ -35,6 +35,11 @@ import { NAME_LENS_KNOBS } from '../../lenses/nameLens';
 import { writePhase, writeSubAlpha } from '../../motion/text';
 import { traceTitlePath } from './titleTrace';
 import type { StepMorph } from './stepMorph';
+import {
+  queryFlightIndex,
+  viewRect,
+  type FlightIndex,
+} from './flightIndex';
 
 /** KNOBS — keep descenders and metadata just outside the viewport available. */
 export const ROW_TEXT_OVERSCAN_PX = 64;
@@ -88,6 +93,33 @@ export function createRowPaints(
 }
 
 /** One UI-thread picture for ordinary rows; the focused player's morph keeps its own owner. */
+/** Room past the rows' own cull for what the index cannot see. */
+const ROW_INDEX_SLACK_PX = 48;
+
+/** The rows that can be on the screen through `camera`, in their order. */
+function queryRowsInView(
+  index: FlightIndex,
+  camera: Camera,
+  viewport: Viewport,
+): readonly number[] {
+  'worklet';
+  const rect = viewRect(
+    camera.x,
+    camera.y,
+    camera.scale,
+    viewport.width,
+    viewport.height,
+    Math.max(
+      NAME_LENS_KNOBS.ROW_RIGHT_PX,
+      NAME_LENS_KNOBS.ROW_TITLE_OFFSET_PX,
+      ROW_TEXT_OVERSCAN_PX,
+    ) +
+      index.bowPx / 2 +
+      ROW_INDEX_SLACK_PX,
+  );
+  return queryFlightIndex(index, rect.minX, rect.minY, rect.maxX, rect.maxY);
+}
+
 export function drawNativeRows(
   canvas: SkCanvas,
   rows: readonly NativeRowFlight[],
@@ -125,6 +157,8 @@ export function drawNativeRows(
    * it leaves and the one it arrives at, whoever holds them; see `stepMorph.ts`.
    */
   step: StepMorph | null = null,
+  /** The rows filed by where they can stand; see `flightIndex.ts`. */
+  rowIndex: FlightIndex | null = null,
 ) {
   'worklet';
   if (
@@ -137,7 +171,19 @@ export function drawNativeRows(
   const linear = recede === null ? progress : linearOfEased(progress);
   const mapCam =
     gather === null ? null : mapCameraAt(gather.map, recede, linear);
-  for (const { flight, row: shelfRow, homeRow, titleFrom, openAt } of rows) {
+  // Outside a gather, only the rows that can be on the screen: the exact
+  // cull below, widened by the widest bow.
+  const visible =
+    mapCam === null &&
+    rowIndex !== null &&
+    rowIndex.source === rows &&
+    camera.scale > 0
+      ? queryRowsInView(rowIndex, camera, viewport)
+      : null;
+  const walked = visible === null ? rows.length : visible.length;
+  for (let k = 0; k < walked; k++) {
+    const { flight, row: shelfRow, homeRow, titleFrom, openAt } =
+      rows[visible === null ? k : visible[k]];
     if (yieldKey !== null && flight.targetPlacementKey === yieldKey) continue;
     if (
       step !== null &&
