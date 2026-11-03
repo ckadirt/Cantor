@@ -20,7 +20,14 @@ import {
   type LensIdentity,
 } from '../../../lenses';
 import { drawFieldFaces, faceFlightsOf, type FaceFlight } from '../FieldCanvas';
-import type { FaceAtlas, FaceStamping, StampPool } from '../faceAtlas';
+import {
+  faceAtlasFor,
+  pumpFaceAtlas,
+  stampFor,
+  type FaceAtlas,
+  type FaceStamping,
+  type StampPool,
+} from '../faceAtlas';
 import {
   nodePresentation,
   type FieldPresentation,
@@ -187,6 +194,12 @@ describe('faces as stamps', () => {
     expect(pinned.length).toBeGreaterThan(0);
     const stamping = stampingFor(pinned);
     const paths = frame(pinned, lens, null);
+    // The first frame has no stamps yet: it draws paths and asks for them.
+    const asking = frame(pinned, lens, stamping);
+    expect(stamping.pool.value.xforms.length).toBe(0);
+    expect(compare(paths, asking).meanDiff).toBe(0);
+    // The worker draws what was asked for, and the next frame stamps it.
+    pumpFaceAtlas(stamping.atlas, Infinity);
     const stamped = frame(pinned, lens, stamping);
     // The stamps were drawn and used.
     expect(stamping.atlas.value).not.toBeNull();
@@ -196,6 +209,35 @@ describe('faces as stamps', () => {
     // The same ink, to within what resampling a stamp between pixels moves.
     expect(Math.abs(inkB - inkA) / inkA).toBeLessThan(0.03);
     expect(meanDiff).toBeLessThan(1);
+  });
+
+  it('keeps the stamps of a size while the field visits another', () => {
+    const lens = lensIndex('name');
+    const stamping = stampingFor(pinned);
+    const marks = paints();
+    const face = pinned[0];
+    const ask = (size: number) => {
+      // The size held still for two frames, as it is once a zoom has landed.
+      faceAtlasFor(stamping, [lens], size, marks);
+      const atlas = faceAtlasFor(stamping, [lens], size, marks)!;
+      return stampFor(atlas, lens, face.entityKey, face.identities[lens], size);
+    };
+    expect(ask(1)).toBeNull();
+    pumpFaceAtlas(stamping.atlas, Infinity);
+    const small = ask(1);
+    expect(small).not.toBeNull();
+    // Twice the size: the small stamps would blur, so it is drawn as paths
+    // until stamps are drawn for it.
+    expect(ask(2)).toBeNull();
+    pumpFaceAtlas(stamping.atlas, Infinity);
+    expect(ask(2)?.size).toBe(2);
+    // Back at the first size, its stamps are still there: nothing to draw.
+    expect(ask(1)).toBe(small);
+    // Mid-zoom, a size between the two is served by the bigger stamps.
+    const moving = faceAtlasFor(stamping, [lens], 1.5, marks)!;
+    expect(
+      stampFor(moving, lens, face.entityKey, face.identities[lens], 1.5)?.size,
+    ).toBe(2);
   });
 
   it('gives each look the alpha its paths are drawn at', () => {

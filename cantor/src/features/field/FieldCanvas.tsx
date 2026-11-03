@@ -18,11 +18,12 @@ import {
 } from './gatherInk';
 import { drawNativeJobs, type JobMark } from './nativeJobs';
 import {
-  canStamp,
   createStampBatch,
   faceAtlasFor,
   flushStamps,
   stampFace,
+  stampFor,
+  type Stamp,
   type FaceAtlas,
   type FaceStamping,
   type StampPool,
@@ -112,6 +113,14 @@ import {
   type DerivedValue,
   type SharedValue,
 } from 'react-native-reanimated';
+import {
+  jsSpan,
+  probeNow,
+  uiRecord,
+  uiSpan,
+  useFrameGapProbe,
+  useRenderProbe,
+} from '../../dev/perfProbe';
 import {
   GRAIN_KNOBS,
   LEVEL_BOUNDARIES,
@@ -775,6 +784,8 @@ function FieldCanvasImpl({
   foundPlaces = null,
   foundFoot = null,
 }: Props) {
+  useRenderProbe('js.FieldCanvas render+commit');
+  useFrameGapProbe();
   // Removed songs still own ink in the outgoing placement flights. Keep only
   // that drawing data until the flight family is replaced; it never re-enters
   // the controller's library or hit targets. Dropping it at the data commit
@@ -1089,6 +1100,7 @@ function FieldCanvasImpl({
   const lastInk = useRef<InkArrival | null>(null);
   useLayoutEffect(() => {
     if (displayFont === null || monoFont === null) return;
+    const probeSongs = probeNow();
     const cache = songCache.current;
     const changed: Record<string, SongDraw> = {};
     let any = false;
@@ -1117,13 +1129,17 @@ function FieldCanvasImpl({
     // The arrival runs on the scene's ink clock, so the next one reads where
     // this one has got to from it.
     lastInk.current = arriving ? { ...ink, clock: scene.inkClock } : ink;
+    jsSpan('js.songsDiff', probeSongs);
     if (!any && removed.length === 0 && !arriving) return;
     const from = arriving ? Object.fromEntries(ink.from) : null;
     const songs = scene.songs;
     const inkFrom = scene.inkFrom;
     const inkClock = scene.inkClock;
+    const probeSent = Date.now();
     runOnUI(() => {
       'worklet';
+      uiRecord('ui.songsHop', Date.now() - probeSent);
+      const probeApply = probeNow();
       // A copy made here, on the UI thread, crosses nothing: only the songs
       // that changed were sent.
       const next: Record<string, SongDraw> = { ...songs.value, ...changed };
@@ -1131,6 +1147,7 @@ function FieldCanvasImpl({
         delete next[removed[index]];
       }
       songs.value = next;
+      uiSpan('ui.songsApply', probeApply);
       if (from !== null) {
         inkFrom.value = from;
         cancelAnimation(inkClock);
@@ -1241,6 +1258,7 @@ function FieldCanvasImpl({
     if (installed.current !== null && next.generation < installed.current) {
       return;
     }
+    const probeCut = probeNow();
     const fitted: Record<string, string> = {};
     if (places !== null) {
       for (const [key, text] of places) {
@@ -1296,8 +1314,10 @@ function FieldCanvasImpl({
     const waits = restart && focusGeneration.current === next.generation;
     const parked = scene.parked;
     const focusLive = scene.focusLive;
+    const probeSent = Date.now();
     const send = () => {
       'worklet';
+      uiRecord('ui.cutHop', Date.now() - probeSent);
       const held = parked.value;
       if (!restart && held !== null && held.generation === cutData.generation) {
         // A resend of the cut still waiting: it waits with the new data.
@@ -1315,8 +1335,11 @@ function FieldCanvasImpl({
         return;
       }
       parked.value = null;
+      const probeApply = probeNow();
       applyCut(cutData, restart);
+      uiSpan('ui.applyCut', probeApply);
     };
+    jsSpan('js.sendCut.build', probeCut);
     runOnUI(send)();
     if (waits) {
       const generation = next.generation;
@@ -3438,7 +3461,12 @@ export function drawFieldFaces(
                 mapShrink,
           paints,
         );
-  const batch = createStampBatch(stamping === null ? null : stamping.pool.value);
+  const batch = createStampBatch(
+    stamping === null ? null : stamping.pool.value,
+    canvas,
+    paints.stamp ?? paints.fill,
+  );
+  const passStamps: (Stamp | null)[] = [null, null];
   const layerAlphas = [
     [0, 0, 0, 0],
     [0, 0, 0, 0],
@@ -3601,9 +3629,14 @@ export function drawFieldFaces(
           continue;
         }
         const sprites = LENS_UI[lens].sprites;
+        const stamp =
+          sprites === undefined
+            ? null
+            : stampFor(atlas, lens, face.entityKey, face.identities[lens], size);
+        passStamps[pass] = stamp;
         stampable =
           sprites !== undefined &&
-          canStamp(atlas, lens, face.entityKey, face.identities[lens], size) &&
+          stamp !== null &&
           sprites.alphas(
             opacity * ink,
             weight,
@@ -3618,12 +3651,11 @@ export function drawFieldFaces(
           const lens = pass === 0 ? firstLens : lastLens;
           const coming = lens === lensTo;
           const sprites = LENS_UI[lens].sprites;
-          if (sprites === undefined) continue;
+          const stamp = passStamps[pass];
+          if (sprites === undefined || stamp === null) continue;
           stampFace(
             batch,
-            atlas,
-            lens,
-            face.entityKey,
+            stamp,
             x + pose.x,
             y + pose.y,
             pose.scale * openScale * (coming ? comingScale : leavingScale),
@@ -3636,7 +3668,7 @@ export function drawFieldFaces(
       }
     }
     // Drawn as paths: what was stamped before it goes down first.
-    flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+    flushStamps(batch);
     canvas.save();
     canvas.translate(x + pose.x, y + pose.y);
     // The field's share of the player while the motion layer fades it in or out.
@@ -3940,7 +3972,7 @@ export function drawFieldFaces(
 
   if (mapCam === null) {
     for (let index = 0; index < faces.length; index++) drawOne(faces[index]);
-    flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+    flushStamps(batch);
     releaseLayer();
     return;
   }
@@ -3954,7 +3986,7 @@ export function drawFieldFaces(
     }
   }
   if (side === 1) {
-    flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+    flushStamps(batch);
     releaseLayer();
     return;
   }
@@ -3964,7 +3996,7 @@ export function drawFieldFaces(
       drawOne(face);
     }
   }
-  flushStamps(canvas, batch, atlas, paints.stamp ?? paints.fill);
+  flushStamps(batch);
   releaseLayer();
 }
 
@@ -4949,6 +4981,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   font: monoFont,
   palette,
 }: NativeFieldContentProps) {
+  useRenderProbe('js.NativeFieldContent render+commit');
   const cutShared = scene.cut;
   const clock = scene.clock;
   // Where the canvas has drawn the cut to, for the camera hook, which
@@ -4999,16 +5032,19 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   const soundClock = scene.soundClock;
   const stepMorph = scene.stepMorph;
   const stepClock = scene.stepClock;
-  const faceFlights = useDerivedValue(() =>
-    joinFaces(
+  const faceFlights = useDerivedValue(() => {
+    const probeStart = probeNow();
+    const joined = joinFaces(
       cutShared.value,
       songs.value,
       focusDraw.value,
       playing.value,
       inkFrom.value,
       openAt.value,
-    ),
-  );
+    );
+    uiSpan('ui.joinFaces', probeStart);
+    return joined;
+  });
   /*
    * A player's sound waits for the descent, as the circle's ring does.
    *
@@ -5111,8 +5147,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     return positionSeconds.value / seconds;
   });
   const mapPaints = useMemo(() => createMapPaints(palette), [palette]);
-  const facePicture = useDerivedValue(() =>
-    createPicture(
+  const facePicture = useDerivedValue(() => {
+    const probeStart = probeNow();
+    const picture = createPicture(
       canvas => {
         const cut = cutShared.value;
         if (cut === null) return;
@@ -5197,8 +5234,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         );
       },
       { width: viewport.width, height: viewport.height },
-    ),
-  );
+    );
+    uiSpan('ui.facePicture', probeStart);
+    return picture;
+  });
   /**
    * The row the player's flight has taken over, once that flight is live on
    * the UI thread; null otherwise.
@@ -5214,9 +5253,17 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   const playerRow = useSharedValue<PlayerRow | null>(null);
   // Every row, the focused one included: who draws it is decided per frame,
   // by `motion.owned`, not by which rows this list holds.
-  const rows = useDerivedValue(() =>
-    joinRows(cutShared.value, songs.value, inkFrom.value, openAt.value),
-  );
+  const rows = useDerivedValue(() => {
+    const probeStart = probeNow();
+    const joined = joinRows(
+      cutShared.value,
+      songs.value,
+      inkFrom.value,
+      openAt.value,
+    );
+    uiSpan('ui.joinRows', probeStart);
+    return joined;
+  });
   const rowPaints = useMemo(
     () =>
       createRowPaints(
@@ -5264,7 +5311,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
             recede,
             recede === null ? p : linearOfEased(p),
           );
-    return createPicture(canvas => {
+    const probeStart = probeNow();
+    const picture = createPicture(canvas => {
       const fit = nativeFitScale(p, nativeRecut, fitScaleShared);
       drawSections(
         canvas,
@@ -5402,6 +5450,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
         }
       }
     }, viewport);
+    uiSpan('ui.rowsPicture', probeStart);
+    return picture;
   });
   // Whatever in this re-cut is not a song is a job; one whose mark has not
   // arrived, or has left, draws nothing.
