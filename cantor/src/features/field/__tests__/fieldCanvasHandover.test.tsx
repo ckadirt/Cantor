@@ -234,8 +234,19 @@ describe('field canvas L0 to L1 handover', () => {
   });
   const year = layoutField({ entities, arrangement: byDate('year'), viewport });
 
+  // Jest runs as the JS thread, whose first run of a derived value answers
+  // with nothing on a device (`onJsThread`); these tests stand in for the UI
+  // thread, which draws.
+  const runtime = globalThis as { __RUNTIME_KIND?: number };
+  const jsKind = runtime.__RUNTIME_KIND;
+
   beforeAll(() => {
     mockFont = Skia.Font(undefined, 9);
+    runtime.__RUNTIME_KIND = 2;
+  });
+
+  afterAll(() => {
+    runtime.__RUNTIME_KIND = jsKind;
   });
 
   beforeEach(() => {

@@ -532,6 +532,25 @@ function labelKeyOf(label: Readonly<Record<string, unknown>>): string {
     : `${flight.fromGroupKey ?? ''}\u0001${flight.toGroupKey ?? ''}`;
 }
 
+/**
+ * Whether a worklet is running on the JS thread: a derived value's first run,
+ * as its hook mounts.
+ *
+ * There a read of a shared value the UI thread has changed copies it back
+ * whole (Reanimated's getter is a `runOnUISync`): the scene's cut and songs —
+ * every flight, every song's drawing — once for each join and picture that
+ * reads them, which held the canvas's first mount ~1.5 s at launch on the
+ * Xiaomi. Those answer the JS thread with nothing, and the UI thread works
+ * them out before it draws: the field is paper for its first frame.
+ */
+function onJsThread(): boolean {
+  'worklet';
+  return (globalThis as { __RUNTIME_KIND?: number }).__RUNTIME_KIND === 1;
+}
+const NO_FACES: ReturnType<typeof joinFaces> = [];
+const NO_ROWS: ReturnType<typeof joinRows> = [];
+const NO_JOBS: PlacementFlight[] = [];
+
 /** A cut's flights before the UI thread rebuilds them; see `sendCut`. */
 const NO_FLIGHTS: readonly PlacementFlight[] = [];
 /** No map names yet; see `LivingScene.names`. */
@@ -5515,6 +5534,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   const stepMorph = scene.stepMorph;
   const stepClock = scene.stepClock;
   const faceFlights = useDerivedValue(() => {
+    if (onJsThread()) return NO_FACES;
     const probeStart = probeNow();
     const joined = joinFaces(
       cutShared.value,
@@ -5553,8 +5573,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
    * reset only while hidden, keep the ink while the camera carries it out.
    */
   const soundPhase = useDerivedValue(() => {
-    const cut = cutShared.value;
-    const nativeRecut = cut === null ? EMPTY_RECUT : cut.recut;
+    const head = scene.cutHead.value;
+    const nativeRecut = head === null ? EMPTY_RECUT : head.recut;
     const fitted = nativeFitScale(clock.value, nativeRecut, fitScaleShared);
     const ratio =
       fitted > 0
@@ -5682,6 +5702,12 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   });
   const heldMap = useSharedValue<HeldMapPicture>({ key: null, picture: null });
   const facePicture = useDerivedValue(() => {
+    if (onJsThread()) {
+      return createPicture(() => {}, {
+        width: viewport.width,
+        height: viewport.height,
+      });
+    }
     const probeStart = probeNow();
     const heldKey = heldMapKey(
       cutShared.value,
@@ -5816,6 +5842,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   // Every row, the focused one included: who draws it is decided per frame,
   // by `motion.owned`, not by which rows this list holds.
   const rows = useDerivedValue(() => {
+    if (onJsThread()) return NO_ROWS;
     const probeStart = probeNow();
     const joined = joinRows(
       cutShared.value,
@@ -5855,6 +5882,7 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     [palette],
   );
   const rowsPicture = useDerivedValue(() => {
+    if (onJsThread()) return createPicture(() => {}, viewport);
     const cut = cutShared.value;
     const p = Math.min(Math.max(clock.value, 0), 1);
     if (cut === null) return createPicture(() => {}, viewport);
@@ -6034,11 +6062,12 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   // Whatever in this re-cut is not a song is a job; one whose mark has not
   // arrived, or has left, draws nothing.
   const jobFlights = useDerivedValue(() =>
-    joinJobs(cutShared.value, songs.value),
+    onJsThread() ? NO_JOBS : joinJobs(cutShared.value, songs.value),
   );
   const jobLayer = useMemo(() => Skia.Paint(), []);
   const jobFade = useMemo(() => Skia.Paint(), []);
   const jobsPicture = useDerivedValue(() => {
+    if (onJsThread()) return createPicture(() => {}, viewport);
     const cut = cutShared.value;
     const p = Math.min(Math.max(clock.value, 0), 1);
     if (cut === null) return createPicture(() => {}, viewport);
