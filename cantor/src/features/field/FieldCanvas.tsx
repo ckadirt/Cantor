@@ -9,6 +9,7 @@ import { timedPicture } from '../../dev/perfProbe';
 import { flightOwnerAlpha } from './flightOwnerAlpha';
 import {
   flightOnScreen,
+  seatOnScreen,
   gatherDrawn,
   gatherFaceInk,
   mapCameraAt,
@@ -35,6 +36,8 @@ import {
   viewRect,
   type FlightIndex,
 } from './flightIndex';
+import { packFlights, unpackFlights } from './flightPack';
+import { useStableData, useStableList } from './stableData';
 import {
   joinFaces,
   joinJobs,
@@ -518,6 +521,25 @@ const FIELD_CANVAS_KNOBS = {
  */
 const FOCUS_WAIT_MAX_MS = 900;
 
+/** Which group a map name leaves and which it lands on; see `useStableList`. */
+function labelKeyOf(label: Readonly<Record<string, unknown>>): string {
+  const flight = label.flight as
+    | Readonly<{ fromGroupKey: string | null; toGroupKey: string | null }>
+    | undefined;
+  return flight === undefined
+    ? ''
+    : `${flight.fromGroupKey ?? ''}\u0001${flight.toGroupKey ?? ''}`;
+}
+
+/** A cut's flights before the UI thread rebuilds them; see `sendCut`. */
+const NO_FLIGHTS: readonly PlacementFlight[] = [];
+/** No map names yet; see `LivingScene.names`. */
+const NO_NAMES: Readonly<{
+  labels: NativeCut['labels'];
+  hubs: NativeCut['hubs'];
+  sections: NativeCut['sections'];
+}> = { labels: [], hubs: [], sections: [] };
+
 const ROW_ARRIVAL_KNOBS = {
   /**
    * The pen's width for a row's title, in pixels.
@@ -931,6 +953,7 @@ function FieldCanvasImpl({
   const sceneCandidate: LivingScene = {
     cut: useSharedValue<NativeCut | null>(null),
     cutHead: useSharedValue<CutHead | null>(null),
+    names: useSharedValue<MapNames>(NO_NAMES),
     clock: cutClockShared ?? ownClock,
     songs: useSharedValue<Readonly<Record<string, SongDraw>>>({}),
     focus: focusShared,
@@ -1020,12 +1043,14 @@ function FieldCanvasImpl({
   // array every render, and a new plan would hand `Canvas` a new scene.
   const mapBefore =
     labelFromGroups.length === 0 ? layout.groups : labelFromGroups;
-  const mapFlights = useMemo(
-    () => ({
-      hubs: planHubFlights(mapBefore, layout.groups),
-      sections: planSectionFlights(mapBefore, layout.groups),
-    }),
-    [mapBefore, layout.groups],
+  const mapFlights = useStableData(
+    useMemo(
+      () => ({
+        hubs: planHubFlights(mapBefore, layout.groups),
+        sections: planSectionFlights(mapBefore, layout.groups),
+      }),
+      [mapBefore, layout.groups],
+    ),
   );
   const hubPaths = useHubCovers(layout.groups, currentPresentations);
   /*
@@ -1202,12 +1227,16 @@ function FieldCanvasImpl({
    * kept without building a scene per cut.
    */
   const labelWidthPx = labelMaxWidthPx(viewport);
-  const preparedLabels = useMemo(
-    () =>
-      monoFont === null
-        ? []
-        : prepareNativeLabels(labelFlights ?? [], monoFont, labelWidthPx),
-    [labelFlights, monoFont, labelWidthPx],
+  // Held while they say the same, so a cut sends them only when they change.
+  const preparedLabels = useStableList(
+    useMemo(
+      () =>
+        monoFont === null
+          ? []
+          : prepareNativeLabels(labelFlights ?? [], monoFont, labelWidthPx),
+      [labelFlights, monoFont, labelWidthPx],
+    ),
+    labelKeyOf,
   );
   const installed = useRef<number | null>(null);
   /**
@@ -1275,6 +1304,10 @@ function FieldCanvasImpl({
   );
   /** The cut the focus layer being drawn was built for; see `sendCut`. */
   const focusGeneration = useRef<number | null>(null);
+  /** What the last cut sent was made from; see `sameCutSent`. */
+  const lastSent = useRef<SentCut | null>(null);
+  /** The map's names the UI thread holds; see `sendCut`. */
+  const namesSent = useRef<MapNames | null>(null);
   const sendCut = (
     next: FieldRecutModel,
     places: ReadonlyMap<string, string> | null,
@@ -1307,13 +1340,14 @@ function FieldCanvasImpl({
       recede: next.recede ?? null,
       gather: next.gather ?? null,
       follows: next.follows === true,
-      flights: next.flights,
+      // Sent packed (`flightPack.ts`) and rebuilt on the UI thread.
+      flights: NO_FLIGHTS,
       places: fitted,
-      // A find cut keeps the map's groups as they were, so the names on the
-      // canvas are already the right ones; the render plans them anew.
-      labels: preparedLabels,
-      hubs: mapFlights.hubs,
-      sections: mapFlights.sections,
+      // The map's names and furniture go with the cut only when they have
+      // changed (`names`, below); the UI thread keeps the last ones.
+      labels: NO_NAMES.labels,
+      hubs: NO_NAMES.hubs,
+      sections: NO_NAMES.sections,
       foundFoot: foot,
     };
     const restart = installed.current !== next.generation;
@@ -1337,13 +1371,48 @@ function FieldCanvasImpl({
      * the new layer says it is live, the old cut, layer and camera stay
      * together, and the new three take over in one frame.
      */
+    lastSent.current = {
+      recut: next,
+      places,
+      foot,
+      labels: preparedLabels,
+      mapFlights,
+      presentations,
+    };
     const waits = restart && focusGeneration.current === next.generation;
     const parked = scene.parked;
     const focusLive = scene.focusLive;
+    const packed = packFlights(next.flights);
+    const wire = cutData;
+    const sentNames = namesSent.current;
+    const names: MapNames | null =
+      sentNames !== null &&
+      sentNames.labels === preparedLabels &&
+      sentNames.hubs === mapFlights.hubs &&
+      sentNames.sections === mapFlights.sections
+        ? null
+        : {
+            labels: preparedLabels,
+            hubs: mapFlights.hubs,
+            sections: mapFlights.sections,
+          };
+    if (names !== null) namesSent.current = names;
+    const keptNames = scene.names;
     const probeSent = Date.now();
     const send = () => {
       'worklet';
       uiRecord('ui.cutHop', Date.now() - probeSent);
+      const probeUnpack = probeNow();
+      if (names !== null) keptNames.value = names;
+      const onUi = keptNames.value;
+      const cutData: NativeCut = {
+        ...wire,
+        flights: unpackFlights(packed),
+        labels: onUi.labels,
+        hubs: onUi.hubs,
+        sections: onUi.sections,
+      };
+      uiSpan('ui.unpackFlights', probeUnpack);
       const held = parked.value;
       if (!restart && held !== null && held.generation === cutData.generation) {
         // A resend of the cut still waiting: it waits with the new data.
@@ -1394,6 +1463,13 @@ function FieldCanvasImpl({
   // on the Xiaomi).
   useLayoutEffect(() => {
     if (recut === null) return;
+    // The keystroke already sent this cut (`installRef`): the render's own
+    // copies of what it said are new objects, not news, and sending the cut
+    // again rebuilt it on the UI thread mid-gather (~130 ms at 872 songs, a
+    // hitch in every letter).
+    if (sameCutSent(lastSent.current, recut, foundPlaces, foundFoot, preparedLabels, mapFlights, presentations)) {
+      return;
+    }
     sendCutRef.current(recut, foundPlaces, foundFoot);
   }, [
     foundFoot,
@@ -3060,6 +3136,54 @@ type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 /** The found shelf's last row: its words and the world point of its seat. */
 export type FoundFoot = Readonly<{ text: string; x: number; y: number }>;
 
+type SentCut = Readonly<{
+  recut: FieldRecutModel;
+  places: ReadonlyMap<string, string> | null;
+  foot: FoundFoot | null;
+  labels: unknown;
+  mapFlights: unknown;
+  presentations: unknown;
+}>;
+
+/**
+ * Whether the canvas already holds this cut as these would send it. The same
+ * cut, its places and foot the same words, and the map's names and furniture
+ * the same — which in a gather they are by construction: find keeps the
+ * map's groups as they were, so a label plan made anew for it says what the
+ * last one said.
+ */
+function sameCutSent(
+  sent: SentCut | null,
+  recut: FieldRecutModel,
+  places: ReadonlyMap<string, string> | null,
+  foot: FoundFoot | null,
+  labels: unknown,
+  mapFlights: unknown,
+  presentations: unknown,
+): boolean {
+  if (sent === null || sent.recut !== recut) return false;
+  if (sent.presentations !== presentations) return false;
+  const gathered = recut.gather != null;
+  if (!gathered && (sent.labels !== labels || sent.mapFlights !== mapFlights)) {
+    return false;
+  }
+  if ((sent.foot === null) !== (foot === null)) return false;
+  if (
+    sent.foot !== null &&
+    foot !== null &&
+    (sent.foot.text !== foot.text || sent.foot.x !== foot.x || sent.foot.y !== foot.y)
+  ) {
+    return false;
+  }
+  if (sent.places === places) return true;
+  if (sent.places === null || places === null) return false;
+  if (sent.places.size !== places.size) return false;
+  for (const [key, text] of places) {
+    if (sent.places.get(key) !== text) return false;
+  }
+  return true;
+}
+
 /** An arrival from the phone, as the canvas draws it. */
 export type FieldOpening = Readonly<{
   plan: OpeningPlan;
@@ -3083,6 +3207,12 @@ type LivingScene = Readonly<{
    * the descent's first frame behind it.
    */
   cutHead: SharedValue<CutHead | null>;
+  /**
+   * The map's names and furniture as last sent, kept on the UI thread so a cut
+   * that does not change them does not carry them (see `sendCut`). Written
+   * and read there only: a read on the JS thread would copy them back.
+   */
+  names: SharedValue<MapNames>;
   /** Eased 0 → 1 across the cut on the canvas; restarted with it. */
   clock: SharedValue<number>;
   songs: SharedValue<Readonly<Record<string, SongDraw>>>;
@@ -3110,6 +3240,12 @@ type LivingScene = Readonly<{
 }>;
 
 type CutHead = Readonly<{ generation: number; recut: NativeRecut }>;
+
+type MapNames = Readonly<{
+  labels: NativeCut['labels'];
+  hubs: NativeCut['hubs'];
+  sections: NativeCut['sections'];
+}>;
 
 /**
  * The focused song's flight, player and detail: the one part of the scene
@@ -3587,6 +3723,11 @@ export function drawFieldFaces(
     mapCam === null ? walked : faceArrival(mapCam.scale, fitted);
   const mapShrink =
     mapCam === null ? shrink : overviewShrink(mapCam.scale, fitted);
+  // A map face in a gather stands as the map's camera has it: the same pose
+  // for every one, so made once a frame rather than once a face.
+  const mapFaceAt =
+    mapCam === null ? markAt : facePoseAt(mapWalked, 0, viewport, FACE_GROWTH);
+  const mapFacePose = { ...mapFaceAt, scale: mapFaceAt.scale * mapShrink };
   // Plain marks are stamped from an image drawn at the marks' size, in the
   // order the faces are met; see `faceAtlas.ts`. The map's marks: in find's
   // gather the real camera stands at the found shelf, whose faces are the
@@ -3679,7 +3820,35 @@ export function drawFieldFaces(
     let y = 0;
     let faceWalked = walked;
     let faceShrink = shrink;
-    if (twoCameras && mapCam !== null && gather !== null) {
+    let onMap = false;
+    if (
+      twoCameras &&
+      mapCam !== null &&
+      gather !== null &&
+      !face.found &&
+      !fromShelf &&
+      face.fromX === face.targetX &&
+      face.fromY === face.targetY &&
+      face.fromBloomX === face.targetBloomX &&
+      face.fromBloomY === face.targetBloomY
+    ) {
+      // Staying on the map: both ends are the one seat through the map's
+      // camera, which is where `flightOnScreen` would put it, bow and all.
+      const point = seatOnScreen(
+        face.targetX,
+        face.targetY,
+        face.targetBloomX,
+        face.targetBloomY,
+        mapCam,
+        fitted,
+        viewport,
+      );
+      x = point.x;
+      y = point.y;
+      faceWalked = mapWalked + (shelfWalked - mapWalked) * towardShelf;
+      faceShrink = mapShrink + (shelfShrink - mapShrink) * towardShelf;
+      onMap = towardShelf === 0;
+    } else if (twoCameras && mapCam !== null && gather !== null) {
       const target = face.found ? shelfTo ?? cameraShared.value : mapCam;
       const source = fromShelf ? gather.fromShelf ?? target : mapCam;
       const point = flightOnScreen(
@@ -3737,13 +3906,18 @@ export function drawFieldFaces(
     // Culling, at the live camera and on the frame it is true — which is the
     // thing the node renderer could not do, because its answer would have had
     // to come back through React to unmount anything.
-    const faceAt =
-      twoCameras ? facePoseAt(faceWalked, 0, viewport, FACE_GROWTH) : markAt;
+    const faceAt = !twoCameras
+      ? markAt
+      : onMap
+      ? mapFaceAt
+      : facePoseAt(faceWalked, 0, viewport, FACE_GROWTH);
     const pose = face.isPlayer
       ? playerPose
-      : twoCameras
-      ? { ...faceAt, scale: faceAt.scale * faceShrink }
-      : markPose;
+      : !twoCameras
+      ? markPose
+      : onMap
+      ? mapFacePose
+      : { ...faceAt, scale: faceAt.scale * faceShrink };
     if (
       x + pose.x < -FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
       x + pose.x > viewport.width + FIELD_CANVAS_KNOBS.OVERSCAN_PX ||
@@ -4142,10 +4316,43 @@ export function drawFieldFaces(
     releaseLayer();
     return;
   }
+  // In a gather the map's faces stand where the map's camera puts them, so
+  // the index is asked through that camera; the found shelf's faces, which
+  // travel between the two cameras, are among the ones it always answers.
+  const gathered =
+    faceIndex !== null && faceIndex.source === faces && mapCam.scale > 0
+      ? (() => {
+          const mapPose = facePoseAt(mapWalked, 0, viewport, FACE_GROWTH);
+          const rect = viewRect(
+            mapCam.x,
+            mapCam.y,
+            mapCam.scale,
+            viewport.width,
+            viewport.height,
+            FIELD_CANVAS_KNOBS.OVERSCAN_PX +
+              Math.max(
+                Math.abs(mapPose.x),
+                Math.abs(mapPose.y),
+                Math.abs(markPose.x),
+                Math.abs(markPose.y),
+              ) +
+              faceIndex.bowPx / 2 +
+              FIELD_CANVAS_KNOBS.INDEX_SLACK_PX,
+          );
+          return queryFlightIndex(
+            faceIndex,
+            rect.minX,
+            rect.minY,
+            rect.maxX,
+            rect.maxY,
+          );
+        })()
+      : null;
+  const walkedCount = gathered === null ? faces.length : gathered.length;
   // The map first, then the shelf.
   if (side !== 2) {
-    for (let index = 0; index < faces.length; index++) {
-      const face = faces[index];
+    for (let k = 0; k < walkedCount; k++) {
+      const face = faces[gathered === null ? k : gathered[k]];
       if (!face.found && !(face.timing !== null && face.timing.fromFound)) {
         drawOne(face);
       }
@@ -4156,8 +4363,8 @@ export function drawFieldFaces(
     releaseLayer();
     return;
   }
-  for (let index = 0; index < faces.length; index++) {
-    const face = faces[index];
+  for (let k = 0; k < walkedCount; k++) {
+    const face = faces[gathered === null ? k : gathered[k]];
     if (face.found || (face.timing !== null && face.timing.fromFound)) {
       drawOne(face);
     }
@@ -5218,7 +5425,13 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       faceFlights.value,
       face => face,
       face => (face.timing === null ? 0 : face.timing.bowPx),
-      face => face.isPlayer || face.players !== undefined,
+      // The player, and in a gather the found shelf's faces: they travel
+      // between the map's camera and the shelf's, and no seat says where.
+      face =>
+        face.isPlayer ||
+        face.players !== undefined ||
+        face.found ||
+        (face.timing !== null && face.timing.fromFound),
     ),
   );
   /*
@@ -5446,7 +5659,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       rows.value,
       row => row.flight,
       row => (row.flight.timing === undefined ? 0 : row.flight.timing.bowPx),
-      () => false,
+      // In a gather, the found shelf's rows: see the faces' index.
+      row =>
+        isFoundGroup(row.flight.groupKey) ||
+        (row.flight.timing !== undefined && row.flight.timing.fromFound),
     ),
   );
   const rowPaints = useMemo(
@@ -5571,6 +5787,10 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           motionFrame.value,
           motionOn.value,
           layer,
+          1,
+          null,
+          false,
+          faceIndex.value,
         );
       }
       drawNativeRows(

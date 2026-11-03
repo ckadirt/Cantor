@@ -171,14 +171,14 @@ export function drawNativeRows(
   const linear = recede === null ? progress : linearOfEased(progress);
   const mapCam =
     gather === null ? null : mapCameraAt(gather.map, recede, linear);
-  // Outside a gather, only the rows that can be on the screen: the exact
-  // cull below, widened by the widest bow.
+  // Only the rows that can be on the screen: the exact cull below, widened
+  // by the widest bow.
+  // In a gather, through the map's camera: the found shelf's rows are among
+  // the ones the index always answers.
+  const through = mapCam ?? camera;
   const visible =
-    mapCam === null &&
-    rowIndex !== null &&
-    rowIndex.source === rows &&
-    camera.scale > 0
-      ? queryRowsInView(rowIndex, camera, viewport)
+    rowIndex !== null && rowIndex.source === rows && through.scale > 0
+      ? queryRowsInView(rowIndex, through, viewport)
       : null;
   const walked = visible === null ? rows.length : visible.length;
   for (let k = 0; k < walked; k++) {

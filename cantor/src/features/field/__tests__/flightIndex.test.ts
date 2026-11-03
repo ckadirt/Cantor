@@ -8,8 +8,11 @@
  */
 import { Skia, type SkCanvas } from '@shopify/react-native-skia';
 import {
+  FOUND_GROUP_KEY,
   byDate,
+  gatherLayout,
   layoutField,
+  planGatherCut,
   planPlacementFlights,
   type FieldEntity,
 } from '../../../field';
@@ -104,6 +107,11 @@ function pixels(draw: (canvas: SkCanvas) => void): Uint8Array {
 
 type Camera = { x: number; y: number; scale: number };
 
+type Gather = Readonly<{
+  recede: { from: number; to: number; end: number };
+  cameras: { map: Camera; fromShelf: Camera | null; toShelf: Camera | null };
+}>;
+
 function frame(
   faces: readonly FaceFlight[],
   from: Camera,
@@ -111,6 +119,7 @@ function frame(
   fit: number,
   progress: number,
   indexed: boolean,
+  gather: Gather | null = null,
 ) {
   const lens = lensIndex('name');
   const index = indexed
@@ -118,7 +127,10 @@ function frame(
         faces,
         face => face,
         face => (face.timing === null ? 0 : face.timing.bowPx),
-        face => face.isPlayer,
+        face =>
+          face.isPlayer ||
+          face.found ||
+          (face.timing !== null && face.timing.fromFound),
       )
     : null;
   return pixels(canvas =>
@@ -139,8 +151,8 @@ function frame(
       -1,
       1,
       Infinity,
-      null,
-      null,
+      gather === null ? null : gather.recede,
+      gather === null ? null : gather.cameras,
       0,
       null,
       null,
@@ -288,5 +300,32 @@ describe('the position index', () => {
     expect(index.rows).toBeLessThanOrEqual(128);
     const all = queryFlightIndex(index, -1e9, -1e9, 1e9, 1e9);
     expect(all.length).toBe(300);
+  });
+
+  it('draws a gather as the full walk does', () => {
+    const found = weeks.placements.filter((_, index) => index % 9 === 0);
+    const gathered = gatherLayout(weeks, found);
+    const flights = planPlacementFlights(weeks.placements, gathered.placements, 3);
+    const cut = planGatherCut(
+      flights,
+      [],
+      found.map(placement => placement.entityKey),
+    )!;
+    const faces = faceFlightsOf(cut.flights, presentations, null, null);
+    const shelf = gathered.groups.find(group => group.key === FOUND_GROUP_KEY)!;
+    const map = { x: center.x, y: center.y + 300 / fit, scale: fit };
+    const toShelf = { x: shelf.cx, y: shelf.topGathered ?? center.y, scale: fit * 3 };
+    const gather: Gather = {
+      recede: { from: cut.recedeFrom, to: cut.recedeTo, end: cut.recedeEnd },
+      cameras: { map, fromShelf: null, toShelf },
+    };
+    let inked = 0;
+    for (const progress of [0.1, 0.35, 0.6, 0.85, 1]) {
+      const plain = frame(faces, map, toShelf, fit, progress, false, gather);
+      const indexed = frame(faces, map, toShelf, fit, progress, true, gather);
+      inked += ink(plain);
+      expect(samePixels(indexed, plain)).toBe(true);
+    }
+    expect(inked).toBeGreaterThan(0);
   });
 });
