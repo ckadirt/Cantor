@@ -183,7 +183,8 @@ export function facePathAt(recipe: FaceRecipe, cx: number, cy: number, r: number
 }
 
 export type StageMark = SampleSong & { x: number; y: number; group: number };
-export type StageGroup = { label: string; x: number; y: number };
+/** `width` is the room the group's cell gives its name, in world units. */
+export type StageGroup = { label: string; x: number; y: number; width: number };
 /** The axes the landing's map moves between, as the app's arrange control does. */
 export type StageAxis = 'month' | 'playlist' | 'artist';
 export type StageMap = {
@@ -248,7 +249,7 @@ export function stageMap(columns: number, by: StageAxis = 'month', songs = sampl
     const cy = top + markRadius * 4 + tall;
     for (const c of row) {
       const cx = x + c.width / 2;
-      groups.push({ label: c.label, x: cx, y: cy - tall - markRadius * 1.5 });
+      groups.push({ label: c.label, x: cx, y: cy - tall - markRadius * 1.5, width: c.width });
       for (const o of offsets[c.i]) marks.push({ ...o.song, x: cx + o.dx, y: cy + o.dy, group: c.i });
       x += c.width;
     }

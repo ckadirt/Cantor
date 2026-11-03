@@ -74,12 +74,15 @@ const slots = phraseGeometry(
 /**
  * How it works, as devices and who pairs with whom. `at` seats a device in
  * each scene it is in, in percent of the figure; the relay stands between.
+ * `narrow` overrides a seat on a phone, where the first scene sits higher and
+ * further in, to leave its roles room beneath and beside.
  */
-type End = { key: string; kind: 'phone' | 'laptop' | 'desktop' | 'server' | 'cloud'; label: string; role?: string; models?: number; at: Partial<Record<Scene, [number, number]>> };
+type Seats = Partial<Record<Scene, [number, number]>>;
+type End = { key: string; kind: 'phone' | 'laptop' | 'desktop' | 'server' | 'cloud'; label: string; role?: string; models?: number; at: Seats; narrow?: Seats };
 const ENDS: End[] = [
-  { key: 'you', kind: 'phone', label: 'Your phone', role: 'Where your music lives, and plays.', at: { how: [10, 50], share: [10, 28], network: [7, 13] } },
-  { key: 'relay', kind: 'cloud', label: 'The relay', role: 'Carries sealed messages between them. It can’t read a byte.', at: { how: [50, 50], share: [50, 50], network: [43, 50] } },
-  { key: 'desktop', kind: 'desktop', label: 'Your computer', role: 'Runs Cantor’s node: it makes the songs and keeps your library.', models: 3, at: { how: [88, 50], share: [88, 50], network: [74, 28] } },
+  { key: 'you', kind: 'phone', label: 'Your phone', role: 'Where your music lives, and plays.', at: { how: [10, 50], share: [10, 28], network: [7, 13] }, narrow: { how: [16, 26] } },
+  { key: 'relay', kind: 'cloud', label: 'The relay', role: 'Carries sealed messages between them. It can’t read a byte.', at: { how: [50, 50], share: [50, 50], network: [43, 50] }, narrow: { how: [50, 26] } },
+  { key: 'desktop', kind: 'desktop', label: 'Your computer', role: 'Runs Cantor’s node: it makes the songs and keeps your library.', models: 3, at: { how: [88, 50], share: [88, 50], network: [74, 28] }, narrow: { how: [84, 26] } },
   { key: 'ana', kind: 'phone', label: 'Ana’s phone', at: { share: [10, 74], network: [7, 39] } },
   { key: 'leo', kind: 'phone', label: 'Leo’s phone', at: { network: [7, 65] } },
   { key: 'mia', kind: 'phone', label: 'Mia’s phone', at: { network: [7, 91] } },
@@ -260,7 +263,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
         {ENDS.map((e) => {
           const first = e.at.how ?? e.at.share ?? e.at.network!;
           return (
-            <div class:list={['end', e.kind]} data-end={e.key} data-kind={e.kind} data-at={JSON.stringify(e.at)} style={`left:${first[0]}%;top:${first[1]}%`}>
+            <div class:list={['end', e.kind]} data-end={e.key} data-kind={e.kind} data-at={JSON.stringify(e.at)} data-narrow={JSON.stringify(e.narrow ?? {})} style={`left:${first[0]}%;top:${first[1]}%`}>
               <Device kind={e.kind} publicKey={e.key === 'you' ? 'your phone' : e.key} models={e.models} />
               <span class="name">{e.label}</span>
               {e.role && <span class="role">{e.role}</span>}
@@ -664,6 +667,11 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     .drawing { padding-left: 0; }
     .repo { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   }
+  /* A mid-width window: the figure is too narrow for three 190px roles side by side. */
+  @media (min-width: 901px) and (max-width: 1240px) {
+    .wire { container-type: size; }
+    .end .role { width: 24cqw; font-size: 13.5px; line-height: 19px; }
+  }
   @media (max-width: 900px) {
     section { padding: 110px 22px; }
     .inner { max-width: none; }
@@ -693,7 +701,12 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     .signup i { height: 22px; }
     .end .name { white-space: normal; text-align: center; width: 76px; font-size: 9px; letter-spacing: 1.2px; line-height: 1.4; }
     .wire { left: 22px; right: 22px; top: 46svh; bottom: 8svh; }
-    .end .role { display: none; }
+    /* The first scene keeps its roles: three short columns under the devices. */
+    .end .role { width: 28vw; top: calc(100% + 10px); font-size: 13px; line-height: 18px; }
+    .wire[data-scene='how'] .end.on { scale: 1; }
+    .wire[data-scene='how'] .end :global(.device.phone) { width: 30px; }
+    .wire[data-scene='how'] .end :global(.device.desktop) { width: 76px; }
+    .wire[data-scene='how'] .end :global(.device.cloud) { width: 92px; }
     .end :global(.device.phone) { width: 24px; }
     .end :global(.device.laptop) { width: 52px; }
     .end :global(.device.desktop) { width: 66px; }

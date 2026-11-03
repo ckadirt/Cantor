@@ -35,16 +35,24 @@ const smoother = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
 
 export function startNetworkStage(figure: HTMLElement) {
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  /** The phone layout (index.astro's 900px breakpoint): narrow seats and captions. */
+  const narrowScreen = matchMedia('(max-width: 900px)');
   const canvas = figure.querySelector<HTMLCanvasElement>('canvas')!;
   const ctx = canvas.getContext('2d')!;
   const ends = new Map(
     [...figure.querySelectorAll<HTMLElement>('[data-end]')].map((el) => [
       el.dataset.end!,
-      { el, kind: el.dataset.kind as Kind, at: JSON.parse(el.dataset.at!) as Partial<Record<Scene, [number, number]>> },
+      {
+        el,
+        kind: el.dataset.kind as Kind,
+        at: JSON.parse(el.dataset.at!) as Partial<Record<Scene, [number, number]>>,
+        narrow: JSON.parse(el.dataset.narrow ?? '{}') as Partial<Record<Scene, [number, number]>>,
+      },
     ]),
   );
   const links = (JSON.parse(figure.dataset.links!) as Link[]).map((link, k) => ({ link, k, since: -1 }));
   let scene: Scene | null = null;
+  let seatedNarrow = false;
   /** Each computer's fan: how fast it turns (eased toward busy or still) and where it stands. */
   const fans = new Map<string, { rotor: SVGGElement; speed: number; angle: number }>();
   for (const [key, end] of ends) {
@@ -54,11 +62,13 @@ export function startNetworkStage(figure: HTMLElement) {
   let lastNow = performance.now();
 
   const seat = (next: Scene | null) => {
-    if (next === scene) return;
+    const narrow = narrowScreen.matches;
+    if (next === scene && narrow === seatedNarrow) return;
     scene = next;
+    seatedNarrow = narrow;
     figure.dataset.scene = next ?? '';
     for (const end of ends.values()) {
-      const place = next ? end.at[next] : undefined;
+      const place = next ? (narrow && end.narrow[next]) || end.at[next] : undefined;
       end.el.classList.toggle('on', place !== undefined);
       if (place) {
         end.el.style.left = `${place[0]}%`;
@@ -148,7 +158,11 @@ export function startNetworkStage(figure: HTMLElement) {
           ctx.fillStyle = ink;
           ctx.font = `italic ${16 * dpr}px "CMU Serif", Georgia, serif`;
           ctx.textAlign = 'left';
-          ctx.fillText(`“${ask.slice(0, Math.round(typed * ask.length))}”`, p0.x, ac.y - 18 * dpr);
+          const said = `“${ask.slice(0, Math.round(typed * ask.length))}”`;
+          // Beside the phone where the wire has room; above it on a narrow
+          // screen, where beside it is the relay.
+          if (narrowScreen.matches) ctx.fillText(said, a.x, a.y - 14 * dpr);
+          else ctx.fillText(said, p0.x, ac.y - 18 * dpr);
         }
         if (fold > 0) envelope(lerpPt(ac, p0, fold), fold, ink, paper, dpr, shown);
         return;

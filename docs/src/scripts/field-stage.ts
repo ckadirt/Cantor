@@ -379,7 +379,6 @@ export function startFieldStage(
     const labels = clamp((gather - 0.5) / 0.5);
     if (labels > 0) {
       ctx.fillStyle = c.muted;
-      ctx.font = `${(wide ? 10 : 9) * dpr}px ui-monospace, Menlo, monospace`;
       ctx.textAlign = 'center';
       const fade = ease(moved);
       const sets: [StageAxis, ReturnType<typeof fit>, number][] =
@@ -388,7 +387,13 @@ export function startFieldStage(
         if (a <= 0) continue;
         ctx.globalAlpha = labels * a;
         for (const g of axes[axis].groups) {
-          ctx.fillText(spaced(g.label.toUpperCase()), g.x * f.scale + f.ox, g.y * f.scale + f.oy);
+          // A name keeps to its own cell: on a narrow map it wraps, upward, so
+          // it never runs into its neighbour's or off the screen.
+          const x = g.x * f.scale + f.ox;
+          const room = Math.min(g.width * f.scale - 8 * dpr, 2 * Math.min(x, w - x) - 4 * dpr);
+          const { lines, size } = fitLabel(ctx, g.label.toUpperCase(), room, (wide ? 10 : 9) * dpr);
+          const y = g.y * f.scale + f.oy;
+          lines.forEach((line, k) => ctx.fillText(line, x, y - (lines.length - 1 - k) * size * 1.35));
         }
       }
       ctx.globalAlpha = 1;
@@ -617,6 +622,33 @@ export function startFieldStage(
 
 function spaced(label: string) {
   return label.split('').join(String.fromCharCode(8202));
+}
+
+/**
+ * A group's name in at most `room` pixels: spaced on one line if it fits,
+ * else broken at its spaces, then unspaced, then a size smaller. Sets the
+ * context's font to the size it settles on.
+ */
+function fitLabel(ctx: CanvasRenderingContext2D, label: string, room: number, size: number) {
+  const wrap = (space: (s: string) => string) => {
+    const lines: string[] = [];
+    for (const word of label.split(' ')) {
+      const last = lines[lines.length - 1];
+      if (last !== undefined && ctx.measureText(space(`${last} ${word}`)).width <= room) lines[lines.length - 1] = `${last} ${word}`;
+      else lines.push(word);
+    }
+    return lines.map(space);
+  };
+  const fits = (lines: string[]) => lines.every((l) => ctx.measureText(l).width <= room);
+  let lines: string[] = [];
+  for (const s of [size, size * 0.85]) {
+    ctx.font = `${s}px ui-monospace, Menlo, monospace`;
+    for (const space of [spaced, (t: string) => t]) {
+      lines = wrap(space);
+      if (fits(lines) && lines.length <= 2) return { lines, size: s };
+    }
+  }
+  return { lines, size: size * 0.85 };
 }
 
 /** Mix two #rrggbb colours. */
