@@ -114,8 +114,10 @@ import {
   type SharedValue,
 } from 'react-native-reanimated';
 import {
+  jsMark,
   jsSpan,
   probeNow,
+  uiMark,
   uiRecord,
   uiSpan,
   useFrameGapProbe,
@@ -553,6 +555,12 @@ type Props = {
    * letter in find (`useFieldCamera`'s `recutNow`).
    */
   installRef?: { current: CutInstaller | null };
+  /**
+   * Filled with the canvas's way to build players ahead of a tap: the songs
+   * a person standing at a shelf is likely to open next, nearest first. A
+   * ref and not a prop, because entering a shelf must not re-render this.
+   */
+  prepareRef?: { current: ((entityKeys: readonly string[]) => void) | null };
   viewport: Viewport;
   presentations: ReadonlyMap<string, FieldPresentation>;
   jobs?: ReadonlyMap<string, JobPresentation>;
@@ -757,6 +765,7 @@ function FieldCanvasImpl({
   drawnClockShared,
   cutClockShared,
   installRef,
+  prepareRef,
   viewport,
   presentations: currentPresentations,
   jobs,
@@ -1233,6 +1242,7 @@ function FieldCanvasImpl({
    */
   const focusReady = useCallback(
     (generation: number) => {
+      jsMark('focusReady');
       const apply = applyCutRef.current;
       const live = scene.focusLive;
       const parked = scene.parked;
@@ -1242,6 +1252,7 @@ function FieldCanvasImpl({
         const held = parked.value;
         if (held === null || generation < held.generation) return;
         parked.value = null;
+        uiMark('applyCut(unparked)');
         apply(held, true);
       })();
     },
@@ -1331,11 +1342,13 @@ function FieldCanvasImpl({
         focusLive.value >= 0 &&
         focusLive.value < cutData.generation
       ) {
+        uiMark('cut parked');
         parked.value = cutData;
         return;
       }
       parked.value = null;
       const probeApply = probeNow();
+      uiMark('applyCut');
       applyCut(cutData, restart);
       uiSpan('ui.applyCut', probeApply);
     };
@@ -1475,19 +1488,74 @@ function FieldCanvasImpl({
     stepMotion,
     stepPresentation,
   ]);
+  /*
+   * Every lens's player for a song, kept by song while what it is built from
+   * is the same: all four lenses' players are ~20 ms of the Xiaomi's JS
+   * thread, and the descent into a song waits for the commit they are built
+   * in. Built ahead with the rows' models at a shelf (`prepareAhead`).
+   */
+  const lensPlayers = useRef(
+    new Map<
+      string,
+      Readonly<{
+        recipe: FieldPresentation['recipe'];
+        analysis: unknown;
+        cover: unknown;
+        track: unknown;
+        players: readonly (LensPlayer | null)[];
+      }>
+    >(),
+  );
+  const lensPlayersOf = useCallback(
+    (
+      presentation: FieldPresentation,
+      analysis: Parameters<(typeof LENSES)[number]['player']>[1],
+      cover: Parameters<(typeof LENSES)[number]['player']>[2],
+      track: Parameters<(typeof LENSES)[number]['player']>[3],
+    ): readonly (LensPlayer | null)[] => {
+      const key = presentation.entity.key;
+      const kept = lensPlayers.current.get(key);
+      if (
+        kept !== undefined &&
+        kept.recipe === presentation.recipe &&
+        kept.analysis === analysis &&
+        kept.cover === cover &&
+        kept.track === track
+      ) {
+        return kept.players;
+      }
+      const players = LENSES.map(lens =>
+        lens.player(presentation.recipe, analysis, cover, track),
+      );
+      const cache = lensPlayers.current;
+      cache.delete(key);
+      cache.set(key, {
+        recipe: presentation.recipe,
+        analysis,
+        cover,
+        track,
+        players,
+      });
+      while (cache.size > PLAYER_MODELS_KEPT) {
+        const oldest = cache.keys().next().value;
+        if (oldest === undefined) break;
+        cache.delete(oldest);
+      }
+      return players;
+    },
+    [],
+  );
   const focusDraw = useMemo<FocusDraw | null>(
     () =>
       focusKey === null || focusPresentation === undefined
         ? null
         : {
             placementKey: focusKey,
-            players: LENSES.map(lens =>
-              lens.player(
-                focusPresentation.recipe,
-                focusAnalysis,
-                focusCover,
-                focusTrack,
-              ),
+            players: lensPlayersOf(
+              focusPresentation,
+              focusAnalysis,
+              focusCover,
+              focusTrack,
             ),
             seconds: focusPresentation.durationMs / 1000,
             motion: focusMotion,
@@ -1500,6 +1568,7 @@ function FieldCanvasImpl({
       focusMotion,
       focusPresentation,
       focusTrack,
+      lensPlayersOf,
       stepFrom,
     ],
   );
@@ -1574,6 +1643,7 @@ function FieldCanvasImpl({
       if (kept?.inputs === modelInputs && kept.presentation === presentation) {
         return kept;
       }
+      const probeModel = probeNow();
       const row = nativeRowModel(
         presentation,
         presentation.recipe,
@@ -1594,6 +1664,7 @@ function FieldCanvasImpl({
         },
         !reducedMotion,
       );
+      jsSpan('js.playerModel', probeModel);
       const made = { inputs: modelInputs, presentation, row, song };
       const models = playerModels.current;
       models.delete(key);
@@ -1737,6 +1808,49 @@ function FieldCanvasImpl({
       if (timer !== null) clearTimeout(timer);
     };
   }, [focusGroup, focusY, playerModelOf, presentations, recut]);
+  /*
+   * The models of the rows a person standing at a shelf can tap, built
+   * before the tap. A player's model is ~60 ms of the Xiaomi's JS thread,
+   * and built on the tap it was the descent's wait. One at a time, each
+   * after a pause, as the neighbours' are, so a tap that comes meanwhile
+   * waits for one song's worth at most; a new shelf drops the old list.
+   */
+  const aheadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const prepareAhead = (entityKeys: readonly string[]) => {
+    if (aheadTimer.current !== null) clearTimeout(aheadTimer.current);
+    aheadTimer.current = null;
+    const queue = entityKeys
+      .slice(0, SHELF_MODELS_AHEAD)
+      .map(key => presentations.get(key))
+      .filter(
+        (presentation): presentation is FieldPresentation =>
+          presentation !== undefined,
+      );
+    const next = (index: number, delayMs: number) => {
+      if (index >= queue.length) return;
+      aheadTimer.current = setTimeout(() => {
+        aheadTimer.current = null;
+        const presentation = queue[index];
+        const key = presentation.entity.key;
+        playerModelOf(presentation);
+        lensPlayersOf(
+          presentation,
+          analyses?.get(key),
+          covers?.get(key) ?? null,
+          motions?.get(key) ?? null,
+        );
+        next(index + 1, SHELF_MODELS_GAP_MS);
+      }, delayMs);
+    };
+    next(0, SHELF_MODELS_REST_MS);
+  };
+  if (prepareRef !== undefined) prepareRef.current = prepareAhead;
+  useEffect(
+    () => () => {
+      if (aheadTimer.current !== null) clearTimeout(aheadTimer.current);
+    },
+    [],
+  );
   focusGeneration.current = focusLayer?.generation ?? null;
   /*
    * A step's lines go to the motion layer on the commit that makes the next
@@ -5635,8 +5749,17 @@ function useStepForm(
   return { cuts, written };
 }
 
-/** How many songs' player models the canvas keeps; see `playerModelOf`. */
-const PLAYER_MODELS_KEPT = 6;
+/**
+ * How many songs' player models the canvas keeps; see `playerModelOf`: the
+ * rows built ahead at a shelf, and the player with its neighbours.
+ */
+const PLAYER_MODELS_KEPT = 12;
+/** How many of a shelf's rows, nearest the camera first, are built ahead. */
+const SHELF_MODELS_AHEAD = 6;
+/** How long the camera rests at a shelf before its rows' models are built. */
+const SHELF_MODELS_REST_MS = 300;
+/** The pause between two of them, so a tap never waits behind more than one. */
+const SHELF_MODELS_GAP_MS = 120;
 /** How long the player rests before its neighbours' models are built. */
 const PLAYER_MODELS_AHEAD_MS = 700;
 

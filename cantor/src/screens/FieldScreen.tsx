@@ -971,6 +971,9 @@ export function FieldScreen({ identity }: Props) {
   findingNow.current = finding;
   /** The canvas's way to send a cut outside a render; see `changeQuery`. */
   const canvasInstall = useRef<CutInstaller | null>(null);
+  const canvasPrepare = useRef<((entityKeys: readonly string[]) => void) | null>(
+    null,
+  );
   const found = findResult?.found ?? null;
   const findChrome = useMemo(
     () =>
@@ -2794,6 +2797,22 @@ export function FieldScreen({ identity }: Props) {
       fromGroupKey: fieldCamera.groupKey,
     });
   }, [fieldCamera.cameraShared, fieldCamera.groupKey, fieldCamera.level]);
+  /*
+   * Standing at a shelf, the rows nearest the camera are what a tap opens
+   * next: the canvas builds their players ahead (`prepareRef`), so the
+   * descent does not wait for one.
+   */
+  const shelfAhead =
+    fieldCamera.level === 'shelf' ? fieldCamera.groupKey ?? null : null;
+  useEffect(() => {
+    if (shelfAhead === null || layout === null) return;
+    const y = fieldCamera.cameraShared.value.y;
+    const keys = layout.placements
+      .filter(placement => placement.groupKey === shelfAhead)
+      .sort((a, b) => Math.abs(a.targetY - y) - Math.abs(b.targetY - y))
+      .map(placement => placement.entityKey);
+    canvasPrepare.current?.(keys);
+  }, [fieldCamera.cameraShared, layout, shelfAhead]);
   /** Every tag the library uses, with its count, for the blind's list. */
   const libraryTags = useMemo(
     () => tagCounts(controller.entities),
@@ -3026,6 +3045,7 @@ export function FieldScreen({ identity }: Props) {
                 drawnClockShared={fieldCamera.drawnClockShared}
                 cutClockShared={fieldCamera.cutClockShared}
                 installRef={canvasInstall}
+                prepareRef={canvasPrepare}
                 layout={layout}
                 labelFromGroups={fieldCamera.labelFromGroups}
                 palette={pal}
