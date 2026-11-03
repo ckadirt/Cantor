@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { jsTimed } from '../../dev/perfProbe';
 import { Gesture } from 'react-native-gesture-handler';
 import {
   Easing,
@@ -1667,7 +1668,7 @@ export function useFieldCamera({
     if (stranded) strandedFocus.current = generation;
   };
   if (layout !== null && recutWanted(layout, finding)) {
-    planRecut(layout, finding);
+    jsTimed('js.planRecut', () => planRecut(layout, finding));
   }
   /**
    * The latest render's planning, for the keystroke to plan with: the props
@@ -1705,8 +1706,14 @@ export function useFieldCamera({
     () =>
       activeRecut === null
         ? []
-        : activeRecut.flights.map(flight =>
-            placementFlightAtClock(flight, relayoutLinear, renderedCamera.scale),
+        : jsTimed('js.visualPlacements', () =>
+            activeRecut.flights.map(flight =>
+              placementFlightAtClock(
+                flight,
+                relayoutLinear,
+                renderedCamera.scale,
+              ),
+            ),
           ),
     [activeRecut, relayoutLinear, renderedCamera.scale],
   );

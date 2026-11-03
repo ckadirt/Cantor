@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import { jsTimed, useRenderProbe, startPerfProbe } from '../dev/perfProbe';
 import { useFieldNotices } from '../features/field/useFieldNotices';
 import { useSubmission } from '../features/composer/useSubmission';
 import {
@@ -394,6 +395,8 @@ function everything<T>(state: T): T {
 
 /** The post-onboarding surface: one field, no parallel console navigation. */
 export function FieldScreen({ identity }: Props) {
+  useRenderProbe('js.FieldScreen render+commit');
+  useEffect(() => startPerfProbe(), []);
   const pal = usePalette();
   /*
    * The runtime, and only the parts of it this screen shows.
@@ -873,13 +876,15 @@ export function FieldScreen({ identity }: Props) {
   /** The map itself: what the axis, the order and the filter lay out. */
   const mapLayout = useMemo(() => {
     if (viewport === null) return null;
-    return layoutField({
-      entities: fieldEntities,
-      arrangement,
-      viewport,
-      order: orderByKey(orderKey),
-      orderSeed,
-    });
+    return jsTimed('js.layoutField', () =>
+      layoutField({
+        entities: fieldEntities,
+        arrangement,
+        viewport,
+        order: orderByKey(orderKey),
+        orderSeed,
+      }),
+    );
   }, [arrangement, fieldEntities, orderKey, orderSeed, viewport]);
   /**
    * What find searches, folded once per library change: a node song's name,
