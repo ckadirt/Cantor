@@ -265,4 +265,28 @@ describe('the position index', () => {
       });
     }
   });
+
+  it.each([
+    ['on one line', (index: number) => ({ x: index * 3, y: 50 })],
+    ['on one point', () => ({ x: 7, y: 7 })],
+  ])('stays small with every flight %s', (_, at) => {
+    const seats: FlightSeat[] = Array.from({ length: 300 }, (__, index) => {
+      const { x, y } = at(index);
+      return {
+        fromX: x,
+        fromY: y,
+        targetX: x,
+        targetY: y,
+        fromBloomX: 0,
+        fromBloomY: 0,
+        targetBloomX: 0,
+        targetBloomY: 0,
+      };
+    });
+    const index = buildFlightIndex(seats, seat => seat, () => 0, () => false);
+    expect(index.cols).toBeLessThanOrEqual(128);
+    expect(index.rows).toBeLessThanOrEqual(128);
+    const all = queryFlightIndex(index, -1e9, -1e9, 1e9, 1e9);
+    expect(all.length).toBe(300);
+  });
 });

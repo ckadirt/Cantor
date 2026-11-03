@@ -21,8 +21,8 @@
 export const FLIGHT_INDEX_KNOBS = {
   /** Flights per cell, on average, the grid is sized for. */
   PER_CELL: 12,
-  /** The most cells the grid may have. */
-  MAX_CELLS: 16384,
+  /** The most cells along either side of the grid. */
+  MAX_SIDE: 128,
   /** A box over more cells than this is walked every frame instead. */
   MAX_SPAN_CELLS: 64,
 } as const;
@@ -127,13 +127,14 @@ export function buildFlightIndex<T>(
   }
   const width = Math.max(maxX - minX, 1e-6);
   const height = Math.max(maxY - minY, 1e-6);
-  let cell = Math.sqrt(
-    (width * height * FLIGHT_INDEX_KNOBS.PER_CELL) / Math.max(count, 1),
-  );
-  cell = Math.max(
-    cell,
-    Math.sqrt((width * height) / FLIGHT_INDEX_KNOBS.MAX_CELLS),
-    1e-6,
+  // Sized for `PER_CELL` flights a cell, but never more than `MAX_SIDE`
+  // cells along either side: a cut whose flights all stand on one line has
+  // no area, and a cell sized from area alone would split that line into
+  // millions of cells (the UI thread hung building them).
+  const cell = Math.max(
+    Math.sqrt((width * height * FLIGHT_INDEX_KNOBS.PER_CELL) / Math.max(count, 1)),
+    width / FLIGHT_INDEX_KNOBS.MAX_SIDE,
+    height / FLIGHT_INDEX_KNOBS.MAX_SIDE,
   );
   const cols = Math.max(1, Math.ceil(width / cell));
   const rows = Math.max(1, Math.ceil(height / cell));
