@@ -422,6 +422,15 @@ export function faceAtlasFor(
   paints: MarkPaints,
 ): FaceAtlas | null {
   'worklet';
+  // Only ever on the UI thread. A derived value's first run is on the JS
+  // thread, and there `requestAnimationFrame` exists too: a cache made there
+  // started a second worker on the JS thread, stamping the library and
+  // copying the whole cache to the UI thread on every frame it published —
+  // the JS thread pinned at 100 % and the app not answering. Without stamps
+  // that first frame is drawn as paths, which look the same.
+  if ((globalThis as { __RUNTIME_KIND?: number }).__RUNTIME_KIND === 1) {
+    return null;
+  }
   let atlas = stamping.atlas.value;
   if (atlas === null) {
     atlas = {

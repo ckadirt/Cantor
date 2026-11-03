@@ -175,6 +175,25 @@ function compare(a: Uint8Array, b: Uint8Array) {
 }
 
 describe('faces as stamps', () => {
+  // The stamps are the UI thread's alone (`faceAtlasFor`); Jest runs as the
+  // JS thread.
+  const runtime = globalThis as { __RUNTIME_KIND?: number };
+  const jsKind = runtime.__RUNTIME_KIND;
+  beforeEach(() => {
+    runtime.__RUNTIME_KIND = 2;
+  });
+  afterEach(() => {
+    runtime.__RUNTIME_KIND = jsKind;
+  });
+
+  it('keeps no stamps, and no worker, on the JS thread', () => {
+    runtime.__RUNTIME_KIND = 1;
+    const stamping = stampingFor(pinned);
+    const lens = lensIndex('name');
+    expect(faceAtlasFor(stamping, [lens], 1, paints())).toBeNull();
+    expect(stamping.atlas.value).toBeNull();
+  });
+
   const faces = faceFlightsOf(
     planPlacementFlights([], layout.placements, 1),
     presentations,
