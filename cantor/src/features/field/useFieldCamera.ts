@@ -1006,20 +1006,24 @@ export function useFieldCamera({
     },
     [renderedFit, cameraShared, focusKeyShared],
   );
-  const cancelCameraFlight = useCallback(() => {
-    // A descent still waiting for its commit is a flight like any other, so
-    // anything that takes the camera somewhere else drops it. The newest
-    // flight wins, which is what every other caller here already assumes.
+  /** The JS thread's half of `cancelCameraFlight`: what it was waiting on. */
+  const dropPendingFlights = useCallback(() => {
     pendingDescent.current = null;
     pendingStepLeg.current = null;
     stepTarget.current = null;
     flightThen.current = null;
     cameraFlying.current = false;
+  }, []);
+  const cancelCameraFlight = useCallback(() => {
+    // A descent still waiting for its commit is a flight like any other, so
+    // anything that takes the camera somewhere else drops it. The newest
+    // flight wins, which is what every other caller here already assumes.
+    dropPendingFlights();
     cancelAnimation(flightProgress);
     // A glide stopped from here is not a glide still moving, which is what a
     // touch asks `catchGlide` before it decides it was not a tap.
     flightCurve.value = FLIGHT_CURVE.SMOOTH;
-  }, [flightCurve, flightProgress]);
+  }, [dropPendingFlights, flightCurve, flightProgress]);
   const landFlight = useCallback(() => {
     cameraFlying.current = false;
     const then = flightThen.current;
@@ -1113,6 +1117,12 @@ export function useFieldCamera({
         { duration: durationMs, easing: Easing.linear },
         flightLanded,
       );
+      if (PERF_PROBE_ON) {
+        runOnUI(() => {
+          'worklet';
+          uiMark('flight queued');
+        })();
+      }
     },
     [
       cameraShared,
@@ -1125,6 +1135,57 @@ export function useFieldCamera({
       flightLanded,
       flightProgress,
       flightTo,
+      reducedMotion,
+    ],
+  );
+  /**
+   * `flyTo`, begun on the UI thread before this returns.
+   *
+   * A value written from the JS thread reaches the UI thread when the JS
+   * thread next yields, and a descent asks for its flight from the commit
+   * that mounts the player — whose layer then renders for ~100 ms on the
+   * Xiaomi, so the flight waited ~50–150 ms behind it. Here the cancel and
+   * the start go together in one synchronous call, so nothing queued before
+   * can stop the flight after it has begun. Only for the descent: Skia has
+   * re-recorded its commit by then, and the descent's cut waits for the
+   * player's layer whatever the camera does.
+   */
+  const flyNow = useCallback(
+    (target: Camera, durationMs: number = FIELD_CAMERA_KNOBS.CAMERA_FLIGHT_MS) => {
+      if (reducedMotion) {
+        flyTo(target, durationMs);
+        return;
+      }
+      dropPendingFlights();
+      cameraFlying.current = true;
+      runOnUISync(() => {
+        'worklet';
+        cancelAnimation(flightProgress);
+        flightCurve.value = FLIGHT_CURVE.SMOOTH;
+        flightDuration.value = durationMs;
+        flightAnchor.value = null;
+        flightFrom.value = cameraShared.value;
+        flightTo.value = target;
+        flightProgress.value = 0;
+        flightProgress.value = withTiming(
+          1,
+          { duration: durationMs, easing: Easing.linear },
+          flightLanded,
+        );
+        uiMark('flight queued');
+      });
+    },
+    [
+      cameraShared,
+      dropPendingFlights,
+      flightAnchor,
+      flightCurve,
+      flightDuration,
+      flightFrom,
+      flightLanded,
+      flightProgress,
+      flightTo,
+      flyTo,
       reducedMotion,
     ],
   );
@@ -2208,8 +2269,8 @@ export function useFieldCamera({
     if (target === null) return;
     pendingDescent.current = null;
     jsMark('descent.flyTo');
-    flyTo(target);
-  }, [descentTicket, flyTo, cutMorph, landMorph, stepClockShared]);
+    flyNow(target);
+  }, [descentTicket, flyNow, flyTo, cutMorph, landMorph, stepClockShared]);
   useEffect(
     () => () => {
       if (morphFallback.current !== null) clearTimeout(morphFallback.current);

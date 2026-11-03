@@ -2804,15 +2804,21 @@ export function FieldScreen({ identity }: Props) {
    */
   const shelfAhead =
     fieldCamera.level === 'shelf' ? fieldCamera.groupKey ?? null : null;
+  // Asked again when the camera React holds moves on — it lands with the
+  // flight that brought it here — so the rows are the ones it stands among,
+  // not the ones under it halfway down.
+  const shelfAheadY = shelfAhead === null ? null : fieldCamera.camera.y;
   useEffect(() => {
-    if (shelfAhead === null || layout === null) return;
-    const y = fieldCamera.cameraShared.value.y;
+    if (shelfAhead === null || shelfAheadY === null || layout === null) return;
     const keys = layout.placements
       .filter(placement => placement.groupKey === shelfAhead)
-      .sort((a, b) => Math.abs(a.targetY - y) - Math.abs(b.targetY - y))
+      .sort(
+        (a, b) =>
+          Math.abs(a.targetY - shelfAheadY) - Math.abs(b.targetY - shelfAheadY),
+      )
       .map(placement => placement.entityKey);
     canvasPrepare.current?.(keys);
-  }, [fieldCamera.cameraShared, layout, shelfAhead]);
+  }, [layout, shelfAhead, shelfAheadY]);
   /** Every tag the library uses, with its count, for the blind's list. */
   const libraryTags = useMemo(
     () => tagCounts(controller.entities),
