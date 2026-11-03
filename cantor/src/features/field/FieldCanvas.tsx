@@ -551,6 +551,30 @@ const NO_FACES: ReturnType<typeof joinFaces> = [];
 const NO_ROWS: ReturnType<typeof joinRows> = [];
 const NO_JOBS: PlacementFlight[] = [];
 
+/**
+ * How long one pass of drawing songs may take, in ms, and how few songs left
+ * are not worth stopping for; see the songs' effect in `FieldCanvasImpl`.
+ */
+const SONG_PASS_MS = 40;
+const SONG_PASS_ALL = 4;
+
+/**
+ * Where to draw songs first: a song's distance from the camera the cut ends
+ * at, by its flight's target seat; songs the cut does not hold last.
+ */
+export function songDrawOrder(recut: FieldRecutModel | null): (key: string) => number {
+  if (recut === null) return () => 0;
+  const target = recut.toCamera;
+  const at = new Map<string, number>();
+  for (const flight of recut.flights) {
+    if (flight.targetPlacementKey === null) continue;
+    const dx = flight.targetX - target.x;
+    const dy = flight.targetY - target.y;
+    at.set(flight.entityKey, dx * dx + dy * dy);
+  }
+  return key => at.get(key) ?? Number.MAX_VALUE;
+}
+
 /** A cut's flights before the UI thread rebuilds them; see `sendCut`. */
 const NO_FLIGHTS: readonly PlacementFlight[] = [];
 /** No map names yet; see `LivingScene.names`. */
@@ -1165,66 +1189,110 @@ function FieldCanvasImpl({
     new Map<string, { presentation: FieldPresentation; draw: SongDraw }>(),
   );
   const lastInk = useRef<InkArrival | null>(null);
+  // The cut the canvas is drawing, for which songs to draw first.
+  const latestRecut = useRef(recut);
+  latestRecut.current = recut;
   useLayoutEffect(() => {
-    if (displayFont === null || monoFont === null) return;
-    const probeSongs = probeNow();
+    if (displayFont === null || monoFont === null) return undefined;
     const cache = songCache.current;
-    const changed: Record<string, SongDraw> = {};
-    let any = false;
-    for (const [key, presentation] of presentations) {
-      const kept = cache.get(key);
-      if (
-        kept !== undefined &&
-        (kept.presentation === presentation ||
-          sameDrawnSong(kept.presentation, presentation))
-      ) {
-        continue;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    /*
+     * Songs are drawn in passes of at most `SONG_PASS_MS`, those nearest the
+     * camera first. Drawing all of them at once held the JS thread ~2.3 s at
+     * launch on the Xiaomi (872 songs, ~2.7 ms each across the four lenses),
+     * with nothing on the screen and no touch answered. A song with no
+     * drawing yet is a state the field already has — the joins skip it, as
+     * they do a song that has just arrived — so the ones in view appear in the
+     * first pass or two and the rest fill in behind them.
+     */
+    let queue: [string, FieldPresentation][] | null = null;
+    const pass = (first: boolean) => {
+      timer = null;
+      const probeSongs = probeNow();
+      if (queue === null) {
+        queue = [];
+        for (const [key, presentation] of presentations) {
+          const kept = cache.get(key);
+          if (
+            kept !== undefined &&
+            (kept.presentation === presentation ||
+              sameDrawnSong(kept.presentation, presentation))
+          ) {
+            continue;
+          }
+          queue.push([key, presentation]);
+        }
       }
-      const draw = songDrawOf(presentation, displayFont, monoFont);
-      cache.set(key, { presentation, draw });
-      changed[key] = draw;
-      any = true;
-    }
-    const removed: string[] = [];
-    for (const key of [...cache.keys()]) {
-      if (presentations.has(key)) continue;
-      cache.delete(key);
-      removed.push(key);
-    }
-    const ink = arriveInk(lastInk.current, presentations);
-    const arriving = ink !== lastInk.current && ink.clock !== null;
-    // The arrival runs on the scene's ink clock, so the next one reads where
-    // this one has got to from it.
-    lastInk.current = arriving ? { ...ink, clock: scene.inkClock } : ink;
-    jsSpan('js.songsDiff', probeSongs);
-    if (!any && removed.length === 0 && !arriving) return;
-    const from = arriving ? Object.fromEntries(ink.from) : null;
-    const songs = scene.songs;
-    const inkFrom = scene.inkFrom;
-    const inkClock = scene.inkClock;
-    const probeSent = Date.now();
-    runOnUI(() => {
-      'worklet';
-      uiRecord('ui.songsHop', Date.now() - probeSent);
-      const probeApply = probeNow();
-      // A copy made here, on the UI thread, crosses nothing: only the songs
-      // that changed were sent.
-      const next: Record<string, SongDraw> = { ...songs.value, ...changed };
-      for (let index = 0; index < removed.length; index++) {
-        delete next[removed[index]];
+      if (queue.length > SONG_PASS_ALL) {
+        const order = songDrawOrder(latestRecut.current);
+        queue.sort((a, b) => order(a[0]) - order(b[0]));
       }
-      songs.value = next;
-      uiSpan('ui.songsApply', probeApply);
-      if (from !== null) {
-        inkFrom.value = from;
-        cancelAnimation(inkClock);
-        inkClock.value = 0;
-        inkClock.value = withTiming(1, {
-          duration: ARRIVAL_KNOBS.INK_MS,
-          easing: easeSmoother,
-        });
+      const changed: Record<string, SongDraw> = {};
+      let any = false;
+      const began = probeNow();
+      let taken = 0;
+      while (taken < queue.length) {
+        const [key, presentation] = queue[taken];
+        taken += 1;
+        const draw = songDrawOf(presentation, displayFont, monoFont);
+        cache.set(key, { presentation, draw });
+        changed[key] = draw;
+        any = true;
+        if (queue.length - taken > SONG_PASS_ALL && probeNow() - began >= SONG_PASS_MS) {
+          break;
+        }
       }
-    })();
+      queue = queue.slice(taken);
+      const removed: string[] = [];
+      let arriving = false;
+      let from: Record<string, SongInk> | null = null;
+      if (first) {
+        for (const key of [...cache.keys()]) {
+          if (presentations.has(key)) continue;
+          cache.delete(key);
+          removed.push(key);
+        }
+        const ink = arriveInk(lastInk.current, presentations);
+        arriving = ink !== lastInk.current && ink.clock !== null;
+        // The arrival runs on the scene's ink clock, so the next one reads
+        // where this one has got to from it.
+        lastInk.current = arriving ? { ...ink, clock: scene.inkClock } : ink;
+        from = arriving ? Object.fromEntries(ink.from) : null;
+      }
+      jsSpan('js.songsDiff', probeSongs);
+      if (queue.length > 0) timer = setTimeout(() => pass(false), 0);
+      if (!any && removed.length === 0 && !arriving) return;
+      const songs = scene.songs;
+      const inkFrom = scene.inkFrom;
+      const inkClock = scene.inkClock;
+      const probeSent = Date.now();
+      runOnUI(() => {
+        'worklet';
+        uiRecord('ui.songsHop', Date.now() - probeSent);
+        const probeApply = probeNow();
+        // A copy made here, on the UI thread, crosses nothing: only the songs
+        // that changed were sent.
+        const next: Record<string, SongDraw> = { ...songs.value, ...changed };
+        for (let index = 0; index < removed.length; index++) {
+          delete next[removed[index]];
+        }
+        songs.value = next;
+        uiSpan('ui.songsApply', probeApply);
+        if (from !== null) {
+          inkFrom.value = from;
+          cancelAnimation(inkClock);
+          inkClock.value = 0;
+          inkClock.value = withTiming(1, {
+            duration: ARRIVAL_KNOBS.INK_MS,
+            easing: easeSmoother,
+          });
+        }
+      })();
+    };
+    pass(true);
+    return () => {
+      if (timer !== null) clearTimeout(timer);
+    };
   }, [displayFont, monoFont, presentations, scene]);
   useEffect(() => {
     scene.playing.value = playingKey;

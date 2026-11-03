@@ -22,6 +22,7 @@ import {
   faceFlightsOf,
   heldMapKey,
   sameHeldMapKey,
+  songDrawOrder,
   type FaceFlight,
 } from '../FieldCanvas';
 import {
@@ -375,5 +376,29 @@ describe('the position index', () => {
     expect(key(1, false)).not.toBeNull();
     // Anything it is drawn from changing makes it a different picture.
     expect(sameHeldMapKey(settled, key(1, true, 0.5)!)).toBe(false);
+  });
+
+  it('orders songs for drawing by their distance from the camera the cut ends at', () => {
+    const flights = planPlacementFlights([], weeks.placements, 1);
+    const target = { x: someone.targetX, y: someone.targetY, scale: fit * 3 };
+    const order = songDrawOrder({
+      generation: 1,
+      layout: weeks,
+      flights,
+      fromCamera: target,
+      toCamera: target,
+      fromFitScale: fit,
+      toFitScale: fit,
+      fromGroups: weeks.groups,
+      animate: false,
+    } as never);
+    // The song the camera stands at comes first, then by distance.
+    const keys = [...new Set(weeks.placements.map(placement => placement.entityKey))];
+    const sorted = [...keys].sort((a, b) => order(a) - order(b));
+    expect(sorted[0]).toBe(someone.entityKey);
+    expect(order(sorted[0])).toBeLessThanOrEqual(order(sorted[sorted.length - 1]));
+    // A song the cut does not hold goes last; no cut means no preference.
+    expect(order('node-a:not-in-the-cut')).toBe(Number.MAX_VALUE);
+    expect(songDrawOrder(null)('anything')).toBe(0);
   });
 });
