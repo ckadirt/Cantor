@@ -1,4 +1,5 @@
 import { sha256 } from '@noble/hashes/sha2.js';
+import { keepLibrary } from './keepLibrary';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
 import { createStore, type Store } from '../core/store';
 import { folderOf, inExcludedFolder, summarize, type FolderSummary } from './folders';
@@ -572,7 +573,9 @@ export class DeviceLibraryService {
   }
 
   private async reload(repository: DeviceRepository): Promise<DeviceLibrary> {
-    const library = await repository.load();
+    const read = await repository.load();
+    // What has not changed stays the object it was; see `keepLibrary`.
+    const library = keepLibrary(this.store.get().library, read);
     this.store.set(state => ({ ...state, library }));
     return library;
   }
