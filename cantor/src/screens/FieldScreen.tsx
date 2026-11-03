@@ -2802,8 +2802,12 @@ export function FieldScreen({ identity }: Props) {
    * next: the canvas builds their players ahead (`prepareRef`), so the
    * descent does not wait for one.
    */
+  // Not while finding: every letter is a new shelf, and a build between two
+  // letters (~50 ms each) held the next one.
   const shelfAhead =
-    fieldCamera.level === 'shelf' ? fieldCamera.groupKey ?? null : null;
+    fieldCamera.level === 'shelf' && finding === null
+      ? fieldCamera.groupKey ?? null
+      : null;
   // Asked again when the camera React holds moves on — it lands with the
   // flight that brought it here — so the rows are the ones it stands among,
   // not the ones under it halfway down.
