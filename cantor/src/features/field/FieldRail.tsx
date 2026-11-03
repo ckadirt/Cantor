@@ -5,7 +5,11 @@ import {
   GestureDetector,
   type GestureType,
 } from 'react-native-gesture-handler';
-import { useDerivedValue, type SharedValue } from 'react-native-reanimated';
+import {
+  useDerivedValue,
+  useSharedValue,
+  type SharedValue,
+} from 'react-native-reanimated';
 import {
   Canvas,
   PaintStyle,
@@ -13,6 +17,7 @@ import {
   Skia,
   type SkCanvas,
   type SkFont,
+  type SkPicture,
 } from '@shopify/react-native-skia';
 import {
   RAIL_KNOBS,
@@ -179,9 +184,20 @@ function FieldRailImpl({
     [extent, wordFont, words],
   );
   const paints = useMemo(() => createRailPaints(palette), [palette]);
-  const picture = useDerivedValue(() =>
-    timedPicture('pic.rail:183', canvas => {
-      if (model === null || wordFont === null) return;
+  // Hidden (`drawRail` draws nothing), one picture every time, so a camera
+  // moving under a hidden rail does not redraw and present its canvas.
+  const quiet = useSharedValue<{ empty: SkPicture | null }>({ empty: null });
+  const picture = useDerivedValue(() => {
+    if (
+      model === null ||
+      wordFont === null ||
+      shelfLabelAlpha(cameraShared.value.scale, fitScaleShared.value) <= 0
+    ) {
+      const held = quiet.value;
+      if (held.empty === null) held.empty = timedPicture('pic.rail:183', () => {});
+      return held.empty;
+    }
+    return timedPicture('pic.rail:183', canvas => {
       drawRail(
         canvas,
         model,
@@ -191,8 +207,8 @@ function FieldRailImpl({
         wordFont,
         paints,
       );
-    }),
-  );
+    });
+  });
   if (extent === null) return null;
   return (
     <GestureDetector gesture={gesture}>
@@ -312,9 +328,17 @@ function FieldMarginImpl({
     ink.setColor(Skia.Color(palette.muted));
     return ink;
   }, [palette]);
-  const picture = useDerivedValue(() =>
-    timedPicture('pic.rail:316', canvas => {
-      if (wordFont === null) return;
+  const quiet = useSharedValue<{ empty: SkPicture | null }>({ empty: null });
+  const picture = useDerivedValue(() => {
+    if (
+      wordFont === null ||
+      overviewWordAlpha(cameraShared.value.scale, fitScaleShared.value) <= 0
+    ) {
+      const held = quiet.value;
+      if (held.empty === null) held.empty = timedPicture('pic.rail:316', () => {});
+      return held.empty;
+    }
+    return timedPicture('pic.rail:316', canvas => {
       drawMarginWords(
         canvas,
         runs,
@@ -324,8 +348,8 @@ function FieldMarginImpl({
         wordFont,
         paint,
       );
-    }),
-  );
+    });
+  });
   if (runs.length === 0) return null;
   return (
     <View

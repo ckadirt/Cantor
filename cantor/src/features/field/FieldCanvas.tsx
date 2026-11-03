@@ -2697,8 +2697,16 @@ function PlayerMotionLayerImpl({
   });
   const stepForm = useStepForm(focus, layerClock, motionIn);
   const radius = playerRadiusPx(viewport.width);
-  const picture = useDerivedValue(() =>
-    timedPicture('pic.canvas:2620', 
+  /*
+   * Nothing to draw is one picture, the same one every time: a shared value
+   * given what it already holds wakes nothing, so this canvas is not redrawn
+   * and presented each frame while it has no player (all of find, every map
+   * frame), which a fresh empty recording made it.
+   */
+  const quiet = useSharedValue<{ empty: SkPicture | null }>({ empty: null });
+  const picture = useDerivedValue(() => {
+    let drew = false;
+    const recorded = timedPicture('pic.canvas:2620',
       canvas => {
         const now = layer.draw.value;
         const morphing = now !== null && now.morphFrom != null;
@@ -2761,6 +2769,7 @@ function PlayerMotionLayerImpl({
           (frame !== null || stepping || drawn.hold === true) &&
           share > 0
         ) {
+          drew = true;
           // The ring of ticks, as the field drew it, with the music in it.
           const detail = layer.detail.value;
           /*
@@ -2925,8 +2934,12 @@ function PlayerMotionLayerImpl({
         }
       },
       { width: viewport.width, height: viewport.height },
-    ),
-  );
+    );
+    if (drew) return recorded;
+    const held = quiet.value;
+    if (held.empty === null) held.empty = recorded;
+    return held.empty;
+  });
   /*
    * The child held by identity: a Skia canvas handed a fresh element stops
    * its mapper until the JS thread records again, so a re-render of the field
