@@ -1,3 +1,4 @@
+import { SONG_CACHE_LIMIT } from './cacheLimits';
 import {
   FillType,
   Skia,
@@ -81,7 +82,7 @@ export function marbleRingsPath(
   return builder.detach();
 }
 
-const MARK_CACHE_LIMIT = 512;
+const MARK_CACHE_LIMIT = SONG_CACHE_LIMIT;
 const markCache = new Map<string, MarbleMark>();
 
 export function marbleMarkOf(recipe: FaceRecipe): MarbleMark {

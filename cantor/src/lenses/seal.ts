@@ -22,6 +22,7 @@
 /* eslint-disable no-bitwise -- a mask is a bit field by definition, the same
    exemption `face.ts` takes for its hash. */
 
+import { SONG_CACHE_LIMIT } from './cacheLimits';
 import { faceSeed, mulberry32, type FaceRecipe } from './face';
 
 /** KNOBS — the seal's shape language. */
@@ -239,7 +240,7 @@ export function sealSeed(recipe: FaceRecipe): number {
   return (faceSeed(recipe) ^ Math.imul(seconds + 1, 0x9e3779b1) ^ 0x5ea1) >>> 0;
 }
 
-const SEAL_CACHE_LIMIT = 512;
+const SEAL_CACHE_LIMIT = SONG_CACHE_LIMIT;
 const sealCache = new Map<string, SealModel>();
 
 /** The seal for a recipe. Same recipe, same seal, on every device. */

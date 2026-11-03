@@ -30,6 +30,7 @@
 /* eslint-disable no-bitwise -- a seed is a bit field, and a ring is pairs of
    numbers; the same exemption `face.ts` and `seal.ts` take. */
 
+import { SONG_CACHE_LIMIT } from './cacheLimits';
 import { faceSeed, hash, mulberry32, type FaceRecipe } from './face';
 
 /** KNOBS — the identity, the page's own numbers (`identityOps`). */
@@ -550,7 +551,7 @@ export type MarbleIdentity = Readonly<{
   ext: number;
 }>;
 
-const IDENTITY_CACHE_LIMIT = 512;
+const IDENTITY_CACHE_LIMIT = SONG_CACHE_LIMIT;
 const identityCache = new Map<string, MarbleIdentity>();
 
 /** The identity for a recipe. Same recipe, same marbling, on every device. */

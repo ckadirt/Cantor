@@ -1,3 +1,4 @@
+import { SONG_CACHE_LIMIT } from './cacheLimits';
 import type { MotionFrame } from './motion/motionFrame';
 import {
   PathOp,
@@ -49,7 +50,7 @@ export function sealSidePx(radius: number): number {
   return radius * SEAL_KNOBS.SIDE_RATIO;
 }
 
-const SEAL_PATH_CACHE_LIMIT = 512;
+const SEAL_PATH_CACHE_LIMIT = SONG_CACHE_LIMIT;
 const sealPathCache = new Map<string, SkPath>();
 
 /**
@@ -109,7 +110,7 @@ export type SealMark = Readonly<{
   spindle: number;
 }>;
 
-const SEAL_MARK_CACHE_LIMIT = 512;
+const SEAL_MARK_CACHE_LIMIT = SONG_CACHE_LIMIT;
 const sealMarkCache = new Map<string, SealMark>();
 
 export function sealMarkOf(recipe: FaceRecipe): SealMark {

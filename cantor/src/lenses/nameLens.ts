@@ -1,3 +1,4 @@
+import { SONG_CACHE_LIMIT, SONG_TEXT_CACHE_LIMIT } from './cacheLimits';
 import {
   CIRCLE_BODY_KNOBS,
   circleMorphPlayer,
@@ -613,7 +614,7 @@ export type MeasuredFont = Readonly<{
 
 const textWidthCache = new Map<string, number>();
 const fitTextCache = new Map<string, string>();
-const TEXT_CACHE_LIMIT = 512;
+const TEXT_CACHE_LIMIT = SONG_TEXT_CACHE_LIMIT;
 
 /** `measureText` is not free, and a row is measured on every recorded frame. */
 export function textWidth(value: string, font: MeasuredFont): number {
@@ -673,7 +674,8 @@ function remember<T>(cache: Map<string, T>, key: string, value: T): void {
   cache.set(key, value);
 }
 
-const FACE_PATH_CACHE_LIMIT = 512;
+// A song's contour at each size it is asked for: a few sizes per song.
+const FACE_PATH_CACHE_LIMIT = SONG_CACHE_LIMIT * 2;
 const facePathCache = new Map<string, SkPath>();
 
 /** Build the closed contour once per song recipe and requested display size. */
