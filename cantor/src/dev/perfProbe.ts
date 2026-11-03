@@ -56,7 +56,23 @@ export function uiRecord(label: string, ms: number): void {
   ring.spans.push({ label, ms, at: Date.now() });
 }
 
+/** On the UI thread: a moment, logged with its wall-clock time. */
+export function uiMark(label: string): void {
+  'worklet';
+  if (!PERF_PROBE_ON) return;
+  const ring = uiRing();
+  if (ring.spans.length >= RING) return;
+  ring.spans.push({ label: `@${label}`, ms: -1, at: Date.now() });
+}
+
 const jsRing: Ring = { spans: [] };
+
+/** On the JS thread: a moment, logged with its wall-clock time. */
+export function jsMark(label: string): void {
+  if (!PERF_PROBE_ON) return;
+  if (jsRing.spans.length >= RING) return;
+  jsRing.spans.push({ label: `@${label}`, ms: -1, at: Date.now() });
+}
 
 /** On the JS thread: a span that began at `start` (`probeNow()`). */
 export function jsSpan(label: string, start: number): void {
@@ -76,7 +92,11 @@ export function jsTimed<T>(label: string, fn: () => T): T {
 
 function summarise(thread: string, spans: readonly Span[]): string {
   const by: Record<string, { n: number; total: number; max: number }> = {};
+  const marks = spans
+    .filter(span => span.ms < 0)
+    .map(span => `  @ ${span.at % 100000} ${span.label.slice(1)}`);
   for (const span of spans) {
+    if (span.ms < 0) continue;
     const entry = by[span.label] ?? { n: 0, total: 0, max: 0 };
     entry.n += 1;
     entry.total += span.ms;
@@ -94,7 +114,9 @@ function summarise(thread: string, spans: readonly Span[]): string {
   const slow = spans
     .filter(span => span.ms >= SLOW_MS)
     .map(span => `  ! ${span.at % 100000} ${span.label} ${span.ms.toFixed(1)}`);
-  return `PROBE ${thread}\n${lines.join('\n')}\n${slow.join('\n')}`;
+  return `PROBE ${thread}\n${lines.join('\n')}\n${slow.join('\n')}${
+    marks.length > 0 ? `\n${marks.join('\n')}` : ''
+  }`;
 }
 
 function logUi(spans: Span[]) {
@@ -144,3 +166,4 @@ export function useRenderProbe(label: string): void {
     if (PERF_PROBE_ON) jsSpan(label, start);
   });
 }
+

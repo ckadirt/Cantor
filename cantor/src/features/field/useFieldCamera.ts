@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { jsTimed } from '../../dev/perfProbe';
+import { PERF_PROBE_ON, jsMark, jsTimed, uiMark } from '../../dev/perfProbe';
 import { Gesture } from 'react-native-gesture-handler';
 import {
   Easing,
@@ -1128,6 +1128,12 @@ export function useFieldCamera({
       reducedMotion,
     ],
   );
+  useAnimatedReaction(
+    () => PERF_PROBE_ON && flightProgress.value > 0 && flightProgress.value < 0.5,
+    (moving, was) => {
+      if (moving && was === false) uiMark('flight first frame');
+    },
+  );
   /**
    * A glide the gesture has already launched on the UI thread, told to JS:
    * it is a flight like any other, so a re-cut or a tap that arrives while it
@@ -2201,6 +2207,7 @@ export function useFieldCamera({
     const target = pendingDescent.current;
     if (target === null) return;
     pendingDescent.current = null;
+    jsMark('descent.flyTo');
     flyTo(target);
   }, [descentTicket, flyTo, cutMorph, landMorph, stepClockShared]);
   useEffect(
@@ -2483,6 +2490,7 @@ export function useFieldCamera({
 
   const tapAt = useCallback(
     (point: Point) => {
+      jsMark('tap');
       const field = layoutRef.current;
       const size = viewport;
       if (field === null || size === null) return;
