@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef } from 'react';
+import { timedPicture } from '../../dev/perfProbe';
 import { PixelRatio, Pressable, StyleSheet, type TextStyle } from 'react-native';
 import Animated, {
   useAnimatedReaction,
@@ -15,7 +16,6 @@ import {
   PaintStyle,
   Picture,
   Skia,
-  createPicture,
   type SkFont,
 } from '@shopify/react-native-skia';
 import { WriteText, easeSmoother, graphemes } from '../../motion';
@@ -481,7 +481,7 @@ function NowPlayingMark({
 
   const box = NOW_PLAYING_MARK_BOX_PX;
   const picture = useDerivedValue(() =>
-    createPicture(canvas => {
+    timedPicture('pic.nowPlaying:484', canvas => {
       const on = playAt.value;
       const colour = Float32Array.of(
         muted[0] + (ink[0] - muted[0]) * on,

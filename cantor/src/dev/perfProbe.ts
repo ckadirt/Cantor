@@ -11,6 +11,7 @@
  * Read it with `adb logcat -s ReactNativeJS:W | grep PROBE`.
  */
 import { useLayoutEffect } from 'react';
+import { createPicture, type SkCanvas, type SkRect } from '@shopify/react-native-skia';
 import { runOnJS, runOnUI, useFrameCallback } from 'react-native-reanimated';
 
 /** Flip on for a measuring build; committed off. */
@@ -167,3 +168,21 @@ export function useRenderProbe(label: string): void {
   });
 }
 
+
+/**
+ * `createPicture`, timed under `label` when the probe is on: every picture a
+ * canvas records each frame is one of these, so a frame's cost can be read
+ * picture by picture.
+ */
+export function timedPicture(
+  label: string,
+  draw: (canvas: SkCanvas) => void,
+  rect?: SkRect | { width: number; height: number },
+) {
+  'worklet';
+  if (!PERF_PROBE_ON) return createPicture(draw, rect as SkRect);
+  const start = probeNow();
+  const picture = createPicture(draw, rect as SkRect);
+  uiSpan(label, start);
+  return picture;
+}

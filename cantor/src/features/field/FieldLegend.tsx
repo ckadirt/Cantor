@@ -1,11 +1,11 @@
 import React, { useCallback, useMemo, useState } from 'react';
+import { timedPicture } from '../../dev/perfProbe';
 import { StyleSheet, Text, View, type LayoutChangeEvent } from 'react-native';
 import {
   Canvas,
   PaintStyle,
   Picture,
   Skia,
-  createPicture,
 } from '@shopify/react-native-skia';
 import {
   ARRIVING_NONE,
@@ -101,7 +101,7 @@ export function FieldLegend({
         ...(entry.imported ? { imported: true } : {}),
       }),
     );
-    return createPicture(canvas => {
+    return timedPicture('pic.legend:104', canvas => {
       ENTRIES.forEach((entry, index) => {
         if (starts[index] < 0) return;
         canvas.save();

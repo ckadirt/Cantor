@@ -1,4 +1,5 @@
 import { smootherstep } from '../../field/bands';
+import { timedPicture } from '../../dev/perfProbe';
 import React, { useMemo } from 'react';
 import {
   Group as SkiaGroup,
@@ -11,7 +12,6 @@ import {
   Text,
   vec,
   FillType,
-  createPicture,
   interpolatePaths,
   notifyChange,
   PaintStyle,
@@ -1827,7 +1827,7 @@ function MorphLine({
   const base = useMemo(() => Skia.Color(colour)[3] ?? 1, [colour]);
   // The ink inside the picture: a group's opacity does not reach a picture.
   const picture = useDerivedValue(() =>
-    createPicture(canvas => {
+    timedPicture('pic.player:1830', canvas => {
       const ink = own.value;
       if (ink <= 0) return;
       paint.setAlphaf(base * ink);
@@ -2291,7 +2291,7 @@ function FormLetters({
    * a zoom out showed them as the face shrank faster than its clock.
    */
   const picture = useDerivedValue(() =>
-    createPicture(canvas => {
+    timedPicture('pic.player:2294', canvas => {
       const alpha = formInk.value * onClock.value * (handInk === null ? 1 : handInk.value);
       if (alpha <= 0) return;
       const cuts = formCuts.value;

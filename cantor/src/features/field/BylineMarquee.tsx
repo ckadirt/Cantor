@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { timedPicture } from '../../dev/perfProbe';
 import { StyleSheet } from 'react-native';
 import {
   BlendMode,
@@ -6,7 +7,6 @@ import {
   Picture,
   Skia,
   TileMode,
-  createPicture,
   type SkFont,
   type SkPaint,
   type SkPath,
@@ -477,7 +477,7 @@ export const BylineMarqueeLayer = React.memo(function BylineMarqueeLayer({
   );
 
   const picture = useDerivedValue(() =>
-    createPicture(
+    timedPicture('pic.byline:480', 
       canvas => {
         const at = clock.at.value;
         if (

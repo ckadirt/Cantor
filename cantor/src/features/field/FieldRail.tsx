@@ -1,4 +1,5 @@
 import React, { useMemo } from 'react';
+import { timedPicture } from '../../dev/perfProbe';
 import { StyleSheet, View } from 'react-native';
 import {
   GestureDetector,
@@ -7,7 +8,6 @@ import {
 import { useDerivedValue, type SharedValue } from 'react-native-reanimated';
 import {
   Canvas,
-  createPicture,
   PaintStyle,
   Picture,
   Skia,
@@ -180,7 +180,7 @@ function FieldRailImpl({
   );
   const paints = useMemo(() => createRailPaints(palette), [palette]);
   const picture = useDerivedValue(() =>
-    createPicture(canvas => {
+    timedPicture('pic.rail:183', canvas => {
       if (model === null || wordFont === null) return;
       drawRail(
         canvas,
@@ -313,7 +313,7 @@ function FieldMarginImpl({
     return ink;
   }, [palette]);
   const picture = useDerivedValue(() =>
-    createPicture(canvas => {
+    timedPicture('pic.rail:316', canvas => {
       if (wordFont === null) return;
       drawMarginWords(
         canvas,
