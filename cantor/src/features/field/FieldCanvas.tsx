@@ -101,6 +101,7 @@ import {
   Text,
   vec,
   type SkCanvas,
+  type SkPicture,
   type SkColor,
   type SkFont,
   type SkPaint,
@@ -3136,6 +3137,100 @@ type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 /** The found shelf's last row: its words and the world point of its seat. */
 export type FoundFoot = Readonly<{ text: string; x: number; y: number }>;
 
+/** What find's held map picture was drawn from; see `heldMap`. */
+type HeldMapKey = Readonly<{
+  cut: object;
+  faces: object;
+  songs: object;
+  atlas: object | null;
+  mapX: number;
+  mapY: number;
+  mapScale: number;
+  fitted: number;
+  cameraScale: number;
+  receded: number;
+  ink: number;
+  lensFrom: number;
+  lensTo: number;
+  lensT: number;
+  inkClock: number;
+  opening: number;
+}>;
+
+type HeldMapPicture = { key: HeldMapKey | null; picture: SkPicture | null };
+
+/**
+ * What the faces' picture of find's map is drawn from at this frame, or null
+ * when it is not one that can be held: not a gather, or one whose map side
+ * has a face that moves or changes its ink.
+ */
+export function heldMapKey(
+  cut: NativeCut | null,
+  clockValue: number,
+  faces: object,
+  songs: object,
+  atlas: object | null,
+  cameraShared: SharedValue<Camera>,
+  fitScaleShared: SharedValue<number>,
+  lensFrom: number,
+  lensTo: number,
+  lensT: number,
+  inkClockValue: number,
+  opening: number,
+  still: boolean,
+): HeldMapKey | null {
+  'worklet';
+  if (cut === null || cut.flights.length === 0) return null;
+  const p = Math.min(Math.max(clockValue, 0), 1);
+  // Landed, every face stands at its target whatever it did on the way.
+  if (!still && p < 1) return null;
+  const recede = cut.recede;
+  const drawn = gatherDrawn(cut.gather, recede, p);
+  if (drawn === null || recede === null) return null;
+  const linear = linearOfEased(p);
+  const map = mapCameraAt(drawn.map, recede, linear);
+  return {
+    cut,
+    faces,
+    songs,
+    atlas,
+    mapX: map.x,
+    mapY: map.y,
+    mapScale: map.scale,
+    fitted: nativeFitScale(p, cut.recut, fitScaleShared),
+    cameraScale: nativeCameraScale(p, cut.recut, cameraShared),
+    receded: recededAt(recede, linear),
+    ink: recedeInkAt(recede, linear),
+    lensFrom,
+    lensTo,
+    lensT,
+    inkClock: inkClockValue,
+    opening,
+  };
+}
+
+export function sameHeldMapKey(a: HeldMapKey, b: HeldMapKey): boolean {
+  'worklet';
+  return (
+    a.cut === b.cut &&
+    a.faces === b.faces &&
+    a.songs === b.songs &&
+    a.atlas === b.atlas &&
+    a.mapX === b.mapX &&
+    a.mapY === b.mapY &&
+    a.mapScale === b.mapScale &&
+    a.fitted === b.fitted &&
+    a.cameraScale === b.cameraScale &&
+    a.receded === b.receded &&
+    a.ink === b.ink &&
+    a.lensFrom === b.lensFrom &&
+    a.lensTo === b.lensTo &&
+    a.lensT === b.lensT &&
+    a.inkClock === b.inkClock &&
+    a.opening === b.opening
+  );
+}
+
 type SentCut = Readonly<{
   recut: FieldRecutModel;
   places: ReadonlyMap<string, string> | null;
@@ -5536,8 +5631,70 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     return positionSeconds.value / seconds;
   });
   const mapPaints = useMemo(() => createMapPaints(palette), [palette]);
+  /*
+   * Find's map, held still behind the gather.
+   *
+   * In a gather the faces' picture is the map seen through the map's camera:
+   * the found shelf's faces are the rows' picture's. Once the map has
+   * receded nothing in it moves, but its picture was recorded anew on every
+   * frame of every letter's flight (~5 ms on the Xiaomi at 872 songs). It is
+   * kept while everything it is drawn from holds — provided no face on the
+   * map side travels or changes its ink in this cut (`mapStill`), or the cut
+   * has landed — and recorded again the moment any of it changes.
+   */
+  const mapStill = useDerivedValue(() => {
+    const faces = faceFlights.value;
+    for (let index = 0; index < faces.length; index++) {
+      const face = faces[index];
+      // The found shelf's faces, and those leaving it, are the rows' picture's.
+      if (
+        face.found ||
+        face.isPlayer ||
+        (face.timing !== null && face.timing.fromFound)
+      ) {
+        continue;
+      }
+      if (face.timing !== null) return false;
+      if (
+        face.fromX !== face.targetX ||
+        face.fromY !== face.targetY ||
+        face.fromBloomX !== face.targetBloomX ||
+        face.fromBloomY !== face.targetBloomY
+      ) {
+        return false;
+      }
+      if (face.fromAlpha !== face.targetAlpha) return false;
+    }
+    return true;
+  });
+  const heldMap = useSharedValue<HeldMapPicture>({ key: null, picture: null });
   const facePicture = useDerivedValue(() => {
     const probeStart = probeNow();
+    const heldKey = heldMapKey(
+      cutShared.value,
+      clock.value,
+      faceFlights.value,
+      songs.value,
+      faceAtlas.value,
+      cameraShared,
+      fitScaleShared,
+      lensClock.from.value,
+      lensClock.to.value,
+      lensClock.t.value,
+      inkClock.value,
+      openingClock.value,
+      mapStill.value,
+    );
+    const held = heldMap.value;
+    if (
+      heldKey !== null &&
+      held.picture !== null &&
+      held.key !== null &&
+      sameHeldMapKey(held.key, heldKey)
+    ) {
+      uiSpan('ui.facePicture(held)', probeStart);
+      return held.picture;
+    }
     const picture = timedPicture('pic.canvas:5312', 
       canvas => {
         const cut = cutShared.value;
@@ -5625,6 +5782,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
       },
       { width: viewport.width, height: viewport.height },
     );
+    held.key = heldKey;
+    held.picture = heldKey === null ? null : picture;
     uiSpan('ui.facePicture', probeStart);
     return picture;
   });

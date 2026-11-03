@@ -17,7 +17,13 @@ import {
   type FieldEntity,
 } from '../../../field';
 import { lensIndex } from '../../../lenses';
-import { drawFieldFaces, faceFlightsOf, type FaceFlight } from '../FieldCanvas';
+import {
+  drawFieldFaces,
+  faceFlightsOf,
+  heldMapKey,
+  sameHeldMapKey,
+  type FaceFlight,
+} from '../FieldCanvas';
 import {
   buildFlightIndex,
   queryFlightIndex,
@@ -327,5 +333,47 @@ describe('the position index', () => {
       expect(samePixels(indexed, plain)).toBe(true);
     }
     expect(inked).toBeGreaterThan(0);
+  });
+
+  it('holds find\'s map only in a gather, and only while nothing on it moves', () => {
+    const found = weeks.placements.filter((_, index) => index % 9 === 0);
+    const gathered = gatherLayout(weeks, found);
+    const cut = planGatherCut(
+      planPlacementFlights(weeks.placements, gathered.placements, 3),
+      [],
+      found.map(placement => placement.entityKey),
+    )!;
+    const map = { x: center.x, y: center.y, scale: fit };
+    const nativeCut = {
+      generation: 3,
+      animate: true,
+      durationMs: cut.durationMs,
+      recut: { fromCamera: map, toCamera: map, fromFitScale: fit, toFitScale: fit },
+      recede: { from: cut.recedeFrom, to: cut.recedeTo, end: cut.recedeEnd },
+      gather: { map, fromShelf: null, toShelf: map },
+      flights: cut.flights,
+      places: {},
+      labels: [],
+      hubs: [],
+      sections: [],
+      foundFoot: null,
+    };
+    const faces = {};
+    const songs = {};
+    const camera = { value: map } as never;
+    const fitShared = { value: fit } as never;
+    const key = (clock: number, still: boolean, lensT = 1, cutData: object = nativeCut) =>
+      heldMapKey(cutData as never, clock, faces, songs, null, camera, fitShared, 0, 0, lensT, 1, Infinity, still);
+    // Not a gather: never held.
+    expect(key(1, true, 1, { ...nativeCut, gather: null, recede: null })).toBeNull();
+    // A gather whose map stands still: the same key while nothing changes.
+    const settled = key(1, true)!;
+    expect(settled).not.toBeNull();
+    expect(sameHeldMapKey(settled, key(1, true)!)).toBe(true);
+    // Mid-flight with faces moving on the map: not held; landed, held.
+    expect(key(0.5, false)).toBeNull();
+    expect(key(1, false)).not.toBeNull();
+    // Anything it is drawn from changing makes it a different picture.
+    expect(sameHeldMapKey(settled, key(1, true, 0.5)!)).toBe(false);
   });
 });
