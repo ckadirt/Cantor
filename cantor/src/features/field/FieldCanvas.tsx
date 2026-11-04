@@ -38,6 +38,7 @@ import {
 } from './flightIndex';
 import { packFlights, unpackFlights } from './flightPack';
 import { useStableData, useStableList } from './stableData';
+import { newPanHeld, panFrame, type PanFrame, type PanHeld } from './panPicture';
 import {
   joinFaces,
   joinJobs,
@@ -3237,6 +3238,33 @@ type NativeCameraMotion = ReturnType<typeof useNativeCameraMotion>;
 /** The found shelf's last row: its words and the world point of its seat. */
 export type FoundFoot = Readonly<{ text: string; x: number; y: number }>;
 
+/**
+ * What a picture of the map is drawn from while the camera only pans
+ * (`panPicture.ts`), or null when it cannot be held: the cut still flying,
+ * a gather, a song focused or its player still on the motion layer, a step
+ * under way. `parts` are everything else it reads; the zoom is always in it.
+ */
+function mapPanKey(
+  cut: NativeCut | null,
+  clockValue: number,
+  scale: number,
+  fitted: number,
+  focus: object | null,
+  layerDraw: object | null,
+  stepMorphValue: object | null,
+  stepClockValue: number,
+  parts: readonly unknown[],
+): readonly unknown[] | null {
+  'worklet';
+  if (cut === null || cut.flights.length === 0) return null;
+  if (clockValue < 1 || stepClockValue < 1) return null;
+  if (focus !== null || layerDraw !== null || stepMorphValue !== null) {
+    return null;
+  }
+  if (gatherDrawn(cut.gather, cut.recede, 1) !== null) return null;
+  return [cut, scale, fitted, ...parts];
+}
+
 /** What find's held map picture was drawn from; see `heldMap`. */
 type HeldMapKey = Readonly<{
   cut: object;
@@ -5769,39 +5797,22 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     return true;
   });
   const heldMap = useSharedValue<HeldMapPicture>({ key: null, picture: null });
-  const facePicture = useDerivedValue(() => {
-    if (onJsThread()) {
-      return createPicture(() => {}, {
-        width: viewport.width,
-        height: viewport.height,
-      });
-    }
+  /*
+   * The faces' picture, held while the camera only pans (`panPicture.ts`).
+   * Recorded on a canvas bigger than the screen by `extra` on every side, as
+   * `liveCamera` sees it; `cameraShared` and `viewport` below are the ones it
+   * was recorded for, which are the real ones when `extra` is 0.
+   */
+  const baseViewport = viewport;
+  const faceHeld = useSharedValue<PanHeld>(newPanHeld());
+  const recordFaces = (liveCamera: Camera, extra: number) => {
+    'worklet';
+    const cameraShared = { value: liveCamera } as SharedValue<Camera>;
+    const viewport = {
+      width: baseViewport.width + 2 * extra,
+      height: baseViewport.height + 2 * extra,
+    };
     const probeStart = probeNow();
-    const heldKey = heldMapKey(
-      cutShared.value,
-      clock.value,
-      faceFlights.value,
-      songs.value,
-      faceAtlas.value,
-      cameraShared,
-      fitScaleShared,
-      lensClock.from.value,
-      lensClock.to.value,
-      lensClock.t.value,
-      inkClock.value,
-      openingClock.value,
-      mapStill.value,
-    );
-    const held = heldMap.value;
-    if (
-      heldKey !== null &&
-      held.picture !== null &&
-      held.key !== null &&
-      sameHeldMapKey(held.key, heldKey)
-    ) {
-      uiSpan('ui.facePicture(held)', probeStart);
-      return held.picture;
-    }
     const picture = timedPicture('pic.canvas:5312', 
       canvas => {
         const cut = cutShared.value;
@@ -5887,13 +5898,89 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           faceIndex.value,
         );
       },
-      { width: viewport.width, height: viewport.height },
+      viewport,
     );
-    held.key = heldKey;
-    held.picture = heldKey === null ? null : picture;
     uiSpan('ui.facePicture', probeStart);
     return picture;
+  };
+  const facePan = useDerivedValue((): PanFrame => {
+    if (onJsThread()) {
+      return {
+        picture: createPicture(() => {}, {
+          width: viewport.width,
+          height: viewport.height,
+        }),
+        tx: 0,
+        ty: 0,
+      };
+    }
+    const camera = cameraShared.value;
+    const heldKey = heldMapKey(
+      cutShared.value,
+      clock.value,
+      faceFlights.value,
+      songs.value,
+      faceAtlas.value,
+      cameraShared,
+      fitScaleShared,
+      lensClock.from.value,
+      lensClock.to.value,
+      lensClock.t.value,
+      inkClock.value,
+      openingClock.value,
+      mapStill.value,
+    );
+    const held = heldMap.value;
+    if (heldKey !== null) {
+      // Find's map behind the gather: held while it stands still.
+      if (
+        held.picture !== null &&
+        held.key !== null &&
+        sameHeldMapKey(held.key, heldKey)
+      ) {
+        return { picture: held.picture, tx: 0, ty: 0 };
+      }
+      const picture = recordFaces(camera, 0);
+      held.key = heldKey;
+      held.picture = picture;
+      return { picture, tx: 0, ty: 0 };
+    }
+    held.key = null;
+    held.picture = null;
+    return panFrame(
+      faceHeld.value,
+      mapPanKey(
+        cutShared.value,
+        clock.value,
+        camera.scale,
+        fitScaleShared.value,
+        focusDraw.value,
+        layer.draw.value,
+        stepMorph.value,
+        stepClock.value,
+        [
+          faceFlights.value,
+          songs.value,
+          faceAtlas.value,
+          lensClock.from.value,
+          lensClock.to.value,
+          lensClock.t.value,
+          inkClock.value,
+          openingClock.value,
+          facePaints,
+          mapPaints,
+          viewport,
+        ],
+      ),
+      camera,
+      recordFaces,
+    );
   });
+  const facePicture = useDerivedValue(() => facePan.value.picture);
+  const faceShift = useDerivedValue(() => [
+    { translateX: facePan.value.tx },
+    { translateY: facePan.value.ty },
+  ]);
   /**
    * The row the player's flight has taken over, once that flight is live on
    * the UI thread; null otherwise.
@@ -5949,8 +6036,14 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     () => createLabelPaints(palette.muted, palette.faint),
     [palette],
   );
-  const rowsPicture = useDerivedValue(() => {
-    if (onJsThread()) return createPicture(() => {}, viewport);
+  const rowsHeld = useSharedValue<PanHeld>(newPanHeld());
+  const recordRows = (liveCamera: Camera, extra: number) => {
+    'worklet';
+    const cameraShared = { value: liveCamera } as SharedValue<Camera>;
+    const viewport = {
+      width: baseViewport.width + 2 * extra,
+      height: baseViewport.height + 2 * extra,
+    };
     const cut = cutShared.value;
     const p = Math.min(Math.max(clock.value, 0), 1);
     if (cut === null) return createPicture(() => {}, viewport);
@@ -6126,7 +6219,55 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     }, viewport);
     uiSpan('ui.rowsPicture', probeStart);
     return picture;
+  };  const rowsPan = useDerivedValue((): PanFrame => {
+    if (onJsThread()) {
+      return {
+        picture: createPicture(() => {}, {
+          width: viewport.width,
+          height: viewport.height,
+        }),
+        tx: 0,
+        ty: 0,
+      };
+    }
+    const camera = cameraShared.value;
+    const owned = motion.owned.value > 0 ? playerRow.value : null;
+    return panFrame(
+      rowsHeld.value,
+      mapPanKey(
+        cutShared.value,
+        clock.value,
+        camera.scale,
+        fitScaleShared.value,
+        focusDraw.value,
+        layer.draw.value,
+        stepMorph.value,
+        stepClock.value,
+        [
+          rows.value,
+          rowIndex.value,
+          hubPaths.value,
+          motion.written.value,
+          motion.fieldFade.value,
+          owned === null ? null : owned.key,
+          inkClock.value,
+          openingClock.value,
+          rowPaints,
+          labelPaints,
+          rowFonts,
+          mapPaints,
+          viewport,
+        ],
+      ),
+      camera,
+      recordRows,
+    );
   });
+  const rowsPicture = useDerivedValue(() => rowsPan.value.picture);
+  const rowsShift = useDerivedValue(() => [
+    { translateX: rowsPan.value.tx },
+    { translateY: rowsPan.value.ty },
+  ]);
   // Whatever in this re-cut is not a song is a job; one whose mark has not
   // arrived, or has left, draws nothing.
   const jobFlights = useDerivedValue(() =>
@@ -6188,7 +6329,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
   return (
     <>
       <Fill color={palette.bg} />
-      <Picture picture={facePicture} />
+      <SkiaGroup transform={faceShift}>
+        <Picture picture={facePicture} />
+      </SkiaGroup>
       {/*
         Under the arc and the hand, which is where the ring's ticks were drawn
         when they were the ring's — the measurement is what the timeline is
@@ -6212,7 +6355,9 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
           letterFont={monoFont}
         />
       )}
-      <Picture picture={rowsPicture} />
+      <SkiaGroup transform={rowsShift}>
+        <Picture picture={rowsPicture} />
+      </SkiaGroup>
       {focus === null ? null : (
         <FocusFlight
           key={`flight:${focus.key}`}
