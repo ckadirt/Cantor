@@ -625,20 +625,86 @@ export function circleRing(x: number, y: number, r: number, n: number): number[]
 /**
  * How deep each ring nests among the others: how many contain its first
  * point (outlines never cross, so any point of it says the same).
+ *
+ * Each point is a ray to the right, counting the edges it crosses — but only
+ * an edge whose height spans the point's can be crossed, so each ring's edges
+ * are filed once into bands of height, and a ring outside the point's box is
+ * passed over. Walking every edge of every ring for every point was ~90 rings
+ * of ~8,000 points late in a song: 200 ms of each bake and each seek's morph
+ * on the phone, where marbling's nested bands keep most boxes overlapping.
  */
 export function ringDepths(rings: readonly (readonly number[])[]): number[] {
   'worklet';
+  const count = rings.length;
+  const BANDS = 32;
+  const box = new Float64Array(count * 4);
+  // Per ring: where its bands start in `edges`, BANDS + 1 offsets each.
+  const bandStart = new Int32Array(count * (BANDS + 1));
+  const edgeLists: number[][] = [];
+  for (let j = 0; j < count; j++) {
+    const r = rings[j];
+    const n = r.length >> 1;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    for (let p = 0; p < n; p++) {
+      const x = r[2 * p];
+      const y = r[2 * p + 1];
+      if (x < x0) x0 = x;
+      if (x > x1) x1 = x;
+      if (y < y0) y0 = y;
+      if (y > y1) y1 = y;
+    }
+    box[4 * j] = x0;
+    box[4 * j + 1] = y0;
+    box[4 * j + 2] = x1;
+    box[4 * j + 3] = y1;
+    const span = y1 - y0 > 0 ? y1 - y0 : 1;
+    const bands: number[][] = [];
+    for (let b = 0; b < BANDS; b++) bands.push([]);
+    for (let p = 0, q = n - 1; p < n; q = p++) {
+      const ya = r[2 * p + 1];
+      const yb = r[2 * q + 1];
+      const lo = ya < yb ? ya : yb;
+      const hi = ya < yb ? yb : ya;
+      let b0 = Math.floor(((lo - y0) / span) * BANDS);
+      let b1 = Math.floor(((hi - y0) / span) * BANDS);
+      if (b0 < 0) b0 = 0;
+      if (b1 > BANDS - 1) b1 = BANDS - 1;
+      for (let b = b0; b <= b1; b++) bands[b].push(p);
+    }
+    const flat: number[] = [];
+    for (let b = 0; b < BANDS; b++) {
+      bandStart[j * (BANDS + 1) + b] = flat.length;
+      for (const p of bands[b]) flat.push(p);
+    }
+    bandStart[j * (BANDS + 1) + BANDS] = flat.length;
+    edgeLists.push(flat);
+  }
   const depths: number[] = [];
-  for (let i = 0; i < rings.length; i++) {
+  for (let i = 0; i < count; i++) {
     const px = rings[i][0];
     const py = rings[i][1];
     let depth = 0;
-    for (let j = 0; j < rings.length; j++) {
+    for (let j = 0; j < count; j++) {
       if (j === i) continue;
+      const y0 = box[4 * j + 1];
+      const y1 = box[4 * j + 3];
+      if (px < box[4 * j] || px > box[4 * j + 2] || py < y0 || py > y1) continue;
       const r = rings[j];
       const n = r.length >> 1;
+      const span = y1 - y0 > 0 ? y1 - y0 : 1;
+      let b = Math.floor(((py - y0) / span) * BANDS);
+      if (b < 0) b = 0;
+      if (b > BANDS - 1) b = BANDS - 1;
+      const list = edgeLists[j];
+      const from = bandStart[j * (BANDS + 1) + b];
+      const to = bandStart[j * (BANDS + 1) + b + 1];
       let inside = false;
-      for (let p = 0, q = n - 1; p < n; q = p++) {
+      for (let e = from; e < to; e++) {
+        const p = list[e];
+        const q = p === 0 ? n - 1 : p - 1;
         const xi = r[2 * p];
         const yi = r[2 * p + 1];
         const xj = r[2 * q];
