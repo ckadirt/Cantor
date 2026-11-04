@@ -5,6 +5,7 @@ import {
   MARBLE_PLAYER_KNOBS,
   drawMarblePlayer,
   marbleBakeImage,
+  marbleSeekShape,
   marbleBakeKey,
   marblePlayerOf,
   type MarblePlayer,
@@ -239,6 +240,46 @@ describe("marbling's morphs", () => {
     clock.mockRestore();
   });
 
+  it('starts a seek on its morph before the new bath is drawn, and waits at full ink for it', () => {
+    const clock = jest.spyOn(Date, 'now');
+    const player = marblePlayerOf({ ...A, id: 'song-seek-ahead' }, undefined, null, track);
+    const late = 150;
+    const at = (t: number) => ({ ...motionFrameAt(track, t), presence: 1 });
+    const draw = (t: number, ms: number) => {
+      clock.mockReturnValue(ms);
+      return raster(c => drawMarblePlayer(c, player, SIZE, 1, 1, 1, 1, 1, t / player.duration, 1, paints(), at(t)));
+    };
+    const fromKey = marbleBakeKey(player, late);
+    const toKey = marbleBakeKey(player, 0.05);
+    player.baked.value = marbleBakeImage(player, fromKey);
+    const oldFrame = draw(late, 1000);
+    draw(late + 0.016, 1016);
+    // The back button: nothing for where it landed yet — held.
+    expect(diff(draw(0.02, 1032), oldFrame)).toBeLessThan(2);
+    // The morph is here, its bath not yet drawn: the morph starts on it.
+    player.seek.value = marbleSeekShape(player, fromKey, toKey);
+    draw(0.05, 1048);
+    const ms = MARBLE_PLAYER_KNOBS.SEEK_MORPH_MS;
+    const mid = draw(0.3, 1048 + ms / 2);
+    expect(diff(mid, oldFrame)).toBeGreaterThan(3);
+    // Past where it would hand over, still no bath: it waits there, at full ink.
+    const waiting = draw(0.6, 1048 + ms + 40);
+    expect(diff(draw(0.7, 1048 + ms + 120), waiting)).toBeLessThan(0.5);
+    // The bath lands: it hands over, and ends on the new bath as drawn alone.
+    player.baked.value = marbleBakeImage(player, toKey);
+    const g = globalThis as unknown as { __marbleSeek?: Map<number, unknown> };
+    const kept = g.__marbleSeek;
+    g.__marbleSeek = new Map();
+    const plainNew = raster(c =>
+      drawMarblePlayer(c, player, SIZE, 1, 1, 1, 1, 1, 1.2 / player.duration, 1, paints(), at(1.2)),
+    );
+    g.__marbleSeek = kept;
+    for (let now = 1048 + ms + 136; now < 1048 + 2 * ms; now += 16) draw(0.7 + (now - 1048 - ms - 120) / 1000, now);
+    const after = draw(1.2, 1048 + 2 * ms + 40);
+    expect(diff(after, plainNew)).toBe(0);
+    clock.mockRestore();
+  });
+
   it("morphs the cover's strokes into marbling's ink", () => {
     const cover = lensIndex('cover');
     const marble = lensIndex('marble');
@@ -271,26 +312,37 @@ describe("marbling's morphs", () => {
       }
       expect(player.baked.value?.key).toBe(key);
     };
+    // Until the other lenses' morphs into the bath at `key` are here: built
+    // once nothing else waits on the runtime, never as part of a bake.
+    const paired = async (player: MarblePlayer, key: number) => {
+      for (let i = 0; i < 200 && player.pairs.value?.key !== key; i++) {
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 10));
+      }
+      expect(player.pairs.value?.key).toBe(key);
+    };
     const x = marblePlayerOf({ ...A, id: 'built-x' }, undefined, null, track);
     const y = marblePlayerOf({ ...B, id: 'built-y' }, undefined, null, track);
     marbleLens.bake!(x, 40);
     await landed(x, 40);
     const first = x.baked.value!;
     expect(first.key).toBe(40);
-    // A first bake carries only the rise, to come back soonest.
+    // A first bake carries the rise.
     expect(first.morphs!.rise).not.toBeNull();
-    expect(Object.keys(first.morphs!.pairs)).toEqual([]);
-    // The next bake along is not a seek, and carries the other lenses' morphs; a jump back is.
+    // The next bake along is not a seek; the other lenses' morphs follow it.
     marbleLens.bake!(x, 44);
     await landed(x, 44);
-    expect(x.baked.value!.morphs!.seek).toBeNull();
-    expect(Object.keys(x.baked.value!.morphs!.pairs).sort()).toEqual(['circle', 'cover', 'seal']);
+    expect(x.seek.value).toBeNull();
+    await paired(x, 44);
+    expect(Object.keys(x.pairs.value!.morphs).sort()).toEqual(['circle', 'cover', 'seal']);
+    // A jump back is a seek: its morph comes ahead of its bake, from the bath
+    // on the screen.
     marbleLens.bake!(x, 0);
     await landed(x, 0);
-    expect(x.baked.value!.morphs!.seek?.fromKey).toBe(44);
+    expect(x.seek.value?.fromKey).toBe(44);
+    expect(x.seek.value?.key).toBe(0);
     // Built in the bath's unit, not px: its rings get their share of points,
     // not each the least (they were 8-point shards on the phone).
-    const seek = x.baked.value!.morphs!.seek!.morph;
+    const seek = x.seek.value!.morph;
     const rings = seek.starts.length - 1;
     expect(seek.from.length / 2 / rings).toBeGreaterThan(MARBLE_MORPH_KNOBS.MIN_POINTS * 2);
     // The next song's first bake carries the step from this one.
@@ -302,7 +354,8 @@ describe("marbling's morphs", () => {
     expect(y.baked.value!.morphs!.step?.fromKey).toBe(8);
     marbleLens.bake!(y, 16);
     await landed(y, 16);
-    expect(y.baked.value!.morphs!.pairs.seal).toBeDefined();
+    await paired(y, 16);
+    expect(y.pairs.value!.morphs.seal).toBeDefined();
 
     // And the seal pair drawn from the built morph keeps its exact ends.
     const seal = lensIndex('seal');

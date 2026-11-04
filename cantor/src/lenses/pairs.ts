@@ -651,7 +651,8 @@ function marbleMorphsWith(
     'worklet';
     const m = marblePlayer as MarblePlayer | null;
     const bath = m === null || m.sound === null || soundIn <= 0 ? null : m.baked.value;
-    const built = bath === null || bath.morphs === null ? null : bath.morphs.pairs[kind] ?? null;
+    const kept = m === null || bath === null ? null : m.pairs.value;
+    const built = kept === null || bath === null || kept.key !== bath.key ? null : kept.morphs[kind] ?? null;
     // Where the bath's runtime built no morph (a paused player's bake comes
     // without the other lenses'), one is built here, once per key. The other
     // lens is read as rings only when the key is new: a cover read every

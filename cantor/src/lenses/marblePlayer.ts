@@ -25,6 +25,9 @@ import {
   bathAt,
   bathBake,
   bathBakeOn,
+  bathPairsOn,
+  bathSeekOn,
+  bathSeekShape,
   bathStateOf,
   bathSidesOn,
   bathWarmOn,
@@ -33,6 +36,8 @@ import {
   type BathInit,
   type BathState,
   type MarbleBake,
+  type MarblePairs,
+  type MarbleSeekShape,
 } from './marbleBath';
 import { MARBLE_MARK_REACH_PX, marbleRingsPath } from './marbleMark';
 import {
@@ -44,6 +49,7 @@ import {
   type MarbleTimeline,
 } from './marbleTimeline';
 import {
+  MARBLE_MORPH_KNOBS,
   buildMarbleMorph,
   cachedMarbleMorph,
   drawMarbleMorphPaths,
@@ -160,6 +166,18 @@ export type MarblePlayer = Readonly<{
   identityIds: readonly number[];
   baked: SharedValue<MarbleBake | null>;
   /**
+   * The last seek's morph, here ahead of the bake it lands on
+   * (`bathSeekOn`): the screen starts the morph on it while the new bath is
+   * still being drawn.
+   */
+  seek: SharedValue<MarbleSeekShape | null>;
+  /**
+   * The other lenses' morphs into the bath at its `key` (`bathPairsOn`),
+   * built when nothing waits on the bath's runtime; a lens change into a
+   * bath without them builds its own on the UI thread (`pairs.ts`).
+   */
+  pairs: SharedValue<MarblePairs | null>;
+  /**
    * The identity as the shader reads it (the bath before any op), baked once:
    * what a drop pushes aside when the sound rises, and when this player
    * leaves before it has.
@@ -183,6 +201,10 @@ type BathFeed = {
   landed: number;
   /** One call at a time in flight, so a scrub never queues stale bakes. */
   busy: boolean;
+  /** The key whose seek morph has been sent ahead of its bake, or -1. */
+  shaped: number;
+  /** The key whose bake the other lenses' morphs have been built into, or -1. */
+  paired: number;
   warmed: boolean;
   /** Whether the still bake has been asked for. */
   stilled: boolean;
@@ -269,6 +291,8 @@ export function marblePlayerOf(
     identityDepths: ringDepths(identityRings),
     identityIds,
     baked: slot<MarbleBake | null>(null),
+    seek: slot<MarbleSeekShape | null>(null),
+    pairs: slot<MarblePairs | null>(null),
     still: slot<MarbleBake | null>(null),
   };
   if (timeline !== null) {
@@ -285,6 +309,8 @@ export function marblePlayerOf(
       wanted: -1,
       landed: -1,
       busy: false,
+      shaped: -1,
+      paired: -1,
       warmed: false,
       stilled: false,
     });
@@ -334,6 +360,11 @@ export function marbleBakeImage(player: MarblePlayer, k: number): MarbleBake {
   // The identity's own bake, which the sound's rise pushes aside, comes with it.
   if (player.still.value === null) player.still.value = bathBake(localState(player), 0);
   return bathBake(localState(player), k);
+}
+
+/** A seek's morph from the bath at `fromKey` to the one at `k`, built on this thread. */
+export function marbleSeekShape(player: MarblePlayer, fromKey: number, k: number): MarbleSeekShape {
+  return bathSeekShape(localState(player), k, fromKey);
 }
 
 let runtime: WorkletRuntime | null | undefined;
@@ -396,24 +427,40 @@ function pump(player: MarblePlayer, feed: BathFeed): void {
   if (feed.wanted >= 0 && feed.wanted !== feed.landed) {
     const k = feed.wanted;
     feed.busy = true;
-    // The morphs into this bake: the rise on its first, a seek's when the
-    // key is not the next one along, a step's when another song's bath came
-    // before it. Built on the bath's runtime with it.
     const first = feed.landed < 0;
-    const before = lastFed;
+    // A seek — a key that is not the next one along — sends its morph
+    // first, from the bath on the screen: the screen starts it on that,
+    // and the bake below is drawn while it runs.
     const seekFrom = !first && k !== feed.landed + MARBLE_PLAYER_KNOBS.BAKE_EVERY ? feed.landed : -1;
+    if (seekFrom >= 0 && feed.shaped !== k) {
+      feed.shaped = k;
+      onBathRuntime(bathSeekOn, feed.id, feed.sent ? null : feed.init, k, seekFrom).then(
+        shape => {
+          feed.busy = false;
+          if (shape === null) {
+            feed.sent = false;
+            feed.shaped = -1;
+          } else {
+            feed.sent = true;
+            player.seek.value = shape;
+          }
+          pump(player, feed);
+        },
+        () => {
+          feed.busy = false;
+          pump(player, feed);
+        },
+      );
+      return;
+    }
+    // The morphs into this bake: the rise on its first, a step's when
+    // another song's bath came before it. Built on the bath's runtime with it.
+    const before = lastFed;
     const stepFrom =
       first && before !== null && before !== feed && before.landed >= 0
         ? { id: before.id, key: before.landed }
         : null;
-    // A bake a transition waits on carries only its own morph, to come back soonest;
-    // the other lenses' come with the bakes along the way.
-    const ask: BakeAsk = {
-      pairs: !first && seekFrom < 0,
-      rise: first,
-      seekFrom,
-      stepFrom,
-    };
+    const ask: BakeAsk = { rise: first, stepFrom };
     lastFed = feed;
     onBathRuntime(bathBakeOn, feed.id, feed.sent ? null : feed.init, k, ask).then(
       bake => {
@@ -431,6 +478,27 @@ function pump(player: MarblePlayer, feed: BathFeed): void {
       () => {
         feed.busy = false;
         feed.landed = k;
+      },
+    );
+    return;
+  }
+  // Nothing waits: the other lenses' morphs into the bath on the screen, for
+  // a lens change to find ready. Never part of a bake, which the screen may
+  // be waiting on.
+  const shown = player.baked.value;
+  if (feed.sent && feed.landed >= 0 && feed.paired !== feed.landed && shown !== null && shown.key === feed.landed) {
+    const k = feed.landed;
+    feed.busy = true;
+    feed.paired = k;
+    onBathRuntime(bathPairsOn, feed.id, k).then(
+      pairs => {
+        feed.busy = false;
+        if (pairs === null) feed.sent = false;
+        else player.pairs.value = pairs;
+        pump(player, feed);
+      },
+      () => {
+        feed.busy = false;
       },
     );
     return;
@@ -965,6 +1033,8 @@ type SeekState = {
   asked: number;
   /** When the morph began (the new bath here), or -1 while it waits for it. */
   start: number;
+  /** The key of the bath the morph is going to, once it has begun. */
+  target: number;
 };
 
 function seekState(id: number): SeekState {
@@ -973,7 +1043,7 @@ function seekState(id: number): SeekState {
   if (g.__marbleSeek === undefined) g.__marbleSeek = new Map();
   let state = g.__marbleSeek.get(id);
   if (state === undefined) {
-    state = { lastT: -1, lastAt: 0, lastBake: null, from: null, fromT: 0, asked: 0, start: -1 };
+    state = { lastT: -1, lastAt: 0, lastBake: null, from: null, fromT: 0, asked: 0, start: -1, target: -1 };
     g.__marbleSeek.set(id, state);
     if (g.__marbleSeek.size > 4) {
       const oldest = g.__marbleSeek.keys().next().value;
@@ -984,9 +1054,12 @@ function seekState(id: number): SeekState {
 }
 
 /**
- * A seek while the song plays: the bath it was, held still until the bake
- * for where the playhead landed is here, then morphed into it ring by ring
- * on the clock (the playhead itself just jumped, so it cannot time it).
+ * A seek while the song plays: the bath it was, held still until the morph
+ * to where the playhead landed is here — sent ahead of that bath's bake
+ * (`MarblePlayer.seek`) — then morphed into it ring by ring on the clock (the
+ * playhead itself just jumped, so it cannot time it). The new bath's image is
+ * drawn while the morph runs; if it is late, the morph waits at full ink, just
+ * before it hands over, until it is here.
  * Returns whether it drew the bath this frame. Paused or reduced (no
  * `motion`), a seek is a cut: there are no frames to animate it on, and a
  * paused seek is a finger on the rim.
@@ -1034,10 +1107,13 @@ function drawMarbleSeek(
       st.lastBake = bake;
       return false;
     }
-    // Here once the bake is the one for where the playhead landed.
+    // Here once the morph or the bake is the one for where the playhead landed.
     const settled = marbleSettledAt(sound, t);
-    const here = bake !== from && bake.key <= settled && settled - bake.key < K.LIVE_MAX;
-    if (!here) {
+    const lands = (key: number) => key <= settled && settled - key < K.LIVE_MAX;
+    const shape = player.seek.value;
+    const bakeHere = bake !== from && lands(bake.key);
+    const shapeHere = shape !== null && shape.fromKey === from.key && lands(shape.key);
+    if (!bakeHere && !shapeHere) {
       if (now - st.asked > K.SEEK_WAIT_MS) {
         st.from = null;
         st.lastBake = bake;
@@ -1048,12 +1124,35 @@ function drawMarbleSeek(
       return true;
     }
     st.start = now;
+    st.target = bakeHere ? bake.key : shape!.key;
   }
-  const p = (now - st.start) / K.SEEK_MORPH_MS;
+  let p = (now - st.start) / K.SEEK_MORPH_MS;
+  // The new bath is drawn only from the hand-over on: until its image is
+  // here, the morph waits at full ink, just before it.
+  const toHere = bake !== from && bake.key === st.target;
+  const handOver = 1 - MARBLE_MORPH_KNOBS.HAND_OVER;
+  if (!toHere && p > handOver) {
+    if (now - st.asked > K.SEEK_WAIT_MS + K.SEEK_MORPH_MS) {
+      // It never came (another seek took its place): what there is, as it is.
+      st.from = null;
+      st.lastBake = bake;
+      return false;
+    }
+    st.start = now - handOver * K.SEEK_MORPH_MS;
+    p = handOver;
+  }
   if (p >= 1) {
     st.from = null;
     st.lastBake = bake;
     return false;
+  }
+  // Built on the bath's runtime ahead of the bake, or here if it came without.
+  const shape = player.seek.value;
+  const built = shape !== null && shape.fromKey === from.key && shape.key === st.target ? shape.morph : null;
+  if (built === null && !toHere) {
+    // Neither the morph nor the bath it goes to (a newer seek took them): held as it was.
+    drawBath(canvas, player, from, sound, st.fromT, true, k, inkAlpha, lineAlpha, 0, paints);
+    return true;
   }
   const shares = morphShares(p);
   if (shares.from > 0) {
@@ -1063,8 +1162,6 @@ function drawMarbleSeek(
     drawBath(canvas, player, bake, sound, t, true, k, inkAlpha * shares.to, lineAlpha * shares.to, 0, paints);
   }
   if (shares.morph > 0) {
-    // Built with the bake on the bath's runtime, or here if it came without.
-    const built = bake.morphs !== null && bake.morphs.seek !== null && bake.morphs.seek.fromKey === from.key ? bake.morphs.seek.morph : null;
     const morph =
       built ??
       cachedMarbleMorph(`seek:${player.id}:${from.key}:${bake.key}:${Math.round(size * 100)}`, () =>
