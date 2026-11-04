@@ -68,12 +68,24 @@ function circleSideOf(recipe: FaceRecipe, u: number): MorphSide {
  */
 const COVER_MORPH_STROKES = 600;
 
+/**
+ * An even subset of a cover's strokes, at most `COVER_MORPH_STROKES`: what
+ * every cover morph side carries, the bath runtime's and the UI thread's
+ * fallback (`pairs.ts`) alike.
+ */
+export function coverMorphRings(all: number[][]): number[][] {
+  'worklet';
+  const every = Math.max(1, Math.ceil(all.length / COVER_MORPH_STROKES));
+  if (every === 1) return all;
+  const kept: number[][] = [];
+  for (let i = 0; i < all.length; i += every) kept.push(all[i]);
+  return kept;
+}
+
 /** The cover's strokes, or without a cover the circle's face as a hairline (as the cover then is). */
 function coverSideOf(recipe: FaceRecipe, art: CoverArt | null, u: number): MorphSide {
   const path = art === null ? nameLensFacePath(recipe) : coverPlayerOf(recipe, art).sound;
-  const all = pathRings(path, u);
-  const every = Math.max(1, Math.ceil(all.length / COVER_MORPH_STROKES));
-  return { rings: all.filter((_, i) => i % every === 0), alpha: 1, lines: true };
+  return { rings: coverMorphRings(pathRings(path, u)), alpha: 1, lines: true };
 }
 
 export function marbleSidesOf(

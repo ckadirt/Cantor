@@ -24,10 +24,12 @@ import {
   marbleUnitPx,
   type MarblePlayer,
 } from './marblePlayer';
+import { coverMorphRings } from './marbleSides';
 import {
   buildMarbleMorph,
   cachedMarbleMorph,
   circleRing,
+  peekMarbleMorph,
   morphShares,
   pathRings,
   type MorphSide,
@@ -581,7 +583,10 @@ function coverSide(
   'worklet';
   const cover = player === null ? null : (player as CoverPlayer).sound;
   if (cover !== null && soundIn * arrived >= 1) {
-    return { rings: pathRings(cover, size), alpha: 1, lines: true };
+    // The same subset the bath's runtime builds with (`marbleSides.ts`): a
+    // cover is thousands of strokes, and all of them made a morph no frame
+    // could draw.
+    return { rings: coverMorphRings(pathRings(cover, size)), alpha: 1, lines: true };
   }
   const rings = pathRings(identity as SkPath, size);
   return rings.length === 0 ? null : { rings, alpha: 1, lines: true };
@@ -647,14 +652,28 @@ function marbleMorphsWith(
     const m = marblePlayer as MarblePlayer | null;
     const bath = m === null || m.sound === null || soundIn <= 0 ? null : m.baked.value;
     const built = bath === null || bath.morphs === null ? null : bath.morphs.pairs[kind] ?? null;
-    // The other lens as rings only where the bath's runtime built no morph:
-    // a seal is hundreds of rings, not to be rebuilt every frame.
-    const from = m === null || built !== null ? null : sideOf(otherPlayer, other, size, arrived, soundIn, heard);
-    const fixed = built !== null ? (kind === 'circle' ? 0 : -1) : from === null ? -1 : from.fixed ?? -1;
-    if (m === null || (built === null && from === null)) {
+    // Where the bath's runtime built no morph (a paused player's bake comes
+    // without the other lenses'), one is built here, once per key. The other
+    // lens is read as rings only when the key is new: a cover read every
+    // frame was most of each frame.
+    const key =
+      m === null || built !== null
+        ? ''
+        : `${kind}:${m.id}:${bath === null ? -1 : bath.key}:${Math.round(size * 100)}:${Math.round(soundIn * 10)}:${soundIn * arrived >= 1 ? 1 : 0}`;
+    let morph = built ?? (key === '' ? null : peekMarbleMorph(key));
+    if (m !== null && morph === null) {
+      const from = sideOf(otherPlayer, other, size, arrived, soundIn, heard);
+      if (from !== null) {
+        const clipR = marbleClipPx(size, arrived);
+        morph = cachedMarbleMorph(key, () => buildMarbleMorph(from, marbleSide(m, size, arrived, bath), clipR));
+      }
+    }
+    if (m === null || morph === null) {
       drop(canvas, other, otherPlayer, marble, marblePlayer, t, size, alpha, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, motion);
       return;
     }
+    // Only the circle's side keeps a ring fixed (its face, singing): ring 0.
+    const fixed = kind === 'circle' ? 0 : -1;
     const shares = morphShares(t);
     if (shares.from > 0) {
       drawOther(canvas, otherPlayer, other, size, alpha * shares.from, weight, fill, arrived, arriving, soundIn, heard, hairlinePx, paints, motionShare(motion, leavingMotion(t)));
@@ -664,13 +683,6 @@ function marbleMorphsWith(
     }
     if (shares.morph > 0) {
       const clipR = marbleClipPx(size, arrived);
-      // Built with the bake on the bath's runtime, or here if it came without.
-      const morph =
-        built ??
-        cachedMarbleMorph(
-          `${kind}:${m.id}:${bath === null ? -1 : bath.key}:${Math.round(size * 100)}:${Math.round(soundIn * 10)}`,
-          () => buildMarbleMorph(from!, marbleSide(m, size, arrived, bath), clipR),
-        );
       const ink = alpha * (fill + (1 - fill) * arrived);
       const live = liveOf(otherPlayer, size, arrived, motionShare(motion, leavingMotion(t)));
       // The seal's dots grey where the song is still to come, read now.

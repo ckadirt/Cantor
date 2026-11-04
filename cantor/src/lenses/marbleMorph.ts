@@ -535,6 +535,16 @@ export function drawMarbleMorphPaths(
   }
 }
 
+/** A morph `cachedMarbleMorph` already holds under `key`, or null. */
+export function peekMarbleMorph(key: string): MarbleMorph | null {
+  'worklet';
+  const g = globalThis as unknown as { __marbleMorphs?: { key: string; morph: MarbleMorph }[] };
+  const list = g.__marbleMorphs;
+  if (list === undefined) return null;
+  for (const entry of list) if (entry.key === key) return entry.morph;
+  return null;
+}
+
 /** Morphs kept between frames on the UI thread, by a key the caller makes. */
 export function cachedMarbleMorph(key: string, build: () => MarbleMorph): MarbleMorph {
   'worklet';
