@@ -67,6 +67,9 @@ export function useLensBakes(
         }
       }
     },
-    [players],
+    // The clock too: the screen hands the canvas a still one until the song
+    // is heard, and a reaction kept from before play read it forever, so a
+    // song opened paused never baked past its first bath.
+    [players, positionSeconds, lensClock],
   );
 }
