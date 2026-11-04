@@ -1,5 +1,37 @@
-import { useEffect, useState } from 'react';
-import { Keyboard } from 'react-native';
+import { useEffect, useState, type Component } from 'react';
+import {
+  findNodeHandle,
+  Keyboard,
+  TextInput,
+  type GestureResponderEvent,
+} from 'react-native';
+
+/**
+ * A finger landing anywhere but the focused input puts the keyboard down.
+ *
+ * Wired as `onStartShouldSetResponderCapture` on a view that holds one input
+ * among things to touch (the field and its overlay, where find's query
+ * lives). Capture runs before any child sees the touch, and it answers false,
+ * so it claims nothing and the gesture under the finger still runs: a tap on
+ * a song opens it with the keyboard already on its way down, rather than the
+ * player rising under a keyboard.
+ *
+ * The sheets do not need it: their staves are scroll views that already
+ * dismiss on a tap nothing handles, and they hold several inputs, where
+ * putting the keyboard down between two of them would flicker it.
+ */
+export function releaseKeyboardOutside(event: GestureResponderEvent): boolean {
+  const focused = TextInput.State.currentlyFocusedInput();
+  if (focused == null) return false;
+  // On Fabric the event's target is the host instance; the native tag is the
+  // same answer on the old renderer.
+  const target: unknown = event.target;
+  if (target === focused) return false;
+  const tag = findNodeHandle(focused as unknown as Component);
+  if (tag != null && Number(event.nativeEvent.target) === tag) return false;
+  Keyboard.dismiss();
+  return false;
+}
 
 /**
  * How much of the sheet's foot the soft keyboard is standing on, in dp.

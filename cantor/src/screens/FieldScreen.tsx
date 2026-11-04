@@ -73,7 +73,11 @@ import {
 } from '../core/audioActs';
 import { sourceFileInfo } from '../audio/native';
 import type { SongAudioActs } from '../features/song/FromIt';
-import { Curtain, useKeyboardInset } from '../features/curtain';
+import {
+  Curtain,
+  releaseKeyboardOutside,
+  useKeyboardInset,
+} from '../features/curtain';
 import { CondenseOverlay } from '../features/composer/CondenseOverlay';
 import {
   Easing,
@@ -3072,7 +3076,11 @@ export function FieldScreen({ identity }: Props) {
 
   return (
     <SafeAreaView style={[styles.root, { backgroundColor: pal.bg }]}>
-      <View onLayout={onLayout} style={styles.field}>
+      <View
+        onLayout={onLayout}
+        onStartShouldSetResponderCapture={releaseKeyboardOutside}
+        style={styles.field}
+      >
         {layout !== null && viewport !== null ? (
           <GestureDetector gesture={fieldCamera.gesture}>
             <View collapsable={false} style={styles.field}>

@@ -6,4 +6,4 @@ export {
   unrollTo,
   type CurtainEdge,
 } from './Curtain';
-export { useKeyboardInset } from './keyboard';
+export { releaseKeyboardOutside, useKeyboardInset } from './keyboard';
