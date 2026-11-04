@@ -39,6 +39,22 @@ export type PanHeld = {
 /** What to draw this frame: a picture, shifted by (`tx`, `ty`) pixels. */
 export type PanFrame = Readonly<{ picture: SkPicture; tx: number; ty: number }>;
 
+/**
+ * Names, to the derived value that calls it, the shared values its `record`
+ * reads.
+ *
+ * Reanimated re-runs a derived value when a shared value in its own closure
+ * changes, and finds them in arrays and plain objects but never inside a
+ * function it calls. `record` is such a function: what only it read was
+ * invisible, and a change to it recorded nothing — after find, a lens change
+ * left the found song's player in the lens it had been in. Called with every
+ * shared value `record` reads that the derived value does not, it puts them in
+ * the closure; it does nothing else.
+ */
+export function listensTo(_inputs: readonly unknown[]): void {
+  'worklet';
+}
+
 export function newPanHeld(): PanHeld {
   return { key: null, picture: null, x: 0, y: 0, lastX: NaN, lastY: NaN };
 }

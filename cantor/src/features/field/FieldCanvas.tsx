@@ -38,7 +38,13 @@ import {
 } from './flightIndex';
 import { packFlights, unpackFlights } from './flightPack';
 import { useStableData, useStableList } from './stableData';
-import { newPanHeld, panFrame, type PanFrame, type PanHeld } from './panPicture';
+import {
+  listensTo,
+  newPanHeld,
+  panFrame,
+  type PanFrame,
+  type PanHeld,
+} from './panPicture';
 import {
   joinFaces,
   joinJobs,
@@ -5904,6 +5910,8 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     return picture;
   };
   const facePan = useDerivedValue((): PanFrame => {
+    // What `recordFaces` reads that this does not: the player's music.
+    listensTo([faceIndex, heard, motionFrame, motionOn, soundClock, soundDrawn]);
     if (onJsThread()) {
       return {
         picture: createPicture(() => {}, {
@@ -6219,7 +6227,21 @@ const NativeFieldContent = React.memo(function NativeFieldContent({
     }, viewport);
     uiSpan('ui.rowsPicture', probeStart);
     return picture;
-  };  const rowsPan = useDerivedValue((): PanFrame => {
+  };
+  const rowsPan = useDerivedValue((): PanFrame => {
+    // What `recordRows` reads that this does not: the found shelf's faces,
+    // drawn over the map's names in a gather (where the key is null).
+    listensTo([
+      faceFlights,
+      faceIndex,
+      songs,
+      lensClock,
+      heard,
+      motionFrame,
+      motionOn,
+      soundClock,
+      soundDrawn,
+    ]);
     if (onJsThread()) {
       return {
         picture: createPicture(() => {}, {
