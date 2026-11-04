@@ -83,6 +83,7 @@ import {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
+import { loadGrouping, saveGrouping } from '../features/field/groupingChoice';
 import { playerRadiusPx } from '../features/field/songPose';
 import {
   grainBarsOf,
@@ -628,6 +629,33 @@ export function FieldScreen({ identity }: Props) {
     });
   }, []);
   const [dateResolution, setDateResolution] = useState<DateResolution>('week');
+  /*
+   * How the map was grouped when the app was last open (`groupingChoice.ts`).
+   * Read before the first layout — `mapLayout` waits for it — so the map opens
+   * on the saved grouping instead of on date and then re-cutting to it; and
+   * saved whenever either part of it changes, whoever changed it.
+   */
+  const [groupingLoaded, setGroupingLoaded] = useState(false);
+  useEffect(() => {
+    let active = true;
+    loadGrouping().then(choice => {
+      if (!active) return;
+      setArrangementKey(choice.axis);
+      setDateResolution(choice.resolution);
+      setGroupingLoaded(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!groupingLoaded) return;
+    // A grouping that cannot be saved is lost with the process, which is what
+    // it was before it was kept: not worth an error on the map.
+    saveGrouping({ axis: arrangementKey, resolution: dateResolution }).catch(
+      () => undefined,
+    );
+  }, [arrangementKey, dateResolution, groupingLoaded]);
   /**
    * The decoded L3 window, on the UI thread.
    *
@@ -875,7 +903,7 @@ export function FieldScreen({ identity }: Props) {
   );
   /** The map itself: what the axis, the order and the filter lay out. */
   const mapLayout = useMemo(() => {
-    if (viewport === null) return null;
+    if (viewport === null || !groupingLoaded) return null;
     return jsTimed('js.layoutField', () =>
       layoutField({
         entities: fieldEntities,
@@ -885,7 +913,7 @@ export function FieldScreen({ identity }: Props) {
         orderSeed,
       }),
     );
-  }, [arrangement, fieldEntities, orderKey, orderSeed, viewport]);
+  }, [arrangement, fieldEntities, groupingLoaded, orderKey, orderSeed, viewport]);
   /**
    * What find searches, folded once per library change: a node song's name,
    * its caption's summary and its model; a phone song's name, artist and
