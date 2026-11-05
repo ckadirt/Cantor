@@ -5,12 +5,12 @@
  * apps read to offer an update, both come from it.
  */
 export const APP = {
-  versionName: '0.1.9',
-  versionCode: 10,
-  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.9/cantor-0.1.9-arm64.apk',
-  sha256: '0493b8bdd0611c3f19dc3d12bbfb3674b25e1d38514d1e864bd00172b0e43e0a',
-  bytes: 63710593,
-  notes: 'See your song\'s place in a node\'s queue, and when its owner holds it',
+  versionName: '0.1.10',
+  versionCode: 11,
+  apk: 'https://github.com/ckadirt/Cantor/releases/download/app-v0.1.10/cantor-0.1.10-arm64.apk',
+  sha256: 'e2922b4b79d084e288bf81a4d3402e40df27c5ec2a5fe776a732a10a7af98e99',
+  bytes: 63782289,
+  notes: 'Faster find and map, steadier lens changes, quicker marbling seeks',
 } as const;
 
 /** Links the landing and the docs share, in one place. */
