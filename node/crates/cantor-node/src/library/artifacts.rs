@@ -37,6 +37,10 @@ pub struct ArtifactRecord {
 pub const DELIVERY_PROFILE: &str = "opus-stereo-160k-v1";
 pub const DELIVERY_MEDIA_TYPE: &str = "audio/ogg; codecs=opus";
 const DELIVERY_RELATIVE_PATH: &str = "artifacts/delivery.opus";
+/// The canonical master, as `complete` records it: what an app asks for when
+/// someone wants the song as WAV (internal/docs/plans/take-it-plan.md, E3).
+pub const MASTER_PROFILE: &str = "pcm16-wav-v1";
+const MASTER_RELATIVE_PATH: &str = "artifacts/master.wav";
 pub(crate) const DELIVERY_SAMPLE_RATE: u32 = 48_000;
 pub(crate) const DELIVERY_CHANNELS: u16 = 2;
 
@@ -309,6 +313,63 @@ impl Library {
         let inspected = inspect_delivery(&path)?;
         if inspected.byte_length != record.byte_length || inspected.sha256 != record.sha256 {
             bail!("delivery artifact does not match its index");
+        }
+        Ok(Some((record, path)))
+    }
+
+    /// The master as an owner may fetch it: the same rules as a delivery
+    /// (theirs, not trashed, indexed, and verified against the file), for the
+    /// one profile `complete` writes.
+    pub fn verified_master_artifact(
+        &self,
+        principal: PrincipalId,
+        song_id: &str,
+        profile: &str,
+    ) -> Result<Option<(ArtifactRecord, PathBuf)>> {
+        if profile != MASTER_PROFILE {
+            return Ok(None);
+        }
+        let owner = principal.to_string();
+        let record = self
+            .connection
+            .query_row(
+                "SELECT a.kind,a.profile,a.relative_path,a.media_type,a.byte_length,a.sha256,
+                 a.sample_rate,a.channels,a.duration_ms,a.created_at
+                 FROM artifacts a JOIN songs s ON s.id=a.job_id
+                 WHERE a.job_id=?1 AND a.kind='master' AND a.profile=?2
+                   AND s.principal_id=?3 AND s.trashed_at IS NULL",
+                params![song_id, profile, owner],
+                |row| {
+                    Ok(ArtifactRecord {
+                        kind: row.get(0)?,
+                        profile: row.get(1)?,
+                        relative_path: row.get(2)?,
+                        media_type: row.get(3)?,
+                        byte_length: row.get(4)?,
+                        sha256: row.get(5)?,
+                        sample_rate: row.get(6)?,
+                        channels: row.get(7)?,
+                        duration_ms: row.get(8)?,
+                        created_at: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?;
+        let Some(record) = record else {
+            return Ok(None);
+        };
+        if record.relative_path != MASTER_RELATIVE_PATH {
+            bail!("master artifact path is not canonical");
+        }
+        let path = self
+            .root
+            .join("jobs")
+            .join(owner)
+            .join(song_id)
+            .join(&record.relative_path);
+        let inspected = inspect_wav(&path)?;
+        if inspected.byte_length != record.byte_length || inspected.sha256 != record.sha256 {
+            bail!("master artifact does not match its index");
         }
         Ok(Some((record, path)))
     }

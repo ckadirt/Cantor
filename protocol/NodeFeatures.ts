@@ -29,4 +29,10 @@ binary_uploads: boolean,
 /**
  * Additive: `queue.position`.
  */
-queue_position: boolean, };
+queue_position: boolean, 
+/**
+ * Additive: `artifact.open` serves the master as well as the delivery
+ * (profile `pcm16-wav-v1`). A node that predates it answers
+ * `artifact_unavailable`, so a client must not ask unless this is `true`.
+ */
+master_transfer: boolean, };

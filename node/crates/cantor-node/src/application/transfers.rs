@@ -50,7 +50,16 @@ impl ArtifactTransferSession {
         {
             return invalid_field(id, "artifact");
         }
-        let artifact = match library.verified_delivery_artifact(principal_id, &song_id, &profile) {
+        // The delivery is what an app plays; the master is what it saves as
+        // WAV (internal/docs/plans/take-it-plan.md, E3). Both are the owner's
+        // own, verified against their index before a byte is sent.
+        let found = library
+            .verified_delivery_artifact(principal_id, &song_id, &profile)
+            .and_then(|delivery| match delivery {
+                Some(delivery) => Ok(Some(delivery)),
+                None => library.verified_master_artifact(principal_id, &song_id, &profile),
+            });
+        let artifact = match found {
             Ok(Some(artifact)) => artifact,
             Ok(None) => {
                 return NodeMessage::error(

@@ -209,6 +209,7 @@ mod tests {
     use crate::config::{ConfigSeed, NodeConfig, NodePaths};
     use crate::library::Library;
     use crate::pairing::{DEFAULT_PAIR_TTL, PairOffer};
+    use crate::principal::PrincipalId;
 
     fn info() -> NodeInfo {
         NodeInfo {
@@ -254,6 +255,7 @@ mod tests {
                 uploads: false,
                 binary_uploads: false,
                 queue_position: false,
+                master_transfer: false,
             },
             installable: None,
         }
@@ -680,6 +682,86 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn the_master_is_served_to_its_owner_as_wav() {
+        let temporary = tempdir().unwrap();
+        let (mut config, paths) = config(temporary.path());
+        let mut library = Library::open(temporary.path().join("library")).unwrap();
+        let (song_id, digest, length) = library.seed_master_fixture_for_test([1_u8; 32]);
+        let mut offer = None;
+        let node_key = bs58::encode([8_u8; 32]).into_string();
+        let mut open = |key: [u8; 32], profile: &str, library: &mut Library| {
+            let mut session = ClientSession::authenticated_with_bytes_for_test(
+                &bs58::encode(key).into_string(),
+                key,
+            );
+            let response = session
+                .handle(
+                    json!({"t":"artifact.open","v":2,"id":"open","song_id":song_id,
+                           "profile":profile,"offset":0}),
+                    &mut config,
+                    &paths.config,
+                    &mut offer,
+                    &node_key,
+                    &info(),
+                    library,
+                )
+                .unwrap();
+            (session, response)
+        };
+
+        let (_, opened) = open([1_u8; 32], "pcm16-wav-v1", &mut library);
+        match opened {
+            NodeMessage::ArtifactInfo { artifact, .. } => {
+                assert_eq!(artifact.kind, "master");
+                assert_eq!(artifact.media_type, "audio/wav");
+                assert_eq!(artifact.sha256, digest);
+                assert_eq!(artifact.byte_length, length);
+            }
+            other => panic!("unexpected open response: {other:?}"),
+        }
+        // The delivery is still the delivery.
+        let (_, delivery) = open([1_u8; 32], "opus-stereo-160k-v1", &mut library);
+        assert!(matches!(
+            delivery,
+            NodeMessage::ArtifactInfo { ref artifact, .. } if artifact.kind == "delivery"
+        ));
+        // Another principal, and a profile nothing has, are refused alike.
+        for (key, profile) in [([3_u8; 32], "pcm16-wav-v1"), ([1_u8; 32], "flac-v1")] {
+            let (_, refused) = open(key, profile, &mut library);
+            assert!(matches!(
+                refused,
+                NodeMessage::Error {
+                    code: ErrorCode::ArtifactUnavailable,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn a_master_that_changed_on_disk_is_not_sent() {
+        let temporary = tempdir().unwrap();
+        let library = Library::open(temporary.path().join("library")).unwrap();
+        let (song_id, _, _) = library.seed_master_fixture_for_test([1_u8; 32]);
+        let principal = PrincipalId::from_client_public_key(&[1_u8; 32]);
+        let path = temporary
+            .path()
+            .join("library/jobs")
+            .join(principal.to_string())
+            .join(&song_id)
+            .join("artifacts/master.wav");
+        let mut bytes = std::fs::read(&path).unwrap();
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xff;
+        std::fs::write(&path, bytes).unwrap();
+        assert!(
+            library
+                .verified_master_artifact(principal, &song_id, "pcm16-wav-v1")
+                .is_err()
+        );
     }
 
     fn authenticate(token: Option<&str>) -> (NodeMessage, NodeConfig, Option<PairOffer>, bool) {

@@ -59,6 +59,52 @@ impl Library {
         (song_id, digest)
     }
 
+    /// A song with a canonical 16-bit WAV master, indexed as `complete`
+    /// records one: 240 stereo frames at 48 kHz. Returns its id and the
+    /// master's digest and length.
+    pub(crate) fn seed_master_fixture_for_test(&self, key: [u8; 32]) -> (String, String, u64) {
+        let (song_id, _) = self.seed_delivery_fixture_for_test(key);
+        let principal = PrincipalId::from_client_public_key(&key).to_string();
+        let frames: u32 = 240;
+        let data = frames * 4;
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&(36 + data).to_le_bytes());
+        wav.extend_from_slice(b"WAVEfmt ");
+        wav.extend_from_slice(&16_u32.to_le_bytes());
+        wav.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+        wav.extend_from_slice(&2_u16.to_le_bytes()); // channels
+        wav.extend_from_slice(&48_000_u32.to_le_bytes());
+        wav.extend_from_slice(&(48_000_u32 * 4).to_le_bytes());
+        wav.extend_from_slice(&4_u16.to_le_bytes());
+        wav.extend_from_slice(&16_u16.to_le_bytes());
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&data.to_le_bytes());
+        wav.extend((0..data).map(|index| (index % 251) as u8));
+        let digest = format!("{:x}", sha2::Sha256::digest(&wav));
+        let length = wav.len() as u64;
+        std::fs::write(
+            self.root
+                .join("jobs")
+                .join(&principal)
+                .join(&song_id)
+                .join("artifacts")
+                .join("master.wav"),
+            &wav,
+        )
+        .unwrap();
+        self.connection
+            .execute(
+                "INSERT INTO artifacts(job_id,kind,profile,relative_path,media_type,byte_length,
+                 sha256,sample_rate,channels,duration_ms,created_at)
+                 VALUES(?1,'master','pcm16-wav-v1','artifacts/master.wav','audio/wav',?2,
+                 ?3,48000,2,5,'2026-08-09T00:00:00Z')",
+                rusqlite::params![song_id, length, digest],
+            )
+            .unwrap();
+        (song_id, digest, length)
+    }
+
     /// A made song whose recipe says `caption`, readable by `song_detail`.
     pub(crate) fn seed_made_song_for_test(&self, key: [u8; 32], caption: &str) -> String {
         let (song_id, _) = self.seed_delivery_fixture_for_test(key);

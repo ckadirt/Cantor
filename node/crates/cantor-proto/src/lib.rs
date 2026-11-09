@@ -513,6 +513,11 @@ pub struct NodeFeatures {
     /// Additive: `queue.position`.
     #[serde(default)]
     pub queue_position: bool,
+    /// Additive: `artifact.open` serves the master as well as the delivery
+    /// (profile `pcm16-wav-v1`). A node that predates it answers
+    /// `artifact_unavailable`, so a client must not ask unless this is `true`.
+    #[serde(default)]
+    pub master_transfer: bool,
 }
 
 /// One of a client's waiting jobs, and how much stands in front of it.
