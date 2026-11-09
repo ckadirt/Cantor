@@ -1477,13 +1477,6 @@
                 "melody",
                 "off"
               ]
-            },
-            {
-              "kind": "text",
-              "key": "abc",
-              "label": "ABC score",
-              "default": "",
-              "max_bytes": 3072
             }
           ],
           "capabilities": [],
@@ -1557,13 +1550,6 @@
                 "melody",
                 "off"
               ]
-            },
-            {
-              "kind": "text",
-              "key": "abc",
-              "label": "ABC score",
-              "default": "",
-              "max_bytes": 3072
             }
           ],
           "capabilities": [],
@@ -1637,13 +1623,6 @@
                 "melody",
                 "off"
               ]
-            },
-            {
-              "kind": "text",
-              "key": "abc",
-              "label": "ABC score",
-              "default": "",
-              "max_bytes": 3072
             }
           ],
           "capabilities": [],
