@@ -237,6 +237,13 @@ import {
   type AfterSong,
 } from '../player';
 import { useRuntime } from '../runtime';
+import { createExportCopyRepository } from '../export/copies';
+import { renderCover } from '../export/cover';
+import { nodeTagOf } from '../export/marker';
+import { nativeExport } from '../export/native';
+import { restoreExportPreferences } from '../export/preferences';
+import { createExportService, type TakeItSong } from '../export/service';
+import { useTakeIt } from '../features/song/useTakeIt';
 import { readError } from '../core/errors';
 import { space, usePalette } from '../theme/tokens';
 
@@ -764,6 +771,28 @@ export function FieldScreen({ identity }: Props) {
         media: nativeMedia,
         now: () => Date.now(),
         permissions: androidPermissions,
+        // The copies Cantor saved are never imported as songs of the
+        // person's own (`export/scan.ts`).
+        copies: {
+          known: async () =>
+            createExportCopyRepository(await phoneDatabase()).all(),
+          recognise: marker => {
+            const { snapshots } = runtime.store.get();
+            for (const [nodeKey, snapshot] of Object.entries(snapshots)) {
+              if (
+                nodeTagOf(nodeKey) === marker.nodeTag &&
+                snapshot.songs.some(song => song.id === marker.songId)
+              ) {
+                return nodeKey;
+              }
+            }
+            return null;
+          },
+          relink: async found => {
+            const copies = createExportCopyRepository(await phoneDatabase());
+            for (const copy of found) await copies.put(copy);
+          },
+        },
       }),
   );
   useEffect(() => {
@@ -816,6 +845,26 @@ export function FieldScreen({ identity }: Props) {
       onError: error => console.warn('song recipes', readError(error)),
     }),
   );
+  /**
+   * Taking songs out as files: share, and save a public copy
+   * (`src/export/`, internal/docs/plans/take-it-plan.md).
+   */
+  const [exportService] = useState(() =>
+    createExportService({
+      native: nativeExport,
+      repository: async () =>
+        createExportCopyRepository(await phoneDatabase()),
+      fetchAudio: (nodeKey, song, artifact) =>
+        commands.audio(nodeKey, song, artifact, 'download'),
+      audioPath: (nodeKey, song, artifact) =>
+        commands.audioPath(nodeKey, song, artifact),
+      renderCover,
+      now: () => Date.now(),
+    }),
+  );
+  useEffect(() => {
+    restoreExportPreferences().catch(() => {});
+  }, []);
   const [controllerStore] = useState(() =>
     createFieldControllerStore(runtime.store, deviceLibrary.store, network, importDating),
   );
@@ -2250,6 +2299,22 @@ export function FieldScreen({ identity }: Props) {
    * act opens the composer on a draft that starts from the song, its prompt
    * as the caption and its words as `same`.
    */
+  /** The sheet's song as Take it needs it; null for an imported song. */
+  const sheetTakeItSong = useMemo<TakeItSong | null>(() => {
+    if (sheetSong === null || sheetSong.source !== 'node') return null;
+    const nodeKey = sheetSong.entity.nodePublicKey;
+    return {
+      nodeKey,
+      nodeLabel: sheetSong.label,
+      nodeReady: phases[nodeKey] === 'ready',
+      song: sheetSong.song,
+      delivery: sheetSong.delivery ?? null,
+      audioState: sheetSong.localAudio.state,
+      detail: songDetail,
+      lens: activeLens,
+    };
+  }, [activeLens, phases, sheetSong, songDetail]);
+  const sheetTakeIt = useTakeIt(sheetTakeItSong, exportService, sheetOpen);
   const sheetAudioActs = useMemo<SongAudioActs | null>(() => {
     if (sheetSong === null) return null;
     if (sheetSong.source === 'device') {
@@ -3436,6 +3501,7 @@ export function FieldScreen({ identity }: Props) {
           viewportHeight={viewport.height}
         >
           <SongSheet
+            takeIt={sheetTakeIt}
             audioActs={sheetAudioActs}
             audioState={sheetSong.localAudio.state}
             acting={songAct}
@@ -3520,6 +3586,15 @@ export function FieldScreen({ identity }: Props) {
                   sheetSong.entity.nodePublicKey,
                   sheetSong.song,
                 );
+                // Its saved copies stay where they are, the person's own now:
+                // only Cantor's note of them goes, so the next scan imports
+                // them like any other file.
+                await exportService
+                  .forgetSong(
+                    sheetSong.entity.nodePublicKey,
+                    sheetSong.entity.entityId,
+                  )
+                  .catch(() => {});
                 setSheetOpen(false);
               })
             }

@@ -55,6 +55,7 @@ import {
 } from '../controls';
 import { Membership, type MembershipEntry } from './Membership';
 import { FromIt, type CopyWrap, type SongAudioActs } from './FromIt';
+import type { TakeItModel } from './useTakeIt';
 import {
   plainTagsOf,
   playlistsOf,
@@ -175,6 +176,14 @@ export const SONG_SHEET_KNOBS = {
 
 /** Between the offline state and its weight: every ledger note's own offset. */
 const STATE_NOTE_GAP_PX = 3;
+
+/**
+ * How far a Take it act's note is drawn up into the act's own target: the
+ * 48 dp target centres a 22 px line, and the note belongs 3 px under the
+ * line, not under the target.
+ */
+const TAKE_NOTE_TUCK_PX =
+  (touch.min - SONG_SHEET_KNOBS.STATE_SLOT_PX) / 2 - STATE_NOTE_GAP_PX;
 
 /**
  * The acts on a song that are not patches, by name.
@@ -306,6 +315,11 @@ type Props = {
    * song with no node to make it on.
    */
   audioActs?: SongAudioActs | null;
+  /**
+   * Taking the song out as a file: share it, or save a public copy
+   * (`useTakeIt`). Absent for a song Cantor cannot take: an imported one.
+   */
+  takeIt?: TakeItModel | null;
 };
 
 /**
@@ -360,6 +374,7 @@ function SongSheetImpl({
   node = null,
   arriving = null,
   audioActs = null,
+  takeIt = null,
 }: Props) {
   const pal = usePalette();
   /**
@@ -598,6 +613,7 @@ function SongSheetImpl({
             onTogglePlaylist={onTogglePlaylist}
             onToggleTag={onToggleTag}
             onUnpin={onUnpin}
+            takeIt={takeIt}
             placeEntries={placeEntries}
             placePending={placePending}
             playlistProblem={playlistProblem}
@@ -623,6 +639,7 @@ function SongSheetImpl({
             onDelete={onDelete}
             onRecompose={onRecompose}
             placementCount={placementCount}
+            copies={takeIt?.copies ?? []}
             song={song}
           />
         </View>
@@ -810,6 +827,7 @@ function Front({
   playlistProblem,
   problem,
   tagProblem,
+  takeIt,
   usedTags,
   wordEntries,
   wordPending,
@@ -834,13 +852,15 @@ function Front({
   playlistProblem: (name: string) => string | null;
   problem: string | null;
   tagProblem: (name: string) => string | null;
+  takeIt: TakeItModel | null;
   usedTags: number;
   wordEntries: readonly MembershipEntry[];
   wordPending: (name: string) => boolean;
 }) {
   const pal = usePalette();
   const pinned = audioState === 'pinned';
-  const locked = acting !== null;
+  // Taking the song out reads its audio: nothing may move the file meanwhile.
+  const locked = acting !== null || (takeIt?.acting ?? null) !== null;
   /** An audio act is under way: the offline line is what it will change. */
   const moving = acting === 'pin' || acting === 'unpin' || acting === 'remove';
   const keeping = acting === 'pin' || acting === 'unpin';
@@ -974,6 +994,12 @@ function Front({
             </>
           ) : null}
         </Measure>
+        {takeIt !== null && imported === null ? (
+          <>
+            <Rest />
+            <TakeIt model={takeIt} disabled={acting !== null} />
+          </>
+        ) : null}
         {audioActs !== null ? (
           <>
             <Rest />
@@ -1042,6 +1068,7 @@ function Front({
 /** What a song is, and the act that ends it. */
 function Back({
   acting,
+  copies,
   detail,
   detailError,
   deliveryBytes,
@@ -1071,6 +1098,8 @@ function Back({
   }> | null;
   nodeLabel: string;
   onDelete: () => void;
+  /** Where the song's saved copies are; deleting the song leaves them. */
+  copies: readonly string[];
   instrumentalLyrics?: string;
   origin: string | null;
   onRecompose?: (detail: SongDetail) => void;
@@ -1211,6 +1240,17 @@ function Back({
                   masterBytes === null ? 'unknown' : formatBytes(masterBytes)
                 }
               />
+              {copies.map((place, index) => (
+                <Row
+                  key={place}
+                  label={index === 0 ? 'Copies' : ''}
+                  note={
+                    index === copies.length - 1 ? 'STAY IF DELETED' : undefined
+                  }
+                >
+                  <Text style={[type.mono, { color: pal.ink }]}>{place}</Text>
+                </Row>
+              ))}
               {detail.component_digests.map((digest, index) => (
                 <Fact
                   key={digest}
@@ -1360,7 +1400,9 @@ function Act({
             charStyle={charStyle}
             color={colour}
             duration={SONG_SHEET_KNOBS.ACT_MS}
-            style={styles.actSlot}
+            // The seat is the face's line: the coda's display word, or a
+            // body line on the stave.
+            style={display ? styles.actSlot : styles.stateSlot}
             text={label}
           />
         ) : (
@@ -1369,6 +1411,82 @@ function Act({
         <Underway charStyle={charStyle} label={label} working={working} />
       </View>
     </Pressable>
+  );
+}
+
+/**
+ * Taking the song out as a file (internal/docs/plans/take-it-plan.md): the
+ * format and what it weighs, then Share and Save, one act to a row so a word
+ * growing into its present tense never pushes its neighbour. Every line is a
+ * morph between its readings; work is the rule under the act pressed.
+ */
+function TakeIt({
+  model,
+  disabled,
+}: {
+  model: TakeItModel;
+  /** Another of the sheet's acts is running. */
+  disabled: boolean;
+}) {
+  const pal = usePalette();
+  const { words, acting } = model;
+  return (
+    <Measure>
+      <Row label="Take it">
+        <View
+          accessible
+          accessibilityLabel={`${words.format}. ${words.formatNote}`}
+          accessibilityRole="text"
+        >
+          <TransformText
+            charStyle={type.body}
+            color={pal.ink}
+            duration={SONG_SHEET_KNOBS.STATE_MS}
+            style={styles.stateSlot}
+            text={words.format}
+          />
+          <TransformText
+            charStyle={LEDGER_NOTE_STYLE}
+            color={pal.faint}
+            duration={SONG_SHEET_KNOBS.STATE_MS}
+            style={styles.stateNoteSlot}
+            text={words.formatNote}
+          />
+        </View>
+      </Row>
+      <Row control>
+        <Act
+          disabled={disabled || !words.shareReach}
+          label={words.share}
+          morph
+          onPress={model.onShare}
+          working={acting === 'share'}
+        />
+        <TransformText
+          charStyle={LEDGER_NOTE_STYLE}
+          color={pal.faint}
+          duration={SONG_SHEET_KNOBS.STATE_MS}
+          style={styles.takeNoteSlot}
+          text={words.shareNote}
+        />
+      </Row>
+      <Row control>
+        <Act
+          disabled={disabled || !words.saveReach}
+          label={words.save}
+          morph
+          onPress={model.onSave}
+          working={acting === 'save'}
+        />
+        <TransformText
+          charStyle={LEDGER_NOTE_STYLE}
+          color={pal.faint}
+          duration={SONG_SHEET_KNOBS.STATE_MS}
+          style={styles.takeNoteSlot}
+          text={words.saveNote}
+        />
+      </Row>
+    </Measure>
   );
 }
 
@@ -1608,6 +1726,12 @@ const styles = StyleSheet.create({
   stateNoteSlot: {
     height: SONG_SHEET_KNOBS.STATE_NOTE_SLOT_PX,
     marginTop: STATE_NOTE_GAP_PX,
+  },
+  /** A Take it act's note: tucked under the act's 48 dp target. */
+  takeNoteSlot: {
+    height: SONG_SHEET_KNOBS.STATE_NOTE_SLOT_PX,
+    marginTop: -TAKE_NOTE_TUCK_PX,
+    marginBottom: TAKE_NOTE_TUCK_PX,
   },
   copyRow: { alignItems: 'flex-start', flexDirection: 'row', gap: space.md },
   copied: { flex: 1 },

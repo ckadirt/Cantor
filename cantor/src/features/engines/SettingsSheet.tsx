@@ -9,6 +9,7 @@ import { easeSmoother, TransformText } from '../../motion';
 import { Alert, AppState, Pressable, StyleSheet, Text, View } from 'react-native';
 import Clipboard from '@react-native-clipboard/clipboard';
 import {
+  Choice,
   Coda,
   Door,
   FOLIO_ACT_STYLE,
@@ -31,6 +32,10 @@ import { loadStoredPhrase } from '../../identity/secureIdentity';
 import { space, touch, type, usePalette } from '../../theme/tokens';
 import { SyncRow, type SyncSong } from './SyncRow';
 import { useStore } from '../../core/useStore';
+import {
+  chooseExportPreferences,
+  exportPreferences,
+} from '../../export/preferences';
 import {
   chooseImportDating,
   importDating,
@@ -112,16 +117,23 @@ export function SettingsSheet({
   // The rulers move drafts; nothing changes until Save, so exploring the
   // choices cannot drop the cache or re-date the field by accident.
   const savedDating = useStore(importDating, state => state);
+  const savedExport = useStore(exportPreferences, state => state);
+  const savedSaveTo = saveToOf(savedExport.destination.kind);
   const [draftBudget, setDraftBudget] = useState(budgetBytes);
   const [draftDating, setDraftDating] = useState<ImportDating>(savedDating);
+  const [draftSaveTo, setDraftSaveTo] = useState<SaveTo>(savedSaveTo);
   const [saving, setSaving] = useState(false);
   // Leaving Settings without saving lets the drafts go.
   useEffect(() => {
     if (visible) return;
     setDraftBudget(budgetBytes);
     setDraftDating(savedDating);
-  }, [visible, budgetBytes, savedDating]);
-  const dirty = draftBudget !== budgetBytes || draftDating !== savedDating;
+    setDraftSaveTo(savedSaveTo);
+  }, [visible, budgetBytes, savedDating, savedSaveTo]);
+  const dirty =
+    draftBudget !== budgetBytes ||
+    draftDating !== savedDating ||
+    draftSaveTo !== savedSaveTo;
   const save = async () => {
     if (!dirty || saving) return;
     setSaving(true);
@@ -131,6 +143,12 @@ export function SettingsSheet({
     await new Promise<void>(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
     try {
       if (draftBudget !== budgetBytes) onChangeBudget(draftBudget);
+      if (draftSaveTo !== savedSaveTo) {
+        await chooseExportPreferences({
+          ...savedExport,
+          destination: { kind: draftSaveTo },
+        });
+      }
       if (draftDating !== savedDating) {
         await chooseImportDating(draftDating);
         // Hold the wave until the field has drawn the new dates: these frames
@@ -240,6 +258,10 @@ export function SettingsSheet({
         </Measure>
         <Rest />
         <Measure>
+          <SavesToRow value={draftSaveTo} onChange={setDraftSaveTo} />
+        </Measure>
+        <Rest />
+        <Measure>
           <SyncRow song={sync} />
         </Measure>
         <Rest />
@@ -336,6 +358,56 @@ function ImportDatingRow({
       />
       <Text style={[type.small, { color: pal.muted }]}>
         Where your own songs stand by date. Song reads the date in their tags.
+      </Text>
+    </Row>
+  );
+}
+
+/**
+ * Where Save puts a song's public copy (internal/docs/plans/take-it-plan.md,
+ * D4). A choice made once here, never a question on every save. A folder the
+ * person picks is E4.
+ */
+type SaveTo = 'music' | 'download';
+
+function saveToOf(kind: 'music' | 'download' | 'tree'): SaveTo {
+  return kind === 'download' ? 'download' : 'music';
+}
+
+const SAVE_TO_ITEMS = [
+  {
+    key: 'music',
+    label: 'Music/Cantor',
+    accessibilityLabel: 'Save copies to Music, Cantor',
+    state: 'default',
+  },
+  {
+    key: 'download',
+    label: 'Download/Cantor',
+    accessibilityLabel: 'Save copies to Download, Cantor',
+    state: 'downloads',
+  },
+] as const;
+
+function SavesToRow({
+  value,
+  onChange,
+}: {
+  value: SaveTo;
+  onChange: (choice: SaveTo) => void;
+}) {
+  const pal = usePalette();
+  return (
+    <Row label="Saves to" control>
+      <Choice
+        activeKey={value}
+        empty="nowhere"
+        items={SAVE_TO_ITEMS}
+        onSelect={key => onChange(key === 'download' ? 'download' : 'music')}
+      />
+      <Text style={[type.small, { color: pal.muted }]}>
+        Where Save puts copies of your songs. Wherever they are, Cantor knows
+        they are copies.
       </Text>
     </Row>
   );
