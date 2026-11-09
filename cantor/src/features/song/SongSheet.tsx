@@ -57,7 +57,7 @@ import {
 import { Membership, type MembershipEntry } from './Membership';
 import { FromIt, type CopyWrap, type SongAudioActs } from './FromIt';
 import type { TakeItModel } from './useTakeIt';
-import { FORMAT_LABEL, FORMAT_NOTE } from './takeIt';
+import { FORMAT_LABEL } from './takeIt';
 import type { ExportFormat } from '../../export/types';
 import {
   plainTagsOf,
@@ -1365,6 +1365,7 @@ function ImportedRecord({
 function Act({
   disabled = false,
   display,
+  fraction = null,
   label,
   morph = false,
   onPress,
@@ -1372,6 +1373,8 @@ function Act({
 }: {
   disabled?: boolean;
   display?: boolean;
+  /** How far the work has come, 0..1: the rule is straight up to there. */
+  fraction?: number | null;
   label: string;
   morph?: boolean;
   onPress: () => void;
@@ -1411,7 +1414,12 @@ function Act({
         ) : (
           <Animated.Text style={[charStyle, tint]}>{label}</Animated.Text>
         )}
-        <Underway charStyle={charStyle} label={label} working={working} />
+        <Underway
+          charStyle={charStyle}
+          fraction={fraction}
+          label={label}
+          working={working}
+        />
       </View>
     </Pressable>
   );
@@ -1445,11 +1453,14 @@ function TakeIt({
           activeKey={model.format}
           disabled={disabled || acting !== null}
           empty="nothing to take yet"
-          items={model.formats.map(format => ({
+          items={model.choices.map(({ format, quiet, state }) => ({
             key: format,
             label: FORMAT_LABEL[format],
-            accessibilityLabel: `Take it as ${FORMAT_LABEL[format]}`,
-            state: FORMAT_NOTE[format],
+            accessibilityLabel: quiet
+              ? `${FORMAT_LABEL[format]}: ${state.toLowerCase()}`
+              : `Take it as ${FORMAT_LABEL[format]}`,
+            state,
+            quiet,
           }))}
           morphMs={SONG_SHEET_KNOBS.STATE_MS}
           onSelect={key => model.onFormat(key as ExportFormat)}
@@ -1467,6 +1478,7 @@ function TakeIt({
       <Row control>
         <Act
           disabled={disabled || !words.shareReach}
+          fraction={acting === 'share' ? model.progress : null}
           label={words.share}
           morph
           onPress={model.onShare}
@@ -1483,6 +1495,7 @@ function TakeIt({
       <Row control>
         <Act
           disabled={disabled || !words.saveReach}
+          fraction={acting === 'save' ? model.progress : null}
           label={words.save}
           morph
           onPress={model.onSave}

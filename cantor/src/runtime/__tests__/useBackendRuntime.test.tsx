@@ -54,6 +54,7 @@ const nodeInfo: NodeInfo = {
     binary_uploads: false,
     derived_job_ids: false,
   queue_position: false,
+  master_transfer: false,
   },
 };
 

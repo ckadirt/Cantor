@@ -21,6 +21,7 @@ import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
 import java.io.File
 import java.io.FileNotFoundException
+import java.security.MessageDigest
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
@@ -170,6 +171,70 @@ class CantorExportModule(private val context: ReactApplicationContext) :
             it.getInt("height"),
         )
       }
+
+  /**
+   * Where the node's master is downloaded for `key`, and how much of it is
+   * there already: a transfer resumes from the end of the file. `staged` is
+   * the finished WAV when one is already staged under the key as `name`, so
+   * it is not fetched again.
+   */
+  @ReactMethod
+  fun masterPart(key: String, name: String, promise: Promise) {
+    run(promise) {
+      require(KEY.matches(key)) { "Export key is invalid." }
+      requireFileName(name)
+      val directory = File(exportsRoot, key)
+      val part = File(directory, ".master.part")
+      val done = File(directory, name)
+      directory.mkdirs()
+      Arguments.createMap().apply {
+        putString("path", part.absolutePath)
+        putDouble("bytes", if (part.isFile) part.length().toDouble() else 0.0)
+        if (done.isFile) putMap("staged", staged(done)) else putNull("staged")
+      }
+    }
+  }
+
+  /**
+   * Stage the downloaded master as `exports/<key>/<name>`, once its bytes are
+   * the master's (`digest`), with Cantor's marker and `LIST/INFO` tags in it.
+   * A part that does not match is deleted, so the next attempt starts clean.
+   */
+  @ReactMethod
+  fun stageWav(
+      part: String,
+      digest: String,
+      key: String,
+      name: String,
+      comments: ReadableArray,
+      promise: Promise,
+  ) {
+    run(promise) {
+      val downloaded = stagedFile(part)
+      val actual = MessageDigest.getInstance("SHA-256").let { sha ->
+        downloaded.inputStream().use { input ->
+          val buffer = ByteArray(64 * 1024)
+          while (true) {
+            val read = input.read(buffer)
+            if (read < 0) break
+            sha.update(buffer, 0, read)
+          }
+        }
+        sha.digest().joinToString("") { "%02x".format(it) }
+      }
+      if (actual != digest) {
+        downloaded.delete()
+        error("The master arrived damaged; it will be fetched again.")
+      }
+      val result = stage(downloaded.absolutePath, key, name) { input, temporary ->
+        input.inputStream().buffered().use { source ->
+          temporary.outputStream().buffered().use { output -> tagWav(source, output, pairs(comments)) }
+        }
+      }
+      downloaded.delete()
+      result
+    }
+  }
 
   /** Hand a staged file to Android's share sheet. Resolves once it is shown. */
   @ReactMethod

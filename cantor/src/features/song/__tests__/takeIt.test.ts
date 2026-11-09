@@ -3,6 +3,7 @@ import type { TakeItSong } from '../../../export/service';
 import type { ExportCopy } from '../../../export/types';
 import {
   copyFolder,
+  formatChoices,
   formatInForce,
   takeItWords,
   type TakeItState,
@@ -35,6 +36,16 @@ const song: TakeItSong = {
     sample_rate: 48_000,
     channels: 2,
   },
+  master: {
+    kind: 'master',
+    profile: 'pcm16-wav-v1',
+    media_type: 'audio/wav',
+    byte_length: 36_864_044,
+    sha256: 'f'.repeat(64),
+    sample_rate: 48_000,
+    channels: 2,
+  },
+  masterTransfer: true,
   audioState: 'pinned',
   detail: null,
   lens: LENSES[0],
@@ -67,7 +78,8 @@ function words(overrides: Partial<TakeItState> = {}) {
 describe('Take it’s words', () => {
   it('offers Opus with what it weighs', () => {
     expect(formatInForce('mp3')).toBe('mp3');
-    expect(formatInForce('wav')).toBe('opus');
+    expect(formatInForce('wav')).toBe('wav');
+    expect(formatInForce('flac' as never)).toBe('opus');
     expect(words()).toEqual({
       format: 'Opus',
       formatNote: '3.6 MB · THE ORIGINAL',
@@ -101,6 +113,51 @@ describe('Take it’s words', () => {
       saveNote: 'SAVED · MP3 · 7.3 MB',
     });
     expect(words({ format: 'mp3', copies: [copy] }).save).toBe('Save to Music');
+  });
+
+  it('offers the master as WAV, fetched from its node', () => {
+    expect(words({ format: 'wav' })).toMatchObject({
+      format: 'WAV',
+      formatNote: '35 MB · FROM AGENTBOX',
+      shareReach: true,
+      saveReach: true,
+    });
+    // Fetched every time, whatever the delivery's state.
+    expect(words({ format: 'wav', acting: 'share' }).share).toBe('Fetching');
+    expect(words({ format: 'wav', acting: 'save' }).save).toBe('Fetching');
+  });
+
+  it('keeps WAV listed, faint, with why it cannot be had', () => {
+    const away = { ...song, nodeReady: false };
+    expect(words({ song: away, format: 'wav' })).toMatchObject({
+      formatNote: 'ONLY ON AGENTBOX · AWAY',
+      shareReach: false,
+      saveReach: false,
+    });
+    // The Opus is on the phone, so it can still be taken.
+    expect(words({ song: away, format: 'opus' }).shareReach).toBe(true);
+    expect(formatChoices(away)).toEqual([
+      { format: 'opus', quiet: false, state: 'THE ORIGINAL' },
+      { format: 'mp3', quiet: false, state: 'PLAYS ANYWHERE' },
+      { format: 'wav', quiet: true, state: 'ONLY ON AGENTBOX · AWAY' },
+    ]);
+    const old = { ...song, masterTransfer: false };
+    expect(words({ song: old, format: 'wav' }).formatNote).toBe('NEEDS A NEWER NODE');
+    expect(words({ song: { ...song, master: null }, format: 'wav' }).formatNote).toBe(
+      'NO MASTER YET',
+    );
+  });
+
+  it('says a WAV copy is saved when it was made from this master', () => {
+    const wav = { ...copy, format: 'wav' as const, digest: 'f'.repeat(64), bytes: 36_864_444 };
+    expect(words({ format: 'wav', copies: [wav] })).toMatchObject({
+      save: 'In Music/Cantor',
+      saveNote: 'SAVED · WAV · 35 MB',
+    });
+    // A copy whose digest is the delivery's is not this master's.
+    expect(words({ format: 'wav', copies: [{ ...wav, digest: DIGEST }] }).save).toBe(
+      'Save to Music',
+    );
   });
 
   it('follows the folder chosen in Settings', () => {

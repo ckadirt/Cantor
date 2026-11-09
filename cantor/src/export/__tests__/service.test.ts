@@ -25,6 +25,16 @@ const delivery: ArtifactView = {
   sample_rate: 48_000,
   channels: 2,
 };
+const MASTER = 'f'.repeat(64);
+const master: ArtifactView = {
+  kind: 'master',
+  profile: 'pcm16-wav-v1',
+  media_type: 'audio/wav',
+  byte_length: 34_000_000,
+  sha256: MASTER,
+  sample_rate: 48_000,
+  channels: 2,
+};
 const header: SongHeader = {
   id: '0b6f9c1e-6a3d-4c55-9a3e-2f4b8d7c1a90',
   revision: 1,
@@ -47,6 +57,8 @@ function song(overrides: Partial<TakeItSong> = {}): TakeItSong {
     nodeReady: true,
     song: header,
     delivery,
+    master,
+    masterTransfer: true,
     audioState: 'pinned',
     detail: {
       song: header,
@@ -61,6 +73,9 @@ function song(overrides: Partial<TakeItSong> = {}): TakeItSong {
 }
 
 function fakeNative() {
+  /** Parts on disk by key, and WAVs staged by key. */
+  const parts = new Map<string, number>();
+  const wavs = new Map<string, string>();
   const files = new Set<string>();
   let next = 40;
   const native = {
@@ -99,6 +114,24 @@ function fakeNative() {
     present: jest.fn(async (uris: readonly string[]) => uris.map(uri => files.has(uri))),
     prune: jest.fn(async () => 0),
     canWrite: jest.fn(async () => true),
+    parts,
+    wavs,
+    masterPart: jest.fn(async (key: string, _name: string) => {
+      const staged = wavs.get(key);
+      return {
+        path: `/cache/exports/${key}/.master.part`,
+        bytes: parts.get(key) ?? 0,
+        staged: staged === undefined ? null : { path: staged, bytes: 34_000_400 },
+      };
+    }),
+    stageWav: jest.fn(
+      async (part: string, digest: string, request: { key: string; name: string; comments: unknown }) => {
+        native.staged.push({ ...request, source: part, cover: null } as never);
+        const path = `/cache/exports/${request.key}/${request.name}`;
+        wavs.set(request.key, path);
+        return { path, bytes: 34_000_400 };
+      },
+    ),
   };
   return native;
 }
@@ -109,15 +142,30 @@ async function setup() {
   const repository = createExportCopyRepository(db);
   const native = fakeNative();
   const fetchAudio = jest.fn(async () => {});
+  const fetchFile = jest.fn(
+    async (
+      _node: string,
+      _song: SongHeader,
+      _artifact: ArtifactView,
+      _path: string,
+      offset: () => Promise<number>,
+      onProgress?: (written: number, total: number) => void,
+    ) => {
+      const from = await offset();
+      onProgress?.(from, 100);
+      onProgress?.(100, 100);
+    },
+  );
   const service = createExportService({
     native,
     repository: async () => repository,
     fetchAudio,
+    fetchFile,
     audioPath: async () => '/data/pinned/song.opus',
     renderCover: () => ({ png: 'iVBORw0KGgo', width: 1000, height: 1000 }),
     now: () => 9_000,
   });
-  return { service, native, repository, fetchAudio };
+  return { service, native, repository, fetchAudio, fetchFile };
 }
 
 describe('names and tags', () => {
@@ -193,8 +241,57 @@ describe('the export service', () => {
 
   it('refuses a format this build does not make', async () => {
     const { service, native } = await setup();
-    await expect(service.share(song(), 'wav')).rejects.toMatchObject({ code: 'failed' });
+    await expect(service.share(song(), 'flac' as never)).rejects.toMatchObject({ code: 'failed' });
     expect(native.staged).toEqual([]);
+  });
+
+  it('fetches the master into the export cache and stages it as WAV', async () => {
+    const { service, native, fetchFile } = await setup();
+    const progress: number[] = [];
+    await service.share(song(), 'wav', fraction => progress.push(fraction));
+    expect(fetchFile).toHaveBeenCalledTimes(1);
+    const [node, , artifact, path] = fetchFile.mock.calls[0];
+    expect(node).toBe('rtx');
+    expect(artifact).toBe(master);
+    expect(path).toMatch(/^\/cache\/exports\/wav-[0-9a-f]+\/\.master\.part$/);
+    expect(native.stageWav).toHaveBeenCalledWith(path, MASTER, expect.objectContaining({
+      name: 'Salt in the Lantern.wav',
+    }));
+    // The marker names the master's digest, not the delivery's.
+    const comments = native.stageWav.mock.calls[0][2].comments as [string, string][];
+    expect(readMarker(comments[0][1])?.digest).toBe(MASTER);
+    expect(progress).toEqual([0, 1]);
+    expect(native.share).toHaveBeenCalledWith(expect.stringMatching(/\.wav$/), 'audio/wav');
+    expect(native.stageOpus).not.toHaveBeenCalled();
+  });
+
+  it('does not fetch the master again once it is staged', async () => {
+    const { service, fetchFile } = await setup();
+    await service.share(song(), 'wav');
+    await service.share(song(), 'wav');
+    expect(fetchFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves a WAV copy matched by the master’s digest', async () => {
+    const { service, native } = await setup();
+    const copy = await service.save(song(), 'wav', { kind: 'music' });
+    expect(copy).toMatchObject({ format: 'wav', digest: MASTER });
+    expect(await service.save(song(), 'wav', { kind: 'music' })).toEqual(copy);
+    expect(native.save).toHaveBeenCalledTimes(1);
+  });
+
+  it('says why a WAV cannot be had, and fetches nothing', async () => {
+    const { service, fetchFile } = await setup();
+    await expect(service.share(song({ nodeReady: false }), 'wav')).rejects.toMatchObject({
+      code: 'away',
+    });
+    await expect(service.share(song({ masterTransfer: false }), 'wav')).rejects.toMatchObject({
+      code: 'old-node',
+    });
+    await expect(service.share(song({ master: null }), 'wav')).rejects.toMatchObject({
+      code: 'no-audio',
+    });
+    expect(fetchFile).not.toHaveBeenCalled();
   });
 
   it('fetches a song that is not on the phone first', async () => {

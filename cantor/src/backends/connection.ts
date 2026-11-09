@@ -89,6 +89,8 @@ export type ArtifactSink = {
   offset: () => Promise<number>;
   /** The node key this file is kept under; the song and digest come along. */
   nodeKey: string;
+  /** A file in the export cache to write instead of the audio store. */
+  path?: string;
   finalize: (byteLength: number) => Promise<void>;
 };
 
@@ -893,6 +895,7 @@ export class BackendConnection {
           byteLength: artifact.byte_length,
           chunkBytes: info.chunkBytes,
           protocolVersion: APPLICATION_PROTOCOL_VERSION,
+          ...(sink.path === undefined ? {} : { path: sink.path }),
         },
         bytes => onProgress?.(bytes, artifact.byte_length),
       );

@@ -30,10 +30,11 @@ export const EXPORT_KNOBS = {
 } as const;
 
 /**
- * The formats this build can make, in the order they are offered. WAV joins
- * when the node can send its master (E3).
+ * The formats this build can make, in the order they are offered. WAV is the
+ * node's own master, fetched each time (E3): out of reach, with its reason,
+ * when the node is away or predates `master_transfer`.
  */
-export const OFFERED_FORMATS: readonly ExportFormat[] = ['opus', 'mp3'];
+export const OFFERED_FORMATS: readonly ExportFormat[] = ['opus', 'mp3', 'wav'];
 
 /** An MP3's size, estimated before it exists: constant 320 kbps. */
 export function mp3BytesOf(durationMs: number): number {
@@ -61,6 +62,10 @@ export type TakeItSong = Readonly<{
   song: SongHeader;
   /** The delivery artifact; null when the node has not published one. */
   delivery: ArtifactView | null;
+  /** The node's master, saved as WAV; null when the song has none. */
+  master: ArtifactView | null;
+  /** The node can send its master (`NodeFeatures.master_transfer`). */
+  masterTransfer: boolean;
   audioState: LocalAudioState;
   /** The recipe, for the words and the prompt the file carries; null unknown. */
   detail: SongDetail | null;
@@ -69,7 +74,10 @@ export type TakeItSong = Readonly<{
 }>;
 
 /** Why an act cannot run now. */
-export type ExportBlock = 'no-audio' | 'away';
+export type ExportBlock = 'no-audio' | 'away' | 'old-node';
+
+/** Called as a file arrives, 0..1: only a WAV is fetched while you wait. */
+export type ExportProgress = (fraction: number) => void;
 
 export class ExportError extends Error {
   constructor(
@@ -83,11 +91,16 @@ export class ExportError extends Error {
 export type ExportService = Readonly<{
   /** The song's saved copies that still exist; vanished ones are forgotten. */
   copies(nodeKey: string, songId: string): Promise<ExportCopy[]>;
-  share(song: TakeItSong, format: ExportFormat): Promise<void>;
+  share(
+    song: TakeItSong,
+    format: ExportFormat,
+    onProgress?: ExportProgress,
+  ): Promise<void>;
   save(
     song: TakeItSong,
     format: ExportFormat,
     destination: ExportDestination,
+    onProgress?: ExportProgress,
   ): Promise<ExportCopy>;
   /** The song is gone from Cantor: its copies stay, as the person's own. */
   forgetSong(nodeKey: string, songId: string): Promise<void>;
@@ -108,16 +121,46 @@ export type ExportDeps = Readonly<{
     song: SongHeader,
     artifact: ArtifactView,
   ) => Promise<string>;
+  /** Fetch one of a song's artifacts into a file (the runtime's `downloadFile`). */
+  fetchFile: (
+    nodeKey: string,
+    song: SongHeader,
+    artifact: ArtifactView,
+    path: string,
+    offset: () => Promise<number>,
+    onProgress?: (written: number, total: number) => void,
+  ) => Promise<void>;
   renderCover: (lens: Lens, recipe: FaceRecipe) => Cover | null;
   now: () => number;
 }>;
 
-/** What stands between a song and taking it out, or null when nothing does. */
-export function blockOf(song: TakeItSong): ExportBlock | null {
+/**
+ * What stands between a song and taking it out in `format`, or null. A WAV is
+ * the master, which only its node holds: it needs the node now, and a node
+ * that can send it.
+ */
+export function blockOf(
+  song: TakeItSong,
+  format: ExportFormat = 'opus',
+): ExportBlock | null {
+  if (format === 'wav') {
+    if (song.master === null) return 'no-audio';
+    if (!song.masterTransfer) return 'old-node';
+    if (!song.nodeReady) return 'away';
+    return null;
+  }
   if (song.delivery === null) return 'no-audio';
   const here = song.audioState === 'cached' || song.audioState === 'pinned';
   if (!here && !song.nodeReady) return 'away';
   return null;
+}
+
+/** The audio a file in `format` is made from: the master for WAV, else the delivery. */
+export function sourceOf(
+  song: TakeItSong,
+  format: ExportFormat,
+): ArtifactView | null {
+  return format === 'wav' ? song.master : song.delivery;
 }
 
 /**
@@ -177,29 +220,69 @@ export function createExportService(deps: ExportDeps): ExportService {
     return kept;
   };
 
+  const keyOf = (format: ExportFormat, parts: object) =>
+    `${format}-${bytesToHex(
+      sha256(utf8ToBytes(JSON.stringify({ v: EXPORT_KNOBS.TAG_VERSION, ...parts }))),
+    ).slice(0, 32)}`;
+
   const stage = async (
     song: TakeItSong,
     format: ExportFormat,
+    onProgress?: ExportProgress,
   ): Promise<{ staged: StagedFile; digest: string }> => {
-    const block = blockOf(song);
+    if (!OFFERED_FORMATS.includes(format)) {
+      throw new ExportError('failed', `${format} is not made by this build.`);
+    }
+    const block = blockOf(song, format);
     if (block !== null) {
       throw new ExportError(
         block,
         block === 'away'
-          ? `${song.nodeLabel} is away, and the song is not on this phone.`
+          ? format === 'wav'
+            ? `The master is on ${song.nodeLabel}, which is away.`
+            : `${song.nodeLabel} is away, and the song is not on this phone.`
+          : block === 'old-node'
+          ? `${song.nodeLabel} needs a newer Cantor to send its master.`
           : 'This song has no audio to take yet.',
       );
     }
-    if (!OFFERED_FORMATS.includes(format)) {
-      throw new ExportError('failed', `${format} is not made by this build.`);
-    }
-    const delivery = song.delivery!;
-    if (song.audioState !== 'cached' && song.audioState !== 'pinned') {
-      await deps.fetchAudio(song.nodeKey, song.song, delivery);
-    }
-    const source = await deps.audioPath(song.nodeKey, song.song, delivery);
     const name = fileNameOf(song.song.title, format);
-    const comments = exportTags(song, delivery.sha256);
+    const audio = sourceOf(song, format)!;
+    // The marker carries the audio the file is made of: the master's digest
+    // for a WAV, the delivery's otherwise.
+    const comments = exportTags(song, audio.sha256);
+
+    if (format === 'wav') {
+      // The master, as the node keeps it: fetched into the export cache and
+      // checked against its digest before it is tagged. No cover: a WAV has
+      // nowhere a player reads one.
+      const key = keyOf(format, { digest: audio.sha256, name, comments });
+      const part = await deps.native.masterPart(key, name);
+      if (part.staged !== null) {
+        onProgress?.(1);
+        return { staged: part.staged, digest: audio.sha256 };
+      }
+      await deps.fetchFile(
+        song.nodeKey,
+        song.song,
+        audio,
+        part.path,
+        async () => (await deps.native.masterPart(key, name)).bytes,
+        (written, total) => onProgress?.(total > 0 ? written / total : 0),
+      );
+      const staged = await deps.native.stageWav(part.path, audio.sha256, {
+        key,
+        name,
+        comments,
+      });
+      await deps.native.prune(EXPORT_KNOBS.CACHE_BYTES).catch(() => 0);
+      return { staged, digest: audio.sha256 };
+    }
+
+    if (song.audioState !== 'cached' && song.audioState !== 'pinned') {
+      await deps.fetchAudio(song.nodeKey, song.song, audio);
+    }
+    const source = await deps.audioPath(song.nodeKey, song.song, audio);
     let cover: Cover | null = null;
     try {
       cover = deps.renderCover(song.lens, {
@@ -213,27 +296,20 @@ export function createExportService(deps: ExportDeps): ExportService {
     }
     // The key names the contents, so a file staged once is shared again
     // without being made again, and any change of tags or face makes a new one.
-    const key = `${format}-${bytesToHex(
-      sha256(
-        utf8ToBytes(
-          JSON.stringify({
-            v: EXPORT_KNOBS.TAG_VERSION,
-            digest: delivery.sha256,
-            name,
-            comments,
-            lens: song.lens.key,
-            cover: COVER_KNOBS,
-          }),
-        ),
-      ),
-    ).slice(0, 32)}`;
+    const key = keyOf(format, {
+      digest: audio.sha256,
+      name,
+      comments,
+      lens: song.lens.key,
+      cover: COVER_KNOBS,
+    });
     const request = { source, key, name, comments, cover };
     const staged =
       format === 'mp3'
         ? await deps.native.stageMp3(request)
         : await deps.native.stageOpus(request);
     await deps.native.prune(EXPORT_KNOBS.CACHE_BYTES).catch(() => 0);
-    return { staged, digest: delivery.sha256 };
+    return { staged, digest: audio.sha256 };
   };
 
   return {
@@ -241,12 +317,12 @@ export function createExportService(deps: ExportDeps): ExportService {
       return present(await (await repository()).forSong(nodeKey, songId));
     },
 
-    async share(song, format) {
-      const { staged } = await stage(song, format);
+    async share(song, format, onProgress) {
+      const { staged } = await stage(song, format, onProgress);
       await deps.native.share(staged.path, MIME[format]);
     },
 
-    async save(song, format, destination) {
+    async save(song, format, destination, onProgress) {
       if (!(await deps.native.canWrite())) {
         throw new ExportError(
           'permission',
@@ -259,10 +335,13 @@ export function createExportService(deps: ExportDeps): ExportService {
           copy => copy.format === format,
         ),
       );
-      if (existing !== undefined && existing.digest === song.delivery?.sha256) {
+      if (
+        existing !== undefined &&
+        existing.digest === sourceOf(song, format)?.sha256
+      ) {
         return existing;
       }
-      const { staged, digest } = await stage(song, format);
+      const { staged, digest } = await stage(song, format, onProgress);
       // A picked folder is E4; until then it is saved where the default goes.
       const where = destination.kind === 'download' ? 'download' : 'music';
       const saved = await deps.native.save(

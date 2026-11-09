@@ -11,6 +11,11 @@ export type NativeDownload = {
   byteLength: number;
   chunkBytes: number;
   protocolVersion: number;
+  /**
+   * Write to this file in the export cache instead of the audio store: the
+   * node's master, fetched to be saved as WAV.
+   */
+  path?: string;
 };
 
 /** A file to send from `offset`, with the upload the node opened for it. */

@@ -1,6 +1,7 @@
 import { formatBytes } from '../../lenses/availability';
 import {
   blockOf,
+  sourceOf,
   mp3BytesOf,
   OFFERED_FORMATS,
   type ExportError,
@@ -93,34 +94,65 @@ export function copyFolder(copy: ExportCopy): string {
   return where.includes('/download') ? 'Download/Cantor' : 'Music/Cantor';
 }
 
+/** Why a format cannot be had, in a note's words; null when it can. */
+export function blockNote(song: TakeItSong, format: ExportFormat): string | null {
+  const node = song.nodeLabel.toUpperCase();
+  switch (blockOf(song, format)) {
+    case 'away':
+      return format === 'wav' ? `ONLY ON ${node} · AWAY` : `${node} IS AWAY`;
+    case 'old-node':
+      return 'NEEDS A NEWER NODE';
+    case 'no-audio':
+      return format === 'wav' ? 'NO MASTER YET' : 'NO AUDIO YET';
+    default:
+      return null;
+  }
+}
+
+/**
+ * Each format as the choice lists it: out of reach (faint, and not picked)
+ * with its reason, or with what it is for.
+ */
+export function formatChoices(
+  song: TakeItSong,
+): readonly Readonly<{ format: ExportFormat; quiet: boolean; state: string }>[] {
+  return OFFERED_FORMATS.map(format => {
+    const reason = blockNote(song, format);
+    return { format, quiet: reason !== null, state: reason ?? FORMAT_NOTE[format] };
+  });
+}
+
 export function takeItWords(state: TakeItState): TakeItWords {
   const { song, format, destination, copies, acting, failure } = state;
-  const block = blockOf(song);
-  const here = song.audioState === 'cached' || song.audioState === 'pinned';
+  const block = blockOf(song, format);
+  const source = sourceOf(song, format);
+  // A WAV is fetched from the node every time; the others are made from the
+  // delivery, which may be on the phone already.
+  const here =
+    format !== 'wav' &&
+    (song.audioState === 'cached' || song.audioState === 'pinned');
   const fetch = formatBytes(song.delivery?.byte_length ?? 0).toUpperCase();
-  // What the file will weigh: the delivery as it is, or an MP3 at 320 kbps.
+  // What the file will weigh: the source as it is, or an MP3 at 320 kbps.
   const size = formatBytes(
     format === 'mp3'
       ? mp3BytesOf(song.song.duration_ms)
-      : song.delivery?.byte_length ?? 0,
+      : source?.byte_length ?? 0,
   ).toUpperCase();
   const copy = copies.find(
     candidate =>
-      candidate.format === format &&
-      candidate.digest === song.delivery?.sha256,
+      candidate.format === format && candidate.digest === source?.sha256,
   );
 
   const formatNote =
-    block === 'away'
-      ? `${song.nodeLabel.toUpperCase()} IS AWAY`
-      : block === 'no-audio'
-      ? 'NO AUDIO YET'
+    blockNote(song, format) ??
+    (format === 'wav'
+      ? `${size} · FROM ${song.nodeLabel.toUpperCase()}`
       : here
       ? `${size} · ${FORMAT_NOTE[format]}`
-      : `${fetch} TO FETCH`;
+      : `${fetch} TO FETCH`);
 
-  // The present tense of the work under way: fetching the song first, then
-  // making the file (an MP3 is most of the wait).
+  // The present tense of the work under way: fetching first when the audio
+  // is not here (always, for the master), then making the file.
   const making = !here
     ? 'Fetching'
     : format === 'mp3'

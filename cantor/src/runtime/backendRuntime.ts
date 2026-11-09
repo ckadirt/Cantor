@@ -252,6 +252,19 @@ export type BackendRuntimeCommands = {
     song: SongHeader,
     artifact: ArtifactView,
   ) => Promise<string>;
+  /**
+   * Fetch any of a song's artifacts into one file in the export cache,
+   * resuming from `offset()` (the node's master, to be saved as WAV). Never
+   * waits for a node that is away: the caller says why instead.
+   */
+  downloadFile: (
+    nodePublicKey: string,
+    song: SongHeader,
+    artifact: ArtifactView,
+    path: string,
+    offset: () => Promise<number>,
+    onProgress?: (written: number, total: number) => void,
+  ) => Promise<void>;
   refreshLibraries: () => void;
   /**
    * Let go of a download waiting for its node, or of one stopped because the
@@ -374,6 +387,7 @@ export class BackendRuntime {
       getSongDetail: this.getSongDetail,
       audio: this.audio,
       audioPath: this.audioPath,
+      downloadFile: this.downloadFile,
       refreshLibraries: this.refreshLibraries,
       cancelWaiting: this.cancelWaiting,
     };
@@ -1157,6 +1171,25 @@ export class BackendRuntime {
       songId: song.id,
       digest: artifact.sha256,
     });
+
+  private readonly downloadFile = async (
+    nodeKey: string,
+    song: SongHeader,
+    artifact: ArtifactView,
+    path: string,
+    offset: () => Promise<number>,
+    onProgress?: (written: number, total: number) => void,
+  ): Promise<void> => {
+    const connection = this.live(nodeKey, 'Song node is not connected.');
+    // The bytes are checked against the artifact's digest by whoever stages
+    // the file; this only moves them.
+    await connection.downloadArtifact(
+      song.id,
+      artifact,
+      { nodeKey, path, offset, finalize: async () => {} },
+      onProgress,
+    );
+  };
 
   private readonly audio = async (
     nodeKey: string,

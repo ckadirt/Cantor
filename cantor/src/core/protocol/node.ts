@@ -139,6 +139,7 @@ export function parseNodeInfo(value: unknown): NodeInfo | null {
       uploads: features.uploads === true,
       binary_uploads: features.binary_uploads === true,
       queue_position: features.queue_position === true,
+      master_transfer: features.master_transfer === true,
       derived_job_ids: features.derived_job_ids === true,
     },
     ...(installable === undefined ? {} : { installable }),

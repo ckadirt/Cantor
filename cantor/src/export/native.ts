@@ -33,6 +33,25 @@ export type ExportPort = Readonly<{
   stageOpus(request: StageRequest): Promise<StagedFile>;
   /** An MP3 made on several cores (`cpp/export/Mp3Encode.h`), tagged ID3v2.4. */
   stageMp3(request: StageRequest): Promise<StagedFile>;
+  /**
+   * Where the master downloads to for `key`, how much of it is there, and the
+   * WAV already staged as `name`, if one is.
+   */
+  masterPart(
+    key: string,
+    name: string,
+  ): Promise<
+    Readonly<{ path: string; bytes: number; staged: StagedFile | null }>
+  >;
+  /**
+   * The downloaded master staged as a tagged WAV, once its bytes match
+   * `digest`; a damaged part is deleted and the call fails.
+   */
+  stageWav(
+    part: string,
+    digest: string,
+    request: Omit<StageRequest, 'source' | 'cover'>,
+  ): Promise<StagedFile>;
   share(path: string, mime: string): Promise<void>;
   save(
     path: string,
@@ -63,6 +82,14 @@ type CantorExportNative = {
     name: string,
     comments: string[][],
     cover: Cover | null,
+  ): Promise<unknown>;
+  masterPart(key: string, name: string): Promise<unknown>;
+  stageWav(
+    part: string,
+    digest: string,
+    key: string,
+    name: string,
+    comments: string[][],
   ): Promise<unknown>;
   share(path: string, mime: string): Promise<unknown>;
   save(
@@ -106,6 +133,28 @@ export const nativeExport: ExportPort = {
         name,
         comments.map(([k, v]) => [k, v]),
         cover,
+      ),
+    );
+  },
+  async masterPart(key, name) {
+    const value = record(await module().masterPart(key, name));
+    return {
+      path: text(value.path, 'path'),
+      bytes: number(value.bytes, 'bytes'),
+      staged:
+        value.staged === null || value.staged === undefined
+          ? null
+          : staged(value.staged),
+    };
+  },
+  async stageWav(part, digest, { key, name, comments }) {
+    return staged(
+      await module().stageWav(
+        part,
+        digest,
+        key,
+        name,
+        comments.map(([k, v]) => [k, v]),
       ),
     );
   },

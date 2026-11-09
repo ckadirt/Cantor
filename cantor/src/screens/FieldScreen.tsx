@@ -858,6 +858,8 @@ export function FieldScreen({ identity }: Props) {
         commands.audio(nodeKey, song, artifact, 'download'),
       audioPath: (nodeKey, song, artifact) =>
         commands.audioPath(nodeKey, song, artifact),
+      fetchFile: (nodeKey, song, artifact, path, offset, onProgress) =>
+        commands.downloadFile(nodeKey, song, artifact, path, offset, onProgress),
       renderCover,
       now: () => Date.now(),
     }),
@@ -2309,11 +2311,17 @@ export function FieldScreen({ identity }: Props) {
       nodeReady: phases[nodeKey] === 'ready',
       song: sheetSong.song,
       delivery: sheetSong.delivery ?? null,
+      master:
+        sheetSong.song.artifacts.find(artifact => artifact.kind === 'master') ??
+        null,
+      masterTransfer:
+        backends?.find(backend => backend.nodePubkey === nodeKey)
+          ?.lastNodeInfo?.features.master_transfer === true,
       audioState: sheetSong.localAudio.state,
       detail: songDetail,
       lens: activeLens,
     };
-  }, [activeLens, phases, sheetSong, songDetail]);
+  }, [activeLens, backends, phases, sheetSong, songDetail]);
   const sheetTakeIt = useTakeIt(sheetTakeItSong, exportService, sheetOpen);
   const sheetAudioActs = useMemo<SongAudioActs | null>(() => {
     if (sheetSong === null) return null;

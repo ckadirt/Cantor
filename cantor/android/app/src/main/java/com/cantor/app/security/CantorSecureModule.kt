@@ -43,6 +43,8 @@ class CantorSecureModule(
   private val channels = mutableMapOf<String, SecureChannel>()
   private val links = ConcurrentHashMap<Int, RelayLink>()
   private val storage by lazy { AudioStorage(context.noBackupFilesDir, context.cacheDir) }
+  /** The export cache (`export/CantorExportModule.kt`): the only place a `path` download may land. */
+  private val exports by lazy { File(context.cacheDir, "exports") }
   private val writes = Executors.newSingleThreadExecutor { Thread(it, "CantorTransferWrite") }
   private val watchdog = Executors.newSingleThreadScheduledExecutor { Thread(it, "CantorTransferWatch") }
   private val client: OkHttpClient by lazy {
@@ -162,12 +164,23 @@ class CantorSecureModule(
             chunkBytes = options.getInt("chunkBytes"),
             sha256 = digest,
             writer =
-                object : ArtifactWriter {
-                  override fun write(offset: Long, data: ByteArray, from: Int, length: Int) {
-                    storage.appendBytes(nodeKey, songId, digest, offset, data, from, length)
+                // A `path` sends the bytes to one file in the export cache
+                // (the node's master, saved as WAV); without one they are the
+                // song's audio, kept in the audio store.
+                if (options.hasKey("path") && !options.isNull("path")) {
+                  try {
+                    FileArtifactWriter(options.getString("path")!!, exports)
+                  } catch (error: IllegalArgumentException) {
+                    return promise.reject("internal", error.message ?: "The download target is invalid.")
                   }
+                } else {
+                  object : ArtifactWriter {
+                    override fun write(offset: Long, data: ByteArray, from: Int, length: Int) {
+                      storage.appendBytes(nodeKey, songId, digest, offset, data, from, length)
+                    }
 
-                  override fun close() = storage.closePartial()
+                    override fun close() = storage.closePartial()
+                  }
                 },
             writes = writes,
             onProgress = { emitProgress(linkId, transfer, it) },

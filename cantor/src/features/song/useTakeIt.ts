@@ -13,6 +13,7 @@ import {
 import type { ExportCopy, ExportFormat } from '../../export/types';
 import {
   copyFolder,
+  formatChoices,
   formatInForce,
   takeItWords,
   type TakeItAct,
@@ -27,6 +28,10 @@ export type TakeItModel = Readonly<{
   /** The format in force, and the formats offered, in order. */
   format: ExportFormat;
   formats: readonly ExportFormat[];
+  /** Each format as the choice lists it: out of reach (faint) with its reason. */
+  choices: ReturnType<typeof formatChoices>;
+  /** How much of a fetched file has arrived, 0..1, while one is; else null. */
+  progress: number | null;
   /** Choose another format: remembered for every song on this phone. */
   onFormat: (format: ExportFormat) => void;
   /**
@@ -52,6 +57,7 @@ export function useTakeIt(
   const [copies, setCopies] = useState<readonly ExportCopy[]>([]);
   const [acting, setActing] = useState<TakeItAct | null>(null);
   const [failure, setFailure] = useState<TakeItState['failure']>(null);
+  const [progress, setProgress] = useState<number | null>(null);
   const latest = useRef(song);
   latest.current = song;
   const nodeKey = song?.nodeKey ?? null;
@@ -84,10 +90,12 @@ export function useTakeIt(
       if (service === null || current === null || acting !== null) return;
       setActing(act);
       setFailure(null);
+      // A file that is fetched while you wait (the master) says how far it is.
+      const onProgress = (fraction: number) => setProgress(fraction);
       const work =
         act === 'share'
-          ? service.share(current, format)
-          : service.save(current, format, preferences.destination);
+          ? service.share(current, format, onProgress)
+          : service.save(current, format, preferences.destination, onProgress);
       work
         .then(() => (act === 'save' ? refresh() : undefined))
         .catch(error => {
@@ -96,12 +104,23 @@ export function useTakeIt(
             code: error instanceof ExportError ? error.code : 'failed',
           });
         })
-        .finally(() => setActing(null));
+        .finally(() => {
+          setActing(null);
+          setProgress(null);
+        });
     },
     [acting, format, preferences.destination, refresh, service],
   );
   const onFormat = useCallback(
     (next: ExportFormat) => {
+      // A format out of reach is listed, faint, and is not picked.
+      const current = latest.current;
+      if (
+        current !== null &&
+        formatChoices(current).some(choice => choice.format === next && choice.quiet)
+      ) {
+        return;
+      }
       chooseExportPreferences({ ...preferences, format: next }).catch(() => {});
       setFailure(null);
     },
@@ -124,6 +143,8 @@ export function useTakeIt(
       acting,
       format,
       formats: OFFERED_FORMATS,
+      choices: formatChoices(song),
+      progress,
       onFormat,
       copies: copies.map(
         copy => `${copyFolder(copy)} · ${copy.format.toUpperCase()}`,
@@ -140,6 +161,7 @@ export function useTakeIt(
     onSave,
     onShare,
     preferences.destination,
+    progress,
     service,
     song,
   ]);

@@ -11,11 +11,12 @@ package com.cantor.app.export
  */
 const val CANTOR_MARKER_KEY = "CANTOR"
 
-/** The marker in a file's first bytes, or null: an Opus comment or an MP3's `TXXX`. */
+/** The marker in a file's first bytes, or null: an Opus comment, an MP3's `TXXX`, a WAV's `cntr`. */
 fun cantorMarker(head: ByteArray): String? =
     when {
       head.startsWith("OggS") -> opusCommentInHead(head, CANTOR_MARKER_KEY)
       head.startsWith("ID3") -> id3TxxxInHead(head, CANTOR_MARKER_KEY)
+      head.startsWith("RIFF") -> wavMarkerInHead(head)
       else -> null
     }
 
