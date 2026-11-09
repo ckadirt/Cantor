@@ -7,6 +7,7 @@ import android.media.MediaMetadataRetriever
 import android.os.Build
 import android.provider.MediaStore
 import android.util.Size
+import com.cantor.app.export.cantorMarker
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -174,7 +175,7 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
       val file = File(path)
       val size = file.length()
       val digest = MessageDigest.getInstance("SHA-256")
-      FileInputStream(file).use { stream ->
+      val head = FileInputStream(file).use { stream ->
         val buffer = ByteArray(HEAD_BYTES)
         var filled = 0
         while (filled < HEAD_BYTES) {
@@ -183,10 +184,14 @@ class CantorMediaModule(private val context: ReactApplicationContext) :
           filled += read
         }
         digest.update(buffer, 0, filled)
+        buffer.copyOf(filled)
       }
       val result = Arguments.createMap()
       result.putDouble("size", size.toDouble())
       result.putString("headSha256", digest.digest().joinToString("") { "%02x".format(it) })
+      // A copy Cantor saved says so in its first tag (export/CantorMarker.kt),
+      // inside the bytes already read: the scan must not import it as a song.
+      result.putNullableString("marker", cantorMarker(head))
       val tags = Arguments.createMap()
       val retriever = MediaMetadataRetriever()
       try {

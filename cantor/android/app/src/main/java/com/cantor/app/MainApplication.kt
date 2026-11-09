@@ -9,6 +9,7 @@ import com.facebook.react.defaults.DefaultReactHost.getDefaultReactHost
 import com.cantor.app.audio.CantorAudioPackage
 import com.cantor.app.audio.CantorPlaybackPackage
 import com.cantor.app.audio.PlaybackSurface
+import com.cantor.app.export.CantorExportPackage
 import com.cantor.app.haptics.CantorHapticsPackage
 import com.cantor.app.network.CantorNetworkPackage
 import com.cantor.app.update.CantorUpdatePackage
@@ -28,6 +29,7 @@ class MainApplication : Application(), ReactApplication {
           add(CantorAudioPackage())
           add(CantorPlaybackPackage())
           add(CantorMediaPackage())
+          add(CantorExportPackage())
           add(CantorSecurePackage())
           add(CantorHapticsPackage())
           add(CantorNetworkPackage())

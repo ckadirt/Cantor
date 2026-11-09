@@ -18,6 +18,12 @@ import type {
   DeviceScanCommit,
 } from './repository';
 import { albumFolderOf, buildScanCommit, rowsToInspect } from './resolve';
+import {
+  copyFromMarker,
+  withoutKnownCopies,
+  type CopyGate,
+} from '../export/scan';
+import type { ExportCopy } from '../export/types';
 
 /** KNOBS */
 export const DEVICE_LIBRARY_KNOBS = {
@@ -179,6 +185,11 @@ export class DeviceLibraryService {
       now: () => number;
       /** Android's permission; absent, reading is always allowed (tests). */
       permissions?: PermissionPort;
+      /**
+       * The copies Cantor saved, which are never imported as songs
+       * (`export/scan.ts`); absent, every file is a candidate.
+       */
+      copies?: CopyGate;
     }>,
   ) {}
 
@@ -356,8 +367,12 @@ export class DeviceLibraryService {
       await this.checkPermission();
       throw error;
     }
-    const rows = listed.filter(
-      row => under === null || row.path.startsWith(under),
+    // A copy Cantor saved is not a candidate at all: it is not counted in a
+    // folder, read, or brought in.
+    const known = (await this.deps.copies?.known().catch(() => [])) ?? [];
+    const rows = withoutKnownCopies(
+      listed.filter(row => under === null || row.path.startsWith(under)),
+      known,
     );
     this.looked = { rows, generation, under };
     const summary = summarize(rows, this.scoped(under));
@@ -466,10 +481,34 @@ export class DeviceLibraryService {
       perFolder.set(folder, { ...entry, done: entry.done + 1 });
     }
 
+    // A new file whose marker names a song here is a copy Cantor saved, made
+    // before this phone's table knew it: it is written back, not imported.
+    const relinked: ExportCopy[] = [];
+    const gate = this.deps.copies;
+    if (gate !== undefined) {
+      for (const row of toInspect) {
+        const inspection = inspections.get(row.path);
+        if (inspection === undefined) continue;
+        const copy = copyFromMarker(
+          row,
+          inspection,
+          marker => gate.recognise(marker),
+          this.deps.now(),
+        );
+        if (copy === null) continue;
+        relinked.push(copy);
+        inspections.delete(row.path);
+      }
+      if (relinked.length > 0) await gate.relink(relinked);
+    }
+    const copies = new Set(relinked.map(copy => copy.path));
+
     // A file that could not be read this time is left out of the scan: a new
     // one is not imported, and a known one stands as stored rather than
     // reading as missing.
-    const readable = rows.filter(row => !unreadable.has(row.path));
+    const readable = rows.filter(
+      row => !unreadable.has(row.path) && !copies.has(row.path),
+    );
     const draft = buildScanCommit({
       rows: readable,
       library: {

@@ -46,6 +46,11 @@ export type MediaInspection = Readonly<{
   /** sha256 of the file's first 64 KB, hex. */
   headSha256: string;
   tags: RetrieverTags;
+  /**
+   * The marker a copy Cantor saved carries in its first tag (`src/export/`),
+   * raw, or null. Absent where a caller builds an inspection by hand.
+   */
+  marker?: string | null;
 }>;
 
 type CantorMediaNative = {
@@ -200,6 +205,7 @@ export function decodeInspection(value: unknown): MediaInspection {
   return {
     size: count(inspection.size, 'size'),
     headSha256,
+    marker: optionalText(inspection.marker, 'marker'),
     tags: {
       title: optionalText(tags.title, 'title'),
       artist: optionalText(tags.artist, 'artist'),

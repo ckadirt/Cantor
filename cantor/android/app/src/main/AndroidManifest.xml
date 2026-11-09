@@ -22,6 +22,12 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!-- Saving a song as a public copy (export/CantorExportModule.kt). Android 10
+         and later need no permission for files Cantor makes through MediaStore;
+         7 to 9 write the file directly, and this is asked on the first Save. -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
 
     <application
       android:name=".MainApplication"
@@ -49,6 +55,18 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
       </activity>
+      <!-- Share hands the file itself to another app through this, and only
+           what export/ staged in the cache (res/xml/export_paths.xml). The
+           authority follows applicationId, so Cantor Dev has its own. -->
+      <provider
+        android:name="androidx.core.content.FileProvider"
+        android:authorities="${applicationId}.exports"
+        android:exported="false"
+        android:grantUriPermissions="true">
+        <meta-data
+          android:name="android.support.FILE_PROVIDER_PATHS"
+          android:resource="@xml/export_paths" />
+      </provider>
       <service
         android:name="com.swmansion.audioapi.system.CentralizedForegroundService"
         android:stopWithTask="false"

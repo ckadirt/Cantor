@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the exports FileProvider may hand out: only files staged for sharing
+     (export/CantorExportModule.kt), never the song library itself. -->
+<paths>
+    <cache-path name="exports" path="exports/" />
+</paths>

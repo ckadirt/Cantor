@@ -5,6 +5,9 @@ import type { MediaInspection, MediaRow, RetrieverTags } from '../native';
 import type { PermissionPort } from '../permission';
 import { createDeviceRepository } from '../repository';
 import { DEVICE_MIGRATIONS } from '../schema';
+import type { CopyGate } from '../../export/scan';
+import { nodeTagOf, writeMarker } from '../../export/marker';
+import type { ExportCopy } from '../../export/types';
 
 const ROOT = '/storage/emulated/0/Music';
 const TEST = `${ROOT}/cantor-import-test`;
@@ -51,7 +54,12 @@ function row(
 function fakeMedia(
   files: Map<
     string,
-    { row: MediaRow; tags: Partial<RetrieverTags>; art: boolean }
+    {
+      row: MediaRow;
+      tags: Partial<RetrieverTags>;
+      art: boolean;
+      marker?: string;
+    }
   >,
 ) {
   const artwork = new Set<string>(['lab-1000000769.jpg']);
@@ -72,6 +80,7 @@ function fakeMedia(
         size: file.row.size,
         headSha256: String(file.row.mediaId).padStart(64, '0'),
         tags: { ...NO_TAGS, ...file.tags },
+        marker: file.marker ?? null,
       };
     }),
     albumArt: jest.fn(async (mediaId: number, name: string) => {
@@ -93,6 +102,7 @@ async function service(
   files: Parameters<typeof fakeMedia>[0],
   now: number | (() => number) = 5000,
   permissions?: PermissionPort,
+  copies?: CopyGate,
 ) {
   const db = openTestDatabase();
   await migrate(db, DEVICE_MIGRATIONS);
@@ -102,6 +112,7 @@ async function service(
     media,
     now: typeof now === 'number' ? () => now : now,
     permissions,
+    copies,
   });
   await library.start();
   return { library, media, db };
@@ -510,5 +521,119 @@ describe('DeviceLibraryService', () => {
     const id = library.store.get().library.songs[0].id;
     await library.setTags(id, ['p/road']);
     expect(library.store.get().library.tags.get(id)).toEqual(['p/road']);
+  });
+});
+
+describe('copies Cantor saved', () => {
+  const SONG = '0b6f9c1e-6a3d-4c55-9a3e-2f4b8d7c1a90';
+  const DIGEST = 'd'.repeat(64);
+  const SAVED = '/storage/emulated/0/Music/Cantor';
+
+  function gate(known: ExportCopy[] = []) {
+    const relinked: ExportCopy[] = [];
+    const copies: CopyGate = {
+      known: async () => known,
+      recognise: marker =>
+        marker.nodeTag === nodeTagOf('rtx') && marker.songId === SONG
+          ? 'rtx'
+          : null,
+      relink: async found => {
+        relinked.push(...found);
+      },
+    };
+    return { copies, relinked };
+  }
+
+  function withCopy(marker: string | undefined, path = `${SAVED}/Lanterns.opus`) {
+    const files: Parameters<typeof fakeMedia>[0] = fixtures();
+    files.set(path, {
+      row: row(900, path, { title: 'Lanterns', mime: 'audio/ogg' }),
+      tags: { title: 'Lanterns', album: 'Cantor' },
+      art: false,
+      marker,
+    });
+    return files;
+  }
+
+  it('neither reads nor imports a copy it knows', async () => {
+    const known: ExportCopy = {
+      nodeKey: 'rtx',
+      songId: SONG,
+      format: 'opus',
+      digest: DIGEST,
+      mediaId: 900,
+      path: `${SAVED}/Lanterns.opus`,
+      uri: 'content://media/external_primary/audio/media/900',
+      bytes: 1900,
+      savedAtMs: 1,
+    };
+    const { copies } = gate([known]);
+    const { library, media } = await service(
+      withCopy(writeMarker('rtx', SONG, DIGEST)),
+      5000,
+      undefined,
+      copies,
+    );
+    const result = await library.scan();
+    expect(result.imported).toBe(4);
+    expect(media.inspected).not.toContain(known.path);
+    const state = library.store.get();
+    expect(state.library.songs.map(song => song.title)).not.toContain(
+      'Lanterns',
+    );
+    expect(state.folders?.map(folder => folder.path)).not.toContain(SAVED);
+  });
+
+  it('writes a copy back from its marker, and does not import it', async () => {
+    const { copies, relinked } = gate();
+    const { library } = await service(
+      withCopy(writeMarker('rtx', SONG, DIGEST)),
+      5000,
+      undefined,
+      copies,
+    );
+    const result = await library.scan();
+    expect(result.imported).toBe(4);
+    expect(relinked).toEqual([
+      {
+        nodeKey: 'rtx',
+        songId: SONG,
+        format: 'opus',
+        digest: DIGEST,
+        mediaId: 900,
+        path: `${SAVED}/Lanterns.opus`,
+        uri: 'content://media/external_primary/audio/media/900',
+        bytes: 1900,
+        savedAtMs: 5000,
+      },
+    ]);
+  });
+
+  it('imports a marked file whose song is not in this library', async () => {
+    const { copies, relinked } = gate();
+    const { library } = await service(
+      withCopy(writeMarker('someone-else', SONG, DIGEST)),
+      5000,
+      undefined,
+      copies,
+    );
+    const result = await library.scan();
+    expect(result.imported).toBe(5);
+    expect(relinked).toEqual([]);
+    expect(
+      library.store.get().library.songs.map(song => song.title),
+    ).toContain('Lanterns');
+  });
+
+  it('imports as ever a file with no marker, or one it cannot read', async () => {
+    const { copies, relinked } = gate();
+    const { library } = await service(
+      withCopy('v2;whatever'),
+      5000,
+      undefined,
+      copies,
+    );
+    expect((await library.scan()).imported).toBe(5);
+    expect(relinked).toEqual([]);
   });
 });

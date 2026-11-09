@@ -121,4 +121,27 @@ export const DEVICE_MIGRATIONS: readonly Migration[] = [
       PRIMARY KEY (node_key, song_id)
     ) STRICT, WITHOUT ROWID`,
   ],
+  [
+    /*
+     * A made song's public copies (`src/export/`): one row per format saved,
+     * so the sheet can say where it is and the device scan can tell a copy
+     * from a song of the person's own and never import it as a second song.
+     * `digest` is the audio it was made from (the delivery digest, or the
+     * master's for wav); `uri` is where it was written; `path` and `media_id`
+     * are MediaStore's, when MediaStore has it.
+     */
+    `CREATE TABLE export_copy (
+      node_key TEXT NOT NULL,
+      song_id TEXT NOT NULL,
+      format TEXT NOT NULL CHECK (format IN ('opus', 'mp3', 'wav')),
+      digest TEXT NOT NULL,
+      media_id INTEGER,
+      path TEXT,
+      uri TEXT NOT NULL,
+      bytes INTEGER NOT NULL,
+      saved_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (node_key, song_id, format)
+    ) STRICT, WITHOUT ROWID`,
+    'CREATE INDEX export_copy_path ON export_copy (path)',
+  ],
 ];
