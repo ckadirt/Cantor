@@ -30,10 +30,15 @@ export const EXPORT_KNOBS = {
 } as const;
 
 /**
- * The formats this build can make, in the order they are offered. E1 makes
- * Opus only: a choice of one would be a lie, so the sheet shows it as a fact.
+ * The formats this build can make, in the order they are offered. WAV joins
+ * when the node can send its master (E3).
  */
-export const OFFERED_FORMATS: readonly ExportFormat[] = ['opus'];
+export const OFFERED_FORMATS: readonly ExportFormat[] = ['opus', 'mp3'];
+
+/** An MP3's size, estimated before it exists: constant 320 kbps. */
+export function mp3BytesOf(durationMs: number): number {
+  return Math.round((320_000 / 8) * (durationMs / 1000));
+}
 
 export const MIME: Readonly<Record<ExportFormat, string>> = {
   opus: 'audio/ogg',
@@ -185,7 +190,7 @@ export function createExportService(deps: ExportDeps): ExportService {
           : 'This song has no audio to take yet.',
       );
     }
-    if (format !== 'opus') {
+    if (!OFFERED_FORMATS.includes(format)) {
       throw new ExportError('failed', `${format} is not made by this build.`);
     }
     const delivery = song.delivery!;
@@ -222,13 +227,11 @@ export function createExportService(deps: ExportDeps): ExportService {
         ),
       ),
     ).slice(0, 32)}`;
-    const staged = await deps.native.stageOpus({
-      source,
-      key,
-      name,
-      comments,
-      cover,
-    });
+    const request = { source, key, name, comments, cover };
+    const staged =
+      format === 'mp3'
+        ? await deps.native.stageMp3(request)
+        : await deps.native.stageOpus(request);
     await deps.native.prune(EXPORT_KNOBS.CACHE_BYTES).catch(() => 0);
     return { staged, digest: delivery.sha256 };
   };

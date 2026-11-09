@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import android.util.Log
 import androidx.core.content.FileProvider
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
@@ -73,35 +74,102 @@ class CantorExportModule(private val context: ReactApplicationContext) :
       promise: Promise,
   ) {
     run(promise) {
-      require(KEY.matches(key)) { "Export key is invalid." }
-      requireFileName(name)
-      val directory = File(exportsRoot, key)
-      val target = File(directory, name)
-      if (!target.isFile) {
-        val input = File(source)
-        require(input.isFile) { "The song's audio is not on this phone." }
-        val pairs = (0 until comments.size()).map { index ->
-          val pair = comments.getArray(index) ?: error("A tag is malformed.")
-          (pair.getString(0) ?: error("A tag is malformed.")) to
-              (pair.getString(1) ?: error("A tag is malformed."))
-        }
-        val picture = cover?.let {
-          val png = android.util.Base64.decode(it.getString("png"), android.util.Base64.DEFAULT)
-          flacPicture(png, it.getInt("width"), it.getInt("height"))
-        }
-        directory.mkdirs()
-        val temporary = File(directory, ".$name.part")
-        try {
-          rewriteOpusTags(input, temporary, pairs, picture)
-          check(temporary.renameTo(target)) { "The staged file could not be kept." }
-        } finally {
-          temporary.delete()
-        }
+      stage(source, key, name) { input, temporary ->
+        val picture = coverPng(cover)?.let { (png, width, height) -> flacPicture(png, width, height) }
+        rewriteOpusTags(input, temporary, pairs(comments), picture)
       }
-      directory.setLastModified(System.currentTimeMillis())
-      staged(target)
     }
   }
+
+  /**
+   * Make an MP3 of the delivery audio at `source` (`Mp3Encoder`: LAME, on
+   * several cores) and stage it as `exports/<key>/<name>`, with an ID3v2.4 tag
+   * of `comments` (the marker first) and the cover last. Resolves with the
+   * staged file and how long the encode took.
+   */
+  @ReactMethod
+  fun stageMp3(
+      source: String,
+      key: String,
+      name: String,
+      comments: ReadableArray,
+      cover: ReadableMap?,
+      promise: Promise,
+  ) {
+    run(promise) {
+      var encoded: Mp3Encoded? = null
+      val result = stage(source, key, name) { input, temporary ->
+        val frames = File(temporary.parentFile, ".${temporary.name}.frames")
+        try {
+          encoded = Mp3Encoder.encode(input.absolutePath, frames.absolutePath)
+          temporary.outputStream().buffered().use { output ->
+            output.write(id3v2Tag(pairs(comments), coverPng(cover)?.first))
+            frames.inputStream().use { it.copyTo(output) }
+          }
+        } finally {
+          frames.delete()
+        }
+      }
+      encoded?.let {
+        result.putDouble("encodeMs", it.milliseconds)
+        result.putInt("segments", it.segments)
+        // One line per MP3 made, so its cost can be read off a phone.
+        Log.i(
+            MODULE_NAME,
+            "mp3 ${it.segments} segments, ${it.frames} frames, ${it.bytes} bytes, " +
+                "${"%.0f".format(it.milliseconds)} ms decode + encode",
+        )
+      }
+      result
+    }
+  }
+
+  /**
+   * Stage `exports/<key>/<name>`, made by `make(input, temporary)` unless a
+   * file is already staged under the key: the key names its contents.
+   */
+  private fun stage(
+      source: String,
+      key: String,
+      name: String,
+      make: (input: File, temporary: File) -> Unit,
+  ): WritableMap {
+    require(KEY.matches(key)) { "Export key is invalid." }
+    requireFileName(name)
+    val directory = File(exportsRoot, key)
+    val target = File(directory, name)
+    if (!target.isFile) {
+      val input = File(source)
+      require(input.isFile) { "The song's audio is not on this phone." }
+      directory.mkdirs()
+      val temporary = File(directory, ".$name.part")
+      try {
+        make(input, temporary)
+        check(temporary.renameTo(target)) { "The staged file could not be kept." }
+      } finally {
+        temporary.delete()
+      }
+    }
+    directory.setLastModified(System.currentTimeMillis())
+    return staged(target)
+  }
+
+  private fun pairs(comments: ReadableArray): List<Pair<String, String>> =
+      (0 until comments.size()).map { index ->
+        val pair = comments.getArray(index) ?: error("A tag is malformed.")
+        (pair.getString(0) ?: error("A tag is malformed.")) to
+            (pair.getString(1) ?: error("A tag is malformed."))
+      }
+
+  /** The cover's PNG bytes, width and height, or null. */
+  private fun coverPng(cover: ReadableMap?): Triple<ByteArray, Int, Int>? =
+      cover?.let {
+        Triple(
+            android.util.Base64.decode(it.getString("png"), android.util.Base64.DEFAULT),
+            it.getInt("width"),
+            it.getInt("height"),
+        )
+      }
 
   /** Hand a staged file to Android's share sheet. Resolves once it is shown. */
   @ReactMethod

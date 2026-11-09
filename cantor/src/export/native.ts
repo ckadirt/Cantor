@@ -6,7 +6,22 @@ import type { Cover } from './cover';
  * file to send, share it, save a public copy, and check copies still exist.
  * Values are checked here; decisions are the service's.
  */
-export type StagedFile = Readonly<{ path: string; bytes: number }>;
+export type StagedFile = Readonly<{
+  path: string;
+  bytes: number;
+  /** For an MP3 just made: how long LAME took, and on how many segments. */
+  encodeMs?: number;
+  segments?: number;
+}>;
+
+/** What staging a file needs: the delivery audio, its key, its name, its tags. */
+export type StageRequest = Readonly<{
+  source: string;
+  key: string;
+  name: string;
+  comments: readonly (readonly [string, string])[];
+  cover: Cover | null;
+}>;
 
 export type SavedCopy = Readonly<{
   uri: string;
@@ -15,13 +30,9 @@ export type SavedCopy = Readonly<{
 }>;
 
 export type ExportPort = Readonly<{
-  stageOpus(request: {
-    source: string;
-    key: string;
-    name: string;
-    comments: readonly (readonly [string, string])[];
-    cover: Cover | null;
-  }): Promise<StagedFile>;
+  stageOpus(request: StageRequest): Promise<StagedFile>;
+  /** An MP3 made on several cores (`cpp/export/Mp3Encode.h`), tagged ID3v2.4. */
+  stageMp3(request: StageRequest): Promise<StagedFile>;
   share(path: string, mime: string): Promise<void>;
   save(
     path: string,
@@ -40,6 +51,13 @@ export type ExportPort = Readonly<{
 
 type CantorExportNative = {
   stageOpus(
+    source: string,
+    key: string,
+    name: string,
+    comments: string[][],
+    cover: Cover | null,
+  ): Promise<unknown>;
+  stageMp3(
     source: string,
     key: string,
     name: string,
@@ -70,7 +88,7 @@ function module(): CantorExportNative {
 
 export const nativeExport: ExportPort = {
   async stageOpus({ source, key, name, comments, cover }) {
-    const value = record(
+    return staged(
       await module().stageOpus(
         source,
         key,
@@ -79,7 +97,17 @@ export const nativeExport: ExportPort = {
         cover,
       ),
     );
-    return { path: text(value.path, 'path'), bytes: number(value.bytes, 'bytes') };
+  },
+  async stageMp3({ source, key, name, comments, cover }) {
+    return staged(
+      await module().stageMp3(
+        source,
+        key,
+        name,
+        comments.map(([k, v]) => [k, v]),
+        cover,
+      ),
+    );
   },
   async share(path, mime) {
     await module().share(path, mime);
@@ -118,6 +146,18 @@ export const nativeExport: ExportPort = {
     );
   },
 };
+
+function staged(raw: unknown): StagedFile {
+  const value = record(raw);
+  return {
+    path: text(value.path, 'path'),
+    bytes: number(value.bytes, 'bytes'),
+    // Present only when the file was made now, not found already staged.
+    ...(typeof value.encodeMs === 'number'
+      ? { encodeMs: value.encodeMs, segments: number(value.segments, 'segments') }
+      : {}),
+  };
+}
 
 function record(value: unknown): Record<string, unknown> {
   if (typeof value !== 'object' || value === null) {

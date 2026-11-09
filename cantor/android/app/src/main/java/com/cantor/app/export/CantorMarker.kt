@@ -11,11 +11,13 @@ package com.cantor.app.export
  */
 const val CANTOR_MARKER_KEY = "CANTOR"
 
-/** The marker in a file's first bytes, or null: Opus now, MP3 and WAV later. */
+/** The marker in a file's first bytes, or null: an Opus comment or an MP3's `TXXX`. */
 fun cantorMarker(head: ByteArray): String? =
-    if (head.size >= 4 && head[0] == 'O'.code.toByte() && head[1] == 'g'.code.toByte() &&
-        head[2] == 'g'.code.toByte() && head[3] == 'S'.code.toByte()) {
-      opusCommentInHead(head, CANTOR_MARKER_KEY)
-    } else {
-      null
+    when {
+      head.startsWith("OggS") -> opusCommentInHead(head, CANTOR_MARKER_KEY)
+      head.startsWith("ID3") -> id3TxxxInHead(head, CANTOR_MARKER_KEY)
+      else -> null
     }
+
+private fun ByteArray.startsWith(ascii: String): Boolean =
+    size >= ascii.length && ascii.indices.all { this[it] == ascii[it].code.toByte() }

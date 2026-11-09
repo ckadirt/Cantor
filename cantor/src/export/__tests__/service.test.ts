@@ -72,6 +72,15 @@ function fakeNative() {
       native.staged.push(request);
       return { path: `/cache/exports/${request.key}/${request.name}`, bytes: 3_700_000 };
     }),
+    stageMp3: jest.fn(async (request: Parameters<ExportPort['stageMp3']>[0]) => {
+      native.staged.push(request);
+      return {
+        path: `/cache/exports/${request.key}/${request.name}`,
+        bytes: 7_700_000,
+        encodeMs: 1_500,
+        segments: 4,
+      };
+    }),
     share: jest.fn(async (path: string) => {
       native.shared.push(path);
     }),
@@ -157,6 +166,35 @@ describe('the export service', () => {
     });
     expect(native.shared).toEqual([native.staged[0] && `/cache/exports/${native.staged[0].key}/Salt in the Lantern.opus`]);
     expect(native.share).toHaveBeenCalledWith(expect.any(String), 'audio/ogg');
+  });
+
+  it('makes an MP3 with the same tags, and shares it as one', async () => {
+    const { service, native } = await setup();
+    await service.share(song(), 'mp3');
+    expect(native.stageMp3).toHaveBeenCalledTimes(1);
+    expect(native.stageOpus).not.toHaveBeenCalled();
+    const [request] = native.staged;
+    expect(request.name).toBe('Salt in the Lantern.mp3');
+    expect(request.key.startsWith('mp3-')).toBe(true);
+    expect(request.comments).toEqual(exportTags(song(), DIGEST));
+    expect(native.share).toHaveBeenCalledWith(request && `/cache/exports/${request.key}/Salt in the Lantern.mp3`, 'audio/mpeg');
+  });
+
+  it('keeps an MP3 copy beside an Opus one', async () => {
+    const { service } = await setup();
+    await service.save(song(), 'opus', { kind: 'music' });
+    const mp3 = await service.save(song(), 'mp3', { kind: 'music' });
+    expect(mp3).toMatchObject({ format: 'mp3', bytes: 7_700_000 });
+    expect((await service.copies('rtx', header.id)).map(copy => copy.format)).toEqual([
+      'opus',
+      'mp3',
+    ]);
+  });
+
+  it('refuses a format this build does not make', async () => {
+    const { service, native } = await setup();
+    await expect(service.share(song(), 'wav')).rejects.toMatchObject({ code: 'failed' });
+    expect(native.staged).toEqual([]);
   });
 
   it('fetches a song that is not on the phone first', async () => {
