@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useStore } from '../../core/useStore';
-import { exportPreferences } from '../../export/preferences';
+import {
+  chooseExportPreferences,
+  exportPreferences,
+} from '../../export/preferences';
 import {
   ExportError,
+  OFFERED_FORMATS,
   type ExportService,
   type TakeItSong,
 } from '../../export/service';
-import type { ExportCopy } from '../../export/types';
+import type { ExportCopy, ExportFormat } from '../../export/types';
 import {
   copyFolder,
   formatInForce,
@@ -20,6 +24,11 @@ import {
 export type TakeItModel = Readonly<{
   words: TakeItWords;
   acting: TakeItAct | null;
+  /** The format in force, and the formats offered, in order. */
+  format: ExportFormat;
+  formats: readonly ExportFormat[];
+  /** Choose another format: remembered for every song on this phone. */
+  onFormat: (format: ExportFormat) => void;
   /**
    * Where the song's saved copies are, `Music/Cantor · OPUS`: the back page
    * says so beside Delete, because deleting the song leaves them.
@@ -91,6 +100,13 @@ export function useTakeIt(
     },
     [acting, format, preferences.destination, refresh, service],
   );
+  const onFormat = useCallback(
+    (next: ExportFormat) => {
+      chooseExportPreferences({ ...preferences, format: next }).catch(() => {});
+      setFailure(null);
+    },
+    [preferences],
+  );
   const onShare = useCallback(() => run('share'), [run]);
   const onSave = useCallback(() => run('save'), [run]);
 
@@ -106,6 +122,9 @@ export function useTakeIt(
         failure,
       }),
       acting,
+      format,
+      formats: OFFERED_FORMATS,
+      onFormat,
       copies: copies.map(
         copy => `${copyFolder(copy)} · ${copy.format.toUpperCase()}`,
       ),
@@ -117,6 +136,7 @@ export function useTakeIt(
     copies,
     failure,
     format,
+    onFormat,
     onSave,
     onShare,
     preferences.destination,

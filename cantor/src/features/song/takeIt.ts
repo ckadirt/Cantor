@@ -1,6 +1,7 @@
 import { formatBytes } from '../../lenses/availability';
 import {
   blockOf,
+  mp3BytesOf,
   OFFERED_FORMATS,
   type ExportError,
   type TakeItSong,
@@ -31,7 +32,7 @@ export type TakeItState = Readonly<{
 }>;
 
 export type TakeItWords = Readonly<{
-  /** `As Opus`: a fact while there is one format, a choice after. */
+  /** The format's name, `MP3`: the chosen word of the format choice. */
   format: string;
   /** Its weight, or why nothing can be taken. */
   formatNote: string;
@@ -44,13 +45,14 @@ export type TakeItWords = Readonly<{
   saveReach: boolean;
 }>;
 
-const FORMAT_WORD: Readonly<Record<ExportFormat, string>> = {
-  opus: 'As Opus',
-  mp3: 'As MP3',
-  wav: 'As WAV',
+export const FORMAT_LABEL: Readonly<Record<ExportFormat, string>> = {
+  opus: 'Opus',
+  mp3: 'MP3',
+  wav: 'WAV',
 };
 
-const FORMAT_NOTE: Readonly<Record<ExportFormat, string>> = {
+/** What each format is for: its note, and its state in the open choice. */
+export const FORMAT_NOTE: Readonly<Record<ExportFormat, string>> = {
   opus: 'THE ORIGINAL',
   mp3: 'PLAYS ANYWHERE',
   wav: 'THE MASTER',
@@ -95,7 +97,13 @@ export function takeItWords(state: TakeItState): TakeItWords {
   const { song, format, destination, copies, acting, failure } = state;
   const block = blockOf(song);
   const here = song.audioState === 'cached' || song.audioState === 'pinned';
-  const size = formatBytes(song.delivery?.byte_length ?? 0).toUpperCase();
+  const fetch = formatBytes(song.delivery?.byte_length ?? 0).toUpperCase();
+  // What the file will weigh: the delivery as it is, or an MP3 at 320 kbps.
+  const size = formatBytes(
+    format === 'mp3'
+      ? mp3BytesOf(song.song.duration_ms)
+      : song.delivery?.byte_length ?? 0,
+  ).toUpperCase();
   const copy = copies.find(
     candidate =>
       candidate.format === format &&
@@ -109,17 +117,22 @@ export function takeItWords(state: TakeItState): TakeItWords {
       ? 'NO AUDIO YET'
       : here
       ? `${size} · ${FORMAT_NOTE[format]}`
-      : `${size} TO FETCH`;
+      : `${fetch} TO FETCH`;
 
-  const working = here ? null : 'Fetching';
-  const share =
-    acting === 'share' ? working ?? 'Copying' : 'Share';
+  // The present tense of the work under way: fetching the song first, then
+  // making the file (an MP3 is most of the wait).
+  const making = !here
+    ? 'Fetching'
+    : format === 'mp3'
+    ? 'Making MP3'
+    : null;
+  const share = acting === 'share' ? making ?? 'Copying' : 'Share';
   const shareNote =
     failure?.act === 'share' ? 'COULD NOT SHARE' : 'THE FILE, NOT A LINK';
 
   const save =
     acting === 'save'
-      ? working ?? 'Saving'
+      ? making ?? 'Saving'
       : copy !== undefined
       ? `In ${copyFolder(copy)}`
       : saveVerb(destination);
@@ -133,7 +146,7 @@ export function takeItWords(state: TakeItState): TakeItWords {
       : `INTO ${destinationName(destination).toUpperCase()}`;
 
   return {
-    format: FORMAT_WORD[format],
+    format: FORMAT_LABEL[format],
     formatNote,
     share,
     shareNote,

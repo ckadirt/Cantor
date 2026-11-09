@@ -65,10 +65,11 @@ function words(overrides: Partial<TakeItState> = {}) {
 }
 
 describe('Take it’s words', () => {
-  it('offers Opus as a fact, with what it weighs', () => {
-    expect(formatInForce('mp3')).toBe('opus');
+  it('offers Opus with what it weighs', () => {
+    expect(formatInForce('mp3')).toBe('mp3');
+    expect(formatInForce('wav')).toBe('opus');
     expect(words()).toEqual({
-      format: 'As Opus',
+      format: 'Opus',
       formatNote: '3.6 MB · THE ORIGINAL',
       share: 'Share',
       shareNote: 'THE FILE, NOT A LINK',
@@ -77,6 +78,29 @@ describe('Take it’s words', () => {
       saveNote: 'INTO MUSIC/CANTOR',
       saveReach: true,
     });
+  });
+
+  it('weighs an MP3 at 320 kbps, and says it is being made', () => {
+    // 192 s at 40 kB a second.
+    expect(words({ format: 'mp3' })).toMatchObject({
+      format: 'MP3',
+      formatNote: '7.3 MB · PLAYS ANYWHERE',
+    });
+    expect(words({ format: 'mp3', acting: 'share' }).share).toBe('Making MP3');
+    expect(words({ format: 'mp3', acting: 'save' }).save).toBe('Making MP3');
+    const remote = { ...song, audioState: 'remote' as const };
+    expect(words({ song: remote, format: 'mp3', acting: 'share' }).share).toBe(
+      'Fetching',
+    );
+  });
+
+  it('says an MP3 copy is saved only for MP3', () => {
+    const mp3 = { ...copy, format: 'mp3' as const, bytes: 7_680_000 };
+    expect(words({ format: 'mp3', copies: [copy, mp3] })).toMatchObject({
+      save: 'In Music/Cantor',
+      saveNote: 'SAVED · MP3 · 7.3 MB',
+    });
+    expect(words({ format: 'mp3', copies: [copy] }).save).toBe('Save to Music');
   });
 
   it('follows the folder chosen in Settings', () => {

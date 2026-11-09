@@ -22,7 +22,7 @@ import Animated, {
   useSharedValue,
   withTiming,
 } from 'react-native-reanimated';
-import { easeSmoother } from '../../motion';
+import { easeSmoother, TransformText } from '../../motion';
 import { haptic } from '../../haptics';
 import { LEDGER_NOTE_STYLE } from './Ledger';
 import { Reveal } from './Reveal';
@@ -85,9 +85,16 @@ export function Choice({
   items,
   onSelect,
   unchosen = 'not chosen yet',
+  morphMs,
 }: {
   activeKey: string | null;
   disabled?: boolean;
+  /**
+   * The chosen word and its whisper become the next ones by a morph of this
+   * many ms, instead of being replaced. Opt-in: a choice whose words change
+   * while it is watched (Take it's format) asks for it.
+   */
+  morphMs?: number;
   /** What to say when there is nothing to choose from at all. */
   empty: string;
   items: readonly ChoiceItem[];
@@ -129,21 +136,43 @@ export function Choice({
       >
         <View style={styles.named}>
           {head?.mark ?? null}
-          <Text
-            numberOfLines={1}
-            style={[
-              type.body,
-              styles.factWord,
-              {
-                color:
-                  head === null ? pal.faint : head.quiet ? pal.faint : pal.ink,
-              },
-            ]}
-          >
-            {head === null ? unchosen : head.label}
-          </Text>
+          {morphMs !== undefined ? (
+            <TransformText
+              charStyle={type.body}
+              color={
+                head === null ? pal.faint : head.quiet ? pal.faint : pal.ink
+              }
+              duration={morphMs}
+              style={styles.morphWord}
+              text={head === null ? unchosen : head.label}
+            />
+          ) : (
+            <Text
+              numberOfLines={1}
+              style={[
+                type.body,
+                styles.factWord,
+                {
+                  color:
+                    head === null ? pal.faint : head.quiet ? pal.faint : pal.ink,
+                },
+              ]}
+            >
+              {head === null ? unchosen : head.label}
+            </Text>
+          )}
         </View>
-        {stated ? null : (
+        {stated ? null : morphMs !== undefined ? (
+          <View style={open && styles.hidden}>
+            <TransformText
+              charStyle={LEDGER_NOTE_STYLE}
+              color={pal.faint}
+              duration={morphMs}
+              style={styles.morphWhisper}
+              text={whisperOf(head, others)}
+            />
+          </View>
+        ) : (
           <Text
             numberOfLines={1}
             style={[
@@ -152,9 +181,7 @@ export function Choice({
               open && styles.hidden,
             ]}
           >
-            {`${head === null ? '' : 'OR '}${others
-              .map(item => item.label.toUpperCase())
-              .join(' · ')}`}
+            {whisperOf(head, others)}
           </Text>
         )}
       </Pressable>
@@ -195,6 +222,16 @@ export function Choice({
       ) : null}
     </View>
   );
+}
+
+/** The alternatives under the chosen word: `OR H100 · RTX6000`. */
+function whisperOf(
+  head: ChoiceItem | null,
+  others: readonly ChoiceItem[],
+): string {
+  return `${head === null ? '' : 'OR '}${others
+    .map(item => item.label.toUpperCase())
+    .join(' · ')}`;
 }
 
 /** One stop on a ruler. */
@@ -544,6 +581,9 @@ const styles = StyleSheet.create({
   fact: { justifyContent: 'center', minHeight: touch.min },
   named: { alignItems: 'center', flexDirection: 'row', gap: 9 },
   factWord: { flexShrink: 1 },
+  /** A morphing word is drawn on a canvas that fills a seat it cannot measure. */
+  morphWord: { flex: 1, height: type.body.lineHeight },
+  morphWhisper: { height: LEDGER_NOTE_STYLE.lineHeight },
   alt: {
     alignItems: 'center',
     flexDirection: 'row',

@@ -33,6 +33,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { TransformText, WriteText } from '../../motion';
 import {
+  Choice,
   Coda,
   FolioHead,
   SongClef,
@@ -56,6 +57,8 @@ import {
 import { Membership, type MembershipEntry } from './Membership';
 import { FromIt, type CopyWrap, type SongAudioActs } from './FromIt';
 import type { TakeItModel } from './useTakeIt';
+import { FORMAT_LABEL, FORMAT_NOTE } from './takeIt';
+import type { ExportFormat } from '../../export/types';
 import {
   plainTagsOf,
   playlistsOf,
@@ -1432,19 +1435,26 @@ function TakeIt({
   const { words, acting } = model;
   return (
     <Measure>
-      <Row label="Take it">
-        <View
-          accessible
-          accessibilityLabel={`${words.format}. ${words.formatNote}`}
-          accessibilityRole="text"
-        >
-          <TransformText
-            charStyle={type.body}
-            color={pal.ink}
-            duration={SONG_SHEET_KNOBS.STATE_MS}
-            style={styles.stateSlot}
-            text={words.format}
-          />
+      <Row label="Take it" control>
+        {/*
+          The format is a choice once there is more than one: the chosen name
+          in ink, the others whispered, and both become the next by a morph.
+          What it weighs and what it is for is the line under it.
+        */}
+        <Choice
+          activeKey={model.format}
+          disabled={disabled || acting !== null}
+          empty="nothing to take yet"
+          items={model.formats.map(format => ({
+            key: format,
+            label: FORMAT_LABEL[format],
+            accessibilityLabel: `Take it as ${FORMAT_LABEL[format]}`,
+            state: FORMAT_NOTE[format],
+          }))}
+          morphMs={SONG_SHEET_KNOBS.STATE_MS}
+          onSelect={key => model.onFormat(key as ExportFormat)}
+        />
+        <View accessible accessibilityRole="text" accessibilityLabel={words.formatNote}>
           <TransformText
             charStyle={LEDGER_NOTE_STYLE}
             color={pal.faint}
