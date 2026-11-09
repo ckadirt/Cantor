@@ -1403,6 +1403,232 @@
           ]
         }
       ]
+    },
+    {
+      "name": "yue2",
+      "engine": "yue2",
+      "licence": "CC-BY-NC-4.0",
+      "variants": [
+        {
+          "tag": "3b-quality",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:668ca9ffa4622449916aae5068b5737363e7ec186a824cd3d7a1a8a95269f166",
+              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-3B-BF16.gguf",
+              "bytes": 7166072352,
+              "quant": "BF16"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a",
+              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-Vae-F32.gguf",
+              "bytes": 530497344,
+              "quant": "F32"
+            }
+          ],
+          "defaults": {
+            "steps": 32,
+            "cfg": 1.0
+          },
+          "needs": {
+            "vram_bytes": 17179869184,
+            "backends": [
+              "cuda12",
+              "cpu"
+            ]
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": false,
+            "instrumental_text": ""
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Steps",
+              "default": 32,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Guidance",
+              "default": 1.0,
+              "minimum": 0,
+              "maximum": 20,
+              "step": 0.1
+            },
+            {
+              "kind": "choice",
+              "key": "cot",
+              "label": "Score mode",
+              "default": "full",
+              "choices": [
+                "full",
+                "melody",
+                "off"
+              ]
+            }
+          ],
+          "capabilities": [],
+          "acts": []
+        },
+        {
+          "tag": "3b-balanced",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:41121ce97786d7795a325bcf123ca196956c03bb252c9e75384cfc1f2fc19e6b",
+              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-3B-Q8_0.gguf",
+              "bytes": 3810232064,
+              "quant": "Q8_0"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a",
+              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-Vae-F32.gguf",
+              "bytes": 530497344,
+              "quant": "F32"
+            }
+          ],
+          "defaults": {
+            "steps": 32,
+            "cfg": 1.0
+          },
+          "needs": {
+            "vram_bytes": 12884901888,
+            "backends": [
+              "cuda12",
+              "cpu"
+            ]
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": false,
+            "instrumental_text": ""
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Steps",
+              "default": 32,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Guidance",
+              "default": 1.0,
+              "minimum": 0,
+              "maximum": 20,
+              "step": 0.1
+            },
+            {
+              "kind": "choice",
+              "key": "cot",
+              "label": "Score mode",
+              "default": "full",
+              "choices": [
+                "full",
+                "melody",
+                "off"
+              ]
+            }
+          ],
+          "capabilities": [],
+          "acts": []
+        },
+        {
+          "tag": "3b-fast",
+          "components": [
+            {
+              "role": "lm",
+              "blob": "sha256:cd3efd250b734a229172800f08f33a893ad1f66b521666e176cdae4a0729b281",
+              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-3B-Q5_K_M.gguf",
+              "bytes": 2622936832,
+              "quant": "Q5_K_M"
+            },
+            {
+              "role": "vae",
+              "blob": "sha256:93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a",
+              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-Vae-F32.gguf",
+              "bytes": 530497344,
+              "quant": "F32"
+            }
+          ],
+          "defaults": {
+            "steps": 16,
+            "cfg": 1.0
+          },
+          "needs": {
+            "vram_bytes": 10737418240,
+            "backends": [
+              "cuda12",
+              "cpu"
+            ]
+          },
+          "stages": [
+            "codes",
+            "diffuse",
+            "decode"
+          ],
+          "lyrics": {
+            "can_generate": false,
+            "requires_lyrics": false,
+            "instrumental_text": ""
+          },
+          "parameters": [
+            {
+              "kind": "integer",
+              "key": "inference_steps",
+              "label": "Steps",
+              "default": 16,
+              "minimum": 1,
+              "maximum": 200,
+              "step": 1
+            },
+            {
+              "kind": "number",
+              "key": "guidance_scale",
+              "label": "Guidance",
+              "default": 1.0,
+              "minimum": 0,
+              "maximum": 20,
+              "step": 0.1
+            },
+            {
+              "kind": "choice",
+              "key": "cot",
+              "label": "Score mode",
+              "default": "full",
+              "choices": [
+                "full",
+                "melody",
+                "off"
+              ]
+            }
+          ],
+          "capabilities": [],
+          "acts": []
+        }
+      ]
     }
   ]
 }

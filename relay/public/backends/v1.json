@@ -88,6 +88,26 @@
           "bytes": 23413148
         }
       ]
+    },
+    {
+      "name": "yue2",
+      "abi": 1,
+      "backends": [
+        {
+          "backend": "cpu",
+          "arch": "x86_64",
+          "bytes": 7768386,
+          "sha256": "66a0b88daa20b4da7e14b1b4aed7d39fe4f6003015d887fdd71a6ee1826425d1",
+          "url": "https://ckpts.cantorfm.com/backends/25455ed8a916/yue2-engine-cpu-x86_64.tar.gz"
+        },
+        {
+          "backend": "cuda12",
+          "arch": "x86_64",
+          "bytes": 72993755,
+          "sha256": "c7420b1718589a1cc641d0e6da0fd803c0c13a88f4e74a01c55b0366d5125039",
+          "url": "https://ckpts.cantorfm.com/backends/25455ed8a916/yue2-engine-cuda12-x86_64.tar.gz"
+        }
+      ]
     }
   ]
 }
