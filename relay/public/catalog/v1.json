@@ -1415,14 +1415,14 @@
             {
               "role": "lm",
               "blob": "sha256:668ca9ffa4622449916aae5068b5737363e7ec186a824cd3d7a1a8a95269f166",
-              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-3B-BF16.gguf",
+              "url": "https://ckpts.cantorfm.com/yue2-1.0/YuE2-3B-BF16.gguf",
               "bytes": 7166072352,
               "quant": "BF16"
             },
             {
               "role": "vae",
               "blob": "sha256:93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a",
-              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-Vae-F32.gguf",
+              "url": "https://ckpts.cantorfm.com/yue2-1.0/YuE2-Vae-F32.gguf",
               "bytes": 530497344,
               "quant": "F32"
             }
@@ -1435,6 +1435,8 @@
             "vram_bytes": 17179869184,
             "backends": [
               "cuda12",
+              "metal",
+              "vulkan",
               "cpu"
             ]
           },
@@ -1488,14 +1490,14 @@
             {
               "role": "lm",
               "blob": "sha256:41121ce97786d7795a325bcf123ca196956c03bb252c9e75384cfc1f2fc19e6b",
-              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-3B-Q8_0.gguf",
+              "url": "https://ckpts.cantorfm.com/yue2-1.0/YuE2-3B-Q8_0.gguf",
               "bytes": 3810232064,
               "quant": "Q8_0"
             },
             {
               "role": "vae",
               "blob": "sha256:93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a",
-              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-Vae-F32.gguf",
+              "url": "https://ckpts.cantorfm.com/yue2-1.0/YuE2-Vae-F32.gguf",
               "bytes": 530497344,
               "quant": "F32"
             }
@@ -1508,6 +1510,8 @@
             "vram_bytes": 12884901888,
             "backends": [
               "cuda12",
+              "metal",
+              "vulkan",
               "cpu"
             ]
           },
@@ -1561,14 +1565,14 @@
             {
               "role": "lm",
               "blob": "sha256:cd3efd250b734a229172800f08f33a893ad1f66b521666e176cdae4a0729b281",
-              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-3B-Q5_K_M.gguf",
+              "url": "https://ckpts.cantorfm.com/yue2-1.0/YuE2-3B-Q5_K_M.gguf",
               "bytes": 2622936832,
               "quant": "Q5_K_M"
             },
             {
               "role": "vae",
               "blob": "sha256:93e49dfb1970e89ad64cacb17cf13b5d05f6bb30ef7ed3adae3050bcb728638a",
-              "url": "https://huggingface.co/Serveurperso/YuE2-GGUF/resolve/e630f2b8f6aedf8254c3186438633c1b5eeaf80a/YuE2-Vae-F32.gguf",
+              "url": "https://ckpts.cantorfm.com/yue2-1.0/YuE2-Vae-F32.gguf",
               "bytes": 530497344,
               "quant": "F32"
             }
@@ -1581,6 +1585,8 @@
             "vram_bytes": 10737418240,
             "backends": [
               "cuda12",
+              "metal",
+              "vulkan",
               "cpu"
             ]
           },

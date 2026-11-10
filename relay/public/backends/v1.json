@@ -106,6 +106,46 @@
           "bytes": 72993755,
           "sha256": "c7420b1718589a1cc641d0e6da0fd803c0c13a88f4e74a01c55b0366d5125039",
           "url": "https://ckpts.cantorfm.com/backends/25455ed8a916/yue2-engine-cuda12-x86_64.tar.gz"
+        },
+        {
+          "backend": "cpu",
+          "arch": "arm64",
+          "os": "linux",
+          "url": "https://ckpts.cantorfm.com/backends/d43af5015d85/yue2-engine-linux-cpu-arm64.tar.gz",
+          "sha256": "1321b854a9f33333ecaa30b482896da19d5f13211c78033542ed46636b84c882",
+          "bytes": 1833124
+        },
+        {
+          "backend": "vulkan",
+          "arch": "x86_64",
+          "os": "linux",
+          "url": "https://ckpts.cantorfm.com/backends/7fd3f2455e86/yue2-engine-linux-vulkan-x86_64.tar.gz",
+          "sha256": "2a039b9261fd6afb96bd2f222a3228a521724d660b56a5a54a75775de22bc28d",
+          "bytes": 20302662
+        },
+        {
+          "backend": "cpu",
+          "arch": "x86_64",
+          "os": "macos",
+          "url": "https://ckpts.cantorfm.com/backends/9061e660d79b/yue2-engine-macos-cpu-x86_64.tar.gz",
+          "sha256": "dd67d7f3e74c15c33d7372cf6aebc8296ff4fd8c3546b0e54647d4a863ec0cb7",
+          "bytes": 1860244
+        },
+        {
+          "backend": "cpu",
+          "arch": "arm64",
+          "os": "macos",
+          "url": "https://ckpts.cantorfm.com/backends/9061e660d79b/yue2-engine-macos-cpu-arm64.tar.gz",
+          "sha256": "471aa2113c182bef42ae117c93fe2158ac42d31aab0783c8f968d3328bb76a6e",
+          "bytes": 1628677
+        },
+        {
+          "backend": "metal",
+          "arch": "arm64",
+          "os": "macos",
+          "url": "https://ckpts.cantorfm.com/backends/9061e660d79b/yue2-engine-macos-metal-arm64.tar.gz",
+          "sha256": "5cc2ca5932dc3c84911db6ab371eaf8f76654f062b14173a5603a80eb5df34fe",
+          "bytes": 2676262
         }
       ]
     }
