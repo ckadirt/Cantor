@@ -31,7 +31,7 @@ internal fun tagWav(input: InputStream, output: OutputStream, tags: List<Pair<St
 
   val added = ByteArrayOutputStream()
   tags.firstOrNull { it.first.equals(CANTOR_MARKER_KEY, ignoreCase = true) }?.let { (_, marker) ->
-    added.write(chunk(MARKER_CHUNK, marker.toByteArray(Charsets.UTF_8)))
+    added.write(chunk(MARKER_CHUNK, evenLength(marker.toByteArray(Charsets.UTF_8))))
   }
   val info = ByteArrayOutputStream()
   info.write("INFO".toByteArray(Charsets.US_ASCII))
@@ -40,7 +40,7 @@ internal fun tagWav(input: InputStream, output: OutputStream, tags: List<Pair<St
     // INFO strings are zero-terminated.
     info.write(chunk(id, value.toByteArray(Charsets.UTF_8) + 0))
   }
-  if (info.size() > 4) added.write(chunk("LIST", info.toByteArray()))
+  if (info.size() > 4) added.write(chunk("LIST", evenLength(info.toByteArray())))
 
   val extra = added.size().toLong()
   val newSize = riffSize + extra
@@ -63,7 +63,11 @@ internal fun wavMarkerInHead(head: ByteArray): String? {
     val size = head.le32(at + 4)
     val body = at + 8
     if (id == MARKER_CHUNK) {
-      return if (body + size <= head.size) String(head, body, size.toInt(), Charsets.UTF_8) else null
+      return if (body + size <= head.size) {
+        String(head, body, size.toInt(), Charsets.UTF_8).trimEnd('\u0000')
+      } else {
+        null
+      }
     }
     // The audio is too large to step over inside a head, and no tag follows it.
     if (id == "data") return null
@@ -71,6 +75,17 @@ internal fun wavMarkerInHead(head: ByteArray): String? {
   }
   return null
 }
+
+/**
+ * A top-level chunk's body made even by a trailing NUL counted in its size.
+ *
+ * RIFF pads an odd chunk with a byte its size does not count, but Android's
+ * WAV reader steps by the size alone: after an odd chunk it lands a byte short,
+ * never finds `data`, and MediaStore records no duration (measured on the
+ * Xiaomi, 2026-11-09). An even size is read alike by both.
+ */
+private fun evenLength(body: ByteArray): ByteArray =
+    if (body.size % 2 == 0) body else body + 0
 
 private fun chunk(id: String, body: ByteArray): ByteArray {
   val out = ByteArrayOutputStream()

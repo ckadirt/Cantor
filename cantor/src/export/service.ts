@@ -24,7 +24,7 @@ export const EXPORT_KNOBS = {
    * What a staged file's tags are made of. Raise it when the tags change, so
    * a file staged by an older build is made again rather than reused.
    */
-  TAG_VERSION: 1,
+  TAG_VERSION: 2,
   /** The longest file name, in characters, before its extension. */
   NAME_CHARS: 120,
 } as const;

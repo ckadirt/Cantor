@@ -54,7 +54,7 @@ class WavTagsTest {
     )
     val chunks = chunks(tagged)
     assertEquals(listOf("fmt ", "cntr", "LIST", "data"), chunks.map { it.first })
-    assertEquals(marker, String(chunks[1].second, Charsets.UTF_8))
+    assertEquals(marker, String(chunks[1].second, Charsets.UTF_8).trimEnd('\u0000'))
     val list = String(chunks[2].second, Charsets.US_ASCII)
     assert(list.startsWith("INFO")) { list }
     assert(list.contains("INAM") && list.contains("Wild Ride\u0000")) { list }
@@ -66,10 +66,27 @@ class WavTagsTest {
   }
 
   @Test
-  fun anOddLengthTagIsPaddedSoTheNextChunkStaysAligned() {
-    val tagged = tag(master(), listOf("CANTOR" to "odd", "TITLE" to "ab"))
-    assertEquals(listOf("fmt ", "cntr", "LIST", "data"), chunks(tagged).map { it.first })
-    assertEquals("odd", cantorMarker(tagged))
+  fun everyChunkWeAddDeclaresAnEvenSize() {
+    // Android's WAV reader steps by declared sizes and ignores RIFF's padding
+    // byte, so an odd-sized chunk hides `data` from it.
+    for (marker in listOf("odd", "even", "v1;" + "x".repeat(134))) {
+      for (title in listOf("ab", "abc")) {
+        val tagged = tag(master(), listOf("CANTOR" to marker, "TITLE" to title))
+        val chunks = chunks(tagged)
+        assertEquals(listOf("fmt ", "cntr", "LIST", "data"), chunks.map { it.first })
+        chunks.filter { it.first == "cntr" || it.first == "LIST" }.forEach { (id, body) ->
+          assertEquals("$id declares an even size", 0, body.size % 2)
+        }
+        // Stepping by declared sizes alone, as Android does, still lands on `data`.
+        var at = 12
+        while (String(tagged, at, 4, Charsets.US_ASCII) != "data") {
+          val size = (tagged[at + 4].toInt() and 0xff) or ((tagged[at + 5].toInt() and 0xff) shl 8)
+          at += 8 + size
+          assert(at < tagged.size) { "stepping by sizes missed data" }
+        }
+        assertEquals(marker, cantorMarker(tagged))
+      }
+    }
   }
 
   @Test
