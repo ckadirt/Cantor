@@ -19,6 +19,7 @@ import AppIcon from '../components/art/AppIcon.astro';
 import Device from '../components/art/Device.astro';
 import Pulse from '../components/art/Pulse.astro';
 import CopyLine from '../components/CopyLine.astro';
+import CloudList from '../components/CloudList.astro';
 import { facePathAt, sampleLibrary } from '../lib/library';
 import { clock } from '../lib/art';
 import { phraseGeometry } from '../lib/phrase';
@@ -177,6 +178,7 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
             <CopyLine text={SITE.install} />
           </div>
         </div>
+        <a class="no-computer" href="#cloud">No computer? Cantor Cloud is coming</a>
       </div>
 
       <div class="specimen beat" data-beat={`${BEATS.shape} ${BEATS.gather}`} data-specimen>
@@ -333,6 +335,17 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
         <div><dt>Open models</dt><dd>Good, and yours. Each comes with its own licence, shown before it downloads.</dd></div>
       </dl>
       <a class="more" href="/docs/start/">The quick start, step by step</a>
+      <div class="cloud" id="cloud">
+        <div>
+          <span class="lab">No computer?</span>
+          <h3>Cantor Cloud is coming.</h3>
+        </div>
+        <div class="cloud-ask">
+          <p>The same Cantor, with your songs made on our computers instead of yours. Leave an address and we’ll write when it opens.</p>
+          <CloudList />
+          <p class="fine">Cantor itself still asks for no email. This list is the only one we keep, and it is only for that letter.</p>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -532,6 +545,9 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .cta-node { width: min(480px, 36vw); }
   .cta-node .lab { margin-bottom: 10px; }
   .cta-node :global(code) { padding: 14px 16px; font-size: 12.5px; }
+  .no-computer { display: inline-block; margin-top: 26px; font: 11px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; text-decoration: none; color: var(--muted);
+    padding-bottom: 5px; border-bottom: 1px solid var(--faint); transition: color 0.2s linear, border-color 0.2s linear; animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) 1.25s both; }
+  .no-computer:hover { color: var(--ink); border-bottom-color: var(--ink); }
   /* The intro: the title's letters rise one after another, then the rest. */
   h1 > span { display: inline-block; animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) both; animation-delay: calc(0.35s + var(--i) * 0.07s); }
   .hero-beat > p { animation: rise 1.1s cubic-bezier(.2, .7, .1, 1) 0.9s both; }
@@ -540,8 +556,8 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   @keyframes rise { from { opacity: 0; transform: translateY(0.45em); } to { opacity: 1; transform: none; } }
   @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
   /* The intro waits for the page to be shown, so it plays whole. */
-  :global(html.js:not(.ready)) h1 > span, :global(html.js:not(.ready)) .hero-beat > p, :global(html.js:not(.ready)) .cta { animation-play-state: paused; }
-  @media (prefers-reduced-motion: reduce) { h1 span, .hero-beat > p, .cta, .specimen .spec-lines { animation: none; } }
+  :global(html.js:not(.ready)) h1 > span, :global(html.js:not(.ready)) .hero-beat > p, :global(html.js:not(.ready)) .cta, :global(html.js:not(.ready)) .no-computer { animation-play-state: paused; }
+  @media (prefers-reduced-motion: reduce) { h1 span, .hero-beat > p, .cta, .no-computer, .specimen .spec-lines { animation: none; } }
   .cue { left: 50%; bottom: 26px; transform: translateX(-50%); font: 10px/1 var(--mono); letter-spacing: 2.4px; text-transform: uppercase; color: var(--muted); }
 
   /* The specimen's card, under the large shape: HERO_AT in field-stage.ts. */
@@ -656,6 +672,12 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
   .needs dt { font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 12px; }
   .needs dd { margin: 0; font-size: 15.5px; line-height: 24px; color: var(--muted); max-width: 32ch; }
   .begin .more { margin-top: 64px; }
+  /* Cantor Cloud: for whoever has no computer to run the node on. */
+  .cloud { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 110px; padding-top: 28px; border-top: 1px solid var(--ink); scroll-margin-top: 96px; }
+  .cloud h3 { font: 400 clamp(34px, 3.6vw, 54px) / 1.04 var(--display); letter-spacing: -0.4px; margin: 0; max-width: 11ch; text-wrap: balance; }
+  .cloud-ask { display: grid; grid-template-columns: minmax(0, 1fr); gap: 24px; padding-left: 48px; border-left: 1px solid var(--line); }
+  .cloud-ask p { font-size: 17px; line-height: 27px; color: var(--muted); max-width: 44ch; }
+  .cloud-ask .fine { font-size: 14px; line-height: 21px; }
 
   footer { display: flex; justify-content: space-between; align-items: center; padding: 26px 40px; font: 10.5px/1 var(--mono); letter-spacing: 1.8px; text-transform: uppercase; color: var(--muted); }
   footer a, footer span span { margin-left: 24px; text-decoration: none; }
@@ -725,6 +747,9 @@ const quoted = faceLines.slice(quoteFrom, quoteTo + 1).map((text, i) => ({
     .begin h2 { margin-bottom: 48px; }
     .needs { grid-template-columns: minmax(0, 1fr); gap: 28px; margin-top: 56px; }
     .begin .more { margin-top: 48px; }
+    .no-computer { margin-top: 20px; align-self: flex-start; }
+    .cloud { grid-template-columns: minmax(0, 1fr); gap: 24px; margin-top: 72px; }
+    .cloud-ask { padding-left: 0; border-left: 0; }
     footer { flex-direction: column; gap: 16px; align-items: flex-start; }
     footer a:first-child { margin-left: 0; }
   }

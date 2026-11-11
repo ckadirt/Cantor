@@ -82,6 +82,20 @@ Nodes from the release after 0.2.8 fetch the catalog and backends here; older
 ones fetch the same files from `relay.cantorfm.com`, which must keep serving
 them.
 
+## The Cantor Cloud list
+
+The landing's "No computer?" block (`src/components/CloudList.astro`) posts an
+address to `POST /api/cloud-list`, which the Worker (`worker/index.ts`) keeps
+in a D1 database, `cantor-cloud-list`: the address, the day, and the `?from=`
+of the link that brought it (`cantorfm.com/?from=tiktok`). It is the only
+thing the site stores about anyone. The first deploy creates the database, so
+the deploy token needs D1 edit rights.
+
+```sh
+npx wrangler d1 execute cantor-cloud-list --remote \
+  --command "select source, count(*) from cloud_list group by source"
+```
+
 ## Deploy
 
 `wrangler.jsonc` makes the site a Worker with static assets on `cantorfm.com`.

@@ -2,7 +2,8 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   // cantorfm.com: the landing, the docs, and the files a node and its
   // installer fetch. Everything is the built site in dist/ (`npm run build`),
-  // including `_redirects`; the Worker only sends www to the bare domain.
+  // including `_redirects`; the Worker sends www to the bare domain and keeps
+  // the Cantor Cloud list.
   "name": "cantor-site",
   "main": "worker/index.ts",
   "compatibility_date": "2026-07-20",
@@ -15,6 +16,15 @@
     // Starlight builds a 404 page; unknown paths get it, with a 404 status.
     "not_found_handling": "404-page"
   },
+  // The Cantor Cloud list: the addresses people leave on the landing
+  // (`POST /api/cloud-list`, worker/index.ts). No id: the first deploy creates
+  // the database by this name, and later deploys find it again.
+  "d1_databases": [
+    {
+      "binding": "WAITLIST",
+      "database_name": "cantor-cloud-list"
+    }
+  ],
   "routes": [
     {
       "pattern": "cantorfm.com",
