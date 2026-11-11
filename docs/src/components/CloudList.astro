@@ -1,0 +1,80 @@
+---
+/**
+ * The Cantor Cloud list: one address, kept by the site's Worker
+ * (`POST /api/cloud-list`, worker/index.ts). A link that ends `?from=tiktok`
+ * is remembered beside the address, so each place it was posted can be told
+ * apart.
+ */
+---
+<form class="cloud-list" data-cloud-list novalidate>
+  <div class="line">
+    <label class="sr" for="cloud-email">Your email</label>
+    <input id="cloud-email" name="email" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required maxlength="254" />
+    <!-- Left empty by people; filled by form-fillers, which the Worker then drops. -->
+    <input class="trap" name="website" type="text" tabindex="-1" autocomplete="off" aria-hidden="true" />
+    <button type="submit">Tell me</button>
+  </div>
+  <p class="status" data-status role="status" aria-live="polite"></p>
+</form>
+<script>
+  const SAID = {
+    sending: 'Sending…',
+    done: 'You’re on the list. We’ll write when it opens.',
+    email: 'That doesn’t look like an email address.',
+    failed: 'That didn’t go through. Try again in a moment.',
+  };
+  for (const form of document.querySelectorAll<HTMLFormElement>('[data-cloud-list]')) {
+    const email = form.querySelector<HTMLInputElement>('input[name="email"]')!;
+    const trap = form.querySelector<HTMLInputElement>('input[name="website"]')!;
+    const button = form.querySelector<HTMLButtonElement>('button')!;
+    const status = form.querySelector<HTMLElement>('[data-status]')!;
+    const say = (key: keyof typeof SAID) => {
+      status.textContent = SAID[key];
+      form.dataset.state = key;
+    };
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (form.dataset.state === 'sending' || form.dataset.state === 'done') return;
+      if (!email.value.trim() || !email.checkValidity()) return say('email');
+      say('sending');
+      button.disabled = true;
+      try {
+        const response = await fetch('/api/cloud-list', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email: email.value,
+            website: trap.value,
+            from: new URLSearchParams(location.search).get('from') ?? '',
+          }),
+        });
+        if (response.ok) {
+          email.disabled = true;
+          return say('done');
+        }
+        button.disabled = false;
+        say(response.status === 400 ? 'email' : 'failed');
+      } catch {
+        button.disabled = false;
+        say('failed');
+      }
+    });
+  }
+</script>
+<style>
+  .cloud-list { display: grid; gap: 14px; max-width: 100%; }
+  .line { display: flex; align-items: stretch; border: 1px solid var(--ink); }
+  input[type='email'] { flex: 1; min-width: 0; padding: 18px 20px; border: 0; border-radius: 0; background: transparent; color: var(--ink); font: 16px/1.4 var(--mono); outline: none; }
+  input[type='email']::placeholder { color: var(--faint); }
+  input[type='email']:focus-visible { box-shadow: inset 0 -2px 0 var(--ink); }
+  input:disabled { color: var(--muted); }
+  button { flex: none; border: 0; border-left: 1px solid var(--ink); background: var(--ink); color: var(--paper); cursor: pointer;
+    padding: 0 22px; font: 10.5px/1 var(--mono); letter-spacing: 2px; text-transform: uppercase; min-width: 108px; transition: opacity 0.2s linear; }
+  button:hover { opacity: 0.85; }
+  button:disabled { cursor: default; opacity: 0.5; }
+  .cloud-list[data-state='done'] button { display: none; }
+  .status { min-height: 16px; margin: 0; font: 10.5px/1.5 var(--mono); letter-spacing: 1.6px; text-transform: uppercase; color: var(--muted); }
+  .cloud-list[data-state='done'] .status { color: var(--ink); }
+  .trap { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+</style>
